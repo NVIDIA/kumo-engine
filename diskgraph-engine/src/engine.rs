@@ -74,6 +74,7 @@ pub struct DiskGraphEngine {
     /// Map from dense Relation ID to SrcTypeID.
     pub relation_src_type: Vec<usize>,
     /// Forward↔reverse relation pairs: rel_id -> reverse_rel_id.
+    /// Built from the `*_src_to_dst` ↔ `*_dst_to_src` naming convention.
     pub reverse_rel_map: Vec<Option<usize>>,
     /// Feature batch target size in bytes.
     pub target_batch_bytes: usize,
@@ -122,6 +123,7 @@ impl DiskGraphEngine {
             metadata.node_types.len()
         );
 
+        // Compute layouts from metadata
         let all_layouts = diskgraph_index::builder::compute_relation_layouts(
             &metadata.edge_relations,
             &metadata.node_types,
@@ -141,6 +143,9 @@ impl DiskGraphEngine {
             }
             let type_layouts = Arc::new(type_layouts);
 
+            // Ingest currently writes node shard directories in lowercase
+            // (`nodes/<table_name_lower>/...`), while metadata preserves the
+            // original table name case. Support both to keep runtime robust.
             let node_dir_exact = path.join("nodes").join(&node_type.name);
             let node_dir_lower = path.join("nodes").join(node_type.name.to_lowercase());
             let node_dir = if node_dir_exact.exists() {
@@ -148,11 +153,15 @@ impl DiskGraphEngine {
             } else if node_dir_lower.exists() {
                 node_dir_lower
             } else {
+                // Keep old behavior for error surfaces if neither exists.
                 path.join("nodes").join(&node_type.name)
             };
 
             let mut shards = Vec::new();
             for (i, shard_meta) in node_type.shards.iter().enumerate() {
+                // Skip empty shards. Ingest writes (min_id=1, max_id=0) as
+                // a sentinel for shards that received no data. Including
+                // them in the shard vec breaks binary search in find_shard.
                 if shard_meta.min_id > shard_meta.max_id {
                     continue;
                 }
@@ -174,6 +183,7 @@ impl DiskGraphEngine {
             }
             readers.insert(node_type.name.clone(), shards);
 
+            // Load RowPack Decoder if present
             if let Some(config) = &node_type.node_data_compression {
                 let ctx_path = path.join(&config.context_path);
                 let ctx_bytes = std::fs::read(&ctx_path).map_err(|e| {
@@ -204,6 +214,7 @@ impl DiskGraphEngine {
             }
         }
 
+        // Build explicit reverse pairs from metadata.
         let mut reverse_pairs: HashMap<usize, usize> = HashMap::new();
         for (rel_id, rel) in metadata.edge_relations.iter().enumerate() {
             if let Some(ref partner_name) = rel.reverse_of {
@@ -257,6 +268,7 @@ impl DiskGraphEngine {
         let mut node_decoders = Vec::new();
         let mut node_schemas = Vec::new();
 
+        // Sort keys to ensure deterministic ID assignment
         let mut sorted_types: Vec<_> = readers_map.keys().cloned().collect();
         sorted_types.sort();
 
@@ -264,6 +276,7 @@ impl DiskGraphEngine {
             node_type_to_id.insert(name.clone(), idx);
             id_to_node_type.push(name.clone());
 
+            // Populate decoders/arrow schemas aligned with ID
             if let Some(decoder) = node_decoders_map.get(name) {
                 let decoder_arc = Arc::new(decoder.clone());
                 node_decoders.push(Some(decoder_arc.clone()));
@@ -280,6 +293,7 @@ impl DiskGraphEngine {
             }
         }
 
+        // Populate readers vector
         readers.resize_with(sorted_types.len(), Vec::new);
         for (name, shards) in readers_map {
             if let Some(&idx) = node_type_to_id.get(&name) {
@@ -287,11 +301,13 @@ impl DiskGraphEngine {
             }
         }
 
+        // Remap relation info to use Type IDs
         let mut rel_name_to_id = HashMap::new();
         let mut id_to_rel_name = Vec::new();
 
         let max_rel_id = relation_info_map.keys().max().copied().unwrap_or(0);
         id_to_rel_name.resize(max_rel_id + 1, String::new());
+        // Use usize::MAX as sentinel for invalid/unmapped relations
         let mut relation_info = vec![usize::MAX; max_rel_id + 1];
         let mut relation_src_type = vec![usize::MAX; max_rel_id + 1];
         let mut decoders: Vec<Option<SortKeyDecoder>> = vec![None; max_rel_id + 1];
@@ -311,6 +327,8 @@ impl DiskGraphEngine {
             }
         }
 
+        // Build forward↔reverse relation pairs.
+        // Prefer explicit pairs from metadata; fall back to naming convention.
         let mut reverse_rel_map: Vec<Option<usize>> = vec![None; id_to_rel_name.len()];
         if let Some(pairs) = reverse_pairs {
             for (rel_id, partner_id) in pairs {
@@ -319,6 +337,7 @@ impl DiskGraphEngine {
                 }
             }
         } else {
+            // Fallback: naming convention for old indexes without reverse_of.
             for (i, name_i) in id_to_rel_name.iter().enumerate() {
                 if name_i.is_empty() || reverse_rel_map[i].is_some() {
                     continue;
@@ -429,6 +448,7 @@ impl DiskGraphEngine {
             }
         }
 
+        // Send Schema based on selection
         if let Some(full_schema) = self.node_schemas.get(node_type_id).and_then(|s| s.as_ref()) {
             let projected = full_schema
                 .project(&col_indices)
@@ -441,6 +461,7 @@ impl DiskGraphEngine {
             )));
         }
 
+        // Use Bulk Fetch helper
         self.accumulate_features_from_ids_chunked(
             node_type_id,
             node_ids,
@@ -498,6 +519,7 @@ impl DiskGraphEngine {
     ) -> Result<()> {
         let sample_start = Instant::now();
 
+        // Standardize seed timestamps to index unit in a single pass if needed
         let mut request_cow = std::borrow::Cow::Borrowed(request);
         let multiplier = request
             .seed_timestamp_unit
@@ -518,6 +540,7 @@ impl DiskGraphEngine {
         }
         let request = request_cow.as_ref();
 
+        // 1. Initial Validation & Initialization
         let (seed_type, seed_ids) =
             request.seed_nodes.iter().next().ok_or_else(|| {
                 EngineError::InvalidRequest("request has no seed nodes".to_string())
@@ -537,6 +560,7 @@ impl DiskGraphEngine {
             "Sampling engine run started"
         );
 
+        // Pre-allocate stats
         let num_types = self.readers.len();
         let num_rels = self.relation_info.len();
         let num_hops = request.plan.layers.len();
@@ -550,6 +574,8 @@ impl DiskGraphEngine {
 
         let fused = request.flags.fused_feature_fetching;
 
+        // 2. Initialize Seed Layer (Hop 0)
+        // This ensures seed nodes get Local IDs 0..K and are preserved in order.
         let seed_state = state.type_states.entry(seed_type_id).or_default();
         for (i, &global_id) in seed_ids.iter().enumerate() {
             let seed_index = i as u32;
@@ -558,10 +584,12 @@ impl DiskGraphEngine {
                 global_id,
             };
 
+            // Assign Local ID for seeds
             if !seed_state.index_map.contains_key(&key) {
                 let local_id = seed_state.nodes.len() as u32;
                 seed_state.index_map.insert(key, local_id);
 
+                // Cache Node (Hop 0)
                 seed_state.nodes.push(NodeRecord {
                     global_id,
                     seed_index,
@@ -569,6 +597,7 @@ impl DiskGraphEngine {
                 });
                 state.stats.record_node(0, seed_type_id);
 
+                // Add to frontier for Layer 0
                 seed_state.next_frontier.push(NodeRecord {
                     global_id,
                     seed_index,
@@ -577,6 +606,7 @@ impl DiskGraphEngine {
             }
         }
 
+        // 3. Process Layers (BFS)
         let compiled_plan = self.compile_plan(&request.plan)?;
         for layer_idx in 0..request.plan.layers.len() {
             let hop_start = Instant::now();
@@ -600,6 +630,8 @@ impl DiskGraphEngine {
             );
         }
 
+        // 4. Finalize fused fetching by fetching leaf node features
+        // and flush remaining features.
         if fused {
             let type_ids: Vec<usize> = state.type_states.keys().cloned().collect();
             for type_id in type_ids {
@@ -618,6 +650,7 @@ impl DiskGraphEngine {
             }
         }
 
+        // 5. Finalize node batch and stats
         output.finalize(state)?;
 
         debug!(
@@ -630,6 +663,7 @@ impl DiskGraphEngine {
         Ok(())
     }
 
+    /// Feature fetching from an EdgeListView, used in fused mode
     fn accumulate_features_from_view(
         &self,
         type_id: usize,
@@ -649,6 +683,9 @@ impl DiskGraphEngine {
         )
     }
 
+    /// Reused for fused mode feature fetching for both non-leaf and leaf nodes.
+    /// Non-leaf nodes EdgeListView is accessed as part of sampling. Leaf nodes
+    /// requires a separate access to EdgeListView given their IDs.
     fn accumulate_features_from_view_internal(
         &self,
         type_id: usize,
@@ -694,6 +731,9 @@ impl DiskGraphEngine {
         Ok(())
     }
 
+    /// Feature fetching for leaf nodes (current frontier after last hop) in
+    /// fused mode. Sampling no longer access edge list for leaf nodes. An
+    /// additional access is needed specifically for feature fetching.
     fn accumulate_features_from_ids_builder(
         &self,
         type_id: usize,
@@ -702,7 +742,10 @@ impl DiskGraphEngine {
         scratch: &mut RowPackDecodeScratch,
         output: &mut impl OutputHandler,
     ) -> Result<()> {
-        let shards = &self.readers[type_id];
+        let shards = self
+            .readers
+            .get(type_id)
+            .ok_or_else(|| EngineError::InvalidRequest("invalid node type id".to_string()))?;
 
         let decoder = self
             .node_decoders
@@ -710,6 +753,7 @@ impl DiskGraphEngine {
             .and_then(|d| d.as_ref())
             .ok_or_else(|| EngineError::Internal(format!("no decoder for type {}", type_id)))?;
 
+        // No shard tracking/sorting for fused fetching to strictly preserve order
         for &global_id in node_ids {
             let shard_idx = self.find_shard(shards, global_id)?;
             let shard = &shards[shard_idx];
@@ -731,6 +775,8 @@ impl DiskGraphEngine {
         Ok(())
     }
 
+    /// Feature fetching in standalone mode. Multi-threaded to speedup feature
+    /// fetching for cases when sampled subgraph size is large.
     fn accumulate_features_from_ids_chunked(
         &self,
         type_id: usize,
@@ -755,21 +801,42 @@ impl DiskGraphEngine {
             .into_par_iter()
             .map(|chunk_ids| {
                 // 1. Deduplicate requested IDs to minimize Disk I/O and Decoding
-                let mut unique_ids = Vec::new();
+                let mut unique_ids_unsorted = Vec::new();
                 let mut dedup_map = HashMap::new();
-                let mut take_indices_builder = arrow_array::builder::UInt32Builder::with_capacity(chunk_ids.len());
+                let mut take_indices = vec![0u32; chunk_ids.len()];
 
-                for &global_id in chunk_ids {
+                for (pos, &global_id) in chunk_ids.iter().enumerate() {
                     let idx = *dedup_map.entry(global_id).or_insert_with(|| {
-                        let new_idx = unique_ids.len() as u32;
-                        unique_ids.push(global_id);
+                        let new_idx = unique_ids_unsorted.len() as u32;
+                        unique_ids_unsorted.push(global_id);
                         new_idx
                     });
-                    take_indices_builder.append_value(idx);
+                    take_indices[pos] = idx;
                 }
-                let take_indices = take_indices_builder.finish();
 
-                // 2. Fetch and Decode ONLY unique IDs
+                // 2. Sort Unique IDs for Sequential Disk I/O
+                let mut sorted_pairs: Vec<(u64, u32)> = unique_ids_unsorted
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, id)| (id, i as u32))
+                    .collect();
+                sorted_pairs.sort_unstable_by_key(|x| x.0);
+
+                // 3. Create reverse mapping from old unique index to new sorted index
+                let mut old_to_new = vec![0u32; sorted_pairs.len()];
+                for (new_idx, &(_, old_idx)) in sorted_pairs.iter().enumerate() {
+                    old_to_new[old_idx as usize] = new_idx as u32;
+                }
+
+                // 4. Update take_indices to point to the new sorted positions
+                for idx in &mut take_indices {
+                    *idx = old_to_new[*idx as usize];
+                }
+                let take_array = arrow_array::UInt32Array::from(take_indices);
+
+                let unique_ids: Vec<u64> = sorted_pairs.into_iter().map(|x| x.0).collect();
+
+                // 5. Fetch and Decode ONLY unique IDs
                 let mut raw_rows = Vec::with_capacity(unique_ids.len());
                 let mut last_shard_idx = 0;
 
@@ -779,21 +846,8 @@ impl DiskGraphEngine {
                     {
                         &shards[last_shard_idx]
                     } else {
-                        let mut found = None;
-                        for (i, s) in shards.iter().enumerate() {
-                            if global_id >= s.min_id && global_id <= s.max_id {
-                                found = Some(i);
-                                break;
-                            }
-                        }
-                        let idx = found.ok_or_else(|| {
-                            EngineError::DataCorruption(format!(
-                                "node id {} not found in any shard",
-                                global_id
-                            ))
-                        })?;
-                        last_shard_idx = idx;
-                        &shards[idx]
+                        last_shard_idx = self.find_shard(shards, global_id)?;
+                        &shards[last_shard_idx]
                     };
 
                     let local_id = global_id - shard.min_id;
@@ -818,15 +872,15 @@ impl DiskGraphEngine {
                     .decode_batch_to_arrow::<&[u8]>(&raw_rows, col_indices)
                     .map_err(|e| EngineError::Internal(format!("decoding failed: {}", e)))?;
 
-                // 3. Broadcast (take) unique rows back to the requested redundant order
+                // 6. Broadcast (take) unique rows back to the requested redundant order
                 let expanded_columns: std::result::Result<Vec<_>, arrow::error::ArrowError> = unique_batch
                     .columns()
                     .iter()
                     .map(|col| {
-                        arrow::compute::take(col, &take_indices, None)
+                        arrow::compute::take(col, &take_array, None)
                     })
                     .collect();
-                
+
                 let expanded_columns = expanded_columns
                     .map_err(|e| EngineError::Internal(format!("arrow take failed: {}", e)))?;
 
@@ -876,6 +930,140 @@ impl DiskGraphEngine {
         Ok(())
     }
 
+
+    #[inline]
+    fn sample_segment_edges(
+        &self,
+        node: &NodeRecord,
+        rel_id: usize,
+        segment: &RelationSegment<'_>,
+        fanout_spec: &diskgraph_core::sampling::FanoutSpec,
+        request: &BatchSamplingRequest,
+        dst_scratch: &mut Vec<u64>,
+        key_scratch: &mut Vec<u64>,
+        mut on_edge: impl FnMut(u64) -> Result<()>,
+    ) -> Result<()> {
+        let edge_count = segment.count as usize;
+        if edge_count == 0 {
+            return Ok(());
+        }
+
+        let mut unpacker = EdgeUnpacker::new(segment.data, &segment.layout);
+        let k = fanout_spec.fanout as usize;
+
+        match fanout_spec.mode {
+            SamplingMode::TemporalMostRecent => {
+                let decoder = self
+                    .decoders
+                    .get(rel_id)
+                    .and_then(|d: &Option<SortKeyDecoder>| d.as_ref());
+                let seed_type = request.seed_nodes.keys().next().unwrap();
+                let anchor = request
+                    .seed_timestamps
+                    .as_ref()
+                    .and_then(|m| m.get(seed_type))
+                    .and_then(|v| v.get(node.seed_index as usize).copied());
+
+                let mut n = 0;
+                let batch_size = k.min(128);
+
+                loop {
+                    let take = (k - n).min(batch_size);
+                    dst_scratch.resize(take, 0);
+                    key_scratch.resize(take, 0);
+
+                    let unpacked = unpacker.unpack_batch(dst_scratch, key_scratch);
+                    if unpacked == 0 {
+                        break;
+                    }
+
+                    for i in 0..unpacked {
+                        if let (Some(dec), Some(anch)) = (decoder, anchor) {
+                            let (edge_ts, _) = dec.decode(key_scratch[i]);
+                            if let Some(ts) = edge_ts {
+                                if ts >= anch {
+                                    continue;
+                                }
+                            }
+                        }
+
+                        on_edge(dst_scratch[i])?;
+                        n += 1;
+                        if n >= k {
+                            break;
+                        }
+                    }
+
+                    if unpacked < take || n >= k {
+                        break;
+                    }
+                }
+            }
+            SamplingMode::Uniform => {
+                if k >= edge_count {
+                    loop {
+                        dst_scratch.resize(128, 0);
+                        key_scratch.resize(128, 0);
+                        let unpacked = unpacker.unpack_batch(dst_scratch, key_scratch);
+                        if unpacked == 0 {
+                            break;
+                        }
+                        for i in 0..unpacked {
+                            on_edge(dst_scratch[i])?;
+                        }
+                    }
+                } else {
+                    use rand::seq::index::sample;
+                    let indices = if let Some(seed) = self.random_seed {
+                        use rand::SeedableRng;
+                        // Combine the global random_seed with the unique deterministic global_id
+                        // to ensure every seed node walks the same deterministic path consistently
+                        // regardless of batch composition or multi-threading order.
+                        let rng_seed = seed
+                            .wrapping_add(node.global_id)
+                            .wrapping_add(rel_id as u64);
+                        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(rng_seed);
+                        sample(&mut rng, edge_count, k)
+                    } else {
+                        let mut rng = rand::thread_rng();
+                        sample(&mut rng, edge_count, k)
+                    };
+
+                    let mut sorted_indices = indices.into_vec();
+                    sorted_indices.sort_unstable();
+
+                    let mut current_pos = 0;
+                    for target_idx in sorted_indices {
+                        let to_skip = target_idx - current_pos;
+                        if to_skip > 0 {
+                            unpacker.advance(to_skip);
+                        }
+                        dst_scratch.resize(1, 0);
+                        key_scratch.resize(1, 0);
+                        if unpacker.unpack_batch(dst_scratch, key_scratch) > 0 {
+                            on_edge(dst_scratch[0])?;
+                            current_pos = target_idx + 1;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+            _ => {
+                warn!(
+                    relation_id = rel_id,
+                    mode = ?fanout_spec.mode,
+                    "Unsupported sampling mode requested"
+                );
+                return Err(EngineError::InvalidRequest(format!(
+                    "Sampling mode {:?} not supported",
+                    fanout_spec.mode
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn process_layer(
         &self,
         layer_idx: usize,
@@ -893,6 +1081,7 @@ impl DiskGraphEngine {
             }
         }
 
+        // Fused fetching path
         if fused {
             for (src_type_id, frontier) in work_queue {
                 if src_type_id >= self.readers.len() {
@@ -913,6 +1102,7 @@ impl DiskGraphEngine {
                         .edges_for_node(local_id)
                         .map_err(|e| EngineError::DataCorruption(e.to_string()))?;
 
+                    // FETCH SOURCE FEATURES (Locality)
                     {
                         let scratch = &mut state.decode_scratch;
                         let type_state = state.type_states.get_mut(&src_type_id).unwrap();
@@ -945,6 +1135,7 @@ impl DiskGraphEngine {
                 continue;
             }
 
+            // group nodes by shard
             let mut shard_groups: Vec<Vec<&NodeRecord>> = vec![Vec::new(); shards.len()];
             for item in &frontier {
                 let idx = self.find_shard(shards, item.global_id)?;
@@ -952,14 +1143,15 @@ impl DiskGraphEngine {
             }
 
             // Map Phase: Parallel Shard Traversal
+            // Each thread processes one shard to emit all sampled RawEdge
             let raw_edges_results: Vec<Vec<RawEdge>> = self.thread_pool.install(|| shard_groups
                 .into_par_iter()
                 .enumerate()
                 .filter(|(_, nodes)| !nodes.is_empty())
                 .map(|(shard_idx, mut shard_nodes)| {
                     let shard = &shards[shard_idx];
-                    
-                    // STABLE SORT: Sort by global_id, then seed_index to ensure 
+
+                    // STABLE SORT: Sort by global_id, then seed_index to ensure
                     // deterministic visitation order even for hub nodes reached via multiple paths.
                     shard_nodes.sort_by(|a, b| {
                         a.global_id.cmp(&b.global_id).then(a.seed_index.cmp(&b.seed_index))
@@ -974,6 +1166,7 @@ impl DiskGraphEngine {
                     let mut key_scratch = Vec::with_capacity(128);
 
                     for node in shard_nodes {
+                        // HUB DEDUPING
                         if last_id != Some(node.global_id) {
                             let local_id = node.global_id - shard.min_id;
                             if let Ok(edges_view) = shard.reader.edges_for_node(local_id) {
@@ -985,121 +1178,30 @@ impl DiskGraphEngine {
                         for segment in &current_segments {
                             let rel_id = segment.layout.relation_id as usize;
                             let fanout_spec = layer_spec.fanouts.get(&rel_id).or(layer_spec.default_fanout.as_ref());
-                            
+
                             if let Some(fanout_spec) = fanout_spec {
                                 let dst_type_id = *self.relation_info.get(rel_id).unwrap_or(&usize::MAX);
-                                if dst_type_id == usize::MAX { continue; }
-                                
-                                let mut unpacker = EdgeUnpacker::new(segment.data, &segment.layout);
-                                let k = fanout_spec.fanout as usize;
-                                
-                                match &fanout_spec.mode {
-                                    SamplingMode::TemporalMostRecent => {
-                                        let decoder = self.decoders.get(rel_id)
-                                            .and_then(|d| d.as_ref());
-                                        let seed_type = request.seed_nodes
-                                            .keys().next().unwrap();
-                                        let anchor = request.seed_timestamps
-                                            .as_ref()
-                                            .and_then(|m| m.get(seed_type))
-                                            .and_then(|v| v.get(
-                                                node.seed_index as usize).copied());
-
-                                        let mut n = 0;
-                                        loop {
-                                            let take = (k - n).min(128);
-                                            dst_scratch.resize(take, 0);
-                                            key_scratch.resize(take, 0);
-                                            let unpacked = unpacker.unpack_batch(
-                                                &mut dst_scratch, &mut key_scratch);
-                                            if unpacked == 0 { break; }
-
-                                            for i in 0..unpacked {
-                                                if let (Some(dec), Some(anch)) =
-                                                    (decoder, anchor)
-                                                {
-                                                    let (edge_ts, _): (
-                                                        Option<i64>, Option<f32>,
-                                                    ) = dec.decode(key_scratch[i]);
-                                                    if let Some(ts) = edge_ts {
-                                                        if ts >= anch { continue; }
-                                                    }
-                                                }
-                                                local_raw_edges.push(RawEdge {
-                                                    src_local_id: node.local_id,
-                                                    dst_global_id: dst_scratch[i],
-                                                    dst_type_id,
-                                                    rel_id: rel_id as u16,
-                                                    seed_index: node.seed_index,
-                                                    swap_edge_direction: request
-                                                        .flags.swap_edge_direction,
-                                                });
-                                                n += 1;
-                                                if n >= k { break; }
-                                            }
-                                            if unpacked < take || n >= k { break; }
+                                if dst_type_id != usize::MAX {
+                                    let _ = self.sample_segment_edges(
+                                        node,
+                                        rel_id,
+                                        segment,
+                                        fanout_spec,
+                                        request,
+                                        &mut dst_scratch,
+                                        &mut key_scratch,
+                                        |dst_global_id| {
+                                            local_raw_edges.push(RawEdge {
+                                                src_local_id: node.local_id,
+                                                dst_global_id,
+                                                dst_type_id,
+                                                rel_id: rel_id as u16,
+                                                seed_index: node.seed_index,
+                                                swap_edge_direction: request.flags.swap_edge_direction,
+                                            });
+                                            Ok(())
                                         }
-                                    }
-                                    SamplingMode::Uniform => {
-                                        let edge_count = segment.count as usize;
-                                        if edge_count == 0 { continue; }
-
-                                        if k >= edge_count {
-                                            loop {
-                                                dst_scratch.resize(128, 0);
-                                                key_scratch.resize(128, 0);
-                                                let unpacked = unpacker.unpack_batch(&mut dst_scratch, &mut key_scratch);
-                                                if unpacked == 0 { break; }
-                                                for i in 0..unpacked {
-                                                    local_raw_edges.push(RawEdge {
-                                                        src_local_id: node.local_id,
-                                                        dst_global_id: dst_scratch[i],
-                                                        dst_type_id,
-                                                        rel_id: rel_id as u16,
-                                                        seed_index: node.seed_index,
-                                                        swap_edge_direction: request.flags.swap_edge_direction,
-                                                    });
-                                                }
-                                            }
-                                        } else {
-                                            use rand::seq::index::sample;
-                                            let indices = if let Some(seed) = self.random_seed {
-                                                use rand::SeedableRng;
-                                                let rng_seed = seed.wrapping_add(node.global_id);
-                                                let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(rng_seed);
-                                                sample(&mut rng, edge_count, k)
-                                            } else {
-                                                let mut rng = rand::thread_rng();
-                                                sample(&mut rng, edge_count, k)
-                                            };
-
-                                            let mut sorted_indices = indices.into_vec();
-                                            sorted_indices.sort_unstable();
-                                            let mut current_pos = 0;
-                                            for target_idx in sorted_indices {
-                                                if target_idx > current_pos { unpacker.advance(target_idx - current_pos); }
-                                                dst_scratch.resize(1, 0); key_scratch.resize(1, 0);
-                                                if unpacker.unpack_batch(&mut dst_scratch, &mut key_scratch) > 0 {
-                                                    local_raw_edges.push(RawEdge {
-                                                        src_local_id: node.local_id,
-                                                        dst_global_id: dst_scratch[0],
-                                                        dst_type_id,
-                                                        rel_id: rel_id as u16,
-                                                        seed_index: node.seed_index,
-                                                        swap_edge_direction: request.flags.swap_edge_direction,
-                                                    });
-                                                }
-                                                current_pos = target_idx + 1;
-                                            }
-                                        }
-                                    }
-                                    mode => {
-                                        panic!(
-                                            "Sampling mode {:?} not supported in \
-                                             standalone multi-threaded path",
-                                            mode
-                                        );
-                                    }
+                                    );
                                 }
                             }
                         }
@@ -1112,30 +1214,17 @@ impl DiskGraphEngine {
             // Reduce Phase: Sequential Commitment
             for raw_edges in raw_edges_results {
                 for edge in raw_edges {
-                    let dst_type_state = state.type_states.entry(edge.dst_type_id).or_default();
-                    let key = LookupKey { seed_index: edge.seed_index, global_id: edge.dst_global_id };
-                    
-                    let dst_local_id = if let Some(&id) = dst_type_state.index_map.get(&key) {
-                        id
-                    } else {
-                        let id = dst_type_state.nodes.len() as u32;
-                        dst_type_state.index_map.insert(key, id);
-                        dst_type_state.nodes.push(NodeRecord { global_id: edge.dst_global_id, seed_index: edge.seed_index, local_id: id });
-                        state.stats.record_node(layer_idx + 1, edge.dst_type_id);
-                        dst_type_state.next_frontier.push(NodeRecord { global_id: edge.dst_global_id, seed_index: edge.seed_index, local_id: id });
-                        id
-                    };
-
-                    let (actual_rel, actual_src, actual_dst) = if edge.swap_edge_direction {
-                        match self.reverse_rel_map.get(edge.rel_id as usize) {
-                            Some(Some(rev_id)) => (*rev_id as u16, dst_local_id, edge.src_local_id),
-                            _ => (edge.rel_id, edge.src_local_id, dst_local_id),
-                        }
-                    } else {
-                        (edge.rel_id, edge.src_local_id, dst_local_id)
-                    };
-                    output.handle_edge(layer_idx, actual_rel, actual_src, actual_dst)?;
-                    state.stats.record_edge(layer_idx, actual_rel as usize);
+                    self.record_edge(
+                        layer_idx,
+                        edge.src_local_id,
+                        edge.seed_index,
+                        edge.dst_global_id,
+                        edge.dst_type_id,
+                        edge.rel_id,
+                        edge.swap_edge_direction,
+                        state,
+                        output,
+                    )?;
                 }
             }
         }
@@ -1154,6 +1243,9 @@ impl DiskGraphEngine {
         state: &mut SamplingState,
         output: &mut impl OutputHandler,
     ) -> Result<()> {
+        let mut dst_scratch = std::mem::take(&mut state.dst_scratch);
+        let mut key_scratch = std::mem::take(&mut state.key_scratch);
+
         for segment in segments {
             let rel_id = segment.layout.relation_id as usize;
             let fanout_spec = layer_spec
@@ -1164,189 +1256,26 @@ impl DiskGraphEngine {
             if let Some(fanout_spec) = fanout_spec {
                 let dst_type_id = *self.relation_info.get(rel_id).unwrap_or(&usize::MAX);
                 if dst_type_id != usize::MAX {
-                    self.sample_relation(
-                        layer_idx,
-                        segment,
+                    self.sample_segment_edges(
                         node,
-                        dst_type_id,
                         rel_id,
-                        fanout_spec.fanout,
-                        &fanout_spec.mode,
+                        &segment,
+                        fanout_spec,
                         request,
-                        state,
-                        output,
+                        &mut dst_scratch,
+                        &mut key_scratch,
+                        |dst_global_id| {
+                            self.record_edge(
+                                layer_idx, node.local_id, node.seed_index, dst_global_id,
+                                dst_type_id, rel_id as u16,
+                                request.flags.swap_edge_direction, state, output)
+                        }
                     )?;
                 }
             }
         }
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn sample_relation(
-        &self,
-        layer_idx: usize,
-        segment: &RelationSegment<'_>,
-        src_item: &NodeRecord,
-        dst_type_id: usize,
-        rel_id: usize,
-        fanout: u32,
-        mode: &SamplingMode,
-        request: &BatchSamplingRequest,
-        state: &mut SamplingState,
-        output: &mut impl OutputHandler,
-    ) -> Result<()> {
-        let edge_count = segment.count as usize;
-        if edge_count == 0 {
-            return Ok(());
-        }
-
-        let mut unpacker = EdgeUnpacker::new(segment.data, &segment.layout);
-        let decoder = self
-            .decoders
-            .get(rel_id)
-            .and_then(|d: &Option<SortKeyDecoder>| d.as_ref());
-
-        match mode {
-            SamplingMode::TemporalMostRecent => {
-                let mut n = 0;
-                let batch_size = (fanout as usize).min(128);
-
-                loop {
-                    let take = (fanout as usize - n).min(batch_size);
-                    state.dst_scratch.resize(take, 0);
-                    state.key_scratch.resize(take, 0);
-
-                    let unpacked =
-                        unpacker.unpack_batch(&mut state.dst_scratch, &mut state.key_scratch);
-                    if unpacked == 0 {
-                        break;
-                    }
-
-                    for i in 0..unpacked {
-                        let dst_id = state.dst_scratch[i];
-                        let packed_key = state.key_scratch[i];
-
-                        let seed_type = request.seed_nodes.keys().next().unwrap();
-                        let anchor = request
-                            .seed_timestamps
-                            .as_ref()
-                            .and_then(|m| m.get(seed_type))
-                            .and_then(|v| v.get(src_item.seed_index as usize).copied());
-
-                        if let (Some(decoder), Some(anchor)) = (decoder, anchor) {
-                            let (edge_ts, _): (Option<i64>, Option<f32>) =
-                                decoder.decode(packed_key);
-                            if let Some(ts) = edge_ts {
-                                if ts >= anchor {
-                                    continue;
-                                }
-                            }
-                        }
-
-                        self.record_edge(
-                            layer_idx,
-                            src_item,
-                            dst_id,
-                            dst_type_id,
-                            rel_id as u16,
-                            request.flags.swap_edge_direction,
-                            state,
-                            output,
-                        )?;
-                        n += 1;
-                        if n >= fanout as usize {
-                            break;
-                        }
-                    }
-                    if unpacked < take {
-                        break;
-                    }
-                }
-            }
-            SamplingMode::Uniform => {
-                let k = fanout as usize;
-
-                if k >= edge_count {
-                    loop {
-                        state.dst_scratch.resize(128, 0);
-                        state.key_scratch.resize(128, 0);
-                        let unpacked =
-                            unpacker.unpack_batch(&mut state.dst_scratch, &mut state.key_scratch);
-                        if unpacked == 0 {
-                            break;
-                        }
-                        for i in 0..unpacked {
-                            self.record_edge(
-                                layer_idx,
-                                src_item,
-                                state.dst_scratch[i],
-                                dst_type_id,
-                                rel_id as u16,
-                                request.flags.swap_edge_direction,
-                                state,
-                                output,
-                            )?;
-                        }
-                    }
-                } else {
-                    use rand::seq::index::sample;
-                    let indices = if let Some(seed) = self.random_seed {
-                        use rand::SeedableRng;
-                        let rng_seed = seed
-                            .wrapping_add(src_item.global_id);
-                        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(rng_seed);
-                        sample(&mut rng, edge_count, k)
-                    } else {
-                        let mut rng = rand::thread_rng();
-                        sample(&mut rng, edge_count, k)
-                    };
-
-                    let mut sorted_indices = indices.into_vec();
-                    sorted_indices.sort_unstable();
-
-                    let mut current_pos = 0;
-                    for target_idx in sorted_indices {
-                        let to_skip = target_idx - current_pos;
-                        if to_skip > 0 {
-                            unpacker.advance(to_skip);
-                        }
-
-                        state.dst_scratch.resize(1, 0);
-                        state.key_scratch.resize(1, 0);
-                        let n =
-                            unpacker.unpack_batch(&mut state.dst_scratch, &mut state.key_scratch);
-                        if n > 0 {
-                            self.record_edge(
-                                layer_idx,
-                                src_item,
-                                state.dst_scratch[0],
-                                dst_type_id,
-                                rel_id as u16,
-                                request.flags.swap_edge_direction,
-                                state,
-                                output,
-                            )?;
-                        }
-
-                        current_pos = target_idx + 1;
-                    }
-                }
-            }
-            _ => {
-                warn!(
-                    relation_id = rel_id,
-                    hop = layer_idx,
-                    mode = ?mode,
-                    "Unsupported sampling mode requested"
-                );
-                return Err(EngineError::InvalidRequest(format!(
-                    "Sampling mode {:?} not supported in initial scope",
-                    mode
-                )));
-            }
-        }
-
+        state.dst_scratch = dst_scratch;
+        state.key_scratch = key_scratch;
         Ok(())
     }
 
@@ -1354,7 +1283,8 @@ impl DiskGraphEngine {
     fn record_edge(
         &self,
         layer_idx: usize,
-        src: &NodeRecord,
+        src_local_id: u32,
+        seed_index: u32,
         dst_global_id: u64,
         dst_type_id: usize,
         rel_id: u16,
@@ -1364,7 +1294,7 @@ impl DiskGraphEngine {
     ) -> Result<()> {
         let dst_type_state = state.type_states.entry(dst_type_id).or_default();
         let key = LookupKey {
-            seed_index: src.seed_index,
+            seed_index,
             global_id: dst_global_id,
         };
 
@@ -1376,14 +1306,14 @@ impl DiskGraphEngine {
 
             dst_type_state.nodes.push(NodeRecord {
                 global_id: dst_global_id,
-                seed_index: src.seed_index,
+                seed_index,
                 local_id: id,
             });
             state.stats.record_node(layer_idx + 1, dst_type_id);
 
             dst_type_state.next_frontier.push(NodeRecord {
                 global_id: dst_global_id,
-                seed_index: src.seed_index,
+                seed_index,
                 local_id: id,
             });
             id
@@ -1392,11 +1322,11 @@ impl DiskGraphEngine {
         // Apply edge direction reversal if requested (PyG CSC convention).
         let (actual_rel, actual_src, actual_dst) = if swap_edge_direction {
             match self.reverse_rel_map.get(rel_id as usize) {
-                Some(Some(rev_id)) => (*rev_id as u16, dst_local_id, src.local_id),
-                _ => (rel_id, src.local_id, dst_local_id),
+                Some(Some(rev_id)) => (*rev_id as u16, dst_local_id, src_local_id),
+                _ => (rel_id, src_local_id, dst_local_id),
             }
         } else {
-            (rel_id, src.local_id, dst_local_id)
+            (rel_id, src_local_id, dst_local_id)
         };
 
         output.handle_edge(layer_idx, actual_rel, actual_src, actual_dst)?;
