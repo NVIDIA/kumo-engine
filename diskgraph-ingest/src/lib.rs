@@ -1793,7 +1793,7 @@ impl IngestContext {
 
                     let node_context = node_builder.finish()?;
                     let ctx_bytes = node_context.to_bytes()?;
-                    tracing::info!(
+                    tracing::debug!(
                         table = %table.name,
                         ctx_bytes_len = ctx_bytes.len(),
                         temp_path = %temp_node_context_path(&table.name),
@@ -2367,7 +2367,7 @@ impl IngestContext {
         let mut access = RowAccess::new(row_access_hints, stats);
         let ctx_path = root.join(temp_node_context_path(&table.name));
         let ctx_file_len = fs::metadata(&ctx_path).map(|m| m.len()).unwrap_or(0);
-        tracing::info!(
+        tracing::debug!(
             table = %table.name,
             path = %ctx_path.display(),
             file_len = ctx_file_len,

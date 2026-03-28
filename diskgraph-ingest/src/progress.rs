@@ -317,7 +317,7 @@ fn build_log_progress() -> ProgressCallback {
 
         match event.kind {
             ProgressKind::Start => {
-                tracing::info!(
+                tracing::debug!(
                     phase = ?event.phase,
                     table = %event.table,
                     shard = ?event.shard,
@@ -330,8 +330,8 @@ fn build_log_progress() -> ProgressCallback {
                 if let Some(total) = event.total {
                     if total > 0 {
                         let pct = (state.current as f64 / total as f64 * 100.0) as i32;
-                        // Log every 10%
-                        if pct >= state.last_logged_pct + 10 || (pct >= 100 && state.last_logged_pct < 100) {
+                        // Log every 25% instead of 10% to reduce verbosity
+                        if pct >= state.last_logged_pct + 25 || (pct >= 100 && state.last_logged_pct < 100) {
                             tracing::info!(
                                 phase = ?event.phase,
                                 table = %event.table,
@@ -347,7 +347,7 @@ fn build_log_progress() -> ProgressCallback {
                 }
             }
             ProgressKind::Finish => {
-                tracing::info!(
+                tracing::debug!(
                     phase = ?event.phase,
                     table = %event.table,
                     shard = ?event.shard,
