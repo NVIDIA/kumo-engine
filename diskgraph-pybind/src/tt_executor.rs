@@ -3,7 +3,7 @@
 //! Exposes [`execute_tt_plan`] as a `#[pyfunction]` that returns a
 //! `TTPlanIterator` yielding `pyarrow.RecordBatch` objects one at a time.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -30,10 +30,12 @@ fn get_current_rss_mb() -> usize {
 use crate::split_assignments;
 use arrow::compute::take;
 use arrow::pyarrow::ToPyArrow;
+use arrow_array::types::Int64Type;
 use arrow_array::{
-    Array, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array,
-    RecordBatch, StringArray, TimestampNanosecondArray, UInt16Array, UInt32Array, UInt64Array,
-    UInt8Array,
+    Array, BooleanArray, Date32Array, Date64Array, Float32Array, Float64Array, Int16Array,
+    Int32Array, Int64Array, Int8Array, LargeListArray, LargeStringArray, ListArray, RecordBatch,
+    StringArray, TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
+    TimestampSecondArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
 };
 use arrow_schema::{DataType, Field, Schema};
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
@@ -76,7 +78,9 @@ impl TTPlanIterator {
                     Ok(())
                 }
                 Ok(Err(e)) => Err(e),
-                Err(_) => Err(diskgraph_train_table::errors::TTGenError::SystemError("TT-gen executor thread panicked".to_string())),
+                Err(_) => Err(diskgraph_train_table::errors::TTGenError::SystemError(
+                    "TT-gen executor thread panicked".to_string(),
+                )),
             }
         } else {
             Ok(())
@@ -1192,6 +1196,9 @@ fn collect_column_opt_strings(
 }
 
 const TRAIN_COL_STATS_RESERVOIR_SIZE: usize = 8_192;
+const CATEGORY_COUNTS_MAX_UNIQUE: usize = 1_000_000;
+const MULTI_CATEGORY_COUNTS_MAX_UNIQUE: usize = 1_000_000;
+const MULTI_CATEGORY_SEPARATOR_CANDIDATES: [&str; 4] = [",", "|", ";", "\t"];
 
 #[derive(Debug)]
 struct NumericAccumulator {
@@ -1300,6 +1307,357 @@ impl NumericAccumulator {
     }
 }
 
+#[derive(Debug)]
+struct CategoryAccumulator {
+    null_count: u64,
+    observed_non_null_count: u64,
+    overflowed: bool,
+    counts: BTreeMap<String, (Value, u64)>,
+}
+
+impl CategoryAccumulator {
+    fn new() -> Self {
+        Self {
+            null_count: 0,
+            observed_non_null_count: 0,
+            overflowed: false,
+            counts: BTreeMap::new(),
+        }
+    }
+
+    fn observe_null(&mut self) {
+        self.null_count = self.null_count.saturating_add(1);
+    }
+
+    fn observe_value(&mut self, value: Value) {
+        self.observed_non_null_count = self.observed_non_null_count.saturating_add(1);
+        let key = category_value_key(&value);
+        if let Some((_stored, count)) = self.counts.get_mut(&key) {
+            *count = count.saturating_add(1);
+            return;
+        }
+        if self.counts.len() >= CATEGORY_COUNTS_MAX_UNIQUE {
+            self.overflowed = true;
+            return;
+        }
+        self.counts.insert(key, (value, 1));
+    }
+
+    fn total_count(&self) -> u64 {
+        self.observed_non_null_count.saturating_add(self.null_count)
+    }
+
+    fn unique_count(&self) -> u64 {
+        self.counts.len() as u64
+    }
+
+    fn sorted_category_counts(&self) -> Vec<Value> {
+        let mut pairs: Vec<(String, Value, u64)> = self
+            .counts
+            .iter()
+            .map(|(k, (v, c))| (k.clone(), v.clone(), *c))
+            .collect();
+        pairs.sort_by(|(ka, _va, ca), (kb, _vb, cb)| cb.cmp(ca).then_with(|| ka.cmp(kb)));
+        pairs
+            .into_iter()
+            .map(|(_k, v, c)| Value::Array(vec![v, json!(c)]))
+            .collect()
+    }
+}
+
+#[derive(Debug)]
+struct MultiCategoryAccumulator {
+    row_count: u64,
+    null_count: u64,
+    separator: Option<String>,
+    overflowed: bool,
+    counts: BTreeMap<String, (Value, u64)>,
+}
+
+impl MultiCategoryAccumulator {
+    fn new() -> Self {
+        Self {
+            row_count: 0,
+            null_count: 0,
+            separator: None,
+            overflowed: false,
+            counts: BTreeMap::new(),
+        }
+    }
+
+    fn observe_null(&mut self) {
+        self.row_count = self.row_count.saturating_add(1);
+        self.null_count = self.null_count.saturating_add(1);
+    }
+
+    fn observe_string_value(&mut self, raw: &str) {
+        self.row_count = self.row_count.saturating_add(1);
+        if self.separator.is_none() {
+            self.separator = detect_multicategory_separator(raw).map(str::to_string);
+        }
+
+        let tokens: Vec<Value> = if let Some(sep) = self.separator.as_deref() {
+            raw.split(sep)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| json!(s))
+                .collect()
+        } else if raw.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![json!(raw)]
+        };
+        self.observe_tokens(tokens);
+    }
+
+    fn observe_tokens(&mut self, tokens: Vec<Value>) {
+        for value in tokens {
+            let key = category_value_key(&value);
+            if let Some((_stored, count)) = self.counts.get_mut(&key) {
+                *count = count.saturating_add(1);
+                continue;
+            }
+            if self.counts.len() >= MULTI_CATEGORY_COUNTS_MAX_UNIQUE {
+                self.overflowed = true;
+                continue;
+            }
+            self.counts.insert(key, (value, 1));
+        }
+    }
+
+    fn unique_count(&self) -> u64 {
+        self.counts.len() as u64
+    }
+
+    fn sorted_category_counts(&self) -> Vec<Value> {
+        let mut pairs: Vec<(String, Value, u64)> = self
+            .counts
+            .iter()
+            .map(|(k, (v, c))| (k.clone(), v.clone(), *c))
+            .collect();
+        pairs.sort_by(|(ka, _va, ca), (kb, _vb, cb)| cb.cmp(ca).then_with(|| ka.cmp(kb)));
+        pairs
+            .into_iter()
+            .map(|(_k, v, c)| Value::Array(vec![v, json!(c)]))
+            .collect()
+    }
+}
+
+fn detect_multicategory_separator(raw: &str) -> Option<&'static str> {
+    MULTI_CATEGORY_SEPARATOR_CANDIDATES
+        .iter()
+        .find(|sep| raw.contains(**sep))
+        .copied()
+}
+
+#[derive(Debug)]
+struct SequenceAccumulator {
+    row_count: u64,
+    min_len: Option<u64>,
+    max_len: u64,
+    track_elements: bool,
+    elem_count: u64,
+    elem_mean: f64,
+    elem_m2: f64,
+}
+
+#[derive(Debug)]
+struct TextAccumulator {
+    row_count: u64,
+    non_null_rows: u64,
+    total_tokens: u64,
+    max_tokens: u64,
+    non_char_tokens: u64,
+}
+
+impl SequenceAccumulator {
+    fn new(track_elements: bool) -> Self {
+        Self {
+            row_count: 0,
+            min_len: None,
+            max_len: 0,
+            track_elements,
+            elem_count: 0,
+            elem_mean: 0.0,
+            elem_m2: 0.0,
+        }
+    }
+
+    fn observe_row_len(&mut self, len: usize) {
+        self.row_count = self.row_count.saturating_add(1);
+        let len_u64 = len as u64;
+        self.min_len = Some(self.min_len.map_or(len_u64, |v| v.min(len_u64)));
+        self.max_len = self.max_len.max(len_u64);
+    }
+
+    fn observe_null_row(&mut self) {
+        self.observe_row_len(0);
+    }
+
+    fn observe_element(&mut self, x: f64) {
+        if !self.track_elements {
+            return;
+        }
+        self.elem_count = self.elem_count.saturating_add(1);
+        let n = self.elem_count as f64;
+        let delta = x - self.elem_mean;
+        self.elem_mean += delta / n;
+        let delta2 = x - self.elem_mean;
+        self.elem_m2 += delta * delta2;
+    }
+
+    fn min_len_value(&self) -> u64 {
+        self.min_len.unwrap_or(0)
+    }
+
+    fn max_len_value(&self) -> u64 {
+        self.max_len
+    }
+
+    fn sequence_mean(&self) -> f64 {
+        if self.elem_count > 0 {
+            self.elem_mean
+        } else {
+            0.0
+        }
+    }
+
+    fn sequence_std(&self) -> f64 {
+        if self.elem_count > 0 {
+            (self.elem_m2 / self.elem_count as f64).sqrt()
+        } else {
+            1.0
+        }
+    }
+}
+
+impl TextAccumulator {
+    fn new() -> Self {
+        Self {
+            row_count: 0,
+            non_null_rows: 0,
+            total_tokens: 0,
+            max_tokens: 0,
+            non_char_tokens: 0,
+        }
+    }
+
+    fn observe_null_row(&mut self) {
+        self.row_count = self.row_count.saturating_add(1);
+    }
+
+    fn observe_text_row(&mut self, raw: &str) {
+        self.row_count = self.row_count.saturating_add(1);
+        self.non_null_rows = self.non_null_rows.saturating_add(1);
+        let tokens = basic_english_tokenize(raw);
+        let token_count = tokens.len() as u64;
+        self.total_tokens = self.total_tokens.saturating_add(token_count);
+        self.max_tokens = self.max_tokens.max(token_count);
+        for token in tokens {
+            if !token.chars().all(|c| c.is_ascii_alphabetic()) {
+                self.non_char_tokens = self.non_char_tokens.saturating_add(1);
+            }
+        }
+    }
+
+    fn avg_tokens(&self) -> f64 {
+        if self.non_null_rows > 0 {
+            self.total_tokens as f64 / self.non_null_rows as f64
+        } else {
+            0.0
+        }
+    }
+
+    fn max_tokens_value(&self) -> u64 {
+        self.max_tokens
+    }
+
+    fn avg_non_char(&self) -> f64 {
+        if self.total_tokens > 0 {
+            self.non_char_tokens as f64 / self.total_tokens as f64
+        } else {
+            1.0
+        }
+    }
+}
+
+fn basic_english_tokenize(raw: &str) -> Vec<String> {
+    let mut text = raw.to_lowercase();
+    text = text.replace("<br />", " ");
+    for ch in ['\'', '"', '.', ',', '(', ')', '!', '?', ';', ':'] {
+        text = text.replace(ch, " ");
+    }
+    text.split_whitespace().map(|s| s.to_string()).collect()
+}
+
+fn category_value_key(value: &Value) -> String {
+    match value {
+        Value::Null => "null:".to_string(),
+        Value::Bool(v) => format!("bool:{v}"),
+        Value::Number(v) => format!("num:{v}"),
+        Value::String(v) => format!("str:{v}"),
+        other => format!("json:{}", other),
+    }
+}
+
+fn json_scalar_value_at(arr: &dyn Array, idx: usize) -> Option<Value> {
+    if arr.is_null(idx) {
+        return None;
+    }
+
+    macro_rules! scalar_value {
+        ($ty:ty, $to_value:expr) => {
+            if let Some(a) = arr.as_any().downcast_ref::<$ty>() {
+                return Some($to_value(a.value(idx)));
+            }
+        };
+    }
+
+    scalar_value!(Int8Array, |v: i8| json!(v));
+    scalar_value!(Int16Array, |v: i16| json!(v));
+    scalar_value!(Int32Array, |v: i32| json!(v));
+    scalar_value!(Int64Array, |v: i64| json!(v));
+    scalar_value!(UInt8Array, |v: u8| json!(v));
+    scalar_value!(UInt16Array, |v: u16| json!(v));
+    scalar_value!(UInt32Array, |v: u32| json!(v));
+    scalar_value!(UInt64Array, |v: u64| json!(v));
+    scalar_value!(Float32Array, |v: f32| json!(v));
+    scalar_value!(Float64Array, |v: f64| json!(v));
+    scalar_value!(BooleanArray, |v: bool| json!(v));
+    scalar_value!(StringArray, |v: &str| json!(v));
+    scalar_value!(LargeStringArray, |v: &str| json!(v));
+
+    None
+}
+
+fn scalar_f64_value_at(arr: &dyn Array, idx: usize) -> Option<f64> {
+    if arr.is_null(idx) {
+        return None;
+    }
+
+    macro_rules! scalar_f64 {
+        ($ty:ty, $cast:expr) => {
+            if let Some(a) = arr.as_any().downcast_ref::<$ty>() {
+                return Some($cast(a.value(idx)));
+            }
+        };
+    }
+
+    scalar_f64!(Int8Array, |v: i8| v as f64);
+    scalar_f64!(Int16Array, |v: i16| v as f64);
+    scalar_f64!(Int32Array, |v: i32| v as f64);
+    scalar_f64!(Int64Array, |v: i64| v as f64);
+    scalar_f64!(UInt8Array, |v: u8| v as f64);
+    scalar_f64!(UInt16Array, |v: u16| v as f64);
+    scalar_f64!(UInt32Array, |v: u32| v as f64);
+    scalar_f64!(UInt64Array, |v: u64| v as f64);
+    scalar_f64!(Float32Array, |v: f32| v as f64);
+    scalar_f64!(Float64Array, |v: f64| v);
+    scalar_f64!(BooleanArray, |v: bool| if v { 1.0 } else { 0.0 });
+
+    None
+}
+
 fn percentile_from_sorted(sorted: &[f64], p: f64) -> f64 {
     if sorted.is_empty() {
         return 0.0;
@@ -1331,7 +1689,42 @@ fn is_numeric_stats_type(dtype: &DataType) -> bool {
             | DataType::Float32
             | DataType::Float64
             | DataType::Boolean
+            | DataType::Timestamp(_, _)
+            | DataType::Date32
+            | DataType::Date64
     )
+}
+
+fn is_category_stats_type(dtype: &DataType) -> bool {
+    matches!(
+        dtype,
+        DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64
+            | DataType::Boolean
+            | DataType::Utf8
+            | DataType::LargeUtf8
+    )
+}
+
+fn is_multicategory_stats_type(dtype: &DataType) -> bool {
+    matches!(
+        dtype,
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::List(_) | DataType::LargeList(_)
+    )
+}
+
+fn is_sequence_stats_type(dtype: &DataType) -> bool {
+    matches!(dtype, DataType::List(_) | DataType::LargeList(_))
+}
+
+fn is_text_stats_type(dtype: &DataType) -> bool {
+    matches!(dtype, DataType::Utf8 | DataType::LargeUtf8)
 }
 
 fn kumo_key(col: &str, stype: &str, stat: &str, approx: bool) -> String {
@@ -1384,6 +1777,12 @@ fn observe_numeric_array_for_train_rows(
     observe_primitive!(UInt64Array, |v: u64| v as f64);
     observe_primitive!(Float32Array, |v: f32| v as f64);
     observe_primitive!(Float64Array, |v: f64| v);
+    observe_primitive!(TimestampSecondArray, |v: i64| v as f64);
+    observe_primitive!(TimestampMillisecondArray, |v: i64| v as f64);
+    observe_primitive!(TimestampMicrosecondArray, |v: i64| v as f64);
+    observe_primitive!(TimestampNanosecondArray, |v: i64| v as f64);
+    observe_primitive!(Date32Array, |v: i32| v as f64);
+    observe_primitive!(Date64Array, |v: i64| v as f64);
 
     if let Some(a) = arr.as_any().downcast_ref::<BooleanArray>() {
         for i in 0..a.len() {
@@ -1433,6 +1832,12 @@ fn observe_numeric_array_all_rows(
     observe_primitive_all!(UInt64Array, |v: u64| v as f64);
     observe_primitive_all!(Float32Array, |v: f32| v as f64);
     observe_primitive_all!(Float64Array, |v: f64| v);
+    observe_primitive_all!(TimestampSecondArray, |v: i64| v as f64);
+    observe_primitive_all!(TimestampMillisecondArray, |v: i64| v as f64);
+    observe_primitive_all!(TimestampMicrosecondArray, |v: i64| v as f64);
+    observe_primitive_all!(TimestampNanosecondArray, |v: i64| v as f64);
+    observe_primitive_all!(Date32Array, |v: i32| v as f64);
+    observe_primitive_all!(Date64Array, |v: i64| v as f64);
 
     if let Some(a) = arr.as_any().downcast_ref::<BooleanArray>() {
         for i in 0..a.len() {
@@ -1447,6 +1852,501 @@ fn observe_numeric_array_all_rows(
 
     Err(anyhow::anyhow!(
         "unsupported dtype for prediction table col stats"
+    ))
+}
+
+fn observe_category_array_for_train_rows(
+    arr: &dyn Array,
+    assignment_slice: &[u8],
+    acc: &mut CategoryAccumulator,
+) -> anyhow::Result<()> {
+    if arr.len() != assignment_slice.len() {
+        return Err(anyhow::anyhow!(
+            "batch assignment length mismatch (array_len={}, assignment_len={})",
+            arr.len(),
+            assignment_slice.len()
+        ));
+    }
+
+    macro_rules! observe_category_primitive {
+        ($ty:ty, $to_value:expr) => {
+            if let Some(a) = arr.as_any().downcast_ref::<$ty>() {
+                for i in 0..a.len() {
+                    if assignment_slice[i] != 0 {
+                        continue;
+                    }
+                    if a.is_null(i) {
+                        acc.observe_null();
+                    } else {
+                        acc.observe_value($to_value(a.value(i)));
+                    }
+                }
+                return Ok(());
+            }
+        };
+    }
+
+    observe_category_primitive!(Int8Array, |v: i8| json!(v));
+    observe_category_primitive!(Int16Array, |v: i16| json!(v));
+    observe_category_primitive!(Int32Array, |v: i32| json!(v));
+    observe_category_primitive!(Int64Array, |v: i64| json!(v));
+    observe_category_primitive!(UInt8Array, |v: u8| json!(v));
+    observe_category_primitive!(UInt16Array, |v: u16| json!(v));
+    observe_category_primitive!(UInt32Array, |v: u32| json!(v));
+    observe_category_primitive!(UInt64Array, |v: u64| json!(v));
+
+    if let Some(a) = arr.as_any().downcast_ref::<BooleanArray>() {
+        for i in 0..a.len() {
+            if assignment_slice[i] != 0 {
+                continue;
+            }
+            if a.is_null(i) {
+                acc.observe_null();
+            } else {
+                acc.observe_value(json!(a.value(i)));
+            }
+        }
+        return Ok(());
+    }
+
+    if let Some(a) = arr.as_any().downcast_ref::<StringArray>() {
+        for i in 0..a.len() {
+            if assignment_slice[i] != 0 {
+                continue;
+            }
+            if a.is_null(i) {
+                acc.observe_null();
+            } else {
+                acc.observe_value(json!(a.value(i)));
+            }
+        }
+        return Ok(());
+    }
+
+    if let Some(a) = arr.as_any().downcast_ref::<LargeStringArray>() {
+        for i in 0..a.len() {
+            if assignment_slice[i] != 0 {
+                continue;
+            }
+            if a.is_null(i) {
+                acc.observe_null();
+            } else {
+                acc.observe_value(json!(a.value(i)));
+            }
+        }
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!(
+        "unsupported dtype for train table categorical stats"
+    ))
+}
+
+fn observe_category_array_all_rows(
+    arr: &dyn Array,
+    acc: &mut CategoryAccumulator,
+) -> anyhow::Result<()> {
+    macro_rules! observe_category_primitive_all {
+        ($ty:ty, $to_value:expr) => {
+            if let Some(a) = arr.as_any().downcast_ref::<$ty>() {
+                for i in 0..a.len() {
+                    if a.is_null(i) {
+                        acc.observe_null();
+                    } else {
+                        acc.observe_value($to_value(a.value(i)));
+                    }
+                }
+                return Ok(());
+            }
+        };
+    }
+
+    observe_category_primitive_all!(Int8Array, |v: i8| json!(v));
+    observe_category_primitive_all!(Int16Array, |v: i16| json!(v));
+    observe_category_primitive_all!(Int32Array, |v: i32| json!(v));
+    observe_category_primitive_all!(Int64Array, |v: i64| json!(v));
+    observe_category_primitive_all!(UInt8Array, |v: u8| json!(v));
+    observe_category_primitive_all!(UInt16Array, |v: u16| json!(v));
+    observe_category_primitive_all!(UInt32Array, |v: u32| json!(v));
+    observe_category_primitive_all!(UInt64Array, |v: u64| json!(v));
+
+    if let Some(a) = arr.as_any().downcast_ref::<BooleanArray>() {
+        for i in 0..a.len() {
+            if a.is_null(i) {
+                acc.observe_null();
+            } else {
+                acc.observe_value(json!(a.value(i)));
+            }
+        }
+        return Ok(());
+    }
+
+    if let Some(a) = arr.as_any().downcast_ref::<StringArray>() {
+        for i in 0..a.len() {
+            if a.is_null(i) {
+                acc.observe_null();
+            } else {
+                acc.observe_value(json!(a.value(i)));
+            }
+        }
+        return Ok(());
+    }
+
+    if let Some(a) = arr.as_any().downcast_ref::<LargeStringArray>() {
+        for i in 0..a.len() {
+            if a.is_null(i) {
+                acc.observe_null();
+            } else {
+                acc.observe_value(json!(a.value(i)));
+            }
+        }
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!(
+        "unsupported dtype for prediction table categorical stats"
+    ))
+}
+
+fn observe_multicategory_array_for_train_rows(
+    arr: &dyn Array,
+    assignment_slice: &[u8],
+    acc: &mut MultiCategoryAccumulator,
+) -> anyhow::Result<()> {
+    if arr.len() != assignment_slice.len() {
+        return Err(anyhow::anyhow!(
+            "batch assignment length mismatch (array_len={}, assignment_len={})",
+            arr.len(),
+            assignment_slice.len()
+        ));
+    }
+
+    if let Some(a) = arr.as_any().downcast_ref::<StringArray>() {
+        for i in 0..a.len() {
+            if assignment_slice[i] != 0 {
+                continue;
+            }
+            if a.is_null(i) {
+                acc.observe_null();
+            } else {
+                acc.observe_string_value(a.value(i));
+            }
+        }
+        return Ok(());
+    }
+
+    if let Some(a) = arr.as_any().downcast_ref::<LargeStringArray>() {
+        for i in 0..a.len() {
+            if assignment_slice[i] != 0 {
+                continue;
+            }
+            if a.is_null(i) {
+                acc.observe_null();
+            } else {
+                acc.observe_string_value(a.value(i));
+            }
+        }
+        return Ok(());
+    }
+
+    if let Some(a) = arr.as_any().downcast_ref::<ListArray>() {
+        for i in 0..a.len() {
+            if assignment_slice[i] != 0 {
+                continue;
+            }
+            if a.is_null(i) {
+                acc.observe_null();
+            } else {
+                acc.row_count = acc.row_count.saturating_add(1);
+                let values = a.value(i);
+                let mut tokens: Vec<Value> = Vec::new();
+                for j in 0..values.len() {
+                    if let Some(v) = json_scalar_value_at(values.as_ref(), j) {
+                        tokens.push(v);
+                    }
+                }
+                acc.observe_tokens(tokens);
+            }
+        }
+        return Ok(());
+    }
+
+    if let Some(a) = arr.as_any().downcast_ref::<LargeListArray>() {
+        for i in 0..a.len() {
+            if assignment_slice[i] != 0 {
+                continue;
+            }
+            if a.is_null(i) {
+                acc.observe_null();
+            } else {
+                acc.row_count = acc.row_count.saturating_add(1);
+                let values = a.value(i);
+                let mut tokens: Vec<Value> = Vec::new();
+                for j in 0..values.len() {
+                    if let Some(v) = json_scalar_value_at(values.as_ref(), j) {
+                        tokens.push(v);
+                    }
+                }
+                acc.observe_tokens(tokens);
+            }
+        }
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!(
+        "unsupported dtype for train table multicategorical stats"
+    ))
+}
+
+fn observe_multicategory_array_all_rows(
+    arr: &dyn Array,
+    acc: &mut MultiCategoryAccumulator,
+) -> anyhow::Result<()> {
+    if let Some(a) = arr.as_any().downcast_ref::<StringArray>() {
+        for i in 0..a.len() {
+            if a.is_null(i) {
+                acc.observe_null();
+            } else {
+                acc.observe_string_value(a.value(i));
+            }
+        }
+        return Ok(());
+    }
+
+    if let Some(a) = arr.as_any().downcast_ref::<LargeStringArray>() {
+        for i in 0..a.len() {
+            if a.is_null(i) {
+                acc.observe_null();
+            } else {
+                acc.observe_string_value(a.value(i));
+            }
+        }
+        return Ok(());
+    }
+
+    if let Some(a) = arr.as_any().downcast_ref::<ListArray>() {
+        for i in 0..a.len() {
+            if a.is_null(i) {
+                acc.observe_null();
+            } else {
+                acc.row_count = acc.row_count.saturating_add(1);
+                let values = a.value(i);
+                let mut tokens: Vec<Value> = Vec::new();
+                for j in 0..values.len() {
+                    if let Some(v) = json_scalar_value_at(values.as_ref(), j) {
+                        tokens.push(v);
+                    }
+                }
+                acc.observe_tokens(tokens);
+            }
+        }
+        return Ok(());
+    }
+
+    if let Some(a) = arr.as_any().downcast_ref::<LargeListArray>() {
+        for i in 0..a.len() {
+            if a.is_null(i) {
+                acc.observe_null();
+            } else {
+                acc.row_count = acc.row_count.saturating_add(1);
+                let values = a.value(i);
+                let mut tokens: Vec<Value> = Vec::new();
+                for j in 0..values.len() {
+                    if let Some(v) = json_scalar_value_at(values.as_ref(), j) {
+                        tokens.push(v);
+                    }
+                }
+                acc.observe_tokens(tokens);
+            }
+        }
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!(
+        "unsupported dtype for prediction table multicategorical stats"
+    ))
+}
+
+fn observe_sequence_array_for_train_rows(
+    arr: &dyn Array,
+    assignment_slice: &[u8],
+    acc: &mut SequenceAccumulator,
+) -> anyhow::Result<()> {
+    if arr.len() != assignment_slice.len() {
+        return Err(anyhow::anyhow!(
+            "batch assignment length mismatch (array_len={}, assignment_len={})",
+            arr.len(),
+            assignment_slice.len()
+        ));
+    }
+
+    if let Some(a) = arr.as_any().downcast_ref::<ListArray>() {
+        for i in 0..a.len() {
+            if assignment_slice[i] != 0 {
+                continue;
+            }
+            if a.is_null(i) {
+                acc.observe_null_row();
+            } else {
+                let values = a.value(i);
+                acc.observe_row_len(values.len());
+                if acc.track_elements {
+                    for j in 0..values.len() {
+                        if let Some(v) = scalar_f64_value_at(values.as_ref(), j) {
+                            acc.observe_element(v);
+                        }
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    if let Some(a) = arr.as_any().downcast_ref::<LargeListArray>() {
+        for i in 0..a.len() {
+            if assignment_slice[i] != 0 {
+                continue;
+            }
+            if a.is_null(i) {
+                acc.observe_null_row();
+            } else {
+                let values = a.value(i);
+                acc.observe_row_len(values.len());
+                if acc.track_elements {
+                    for j in 0..values.len() {
+                        if let Some(v) = scalar_f64_value_at(values.as_ref(), j) {
+                            acc.observe_element(v);
+                        }
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!(
+        "unsupported dtype for train table sequence stats"
+    ))
+}
+
+fn observe_sequence_array_all_rows(
+    arr: &dyn Array,
+    acc: &mut SequenceAccumulator,
+) -> anyhow::Result<()> {
+    if let Some(a) = arr.as_any().downcast_ref::<ListArray>() {
+        for i in 0..a.len() {
+            if a.is_null(i) {
+                acc.observe_null_row();
+            } else {
+                let values = a.value(i);
+                acc.observe_row_len(values.len());
+                if acc.track_elements {
+                    for j in 0..values.len() {
+                        if let Some(v) = scalar_f64_value_at(values.as_ref(), j) {
+                            acc.observe_element(v);
+                        }
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    if let Some(a) = arr.as_any().downcast_ref::<LargeListArray>() {
+        for i in 0..a.len() {
+            if a.is_null(i) {
+                acc.observe_null_row();
+            } else {
+                let values = a.value(i);
+                acc.observe_row_len(values.len());
+                if acc.track_elements {
+                    for j in 0..values.len() {
+                        if let Some(v) = scalar_f64_value_at(values.as_ref(), j) {
+                            acc.observe_element(v);
+                        }
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!(
+        "unsupported dtype for prediction table sequence stats"
+    ))
+}
+
+fn observe_text_array_for_train_rows(
+    arr: &dyn Array,
+    assignment_slice: &[u8],
+    acc: &mut TextAccumulator,
+) -> anyhow::Result<()> {
+    if arr.len() != assignment_slice.len() {
+        return Err(anyhow::anyhow!(
+            "batch assignment length mismatch (array_len={}, assignment_len={})",
+            arr.len(),
+            assignment_slice.len()
+        ));
+    }
+
+    if let Some(a) = arr.as_any().downcast_ref::<StringArray>() {
+        for i in 0..a.len() {
+            if assignment_slice[i] != 0 {
+                continue;
+            }
+            if a.is_null(i) {
+                acc.observe_null_row();
+            } else {
+                acc.observe_text_row(a.value(i));
+            }
+        }
+        return Ok(());
+    }
+
+    if let Some(a) = arr.as_any().downcast_ref::<LargeStringArray>() {
+        for i in 0..a.len() {
+            if assignment_slice[i] != 0 {
+                continue;
+            }
+            if a.is_null(i) {
+                acc.observe_null_row();
+            } else {
+                acc.observe_text_row(a.value(i));
+            }
+        }
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!(
+        "unsupported dtype for train table text stats"
+    ))
+}
+
+fn observe_text_array_all_rows(arr: &dyn Array, acc: &mut TextAccumulator) -> anyhow::Result<()> {
+    if let Some(a) = arr.as_any().downcast_ref::<StringArray>() {
+        for i in 0..a.len() {
+            if a.is_null(i) {
+                acc.observe_null_row();
+            } else {
+                acc.observe_text_row(a.value(i));
+            }
+        }
+        return Ok(());
+    }
+
+    if let Some(a) = arr.as_any().downcast_ref::<LargeStringArray>() {
+        for i in 0..a.len() {
+            if a.is_null(i) {
+                acc.observe_null_row();
+            } else {
+                acc.observe_text_row(a.value(i));
+            }
+        }
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!(
+        "unsupported dtype for prediction table text stats"
     ))
 }
 
@@ -1469,13 +2369,90 @@ fn init_numeric_trackers(schema: &Schema) -> Vec<(usize, String, NumericAccumula
         .collect()
 }
 
+fn init_category_trackers(schema: &Schema) -> Vec<(usize, String, CategoryAccumulator)> {
+    schema
+        .fields()
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, field)| {
+            if is_category_stats_type(field.data_type()) {
+                Some((idx, field.name().to_string(), CategoryAccumulator::new()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn init_multicategory_trackers(schema: &Schema) -> Vec<(usize, String, MultiCategoryAccumulator)> {
+    schema
+        .fields()
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, field)| {
+            if is_multicategory_stats_type(field.data_type()) {
+                Some((
+                    idx,
+                    field.name().to_string(),
+                    MultiCategoryAccumulator::new(),
+                ))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn init_sequence_trackers(schema: &Schema) -> Vec<(usize, String, SequenceAccumulator)> {
+    schema
+        .fields()
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, field)| {
+            if !is_sequence_stats_type(field.data_type()) {
+                return None;
+            }
+
+            let child_dtype = match field.data_type() {
+                DataType::List(item) | DataType::LargeList(item) => item.data_type(),
+                _ => return None,
+            };
+            let track_elements = is_numeric_stats_type(child_dtype);
+            Some((
+                idx,
+                field.name().to_string(),
+                SequenceAccumulator::new(track_elements),
+            ))
+        })
+        .collect()
+}
+
+fn init_text_trackers(schema: &Schema) -> Vec<(usize, String, TextAccumulator)> {
+    schema
+        .fields()
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, field)| {
+            if is_text_stats_type(field.data_type()) {
+                Some((idx, field.name().to_string(), TextAccumulator::new()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 fn build_col_stats_map(
-    trackers: Vec<(usize, String, NumericAccumulator)>,
+    numeric_trackers: Vec<(usize, String, NumericAccumulator)>,
+    category_trackers: Vec<(usize, String, CategoryAccumulator)>,
+    multicategory_trackers: Vec<(usize, String, MultiCategoryAccumulator)>,
+    sequence_trackers: Vec<(usize, String, SequenceAccumulator)>,
+    text_trackers: Vec<(usize, String, TextAccumulator)>,
     data_version: &str,
     approx_for_distribution_stats: bool,
 ) -> Value {
     let mut stats = serde_json::Map::new();
-    for (_col_idx, name, acc) in trackers.into_iter() {
+    for (_col_idx, name, acc) in numeric_trackers.into_iter() {
         let total = acc.total_count();
         let na_fraction = if total > 0 {
             acc.null_count as f64 / total as f64
@@ -1564,16 +2541,143 @@ fn build_col_stats_map(
             ),
         );
     }
+
+    for (_col_idx, name, acc) in category_trackers.into_iter() {
+        let total = acc.total_count();
+        let na_fraction = if total > 0 {
+            acc.null_count as f64 / total as f64
+        } else {
+            0.0
+        };
+        let stype = "kumo.categorical";
+
+        stats.insert(
+            kumo_key(&name, stype, "COUNT", false),
+            kumo_entry(json!(total), false, data_version, total),
+        );
+        stats.insert(
+            kumo_key(&name, stype, "NUM_NA", false),
+            kumo_entry(json!(acc.null_count), false, data_version, total),
+        );
+        stats.insert(
+            kumo_key(&name, stype, "NA_FRACTION", false),
+            kumo_entry(json!(na_fraction), false, data_version, total),
+        );
+        stats.insert(
+            kumo_key(&name, stype, "NUM_UNIQUE", acc.overflowed),
+            kumo_entry(
+                json!(acc.unique_count()),
+                acc.overflowed,
+                data_version,
+                total,
+            ),
+        );
+        stats.insert(
+            kumo_key(&name, stype, "CATEGORY_COUNTS", acc.overflowed),
+            kumo_entry(
+                Value::Array(acc.sorted_category_counts()),
+                acc.overflowed,
+                data_version,
+                total,
+            ),
+        );
+    }
+
+    for (_col_idx, name, acc) in multicategory_trackers.into_iter() {
+        let stype = "kumo.multicategorical";
+        let total_rows = acc.row_count;
+        stats.insert(
+            kumo_key(&name, stype, "MULTI_CATEGORIES_SEPARATOR", false),
+            kumo_entry(
+                acc.separator
+                    .as_ref()
+                    .map(|s| json!(s))
+                    .unwrap_or(Value::Null),
+                false,
+                data_version,
+                total_rows,
+            ),
+        );
+        stats.insert(
+            kumo_key(&name, stype, "MULTI_CATEGORY_COUNTS", acc.overflowed),
+            kumo_entry(
+                Value::Array(acc.sorted_category_counts()),
+                acc.overflowed,
+                data_version,
+                total_rows,
+            ),
+        );
+        stats.insert(
+            kumo_key(&name, stype, "NUM_UNIQUE_MULTI", true),
+            kumo_entry(json!(acc.unique_count()), true, data_version, total_rows),
+        );
+    }
+
+    for (_col_idx, name, acc) in sequence_trackers.into_iter() {
+        let stype = "kumo.sequence";
+        let total_rows = acc.row_count;
+        stats.insert(
+            kumo_key(&name, stype, "SEQUENCE_MIN_LENGTH", false),
+            kumo_entry(json!(acc.min_len_value()), false, data_version, total_rows),
+        );
+        stats.insert(
+            kumo_key(&name, stype, "SEQUENCE_MAX_LENGTH", false),
+            kumo_entry(json!(acc.max_len_value()), false, data_version, total_rows),
+        );
+        stats.insert(
+            kumo_key(&name, stype, "SEQUENCE_MEAN", false),
+            kumo_entry(json!(acc.sequence_mean()), false, data_version, total_rows),
+        );
+        stats.insert(
+            kumo_key(&name, stype, "SEQUENCE_STD", false),
+            kumo_entry(json!(acc.sequence_std()), false, data_version, total_rows),
+        );
+    }
+
+    for (_col_idx, name, acc) in text_trackers.into_iter() {
+        let stype = "kumo.text";
+        let total_rows = acc.row_count;
+        stats.insert(
+            kumo_key(&name, stype, "STRING_AVG_TOKENS", true),
+            kumo_entry(json!(acc.avg_tokens()), true, data_version, total_rows),
+        );
+        stats.insert(
+            kumo_key(&name, stype, "STRING_MAX_TOKENS", true),
+            kumo_entry(
+                json!(acc.max_tokens_value()),
+                true,
+                data_version,
+                total_rows,
+            ),
+        );
+        stats.insert(
+            kumo_key(&name, stype, "STRING_AVG_NON_CHAR", true),
+            kumo_entry(json!(acc.avg_non_char()), true, data_version, total_rows),
+        );
+    }
+
     Value::Object(stats)
 }
 
 fn build_train_table_col_stats_payload(
-    trackers: Vec<(usize, String, NumericAccumulator)>,
+    numeric_trackers: Vec<(usize, String, NumericAccumulator)>,
+    category_trackers: Vec<(usize, String, CategoryAccumulator)>,
+    multicategory_trackers: Vec<(usize, String, MultiCategoryAccumulator)>,
+    sequence_trackers: Vec<(usize, String, SequenceAccumulator)>,
+    text_trackers: Vec<(usize, String, TextAccumulator)>,
     data_version: &str,
     row_count: usize,
     num_train_rows: u64,
 ) -> Value {
-    let stats = build_col_stats_map(trackers, data_version, true);
+    let stats = build_col_stats_map(
+        numeric_trackers,
+        category_trackers,
+        multicategory_trackers,
+        sequence_trackers,
+        text_trackers,
+        data_version,
+        true,
+    );
     json!({
         "version": 1,
         "kind": "tt_train_table_col_stats",
@@ -1586,13 +2690,25 @@ fn build_train_table_col_stats_payload(
 }
 
 fn build_prediction_table_col_stats_payload(
-    trackers: Vec<(usize, String, NumericAccumulator)>,
+    numeric_trackers: Vec<(usize, String, NumericAccumulator)>,
+    category_trackers: Vec<(usize, String, CategoryAccumulator)>,
+    multicategory_trackers: Vec<(usize, String, MultiCategoryAccumulator)>,
+    sequence_trackers: Vec<(usize, String, SequenceAccumulator)>,
+    text_trackers: Vec<(usize, String, TextAccumulator)>,
     data_version: &str,
     row_count: usize,
 ) -> Value {
     // Keep approx=True key suffix parity with train-table col stats so encoder
     // lookup contracts can remain shared across train/prediction paths.
-    let stats = build_col_stats_map(trackers, data_version, true);
+    let stats = build_col_stats_map(
+        numeric_trackers,
+        category_trackers,
+        multicategory_trackers,
+        sequence_trackers,
+        text_trackers,
+        data_version,
+        true,
+    );
     json!({
         "version": 1,
         "kind": "tt_prediction_table_col_stats",
@@ -1613,7 +2729,11 @@ fn compute_train_table_col_stats_from_batches(
     let first = raw_batches
         .first()
         .ok_or_else(|| anyhow::anyhow!("cannot build train table col stats for empty batches"))?;
-    let mut trackers = init_numeric_trackers(first.schema().as_ref());
+    let mut numeric_trackers = init_numeric_trackers(first.schema().as_ref());
+    let mut category_trackers = init_category_trackers(first.schema().as_ref());
+    let mut multicategory_trackers = init_multicategory_trackers(first.schema().as_ref());
+    let mut sequence_trackers = init_sequence_trackers(first.schema().as_ref());
+    let mut text_trackers = init_text_trackers(first.schema().as_ref());
 
     let mut assignment_by_original = vec![255u8; pre_downsample_row_count];
     if let Some(idxs) = selected_indices {
@@ -1656,8 +2776,36 @@ fn compute_train_table_col_stats_from_batches(
             ));
         }
         let assignment_slice = &assignment_by_original[row_offset..end];
-        for (col_idx, _name, acc) in trackers.iter_mut() {
+        for (col_idx, _name, acc) in numeric_trackers.iter_mut() {
             observe_numeric_array_for_train_rows(
+                batch.column(*col_idx).as_ref(),
+                assignment_slice,
+                acc,
+            )?;
+        }
+        for (col_idx, _name, acc) in category_trackers.iter_mut() {
+            observe_category_array_for_train_rows(
+                batch.column(*col_idx).as_ref(),
+                assignment_slice,
+                acc,
+            )?;
+        }
+        for (col_idx, _name, acc) in multicategory_trackers.iter_mut() {
+            observe_multicategory_array_for_train_rows(
+                batch.column(*col_idx).as_ref(),
+                assignment_slice,
+                acc,
+            )?;
+        }
+        for (col_idx, _name, acc) in sequence_trackers.iter_mut() {
+            observe_sequence_array_for_train_rows(
+                batch.column(*col_idx).as_ref(),
+                assignment_slice,
+                acc,
+            )?;
+        }
+        for (col_idx, _name, acc) in text_trackers.iter_mut() {
+            observe_text_array_for_train_rows(
                 batch.column(*col_idx).as_ref(),
                 assignment_slice,
                 acc,
@@ -1675,7 +2823,11 @@ fn compute_train_table_col_stats_from_batches(
 
     let num_train_rows = split_assignments.iter().filter(|s| **s == 0).count() as u64;
     Ok(build_train_table_col_stats_payload(
-        trackers,
+        numeric_trackers,
+        category_trackers,
+        multicategory_trackers,
+        sequence_trackers,
+        text_trackers,
         data_version,
         split_assignments.len(),
         num_train_rows,
@@ -1689,18 +2841,38 @@ fn compute_prediction_table_col_stats_from_batches(
     let first = raw_batches.first().ok_or_else(|| {
         anyhow::anyhow!("cannot build prediction table col stats for empty batches")
     })?;
-    let mut trackers = init_numeric_trackers(first.schema().as_ref());
+    let mut numeric_trackers = init_numeric_trackers(first.schema().as_ref());
+    let mut category_trackers = init_category_trackers(first.schema().as_ref());
+    let mut multicategory_trackers = init_multicategory_trackers(first.schema().as_ref());
+    let mut sequence_trackers = init_sequence_trackers(first.schema().as_ref());
+    let mut text_trackers = init_text_trackers(first.schema().as_ref());
 
     let mut row_count = 0usize;
     for batch in raw_batches {
         row_count = row_count.saturating_add(batch.num_rows());
-        for (col_idx, _name, acc) in trackers.iter_mut() {
+        for (col_idx, _name, acc) in numeric_trackers.iter_mut() {
             observe_numeric_array_all_rows(batch.column(*col_idx).as_ref(), acc)?;
+        }
+        for (col_idx, _name, acc) in category_trackers.iter_mut() {
+            observe_category_array_all_rows(batch.column(*col_idx).as_ref(), acc)?;
+        }
+        for (col_idx, _name, acc) in multicategory_trackers.iter_mut() {
+            observe_multicategory_array_all_rows(batch.column(*col_idx).as_ref(), acc)?;
+        }
+        for (col_idx, _name, acc) in sequence_trackers.iter_mut() {
+            observe_sequence_array_all_rows(batch.column(*col_idx).as_ref(), acc)?;
+        }
+        for (col_idx, _name, acc) in text_trackers.iter_mut() {
+            observe_text_array_all_rows(batch.column(*col_idx).as_ref(), acc)?;
         }
     }
 
     Ok(build_prediction_table_col_stats_payload(
-        trackers,
+        numeric_trackers,
+        category_trackers,
+        multicategory_trackers,
+        sequence_trackers,
+        text_trackers,
         data_version,
         row_count,
     ))
@@ -1994,10 +3166,9 @@ pub fn execute_tt_plan_materialize_with_split(
         .map_err(|e| crate::DiskgraphConfigError::new_err(format!("invalid plan JSON: {e}")))?;
 
     let split_cfg: Option<Value> = match split_config_json {
-        Some(s) if !s.is_empty() => Some(
-            serde_json::from_str(s)
-                .map_err(|e| crate::DiskgraphConfigError::new_err(format!("invalid split config JSON: {e}")))?,
-        ),
+        Some(s) if !s.is_empty() => Some(serde_json::from_str(s).map_err(|e| {
+            crate::DiskgraphConfigError::new_err(format!("invalid split config JSON: {e}"))
+        })?),
         _ => None,
     };
 
@@ -2011,8 +3182,9 @@ pub fn execute_tt_plan_materialize_with_split(
         })?),
         _ => None,
     };
-    let downsampling_cfg = parse_downsampling_config(downsampling_cfg.as_ref())
-        .map_err(|e| crate::DiskgraphConfigError::new_err(format!("invalid downsampling config: {e}")))?;
+    let downsampling_cfg = parse_downsampling_config(downsampling_cfg.as_ref()).map_err(|e| {
+        crate::DiskgraphConfigError::new_err(format!("invalid downsampling config: {e}"))
+    })?;
 
     let manual_train_values = split_cfg
         .as_ref()
@@ -2471,7 +3643,8 @@ pub fn build_tt_stats_artifact(
     let out = PyDict::new(py);
     out.set_item(
         "payload_json",
-        serde_json::to_string(&payload).map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
+        serde_json::to_string(&payload)
+            .map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
     )?;
     Ok(out.into())
 }
@@ -2570,7 +3743,8 @@ pub fn build_split_stats_artifact(
     let out_dict = PyDict::new(py);
     out_dict.set_item(
         "payload_json",
-        serde_json::to_string(&payload).map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
+        serde_json::to_string(&payload)
+            .map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
     )?;
     Ok(out_dict.into())
 }
@@ -2627,7 +3801,8 @@ pub fn build_train_table_col_stats_artifact(
     let out_dict = PyDict::new(py);
     out_dict.set_item(
         "payload_json",
-        serde_json::to_string(&payload).map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
+        serde_json::to_string(&payload)
+            .map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
     )?;
     Ok(out_dict.into())
 }
@@ -2670,7 +3845,8 @@ pub fn build_prediction_table_col_stats_artifact(
     let out_dict = PyDict::new(py);
     out_dict.set_item(
         "payload_json",
-        serde_json::to_string(&payload).map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
+        serde_json::to_string(&payload)
+            .map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
     )?;
     Ok(out_dict.into())
 }
@@ -2710,7 +3886,8 @@ pub fn build_train_table_edge_bundle_artifact(
     let out_dict = PyDict::new(py);
     out_dict.set_item(
         "payload_json",
-        serde_json::to_string(&payload).map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
+        serde_json::to_string(&payload)
+            .map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
     )?;
     Ok(out_dict.into())
 }
@@ -2750,7 +3927,8 @@ pub fn build_prediction_table_edge_bundle_artifact(
     let out_dict = PyDict::new(py);
     out_dict.set_item(
         "payload_json",
-        serde_json::to_string(&payload).map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
+        serde_json::to_string(&payload)
+            .map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
     )?;
     Ok(out_dict.into())
 }
@@ -2770,7 +3948,9 @@ pub fn persist_prediction_artifact_bundle(
     let prediction_table_edges_payload = prediction_table_edges_json.to_string();
     let prediction_table_edges_value: Value =
         serde_json::from_str::<Value>(&prediction_table_edges_payload).map_err(|e| {
-            crate::DiskgraphConfigError::new_err(format!("invalid prediction_table_edges_json: {e}"))
+            crate::DiskgraphConfigError::new_err(format!(
+                "invalid prediction_table_edges_json: {e}"
+            ))
         })?;
 
     let kind_ok = prediction_table_edges_value
@@ -2796,7 +3976,9 @@ pub fn persist_prediction_artifact_bundle(
     let prediction_col_stats_payload = prediction_table_col_stats_json.map(|s| s.to_string());
     let prediction_col_stats_value: Option<Value> = match prediction_col_stats_payload.as_ref() {
         Some(s) => Some(serde_json::from_str::<Value>(s).map_err(|e| {
-            crate::DiskgraphConfigError::new_err(format!("invalid prediction_table_col_stats_json: {e}"))
+            crate::DiskgraphConfigError::new_err(format!(
+                "invalid prediction_table_col_stats_json: {e}"
+            ))
         })?),
         None => None,
     };
@@ -2919,7 +4101,9 @@ pub fn persist_prediction_artifact_bundle(
             Ok((manifest_path, artifacts_dir))
         })
         .map_err(|e| {
-            crate::DiskgraphConfigError::new_err(format!("persist_prediction_artifact_bundle failed: {e:#}"))
+            crate::DiskgraphConfigError::new_err(format!(
+                "persist_prediction_artifact_bundle failed: {e:#}"
+            ))
         })?;
 
     let out_dict = PyDict::new(py);
@@ -2957,13 +4141,12 @@ pub fn persist_tt_artifact_bundle(
         .unwrap_or(Value::Null);
     let train_table_col_stats_payload = train_table_col_stats_json.to_string();
     let train_table_edges_payload = train_table_edges_json.map(|s| s.to_string());
-    let train_table_edges_value: Option<Value> =
-        match train_table_edges_payload.as_ref() {
-            Some(s) => Some(serde_json::from_str::<Value>(s).map_err(|e| {
-                crate::DiskgraphConfigError::new_err(format!("invalid train_table_edges_json: {e}"))
-            })?),
-            None => None,
-        };
+    let train_table_edges_value: Option<Value> = match train_table_edges_payload.as_ref() {
+        Some(s) => Some(serde_json::from_str::<Value>(s).map_err(|e| {
+            crate::DiskgraphConfigError::new_err(format!("invalid train_table_edges_json: {e}"))
+        })?),
+        None => None,
+    };
 
     let (manifest_path, artifacts_dir) = py
         .detach(|| -> anyhow::Result<(String, String)> {
@@ -3078,7 +4261,9 @@ pub fn persist_tt_artifact_bundle(
             Ok((manifest_path, artifacts_dir))
         })
         .map_err(|e| {
-            crate::DiskgraphConfigError::new_err(format!("persist_tt_artifact_bundle failed: {e:#}"))
+            crate::DiskgraphConfigError::new_err(format!(
+                "persist_tt_artifact_bundle failed: {e:#}"
+            ))
         })?;
 
     let out_dict = PyDict::new(py);
@@ -3152,9 +4337,16 @@ mod tests {
             .and_then(|v| v.get("value"))
             .and_then(|v| v.as_u64())
             .unwrap();
+        let city_counts = stats
+            .get("CITY__kumo.categorical__CATEGORY_COUNTS__False")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap();
 
         assert_eq!(target_count, 2);
         assert_eq!(score_count, 2);
+        assert_eq!(city_counts, vec![json!(["a", 1]), json!(["e", 1])]);
         assert!((target_mean - 3.0).abs() < 1e-9);
         assert!((target_median - 3.0).abs() < 1e-9);
     }
@@ -3184,7 +4376,21 @@ mod tests {
             Some(2)
         );
         let stats = payload.get("stats").and_then(|v| v.as_object()).unwrap();
-        assert!(stats.is_empty());
+
+        let city_counts = stats
+            .get("CITY__kumo.categorical__CATEGORY_COUNTS__False")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap();
+        assert_eq!(city_counts, vec![json!(["a", 1])]);
+
+        let city_num_unique = stats
+            .get("CITY__kumo.categorical__NUM_UNIQUE__False")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_u64())
+            .unwrap();
+        assert_eq!(city_num_unique, 1);
     }
 
     #[test]
@@ -3215,6 +4421,255 @@ mod tests {
         let stats = payload.get("stats").and_then(|v| v.as_object()).unwrap();
         assert!(stats.contains_key("TARGET__kumo.numerical__MEAN__True"));
         assert!(stats.contains_key("TARGET__kumo.numerical__STD__True"));
+    }
+
+    #[test]
+    fn test_compute_prediction_table_col_stats_includes_category_counts() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "TARGET",
+            DataType::Int64,
+            true,
+        )]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int64Array::from(vec![
+                Some(1),
+                Some(1),
+                Some(2),
+                None,
+            ]))],
+        )
+        .unwrap();
+
+        let payload = compute_prediction_table_col_stats_from_batches(&[batch], "v1").unwrap();
+        let stats = payload.get("stats").and_then(|v| v.as_object()).unwrap();
+
+        let counts = stats
+            .get("TARGET__kumo.categorical__CATEGORY_COUNTS__False")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap();
+        assert_eq!(counts, vec![json!([1, 2]), json!([2, 1])]);
+    }
+
+    #[test]
+    fn test_compute_prediction_table_col_stats_includes_timestamp_min_max() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "TS",
+            DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, None),
+            true,
+        )]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(TimestampNanosecondArray::from(vec![
+                Some(10_i64),
+                Some(20_i64),
+                None,
+            ]))],
+        )
+        .unwrap();
+
+        let payload = compute_prediction_table_col_stats_from_batches(&[batch], "v1").unwrap();
+        let stats = payload.get("stats").and_then(|v| v.as_object()).unwrap();
+
+        let min = stats
+            .get("TS__kumo.numerical__MIN__True")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_f64())
+            .unwrap();
+        let max = stats
+            .get("TS__kumo.numerical__MAX__True")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_f64())
+            .unwrap();
+        assert_eq!(min, 10.0);
+        assert_eq!(max, 20.0);
+    }
+
+    #[test]
+    fn test_compute_prediction_table_col_stats_includes_multicategory_stats() {
+        let schema = Arc::new(Schema::new(vec![Field::new("MCAT", DataType::Utf8, true)]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(vec![
+                Some("a|b"),
+                Some("a|c"),
+                None,
+            ]))],
+        )
+        .unwrap();
+
+        let payload = compute_prediction_table_col_stats_from_batches(&[batch], "v1").unwrap();
+        let stats = payload.get("stats").and_then(|v| v.as_object()).unwrap();
+
+        let sep = stats
+            .get("MCAT__kumo.multicategorical__MULTI_CATEGORIES_SEPARATOR__False")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_str())
+            .unwrap();
+        assert_eq!(sep, "|");
+
+        let counts = stats
+            .get("MCAT__kumo.multicategorical__MULTI_CATEGORY_COUNTS__False")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            counts,
+            vec![json!(["a", 2]), json!(["b", 1]), json!(["c", 1])]
+        );
+
+        let unique_multi = stats
+            .get("MCAT__kumo.multicategorical__NUM_UNIQUE_MULTI__True")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_u64())
+            .unwrap();
+        assert_eq!(unique_multi, 3);
+    }
+
+    #[test]
+    fn test_compute_prediction_table_col_stats_includes_sequence_stats() {
+        let seq = ListArray::from_iter_primitive::<Int64Type, _, _>(vec![
+            Some(vec![Some(1), Some(2), Some(3)]),
+            Some(vec![Some(4)]),
+            None,
+        ]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "SEQ",
+            DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
+            true,
+        )]));
+
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(seq)]).unwrap();
+
+        let payload = compute_prediction_table_col_stats_from_batches(&[batch], "v1").unwrap();
+        let stats = payload.get("stats").and_then(|v| v.as_object()).unwrap();
+
+        let min_len = stats
+            .get("SEQ__kumo.sequence__SEQUENCE_MIN_LENGTH__False")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_u64())
+            .unwrap();
+        let max_len = stats
+            .get("SEQ__kumo.sequence__SEQUENCE_MAX_LENGTH__False")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_u64())
+            .unwrap();
+        let mean = stats
+            .get("SEQ__kumo.sequence__SEQUENCE_MEAN__False")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_f64())
+            .unwrap();
+        let std = stats
+            .get("SEQ__kumo.sequence__SEQUENCE_STD__False")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_f64())
+            .unwrap();
+
+        assert_eq!(min_len, 0);
+        assert_eq!(max_len, 3);
+        assert!((mean - 2.5).abs() < 1e-9);
+        assert!((std - 1.118033988749895).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_compute_prediction_table_col_stats_includes_text_stats() {
+        let schema = Arc::new(Schema::new(vec![Field::new("TXT", DataType::Utf8, true)]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(vec![
+                Some("Hello, world!"),
+                Some("abc 123 ???"),
+                None,
+            ]))],
+        )
+        .unwrap();
+
+        let payload = compute_prediction_table_col_stats_from_batches(&[batch], "v1").unwrap();
+        let stats = payload.get("stats").and_then(|v| v.as_object()).unwrap();
+
+        let avg_tokens = stats
+            .get("TXT__kumo.text__STRING_AVG_TOKENS__True")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_f64())
+            .unwrap();
+        let max_tokens = stats
+            .get("TXT__kumo.text__STRING_MAX_TOKENS__True")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_u64())
+            .unwrap();
+        let avg_non_char = stats
+            .get("TXT__kumo.text__STRING_AVG_NON_CHAR__True")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_f64())
+            .unwrap();
+
+        assert!((avg_tokens - 2.0).abs() < 1e-9);
+        assert_eq!(max_tokens, 2);
+        assert!((avg_non_char - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_category_overflow_uses_observed_counts_and_marks_approx() {
+        let mut counts = BTreeMap::new();
+        counts.insert("str:a".to_string(), (json!("a"), 1));
+        let cat = CategoryAccumulator {
+            null_count: 1,
+            observed_non_null_count: 3,
+            overflowed: true,
+            counts,
+        };
+
+        let stats = build_col_stats_map(
+            vec![],
+            vec![(0, "CAT".to_string(), cat)],
+            vec![],
+            vec![],
+            vec![],
+            "v1",
+            true,
+        );
+        let m = stats.as_object().unwrap();
+
+        let count = m
+            .get("CAT__kumo.categorical__COUNT__False")
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_u64())
+            .unwrap();
+        assert_eq!(count, 4);
+        assert!(m.contains_key("CAT__kumo.categorical__NUM_UNIQUE__True"));
+        assert!(m.contains_key("CAT__kumo.categorical__CATEGORY_COUNTS__True"));
+    }
+
+    #[test]
+    fn test_multicategory_overflow_marks_counts_approx() {
+        let mut counts = BTreeMap::new();
+        counts.insert("str:a".to_string(), (json!("a"), 1));
+        let mcat = MultiCategoryAccumulator {
+            row_count: 2,
+            null_count: 0,
+            separator: Some("|".to_string()),
+            overflowed: true,
+            counts,
+        };
+
+        let stats = build_col_stats_map(
+            vec![],
+            vec![],
+            vec![(0, "MCAT".to_string(), mcat)],
+            vec![],
+            vec![],
+            "v1",
+            true,
+        );
+        let m = stats.as_object().unwrap();
+        assert!(m.contains_key("MCAT__kumo.multicategorical__MULTI_CATEGORY_COUNTS__True"));
     }
 
     #[test]
