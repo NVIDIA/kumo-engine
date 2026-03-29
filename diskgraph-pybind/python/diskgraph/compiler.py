@@ -213,8 +213,7 @@ class DiskGraphPlanCompiler:
                 'legacy dict split payloads are no longer supported'
             )
         if split_spec is not None:
-            if split_spec.ratio is None:
-                raise DiskgraphConfigError('diskgraph split contract requires ratio for compiler split planning')
+            split_spec.validate_for_compiler()
             self.builder.split_ratio(
                 split_spec.ratio,
                 kind=split_spec.kind,

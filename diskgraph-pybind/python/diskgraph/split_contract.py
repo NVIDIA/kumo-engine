@@ -3,6 +3,32 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
+try:
+    from ._c import DiskgraphConfigError
+except Exception:  # pragma: no cover - stale/missing wheel should fail fast at callsites
+    DiskgraphConfigError = RuntimeError
+
+
+_RATIO_REQUIRED_FAMILIES = {
+    'FixedSplit',
+    'RandomSplit',
+    'TemporalSplit',
+    'ColumnSplit',
+    'ApproxDateOffsetSplit',
+}
+_OFFSET_REQUIRED_FAMILIES = {'DateOffsetSplit'}
+_RANGES_REQUIRED_FAMILIES = {'TimeRangeSplit'}
+_BACKTESTING_REQUIRED_FAMILIES = {'BacktestingSplit'}
+_COLUMN_REQUIRED_FAMILIES = {'ColumnSplit', 'ManualSplit'}
+_MANUAL_VALUES_REQUIRED_FAMILIES = {'ManualSplit'}
+_SUPPORTED_FAMILIES = {
+    *_RATIO_REQUIRED_FAMILIES,
+    *_OFFSET_REQUIRED_FAMILIES,
+    *_RANGES_REQUIRED_FAMILIES,
+    *_BACKTESTING_REQUIRED_FAMILIES,
+    *_COLUMN_REQUIRED_FAMILIES,
+}
+
 
 @dataclass(frozen=True)
 class SplitSpec:
@@ -56,6 +82,64 @@ class SplitSpec:
         if self.is_temporal is not None:
             cfg['is_temporal'] = bool(self.is_temporal)
         return cfg
+
+    def validate_for_compiler(self) -> None:
+        family = self.kind
+        if not family:
+            raise DiskgraphConfigError('diskgraph split contract requires split kind')
+        if family == 'RandomLinkSplit':
+            raise DiskgraphConfigError(
+                'RandomLinkSplit is not supported for diskgraph dense split assignment'
+            )
+        if family not in _SUPPORTED_FAMILIES:
+            raise DiskgraphConfigError(
+                f'unsupported split family for diskgraph compiler split planning: {family}'
+            )
+
+        if family in _RATIO_REQUIRED_FAMILIES:
+            _validate_ratio(family, self.ratio)
+
+        if family in _OFFSET_REQUIRED_FAMILIES:
+            if not self.offsets:
+                raise DiskgraphConfigError(f'{family} requires offsets')
+            # Kumo parity: DateOffsetSplit supports 1 or 2 negative offsets.
+            # 1 offset -> 2-way split, 2 offsets -> 3-way split.
+            if len(self.offsets) < 1 or len(self.offsets) > 2:
+                raise DiskgraphConfigError(f'{family} offsets must contain 1 or 2 entries')
+            if any(offset > 0 for offset in self.offsets):
+                raise DiskgraphConfigError(f'{family} offsets must be <= 0')
+            if any(left > right for left, right in zip(self.offsets[:-1], self.offsets[1:])):
+                raise DiskgraphConfigError(f'{family} offsets must be monotonically increasing')
+
+        if family in _RANGES_REQUIRED_FAMILIES:
+            if not self.ranges or len(self.ranges) < 2:
+                raise DiskgraphConfigError(f'{family} requires at least two ranges')
+            if len(self.ranges) > 3:
+                raise DiskgraphConfigError(f'{family} supports at most three ranges')
+            for pair in self.ranges:
+                if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                    raise DiskgraphConfigError(f'{family} range entries must be [start, end]')
+
+        if family in _BACKTESTING_REQUIRED_FAMILIES and self.backtesting_timestamp is None:
+            raise DiskgraphConfigError(f'{family} requires backtesting_timestamp')
+
+        if family in _COLUMN_REQUIRED_FAMILIES and not self.split_column:
+            raise DiskgraphConfigError(f'{family} requires split_column')
+
+        if family in _MANUAL_VALUES_REQUIRED_FAMILIES:
+            if not self.manual_train_values:
+                raise DiskgraphConfigError(f'{family} requires manual_train_values')
+            if not self.manual_val_values:
+                raise DiskgraphConfigError(f'{family} requires manual_val_values')
+
+
+def _validate_ratio(family: str, ratio: Optional[list[float]]) -> None:
+    if ratio is None:
+        raise DiskgraphConfigError(f'{family} requires ratio')
+    if len(ratio) < 2 or len(ratio) > 3:
+        raise DiskgraphConfigError(f'{family} ratio must contain 2 or 3 entries')
+    if any(val < 0 for val in ratio):
+        raise DiskgraphConfigError(f'{family} ratio cannot contain negative values')
 
 
 def _coerce_split_payload(raw: Optional[Any]) -> dict[str, Any]:

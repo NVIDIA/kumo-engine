@@ -52,7 +52,10 @@ use crate::ttgen_traversal::*;
 pub fn execute(
     plan: &DiskGraphTTPlan,
     index_path: &Path,
-) -> TTGenResult<(Receiver<RecordBatch>, std::thread::JoinHandle<TTGenResult<u64>>)> {
+) -> TTGenResult<(
+    Receiver<RecordBatch>,
+    std::thread::JoinHandle<TTGenResult<u64>>,
+)> {
     let (receiver, summary_handle) = execute_with_summary(plan, index_path)?;
     let handle = std::thread::spawn(move || {
         let summary = summary_handle
@@ -105,7 +108,7 @@ pub fn execute_with_summary(
         }
     );
     let has_include_bit_col = resolved.lag_timesteps > 0;
-    let split_ratio = plan.split.as_ref().map(|s| s.ratio.clone());
+    let split_ratio = plan.split.as_ref().and_then(|s| s.ratio.clone());
     let split_kind = plan.split.as_ref().and_then(|s| s.kind.clone());
     let split_is_temporal = plan
         .split
@@ -153,7 +156,10 @@ pub fn execute_with_summary(
                     stats.merge(chunk_stats);
                 }
                 Err(e) => {
-                    return Err(TTGenError::SystemError(format!("thread {} failed: {}", i, e)));
+                    return Err(TTGenError::SystemError(format!(
+                        "thread {} failed: {}",
+                        i, e
+                    )));
                 }
             }
         }
@@ -209,8 +215,7 @@ fn output_mode_from_prediction_type(
         },
         PredictionType::PassThrough => OutputMode::PassThrough,
         PredictionType::Forecasting => OutputMode::Forecasting {
-            autoregression_dtype: autoregression_dtype
-                .expect("forecasting missing ar_dtype"),
+            autoregression_dtype: autoregression_dtype.expect("forecasting missing ar_dtype"),
             yoy_dtype,
         },
     }
@@ -633,16 +638,14 @@ fn execute_stages(
     for stage in &plan.stages {
         for op in &stage.ops {
             let result = match op {
-                ResolvedOp::Aggregate(agg) => {
-                    execute_aggregate(
-                        plan,
-                        entity_node,
-                        agg,
-                        entity_cols,
-                        observation_ts,
-                        link_frequencies,
-                    )
-                }
+                ResolvedOp::Aggregate(agg) => execute_aggregate(
+                    plan,
+                    entity_node,
+                    agg,
+                    entity_cols,
+                    observation_ts,
+                    link_frequencies,
+                ),
                 ResolvedOp::HasEdges(has_edges) => {
                     execute_has_edges(plan, entity_node, has_edges, entity_cols, observation_ts)
                 }
@@ -756,12 +759,20 @@ fn execute_has_edges(
     let window = has_edges.window.as_ref().map(|w| {
         let obs = observation_ts.unwrap_or(0);
         match w {
-            ResolvedWindow::Fixed { offset_lo_secs, offset_hi_secs, encoder } => {
+            ResolvedWindow::Fixed {
+                offset_lo_secs,
+                offset_hi_secs,
+                encoder,
+            } => {
                 let lo = encoder.encode_upper(obs + offset_lo_secs);
                 let hi = encoder.encode_upper(obs + offset_hi_secs);
                 (lo, hi)
             }
-            ResolvedWindow::Calendar { lo_months, hi_months, encoder } => {
+            ResolvedWindow::Calendar {
+                lo_months,
+                hi_months,
+                encoder,
+            } => {
                 let lo_secs = add_calendar_months(obs, *lo_months);
                 let hi_secs = add_calendar_months(obs, *hi_months);
                 let lo = encoder.encode_upper(lo_secs);
@@ -774,15 +785,21 @@ fn execute_has_edges(
     let dst_table = &has_edges.path.last().unwrap().dst_table;
     let mut traversed = false;
 
-    traverse_and_accumulate(entity_node, &has_edges.path, window, true, &mut |dst, _sk| {
-        if let Some(ref f) = has_edges.row_filter {
-            if !eval_row_filter(f, dst, dst_table, entity_cols) {
-                return true;
+    traverse_and_accumulate(
+        entity_node,
+        &has_edges.path,
+        window,
+        true,
+        &mut |dst, _sk| {
+            if let Some(ref f) = has_edges.row_filter {
+                if !eval_row_filter(f, dst, dst_table, entity_cols) {
+                    return true;
+                }
             }
-        }
-        traversed = true;
-        false
-    });
+            traversed = true;
+            false
+        },
+    );
 
     Some(Value::Bool(traversed))
 }

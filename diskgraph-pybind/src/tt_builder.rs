@@ -76,11 +76,7 @@ impl RowFilter {
     /// RowFilter.compare_to_entity("currency", "==", "pref_currency")
     /// ```
     #[staticmethod]
-    fn compare_to_entity(
-        column: String,
-        op: &str,
-        entity_column: String,
-    ) -> PyResult<Self> {
+    fn compare_to_entity(column: String, op: &str, entity_column: String) -> PyResult<Self> {
         Ok(Self {
             inner: tt::RowFilter::Compare {
                 lhs: tt::RowFilterLhs::Column(column),
@@ -220,11 +216,7 @@ impl StageFilter {
     /// StageFilter.compare_to_entity("_sum", ">", "credit_limit")
     /// ```
     #[staticmethod]
-    fn compare_to_entity(
-        alias: String,
-        op: &str,
-        entity_column: String,
-    ) -> PyResult<Self> {
+    fn compare_to_entity(alias: String, op: &str, entity_column: String) -> PyResult<Self> {
         Ok(Self {
             inner: tt::StageFilter::Compare {
                 alias,
@@ -264,11 +256,7 @@ impl StageFilter {
     /// StageFilter.compare_to_alias("_sum", ">", "_avg")
     /// ```
     #[staticmethod]
-    fn compare_to_alias(
-        alias: String,
-        op: &str,
-        rhs_alias: String,
-    ) -> PyResult<Self> {
+    fn compare_to_alias(alias: String, op: &str, rhs_alias: String) -> PyResult<Self> {
         Ok(Self {
             inner: tt::StageFilter::Compare {
                 alias,
@@ -330,7 +318,13 @@ impl DiskGraphTTBuilder {
 
     /// `FOR EACH {table}.{column}`.
     #[pyo3(signature = (table, column, output_time_col_name=None, default_time_value=None))]
-    fn for_each(&mut self, table: String, column: String, output_time_col_name: Option<String>, default_time_value: Option<i64>) {
+    fn for_each(
+        &mut self,
+        table: String,
+        column: String,
+        output_time_col_name: Option<String>,
+        default_time_value: Option<i64>,
+    ) {
         self.entity = Some(tt::EntitySpec {
             table,
             column,
@@ -417,7 +411,7 @@ impl DiskGraphTTBuilder {
     ))]
     fn split_ratio(
         &mut self,
-        ratio: Vec<f64>,
+        ratio: Option<Vec<f64>>,
         kind: Option<String>,
         is_temporal: Option<bool>,
         offsets: Option<Vec<i64>>,
@@ -428,15 +422,17 @@ impl DiskGraphTTBuilder {
         manual_val_values: Option<Vec<String>>,
         manual_test_values: Option<Vec<String>>,
     ) -> PyResult<()> {
-        if ratio.len() < 2 || ratio.len() > 3 {
-            return Err(crate::DiskgraphConfigError::new_err(
-                "split ratio must contain 2 or 3 entries",
-            ));
-        }
-        if ratio.iter().any(|v| *v < 0.0) {
-            return Err(crate::DiskgraphConfigError::new_err(
-                "split ratio cannot contain negative values",
-            ));
+        if let Some(ratio_vals) = ratio.as_ref() {
+            if ratio_vals.len() < 2 || ratio_vals.len() > 3 {
+                return Err(crate::DiskgraphConfigError::new_err(
+                    "split ratio must contain 2 or 3 entries",
+                ));
+            }
+            if ratio_vals.iter().any(|v| *v < 0.0) {
+                return Err(crate::DiskgraphConfigError::new_err(
+                    "split ratio cannot contain negative values",
+                ));
+            }
         }
         self.split = Some(tt::SplitSpec {
             ratio,
@@ -456,7 +452,10 @@ impl DiskGraphTTBuilder {
     /// Link prediction.
     #[pyo3(signature = (explode=false, include_frequency=false))]
     fn link_prediction(&mut self, explode: bool, include_frequency: bool) {
-        self.prediction_type = tt::PredictionType::Link { explode, include_frequency };
+        self.prediction_type = tt::PredictionType::Link {
+            explode,
+            include_frequency,
+        };
     }
 
     /// Pass-through prediction (LHS/RHS extraction without target ops).
@@ -530,17 +529,17 @@ impl DiskGraphTTBuilder {
     }
 
     /// Logical combination of previously computed boolean aliases.
-    pub fn logical_op(
-        &mut self,
-        alias: String,
-        op: String,
-        operands: Vec<String>,
-    ) -> PyResult<()> {
+    pub fn logical_op(&mut self, alias: String, op: String, operands: Vec<String>) -> PyResult<()> {
         let op_kind = match op.as_str() {
             "and" => tt::LogicalOpKind::And,
             "or" => tt::LogicalOpKind::Or,
             "not" => tt::LogicalOpKind::Not,
-            _ => return Err(crate::DiskgraphConfigError::new_err(format!("Invalid logical op: {}", op))),
+            _ => {
+                return Err(crate::DiskgraphConfigError::new_err(format!(
+                    "Invalid logical op: {}",
+                    op
+                )))
+            }
         };
 
         self.current_ops.push(tt::Op::LogicalOp {
@@ -558,8 +557,9 @@ impl DiskGraphTTBuilder {
         target_op_json: String,
         lag_offsets: Vec<i64>,
     ) -> PyResult<()> {
-        let target_op: tt::Op = serde_json::from_str(&target_op_json)
-            .map_err(|e| crate::DiskgraphConfigError::new_err(format!("Invalid target op JSON: {}", e)))?;
+        let target_op: tt::Op = serde_json::from_str(&target_op_json).map_err(|e| {
+            crate::DiskgraphConfigError::new_err(format!("Invalid target op JSON: {}", e))
+        })?;
 
         self.current_ops.push(tt::Op::Autoregression {
             alias,
@@ -595,10 +595,13 @@ impl DiskGraphTTBuilder {
     /// Pops the last operation off the current stage and returns it as a JSON string.
     /// This is useful for wrapping existing operations (like Aggregates) inside other operations (like Autoregression).
     pub fn pop_last_op_json(&mut self) -> PyResult<String> {
-        let op = self.current_ops.pop()
+        let op = self
+            .current_ops
+            .pop()
             .ok_or_else(|| crate::DiskgraphConfigError::new_err("No operations to pop"))?;
-        serde_json::to_string(&op)
-            .map_err(|e| crate::DiskgraphConfigError::new_err(format!("Failed to serialize op: {}", e)))
+        serde_json::to_string(&op).map_err(|e| {
+            crate::DiskgraphConfigError::new_err(format!("Failed to serialize op: {}", e))
+        })
     }
 
     /// Close current stage with a short-circuit filter, start new stage.
@@ -617,10 +620,9 @@ impl DiskGraphTTBuilder {
             self.stages.push(tt::Stage { ops, filter: None });
         }
 
-        let entity = self
-            .entity
-            .take()
-            .ok_or_else(|| crate::DiskgraphConfigError::new_err("call for_each() before build()"))?;
+        let entity = self.entity.take().ok_or_else(|| {
+            crate::DiskgraphConfigError::new_err("call for_each() before build()")
+        })?;
 
         let plan = tt::DiskGraphTTPlan {
             entity,
@@ -630,7 +632,8 @@ impl DiskGraphTTBuilder {
             stages: std::mem::take(&mut self.stages),
         };
 
-        serde_json::to_string(&plan).map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))
+        serde_json::to_string(&plan)
+            .map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))
     }
 }
 
@@ -646,7 +649,9 @@ fn parse_compare_op(op: &str) -> PyResult<tt::CompareOp> {
         "<=" | "lte" => Ok(tt::CompareOp::Lte),
         "isnull" | "is_null" => Ok(tt::CompareOp::IsNull),
         "isnotnull" | "is_not_null" => Ok(tt::CompareOp::IsNotNull),
-        _ => Err(crate::DiskgraphConfigError::new_err(format!("unknown compare op: {op}"))),
+        _ => Err(crate::DiskgraphConfigError::new_err(format!(
+            "unknown compare op: {op}"
+        ))),
     }
 }
 
@@ -661,7 +666,9 @@ fn parse_agg_func(func: &str) -> PyResult<tt::AggFunc> {
         "list_distinct" | "listdistinct" => Ok(tt::AggFunc::ListDistinct),
         "first" => Ok(tt::AggFunc::First),
         "last" => Ok(tt::AggFunc::Last),
-        _ => Err(crate::DiskgraphConfigError::new_err(format!("unknown agg func: {func}"))),
+        _ => Err(crate::DiskgraphConfigError::new_err(format!(
+            "unknown agg func: {func}"
+        ))),
     }
 }
 
@@ -674,7 +681,9 @@ fn parse_time_unit(unit: &str) -> PyResult<tt::TimeUnit> {
         "weeks" | "week" | "w" => Ok(tt::TimeUnit::Weeks),
         "months" | "month" | "mo" => Ok(tt::TimeUnit::Months),
         "years" | "year" | "y" => Ok(tt::TimeUnit::Years),
-        _ => Err(crate::DiskgraphConfigError::new_err(format!("unknown time unit: {unit}"))),
+        _ => Err(crate::DiskgraphConfigError::new_err(format!(
+            "unknown time unit: {unit}"
+        ))),
     }
 }
 

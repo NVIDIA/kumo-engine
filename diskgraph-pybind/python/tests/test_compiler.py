@@ -94,7 +94,7 @@ def test_compile_signature_prefers_split_spec_param():
     assert 'split_ratio' not in sig.parameters
 
 
-def test_compiler_accepts_split_spec_object():
+def _make_temporal_query() -> ValidatedPredictiveQuery:
     target_ast = Aggregation(
         target=Column(fqn="transactions.amount"),
         aggr=AggregationType.SUM,
@@ -111,6 +111,11 @@ def test_compiler_accepts_split_spec_object():
         target_ast=target_ast,
     )
     query._query_type = "TEMPORAL"
+    return query
+
+
+def test_compiler_accepts_split_spec_object():
+    query = _make_temporal_query()
 
     compiler = DiskGraphPlanCompiler()
     plan_json = compiler.compile(
@@ -126,22 +131,45 @@ def test_compiler_accepts_split_spec_object():
     assert plan["split"]["kind"] == "FixedSplit"
 
 
+def test_compiler_accepts_date_offset_split_without_ratio():
+    query = _make_temporal_query()
+
+    compiler = DiskGraphPlanCompiler()
+    plan_json = compiler.compile(
+        query=query,
+        timestamps=[1609459200000000],
+        forecast_length=1,
+        lag_timesteps=30,
+        task_type="temporal_link_prediction",
+        split=SplitSpec(kind="DateOffsetSplit", offsets=[-30, -7], offset_unit="days"),
+    )
+
+    plan = json.loads(plan_json)
+    assert plan["split"]["kind"] == "DateOffsetSplit"
+    assert plan["split"]["offsets"] == [-30, -7]
+    assert plan["split"]["ratio"] is None
+
+
+def test_compiler_accepts_backtesting_split_without_ratio():
+    query = _make_temporal_query()
+
+    compiler = DiskGraphPlanCompiler()
+    plan_json = compiler.compile(
+        query=query,
+        timestamps=[1609459200000000],
+        forecast_length=1,
+        lag_timesteps=30,
+        task_type="binary_classification",
+        split=SplitSpec(kind="BacktestingSplit", backtesting_timestamp="2024-01-01"),
+    )
+
+    plan = json.loads(plan_json)
+    assert plan["split"]["kind"] == "BacktestingSplit"
+    assert plan["split"]["ratio"] is None
+
+
 def test_compiler_rejects_legacy_split_dict_payload():
-    target_ast = Aggregation(
-        target=Column(fqn="transactions.amount"),
-        aggr=AggregationType.SUM,
-        aggr_time_range=DateOffsetRange(start=-30, end=0, unit=TimeUnit.DAYS)
-    )
-    target_ast.target = Join(
-        rhs_target=Column(fqn="transactions.amount"),
-        lhs_key="users.user_id",
-        rhs_key="transactions.user_id"
-    )
-    query = ValidatedPredictiveQuery(
-        entity_ast=Column(fqn="users.user_id"),
-        target_ast=target_ast,
-    )
-    query._query_type = "TEMPORAL"
+    query = _make_temporal_query()
 
     compiler = DiskGraphPlanCompiler()
     with pytest.raises(DiskgraphConfigError, match='requires split=SplitSpec'):
@@ -152,6 +180,36 @@ def test_compiler_rejects_legacy_split_dict_payload():
             lag_timesteps=30,
             task_type="binary_classification",
             split={"split_kind": "FixedSplit", "ratio": [0.8, 0.1, 0.1]},
+        )
+
+
+def test_compiler_rejects_fixed_split_without_ratio():
+    query = _make_temporal_query()
+
+    compiler = DiskGraphPlanCompiler()
+    with pytest.raises(DiskgraphConfigError, match='FixedSplit requires ratio'):
+        compiler.compile(
+            query=query,
+            timestamps=[1609459200000000],
+            forecast_length=1,
+            lag_timesteps=30,
+            task_type="binary_classification",
+            split=SplitSpec(kind="FixedSplit"),
+        )
+
+
+def test_compiler_rejects_random_link_split_until_native_support_lands():
+    query = _make_temporal_query()
+
+    compiler = DiskGraphPlanCompiler()
+    with pytest.raises(DiskgraphConfigError, match='RandomLinkSplit is not supported'):
+        compiler.compile(
+            query=query,
+            timestamps=[1609459200000000],
+            forecast_length=1,
+            lag_timesteps=30,
+            task_type="temporal_link_prediction",
+            split=SplitSpec(kind="RandomLinkSplit", ratio=[0.8, 0.1, 0.1]),
         )
 
 
