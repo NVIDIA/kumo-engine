@@ -136,3 +136,45 @@ Region used by the workflow: `us-west-2`.
 
 Current Python package version is read from `diskgraph-pybind/pyproject.toml` (`[project].version`).
 
+## Contributing notes
+
+### Error handling and logging conventions (required)
+
+We standardized error handling and logging in [PR #140](https://github.com/kumo-ai/kumo-diskgraph/pull/140). Please keep all new work consistent with that contract.
+
+#### 1) Prefer typed Rust errors over stringly errors
+
+- Add/extend crate-local typed error enums (`thiserror`) for new failure modes.
+- Avoid introducing ad-hoc `anyhow!(...)` or string errors at API boundaries when a typed variant is possible.
+- Keep errors domain-specific (data/config/system) so callers can react correctly.
+
+#### 2) Pybind must map Rust errors to the 3 Python exception classes
+
+In `diskgraph-pybind/src/lib.rs`, route failures to:
+
+- `DiskgraphDataError`
+- `DiskgraphConfigError`
+- `DiskgraphSystemError`
+
+Use the existing mapping helpers/patterns (for TT-gen, engine, and `anyhow` classification) instead of introducing new generic Python exceptions.
+
+#### 3) Use structured logging via `tracing`
+
+- Use `tracing::{info, debug, warn, error}` with structured fields.
+- Prefer context-rich logs at major boundaries (start/finish, row counts, durations, key IDs/paths).
+- Keep log levels meaningful (avoid noisy `info` in tight loops).
+
+#### 4) Ensure Rust logs are visible from Python runtime
+
+Pybind uses `pyo3-log` integration so Rust logs flow into Python logging. New pybind entry points should follow the existing initialization and instrumentation style.
+
+#### 5) Review checklist for PRs touching errors/logging
+
+- [ ] New failure paths use typed Rust errors.
+- [ ] Pybind maps failures to one of the 3 DiskGraph Python exceptions.
+- [ ] No new generic `PyRuntimeError`/`PyValueError` in places where typed mapping should apply.
+- [ ] Logs use structured `tracing` fields.
+- [ ] Existing logging/error behavior is preserved unless intentionally changed and called out in PR description.
+
+When in doubt, use PR #140 as the reference baseline.
+
