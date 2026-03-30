@@ -160,11 +160,12 @@ def test_compiler_accepts_backtesting_split_without_ratio():
         forecast_length=1,
         lag_timesteps=30,
         task_type="binary_classification",
-        split=SplitSpec(kind="BacktestingSplit", backtesting_timestamp="2024-01-01"),
+        split=SplitSpec(kind="BacktestingSplit", backtesting_timestamp=1704067200),
     )
 
     plan = json.loads(plan_json)
     assert plan["split"]["kind"] == "BacktestingSplit"
+    assert plan["split"]["backtesting_timestamp"] == 1704067200
     assert plan["split"]["ratio"] is None
 
 

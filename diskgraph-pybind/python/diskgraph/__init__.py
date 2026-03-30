@@ -38,6 +38,9 @@ def __getattr__(name):
     if name == "execute_tt_plan_with_artifacts":
         from .tt_artifacts import execute_tt_plan_with_artifacts
         return execute_tt_plan_with_artifacts
+    if name == "build_train_table_artifacts_for_existing_table":
+        from .tt_artifacts import build_train_table_artifacts_for_existing_table
+        return build_train_table_artifacts_for_existing_table
     if name == "build_prediction_table_edges_artifact":
         from .prediction_artifacts import build_prediction_table_edges_artifact
         return build_prediction_table_edges_artifact
@@ -85,6 +88,7 @@ __all__ = [
     "generate_training_table",
     "compute_dense_split_assignments",
     "execute_tt_plan_with_artifacts",
+    "build_train_table_artifacts_for_existing_table",
     "build_prediction_table_edges_artifact",
     "parse_prediction_table_edges_artifact",
     "validate_prediction_table_edges_artifact",

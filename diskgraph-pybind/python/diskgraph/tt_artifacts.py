@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import numpy as np
+import pyarrow.parquet as pq
 
 _NATIVE_IMPORT_ERROR: Optional[Exception] = None
 try:
@@ -44,6 +45,10 @@ _build_train_table_edge_bundle_artifact_native = (
     getattr(_native_c, 'build_train_table_edge_bundle_artifact', None)
     if _native_c is not None else None
 )
+_build_train_table_col_stats_artifact_native = (
+    getattr(_native_c, 'build_train_table_col_stats_artifact', None)
+    if _native_c is not None else None
+)
 _export_tt_artifacts_native = (
     getattr(_native_c, 'export_tt_artifacts', None)
     if _native_c is not None else None
@@ -56,6 +61,7 @@ _fkey_config_cls = (
     getattr(_native_c, 'FkeyConfig', None)
     if _native_c is not None else None
 )
+from .split_assignments import compute_dense_split_assignments
 from .split_contract import SplitSpec
 
 
@@ -94,6 +100,28 @@ def _ensure_native_strict_artifact_capabilities() -> None:
         details = f' native_import_error={_NATIVE_IMPORT_ERROR!r}'
     raise DiskgraphSystemError(
         'diskgraph strict artifact path missing native helper(s): '
+        + ', '.join(missing)
+        + '. Install a compatible diskgraph runtime wheel.'
+        + details
+    )
+
+
+def _ensure_native_existing_table_rehydration_capabilities() -> None:
+    required = {
+        'build_tt_stats_artifact': _build_tt_stats_artifact_native,
+        'build_split_stats_artifact': _build_split_stats_artifact_native,
+        'build_train_table_col_stats_artifact': _build_train_table_col_stats_artifact_native,
+        'persist_tt_artifact_bundle': _persist_tt_artifact_bundle,
+    }
+    missing = [name for name, fn in required.items() if not callable(fn)]
+    if not missing:
+        return
+
+    details = ''
+    if _NATIVE_IMPORT_ERROR is not None:
+        details = f' native_import_error={_NATIVE_IMPORT_ERROR!r}'
+    raise DiskgraphSystemError(
+        'diskgraph existing-table artifact rehydration missing native helper(s): '
         + ', '.join(missing)
         + '. Install a compatible diskgraph runtime wheel.'
         + details
@@ -159,6 +187,22 @@ def _build_split_assignment_artifact(assignments: np.ndarray) -> bytes:
     return magic + header + arr.tobytes(order='C')
 
 
+def _extract_payload_json_as_sorted_dict_json(
+    built: Any,
+    *,
+    label: str,
+) -> str:
+    payload_json = built.get('payload_json') if isinstance(built, dict) else None
+    if not isinstance(payload_json, str) or not payload_json:
+        raise DiskgraphSystemError(
+            f'diskgraph native {label} builder returned invalid payload_json')
+    payload = json.loads(payload_json)
+    if not isinstance(payload, dict):
+        raise DiskgraphSystemError(
+            f'diskgraph native {label} builder returned non-dict payload')
+    return json.dumps(payload, sort_keys=True)
+
+
 def _build_train_table_edges_artifact(
     *,
     output_path: str,
@@ -219,13 +263,158 @@ def _build_train_table_edges_artifact(
         mask_absent_reason=cfg.get('mask_absent_reason'),
         edge_attrs_path=cfg.get('edge_attrs_path'),
     )
-    payload_json = built_edges.get('payload_json') if isinstance(built_edges, dict) else None
-    if not isinstance(payload_json, str) or not payload_json:
-        raise DiskgraphSystemError('diskgraph native train-table edges builder returned invalid payload_json')
-    payload = json.loads(payload_json)
-    if not isinstance(payload, dict):
-        raise DiskgraphSystemError('diskgraph native train-table edges builder returned non-dict payload')
-    return json.dumps(payload, sort_keys=True)
+    return _extract_payload_json_as_sorted_dict_json(
+        built_edges,
+        label='train-table edges',
+    )
+
+
+def build_train_table_artifacts_for_existing_table(
+    *,
+    output_path: str,
+    split_config: SplitSpec,
+    split_family_hint: Optional[str] = None,
+    split_stats_config: Optional[dict[str, Any]] = None,
+    train_table_col_stats_config: Optional[dict[str, Any]] = None,
+    train_table_edges_config: Optional[dict[str, Any]] = None,
+    index_path: Optional[str] = None,
+    producer_summary_json: Optional[str] = None,
+) -> dict[str, Any]:
+    if not isinstance(split_config, SplitSpec):
+        raise DiskgraphDataError(
+            'diskgraph existing-table artifact rehydration requires split_config as SplitSpec '
+            f'(output_path={output_path})')
+    if split_family_hint and split_config.kind and split_family_hint != split_config.kind:
+        raise DiskgraphConfigError(
+            'diskgraph split contract mismatch: '
+            f'split_family_hint={split_family_hint} conflicts with split_config.kind={split_config.kind}'
+        )
+    resolved_family = split_config.kind or split_family_hint
+    if not resolved_family:
+        raise DiskgraphConfigError(
+            'diskgraph existing-table artifact rehydration requires split family in '
+            f'split_config.kind or split_family_hint (output_path={output_path})')
+    if resolved_family == 'RandomLinkSplit':
+        raise DiskgraphConfigError(
+            'diskgraph existing-table artifact rehydration does not support RandomLinkSplit yet '
+            f'(output_path={output_path})')
+
+    _ensure_native_existing_table_rehydration_capabilities()
+
+    if producer_summary_json is not None and not isinstance(producer_summary_json, str):
+        raise DiskgraphConfigError(
+            'diskgraph existing-table artifact rehydration requires producer_summary_json as string when provided')
+
+    if train_table_col_stats_config is not None and not isinstance(train_table_col_stats_config, dict):
+        raise DiskgraphConfigError(
+            'diskgraph existing-table artifact rehydration requires train_table_col_stats_config as dict')
+
+    split_stats_cfg = _normalize_split_stats_config(
+        split_stats_config,
+        _normalize_downsampling_config(None),
+    )
+
+    assignments, split_meta = compute_dense_split_assignments(
+        output_path,
+        split_config,
+        split_family_hint=resolved_family,
+    )
+    row_count = int(assignments.shape[0])
+    table_rows = int(pq.read_metadata(output_path).num_rows)
+    if row_count != table_rows:
+        raise DiskgraphDataError(
+            'diskgraph existing-table artifact rehydration row count mismatch '
+            f'(output_path={output_path}, split_family={resolved_family}, '
+            f'table_rows={table_rows}, assignment_rows={row_count})'
+        )
+
+    split_bytes = _build_split_assignment_artifact(assignments)
+
+    built = _build_tt_stats_artifact_native(
+        row_count=row_count,
+        summary_json=producer_summary_json,
+        plan_json=None,
+    )
+    stats_json = _extract_payload_json_as_sorted_dict_json(
+        built,
+        label='tt stats',
+    )
+
+    split_stats_built = _build_split_stats_artifact_native(
+        output_path=output_path,
+        split_assignments=assignments.tobytes(order='C'),
+        split_stats_config_json=json.dumps({
+            'entity_col': split_stats_cfg.entity_col,
+            'target_col': split_stats_cfg.target_col,
+            'time_col': split_stats_cfg.time_col,
+            'task_type': split_stats_cfg.task_type,
+            'list_distinct_target_is_array': split_stats_cfg.list_distinct_target_is_array,
+        }, sort_keys=True),
+    )
+    split_stats_json = _extract_payload_json_as_sorted_dict_json(
+        split_stats_built,
+        label='split stats',
+    )
+
+    train_col_stats_built = _build_train_table_col_stats_artifact_native(
+        output_path=output_path,
+        split_assignments=assignments.tobytes(order='C'),
+        train_table_col_stats_config_json=(
+            json.dumps(train_table_col_stats_config, sort_keys=True)
+            if train_table_col_stats_config is not None else None
+        ),
+    )
+    train_col_stats_json = _extract_payload_json_as_sorted_dict_json(
+        train_col_stats_built,
+        label='train table col stats',
+    )
+
+    edges_cfg = train_table_edges_config if isinstance(train_table_edges_config, dict) else {}
+    if bool(edges_cfg.get('enabled', False)) and (not index_path or not isinstance(index_path, str)):
+        raise DiskgraphConfigError(
+            'diskgraph existing-table artifact rehydration requires index_path when '
+            f'train_table_edges_config.enabled=true (output_path={output_path})')
+
+    train_table_edges_json = None
+    if bool(edges_cfg.get('enabled', False)):
+        train_table_edges_json = _build_train_table_edges_artifact(
+            output_path=output_path,
+            index_path=str(index_path),
+            cfg=edges_cfg,
+        )
+
+    artifacts_dir = output_path + '.artifacts'
+    manifest_path = output_path + '.manifest.json'
+    persisted = _persist_tt_artifact_bundle(
+        output_path=output_path,
+        row_count=row_count,
+        stats_json=stats_json,
+        split_stats_json=split_stats_json,
+        split_bytes=split_bytes,
+        split_family=resolved_family,
+        split_authoritative=bool(split_meta.get('authoritative', False)),
+        split_reason=split_meta.get('reason'),
+        downsampling_json=None,
+        producer_summary_json=producer_summary_json,
+        train_table_col_stats_json=train_col_stats_json,
+        train_table_edges_json=train_table_edges_json,
+    )
+    if isinstance(persisted, dict):
+        manifest_path = str(persisted.get('manifest_path') or manifest_path)
+        artifacts_dir = str(persisted.get('artifacts_dir') or artifacts_dir)
+
+    split_counts = {
+        int(stage): int(count)
+        for stage, count in zip(*np.unique(assignments, return_counts=True))
+    }
+    return {
+        'output_path': output_path,
+        'manifest_path': manifest_path,
+        'artifacts_dir': artifacts_dir,
+        'row_count': row_count,
+        'split_counts': split_counts,
+        'split_meta': split_meta,
+    }
 
 
 def execute_tt_plan_with_artifacts(
@@ -376,20 +565,15 @@ def execute_tt_plan_with_artifacts(
     split_meta = native_split_meta
     split_bytes = _build_split_assignment_artifact(assignments)
 
-    stats_payload: dict[str, Any]
     built = _build_tt_stats_artifact_native(
         row_count=int(row_count),
         summary_json=(json.dumps(native_summary, sort_keys=True) if native_summary is not None else None),
         plan_json=plan_json,
     )
-    payload_json = built.get('payload_json') if isinstance(built, dict) else None
-    if not isinstance(payload_json, str) or not payload_json:
-        raise DiskgraphSystemError('diskgraph native tt stats builder returned invalid payload_json')
-    parsed_payload = json.loads(payload_json)
-    if not isinstance(parsed_payload, dict):
-        raise DiskgraphSystemError('diskgraph native tt stats builder returned non-dict payload')
-    stats_payload = parsed_payload
-    stats_json = json.dumps(stats_payload, sort_keys=True)
+    stats_json = _extract_payload_json_as_sorted_dict_json(
+        built,
+        label='tt stats',
+    )
 
     split_stats_built = _build_split_stats_artifact_native(
         output_path=output_path,
@@ -402,13 +586,10 @@ def execute_tt_plan_with_artifacts(
             'list_distinct_target_is_array': split_stats_cfg.list_distinct_target_is_array,
         }, sort_keys=True),
     )
-    split_stats_payload_json = split_stats_built.get('payload_json') if isinstance(split_stats_built, dict) else None
-    if not isinstance(split_stats_payload_json, str) or not split_stats_payload_json:
-        raise DiskgraphSystemError('diskgraph native split stats builder returned invalid payload_json')
-    split_stats_payload = json.loads(split_stats_payload_json)
-    if not isinstance(split_stats_payload, dict):
-        raise DiskgraphSystemError('diskgraph native split stats builder returned non-dict payload')
-    split_stats_json = json.dumps(split_stats_payload, sort_keys=True)
+    split_stats_json = _extract_payload_json_as_sorted_dict_json(
+        split_stats_built,
+        label='split stats',
+    )
 
     train_col_stats_payload_json = mat.get('train_table_col_stats_json')
     if not isinstance(train_col_stats_payload_json, str) or not train_col_stats_payload_json:

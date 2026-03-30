@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -58,6 +59,20 @@ def _mock_native_split_stats(**_kwargs):
                         '"val_table_stats":{"num_train_rows":1},"test_table_stats":null,'
                         '"provided_fields":["train_table_stats","val_table_stats","test_table_stats"]}'
     }
+
+
+def _mock_native_train_col_stats(**_kwargs):
+    return {
+        'payload_json': '{"version":1,"kind":"tt_train_table_col_stats","format":"tt_train_table_col_stats_v1","stats":{},"provided_fields":["stats"]}'
+    }
+
+
+def _mock_compute_dense_split_assignments(_path, _split_config, split_family_hint=None):
+    return (np.asarray([0, 1], dtype=np.uint8), {
+        'family': split_family_hint or 'FixedSplit',
+        'authoritative': True,
+        'reason': None,
+    })
 
 
 def _mock_native_edge_bundle(**_kwargs):
@@ -316,3 +331,105 @@ def test_success_with_native_helpers_only(tmp_path: Path, monkeypatch):
     assert out['manifest_path'] == '/tmp/fake.manifest.json'
     assert isinstance(captured.get('train_table_col_stats_json'), str)
     assert captured['train_table_col_stats_json']
+
+
+def test_build_artifacts_for_existing_table_success(tmp_path: Path, monkeypatch):
+    table_path = tmp_path / 'existing.parquet'
+    _write_min_table(table_path)
+    captured = {}
+
+    def persist_capture(**kwargs):
+        captured.update(kwargs)
+        return _mock_native_persist(**kwargs)
+
+    monkeypatch.setattr(tt_artifacts, 'compute_dense_split_assignments', _mock_compute_dense_split_assignments)
+    monkeypatch.setattr(tt_artifacts, '_build_tt_stats_artifact_native', _mock_native_tt_stats)
+    monkeypatch.setattr(tt_artifacts, '_build_split_stats_artifact_native', _mock_native_split_stats)
+    monkeypatch.setattr(tt_artifacts, '_build_train_table_col_stats_artifact_native', _mock_native_train_col_stats)
+    monkeypatch.setattr(tt_artifacts, '_persist_tt_artifact_bundle', persist_capture)
+
+    out = tt_artifacts.build_train_table_artifacts_for_existing_table(
+        output_path=str(table_path),
+        split_config=SplitSpec(kind='FixedSplit', ratio=[0.5, 0.25, 0.25]),
+        split_stats_config={
+            'entity_col': 'ENTITY',
+            'target_col': 'TARGET',
+            'time_col': 'TIMESTAMP',
+        },
+        train_table_col_stats_config={'data_version': 'v1'},
+    )
+    assert out['row_count'] == 2
+    assert out['manifest_path'] == '/tmp/fake.manifest.json'
+    assert out['split_meta']['authoritative'] is True
+    assert captured['split_family'] == 'FixedSplit'
+    assert isinstance(captured.get('train_table_col_stats_json'), str)
+
+
+def test_build_artifacts_for_existing_table_rejects_random_link_split(tmp_path: Path):
+    table_path = tmp_path / 'existing.parquet'
+    _write_min_table(table_path)
+
+    with pytest.raises(DiskgraphConfigError, match='does not support RandomLinkSplit yet'):
+        tt_artifacts.build_train_table_artifacts_for_existing_table(
+            output_path=str(table_path),
+            split_config=SplitSpec(kind='RandomLinkSplit', ratio=[0.8, 0.2]),
+        )
+
+
+def test_build_artifacts_for_existing_table_fails_row_count_mismatch(tmp_path: Path, monkeypatch):
+    table_path = tmp_path / 'existing.parquet'
+    _write_min_table(table_path)
+
+    def _bad_assignments(_path, _split_cfg, split_family_hint=None):
+        return np.asarray([0, 1, 2], dtype=np.uint8), {
+            'family': split_family_hint or 'FixedSplit',
+            'authoritative': True,
+            'reason': None,
+        }
+
+    monkeypatch.setattr(tt_artifacts, 'compute_dense_split_assignments', _bad_assignments)
+    monkeypatch.setattr(tt_artifacts, '_build_tt_stats_artifact_native', _mock_native_tt_stats)
+    monkeypatch.setattr(tt_artifacts, '_build_split_stats_artifact_native', _mock_native_split_stats)
+    monkeypatch.setattr(tt_artifacts, '_build_train_table_col_stats_artifact_native', _mock_native_train_col_stats)
+    monkeypatch.setattr(tt_artifacts, '_persist_tt_artifact_bundle', _mock_native_persist)
+
+    with pytest.raises(DiskgraphDataError, match='row count mismatch'):
+        tt_artifacts.build_train_table_artifacts_for_existing_table(
+            output_path=str(table_path),
+            split_config=SplitSpec(kind='FixedSplit', ratio=[0.5, 0.25, 0.25]),
+        )
+
+
+def test_build_artifacts_for_existing_table_rejects_split_family_conflict(tmp_path: Path):
+    table_path = tmp_path / 'existing.parquet'
+    _write_min_table(table_path)
+
+    with pytest.raises(DiskgraphConfigError, match='split contract mismatch'):
+        tt_artifacts.build_train_table_artifacts_for_existing_table(
+            output_path=str(table_path),
+            split_config=SplitSpec(kind='FixedSplit', ratio=[0.5, 0.25, 0.25]),
+            split_family_hint='TemporalSplit',
+        )
+
+
+def test_build_artifacts_for_existing_table_skips_edges_builder_when_disabled(tmp_path: Path, monkeypatch):
+    table_path = tmp_path / 'existing.parquet'
+    _write_min_table(table_path)
+
+    monkeypatch.setattr(tt_artifacts, 'compute_dense_split_assignments', _mock_compute_dense_split_assignments)
+    monkeypatch.setattr(tt_artifacts, '_build_tt_stats_artifact_native', _mock_native_tt_stats)
+    monkeypatch.setattr(tt_artifacts, '_build_split_stats_artifact_native', _mock_native_split_stats)
+    monkeypatch.setattr(tt_artifacts, '_build_train_table_col_stats_artifact_native', _mock_native_train_col_stats)
+    monkeypatch.setattr(tt_artifacts, '_persist_tt_artifact_bundle', _mock_native_persist)
+
+    def _fail_if_called(**_kwargs):
+        raise AssertionError('edges helper should not be called when disabled')
+
+    monkeypatch.setattr(tt_artifacts, '_build_train_table_edges_artifact', _fail_if_called)
+
+    out = tt_artifacts.build_train_table_artifacts_for_existing_table(
+        output_path=str(table_path),
+        split_config=SplitSpec(kind='FixedSplit', ratio=[0.5, 0.25, 0.25]),
+        train_table_edges_config={'enabled': False},
+    )
+    assert out['row_count'] == 2
