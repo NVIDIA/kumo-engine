@@ -30,6 +30,10 @@ fn get_current_rss_mb() -> usize {
 use crate::split_assignments;
 use arrow::compute::take;
 use arrow::pyarrow::ToPyArrow;
+use arrow_array::builder::{
+    BooleanBuilder, Float64Builder, Int64Builder, ListBuilder, StringBuilder,
+    TimestampNanosecondBuilder,
+};
 use arrow_array::types::Int64Type;
 use arrow_array::{
     Array, BooleanArray, Date32Array, Date64Array, Float32Array, Float64Array, Int16Array,
@@ -421,6 +425,480 @@ fn write_batches_with_arange(
         w.close()?;
     }
     Ok(row_offset as u64)
+}
+
+fn materialize_selected_batches(
+    batches: &[RecordBatch],
+    selected_global_indices: Option<&[usize]>,
+) -> anyhow::Result<Vec<RecordBatch>> {
+    if selected_global_indices.is_none() {
+        return Ok(batches.to_vec());
+    }
+
+    let selected = selected_global_indices.unwrap();
+    let mut out = Vec::new();
+    let mut global_base = 0usize;
+    for batch in batches {
+        let end = global_base + batch.num_rows();
+        let local = selected
+            .iter()
+            .filter_map(|g| {
+                if *g >= global_base && *g < end {
+                    Some((*g - global_base) as u64)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        global_base = end;
+        if local.is_empty() {
+            continue;
+        }
+        out.push(take_batch_rows(batch, &local)?);
+    }
+    Ok(out)
+}
+
+fn row_count_of_batches(batches: &[RecordBatch]) -> usize {
+    batches.iter().map(|b| b.num_rows()).sum()
+}
+
+#[derive(Clone)]
+enum ScalarCell {
+    Int(i64),
+    Float(f64),
+    Str(String),
+    Bool(bool),
+    Ts(i64),
+    Null,
+}
+
+fn scalar_from_array_at(arr: &dyn Array, idx: usize, ctx: &str) -> anyhow::Result<ScalarCell> {
+    if let Some(a) = arr.as_any().downcast_ref::<Int64Array>() {
+        return Ok(if a.is_null(idx) {
+            ScalarCell::Null
+        } else {
+            ScalarCell::Int(a.value(idx))
+        });
+    }
+    if let Some(a) = arr.as_any().downcast_ref::<Float64Array>() {
+        return Ok(if a.is_null(idx) {
+            ScalarCell::Null
+        } else {
+            ScalarCell::Float(a.value(idx))
+        });
+    }
+    if let Some(a) = arr.as_any().downcast_ref::<StringArray>() {
+        return Ok(if a.is_null(idx) {
+            ScalarCell::Null
+        } else {
+            ScalarCell::Str(a.value(idx).to_string())
+        });
+    }
+    if let Some(a) = arr.as_any().downcast_ref::<BooleanArray>() {
+        return Ok(if a.is_null(idx) {
+            ScalarCell::Null
+        } else {
+            ScalarCell::Bool(a.value(idx))
+        });
+    }
+    if let Some(a) = arr.as_any().downcast_ref::<TimestampNanosecondArray>() {
+        return Ok(if a.is_null(idx) {
+            ScalarCell::Null
+        } else {
+            ScalarCell::Ts(a.value(idx))
+        });
+    }
+    Err(anyhow::anyhow!(
+        "RandomLinkSplit unsupported scalar dtype for {ctx}: {:?}",
+        arr.data_type()
+    ))
+}
+
+fn build_scalar_array_from_cells(
+    dtype: &DataType,
+    cells: &[ScalarCell],
+    ctx: &str,
+) -> anyhow::Result<Arc<dyn Array>> {
+    match dtype {
+        DataType::Int64 => {
+            let mut b = Int64Builder::with_capacity(cells.len());
+            for c in cells {
+                match c {
+                    ScalarCell::Int(v) => b.append_value(*v),
+                    ScalarCell::Null => b.append_null(),
+                    _ => {
+                        return Err(anyhow::anyhow!(
+                            "RandomLinkSplit type mismatch for {ctx}: expected Int64"
+                        ))
+                    }
+                }
+            }
+            Ok(Arc::new(b.finish()))
+        }
+        DataType::Float64 => {
+            let mut b = Float64Builder::with_capacity(cells.len());
+            for c in cells {
+                match c {
+                    ScalarCell::Float(v) => b.append_value(*v),
+                    ScalarCell::Null => b.append_null(),
+                    _ => {
+                        return Err(anyhow::anyhow!(
+                            "RandomLinkSplit type mismatch for {ctx}: expected Float64"
+                        ))
+                    }
+                }
+            }
+            Ok(Arc::new(b.finish()))
+        }
+        DataType::Utf8 => {
+            let mut b = StringBuilder::with_capacity(cells.len(), cells.len() * 8);
+            for c in cells {
+                match c {
+                    ScalarCell::Str(v) => b.append_value(v),
+                    ScalarCell::Null => b.append_null(),
+                    _ => {
+                        return Err(anyhow::anyhow!(
+                            "RandomLinkSplit type mismatch for {ctx}: expected Utf8"
+                        ))
+                    }
+                }
+            }
+            Ok(Arc::new(b.finish()))
+        }
+        DataType::Boolean => {
+            let mut b = BooleanBuilder::with_capacity(cells.len());
+            for c in cells {
+                match c {
+                    ScalarCell::Bool(v) => b.append_value(*v),
+                    ScalarCell::Null => b.append_null(),
+                    _ => {
+                        return Err(anyhow::anyhow!(
+                            "RandomLinkSplit type mismatch for {ctx}: expected Boolean"
+                        ))
+                    }
+                }
+            }
+            Ok(Arc::new(b.finish()))
+        }
+        DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, _) => {
+            let mut b = TimestampNanosecondBuilder::with_capacity(cells.len());
+            for c in cells {
+                match c {
+                    ScalarCell::Ts(v) => b.append_value(*v),
+                    ScalarCell::Null => b.append_null(),
+                    _ => {
+                        return Err(anyhow::anyhow!(
+                            "RandomLinkSplit type mismatch for {ctx}: expected Timestamp(ns)"
+                        ))
+                    }
+                }
+            }
+            Ok(Arc::new(b.finish()))
+        }
+        other => Err(anyhow::anyhow!(
+            "RandomLinkSplit unsupported scalar build dtype for {ctx}: {other:?}"
+        )),
+    }
+}
+
+fn build_list_array_from_cells(
+    list_dtype: &DataType,
+    rows: &[Vec<ScalarCell>],
+    ctx: &str,
+) -> anyhow::Result<Arc<dyn Array>> {
+    let DataType::List(field) = list_dtype else {
+        return Err(anyhow::anyhow!(
+            "RandomLinkSplit expected List dtype for {ctx}"
+        ));
+    };
+    let item_dtype = field.data_type();
+
+    match item_dtype {
+        DataType::Int64 => {
+            let mut b = ListBuilder::new(Int64Builder::new());
+            for row in rows {
+                for c in row {
+                    match c {
+                        ScalarCell::Int(v) => b.values().append_value(*v),
+                        ScalarCell::Null => b.values().append_null(),
+                        _ => {
+                            return Err(anyhow::anyhow!(
+                                "RandomLinkSplit type mismatch for {ctx}: expected List<Int64>"
+                            ))
+                        }
+                    }
+                }
+                b.append(true);
+            }
+            Ok(Arc::new(b.finish()))
+        }
+        DataType::Float64 => {
+            let mut b = ListBuilder::new(Float64Builder::new());
+            for row in rows {
+                for c in row {
+                    match c {
+                        ScalarCell::Float(v) => b.values().append_value(*v),
+                        ScalarCell::Null => b.values().append_null(),
+                        _ => {
+                            return Err(anyhow::anyhow!(
+                                "RandomLinkSplit type mismatch for {ctx}: expected List<Float64>"
+                            ))
+                        }
+                    }
+                }
+                b.append(true);
+            }
+            Ok(Arc::new(b.finish()))
+        }
+        DataType::Utf8 => {
+            let mut b = ListBuilder::new(StringBuilder::new());
+            for row in rows {
+                for c in row {
+                    match c {
+                        ScalarCell::Str(v) => b.values().append_value(v),
+                        ScalarCell::Null => b.values().append_null(),
+                        _ => {
+                            return Err(anyhow::anyhow!(
+                                "RandomLinkSplit type mismatch for {ctx}: expected List<Utf8>"
+                            ))
+                        }
+                    }
+                }
+                b.append(true);
+            }
+            Ok(Arc::new(b.finish()))
+        }
+        DataType::Boolean => {
+            let mut b = ListBuilder::new(BooleanBuilder::new());
+            for row in rows {
+                for c in row {
+                    match c {
+                        ScalarCell::Bool(v) => b.values().append_value(*v),
+                        ScalarCell::Null => b.values().append_null(),
+                        _ => {
+                            return Err(anyhow::anyhow!(
+                                "RandomLinkSplit type mismatch for {ctx}: expected List<Boolean>"
+                            ))
+                        }
+                    }
+                }
+                b.append(true);
+            }
+            Ok(Arc::new(b.finish()))
+        }
+        DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, _) => {
+            let mut b = ListBuilder::new(TimestampNanosecondBuilder::new());
+            for row in rows {
+                for c in row {
+                    match c {
+                        ScalarCell::Ts(v) => b.values().append_value(*v),
+                        ScalarCell::Null => b.values().append_null(),
+                        _ => {
+                            return Err(anyhow::anyhow!(
+                            "RandomLinkSplit type mismatch for {ctx}: expected List<Timestamp(ns)>"
+                        ))
+                        }
+                    }
+                }
+                b.append(true);
+            }
+            Ok(Arc::new(b.finish()))
+        }
+        other => Err(anyhow::anyhow!(
+            "RandomLinkSplit unsupported target list item dtype for {ctx}: {other:?}"
+        )),
+    }
+}
+
+fn is_link_array_batches(batches: &[RecordBatch]) -> bool {
+    let Some(first) = batches.first() else {
+        return false;
+    };
+    if let Ok(idx) = first.schema().index_of("TARGET") {
+        matches!(first.schema().field(idx).data_type(), DataType::List(_))
+    } else {
+        false
+    }
+}
+
+fn transform_random_link_split_link_array(
+    batches: &[RecordBatch],
+    ratio: Vec<f64>,
+    seed: Option<u64>,
+) -> anyhow::Result<(Vec<RecordBatch>, Vec<u8>)> {
+    let first = batches.first().ok_or_else(|| {
+        anyhow::anyhow!("RandomLinkSplit cannot transform empty LinkArray batches")
+    })?;
+    let schema = first.schema();
+
+    let target_idx = schema
+        .index_of("TARGET")
+        .map_err(|_| anyhow::anyhow!("RandomLinkSplit requires TARGET column"))?;
+    let freq_idx = schema.index_of("__kumo_internal_frequency_column__").ok();
+
+    let target_field = schema.field(target_idx);
+    let DataType::List(_) = target_field.data_type() else {
+        return Err(anyhow::anyhow!(
+            "RandomLinkSplit LinkArray transform requires TARGET as List type"
+        ));
+    };
+
+    let mut row_targets: Vec<Vec<ScalarCell>> = Vec::new();
+    let mut row_freqs: Vec<Vec<i64>> = Vec::new();
+    let mut row_scalar_cols: Vec<Vec<ScalarCell>> = vec![Vec::new(); schema.fields().len()];
+    let mut exploded_refs: Vec<(usize, usize)> = Vec::new();
+
+    for batch in batches {
+        for i in 0..batch.num_rows() {
+            let list = batch
+                .column(target_idx)
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .ok_or_else(|| anyhow::anyhow!("RandomLinkSplit TARGET must be ListArray"))?;
+
+            let values = list.values();
+            let start = list.value_offsets()[i] as usize;
+            let end = list.value_offsets()[i + 1] as usize;
+
+            let mut targets = Vec::new();
+            for j in start..end {
+                targets.push(scalar_from_array_at(values.as_ref(), j, "TARGET.item")?);
+            }
+
+            let freqs = if let Some(fi) = freq_idx {
+                let flist = batch
+                    .column(fi)
+                    .as_any()
+                    .downcast_ref::<ListArray>()
+                    .ok_or_else(|| anyhow::anyhow!("frequency column must be ListArray"))?;
+                let fvals = flist.values();
+                let farr = fvals
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .ok_or_else(|| anyhow::anyhow!("frequency list items must be Int64"))?;
+                let fs = flist.value_offsets()[i] as usize;
+                let fe = flist.value_offsets()[i + 1] as usize;
+                let mut fv = Vec::new();
+                for j in fs..fe {
+                    fv.push(if farr.is_null(j) { 1 } else { farr.value(j) });
+                }
+                if fv.len() != targets.len() {
+                    return Err(anyhow::anyhow!(
+                        "frequency/target list length mismatch for RandomLinkSplit"
+                    ));
+                }
+                fv
+            } else {
+                vec![1; targets.len()]
+            };
+
+            let row_idx = row_targets.len();
+            for link_idx in 0..targets.len() {
+                exploded_refs.push((row_idx, link_idx));
+            }
+
+            row_targets.push(targets);
+            row_freqs.push(freqs);
+
+            for col_idx in 0..schema.fields().len() {
+                if col_idx == target_idx || Some(col_idx) == freq_idx {
+                    continue;
+                }
+                let field = schema.field(col_idx);
+                if matches!(field.data_type(), DataType::List(_)) {
+                    return Err(anyhow::anyhow!(
+                        "RandomLinkSplit unsupported passthrough list column: {}",
+                        field.name()
+                    ));
+                }
+                row_scalar_cols[col_idx].push(scalar_from_array_at(
+                    batch.column(col_idx).as_ref(),
+                    i,
+                    field.name(),
+                )?);
+            }
+        }
+    }
+
+    if exploded_refs.is_empty() {
+        return Ok((vec![first.slice(0, 0)], Vec::new()));
+    }
+
+    let mut perm: Vec<usize> = (0..exploded_refs.len()).collect();
+    let mut rng = StdRng::seed_from_u64(seed.unwrap_or(0));
+    use rand::seq::SliceRandom;
+    perm.shuffle(&mut rng);
+    let link_stage = split_assignments::assign_by_ratio_on_perm(exploded_refs.len(), ratio, perm)
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
+    let mut grouped_targets: Vec<[Vec<ScalarCell>; 3]> = (0..row_targets.len())
+        .map(|_| [Vec::new(), Vec::new(), Vec::new()])
+        .collect();
+    let mut grouped_freqs: Vec<[Vec<i64>; 3]> = (0..row_targets.len())
+        .map(|_| [Vec::new(), Vec::new(), Vec::new()])
+        .collect();
+
+    for (eid, (row_idx, link_idx)) in exploded_refs.iter().enumerate() {
+        let stage = *link_stage
+            .get(eid)
+            .ok_or_else(|| anyhow::anyhow!("RandomLinkSplit assignment index out of bounds"))?
+            as usize;
+        if stage > 2 {
+            continue;
+        }
+        grouped_targets[*row_idx][stage].push(row_targets[*row_idx][*link_idx].clone());
+        grouped_freqs[*row_idx][stage].push(row_freqs[*row_idx][*link_idx]);
+    }
+
+    let mut out_source_row_idxs: Vec<usize> = Vec::new();
+    let mut out_targets: Vec<Vec<ScalarCell>> = Vec::new();
+    let mut out_freqs: Vec<Vec<i64>> = Vec::new();
+    let mut out_assignments: Vec<u8> = Vec::new();
+
+    for row_idx in 0..row_targets.len() {
+        for stage in 0..3usize {
+            if grouped_targets[row_idx][stage].is_empty() {
+                continue;
+            }
+            out_source_row_idxs.push(row_idx);
+            out_targets.push(grouped_targets[row_idx][stage].clone());
+            out_freqs.push(grouped_freqs[row_idx][stage].clone());
+            out_assignments.push(stage as u8);
+        }
+    }
+
+    let mut columns: Vec<Arc<dyn Array>> = Vec::with_capacity(schema.fields().len());
+    for (col_idx, field) in schema.fields().iter().enumerate() {
+        let col = if col_idx == target_idx {
+            build_list_array_from_cells(field.data_type(), &out_targets, "TARGET")?
+        } else if Some(col_idx) == freq_idx {
+            if !matches!(field.data_type(), DataType::List(_)) {
+                return Err(anyhow::anyhow!(
+                    "RandomLinkSplit frequency column must be List type"
+                ));
+            }
+            let mut b = ListBuilder::new(Int64Builder::new());
+            for row in &out_freqs {
+                for f in row {
+                    b.values().append_value(*f);
+                }
+                b.append(true);
+            }
+            Arc::new(b.finish())
+        } else {
+            let cells = out_source_row_idxs
+                .iter()
+                .map(|src| row_scalar_cols[col_idx][*src].clone())
+                .collect::<Vec<_>>();
+            build_scalar_array_from_cells(field.data_type(), &cells, field.name())?
+        };
+        columns.push(col);
+    }
+
+    let out_batch = RecordBatch::try_new(schema.clone(), columns)
+        .map_err(|e| anyhow::anyhow!("failed to build RandomLinkSplit transformed batch: {e}"))?;
+    Ok((vec![out_batch], out_assignments))
 }
 
 fn sha256_hex_bytes(data: &[u8]) -> String {
@@ -3149,6 +3627,39 @@ fn extract_string_values(batch: &RecordBatch, col_name: &str) -> anyhow::Result<
     ))
 }
 
+fn extend_timestamps_ns_from_batch(batch: &RecordBatch, out: &mut Vec<i64>) {
+    if let Ok(idx) = batch.schema().index_of("TIMESTAMP") {
+        if let Some(ts_arr) = batch
+            .column(idx)
+            .as_any()
+            .downcast_ref::<TimestampNanosecondArray>()
+        {
+            for i in 0..ts_arr.len() {
+                out.push(if ts_arr.is_null(i) {
+                    0
+                } else {
+                    ts_arr.value(i)
+                });
+            }
+        }
+    }
+}
+
+fn extend_include_mask_from_batch(batch: &RecordBatch, include_mask: &mut Option<Vec<bool>>) {
+    if let Ok(idx) = batch.schema().index_of("ENTITY_INCLUDE_BIT") {
+        if let Some(mask_arr) = batch.column(idx).as_any().downcast_ref::<BooleanArray>() {
+            if include_mask.is_none() {
+                *include_mask = Some(Vec::new());
+            }
+            if let Some(mask) = include_mask.as_mut() {
+                for i in 0..mask_arr.len() {
+                    mask.push(!mask_arr.is_null(i) && mask_arr.value(i));
+                }
+            }
+        }
+    }
+}
+
 #[pyfunction]
 #[pyo3(signature=(plan_json, index_path, output_path, split_config_json=None, split_family_hint=None, downsampling_config_json=None))]
 #[tracing::instrument(level = "info", skip(py, plan_json, split_config_json, downsampling_config_json), fields(index_path = %index_path, output_path = %output_path))]
@@ -3245,38 +3756,8 @@ pub fn execute_tt_plan_materialize_with_split(
                     last_logged_gb = current_gb;
                 }
 
-                if let Some(ts_arr) = batch
-                    .column(1)
-                    .as_any()
-                    .downcast_ref::<TimestampNanosecondArray>()
-                {
-                    timestamps_ns.extend(ts_arr.values().iter().copied());
-                }
-
-                if include_mask.is_none() {
-                    if let Ok(idx) = batch.schema().index_of("ENTITY_INCLUDE_BIT") {
-                        include_mask = Some(Vec::new());
-                        if let Some(mask_arr) = batch
-                            .column(idx)
-                            .as_any()
-                            .downcast_ref::<BooleanArray>()
-                        {
-                            if let Some(mask) = include_mask.as_mut() {
-                                mask.extend(mask_arr.values().iter());
-                            }
-                        }
-                    }
-                } else if let Some(mask) = include_mask.as_mut() {
-                    if let Ok(idx) = batch.schema().index_of("ENTITY_INCLUDE_BIT") {
-                        if let Some(mask_arr) = batch
-                            .column(idx)
-                            .as_any()
-                            .downcast_ref::<BooleanArray>()
-                        {
-                            mask.extend(mask_arr.values().iter());
-                        }
-                    }
-                }
+                extend_timestamps_ns_from_batch(&batch, &mut timestamps_ns);
+                extend_include_mask_from_batch(&batch, &mut include_mask);
 
                 if family == "ColumnSplit" {
                     let col_name = split_column_name
@@ -3352,17 +3833,8 @@ pub fn execute_tt_plan_materialize_with_split(
                 let _ = write_batches_with_arange(&pre_path, &raw_batches, None)?;
             }
 
-            let materialization_start = std::time::Instant::now();
-            let final_rows = if let Some(idxs) = selected_indices.as_ref() {
-                write_batches_with_arange(&out, &raw_batches, Some(idxs))?
-            } else {
-                write_batches_with_arange(&out, &raw_batches, None)?
-            } as usize;
-            info!(
-                final_rows = final_rows,
-                duration_ms = materialization_start.elapsed().as_millis(),
-                "Final materialization complete"
-            );
+            let mut final_batches = materialize_selected_batches(&raw_batches, selected_indices.as_deref())?;
+            let mut row_offset = row_count_of_batches(&final_batches) as i64;
 
             if let Some(idxs) = selected_indices.as_ref() {
                 timestamps_ns = idxs.iter().map(|i| timestamps_ns[*i]).collect();
@@ -3381,33 +3853,17 @@ pub fn execute_tt_plan_materialize_with_split(
                 if target_values.len() == pre_downsample_row_count {
                     target_values = idxs.iter().map(|i| target_values[*i].clone()).collect();
                 }
-                row_offset = final_rows as i64;
             }
 
             let summary = handle
                 .join()
                 .map_err(|_| anyhow::anyhow!("TT-gen summary thread panicked"))??;
-            let mut summary_json = serde_json::to_string(&summary)?;
-            summary_json = patch_summary_for_final_rows(
-                summary_json,
-                row_offset as usize,
-                if entity_values.len() == row_offset as usize {
-                    Some(entity_values.as_slice())
-                } else {
-                    None
-                },
-                if target_values.len() == row_offset as usize {
-                    Some(target_values.as_slice())
-                } else {
-                    None
-                },
-                &downsampling_cfg,
-            )?;
+            let raw_summary_json = serde_json::to_string(&summary)?;
 
             let split_authoritative = true;
             let split_reason: Option<String> = None;
             let split_assignments = if let Some(split_cfg) = split_cfg.as_ref() {
-                let out = match family.as_str() {
+                let mut out = match family.as_str() {
                     "FixedSplit" => {
                         let ratio = parse_ratio(split_cfg)?;
                         split_assignments::compute_dense_split_assignments_core(
@@ -3421,7 +3877,7 @@ pub fn execute_tt_plan_materialize_with_split(
                     }
                     "RandomSplit" => {
                         let ratio = parse_ratio(split_cfg)?;
-                        let seed = split_cfg.get("seed").and_then(|v| v.as_u64());
+                        let seed = split_cfg.get("rnd_seed").and_then(|v| v.as_u64());
                         split_assignments::compute_dense_split_assignments_core(
                             "RandomSplit",
                             row_offset as usize,
@@ -3543,9 +3999,40 @@ pub fn execute_tt_plan_materialize_with_split(
                         .map_err(|e| anyhow::anyhow!(e.to_string()))?
                     }
                     "RandomLinkSplit" => {
-                        return Err(anyhow::anyhow!(
-                            "RandomLinkSplit is not supported for diskgraph dense split assignment"
-                        ));
+                        let ratio = parse_ratio(split_cfg)?;
+                        let seed = split_cfg.get("rnd_seed").and_then(|v| v.as_u64());
+                        if is_link_array_batches(&final_batches) {
+                            let (transformed_batches, transformed_assignments) =
+                                transform_random_link_split_link_array(&final_batches, ratio, seed)?;
+                            final_batches = transformed_batches;
+                            row_offset = row_count_of_batches(&final_batches) as i64;
+
+                            if let Ok(mut entities) = final_batches
+                                .iter()
+                                .map(extract_entity_strings)
+                                .collect::<anyhow::Result<Vec<_>>>()
+                                .map(|chunks| chunks.into_iter().flatten().collect::<Vec<_>>())
+                            {
+                                entity_values = std::mem::take(&mut entities);
+                            }
+                            timestamps_ns.clear();
+                            include_mask = None;
+                            for batch in &final_batches {
+                                extend_timestamps_ns_from_batch(batch, &mut timestamps_ns);
+                                extend_include_mask_from_batch(batch, &mut include_mask);
+                            }
+
+                            transformed_assignments
+                        } else {
+                            split_assignments::compute_dense_split_assignments_core(
+                                "RandomLinkSplit",
+                                row_offset as usize,
+                                ratio,
+                                seed,
+                                None,
+                            )
+                            .map_err(|e| anyhow::anyhow!(e.to_string()))?
+                        }
                     }
                     other => {
                         return Err(anyhow::anyhow!(
@@ -3555,7 +4042,7 @@ pub fn execute_tt_plan_materialize_with_split(
                 };
 
                 if split_authoritative {
-                    let out = if let Some(mask) = include_mask {
+                    out = if let Some(mask) = include_mask {
                         split_assignments::apply_entity_include_mask(out, mask)
                             .map_err(|e| anyhow::anyhow!(e.to_string()))?
                     } else {
@@ -3576,16 +4063,47 @@ pub fn execute_tt_plan_materialize_with_split(
                 )
             })?;
             let payload = compute_train_table_col_stats_from_batches(
-                &raw_batches,
+                &final_batches,
                 assignments,
-                selected_indices.as_deref(),
-                pre_downsample_row_count,
+                None,
+                row_offset as usize,
                 "v1",
             )?;
             let train_table_col_stats_json = Some(serde_json::to_string(&payload)?);
 
+            let materialization_start = std::time::Instant::now();
+            let rows_written = write_batches_with_arange(&out, &final_batches, None)?;
+            if rows_written as usize != row_offset as usize {
+                return Err(anyhow::anyhow!(
+                    "materialized row count mismatch after split processing (written={}, expected={})",
+                    rows_written,
+                    row_offset
+                ));
+            }
+            info!(
+                final_rows = rows_written,
+                duration_ms = materialization_start.elapsed().as_millis(),
+                "Final materialization complete"
+            );
+
+            let summary_json = patch_summary_for_final_rows(
+                raw_summary_json,
+                row_offset as usize,
+                if entity_values.len() == row_offset as usize {
+                    Some(entity_values.as_slice())
+                } else {
+                    None
+                },
+                if target_values.len() == row_offset as usize {
+                    Some(target_values.as_slice())
+                } else {
+                    None
+                },
+                &downsampling_cfg,
+            )?;
+
             Ok((
-                row_offset as u64,
+                rows_written,
                 summary_json,
                 split_assignments,
                 split_authoritative,
@@ -4670,6 +5188,139 @@ mod tests {
         );
         let m = stats.as_object().unwrap();
         assert!(m.contains_key("MCAT__kumo.multicategorical__MULTI_CATEGORY_COUNTS__True"));
+    }
+
+    #[test]
+    fn test_transform_random_link_split_link_array_basic() {
+        let target_values = {
+            let mut b = ListBuilder::new(StringBuilder::new());
+            b.values().append_value("a");
+            b.values().append_value("b");
+            b.values().append_value("c");
+            b.append(true);
+            Arc::new(b.finish()) as Arc<dyn Array>
+        };
+
+        let freq_values = {
+            let mut b = ListBuilder::new(Int64Builder::new());
+            b.values().append_value(1);
+            b.values().append_value(1);
+            b.values().append_value(1);
+            b.append(true);
+            Arc::new(b.finish()) as Arc<dyn Array>
+        };
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("ENTITY", DataType::Int64, true),
+            Field::new(
+                "TIMESTAMP",
+                DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new(
+                "TARGET",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+                true,
+            ),
+            Field::new(
+                "__kumo_internal_frequency_column__",
+                DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
+                true,
+            ),
+            Field::new("ENTITY_INCLUDE_BIT", DataType::Boolean, true),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![Some(1)])),
+                Arc::new(TimestampNanosecondArray::from(vec![Some(100)])),
+                target_values,
+                freq_values,
+                Arc::new(BooleanArray::from(vec![Some(true)])),
+            ],
+        )
+        .unwrap();
+
+        let (out_batches, assignments) =
+            transform_random_link_split_link_array(&[batch], vec![0.5, 0.25, 0.25], Some(0))
+                .unwrap();
+
+        assert_eq!(row_count_of_batches(&out_batches), assignments.len());
+        assert_eq!(assignments.iter().filter(|x| **x == 0).count(), 1);
+        assert_eq!(assignments.iter().filter(|x| **x == 1).count(), 1);
+        assert_eq!(assignments.iter().filter(|x| **x == 2).count(), 1);
+    }
+
+    #[test]
+    fn test_transform_random_link_split_link_array_preserves_weight_column() {
+        let target_values = {
+            let mut b = ListBuilder::new(StringBuilder::new());
+            b.values().append_value("a");
+            b.values().append_value("b");
+            b.values().append_value("c");
+            b.append(true);
+            Arc::new(b.finish()) as Arc<dyn Array>
+        };
+
+        let freq_values = {
+            let mut b = ListBuilder::new(Int64Builder::new());
+            b.values().append_value(1);
+            b.values().append_value(1);
+            b.values().append_value(1);
+            b.append(true);
+            Arc::new(b.finish()) as Arc<dyn Array>
+        };
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("ENTITY", DataType::Int64, true),
+            Field::new(
+                "TIMESTAMP",
+                DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new(
+                "TARGET",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+                true,
+            ),
+            Field::new(
+                "__kumo_internal_frequency_column__",
+                DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
+                true,
+            ),
+            Field::new("WEIGHT", DataType::Float64, true),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![Some(1)])),
+                Arc::new(TimestampNanosecondArray::from(vec![Some(100)])),
+                target_values,
+                freq_values,
+                Arc::new(Float64Array::from(vec![Some(2.5)])),
+            ],
+        )
+        .unwrap();
+
+        let (out_batches, assignments) =
+            transform_random_link_split_link_array(&[batch], vec![0.5, 0.25, 0.25], Some(0))
+                .unwrap();
+
+        assert_eq!(row_count_of_batches(&out_batches), assignments.len());
+        let out = &out_batches[0];
+        let widx = out.schema().index_of("WEIGHT").unwrap();
+        let warr = out
+            .column(widx)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+        assert_eq!(warr.len(), 3);
+        for i in 0..warr.len() {
+            assert!(!warr.is_null(i));
+            assert!((warr.value(i) - 2.5).abs() < 1e-9);
+        }
     }
 
     #[test]

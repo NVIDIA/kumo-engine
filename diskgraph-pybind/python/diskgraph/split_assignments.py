@@ -113,14 +113,19 @@ def _assign_for_fixed_split(split_cfg: dict[str, Any], train_table_path: str) ->
     return _to_uint8_array(out)
 
 
-def _assign_for_random_split(split_cfg: dict[str, Any], train_table_path: str) -> np.ndarray:
+def _assign_for_random_split(
+    split_cfg: dict[str, Any],
+    train_table_path: str,
+    *,
+    family: str = 'RandomSplit',
+) -> np.ndarray:
     _require_rust_split_core()
     ratio = [float(x) for x in split_cfg.get('ratio', [0.8, 0.1, 0.1])]
-    seed = int(split_cfg.get('seed', 0))
+    seed = int(split_cfg.get('rnd_seed', 0))
     row_count = pq.read_metadata(train_table_path).num_rows
     dense_core = _require_rust_fn(compute_dense_split_assignments_core, 'compute_dense_split_assignments_core')
     out = dense_core(
-        family='RandomSplit',
+        family=family,
         row_count=row_count,
         ratio=ratio,
         seed=seed,
@@ -347,7 +352,11 @@ def compute_dense_split_assignments(
     elif family == 'ManualSplit':
         assignments = _assign_for_manual_split(split_cfg, train_table_path)
     elif family == 'RandomLinkSplit':
-        raise NotImplementedError('RandomLinkSplit is not implemented for diskgraph dense split assignment')
+        assignments = _assign_for_random_split(
+            split_cfg,
+            train_table_path,
+            family='RandomLinkSplit',
+        )
     else:
         raise DiskgraphConfigError(f'unsupported split family for diskgraph dense split assignment: {family}')
 

@@ -400,6 +400,7 @@ impl DiskGraphTTBuilder {
     #[pyo3(signature = (
         ratio,
         kind=None,
+        rnd_seed=None,
         is_temporal=None,
         offsets=None,
         ranges=None,
@@ -413,6 +414,7 @@ impl DiskGraphTTBuilder {
         &mut self,
         ratio: Option<Vec<f64>>,
         kind: Option<String>,
+        rnd_seed: Option<u64>,
         is_temporal: Option<bool>,
         offsets: Option<Vec<i64>>,
         ranges: Option<Vec<(i64, i64)>>,
@@ -437,6 +439,7 @@ impl DiskGraphTTBuilder {
         self.split = Some(tt::SplitSpec {
             ratio,
             kind,
+            rnd_seed,
             is_temporal,
             offsets,
             ranges,

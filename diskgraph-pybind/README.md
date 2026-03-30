@@ -80,6 +80,8 @@ for event in features:
 
 ## Running tests
 
+Python tests:
+
 ```bash
 cd diskgraph-pybind
 ./run_tests.sh
@@ -87,6 +89,16 @@ cd diskgraph-pybind
 
 This builds the module with `uvx maturin develop` and runs pytest. Override the
 Python interpreter with `PYTHON=python3.11 ./run_tests.sh`.
+
+Rust unit tests (`diskgraph-pybind` crate):
+
+```bash
+cargo test -p diskgraph-pybind
+```
+
+The crate keeps `extension-module` as an opt-in feature. Maturin enables it for
+Python extension builds, while plain Rust tests run without it to avoid Python
+C API linker issues in test binaries.
 
 ## Environment variables
 

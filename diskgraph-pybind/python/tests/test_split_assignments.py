@@ -59,21 +59,32 @@ def test_fixed_split_dense_assignments(tmp_path):
     assert int((assignments == 2).sum()) == 1
 
 
-def test_random_link_split_not_implemented(tmp_path):
+def test_random_link_split_supported_and_seeded(tmp_path):
     p = tmp_path / 'tt.parquet'
     _write_tt(
         p,
         {
-            'arange': list(range(5)),
-            'TIMESTAMP': [f'2020-01-{i:02d}' for i in range(1, 6)],
+            'arange': list(range(20)),
+            'TIMESTAMP': [f'2020-01-{(i % 28) + 1:02d}' for i in range(20)],
         },
     )
 
-    with pytest.raises(NotImplementedError):
-        M.compute_dense_split_assignments(
-            train_table_path=str(p),
-            split_config=SplitSpec(kind='RandomLinkSplit', ratio=[0.8, 0.1, 0.1], seed=1),
-        )
+    a1, meta1 = M.compute_dense_split_assignments(
+        train_table_path=str(p),
+        split_config=SplitSpec(kind='RandomLinkSplit', ratio=[0.8, 0.1, 0.1], rnd_seed=7),
+    )
+    a2, meta2 = M.compute_dense_split_assignments(
+        train_table_path=str(p),
+        split_config=SplitSpec(kind='RandomLinkSplit', ratio=[0.8, 0.1, 0.1], rnd_seed=7),
+    )
+
+    assert meta1['authoritative'] is True
+    assert meta1['family'] == 'RandomLinkSplit'
+    assert meta2['family'] == 'RandomLinkSplit'
+    assert a1.tolist() == a2.tolist()
+    assert int((a1 == 0).sum()) == 16
+    assert int((a1 == 1).sum()) == 2
+    assert int((a1 == 2).sum()) == 2
 
 
 def test_column_split_is_stable_for_ties(tmp_path):

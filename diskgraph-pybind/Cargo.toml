@@ -7,8 +7,12 @@ edition = "2021"
 name = "_c"
 crate-type = ["cdylib"]
 
+[features]
+default = []
+extension-module = ["pyo3/extension-module"]
+
 [dependencies]
-pyo3 = { version = "0.26", features = ["extension-module", "abi3-py37", "hashbrown"] }
+pyo3 = { version = "0.26", features = ["abi3-py37", "hashbrown"] }
 pyo3-log = "0.13"
 arrow = { version = "57.2.0", features = ["pyarrow"] }
 arrow-array = "57.2.0"

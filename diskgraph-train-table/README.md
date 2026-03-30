@@ -93,4 +93,4 @@ Currently supported families for dense row-stage assignment:
 
 Non-authoritative for now:
 
-- `RandomLinkSplit` (array-level semantics not yet implemented natively)
+- (none)

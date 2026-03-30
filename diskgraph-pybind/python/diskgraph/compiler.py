@@ -217,6 +217,7 @@ class DiskGraphPlanCompiler:
             self.builder.split_ratio(
                 split_spec.ratio,
                 kind=split_spec.kind,
+                rnd_seed=split_spec.rnd_seed,
                 is_temporal=split_spec.is_temporal,
                 offsets=split_spec.offsets,
                 ranges=split_spec.ranges,

@@ -48,6 +48,7 @@ pub struct DiskGraphTTPlan {
 pub struct SplitSpec {
     pub ratio: Option<Vec<f64>>,
     pub kind: Option<String>,
+    pub rnd_seed: Option<u64>,
     pub is_temporal: Option<bool>,
     pub offsets: Option<Vec<i64>>,
     pub ranges: Option<Vec<(i64, i64)>>,

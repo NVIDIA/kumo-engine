@@ -21,3 +21,4 @@ test = [
 manifest-path = "Cargo.toml"
 module-name = "diskgraph._c"
 python-source = "python"
+features = ["extension-module"]

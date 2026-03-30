@@ -92,9 +92,9 @@ fn stage_assignments_by_ratio_on_perm(
 fn ns_to_dt(ts_ns: i64) -> PyResult<DateTime<Utc>> {
     let secs = ts_ns.div_euclid(NS_PER_SEC);
     let nanos = ts_ns.rem_euclid(NS_PER_SEC) as u32;
-    Utc.timestamp_opt(secs, nanos)
-        .single()
-        .ok_or_else(|| crate::DiskgraphConfigError::new_err(format!("invalid timestamp ns: {}", ts_ns)))
+    Utc.timestamp_opt(secs, nanos).single().ok_or_else(|| {
+        crate::DiskgraphConfigError::new_err(format!("invalid timestamp ns: {}", ts_ns))
+    })
 }
 
 fn dt_to_ns(dt: DateTime<Utc>) -> PyResult<i64> {
@@ -134,7 +134,10 @@ fn add_unit(ts_ns: i64, unit: &str, value: i64) -> PyResult<i64> {
             .ok_or_else(|| crate::DiskgraphConfigError::new_err("year offset overflow"))?;
             dt_to_ns(out)
         }
-        other => Err(crate::DiskgraphConfigError::new_err(format!("unsupported time unit: {}", other))),
+        other => Err(crate::DiskgraphConfigError::new_err(format!(
+            "unsupported time unit: {}",
+            other
+        ))),
     }
 }
 
@@ -158,7 +161,7 @@ pub fn compute_dense_split_assignments_core(
 ) -> PyResult<Vec<u8>> {
     let perm: Vec<usize> = match family {
         "FixedSplit" => (0..row_count).collect(),
-        "RandomSplit" => {
+        "RandomSplit" | "RandomLinkSplit" => {
             let mut p: Vec<usize> = (0..row_count).collect();
             let mut rng = StdRng::seed_from_u64(seed.unwrap_or(0));
             p.shuffle(&mut rng);
@@ -191,7 +194,10 @@ pub fn compute_dense_split_assignments_core(
 }
 
 #[pyfunction]
-pub fn apply_entity_include_mask(assignments: Vec<u8>, include_mask: Vec<bool>) -> PyResult<Vec<u8>> {
+pub fn apply_entity_include_mask(
+    assignments: Vec<u8>,
+    include_mask: Vec<bool>,
+) -> PyResult<Vec<u8>> {
     if assignments.len() != include_mask.len() {
         return Err(crate::DiskgraphConfigError::new_err(format!(
             "include mask length mismatch: assignments={} include_mask={}",
@@ -209,7 +215,12 @@ pub fn apply_entity_include_mask(assignments: Vec<u8>, include_mask: Vec<bool>) 
 }
 
 #[pyfunction]
-pub fn assign_manual_split(values: Vec<String>, train_values: Vec<String>, val_values: Vec<String>, test_values: Vec<String>) -> PyResult<Vec<u8>> {
+pub fn assign_manual_split(
+    values: Vec<String>,
+    train_values: Vec<String>,
+    val_values: Vec<String>,
+    test_values: Vec<String>,
+) -> PyResult<Vec<u8>> {
     let train: HashSet<String> = train_values.into_iter().collect();
     let val: HashSet<String> = val_values.into_iter().collect();
     let test: HashSet<String> = test_values.into_iter().collect();
@@ -252,12 +263,17 @@ pub fn assign_backtesting_split(timestamps_ns: Vec<i64>, target_timestamp_ns: i6
 
 #[pyfunction]
 #[pyo3(signature=(timestamps_ns, ratio))]
-pub fn assign_approx_date_offset_split(timestamps_ns: Vec<i64>, ratio: Vec<f64>) -> PyResult<Vec<u8>> {
+pub fn assign_approx_date_offset_split(
+    timestamps_ns: Vec<i64>,
+    ratio: Vec<f64>,
+) -> PyResult<Vec<u8>> {
     if timestamps_ns.is_empty() {
         return Ok(Vec::new());
     }
     if ratio.len() < 2 || ratio.len() > 3 {
-        return Err(crate::DiskgraphConfigError::new_err("ApproxDateOffsetSplit requires 2 or 3 ratios"));
+        return Err(crate::DiskgraphConfigError::new_err(
+            "ApproxDateOffsetSplit requires 2 or 3 ratios",
+        ));
     }
 
     let mut counts: HashMap<i64, usize> = HashMap::new();
@@ -334,7 +350,9 @@ pub fn assign_date_offset_split(
     anchor_start_offset: i64,
 ) -> PyResult<Vec<u8>> {
     if offsets.is_empty() {
-        return Err(crate::DiskgraphConfigError::new_err("DateOffsetSplit requires offsets"));
+        return Err(crate::DiskgraphConfigError::new_err(
+            "DateOffsetSplit requires offsets",
+        ));
     }
     if timestamps_ns.is_empty() {
         return Ok(Vec::new());
@@ -358,14 +376,25 @@ pub fn assign_date_offset_split(
     for off in &offsets {
         boundaries.push(add_unit(max_ts, offset_unit, *off)?);
     }
-    boundaries.push(add_unit(max_ts, unit, tf.saturating_add(anchor_start_offset))?);
+    boundaries.push(add_unit(
+        max_ts,
+        unit,
+        tf.saturating_add(anchor_start_offset),
+    )?);
 
     let mut out = vec![UNUSED_STAGE_ID; timestamps_ns.len()];
     for (i, ts) in timestamps_ns.iter().enumerate() {
         let shifted = add_unit(add_unit(*ts, unit, tf)?, unit, anchor_start_offset)?;
-        for (split_idx, (start, end)) in boundaries.iter().zip(boundaries.iter().skip(1)).enumerate()
+        for (split_idx, (start, end)) in
+            boundaries.iter().zip(boundaries.iter().skip(1)).enumerate()
         {
-            let stage_id = if split_idx == 0 { 0u8 } else if split_idx == 1 { 1u8 } else { 2u8 };
+            let stage_id = if split_idx == 0 {
+                0u8
+            } else if split_idx == 1 {
+                1u8
+            } else {
+                2u8
+            };
             if *ts >= *start && shifted <= *end {
                 out[i] = stage_id;
             }
@@ -393,7 +422,13 @@ pub fn assign_time_range_split(
     let mut out = vec![UNUSED_STAGE_ID; timestamps_ns.len()];
     for (i, ts) in timestamps_ns.iter().enumerate() {
         for split_idx in 0..ranges_start_ns.len().min(3) {
-            let stage_id = if split_idx == 0 { 0u8 } else if split_idx == 1 { 1u8 } else { 2u8 };
+            let stage_id = if split_idx == 0 {
+                0u8
+            } else if split_idx == 1 {
+                1u8
+            } else {
+                2u8
+            };
             let start = ranges_start_ns[split_idx];
             let end = ranges_end_ns[split_idx];
             let cond = if let Some(tf) = timeframe {
@@ -408,4 +443,33 @@ pub fn assign_time_range_split(
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_dense_split_assignments_core_random_link_seeded() {
+        let a = compute_dense_split_assignments_core(
+            "RandomLinkSplit",
+            20,
+            vec![0.8, 0.1, 0.1],
+            Some(7),
+            None,
+        )
+        .unwrap();
+        let b = compute_dense_split_assignments_core(
+            "RandomLinkSplit",
+            20,
+            vec![0.8, 0.1, 0.1],
+            Some(7),
+            None,
+        )
+        .unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a.iter().filter(|x| **x == 0).count(), 16);
+        assert_eq!(a.iter().filter(|x| **x == 1).count(), 2);
+        assert_eq!(a.iter().filter(|x| **x == 2).count(), 2);
+    }
 }

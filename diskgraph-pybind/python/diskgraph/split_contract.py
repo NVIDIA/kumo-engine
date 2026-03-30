@@ -10,6 +10,7 @@ except Exception:  # pragma: no cover - stale/missing wheel should fail fast at 
 _RATIO_REQUIRED_FAMILIES = {
     'FixedSplit',
     'RandomSplit',
+    'RandomLinkSplit',
     'TemporalSplit',
     'ColumnSplit',
     'ApproxDateOffsetSplit',
@@ -32,7 +33,7 @@ _SUPPORTED_FAMILIES = {
 class SplitSpec:
     kind: Optional[str] = None
     ratio: Optional[list[float]] = None
-    seed: Optional[int] = None
+    rnd_seed: Optional[int] = None
     is_temporal: Optional[bool] = None
     offsets: Optional[list[int]] = None
     ranges: Optional[list[tuple[Any, Any]]] = None
@@ -52,8 +53,8 @@ class SplitSpec:
             cfg['_target_'] = f'kumo.task.split.{self.kind}'
         if self.ratio is not None:
             cfg['ratio'] = [float(x) for x in self.ratio]
-        if self.seed is not None:
-            cfg['seed'] = int(self.seed)
+        if self.rnd_seed is not None:
+            cfg['rnd_seed'] = int(self.rnd_seed)
         if self.split_column is not None:
             cfg['col'] = {'name': self.split_column}
             cfg['split_column'] = self.split_column
@@ -85,10 +86,6 @@ class SplitSpec:
         family = self.kind
         if not family:
             raise DiskgraphConfigError('diskgraph split contract requires split kind')
-        if family == 'RandomLinkSplit':
-            raise DiskgraphConfigError(
-                'RandomLinkSplit is not supported for diskgraph dense split assignment'
-            )
         if family not in _SUPPORTED_FAMILIES:
             raise DiskgraphConfigError(
                 f'unsupported split family for diskgraph compiler split planning: {family}'
@@ -203,8 +200,8 @@ def normalize_split_spec(
     if ratio is not None:
         ratio = [float(x) for x in _as_list(ratio)]
 
-    seed_raw = payload.get('seed')
-    seed = int(seed_raw) if isinstance(seed_raw, int) else None
+    seed_raw = payload.get('rnd_seed')
+    rnd_seed = int(seed_raw) if isinstance(seed_raw, int) else None
 
     def _string_list(*keys: str) -> Optional[list[str]]:
         for k in keys:
@@ -236,7 +233,7 @@ def normalize_split_spec(
     return SplitSpec(
         kind=str(kind) if isinstance(kind, str) and kind else None,
         ratio=ratio,
-        seed=seed,
+        rnd_seed=rnd_seed,
         is_temporal=is_temporal,
         offsets=offsets,
         ranges=ranges,

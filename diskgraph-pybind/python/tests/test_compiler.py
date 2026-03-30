@@ -199,19 +199,22 @@ def test_compiler_rejects_fixed_split_without_ratio():
         )
 
 
-def test_compiler_rejects_random_link_split_until_native_support_lands():
+def test_compiler_accepts_random_link_split_with_ratio():
     query = _make_temporal_query()
 
     compiler = DiskGraphPlanCompiler()
-    with pytest.raises(DiskgraphConfigError, match='RandomLinkSplit is not supported'):
-        compiler.compile(
-            query=query,
-            timestamps=[1609459200000000],
-            forecast_length=1,
-            lag_timesteps=30,
-            task_type="temporal_link_prediction",
-            split=SplitSpec(kind="RandomLinkSplit", ratio=[0.8, 0.1, 0.1]),
-        )
+    plan_json = compiler.compile(
+        query=query,
+        timestamps=[1609459200000000],
+        forecast_length=1,
+        lag_timesteps=30,
+        task_type="temporal_link_prediction",
+        split=SplitSpec(kind="RandomLinkSplit", ratio=[0.8, 0.1, 0.1], rnd_seed=11),
+    )
+    plan = json.loads(plan_json)
+    assert plan.get("split", {}).get("kind") == "RandomLinkSplit"
+    assert plan.get("split", {}).get("ratio") == [0.8, 0.1, 0.1]
+    assert plan.get("split", {}).get("rnd_seed") == 11
 
 
 def test_compiler_with_row_filter():
