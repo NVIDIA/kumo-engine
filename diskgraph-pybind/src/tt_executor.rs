@@ -1480,6 +1480,11 @@ fn build_tt_stats_artifact_value(
     } else {
         0
     };
+    let avg_targets_per_timeframe = if num_timeframes_post_filter > 0 {
+        (num_targets as f64 / num_timeframes_post_filter as f64).round() as u64
+    } else {
+        0
+    };
 
     let timestamp_max = exact_stats
         .get("timestamp")
@@ -1546,6 +1551,7 @@ fn build_tt_stats_artifact_value(
         "num_timeframes": num_timeframes,
         "num_timeframes_post_filter": num_timeframes_post_filter,
         "avg_entities_per_timeframe": avg_entities_per_timeframe,
+        "avg_targets_per_timeframe": avg_targets_per_timeframe,
         "node_degree_stats": Value::Null,
         "stats_per_timeframe": stats_per_timeframe,
         "target_distribution": json!({}),
@@ -1563,6 +1569,7 @@ fn build_tt_stats_artifact_value(
         "num_timeframes",
         "num_timeframes_post_filter",
         "avg_entities_per_timeframe",
+        "avg_targets_per_timeframe",
         "node_degree_stats",
         "stats_per_timeframe",
         "target_distribution",
