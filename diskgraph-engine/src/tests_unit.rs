@@ -208,6 +208,54 @@ impl OutputHandler for MockOutput {
     }
 }
 
+fn make_sampling_request(seed_nodes: Vec<u64>, fanouts: Vec<u32>) -> BatchSamplingRequest {
+    let layers: Vec<LayerSpec> = fanouts
+        .into_iter()
+        .map(|fanout| LayerSpec {
+            fanouts: [(
+                "Connects".to_string(),
+                FanoutSpec {
+                    fanout,
+                    mode: SamplingMode::Uniform,
+                    absent_key_policy: AbsentKeyPolicy::UniformFallback,
+                },
+            )]
+            .into(),
+            default_fanout: None,
+        })
+        .collect();
+
+    BatchSamplingRequest {
+        dataset_id: DatasetId::nil(),
+        seed_nodes: [("User".to_string(), seed_nodes)].into(),
+        seed_timestamps: None,
+        seed_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        plan: SamplingPlan { layers },
+        flags: SamplingFlags {
+            replace: false,
+            directed: true,
+            disjoint: true,
+            return_edge_id: false,
+            adaptive: false,
+            fused_feature_fetching: false,
+            swap_edge_direction: false,
+        },
+    }
+}
+
+fn local_id_to_hop(local_id: u32, hop_counts: &[u64]) -> Option<usize> {
+    let local = local_id as u64;
+    let mut start = 0u64;
+    for (hop, count) in hop_counts.iter().enumerate() {
+        let end = start + count;
+        if (start..end).contains(&local) {
+            return Some(hop);
+        }
+        start = end;
+    }
+    None
+}
+
 #[test]
 fn test_basic_sampling() {
     let graph = TestGraph::new();
@@ -457,6 +505,73 @@ fn test_sampling_determinism() {
     let mut diff_globals: Vec<_> = state.type_states[&0].nodes.iter().skip(1).map(|n| n.global_id).collect();
 
     assert_ne!(first_sampled_globals, diff_globals, "Sampling should produce different results with different seeds");
+}
+
+#[test]
+fn test_stats_vectors_match_sampled_totals() {
+    let graph = TestGraph::new();
+    let mut state = crate::state::StatePool::new().acquire();
+    let mut output = MockOutput {
+        edges: vec![],
+        feature_batches: vec![],
+        schema: None,
+        fused_batches: vec![],
+    };
+
+    // Two hops over a star graph (second hop remains empty).
+    let req = make_sampling_request(vec![0], vec![5, 5]);
+
+    graph.sampler.sample(&req, &mut state, &mut output).unwrap();
+
+    let node_counts = &state.stats.nodes_per_type[0];
+    let edge_counts = &state.stats.edges_per_type[0];
+
+    assert_eq!(node_counts.len(), req.plan.layers.len() + 1);
+    assert_eq!(edge_counts.len(), req.plan.layers.len());
+
+    let sampled_user_nodes = state.type_states[&0].nodes.len() as u64;
+    assert_eq!(node_counts.iter().sum::<u64>(), sampled_user_nodes);
+    assert_eq!(edge_counts.iter().sum::<u64>(), output.edges.len() as u64);
+}
+
+#[test]
+fn test_edge_hop_counts_and_node_hop_ranges_are_consistent() {
+    let graph = TestGraph::new();
+    let mut state = crate::state::StatePool::new().acquire();
+    let mut output = MockOutput {
+        edges: vec![],
+        feature_batches: vec![],
+        schema: None,
+        fused_batches: vec![],
+    };
+
+    let req = make_sampling_request(vec![0], vec![7, 7]);
+
+    graph.sampler.sample(&req, &mut state, &mut output).unwrap();
+
+    let node_counts = &state.stats.nodes_per_type[0];
+    let edge_counts = &state.stats.edges_per_type[0];
+
+    // 1) Per-hop edge totals in output must match stats vector.
+    let mut observed_edges_per_hop = vec![0u64; edge_counts.len()];
+    for (hop, rel, _src, _dst) in &output.edges {
+        assert_eq!(*rel, 0);
+        observed_edges_per_hop[*hop] += 1;
+    }
+    assert_eq!(observed_edges_per_hop, *edge_counts);
+
+    // 2) Local node-id hop ranges must align with each sampled edge hop.
+    // With swap_edge_direction=false, source is at current hop and
+    // destination is discovered at next hop.
+    for (hop, _rel, src_local, dst_local) in &output.edges {
+        let src_hop = local_id_to_hop(*src_local, node_counts)
+            .expect("src local id must map to a hop");
+        let dst_hop = local_id_to_hop(*dst_local, node_counts)
+            .expect("dst local id must map to a hop");
+
+        assert_eq!(src_hop, *hop);
+        assert_eq!(dst_hop, hop + 1);
+    }
 }
 
 #[test]
