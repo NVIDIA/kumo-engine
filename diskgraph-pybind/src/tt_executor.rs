@@ -92,6 +92,20 @@ impl TTPlanIterator {
     }
 }
 
+impl Drop for TTPlanIterator {
+    fn drop(&mut self) {
+        // Drop the receiver first to unblock any workers stuck on send().
+        self.receiver = None;
+        // Join the handle with GIL released to avoid deadlock with pyo3-log.
+        // The background thread uses tracing::info! which routes through
+        // pyo3-log and needs the GIL. Drop is called with GIL held (Python GC),
+        // so we must release it before joining.
+        if let Some(handle) = self.handle.take() {
+            let _ = pyo3::Python::with_gil(|py| py.detach(|| handle.join()));
+        }
+    }
+}
+
 #[pymethods]
 impl TTPlanIterator {
     fn __iter__(slf: PyRef<Self>) -> PyRef<Self> {
@@ -110,7 +124,27 @@ impl TTPlanIterator {
             Ok(batch) => batch.to_pyarrow(py).map(|b| b.unbind()),
             Err(_) => {
                 self.receiver = None;
-                self.finish_execution().map_err(crate::map_ttgen_err)?;
+
+                // Join the background thread with GIL released.
+                // The bg thread uses tracing::info! which routes through
+                // pyo3-log and needs the GIL. If we hold the GIL while
+                // joining, the bg thread can't log and we deadlock.
+                if self.summary.is_none() {
+                    if let Some(handle) = self.handle.take() {
+                        let join_result = py.detach(|| handle.join());
+                        match join_result {
+                            Ok(Ok(summary)) => { self.summary = Some(summary); }
+                            Ok(Err(e)) => {
+                                return Err(crate::map_ttgen_err(e));
+                            }
+                            Err(_) => {
+                                return Err(crate::DiskgraphSystemError::new_err(
+                                    "TT-gen executor thread panicked"));
+                            }
+                        }
+                    }
+                }
+
                 Err(PyStopIteration::new_err(()))
             }
         }
