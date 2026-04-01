@@ -1,5 +1,6 @@
 use diskgraph_index::graph::{GraphBuildProgress, GraphBuildStage, GraphProgressSink};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::sync::{Arc, Mutex};
@@ -49,16 +50,26 @@ struct ProgressState {
 
 pub struct IndexProgressAdapter {
     cb: ProgressCallback,
-    shard_states: dashmap::DashMap<(String, Option<usize>), std::sync::atomic::AtomicU64>,
-    table_states: dashmap::DashMap<String, TableProgressState>,
+    state: Mutex<IndexProgressTracker>,
 }
 
+struct IndexProgressTracker {
+    shard_states: HashMap<(String, Option<usize>), IndexProgressState>,
+    table_states: HashMap<String, TableProgressState>,
+}
+
+#[derive(Clone, Copy)]
+struct IndexProgressState {
+    current: u64,
+}
+
+#[derive(Clone, Copy)]
 struct TableProgressState {
-    current: std::sync::atomic::AtomicU64,
+    current: u64,
     total: Option<u64>,
-    remaining_shards: std::sync::atomic::AtomicUsize,
-    started: std::sync::atomic::AtomicBool,
-    finished: std::sync::atomic::AtomicBool,
+    remaining_shards: Option<usize>,
+    started: bool,
+    finished: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -69,23 +80,25 @@ pub struct TableIndexTotals {
 
 impl IndexProgressAdapter {
     pub fn new(cb: ProgressCallback, table_totals: HashMap<String, TableIndexTotals>) -> Self {
-        let table_states = dashmap::DashMap::new();
+        let mut table_states = HashMap::new();
         for (table, totals) in table_totals {
             table_states.insert(
                 table,
                 TableProgressState {
-                    current: std::sync::atomic::AtomicU64::new(0),
+                    current: 0,
                     total: Some(totals.total_nodes),
-                    remaining_shards: std::sync::atomic::AtomicUsize::new(totals.total_shards),
-                    started: std::sync::atomic::AtomicBool::new(false),
-                    finished: std::sync::atomic::AtomicBool::new(false),
+                    remaining_shards: Some(totals.total_shards),
+                    started: false,
+                    finished: false,
                 },
             );
         }
         Self {
             cb,
-            shard_states: dashmap::DashMap::new(),
-            table_states,
+            state: Mutex::new(IndexProgressTracker {
+                shard_states: HashMap::new(),
+                table_states,
+            }),
         }
     }
 
@@ -107,55 +120,54 @@ impl GraphProgressSink for IndexProgressAdapter {
             }
         };
         let key = (table.clone(), shard);
-
+        let mut state = self.state.lock().unwrap();
         match update.stage {
             GraphBuildStage::BuildShard { .. } => {
-                let shard_current = self.shard_states.entry(key).or_insert_with(|| std::sync::atomic::AtomicU64::new(0));
-
-                // Compare-and-swap loop to find the true delta
-                let mut delta = 0;
-                let mut prev = shard_current.load(std::sync::atomic::Ordering::Acquire);
-                loop {
-                    if update.current <= prev {
-                        break;
-                    }
-                    match shard_current.compare_exchange_weak(prev, update.current, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::Acquire) {
-                        Ok(_) => {
-                            delta = update.current - prev;
-                            break;
-                        }
-                        Err(x) => prev = x,
-                    }
-                }
-
-                let table_state = self
-                    .table_states
-                    .entry(table.clone())
-                    .or_insert_with(|| TableProgressState {
-                        current: std::sync::atomic::AtomicU64::new(0),
-                        total: None,
-                        remaining_shards: std::sync::atomic::AtomicUsize::new(0),
-                        started: std::sync::atomic::AtomicBool::new(false),
-                        finished: std::sync::atomic::AtomicBool::new(false),
-                    });
-
-                // Check if we need to emit Start
-                if !table_state.started.load(std::sync::atomic::Ordering::Acquire) && !table_state.finished.load(std::sync::atomic::Ordering::Acquire) {
-                    if table_state.started.compare_exchange(false, true, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::Acquire).is_ok() {
-                        (self.cb)(ProgressEvent {
-                            phase: ProgressPhase::Index,
-                            table: table.clone(),
-                            shard: None,
-                            kind: ProgressKind::Start,
-                            delta: 0,
-                            total: table_state.total,
-                            status: None,
+                let delta = match state.shard_states.entry(key) {
+                    Entry::Vacant(v) => {
+                        v.insert(IndexProgressState {
+                            current: update.current,
                         });
+                        update.current
                     }
+                    Entry::Occupied(mut o) => {
+                        let prev = o.get().current;
+                        if update.current > prev {
+                            let delta = update.current.saturating_sub(prev);
+                            o.insert(IndexProgressState {
+                                current: update.current,
+                            });
+                            delta
+                        } else {
+                            0
+                        }
+                    }
+                };
+                let table_state =
+                    state
+                        .table_states
+                        .entry(table.clone())
+                        .or_insert(TableProgressState {
+                            current: 0,
+                            total: None,
+                            remaining_shards: None,
+                            started: false,
+                            finished: false,
+                        });
+                if !table_state.started && !table_state.finished {
+                    table_state.started = true;
+                    (self.cb)(ProgressEvent {
+                        phase: ProgressPhase::Index,
+                        table: table.clone(),
+                        shard: None,
+                        kind: ProgressKind::Start,
+                        delta: 0,
+                        total: table_state.total,
+                        status: None,
+                    });
                 }
-
                 if delta > 0 {
-                    table_state.current.fetch_add(delta, std::sync::atomic::Ordering::SeqCst);
+                    table_state.current = table_state.current.saturating_add(delta);
                     (self.cb)(ProgressEvent {
                         phase: ProgressPhase::Index,
                         table,
@@ -168,22 +180,38 @@ impl GraphProgressSink for IndexProgressAdapter {
                 }
             }
             GraphBuildStage::Complete { .. } => {
-                if let Some(table_state) = self.table_states.get(&table) {
-                    let prev_shards = table_state.remaining_shards.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                    if prev_shards == 1 {
-                        // Last shard finished
-                        if table_state.finished.compare_exchange(false, true, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::Acquire).is_ok() {
-                            (self.cb)(ProgressEvent {
-                                phase: ProgressPhase::Index,
-                                table,
-                                shard: None,
-                                kind: ProgressKind::Finish,
-                                delta: 0,
-                                total: table_state.total.or(Some(table_state.current.load(std::sync::atomic::Ordering::Acquire))),
-                                status: None,
-                            });
-                        }
+                state.shard_states.remove(&key);
+                let table_state =
+                    state
+                        .table_states
+                        .entry(table.clone())
+                        .or_insert(TableProgressState {
+                            current: 0,
+                            total: None,
+                            remaining_shards: None,
+                            started: false,
+                            finished: false,
+                        });
+                if let Some(remaining) = table_state.remaining_shards.as_mut() {
+                    if *remaining > 0 {
+                        *remaining = remaining.saturating_sub(1);
                     }
+                }
+                let should_finish = match table_state.remaining_shards {
+                    Some(remaining) => remaining == 0,
+                    None => true,
+                };
+                if should_finish && !table_state.finished {
+                    table_state.finished = true;
+                    (self.cb)(ProgressEvent {
+                        phase: ProgressPhase::Index,
+                        table,
+                        shard: None,
+                        kind: ProgressKind::Finish,
+                        delta: 0,
+                        total: table_state.total.or(Some(table_state.current)),
+                        status: None,
+                    });
                 }
             }
         }
@@ -267,26 +295,24 @@ pub fn build_progress() -> Option<ProgressCallback> {
     Some(cb)
 }
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use dashmap::DashMap;
-
 struct LogProgressState {
-    last_logged_pct: std::sync::atomic::AtomicI32,
-    current: AtomicU64,
+    last_logged_pct: i32,
+    current: u64,
 }
 
 fn build_log_progress() -> ProgressCallback {
-    let states = Arc::new(DashMap::<ProgressKey, LogProgressState>::new());
+    let states = Arc::new(Mutex::new(HashMap::<ProgressKey, LogProgressState>::new()));
     Arc::new(move |event: ProgressEvent| {
+        let mut guard = states.lock().unwrap();
         let key = ProgressKey {
             phase: event.phase,
             table: event.table.clone(),
             shard: event.shard,
         };
 
-        let state = states.entry(key).or_insert_with(|| LogProgressState {
-            last_logged_pct: std::sync::atomic::AtomicI32::new(-1),
-            current: AtomicU64::new(0),
+        let state = guard.entry(key).or_insert(LogProgressState {
+            last_logged_pct: -1,
+            current: 0,
         });
 
         match event.kind {
@@ -300,27 +326,22 @@ fn build_log_progress() -> ProgressCallback {
                 );
             }
             ProgressKind::Advance => {
-                let prev = state.current.fetch_add(event.delta, Ordering::Relaxed);
-                let current = prev + event.delta;
-
+                state.current += event.delta;
                 if let Some(total) = event.total {
                     if total > 0 {
-                        let pct = (current as f64 / total as f64 * 100.0) as i32;
-                        let last_pct = state.last_logged_pct.load(Ordering::Relaxed);
-
-                        if pct >= last_pct + 25 || (pct >= 100 && last_pct < 100) {
-                            // Compare and exchange to prevent concurrent threads from logging the same milestone
-                            if state.last_logged_pct.compare_exchange(last_pct, pct, Ordering::Acquire, Ordering::Relaxed).is_ok() {
-                                tracing::info!(
-                                    phase = ?event.phase,
-                                    table = %event.table,
-                                    shard = ?event.shard,
-                                    progress_pct = pct,
-                                    current = current,
-                                    total = total,
-                                    "Ingestion stage progress"
-                                );
-                            }
+                        let pct = (state.current as f64 / total as f64 * 100.0) as i32;
+                        // Log every 25% instead of 10% to reduce verbosity
+                        if pct >= state.last_logged_pct + 25 || (pct >= 100 && state.last_logged_pct < 100) {
+                            tracing::info!(
+                                phase = ?event.phase,
+                                table = %event.table,
+                                shard = ?event.shard,
+                                progress_pct = pct,
+                                current = state.current,
+                                total = total,
+                                "Ingestion stage progress"
+                            );
+                            state.last_logged_pct = pct;
                         }
                     }
                 }
@@ -330,7 +351,7 @@ fn build_log_progress() -> ProgressCallback {
                     phase = ?event.phase,
                     table = %event.table,
                     shard = ?event.shard,
-                    total = ?event.total.unwrap_or_else(|| state.current.load(Ordering::Relaxed)),
+                    total = ?event.total.unwrap_or(state.current),
                     "Ingestion stage finished"
                 );
             }
