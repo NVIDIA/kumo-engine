@@ -4581,7 +4581,7 @@ pub fn persist_prediction_artifact_bundle(
             let mut checksums = serde_json::Map::new();
             checksums.insert(
                 "prediction_table_sha256".to_string(),
-                json!(sha256_hex_file(&out)?),
+                json!(sha256_hex_path(Path::new(&out))?),
             );
             checksums.insert(
                 "prediction_table_edges_sha256".to_string(),
@@ -4739,7 +4739,7 @@ pub fn persist_tt_artifact_bundle(
             let mut checksums = serde_json::Map::new();
             checksums.insert(
                 "train_table_sha256".to_string(),
-                json!(sha256_hex_file(&out)?),
+                json!(sha256_hex_path(Path::new(&out))?),
             );
             checksums.insert(
                 "split_sha256".to_string(),
