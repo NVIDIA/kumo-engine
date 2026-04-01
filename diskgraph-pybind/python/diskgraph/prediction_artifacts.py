@@ -11,6 +11,7 @@ import json
 import os
 from typing import Any, Optional
 
+import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 _NATIVE_IMPORT_ERROR: Optional[Exception] = None
@@ -110,7 +111,9 @@ def _resolve_prediction_row_count(prediction_table_path: str, cfg: dict[str, Any
         return int(row_count)
 
     try:
-        return int(pq.read_metadata(prediction_table_path).num_rows)
+        if os.path.isfile(prediction_table_path):
+            return int(pq.read_metadata(prediction_table_path).num_rows)
+        return int(ds.dataset(prediction_table_path, format='parquet').count_rows())
     except Exception as e:
         raise DiskgraphSystemError(
             'prediction artifact bundle requires row_count in cfg or readable parquet metadata; '
@@ -119,12 +122,31 @@ def _resolve_prediction_row_count(prediction_table_path: str, cfg: dict[str, Any
 
 
 def _prediction_table_size_bytes(prediction_table_path: str) -> int:
+    if os.path.isfile(prediction_table_path):
+        try:
+            return int(os.stat(prediction_table_path).st_size)
+        except Exception as e:
+            raise DiskgraphSystemError(
+                f'prediction_table_path missing or unreadable for size metadata: {e}'
+            )
+
     try:
-        return int(os.stat(prediction_table_path).st_size)
+        dataset = ds.dataset(prediction_table_path, format='parquet')
+        total = 0
+        for frag in dataset.get_fragments():
+            path = getattr(frag, 'path', None)
+            if isinstance(path, str) and path:
+                total += int(os.stat(path).st_size)
+        if total > 0:
+            return total
     except Exception as e:
         raise DiskgraphSystemError(
             f'prediction_table_path missing or unreadable for size metadata: {e}'
         )
+
+    raise DiskgraphSystemError(
+        f'prediction_table_path missing or unreadable for size metadata: {prediction_table_path}'
+    )
 
 
 def validate_prediction_table_edges_artifact(payload: dict[str, Any]) -> None:

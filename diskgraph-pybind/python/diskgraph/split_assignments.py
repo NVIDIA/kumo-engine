@@ -11,8 +11,11 @@ except ImportError:
 
 from typing import Any, Optional
 
+import os
+
 import numpy as np
 import pandas as pd
+import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 _RUST_SPLIT_IMPORT_ERROR: Optional[Exception] = None
@@ -57,12 +60,37 @@ def _require_rust_fn(fn: Any, fn_name: str) -> Any:
     return fn
 
 
+def _is_file_path(path: str) -> bool:
+    return os.path.isfile(path)
+
+
 def _read_parquet_columns(path: str, required: list[str]) -> pd.DataFrame:
-    schema = pq.read_schema(path)
-    missing = [c for c in required if c not in schema.names]
+    if _is_file_path(path):
+        schema = pq.read_schema(path)
+        missing = [c for c in required if c not in schema.names]
+        if missing:
+            raise DiskgraphDataError(
+                f'diskgraph native split requires missing columns: {missing}')
+        return pq.read_table(path, columns=required).to_pandas()
+
+    dataset = ds.dataset(path, format='parquet')
+    missing = [c for c in required if c not in dataset.schema.names]
     if missing:
-        raise DiskgraphDataError(f'diskgraph native split requires missing columns: {missing}')
-    return pq.read_table(path, columns=required).to_pandas()
+        raise DiskgraphDataError(
+            f'diskgraph native split requires missing columns: {missing}')
+    return dataset.to_table(columns=required).to_pandas()
+
+
+def _parquet_row_count(path: str) -> int:
+    if _is_file_path(path):
+        return int(pq.read_metadata(path).num_rows)
+    return int(ds.dataset(path, format='parquet').count_rows())
+
+
+def _parquet_schema_names(path: str) -> list[str]:
+    if _is_file_path(path):
+        return list(pq.read_schema(path).names)
+    return list(ds.dataset(path, format='parquet').schema.names)
 
 
 def _as_list(v: Any) -> list[Any]:
@@ -103,7 +131,7 @@ def _assign_for_temporal_split(split_cfg: dict[str, Any], train_table_path: str)
 def _assign_for_fixed_split(split_cfg: dict[str, Any], train_table_path: str) -> np.ndarray:
     _require_rust_split_core()
     ratio = [float(x) for x in split_cfg.get('ratio', [0.8, 0.1, 0.1])]
-    row_count = pq.read_metadata(train_table_path).num_rows
+    row_count = _parquet_row_count(train_table_path)
     dense_core = _require_rust_fn(compute_dense_split_assignments_core, 'compute_dense_split_assignments_core')
     out = dense_core(
         family='FixedSplit',
@@ -122,7 +150,7 @@ def _assign_for_random_split(
     _require_rust_split_core()
     ratio = [float(x) for x in split_cfg.get('ratio', [0.8, 0.1, 0.1])]
     seed = int(split_cfg.get('rnd_seed', 0))
-    row_count = pq.read_metadata(train_table_path).num_rows
+    row_count = _parquet_row_count(train_table_path)
     dense_core = _require_rust_fn(compute_dense_split_assignments_core, 'compute_dense_split_assignments_core')
     out = dense_core(
         family=family,
@@ -283,10 +311,10 @@ def _assign_for_approx_date_offset_split(split_cfg: dict[str, Any], train_table_
 
 def _apply_entity_include_filter(assignments: np.ndarray, train_table_path: str) -> np.ndarray:
     _require_rust_split_core()
-    schema = pq.read_schema(train_table_path)
-    if _ENTITY_INCLUDE_BIT_COL not in schema.names:
+    schema_names = _parquet_schema_names(train_table_path)
+    if _ENTITY_INCLUDE_BIT_COL not in schema_names:
         return assignments
-    include_df = pq.read_table(train_table_path, columns=[_ENTITY_INCLUDE_BIT_COL]).to_pandas()
+    include_df = _read_parquet_columns(train_table_path, [_ENTITY_INCLUDE_BIT_COL])
     include_mask = include_df[_ENTITY_INCLUDE_BIT_COL].astype(bool).to_numpy()
     apply_mask = _require_rust_fn(apply_entity_include_mask, 'apply_entity_include_mask')
     out = apply_mask(

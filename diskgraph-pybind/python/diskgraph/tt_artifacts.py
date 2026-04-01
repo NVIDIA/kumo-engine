@@ -11,11 +11,14 @@ except ImportError:
 
 import json
 import os
+import shutil
 import struct
+import tempfile
 from dataclasses import dataclass
 from typing import Any, Optional
 
 import numpy as np
+import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 _NATIVE_IMPORT_ERROR: Optional[Exception] = None
@@ -203,6 +206,37 @@ def _extract_payload_json_as_sorted_dict_json(
     return json.dumps(payload, sort_keys=True)
 
 
+def _prepare_existing_table_reader_path(output_path: str) -> tuple[str, Optional[str]]:
+    """Return a parquet *file* path usable by native artifact readers.
+
+    For directory-style parquet datasets, this builds a temporary merged parquet
+    file for read-only artifact computation, leaving the source dataset intact.
+    Returns (reader_path, temp_dir_to_cleanup).
+    """
+    if os.path.isfile(output_path):
+        return output_path, None
+
+    dataset = ds.dataset(output_path, format='parquet')
+    tmp_dir = tempfile.mkdtemp(prefix='dg_existing_tt_')
+    tmp_path = os.path.join(tmp_dir, 'train_table.parquet')
+    writer = None
+    try:
+        for batch in dataset.to_batches():
+            if writer is None:
+                writer = pq.ParquetWriter(tmp_path, batch.schema)
+            writer.write_batch(batch)
+        if writer is None:
+            writer = pq.ParquetWriter(tmp_path, dataset.schema)
+        writer.close()
+        writer = None
+        return tmp_path, tmp_dir
+    except Exception:
+        if writer is not None:
+            writer.close()
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+
+
 def _build_train_table_edges_artifact(
     *,
     output_path: str,
@@ -314,107 +348,117 @@ def build_train_table_artifacts_for_existing_table(
         _normalize_downsampling_config(None),
     )
 
-    assignments, split_meta = compute_dense_split_assignments(
-        output_path,
-        split_config,
-        split_family_hint=resolved_family,
-    )
-    row_count = int(assignments.shape[0])
-    table_rows = int(pq.read_metadata(output_path).num_rows)
-    if row_count != table_rows:
-        raise DiskgraphDataError(
-            'diskgraph existing-table artifact rehydration row count mismatch '
-            f'(output_path={output_path}, split_family={resolved_family}, '
-            f'table_rows={table_rows}, assignment_rows={row_count})'
+    reader_path, cleanup_dir = _prepare_existing_table_reader_path(output_path)
+    try:
+        assignments, split_meta = compute_dense_split_assignments(
+            reader_path,
+            split_config,
+            split_family_hint=resolved_family,
+        )
+        row_count = int(assignments.shape[0])
+        table_rows = int(pq.read_metadata(reader_path).num_rows)
+        if row_count != table_rows:
+            raise DiskgraphDataError(
+                'diskgraph existing-table artifact rehydration row count mismatch '
+                f'(output_path={output_path}, reader_path={reader_path}, split_family={resolved_family}, '
+                f'table_rows={table_rows}, assignment_rows={row_count})'
+            )
+
+        split_bytes = _build_split_assignment_artifact(assignments)
+
+        built = _build_tt_stats_artifact_native(
+            row_count=row_count,
+            summary_json=producer_summary_json,
+            plan_json=None,
+        )
+        stats_json = _extract_payload_json_as_sorted_dict_json(
+            built,
+            label='tt stats',
         )
 
-    split_bytes = _build_split_assignment_artifact(assignments)
+        split_stats_built = _build_split_stats_artifact_native(
+            output_path=reader_path,
+            split_assignments=assignments.tobytes(order='C'),
+            split_stats_config_json=json.dumps({
+                'entity_col': split_stats_cfg.entity_col,
+                'target_col': split_stats_cfg.target_col,
+                'time_col': split_stats_cfg.time_col,
+                'task_type': split_stats_cfg.task_type,
+                'list_distinct_target_is_array': split_stats_cfg.list_distinct_target_is_array,
+            }, sort_keys=True),
+        )
+        split_stats_json = _extract_payload_json_as_sorted_dict_json(
+            split_stats_built,
+            label='split stats',
+        )
 
-    built = _build_tt_stats_artifact_native(
-        row_count=row_count,
-        summary_json=producer_summary_json,
-        plan_json=None,
-    )
-    stats_json = _extract_payload_json_as_sorted_dict_json(
-        built,
-        label='tt stats',
-    )
+        train_col_stats_built = _build_train_table_col_stats_artifact_native(
+            output_path=reader_path,
+            split_assignments=assignments.tobytes(order='C'),
+            train_table_col_stats_config_json=(
+                json.dumps(train_table_col_stats_config, sort_keys=True)
+                if train_table_col_stats_config is not None else None
+            ),
+        )
+        train_col_stats_json = _extract_payload_json_as_sorted_dict_json(
+            train_col_stats_built,
+            label='train table col stats',
+        )
 
-    split_stats_built = _build_split_stats_artifact_native(
-        output_path=output_path,
-        split_assignments=assignments.tobytes(order='C'),
-        split_stats_config_json=json.dumps({
-            'entity_col': split_stats_cfg.entity_col,
-            'target_col': split_stats_cfg.target_col,
-            'time_col': split_stats_cfg.time_col,
-            'task_type': split_stats_cfg.task_type,
-            'list_distinct_target_is_array': split_stats_cfg.list_distinct_target_is_array,
-        }, sort_keys=True),
-    )
-    split_stats_json = _extract_payload_json_as_sorted_dict_json(
-        split_stats_built,
-        label='split stats',
-    )
+        edges_cfg = train_table_edges_config if isinstance(train_table_edges_config, dict) else {}
+        if bool(edges_cfg.get('enabled', False)) and (not index_path or not isinstance(index_path, str)):
+            raise DiskgraphConfigError(
+                'diskgraph existing-table artifact rehydration requires index_path when '
+                f'train_table_edges_config.enabled=true (output_path={output_path})')
 
-    train_col_stats_built = _build_train_table_col_stats_artifact_native(
-        output_path=output_path,
-        split_assignments=assignments.tobytes(order='C'),
-        train_table_col_stats_config_json=(
-            json.dumps(train_table_col_stats_config, sort_keys=True)
-            if train_table_col_stats_config is not None else None
-        ),
-    )
-    train_col_stats_json = _extract_payload_json_as_sorted_dict_json(
-        train_col_stats_built,
-        label='train table col stats',
-    )
+        train_table_edges_json = None
+        if bool(edges_cfg.get('enabled', False)):
+            edge_cfg = dict(edges_cfg)
+            edge_cfg.setdefault(
+                'output_dir',
+                os.path.join(output_path + '.artifacts', 'train_table_edges'),
+            )
+            train_table_edges_json = _build_train_table_edges_artifact(
+                output_path=reader_path,
+                index_path=str(index_path),
+                cfg=edge_cfg,
+            )
 
-    edges_cfg = train_table_edges_config if isinstance(train_table_edges_config, dict) else {}
-    if bool(edges_cfg.get('enabled', False)) and (not index_path or not isinstance(index_path, str)):
-        raise DiskgraphConfigError(
-            'diskgraph existing-table artifact rehydration requires index_path when '
-            f'train_table_edges_config.enabled=true (output_path={output_path})')
-
-    train_table_edges_json = None
-    if bool(edges_cfg.get('enabled', False)):
-        train_table_edges_json = _build_train_table_edges_artifact(
+        artifacts_dir = output_path + '.artifacts'
+        manifest_path = output_path + '.manifest.json'
+        persisted = _persist_tt_artifact_bundle(
             output_path=output_path,
-            index_path=str(index_path),
-            cfg=edges_cfg,
+            row_count=row_count,
+            stats_json=stats_json,
+            split_stats_json=split_stats_json,
+            split_bytes=split_bytes,
+            split_family=resolved_family,
+            split_authoritative=bool(split_meta.get('authoritative', False)),
+            split_reason=split_meta.get('reason'),
+            downsampling_json=None,
+            producer_summary_json=producer_summary_json,
+            train_table_col_stats_json=train_col_stats_json,
+            train_table_edges_json=train_table_edges_json,
         )
+        if isinstance(persisted, dict):
+            manifest_path = str(persisted.get('manifest_path') or manifest_path)
+            artifacts_dir = str(persisted.get('artifacts_dir') or artifacts_dir)
 
-    artifacts_dir = output_path + '.artifacts'
-    manifest_path = output_path + '.manifest.json'
-    persisted = _persist_tt_artifact_bundle(
-        output_path=output_path,
-        row_count=row_count,
-        stats_json=stats_json,
-        split_stats_json=split_stats_json,
-        split_bytes=split_bytes,
-        split_family=resolved_family,
-        split_authoritative=bool(split_meta.get('authoritative', False)),
-        split_reason=split_meta.get('reason'),
-        downsampling_json=None,
-        producer_summary_json=producer_summary_json,
-        train_table_col_stats_json=train_col_stats_json,
-        train_table_edges_json=train_table_edges_json,
-    )
-    if isinstance(persisted, dict):
-        manifest_path = str(persisted.get('manifest_path') or manifest_path)
-        artifacts_dir = str(persisted.get('artifacts_dir') or artifacts_dir)
-
-    split_counts = {
-        int(stage): int(count)
-        for stage, count in zip(*np.unique(assignments, return_counts=True))
-    }
-    return {
-        'output_path': output_path,
-        'manifest_path': manifest_path,
-        'artifacts_dir': artifacts_dir,
-        'row_count': row_count,
-        'split_counts': split_counts,
-        'split_meta': split_meta,
-    }
+        split_counts = {
+            int(stage): int(count)
+            for stage, count in zip(*np.unique(assignments, return_counts=True))
+        }
+        return {
+            'output_path': output_path,
+            'manifest_path': manifest_path,
+            'artifacts_dir': artifacts_dir,
+            'row_count': row_count,
+            'split_counts': split_counts,
+            'split_meta': split_meta,
+        }
+    finally:
+        if cleanup_dir is not None:
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
 
 
 def execute_tt_plan_with_artifacts(
