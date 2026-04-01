@@ -225,6 +225,7 @@ impl TestGraph {
             None,
             diskgraph_core::time::TimeUnit::Seconds,
             None,
+            None,
         );
         Self { _dir: dir, sampler }
     }

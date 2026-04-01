@@ -110,7 +110,7 @@ struct RawEdge {
 }
 
 impl DiskGraphEngine {
-    pub fn load(path: &Path, random_seed: Option<u64>) -> Result<Self> {
+    pub fn load(path: &Path, random_seed: Option<u64>, num_threads: Option<usize>) -> Result<Self> {
 
         let metadata_path = path.join("index_metadata.json");
         let metadata_bytes = std::fs::read(&metadata_path)
@@ -242,6 +242,7 @@ impl DiskGraphEngine {
             reverse_pairs_opt,
             metadata.timestamp_unit,
             random_seed,
+            num_threads,
         ))
     }
 
@@ -253,11 +254,14 @@ impl DiskGraphEngine {
         reverse_pairs: Option<HashMap<usize, usize>>,
         timestamp_unit: diskgraph_core::time::TimeUnit,
         random_seed: Option<u64>,
+        num_threads: Option<usize>,
     ) -> Self {
-        let num_threads = std::env::var("RAYON_NUM_THREADS")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(1);
+        let num_threads = num_threads.unwrap_or_else(|| {
+            std::env::var("RAYON_NUM_THREADS")
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(1)
+        });
         let thread_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(num_threads)
             .build()

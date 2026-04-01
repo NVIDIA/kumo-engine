@@ -153,6 +153,7 @@ impl TestGraph {
             None,
             diskgraph_core::time::TimeUnit::Seconds,
             random_seed,
+            None,
         );
 
         Self {
@@ -702,7 +703,7 @@ fn load_finds_lowercase_node_dir() {
     fs::write(&meta_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
 
     // Loading should succeed by finding 'users'
-    let result = DiskGraphEngine::load(dir.path(), None);
+    let result = DiskGraphEngine::load(dir.path(), None, None);
     assert!(result.is_ok(), "Load failed: {:?}", result.err());
 }
 

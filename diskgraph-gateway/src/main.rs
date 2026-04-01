@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
     if let Some(seed) = args.seed {
         println!("Using deterministic random seed: {}", seed);
     }
-    let engine = Arc::new(DiskGraphEngine::load(&args.data, args.seed)?);
+    let engine = Arc::new(DiskGraphEngine::load(&args.data, args.seed, None)?);
     let pool = StatePool::new();
 
     let service = SamplerGateway::new(engine, pool);

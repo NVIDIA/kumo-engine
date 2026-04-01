@@ -395,10 +395,10 @@ pub struct SamplerEngine {
 #[pymethods]
 impl SamplerEngine {
     #[new]
-    #[pyo3(signature = (path, random_seed=None))]
+    #[pyo3(signature = (path, random_seed=None, num_threads=None))]
     #[tracing::instrument(level = "info", skip(path), fields(index_path = %path))]
-    pub fn new(path: String, random_seed: Option<u64>) -> PyResult<Self> {
-        let engine = DiskGraphEngine::load(std::path::Path::new(&path), random_seed)
+    pub fn new(path: String, random_seed: Option<u64>, num_threads: Option<usize>) -> PyResult<Self> {
+        let engine = DiskGraphEngine::load(std::path::Path::new(&path), random_seed, num_threads)
             .map_err(map_engine_err)?;
         info!("SamplerEngine initialized successfully");
         Ok(Self {
