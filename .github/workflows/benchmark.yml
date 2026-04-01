@@ -35,7 +35,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Build release
-        run: cargo build --release
+        run: cargo build -p diskgraph-ingest --bin ingest --release
 
       - name: Cache benchmark data
         run: |
