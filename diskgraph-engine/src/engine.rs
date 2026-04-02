@@ -985,7 +985,7 @@ impl DiskGraphEngine {
                         if let (Some(dec), Some(anch)) = (decoder, anchor) {
                             let (edge_ts, _) = dec.decode(key_scratch[i]);
                             if let Some(ts) = edge_ts {
-                                if ts >= anch {
+                                if ts > anch {
                                     continue;
                                 }
                             }
