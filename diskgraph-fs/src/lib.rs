@@ -1,6 +1,7 @@
 use std::io::{self, SeekFrom, Write};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use aws_config::{self, BehaviorVersion};
@@ -11,6 +12,7 @@ use object_store::aws::AmazonS3Builder;
 use object_store::azure::MicrosoftAzureBuilder;
 use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::path::Path as ObjectPath;
+use object_store::ClientOptions;
 use object_store::WriteMultipart;
 use object_store::{ObjectStore, ObjectStoreExt};
 use tokio::runtime::Runtime;
@@ -60,6 +62,16 @@ pub use cloud_transfer::{
     CloudTransferDownloadTicket, CloudTransferStatsHandle, CloudTransferStatsSnapshot,
     CloudTransferTicket, PooledBuffer, PooledBytes,
 };
+
+/// Build `ClientOptions` with a connect timeout for all cloud object stores.
+///
+/// Sets a **connect timeout** (TCP handshake + TLS setup) to detect
+/// unreachable endpoints quickly.  The per-request timeout retains its
+/// `object_store` default (~30 s) which applies to individual HTTP
+/// requests, not to multi-part data transfers.
+pub fn cloud_client_options() -> ClientOptions {
+    ClientOptions::new().with_connect_timeout(Duration::from_secs(60))
+}
 
 pub fn build_s3_client(cfg: S3Config) -> Result<S3Client> {
     let allow_http = cfg
@@ -131,7 +143,10 @@ pub fn build_s3_client(cfg: S3Config) -> Result<S3Client> {
         .or_else(|| std::env::var("S3_SESSION_TOKEN").ok())
         .or_else(|| creds.session_token().map(|t| t.to_string()));
 
+    // with_client_options replaces the entire ClientOptions struct,
+    // so it must come before with_allow_http (which writes into it).
     let mut builder = AmazonS3Builder::new()
+        .with_client_options(cloud_client_options())
         .with_bucket_name(&cfg.bucket)
         .with_region(&region)
         .with_virtual_hosted_style_request(virtual_hosted)
@@ -228,6 +243,7 @@ pub async fn build_s3_client_async(cfg: S3Config) -> Result<S3Client> {
         .or_else(|| creds.session_token().map(|t| t.to_string()));
 
     let mut builder = AmazonS3Builder::new()
+        .with_client_options(cloud_client_options())
         .with_bucket_name(&cfg.bucket)
         .with_region(&region)
         .with_virtual_hosted_style_request(virtual_hosted)
@@ -268,7 +284,12 @@ pub struct GcsClient {
 }
 
 pub fn build_gcs_client(cfg: GcsConfig) -> Result<GcsClient> {
-    let builder = GoogleCloudStorageBuilder::from_env().with_bucket_name(&cfg.bucket);
+    // with_client_options replaces the entire ClientOptions struct.
+    // Calling it after from_env() wipes any env-sourced client
+    // settings (e.g. GOOGLE_ALLOW_HTTP), but those are rarely used.
+    let builder = GoogleCloudStorageBuilder::from_env()
+        .with_client_options(cloud_client_options())
+        .with_bucket_name(&cfg.bucket);
     Ok(GcsClient {
         store: Arc::new(builder.build()?),
         bucket: cfg.bucket,
@@ -314,7 +335,10 @@ pub fn build_adls_client(cfg: AdlsConfig) -> Result<AdlsClient> {
         .allow_http
         .or_else(|| env_flag("AZURE_ALLOW_HTTP"))
         .unwrap_or(false);
+    // with_client_options replaces the entire ClientOptions struct,
+    // so it must come before with_allow_http.
     let mut builder = MicrosoftAzureBuilder::new()
+        .with_client_options(cloud_client_options())
         .with_account(&cfg.account)
         .with_container_name(&cfg.container)
         .with_allow_http(allow_http);

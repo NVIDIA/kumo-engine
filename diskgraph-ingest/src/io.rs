@@ -165,13 +165,29 @@ pub fn is_cloud_path(path: &str) -> bool {
 ///
 /// Uses the object_store SDK to list objects under the prefix and returns
 /// sorted full cloud URLs for every `.parquet` file found.
+///
+/// The list operation is bounded by a 10-minute timeout so that an
+/// unreachable cloud endpoint cannot hang the ingest process indefinitely.
 pub fn expand_cloud_parquet_paths(dir_url: &str) -> Result<Vec<String>> {
     let transfer = build_transfer_for_cloud_path(dir_url)?;
     let prefix = object_path_from_cloud_url(dir_url)?;
+    let list_timeout = Duration::from_secs(600);
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let objects = rt.block_on(transfer.list_objects(&prefix))?;
+    let objects = rt.block_on(async {
+        tokio::time::timeout(list_timeout, transfer.list_objects(&prefix))
+            .await
+            .map_err(|_| {
+                anyhow!(
+                    "Timed out listing parquet files at {} (exceeded {}s). \
+                     Check that the cloud path is reachable and credentials \
+                     are available.",
+                    dir_url,
+                    list_timeout.as_secs(),
+                )
+            })?
+    })?;
 
     // Reconstruct full cloud URLs from object locations.
     let base_url = dir_url.trim_end_matches('/');
