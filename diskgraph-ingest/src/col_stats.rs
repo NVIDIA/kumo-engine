@@ -1679,16 +1679,33 @@ fn build_cat_count_json(
     let Some(ref cc) = cat_counts[col_idx] else {
         return json!([]);
     };
-    let is_int = ingested_types
-        .get(col_idx)
-        .map_or(false, |t| t.is_integer_like());
+    let ingested_type = ingested_types.get(col_idx);
+    let is_bool = matches!(ingested_type, Some(IngestedType::Bool));
+    let is_int = ingested_type.map_or(false, |t| t.is_integer_like()) && !is_bool;
+    let is_float = matches!(
+        ingested_type,
+        Some(IngestedType::Float32) | Some(IngestedType::Float64)
+    );
     let pairs: Vec<JsonValue> = cc
         .iter()
         .map(|(k, v)| {
-            let key_val = if is_int {
+            let key_val = if is_bool {
+                // Emit JSON bools to match Spark's True/False representation.
+                match k.as_str() {
+                    "1" | "true" => JsonValue::Bool(true),
+                    "0" | "false" => JsonValue::Bool(false),
+                    _ => JsonValue::String(k.clone()),
+                }
+            } else if is_int {
                 k.parse::<i64>()
                     .map(|n| JsonValue::Number(n.into()))
                     .unwrap_or_else(|_| JsonValue::String(k.clone()))
+            } else if is_float {
+                k.parse::<f64>()
+                    .ok()
+                    .and_then(|n| serde_json::Number::from_f64(n))
+                    .map(JsonValue::Number)
+                    .unwrap_or_else(|| JsonValue::String(k.clone()))
             } else {
                 JsonValue::String(k.clone())
             };
@@ -2106,16 +2123,40 @@ impl ColumnValueObserver for FileColStats {
 
     #[inline]
     fn observe_f64(&mut self, col_idx: usize, value: f64) {
-        if let ColumnStatsCollector::Numerical {
-            welford,
-            hll,
-            tdigest,
-            ..
-        } = &mut self.cols[col_idx]
-        {
-            welford.observe(value);
-            hll.observe_f64(value);
-            tdigest.observe(value);
+        // Pre-compute hash for categorical/id (shared between HLL and category counts).
+        let cat_hash = match &self.cols[col_idx] {
+            ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. } => {
+                Some(HyperLogLog::hash_f64(value))
+            }
+            _ => None,
+        };
+
+        match &mut self.cols[col_idx] {
+            ColumnStatsCollector::Numerical {
+                welford,
+                hll,
+                tdigest,
+                ..
+            } => {
+                welford.observe(value);
+                hll.observe_f64(value);
+                tdigest.observe(value);
+            }
+            ColumnStatsCollector::Categorical { count, hll, .. } => {
+                *count += 1;
+                hll.observe_hash(cat_hash.unwrap());
+            }
+            ColumnStatsCollector::Id { count, hll, .. } => {
+                *count += 1;
+                hll.observe_hash(cat_hash.unwrap());
+            }
+            _ => {}
+        }
+
+        // Category counts — after releasing the borrow on self.cols
+        if let Some(hash) = cat_hash {
+            let str_value = value.to_string();
+            self.observe_category_string(col_idx, hash, &str_value);
         }
     }
 

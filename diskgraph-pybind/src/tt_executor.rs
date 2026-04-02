@@ -3294,39 +3294,57 @@ fn compute_train_table_col_stats_from_batches(
                 assignment_by_original.len()
             ));
         }
+        // Build a boolean mask to skip unselected (downsampled-out) rows.
+        // Selected rows have assignment 0/1/2; unselected rows have 255.
+        // We compute stats on ALL selected rows (train+val+test), matching
+        // Kumo's Spark path which computes on the post-downsample table.
         let assignment_slice = &assignment_by_original[row_offset..end];
+        let has_unselected = assignment_slice.iter().any(|&a| a == 255);
+        let selected_mask: Option<BooleanArray> = if has_unselected {
+            Some(BooleanArray::from(
+                assignment_slice.iter().map(|&a| a != 255).collect::<Vec<_>>(),
+            ))
+        } else {
+            None
+        };
+
+        // If downsampling is active, filter the batch to selected rows only.
+        // Otherwise use the full batch (common case — no allocation).
+        let filtered_batch: Option<RecordBatch>;
+        let active_batch = if let Some(ref mask) = selected_mask {
+            filtered_batch = Some(arrow::compute::filter_record_batch(batch, mask)?);
+            filtered_batch.as_ref().unwrap()
+        } else {
+            batch
+        };
+
         for (col_idx, _name, acc) in numeric_trackers.iter_mut() {
-            observe_numeric_array_for_train_rows(
-                batch.column(*col_idx).as_ref(),
-                assignment_slice,
+            observe_numeric_array_all_rows(
+                active_batch.column(*col_idx).as_ref(),
                 acc,
             )?;
         }
         for (col_idx, _name, acc) in category_trackers.iter_mut() {
-            observe_category_array_for_train_rows(
-                batch.column(*col_idx).as_ref(),
-                assignment_slice,
+            observe_category_array_all_rows(
+                active_batch.column(*col_idx).as_ref(),
                 acc,
             )?;
         }
         for (col_idx, _name, acc) in multicategory_trackers.iter_mut() {
-            observe_multicategory_array_for_train_rows(
-                batch.column(*col_idx).as_ref(),
-                assignment_slice,
+            observe_multicategory_array_all_rows(
+                active_batch.column(*col_idx).as_ref(),
                 acc,
             )?;
         }
         for (col_idx, _name, acc) in sequence_trackers.iter_mut() {
-            observe_sequence_array_for_train_rows(
-                batch.column(*col_idx).as_ref(),
-                assignment_slice,
+            observe_sequence_array_all_rows(
+                active_batch.column(*col_idx).as_ref(),
                 acc,
             )?;
         }
         for (col_idx, _name, acc) in text_trackers.iter_mut() {
-            observe_text_array_for_train_rows(
-                batch.column(*col_idx).as_ref(),
-                assignment_slice,
+            observe_text_array_all_rows(
+                active_batch.column(*col_idx).as_ref(),
                 acc,
             )?;
         }
@@ -4903,10 +4921,13 @@ mod tests {
             .cloned()
             .unwrap();
 
-        assert_eq!(target_count, 2);
-        assert_eq!(score_count, 2);
-        assert_eq!(city_counts, vec![json!(["a", 1]), json!(["e", 1])]);
+        // All 3 selected rows are counted (train+val+test), not just train.
+        assert_eq!(target_count, 3);
+        assert_eq!(score_count, 3);
+        assert_eq!(city_counts, vec![json!(["a", 1]), json!(["c", 1]), json!(["e", 1])]);
+        // Mean of selected rows: (1.0 + 3.0 + 5.0) / 3 = 3.0
         assert!((target_mean - 3.0).abs() < 1e-9);
+        // Median of selected rows: 3.0
         assert!((target_median - 3.0).abs() < 1e-9);
     }
 
@@ -4942,14 +4963,16 @@ mod tests {
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap();
-        assert_eq!(city_counts, vec![json!(["a", 1])]);
+        // All selected rows counted: row 0 ("a", assignment=0) and row 2 ("b", assignment=1 but remapped to 0).
+        // Row 1 (None) is null, not counted in category_counts.
+        assert_eq!(city_counts, vec![json!(["a", 1]), json!(["b", 1])]);
 
         let city_num_unique = stats
             .get("CITY__kumo.categorical__NUM_UNIQUE__False")
             .and_then(|v| v.get("value"))
             .and_then(|v| v.as_u64())
             .unwrap();
-        assert_eq!(city_num_unique, 1);
+        assert_eq!(city_num_unique, 2);
     }
 
     #[test]

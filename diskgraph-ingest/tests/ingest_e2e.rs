@@ -2387,20 +2387,18 @@ fn ingest_parquet_drops_rows_with_null_create_time() -> Result<()> {
         .map(|c| c.parse_failures)
         .unwrap_or(0);
 
-    assert_eq!(node_failures, 1, "Expected 1 recorded failure for Node");
+    // Null create_time rows are now skipped before key parsing,
+    // so they don't appear in key_failures_by_context. They are
+    // counted in dropped_rows_counts (checked above).
+    assert_eq!(node_failures, 0, "Null-time rows skip before key parse");
     assert_eq!(edge_failures, 1, "Expected 1 recorded failure for Edge");
 
-    // Check that we have samples
-    let has_node_sample = stats
-        .key_failure_samples
-        .iter()
-        .any(|s| s.contains(node_sample_key));
+    // No node sample expected (skipped before recording), edge sample still expected.
     let has_edge_sample = stats
         .key_failure_samples
         .iter()
         .any(|s| s.contains(edge_sample_key));
 
-    assert!(has_node_sample, "Expected sample for dropped node");
     assert!(has_edge_sample, "Expected sample for dropped edge");
 
     Ok(())

@@ -2581,8 +2581,11 @@ impl IngestContext {
                         .as_ref()
                         .map(|a| a.is_valid(row))
                         .unwrap_or(true);
-                    if !timestamp_valid && pk_idx.is_none() {
+                    // Skip rows with null time_col — matches Spark's drop_na
+                    // behavior during load_table_data materialization.
+                    if !timestamp_valid {
                         node_data_dropped += 1;
+                        continue;
                     }
                     let shard_override = precomputed.as_ref().and_then(|p| p.shards[row]);
                     let pk_pre = precomputed
