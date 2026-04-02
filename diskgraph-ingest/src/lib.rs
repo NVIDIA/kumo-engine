@@ -4,6 +4,7 @@ pub mod coercion;
 pub mod col_stats;
 pub mod config;
 pub mod config_converter;
+pub mod disk_manager;
 pub mod consts;
 pub mod errors;
 pub mod graph_config;
@@ -168,11 +169,21 @@ pub fn ingest_with_stats_from_source(
     }
     target.prepare()?;
     if let OutputTarget::Local { root } = &*target {
+        // Log disk space before ingest as a pre-flight warning
+        log_disk_space(root);
+
         if root.exists() {
             fs::remove_dir_all(root)?;
             fs::create_dir_all(root)?;
         }
     }
+
+    // CleanupGuard: if ingest fails or panics, remove partial output
+    let cleanup_guard = if let OutputTarget::Local { root } = &*target {
+        Some(CleanupGuard::new(root.clone()))
+    } else {
+        None
+    };
 
     let mut ctx = IngestContext::new(source, target, options, output)?;
     let profile_dir = ctx.profile_dir.clone();
@@ -294,6 +305,7 @@ pub fn ingest_with_stats_from_source(
         finalize_wall_ms: finalize_wall.as_millis() as u64,
         bytes_read,
         bytes_written,
+        source_total_bytes: Some(bytes_read),
         temp_edges_src_bytes: ctx.temp_edges_src_bytes,
         temp_fkeys_bytes: ctx.temp_fkeys_bytes,
         temp_edges_map_bytes: ctx.temp_edges_map_bytes,
@@ -374,7 +386,174 @@ pub fn ingest_with_stats_from_source(
         "Ingest run finished"
     );
 
+    // Ingest succeeded — disarm the cleanup guard so output is kept
+    if let Some(guard) = cleanup_guard {
+        guard.disarm();
+    }
+
     Ok((index_metadata, stats))
+}
+
+/// Guard that removes a directory on drop (cleanup partial output on failure).
+/// Call `disarm()` on success to prevent cleanup.
+struct CleanupGuard {
+    path: PathBuf,
+    armed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl CleanupGuard {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            armed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        }
+    }
+
+    fn disarm(self) {
+        self.armed
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        if self.armed.load(std::sync::atomic::Ordering::SeqCst) {
+            tracing::warn!(
+                path = %self.path.display(),
+                "cleaning up partial ingest output"
+            );
+            if let Err(e) = fs::remove_dir_all(&self.path) {
+                tracing::error!(
+                    path = %self.path.display(),
+                    error = %e,
+                    "failed to clean up partial ingest output"
+                );
+            }
+        }
+    }
+}
+
+/// Check if an IO error indicates disk space exhaustion (ENOSPC or EDQUOT).
+pub fn is_disk_space_error(err: &anyhow::Error) -> bool {
+    for cause in err.chain() {
+        if let Some(io_err) = cause.downcast_ref::<std::io::Error>() {
+            if let Some(code) = io_err.raw_os_error() {
+                // ENOSPC = 28, EDQUOT = 122
+                if code == 28 || code == 122 {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests_disk_space {
+    use super::*;
+
+    #[test]
+    fn test_is_disk_space_error_enospc() {
+        let io_err = std::io::Error::from_raw_os_error(28); // ENOSPC
+        let err = anyhow::Error::new(io_err).context("write failed");
+        assert!(is_disk_space_error(&err));
+    }
+
+    #[test]
+    fn test_is_disk_space_error_edquot() {
+        let io_err = std::io::Error::from_raw_os_error(122); // EDQUOT
+        let err = anyhow::Error::new(io_err);
+        assert!(is_disk_space_error(&err));
+    }
+
+    #[test]
+    fn test_is_disk_space_error_other() {
+        let io_err = std::io::Error::from_raw_os_error(13); // EACCES
+        let err = anyhow::Error::new(io_err);
+        assert!(!is_disk_space_error(&err));
+    }
+
+    #[test]
+    fn test_is_disk_space_error_non_io() {
+        let err = anyhow::anyhow!("some other error");
+        assert!(!is_disk_space_error(&err));
+    }
+
+    #[test]
+    fn test_cleanup_guard_armed_cleans_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("partial_output");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("data.bin"), b"test data").unwrap();
+        assert!(target.exists());
+
+        {
+            let _guard = CleanupGuard::new(target.clone());
+            // guard drops here, should remove target
+        }
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn test_cleanup_guard_disarmed_keeps() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("good_output");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("data.bin"), b"test data").unwrap();
+
+        {
+            let guard = CleanupGuard::new(target.clone());
+            guard.disarm();
+            // guard drops here, should NOT remove target
+        }
+        assert!(target.exists());
+    }
+}
+
+/// Log available disk space as a pre-flight check. Non-blocking — just a warning.
+fn log_disk_space(output_path: &Path) {
+    let parent = output_path.parent().unwrap_or(output_path);
+    match disk_space_bytes(parent) {
+        Some((total, available)) => {
+            let pct_used = if total > 0 {
+                ((total - available) as f64 / total as f64 * 100.0) as u64
+            } else {
+                0
+            };
+            if pct_used > 90 {
+                tracing::warn!(
+                    available_gb = available / 1_073_741_824,
+                    total_gb = total / 1_073_741_824,
+                    pct_used,
+                    "disk space is low before ingest"
+                );
+            } else {
+                tracing::info!(
+                    available_gb = available / 1_073_741_824,
+                    total_gb = total / 1_073_741_824,
+                    pct_used,
+                    "pre-ingest disk space check"
+                );
+            }
+        }
+        None => {
+            tracing::debug!("could not determine disk space for {:?}", parent);
+        }
+    }
+}
+
+/// Get disk space via statvfs. Returns (total, available) in bytes.
+fn disk_space_bytes(path: &Path) -> Option<(u64, u64)> {
+    let c_path = std::ffi::CString::new(path.to_string_lossy().as_bytes()).ok()?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    let ret = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
+    if ret != 0 {
+        return None;
+    }
+    Some((
+        stat.f_blocks * stat.f_frsize,
+        stat.f_bavail * stat.f_frsize,
+    ))
 }
 
 #[derive(Clone)]

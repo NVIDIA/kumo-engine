@@ -16,6 +16,8 @@ from ._c import (
     DiskgraphDataError,
     DiskgraphConfigError,
     DiskgraphSystemError,
+    DiskManager,
+    estimate_ingest_size,
 )
 
 # Lazy imports for modules that have external dependencies (kumoapi)
@@ -81,6 +83,8 @@ __all__ = [
     "DiskgraphDataError",
     "DiskgraphConfigError",
     "DiskgraphSystemError",
+    "DiskManager",
+    "estimate_ingest_size",
     "DiskGraphPlanCompiler",
     "SplitSpec",
     "DiskgraphConfigConverter",

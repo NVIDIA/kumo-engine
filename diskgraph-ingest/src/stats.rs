@@ -78,6 +78,8 @@ pub struct PerfStats {
     pub finalize_wall_ms: u64,
     pub bytes_read: u64,
     pub bytes_written: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_total_bytes: Option<u64>,
     pub temp_edges_src_bytes: u64,
     pub temp_fkeys_bytes: u64,
     pub temp_edges_map_bytes: u64,

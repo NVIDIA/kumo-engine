@@ -54,7 +54,28 @@ pub(crate) fn map_engine_err(err: diskgraph_engine::errors::EngineError) -> PyEr
     }
 }
 
+pub(crate) fn map_disk_manager_err(err: diskgraph_ingest::disk_manager::DiskManagerError) -> PyErr {
+    use diskgraph_ingest::disk_manager::DiskManagerError;
+    match err {
+        DiskManagerError::InvalidPath(msg) => DiskgraphConfigError::new_err(msg),
+        DiskManagerError::InsufficientSpace { needed, available } => {
+            DiskgraphSystemError::new_err(format!(
+                "Insufficient disk space: need {} bytes, only {} available",
+                needed, available
+            ))
+        }
+        DiskManagerError::Io(e) => DiskgraphSystemError::new_err(e.to_string()),
+    }
+}
+
 pub(crate) fn map_anyhow_err(err: anyhow::Error) -> PyErr {
+    // Check for disk space errors (ENOSPC/EDQUOT) first — actionable message
+    if diskgraph_ingest::is_disk_space_error(&err) {
+        return DiskgraphSystemError::new_err(format!(
+            "Disk space exhausted during operation (ENOSPC/EDQUOT). \
+             The local SSD may be full. Error: {err}"
+        ));
+    }
     if let Some(e) = err.downcast_ref::<diskgraph_ingest::errors::ConvertError>() {
         return DiskgraphConfigError::new_err(e.to_string());
     }
@@ -917,6 +938,84 @@ pub fn ingest(
         .map_err(|e| DiskgraphSystemError::new_err(format!("Failed to serialize stats: {e}")))
 }
 
+// ---------------------------------------------------------------------------
+// Disk Manager
+// ---------------------------------------------------------------------------
+
+#[pyclass]
+struct DiskManager {
+    inner: diskgraph_ingest::disk_manager::DiskManager,
+}
+
+#[pymethods]
+impl DiskManager {
+    #[new]
+    fn new(data_root: &str) -> PyResult<Self> {
+        let path = std::path::Path::new(data_root);
+        if !path.exists() {
+            return Err(DiskgraphConfigError::new_err(format!(
+                "data_root does not exist: {data_root}"
+            )));
+        }
+        Ok(Self {
+            inner: diskgraph_ingest::disk_manager::DiskManager::new(path),
+        })
+    }
+
+    /// Ensure enough disk space for an ingest, evicting LRU indexes if needed.
+    /// Returns JSON EnsureSpaceResult.
+    fn ensure_space(
+        &self,
+        _py: Python<'_>,
+        needed_bytes: u64,
+        current_graph_key: &str,
+        current_graph_version: &str,
+    ) -> PyResult<String> {
+        let req = diskgraph_ingest::disk_manager::types::EnsureSpaceRequest {
+            needed_bytes,
+            current_graph_key: current_graph_key.to_string(),
+            current_graph_version: current_graph_version.to_string(),
+        };
+        let result = self.inner.ensure_space(&req).map_err(map_disk_manager_err)?;
+        serde_json::to_string(&result)
+            .map_err(|e| DiskgraphSystemError::new_err(format!("serialization failed: {e}")))
+    }
+
+    /// Scan all index directories under data_root. Returns JSON Vec<IndexInfo>.
+    fn scan_indexes(&self, _py: Python<'_>) -> PyResult<String> {
+        let indexes = self.inner.scan_indexes().map_err(map_disk_manager_err)?;
+        serde_json::to_string(&indexes)
+            .map_err(|e| DiskgraphSystemError::new_err(format!("serialization failed: {e}")))
+    }
+
+    /// Get disk usage stats. Returns JSON DiskUsage.
+    fn disk_usage(&self, _py: Python<'_>) -> PyResult<String> {
+        let usage = self.inner.disk_usage().map_err(map_disk_manager_err)?;
+        serde_json::to_string(&usage)
+            .map_err(|e| DiskgraphSystemError::new_err(format!("serialization failed: {e}")))
+    }
+}
+
+/// Estimate the total source bytes for an ingest from a graph config JSON.
+/// Sums file sizes for all local table paths. Returns bytes as u64.
+#[pyfunction]
+fn estimate_ingest_size(_py: Python<'_>, config_json: &str) -> PyResult<u64> {
+    let config: diskgraph_ingest::GraphConfig = serde_json::from_str(config_json)
+        .map_err(|e| DiskgraphConfigError::new_err(format!("invalid config JSON: {e}")))?;
+    // Pass None for cloud transfer — source paths should already be local
+    // when called from the Python workflow (resolved by resolve_diskgraph_source_paths)
+    let total = diskgraph_ingest::config_converter::inference::compute_total_bytes(&config, &None)
+        .map_err(|e| {
+            DiskgraphSystemError::new_err(format!("failed to compute source bytes: {e}"))
+        })?;
+    if total == 0 {
+        return Err(DiskgraphDataError::new_err(
+            "computed source size is 0 bytes — no data files found in table paths",
+        ));
+    }
+    Ok(total)
+}
+
 #[pymodule]
 #[pyo3(name = "_c")]
 fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -931,6 +1030,8 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ExportConfig>()?;
     m.add_class::<FkeyConfig>()?;
     m.add_class::<PyTimeUnit>()?;
+    m.add_class::<DiskManager>()?;
+    m.add_function(wrap_pyfunction!(estimate_ingest_size, m)?)?;
     m.add_class::<SamplerEngine>()?;
     m.add_class::<PySampleIterator>()?;
     m.add_class::<tt_builder::DiskGraphTTBuilder>()?;
