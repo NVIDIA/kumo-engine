@@ -37,6 +37,7 @@ pub fn plan_eviction(
         }
     }
 
+    orphans.sort_by(|a, b| a.path.cmp(&b.path));
     valid.sort_by_key(|idx| idx.success_mtime_secs.unwrap_or(0));
 
     let mut to_evict = Vec::new();
@@ -67,14 +68,19 @@ pub fn execute_eviction(
 ) -> Result<EnsureSpaceResult, DiskManagerError> {
     let mut freed_bytes = 0u64;
     let mut evicted = Vec::new();
+    let mut eviction_errors = 0u32;
 
     for entry in plan {
-        if let Err(e) = canonicalize_under(data_root, &entry.path) {
-            tracing::warn!("skipping eviction of {:?}: {}", entry.path, e);
-            continue;
-        }
+        let canonical = match canonicalize_under(data_root, &entry.path) {
+            Ok(p) => p,
+            Err(e) => {
+                eviction_errors += 1;
+                tracing::error!("skipping eviction of {:?}: {}", entry.path, e);
+                continue;
+            }
+        };
 
-        match std::fs::remove_dir_all(&entry.path) {
+        match std::fs::remove_dir_all(&canonical) {
             Ok(()) => {
                 tracing::info!(
                     graph_key = %entry.graph_key,
@@ -87,7 +93,8 @@ pub fn execute_eviction(
                 evicted.push(entry.clone());
             }
             Err(e) => {
-                tracing::warn!("failed to evict {:?}: {}", entry.path, e);
+                eviction_errors += 1;
+                tracing::error!("failed to evict {:?}: {}", entry.path, e);
             }
         }
 
@@ -101,6 +108,14 @@ pub fn execute_eviction(
                 }
             }
         }
+    }
+
+    if eviction_errors > 0 {
+        tracing::error!(
+            failed = eviction_errors,
+            total = plan.len(),
+            "some evictions failed, space may be insufficient due to failed deletions"
+        );
     }
 
     let available_bytes = super::available_space(data_root).unwrap_or(0);

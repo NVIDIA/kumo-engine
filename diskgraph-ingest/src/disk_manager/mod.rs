@@ -41,8 +41,12 @@ pub struct DiskManager {
 
 impl DiskManager {
     pub fn new(data_root: &Path) -> Self {
+        // Canonicalize to resolve symlinks and .. segments.
+        // Fall back to the original path if canonicalization fails
+        // (e.g., path doesn't exist yet).
+        let resolved = data_root.canonicalize().unwrap_or_else(|_| data_root.to_path_buf());
         Self {
-            data_root: data_root.to_path_buf(),
+            data_root: resolved,
         }
     }
 
@@ -129,13 +133,13 @@ impl DiskManager {
 /// Available bytes on the filesystem containing `path` (via statvfs).
 pub fn available_space(path: &Path) -> std::io::Result<u64> {
     let stat = statvfs(path)?;
-    Ok(stat.f_bavail * stat.f_frsize)
+    Ok(stat.f_bavail.saturating_mul(stat.f_frsize))
 }
 
 /// Total bytes on the filesystem containing `path` (via statvfs).
-fn total_space(path: &Path) -> std::io::Result<u64> {
+pub fn total_space(path: &Path) -> std::io::Result<u64> {
     let stat = statvfs(path)?;
-    Ok(stat.f_blocks * stat.f_frsize)
+    Ok(stat.f_blocks.saturating_mul(stat.f_frsize))
 }
 
 fn statvfs(path: &Path) -> std::io::Result<libc::statvfs> {
@@ -183,7 +187,9 @@ mod tests {
         }).unwrap();
 
         assert!(result.evicted.is_empty());
-        assert!(result.available_bytes >= 100);
+        assert_eq!(result.freed_bytes, 0);
+        assert_eq!(result.needed_bytes, 100);
+        assert!(result.available_bytes > 0);
     }
 
     #[test]
@@ -278,7 +284,7 @@ mod tests {
         // close the deficit. We keep the deficit well under the total bytes
         // we can free (~3 MB of indexes) so the post-eviction check passes.
         let available = available_space(dir.path()).unwrap();
-        let deficit = 512_000u64; // ~512 KB, well under 3 MB of evictable indexes
+        let deficit = 2_000_000u64; // ~2 MB, well under 3 MB of evictable indexes
         let needed = available + deficit;
 
         let result = dm
@@ -319,6 +325,101 @@ mod tests {
         assert!(
             !dir.path().join("graph-old").exists(),
             "empty parent dir should be removed after eviction"
+        );
+    }
+
+    #[test]
+    fn test_ensure_space_insufficient_only_current_target() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create one index that matches the current target — it must not be evicted.
+        create_index(dir.path(), "graph-A", "v1", 1_000, 1000);
+
+        let dm = DiskManager::new(dir.path());
+        let available = available_space(dir.path()).unwrap();
+        // Request more than available so eviction is attempted, but the only
+        // index matches current_graph_key/version and is therefore protected.
+        let needed = available + 10_000_000;
+
+        let err = dm
+            .ensure_space(&EnsureSpaceRequest {
+                needed_bytes: needed,
+                current_graph_key: "graph-A".into(),
+                current_graph_version: "v1".into(),
+            })
+            .unwrap_err();
+
+        assert!(
+            matches!(err, DiskManagerError::InsufficientSpace { .. }),
+            "expected InsufficientSpace, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_ensure_space_nonexistent_root() {
+        let fake_root = PathBuf::from(format!(
+            "/tmp/nonexistent-dm-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        assert!(!fake_root.exists());
+
+        let dm = DiskManager::new(&fake_root);
+        let err = dm
+            .ensure_space(&EnsureSpaceRequest {
+                needed_bytes: 100,
+                current_graph_key: "graph-A".into(),
+                current_graph_version: "v1".into(),
+            })
+            .unwrap_err();
+
+        assert!(
+            matches!(err, DiskManagerError::Io(_)),
+            "expected Io error, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_eviction_keeps_parent_with_siblings() {
+        // Tests that evicting one version does NOT remove the parent
+        // graph-key directory when a sibling version still exists.
+        // Uses execute_eviction directly (not ensure_space) to avoid
+        // depending on real disk pressure, which is flaky on CI.
+        let dir = tempfile::tempdir().unwrap();
+        create_index(dir.path(), "graph-A", "v1", 100, 1000);
+        create_index(dir.path(), "graph-A", "v2", 100, 3000);
+
+        // Plan to evict only v1.
+        let plan = vec![types::EvictedIndex {
+            path: dir.path().join("graph-A").join("v1"),
+            graph_key: "graph-A".into(),
+            graph_version: "v1".into(),
+            size_bytes: 100,
+            was_orphan: false,
+        }];
+
+        let result = eviction::execute_eviction(dir.path(), &plan, 100).unwrap();
+        assert_eq!(result.evicted.len(), 1);
+        assert_eq!(result.evicted[0].graph_version, "v1");
+
+        // v1 directory should be gone.
+        assert!(
+            !dir.path().join("graph-A").join("v1").exists(),
+            "v1 should have been deleted"
+        );
+        // The graph-A parent dir must still exist because v2 remains.
+        assert!(
+            dir.path().join("graph-A").exists(),
+            "parent dir should still exist when sibling v2 remains"
+        );
+        // v2 itself is still on disk.
+        assert!(
+            dir.path().join("graph-A").join("v2").exists(),
+            "v2 should not have been evicted"
         );
     }
 }

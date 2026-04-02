@@ -31,6 +31,13 @@ pub fn scan_indexes(data_root: &Path) -> io::Result<Vec<IndexInfo>> {
         if !key_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             continue;
         }
+        // Reject symlinks explicitly (file_type may follow symlinks on some filesystems)
+        if key_entry.path().symlink_metadata()
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            continue;
+        }
         let key_name = key_entry.file_name().to_string_lossy().to_string();
         if validate_path_component(&key_name).is_err() {
             continue;
@@ -48,6 +55,13 @@ pub fn scan_indexes(data_root: &Path) -> io::Result<Vec<IndexInfo>> {
                 Err(_) => continue,
             };
             if !ver_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            // Reject symlinks explicitly (file_type may follow symlinks on some filesystems)
+            if ver_entry.path().symlink_metadata()
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false)
+            {
                 continue;
             }
             let ver_name = ver_entry.file_name().to_string_lossy().to_string();

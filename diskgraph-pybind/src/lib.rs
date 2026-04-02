@@ -966,7 +966,7 @@ impl DiskManager {
     /// Returns JSON EnsureSpaceResult.
     fn ensure_space(
         &self,
-        _py: Python<'_>,
+        py: Python<'_>,
         needed_bytes: u64,
         current_graph_key: &str,
         current_graph_version: &str,
@@ -976,21 +976,24 @@ impl DiskManager {
             current_graph_key: current_graph_key.to_string(),
             current_graph_version: current_graph_version.to_string(),
         };
-        let result = self.inner.ensure_space(&req).map_err(map_disk_manager_err)?;
+        let result = py.detach(|| self.inner.ensure_space(&req))
+            .map_err(map_disk_manager_err)?;
         serde_json::to_string(&result)
             .map_err(|e| DiskgraphSystemError::new_err(format!("serialization failed: {e}")))
     }
 
     /// Scan all index directories under data_root. Returns JSON Vec<IndexInfo>.
-    fn scan_indexes(&self, _py: Python<'_>) -> PyResult<String> {
-        let indexes = self.inner.scan_indexes().map_err(map_disk_manager_err)?;
+    fn scan_indexes(&self, py: Python<'_>) -> PyResult<String> {
+        let indexes = py.detach(|| self.inner.scan_indexes())
+            .map_err(map_disk_manager_err)?;
         serde_json::to_string(&indexes)
             .map_err(|e| DiskgraphSystemError::new_err(format!("serialization failed: {e}")))
     }
 
     /// Get disk usage stats. Returns JSON DiskUsage.
-    fn disk_usage(&self, _py: Python<'_>) -> PyResult<String> {
-        let usage = self.inner.disk_usage().map_err(map_disk_manager_err)?;
+    fn disk_usage(&self, py: Python<'_>) -> PyResult<String> {
+        let usage = py.detach(|| self.inner.disk_usage())
+            .map_err(map_disk_manager_err)?;
         serde_json::to_string(&usage)
             .map_err(|e| DiskgraphSystemError::new_err(format!("serialization failed: {e}")))
     }

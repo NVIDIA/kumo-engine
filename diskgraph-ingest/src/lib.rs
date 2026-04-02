@@ -86,7 +86,6 @@ use std::io::{self as std_io, BufWriter, Cursor, Read, Write};
 #[cfg(target_os = "linux")]
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use uuid_simd::{parse_hyphenated, parse_simple, AsOut};
@@ -445,7 +444,13 @@ pub fn is_disk_space_error(err: &anyhow::Error) -> bool {
             }
         }
     }
-    false
+    // Fallback: check stringified error for disk-space keywords
+    // (catches cases where io::Error was stringified by intermediate error types)
+    let msg = format!("{err:?}");
+    msg.contains("No space left on device")
+        || msg.contains("os error 28")
+        || msg.contains("Disk quota exceeded")
+        || msg.contains("os error 122")
 }
 
 #[cfg(test)]
@@ -477,6 +482,19 @@ mod tests_disk_space {
     fn test_is_disk_space_error_non_io() {
         let err = anyhow::anyhow!("some other error");
         assert!(!is_disk_space_error(&err));
+    }
+
+    #[test]
+    fn test_is_disk_space_error_stringified_enospc() {
+        // Simulates ParquetError::General(String) that stringifies the inner io::Error
+        let err = anyhow::anyhow!("General error: No space left on device (os error 28)");
+        assert!(is_disk_space_error(&err));
+    }
+
+    #[test]
+    fn test_is_disk_space_error_stringified_edquot() {
+        let err = anyhow::anyhow!("General error: Disk quota exceeded (os error 122)");
+        assert!(is_disk_space_error(&err));
     }
 
     #[test]
@@ -542,18 +560,11 @@ fn log_disk_space(output_path: &Path) {
     }
 }
 
-/// Get disk space via statvfs. Returns (total, available) in bytes.
+/// Get disk space via disk_manager. Returns (total, available) in bytes.
 fn disk_space_bytes(path: &Path) -> Option<(u64, u64)> {
-    let c_path = std::ffi::CString::new(path.to_string_lossy().as_bytes()).ok()?;
-    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
-    let ret = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
-    if ret != 0 {
-        return None;
-    }
-    Some((
-        stat.f_blocks * stat.f_frsize,
-        stat.f_bavail * stat.f_frsize,
-    ))
+    let available = disk_manager::available_space(path).ok()?;
+    let total = disk_manager::total_space(path).ok()?;
+    Some((total, available))
 }
 
 #[derive(Clone)]
@@ -797,68 +808,6 @@ struct TempNodeFileResult {
     total_rows: u64,
     node_data_dropped: u64,
 }
-
-fn spawn_background_delete(path: PathBuf) {
-    if !path.exists() {
-        return;
-    }
-    if let Err(err) = spawn_delete_process(&path) {
-        tracing::warn!("delete spawn failed for {}: {}", path.display(), err);
-    }
-}
-
-fn spawn_delete_process(path: &Path) -> std_io::Result<()> {
-    let mut cmd = if command_exists("ionice") {
-        let mut cmd = Command::new("ionice");
-        cmd.args(["-c3", "-n7", "nice", "-n", "19", "rm", "-rf", "--"]);
-        cmd.arg(path);
-        cmd
-    } else if command_exists("nice") {
-        let mut cmd = Command::new("nice");
-        cmd.args(["-n", "19", "rm", "-rf", "--"]);
-        cmd.arg(path);
-        cmd
-    } else {
-        let mut cmd = Command::new("rm");
-        cmd.args(["-rf", "--"]);
-        cmd.arg(path);
-        cmd
-    };
-
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    detach_command(&mut cmd);
-    let _child = cmd.spawn()?;
-    Ok(())
-}
-
-fn command_exists(cmd: &str) -> bool {
-    Command::new(cmd)
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map(|mut child| {
-            let _ = child.wait();
-            true
-        })
-        .unwrap_or(false)
-}
-
-#[cfg(unix)]
-fn detach_command(cmd: &mut Command) {
-    use std::os::unix::process::CommandExt;
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::setsid();
-            Ok(())
-        });
-    }
-}
-
-#[cfg(not(unix))]
-fn detach_command(_cmd: &mut Command) {}
 
 #[derive(Clone)]
 struct RelationDef {
