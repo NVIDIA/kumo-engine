@@ -3,7 +3,7 @@
 //! Exposes [`execute_tt_plan`] as a `#[pyfunction]` that returns a
 //! `TTPlanIterator` yielding `pyarrow.RecordBatch` objects one at a time.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -287,6 +287,15 @@ impl TTPlanIterator {
                     stats_dict.set_item("split_payload", split_dict)?;
                 } else {
                     stats_dict.set_item("split_payload", py.None())?;
+                }
+
+                // Per-timestamp row counts for accurate stats_per_timeframe
+                if !stats.timestamp_counts.is_empty() {
+                    let tc_dict = PyDict::new(py);
+                    for (ts, count) in &stats.timestamp_counts {
+                        tc_dict.set_item(ts.to_string(), *count)?;
+                    }
+                    stats_dict.set_item("timestamp_counts", tc_dict)?;
                 }
 
                 out.set_item("stats", stats_dict)?;
@@ -1493,18 +1502,36 @@ fn build_tt_stats_artifact_value(
         .and_then(|v| v.get("num_unique"))
         .and_then(|v| v.as_u64());
 
-    let temporal_timestamps = plan
-        .and_then(|p| p.get("temporal"))
-        .and_then(|t| t.get("timestamps"))
+    // Use actual produced timestamps from split_payload (only timestamps with
+    // data), not the full input timestamp list from the plan.  The plan's
+    // temporal.timestamps includes ALL candidate timestamps, but some may
+    // produce zero rows (e.g. ASSUMING clause filters all entities).  GE's
+    // Spark path naturally excludes empty timeframes; DG must do the same.
+    let mut produced_timestamps: Vec<i64> = split_payload
+        .as_object()
+        .and_then(|sp| sp.get("artifacts_v3"))
+        .and_then(|a| a.get("timestamp_stage_assignments"))
         .and_then(|arr| arr.as_array())
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|v| v.as_i64())
-        .collect::<Vec<_>>();
-    let is_temporal = !temporal_timestamps.is_empty();
-    let num_timeframes = if is_temporal {
-        temporal_timestamps.len() as u64
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.get("timestamp").and_then(|t| t.as_i64()))
+                .collect()
+        })
+        .unwrap_or_default();
+    // Sort newest-first: stats_per_timeframe must be in reverse chronological
+    // order (Python's update_train_table_stats asserts this).
+    produced_timestamps.sort_unstable_by(|a, b| b.cmp(a));
+
+    let is_temporal = !produced_timestamps.is_empty()
+        || plan
+            .and_then(|p| p.get("temporal"))
+            .and_then(|t| t.get("timestamps"))
+            .and_then(|arr| arr.as_array())
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
+
+    let num_timeframes = if !produced_timestamps.is_empty() {
+        produced_timestamps.len() as u64
     } else {
         timestamp_unique.unwrap_or(0)
     };
@@ -1531,17 +1558,32 @@ fn build_tt_stats_artifact_value(
         .map(|m| m.contains_key("link"))
         .unwrap_or(false);
 
+    // Extract per-timestamp row counts from the Rust TT gen stats.
+    // These are the real counts (like GE's Spark groupby on TIME_BUCKET_COL).
+    let ts_counts: HashMap<i64, u64> = stats
+        .get("timestamp_counts")
+        .and_then(|v| v.as_object())
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| {
+                    let ts = k.parse::<i64>().ok()?;
+                    let count = v.as_u64()?;
+                    Some((ts, count))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     let mut stats_per_timeframe: Vec<Value> = Vec::new();
     if is_temporal {
-        let mut ts_values = temporal_timestamps.clone();
+        let mut ts_values = produced_timestamps.clone();
         if ts_values.is_empty() {
             ts_values = vec![timestamp_max, timestamp_max];
         } else if ts_values.len() == 1 {
             ts_values.push(ts_values[0]);
         }
-        let per_timeframe_rows = largest_remainder_distribute(num_train_rows, ts_values.len());
         for (idx, ts) in ts_values.iter().enumerate() {
-            let rows_for_tf = per_timeframe_rows.get(idx).copied().unwrap_or(0);
+            let rows_for_tf = ts_counts.get(ts).copied().unwrap_or(0);
             let dt = Utc
                 .timestamp_opt(*ts, 0)
                 .single()

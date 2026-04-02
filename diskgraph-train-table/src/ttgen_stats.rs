@@ -90,6 +90,10 @@ pub struct TrainTableStatsPayload {
     pub num_links: Option<u64>,
     pub exact_stats: TrainTableExactStatsPayload,
     pub split_payload: Option<TrainTableSplitPayload>,
+    /// Per-timestamp row counts: {timestamp_seconds: row_count}.
+    /// Used by the pybind layer to build accurate stats_per_timeframe.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub timestamp_counts: HashMap<i64, u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -256,6 +260,7 @@ impl StatsMerger {
             } else {
                 None
             },
+            timestamp_counts: self.timestamp_counts.clone(),
             exact_stats: TrainTableExactStatsPayload {
                 entity: entity_stats,
                 timestamp: timestamp_stats,
