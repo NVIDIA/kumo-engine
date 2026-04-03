@@ -199,3 +199,64 @@ def test_entity_include_bit_masks_rows_with_canonical_column_name(tmp_path):
         split_config=SplitSpec(kind='FixedSplit', ratio=[1.0, 0.0, 0.0]),
     )
     assert assignments.tolist() == [0, 255, 0, 255]
+
+
+def test_time_range_split_with_seconds_unit(tmp_path):
+    """TimeRangeSplit with timestamp_unit='seconds' correctly converts
+    range boundaries from seconds to nanoseconds before comparing against
+    parquet timestamps (which are in nanoseconds)."""
+    import pandas as pd
+
+    # Create parquet with nanosecond timestamps (Arrow default)
+    # 10 rows: 2020-01-01 through 2020-01-10
+    dates = pd.date_range('2020-01-01', periods=10, freq='D')
+    p = tmp_path / 'tt.parquet'
+    _write_tt(
+        p,
+        {
+            'arange': list(range(10)),
+            'TIMESTAMP': [d.isoformat() for d in dates],
+        },
+    )
+
+    # TimeRangeSplit with ranges in epoch seconds:
+    #   train: (2020-01-01, 2020-01-07]  -> days 2-7
+    #   val:   (2020-01-07, 2020-01-09]  -> days 8-9
+    #   test:  (2020-01-09, 2020-01-11]  -> day 10
+    # Convention is (start, end] — exclusive start, inclusive end.
+    train_start = int(pd.Timestamp('2020-01-01').timestamp())
+    train_end = int(pd.Timestamp('2020-01-07').timestamp())
+    val_end = int(pd.Timestamp('2020-01-09').timestamp())
+    test_end = int(pd.Timestamp('2020-01-11').timestamp())
+
+    assignments, meta = M.compute_dense_split_assignments(
+        train_table_path=str(p),
+        split_config=SplitSpec(
+            kind='TimeRangeSplit',
+            ranges=[(train_start, train_end), (train_end, val_end), (val_end, test_end)],
+            timestamp_unit='seconds',
+        ),
+    )
+
+    assert meta['authoritative'] is True
+    assert meta['family'] == 'TimeRangeSplit'
+    # Day 1 (2020-01-01) is on the open start boundary -> UNASSIGNED (255)
+    # Days 2-7 -> train (0)  [> Jan 1 and <= Jan 7]
+    # Days 8-9 -> val (1)    [> Jan 7 and <= Jan 9]
+    # Day 10 -> test (2)     [> Jan 9 and <= Jan 11]
+    assert assignments.tolist() == [255, 0, 0, 0, 0, 0, 0, 1, 1, 2]
+
+
+def test_time_range_split_timestamp_unit_in_split_spec():
+    """SplitSpec includes timestamp_unit in to_assignment_config()."""
+    spec = SplitSpec(
+        kind='TimeRangeSplit',
+        ranges=[(1000, 2000), (2000, 3000)],
+        timestamp_unit='seconds',
+    )
+    cfg = spec.to_assignment_config()
+    assert cfg['timestamp_unit'] == 'seconds'
+
+    spec2 = SplitSpec(kind='FixedSplit', ratio=[0.8, 0.1, 0.1])
+    cfg2 = spec2.to_assignment_config()
+    assert cfg2['timestamp_unit'] == 'seconds'  # default

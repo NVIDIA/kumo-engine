@@ -219,7 +219,17 @@ def _assign_for_backtesting_split(split_cfg: dict[str, Any], train_table_path: s
     df = _read_parquet_columns(train_table_path, ['arange', 'TIMESTAMP']).sort_values('arange', kind='mergesort')
     time_ser = _infer_datetime_series(df['TIMESTAMP'])
     ts_ns = time_ser.astype('int64').to_numpy(dtype=np.int64)
-    target_ns = int(pd.Timestamp(ts_raw).value)
+    timestamp_unit = str(split_cfg.get('timestamp_unit', 'seconds'))
+    _UNIT_TO_NS = {
+        'seconds': 1_000_000_000,
+        'milliseconds': 1_000_000,
+        'microseconds': 1_000,
+        'nanoseconds': 1,
+    }
+    if isinstance(ts_raw, (int, float)) and timestamp_unit in _UNIT_TO_NS:
+        target_ns = int(ts_raw) * _UNIT_TO_NS[timestamp_unit]
+    else:
+        target_ns = int(pd.Timestamp(ts_raw).value)
     backtesting_assign = _require_rust_fn(assign_backtesting_split, 'assign_backtesting_split')
     out = backtesting_assign(
         timestamps_ns=ts_ns.tolist(),
@@ -238,6 +248,14 @@ def _assign_for_time_range_split(split_cfg: dict[str, Any], train_table_path: st
     time_ser = _infer_datetime_series(df['TIMESTAMP'])
     ts_ns = time_ser.astype('int64').to_numpy(dtype=np.int64)
 
+    timestamp_unit = str(split_cfg.get('timestamp_unit', 'seconds'))
+    _UNIT_TO_NS = {
+        'seconds': 1_000_000_000,
+        'milliseconds': 1_000_000,
+        'microseconds': 1_000,
+        'nanoseconds': 1,
+    }
+
     starts: list[int] = []
     ends: list[int] = []
     for split_idx, pair in enumerate(ranges):
@@ -245,8 +263,13 @@ def _assign_for_time_range_split(split_cfg: dict[str, Any], train_table_path: st
             break
         if not isinstance(pair, (list, tuple)) or len(pair) != 2:
             raise DiskgraphConfigError('TimeRangeSplit range entries must be [start, end]')
-        starts.append(int(pd.Timestamp(pair[0]).value))
-        ends.append(int(pd.Timestamp(pair[1]).value))
+        raw_start, raw_end = pair
+        if isinstance(raw_start, (int, float)) and timestamp_unit in _UNIT_TO_NS:
+            starts.append(int(raw_start) * _UNIT_TO_NS[timestamp_unit])
+            ends.append(int(raw_end) * _UNIT_TO_NS[timestamp_unit])
+        else:
+            starts.append(int(pd.Timestamp(raw_start).value))
+            ends.append(int(pd.Timestamp(raw_end).value))
 
     timeframe = split_cfg.get('timeframe', None)
     unit = str(split_cfg.get('unit', 'days')).lower()

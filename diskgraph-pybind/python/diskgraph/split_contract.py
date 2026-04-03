@@ -46,6 +46,10 @@ class SplitSpec:
     unit: Optional[str] = None
     offset_unit: Optional[str] = None
     anchor_start_offset: Optional[int] = None
+    # Unit of range/backtesting_timestamp values: "seconds", "milliseconds",
+    # "microseconds", or "nanoseconds".  The Rust pybind normalizes to
+    # nanoseconds internally for comparison against parquet timestamps.
+    timestamp_unit: str = "seconds"
 
     def to_assignment_config(self) -> dict[str, Any]:
         cfg: dict[str, Any] = {}
@@ -80,6 +84,7 @@ class SplitSpec:
             cfg['anchor_start_offset'] = int(self.anchor_start_offset)
         if self.is_temporal is not None:
             cfg['is_temporal'] = bool(self.is_temporal)
+        cfg['timestamp_unit'] = str(self.timestamp_unit)
         return cfg
 
     def validate_for_compiler(self) -> None:

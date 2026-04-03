@@ -1222,7 +1222,7 @@ fn parse_i64_list(split_cfg: &Value, key: &str) -> anyhow::Result<Vec<i64>> {
         .collect::<anyhow::Result<Vec<_>>>()
 }
 
-fn parse_time_ranges_ns(split_cfg: &Value) -> anyhow::Result<(Vec<i64>, Vec<i64>)> {
+fn parse_time_ranges_ns(split_cfg: &Value, timestamp_unit: &str) -> anyhow::Result<(Vec<i64>, Vec<i64>)> {
     let ranges = split_cfg
         .get("ranges")
         .and_then(|v| v.as_array())
@@ -1236,8 +1236,12 @@ fn parse_time_ranges_ns(split_cfg: &Value) -> anyhow::Result<(Vec<i64>, Vec<i64>
         if p.len() != 2 {
             return Err(anyhow::anyhow!("split ranges entries must be length-2"));
         }
-        starts.push(parse_timestamp_ns_json(&p[0])?);
-        ends.push(parse_timestamp_ns_json(&p[1])?);
+        let raw_start = parse_timestamp_ns_json(&p[0])?;
+        let raw_end = parse_timestamp_ns_json(&p[1])?;
+        let ns_start = to_nanoseconds(raw_start, timestamp_unit)?;
+        let ns_end = to_nanoseconds(raw_end, timestamp_unit)?;
+        starts.push(ns_start);
+        ends.push(ns_end);
     }
     Ok((starts, ends))
 }
@@ -3592,6 +3596,28 @@ fn parse_timestamp_ns_json(v: &Value) -> anyhow::Result<i64> {
     ))
 }
 
+/// Convert a timestamp value to nanoseconds based on the declared unit.
+fn to_nanoseconds(value: i64, timestamp_unit: &str) -> anyhow::Result<i64> {
+    match timestamp_unit {
+        "seconds" => Ok(value.checked_mul(1_000_000_000)
+            .ok_or_else(|| anyhow::anyhow!("timestamp ns overflow converting from seconds"))?),
+        "milliseconds" => Ok(value.checked_mul(1_000_000)
+            .ok_or_else(|| anyhow::anyhow!("timestamp ns overflow converting from milliseconds"))?),
+        "microseconds" => Ok(value.checked_mul(1_000)
+            .ok_or_else(|| anyhow::anyhow!("timestamp ns overflow converting from microseconds"))?),
+        "nanoseconds" => Ok(value),
+        _ => Err(anyhow::anyhow!("unsupported timestamp_unit: {}", timestamp_unit)),
+    }
+}
+
+/// Read `timestamp_unit` from split config, defaulting to "seconds".
+fn get_timestamp_unit(split_cfg: &Value) -> &str {
+    split_cfg
+        .get("timestamp_unit")
+        .and_then(|v| v.as_str())
+        .unwrap_or("seconds")
+}
+
 fn extract_sort_values(batch: &RecordBatch, col_name: &str) -> anyhow::Result<Vec<SortValue>> {
     let idx = batch
         .schema()
@@ -4033,7 +4059,8 @@ pub fn execute_tt_plan_materialize_with_split(
                         .map_err(|e| anyhow::anyhow!(e.to_string()))?
                     }
                     "TimeRangeSplit" => {
-                        let (starts, ends) = parse_time_ranges_ns(split_cfg)?;
+                        let ts_unit = get_timestamp_unit(split_cfg);
+                        let (starts, ends) = parse_time_ranges_ns(split_cfg, ts_unit)?;
                         let timeframe = split_cfg.get("timeframe").and_then(|v| v.as_i64());
                         let unit = split_cfg
                             .get("unit")
@@ -4054,10 +4081,11 @@ pub fn execute_tt_plan_materialize_with_split(
                         .map_err(|e| anyhow::anyhow!(e.to_string()))?
                     }
                     "BacktestingSplit" => {
+                        let ts_unit = get_timestamp_unit(split_cfg);
                         let ts_val = split_cfg
                             .get("backtesting_timestamp")
                             .ok_or_else(|| anyhow::anyhow!("BacktestingSplit requires backtesting_timestamp"))?;
-                        let ts = parse_timestamp_ns_json(ts_val)?;
+                        let ts = to_nanoseconds(parse_timestamp_ns_json(ts_val)?, ts_unit)?;
                         split_assignments::assign_backtesting_split(timestamps_ns.clone(), ts)
                     }
                     "ColumnSplit" => {
@@ -5515,5 +5543,75 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_to_nanoseconds_seconds() {
+        assert_eq!(to_nanoseconds(1, "seconds").unwrap(), 1_000_000_000);
+        assert_eq!(to_nanoseconds(0, "seconds").unwrap(), 0);
+        assert_eq!(
+            to_nanoseconds(1735689600, "seconds").unwrap(),
+            1735689600_000_000_000
+        );
+    }
+
+    #[test]
+    fn test_to_nanoseconds_milliseconds() {
+        assert_eq!(to_nanoseconds(1, "milliseconds").unwrap(), 1_000_000);
+        assert_eq!(to_nanoseconds(1000, "milliseconds").unwrap(), 1_000_000_000);
+    }
+
+    #[test]
+    fn test_to_nanoseconds_microseconds() {
+        assert_eq!(to_nanoseconds(1, "microseconds").unwrap(), 1_000);
+        assert_eq!(
+            to_nanoseconds(1_000_000, "microseconds").unwrap(),
+            1_000_000_000
+        );
+    }
+
+    #[test]
+    fn test_to_nanoseconds_passthrough() {
+        assert_eq!(to_nanoseconds(42, "nanoseconds").unwrap(), 42);
+    }
+
+    #[test]
+    fn test_to_nanoseconds_unknown_unit() {
+        assert!(to_nanoseconds(1, "fortnights").is_err());
+    }
+
+    #[test]
+    fn test_get_timestamp_unit_present() {
+        let cfg: Value = serde_json::json!({"timestamp_unit": "milliseconds"});
+        assert_eq!(get_timestamp_unit(&cfg), "milliseconds");
+    }
+
+    #[test]
+    fn test_get_timestamp_unit_missing_defaults_to_seconds() {
+        let cfg: Value = serde_json::json!({});
+        assert_eq!(get_timestamp_unit(&cfg), "seconds");
+    }
+
+    #[test]
+    fn test_parse_time_ranges_ns_converts_seconds() {
+        // Ranges in epoch seconds, timestamp_unit = "seconds"
+        let cfg: Value = serde_json::json!({
+            "ranges": [[1000, 2000], [2000, 3000]],
+            "timestamp_unit": "seconds"
+        });
+        let (starts, ends) = parse_time_ranges_ns(&cfg, "seconds").unwrap();
+        assert_eq!(starts, vec![1000_000_000_000i64, 2000_000_000_000i64]);
+        assert_eq!(ends, vec![2000_000_000_000i64, 3000_000_000_000i64]);
+    }
+
+    #[test]
+    fn test_parse_time_ranges_ns_nanoseconds_passthrough() {
+        let cfg: Value = serde_json::json!({
+            "ranges": [[1_000_000_000i64, 2_000_000_000i64], [2_000_000_000i64, 3_000_000_000i64]],
+            "timestamp_unit": "nanoseconds"
+        });
+        let (starts, ends) = parse_time_ranges_ns(&cfg, "nanoseconds").unwrap();
+        assert_eq!(starts, vec![1_000_000_000i64, 2_000_000_000i64]);
+        assert_eq!(ends, vec![2_000_000_000i64, 3_000_000_000i64]);
     }
 }
