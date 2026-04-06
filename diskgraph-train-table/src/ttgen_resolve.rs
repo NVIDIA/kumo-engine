@@ -103,6 +103,11 @@ pub struct ResolvedAggregate {
     pub window: Option<ResolvedWindow>,
     pub row_filter: Option<ResolvedRowFilter>,
     pub limit: Option<u32>,
+    /// For LP ListDistinct: the table whose PK the target column references.
+    /// Used to filter out orphaned FK values that don't exist in the
+    /// destination table (e.g., article_ids in transactions that have no
+    /// matching row in the articles table).
+    pub target_pk_table: Option<Arc<TableReader>>,
 }
 
 pub struct ResolvedColumn {
@@ -566,6 +571,18 @@ fn resolve_op(
                 .map(|f| resolve_row_filter(f, reader, dst_table, &dst_ctx, entity_col_indices))
                 .transpose().map_err(|e| TTGenError::SchemaError(format!("resolving aggregate row filter: {}", e)))?;
 
+            // For LP ListDistinct: resolve the table that the target column
+            // is a foreign key to.  This lets the executor skip target values
+            // whose PK doesn't exist in that table (orphaned FK rows).
+            let target_pk_table = if *func == AggFunc::ListDistinct {
+                match target_col.as_ref() {
+                    Some(col) => resolve_fk_destination(dst_table, col, reader)?,
+                    None => None,
+                }
+            } else {
+                None
+            };
+
             Ok(ResolvedOp::Aggregate(ResolvedAggregate {
                 alias_idx,
                 path: resolved_path,
@@ -574,6 +591,7 @@ fn resolve_op(
                 window: resolved_window,
                 row_filter: resolved_filter,
                 limit: *limit,
+                target_pk_table,
             }))
         }
         Op::HasEdges {
@@ -946,6 +964,44 @@ fn find_relation<'a>(
         edge_ref.dst_col,
         candidates.iter().map(|(_, r)| r.name.as_str()).collect::<Vec<_>>().join(", "),
     )));
+}
+
+/// Look up the table that `col_name` on `src_table` is a foreign key to.
+///
+/// Scans `src_table`'s edge relations for one whose name contains
+/// `col_name` and returns the destination table's `TableReader` from the
+/// index.  Returns `Ok(None)` if no matching relation is found (the
+/// column is not a foreign key).  Returns `Err` if the destination table
+/// is missing from the index or was not ingested with a primary key.
+fn resolve_fk_destination(
+    src_table: &Arc<TableReader>,
+    col_name: &str,
+    reader: &GraphIndexReader,
+) -> TTGenResult<Option<Arc<TableReader>>> {
+    for rel in src_table.relations() {
+        if rel.name.contains(col_name) {
+            let table = reader.table(&rel.dst_type).ok_or_else(|| {
+                TTGenError::SchemaError(format!(
+                    "LP target FK table '{}' not found in index",
+                    rel.dst_type
+                ))
+            })?;
+            if table.pk_map().is_none() {
+                return Err(TTGenError::SchemaError(format!(
+                    "LP target FK table '{}' has no primary key map",
+                    rel.dst_type
+                )));
+            }
+            tracing::debug!(
+                src = src_table.node_type(),
+                col = col_name,
+                dst = rel.dst_type.as_str(),
+                "resolved LP target FK destination table"
+            );
+            return Ok(Some(table));
+        }
+    }
+    Ok(None)
 }
 
 /// Infer the Arrow DataType for the TARGET column.

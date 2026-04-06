@@ -953,6 +953,7 @@ fn execute_aggregate(
             let mut values = Vec::new();
             let mut counts = Vec::new();
             let limit = agg.limit.unwrap_or(u32::MAX) as usize;
+            let pk_filter = agg.target_pk_table.as_ref();
             traverse_and_accumulate(entity_node, &agg.path, window, true, &mut |dst, _sk| {
                 if let Some(ref f) = agg.row_filter {
                     if !eval_row_filter(f, dst, dst_table, entity_cols) {
@@ -961,6 +962,13 @@ fn execute_aggregate(
                 }
                 if let Some(col_idx) = agg.target_col_idx {
                     if let Some(val) = read_column_value(dst_table, dst, col_idx) {
+                        // Skip target values whose FK doesn't exist in the
+                        // destination table (orphaned foreign keys).
+                        if let Some(pk_table) = pk_filter {
+                            if !pk_table.contains_pk_value(&val) {
+                                return true;
+                            }
+                        }
                         let h = hash_value(&val);
                         match seen.entry(h) {
                             std::collections::hash_map::Entry::Occupied(e) => {

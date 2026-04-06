@@ -662,6 +662,29 @@ impl TableReader {
         canonical_node_id == node_id
     }
 
+    /// Check whether `value` exists as a primary key in this table.
+    ///
+    /// # Panics
+    /// Panics if the table has no PK map (caller must verify via
+    /// `pk_map().is_some()` at resolve time) or if the underlying
+    /// shard data is corrupted.
+    ///
+    /// Lock-free, read-only lookup on the memory-mapped MPHF index —
+    /// safe to call from multiple threads concurrently.
+    pub fn contains_pk_value(&self, value: &Value) -> bool {
+        let pk_map = self
+            .pk_map
+            .as_ref()
+            .expect("contains_pk_value called on table without PK map");
+        let key = match Self::value_to_pk_key(value, pk_map.key_type()) {
+            Some(k) => k,
+            None => return false,
+        };
+        self.node_id_from_pk(&key)
+            .expect("corrupted index: PK shard lookup failed")
+            .is_some()
+    }
+
     fn value_to_pk_key(value: &Value, key_type: pkmap::KeyType) -> Option<Key> {
         match (value, key_type) {
             (Value::Int(i), pkmap::KeyType::Int64) => Some(Key::Int(*i as u64)),
