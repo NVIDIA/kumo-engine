@@ -196,6 +196,10 @@ Ingestion expects schemas to match `diskgraph_config.json` and supports:
 
 Other Parquet/Arrow types are rejected during ingest.
 
+## Disk Space Management
+
+Before each ingest, the disk manager scans existing indexes and evicts stale ones (LRU) to free space on the local SSD. See [`disk_manager.md`](./disk_manager.md) for the full API, eviction algorithm, and security model.
+
 ## Outputs (local only)
 
 `diskgraph-ingest` requires a local output directory and builds a DiskGraph index:
