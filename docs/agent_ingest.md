@@ -137,7 +137,7 @@ Sort key data (timestamps, weights for edge ordering) is bundled into `NodeWrite
 
 ### Col Stats Observer
 
-If `--col-stats` is enabled, the encode phase attaches a `ColumnValueObserver` to the encoder. See [col_stats.md](col_stats.md) for details. The observer adds 3-22% wall time overhead depending on dataset characteristics.
+If `--col-stats` is enabled, the encode phase attaches a `ColumnValueObserver` to the encoder. See [col_stats.md](../diskgraph-ingest/col_stats.md) for details. The observer adds 3-22% wall time overhead depending on dataset characteristics.
 
 ### Duplicate PK Handling
 
@@ -247,7 +247,7 @@ Cleanup and stats output:
 
 2. **CleanupGuard**: RAII guard that removes the output directory on failure (drop). On success, `disarm()` prevents cleanup. Ensures no partial index survives a failed ingest.
 
-3. **Stats output**: `ingest_stats.json` (rows, dropped PKs, timing), `edge_stats.json` (Kumo-format edge statistics), optionally `col_stats.json` (see [col_stats.md](col_stats.md)).
+3. **Stats output**: `ingest_stats.json` (rows, dropped PKs, timing), `edge_stats.json` (Kumo-format edge statistics), optionally `col_stats.json` (see [col_stats.md](../diskgraph-ingest/col_stats.md)).
 
 ## Config Converter
 

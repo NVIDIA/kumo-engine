@@ -8,7 +8,7 @@ DiskGraph computes everything — column statistics, TT generation, split assign
 
 **Why:** Production datasets are 100GB-2TB. Multi-pass means re-reading data. Disk I/O is the bottleneck. A 5% overhead added to one pass beats a 0% overhead second pass that doubles I/O.
 
-**Implications:** Every algorithm must be streaming-compatible. Welford for stats, HLL for cardinality, T-Digest for quantiles. Category counting required the most design effort because it inherently needs to track state across the full input (see [col_stats.md](col_stats.md)).
+**Implications:** Every algorithm must be streaming-compatible. Welford for stats, HLL for cardinality, T-Digest for quantiles. Category counting required the most design effort because it inherently needs to track state across the full input (see [col_stats.md](../diskgraph-ingest/col_stats.md)).
 
 ## MPHF-Based PK Maps
 

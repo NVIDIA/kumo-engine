@@ -108,4 +108,4 @@ Non-authoritative for now:
 | `ttgen_stats.rs` | Statistics collection during execution. `TTExecutionSummary` and `ChunkStats` for per-timeframe counts, entity/target/timestamp tracking. |
 | `errors.rs` | `TTGenError` enum: SchemaError, InvalidPlan, Io, SystemError. |
 
-See `docs/tt_gen_and_pql_plan.md` for architecture details.
+See `diskgraph-train-table/tt_gen_and_pql_plan.md` for architecture details.

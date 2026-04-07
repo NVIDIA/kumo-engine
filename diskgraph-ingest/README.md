@@ -246,7 +246,7 @@ Flags:
 - `--dest`: storage backend (`local`, `s3`, `gcs`, `adls`).
 - `--parallel` (default `true`): enable the shared worker pool. Set `false` for sequential execution (debugging).
 - `--index-mem-budget-bytes`: max bytes for index-build edge sort memory (default: 70% of system RAM).
-- `--col-stats`: collect per-column statistics during encode. See `docs/col_stats.md`.
+- `--col-stats`: collect per-column statistics during encode. See `diskgraph-ingest/col_stats.md`.
 - `--cat-count-strategy`: category counting strategy: `none` (default), `hybrid` (exact counts), `graduation` (approximate).
 - `--row-subsample`: enable per-row 30% subsampling for category counts (experimental).
 - `--profile [dir]`: enable CPU profiling and emit `*-profile.pb`/`*-profile.svg`.

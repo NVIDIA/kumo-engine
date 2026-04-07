@@ -160,7 +160,7 @@ pub trait ColumnValueObserver {
 }
 ```
 
-Used by `diskgraph-ingest` for column statistics collection (see `docs/col_stats.md`). Implementors receive zero-copy references — no allocations per value. The observer cannot slow down the encode pipeline (returns void).
+Used by `diskgraph-ingest` for column statistics collection (see `diskgraph-ingest/col_stats.md`). Implementors receive zero-copy references — no allocations per value. The observer cannot slow down the encode pipeline (returns void).
 
 ## RowPackConfig fields
 

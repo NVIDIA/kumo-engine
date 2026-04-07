@@ -183,5 +183,5 @@ The JSON output is consumed by Kumo's `StatsManager`. Changing field names, remo
 | Pipeline integration | `diskgraph-ingest/src/lib.rs` |
 | Observer trait | `diskgraph-rowpack/src/lib.rs` |
 | GloVe bloom data/builder | `diskgraph-ingest/data/glove_bloom.bin`, `src/bin/build_glove_bloom.rs` |
-| Category counting design doc | `docs/category_counts.md` |
+| Category counting design doc | `_(removed — content merged into col_stats.md)_` |
 | Benchmarks | `docs/col-stats-bench/` |
