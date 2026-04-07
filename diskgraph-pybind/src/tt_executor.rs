@@ -3042,41 +3042,26 @@ fn build_col_stats_map(
             kumo_entry(json!(na_fraction), false, data_version, total),
         );
 
+        // MEAN, STD, MIN, MAX are computed exactly (Welford's algorithm /
+        // running min-max).  MEDIAN, QUANTILES use t-digest (approximate).
+        // KURTOSIS is computed from exact moments (Welford's).
+        // The approx flag must match what the Python col-stats cache lookup
+        // expects — encoder stats (MEAN, STD) are fetched with approx=false.
         stats.insert(
-            kumo_key(&name, stype, "MEAN", approx_for_distribution_stats),
-            kumo_entry(
-                json!(acc.mean),
-                approx_for_distribution_stats,
-                data_version,
-                total,
-            ),
+            kumo_key(&name, stype, "MEAN", false),
+            kumo_entry(json!(acc.mean), false, data_version, total),
         );
         stats.insert(
-            kumo_key(&name, stype, "STD", approx_for_distribution_stats),
-            kumo_entry(
-                json!(acc.std_dev()),
-                approx_for_distribution_stats,
-                data_version,
-                total,
-            ),
+            kumo_key(&name, stype, "STD", false),
+            kumo_entry(json!(acc.std_dev()), false, data_version, total),
         );
         stats.insert(
-            kumo_key(&name, stype, "MIN", approx_for_distribution_stats),
-            kumo_entry(
-                json!(min),
-                approx_for_distribution_stats,
-                data_version,
-                total,
-            ),
+            kumo_key(&name, stype, "MIN", false),
+            kumo_entry(json!(min), false, data_version, total),
         );
         stats.insert(
-            kumo_key(&name, stype, "MAX", approx_for_distribution_stats),
-            kumo_entry(
-                json!(max),
-                approx_for_distribution_stats,
-                data_version,
-                total,
-            ),
+            kumo_key(&name, stype, "MAX", false),
+            kumo_entry(json!(max), false, data_version, total),
         );
         stats.insert(
             kumo_key(&name, stype, "MEDIAN", approx_for_distribution_stats),
@@ -3097,10 +3082,10 @@ fn build_col_stats_map(
             ),
         );
         stats.insert(
-            kumo_key(&name, stype, "KURTOSIS", approx_for_distribution_stats),
+            kumo_key(&name, stype, "KURTOSIS", false),
             kumo_entry(
                 json!(acc.kurtosis_excess()),
-                approx_for_distribution_stats,
+                false,
                 data_version,
                 total,
             ),
@@ -4970,7 +4955,7 @@ mod tests {
             .and_then(|v| v.as_u64())
             .unwrap();
         let target_mean = stats
-            .get("TARGET__kumo.numerical__MEAN__True")
+            .get("TARGET__kumo.numerical__MEAN__False")
             .and_then(|v| v.get("value"))
             .and_then(|v| v.as_f64())
             .unwrap();
@@ -5071,8 +5056,8 @@ mod tests {
         );
 
         let stats = payload.get("stats").and_then(|v| v.as_object()).unwrap();
-        assert!(stats.contains_key("TARGET__kumo.numerical__MEAN__True"));
-        assert!(stats.contains_key("TARGET__kumo.numerical__STD__True"));
+        assert!(stats.contains_key("TARGET__kumo.numerical__MEAN__False"));
+        assert!(stats.contains_key("TARGET__kumo.numerical__STD__False"));
     }
 
     #[test]
@@ -5128,12 +5113,12 @@ mod tests {
         let stats = payload.get("stats").and_then(|v| v.as_object()).unwrap();
 
         let min = stats
-            .get("TS__kumo.numerical__MIN__True")
+            .get("TS__kumo.numerical__MIN__False")
             .and_then(|v| v.get("value"))
             .and_then(|v| v.as_f64())
             .unwrap();
         let max = stats
-            .get("TS__kumo.numerical__MAX__True")
+            .get("TS__kumo.numerical__MAX__False")
             .and_then(|v| v.get("value"))
             .and_then(|v| v.as_f64())
             .unwrap();
