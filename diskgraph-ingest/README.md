@@ -21,29 +21,32 @@ Top-level schema (all fields optional except `dataset_name` and `tables`):
 {
   "dataset_name": "example",
   "tables": [/* TableSpec */],
-  "relationships": [/* RelationshipSpec */],
-  "edge_sort_keys": { /* EdgeSortKeysSpec */ },
   "rowpack": { /* RowPackConfig */ },
   "num_shards": 8,
-  "edge_format": "binary"
+  "edge_format": "binary",
+  "coercion_mode": "lossless"
 }
 ```
 
 Notes:
 - `num_shards` defaults to `1` when omitted.
 - `edge_format` exists but only `binary` is accepted (parquet output is rejected).
+- `coercion_mode`: FK→PK type compatibility rules. `"lossless"` (default) rejects incompatible types. `"strict"` allows safe coercions (e.g., int32→int64).
 
 ### TableSpec
 
 ```json
 {
   "name": "Users",
-  "format": "parquet",
-  "paths": ["s3://bucket/users.parquet"],
+  "source": { "type": "parquet", "paths": ["s3://bucket/users.parquet"] },
   "columns": [/* ColumnSpec */],
   "primary_key": "id",
   "create_time": "created_at",
+  "end_time": "expires_at",
   "weight": "weight",
+  "fkeys": [
+    { "edge_column": "org_id", "ref_table": "Orgs", "ref_column": "id" }
+  ],
   "edge_table": {
     "src_fk": { "edge_column": "src_id", "ref_table": "Users" },
     "dst_fk": { "edge_column": "dst_id", "ref_table": "Orders" }
@@ -53,13 +56,16 @@ Notes:
 ```
 
 Rules:
-- `format`: `csv` or `parquet`.
-- `paths`: one or more files, all same schema.
-- `primary_key` (optional): numeric or string/bytes column.
-- `create_time` (optional): `date` or `timestamp` column.
+- `source`: data source definition. Supported types: `parquet` (local or `s3://`, `gs://`, `az://`), `csv`, `snowflake`, `databricks`, `bigquery`.
+- `primary_key` (optional): numeric or string/bytes column. Enables MPHF construction for O(1) PK → node ID lookups.
+- `create_time` (optional): `date` or `timestamp` column. Used for temporal entity filtering (skip entities created after seed timestamp).
+- `end_time` (optional): `date` or `timestamp` column. Used for temporal entity expiry (skip entities that expired before seed timestamp).
 - `weight` (optional): numeric column.
+- `fkeys` (optional): foreign key relationships to other tables. Creates implicit edges.
 - `edge_table` (optional): marks the table as an explicit edge list. Both FKs must reference a primary key on the destination table.
 - `rowpack` (optional): per-table overrides for rowpack configuration. When present, it is merged with the top-level `rowpack` (table values override dataset values).
+- `data_version` (optional): version identifier for cache invalidation in Kumo integration.
+- `kumo_connector_id`, `kumo_source_table_name` (optional): Kumo-specific metadata for connector tracking.
 
 ### EdgeSortKeysSpec (explicit sort keys)
 
@@ -196,7 +202,10 @@ Other Parquet/Arrow types are rejected during ingest.
 
 - `index_metadata.json`
 - `ingest_stats.json`
-- `build_stats.json`
+- `edge_stats.json` (Kumo-format edge statistics)
+- `col_stats.json` (if `--col-stats` enabled)
+- `kumo_col_stats/col_stats_full/<table>.json` (if `--col-stats` enabled)
+- `kumo_col_stats/col_stats_min/<table>.json` (if `--col-stats` enabled)
 - `nodes/<table>/shard-<id>/offsets.bin`
 - `nodes/<table>/shard-<id>/edges.bin`
 - `nodes/<table>/pk_data-<id>.bin`
@@ -234,9 +243,17 @@ cargo run -p diskgraph-ingest --bin ingest --release -- \
 Flags:
 - `--source`: directory containing `diskgraph_config.json` or the path to it.
 - `--output`: local output directory for the index.
-- `--dest`: must be `local` (index build requires local output).
+- `--dest`: storage backend (`local`, `s3`, `gcs`, `adls`).
+- `--parallel` (default `true`): enable the shared worker pool. Set `false` for sequential execution (debugging).
+- `--index-mem-budget-bytes`: max bytes for index-build edge sort memory (default: 70% of system RAM).
+- `--col-stats`: collect per-column statistics during encode. See `docs/col_stats.md`.
+- `--cat-count-strategy`: category counting strategy: `none` (default), `hybrid` (exact counts), `graduation` (approximate).
+- `--row-subsample`: enable per-row 30% subsampling for category counts (experimental).
 - `--profile [dir]`: enable CPU profiling and emit `*-profile.pb`/`*-profile.svg`.
-- `-m, --mem-profile`: enable jemalloc heap dump watchdog (writes one `heap-*.heap` when anon RSS exceeds 80%; requires the `mem-profile` Cargo feature and `_RJEM_MALLOC_CONF=prof:true`).
+- `-m, --mem-profile`: enable jemalloc heap dump watchdog.
+- `--stats-dest`: stats destination root (s3://, gs://, az://, or local path) for publishing.
+- `--stats-dataset`, `--stats-run-id`: identifiers for stats publishing.
+- `--stats-required`: fail the ingest if stats publishing fails.
 
 Helper script:
 - `scripts/ingest_local.sh`
@@ -265,9 +282,9 @@ RowPackConfig fields (all optional):
 - `sample_rows` (int): rows to sample when building the context (default 10,000)
 - `max_dict_bytes_per_col` (int): max bytes per string dict (default 1,000,000)
 - `max_dict_entries` (int): max dict entries per string dict (default 50,000)
-- `bpe_max_dict_bytes` (int): max bytes for BPE dict (default 1,000,000)
-- `bpe_max_dict_entries` (int): max BPE entries (default 256)
-- `bpe_max_samples` (int): max samples for BPE training (default 5,000)
+- `bpe_max_dict_bytes` (int): max bytes for BPE dict (default 256,000)
+- `bpe_max_dict_entries` (int): max BPE entries (default 512)
+- `bpe_max_samples` (int): max samples for BPE training (default 2,000)
 - `bpe_min_gain_ratio` (float): minimum compression gain to keep BPE (default 0.95)
 - `bpe_min_avg_len` (int): min average token length for BPE (default 12)
 - `string_dict_coverage` (float): min coverage to enable dict (default 0.7)

@@ -155,6 +155,97 @@ Commands inside the REPL:
 Helper script:
 - `scripts/explore_local.sh /path/to/index`
 
+## PK Map Architecture
+
+Primary key maps enable O(1) PK → node ID lookups. Built during ingest, memory-mapped at query time.
+
+### PkHashTable
+
+Per-table structure containing sharded MPHF (minimal perfect hash function) data:
+
+```rust
+PkHashTable {
+    key_type: KeyType,              // Int64, VarBytes, Uuid, Uuid256, Ip
+    shards: Vec<PkHashShard>,       // One MPHF per shard
+}
+```
+
+Each `PkHashShard` contains:
+- `mphf`: Memory-mapped MPHF binary (epserde-deserialized `DefaultPtrHash`)
+- `data`: Memory-mapped u32 array mapping MPHF slots to local node IDs
+- `lookup_fn`: Typed lookup function pointer
+
+Lookup is O(1): hash key → shard → MPHF index → data array → local node ID → global node ID.
+
+### Key Types
+
+| KeyType | Source DTypes | Storage |
+|---------|-------------|---------|
+| Int64 | int/uint/float/decimal → u64 | 8 bytes |
+| VarBytes | string/bytes/decimal256 | variable |
+| Uuid | 16-byte UUID | 16 bytes |
+| Uuid256 | 32-byte UUID | 32 bytes |
+| Ip | IPv4/IPv6 | 16 bytes |
+
+### Thread Safety
+
+All PK map data is immutable after construction (memory-mapped, no interior mutability). Lookups are lock-free — safe to call from any number of threads concurrently with zero synchronization.
+
+## GraphIndexReader API
+
+`GraphIndexReader` opens an index from `index_metadata.json` and provides access to tables and their data.
+
+### Key Methods
+
+**`GraphIndexReader::open(metadata_path, root) -> Result<Self>`**: Open an index. Loads metadata, memory-maps all shard files and PK maps.
+
+**`GraphIndexReader::table(name) -> Option<Arc<TableReader>>`**: Get a table reader by name. Returns `Arc` for cheap sharing across threads.
+
+### TableReader Methods
+
+| Method | Description |
+|--------|-------------|
+| `node_type() -> &str` | Table name |
+| `node_count() -> u64` | Total nodes across all shards |
+| `relations() -> &[EdgeRelationMetadata]` | Edge relations originating from this table |
+| `layouts() -> &[RelationLayout]` | Precomputed edge decoding layouts |
+| `pk_map() -> Option<&PkHashTable>` | PK hash table (if table has a primary key) |
+| `node_id_from_pk(key) -> Result<Option<u64>>` | Look up node ID from PK value. Returns `None` if PK not found. |
+| `contains_pk_value(value) -> bool` | Check if a `Value` exists as a PK. Panics if no PK map. Lock-free MPHF lookup. |
+| `is_canonical_node(node_id, pk_value) -> bool` | Check if node_id is the first-occurrence node for its PK (duplicate PKs get separate IDs, only first is in MPHF). |
+| `parse_pk_key(input) -> Result<Key>` | Parse a string representation into a typed PK key. |
+| `edges_for_node(node_id) -> Result<EdgeListView>` | Get edge list for a node (zero-copy mmap slice). |
+| `node_data_decoder() -> Option<RowPackDecoder>` | Get rowpack decoder for node data blobs. |
+| `create_time_col() / end_time_col()` | Temporal column names (if configured). |
+
+### RelationLayout
+
+Precomputed decoding parameters for a single edge relation:
+
+```rust
+RelationLayout {
+    relation_id: u16,                   // Position in relation order
+    dst_bits: u8,                       // Min bits for destination IDs
+    dest_sort_key_bits: Option<u8>,     // Sort key bit width (if present)
+    entry_bytes: usize,                 // Bytes per packed edge entry
+    dst_mask: u64,                      // Bitmask for extracting dst_id
+    dest_sort_key_mask: Option<u64>,    // Bitmask for extracting sort key
+}
+```
+
+Used by edge decoders in TT gen (`ttgen_traversal.rs`) and the sampler to extract destination IDs and sort keys from packed edge entries.
+
+## Metadata Structs
+
+Defined in `diskgraph-core/src/metadata.rs`. Key additions not covered in the spec:
+
+- `NodeTypeMetadata.create_time_col`: Entity creation timestamp column (for temporal filtering)
+- `NodeTypeMetadata.end_time_col`: Entity expiry timestamp column
+- `EdgeRelationMetadata.reverse_of`: Name of the paired reverse relation (if any)
+- `EdgeRelationMetadata.dest_sort_key`: `EdgeSortKeyMetadata` with timestamp/weight decoding parameters
+- `NodeDataCompression`: `{ codec: String, context_path: String }` for rowpack context reference
+- `PrimaryKeyMap`: `{ column, dtype, mapping_path, hash_path, mapping_kind, fixed_len, pk_column_index }`
+
 ## Expectations and assumptions
 - Input edge shard parts may be unsorted; the builder sorts by `src_id` and `dest_sort_key` as needed.
 - Sharding alignment: edges for shard N reference only source IDs in shard N.

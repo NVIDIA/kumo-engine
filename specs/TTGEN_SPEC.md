@@ -95,7 +95,32 @@ Op::Compare {
     op: CompareOp,     // comparison operator
     rhs: Value,        // constant to compare against
 }
+
+Op::HasEdges {
+    alias: String,
+    path: Vec<EdgeRef>,        // edge traversal path
+    window: Option<(i64, i64)>,// relative time window
+    row_filter: Option<RowFilter>,
+}
+
+Op::LogicalOp {
+    alias: String,
+    op: LogicalOpKind,         // And, Or, Not
+    operand_indices: Vec<usize>, // indices of previously computed aliases
+}
+
+Op::Autoregression {
+    alias: String,
+    target_op: Box<Op>,        // the target op to evaluate at lag offsets
+    lag_offsets: Vec<i64>,     // lag offset timestamps
+}
 ```
+
+`HasEdges` produces a boolean: true if the entity has any edges matching the path/window/filter. Used for static prediction entity filtering and BP candidate generation.
+
+`LogicalOp` combines previously computed boolean aliases. Used for complex PQL WHERE clauses with AND/OR/NOT.
+
+`Autoregression` evaluates a target op at multiple lag timestamps for forecasting tasks.
 
 ### EdgeRef
 
@@ -116,13 +141,13 @@ EdgeRef {
 - `Min` — minimum of target_col values. Result: float. Returns NaN if 0 edges.
 - `Max` — maximum of target_col values. Result: float. Returns NaN if 0 edges.
 - `CountDistinct` — count of distinct target_col values. Result: integer.
-- `ListDistinct` — collect distinct target_col values into a list. Result: list of values. When converted to f64 for output, the **list length** is used.
+- `ListDistinct` — collect distinct target_col values into a list. Result: list of values. When converted to f64 for output, the **list length** is used. During resolution, the executor identifies the FK destination table for the target column and filters out orphaned FK values (target PKs that don't exist in the destination table) via lock-free MPHF lookup.
 - `First` — value of target_col from the first edge (by sort key order). If no target_col, returns the destination node ID. Returns 0 if no edges.
 - `Last` — value of target_col from the last edge (by sort key order). Same defaults as First.
 
 ### CompareOp
 
-`Eq`, `Neq`, `Gt`, `Gte`, `Lt`, `Lte`
+`Eq`, `Neq`, `Gt`, `Gte`, `Lt`, `Lte`, `IsNull`, `IsNotNull`
 
 ### Value
 

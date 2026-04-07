@@ -138,11 +138,47 @@ cargo run -p diskgraph-rowpack --bin rowpack_ctx_inspect -- /path/to/node_data.c
 
 ## BPE defaults
 
-- `bpe_max_dict_entries`: 256
-- `bpe_max_dict_bytes`: 1_000_000
-- `bpe_max_samples`: 5_000
+- `bpe_max_dict_entries`: 512
+- `bpe_max_dict_bytes`: 256,000
+- `bpe_max_samples`: 2,000
 
 It only errors on structural corruption (invalid tags, truncated payloads).
+
+## ColumnValueObserver trait
+
+The `ColumnValueObserver` trait provides typed callbacks for observing column values during row access/decoding. The encode pipeline invokes these methods for each value as it passes through the encoder.
+
+```rust
+pub trait ColumnValueObserver {
+    fn observe_i64(&mut self, col_idx: usize, value: i64);
+    fn observe_f64(&mut self, col_idx: usize, value: f64);
+    fn observe_string(&mut self, col_idx: usize, value: &str);
+    fn observe_timestamp(&mut self, col_idx: usize, secs: i64);
+    fn observe_float_list(&mut self, col_idx: usize, values: &[f32]);
+    fn observe_null(&mut self, col_idx: usize);
+    fn observe_parse_failure(&mut self, col_idx: usize);
+}
+```
+
+Used by `diskgraph-ingest` for column statistics collection (see `docs/col_stats.md`). Implementors receive zero-copy references — no allocations per value. The observer cannot slow down the encode pipeline (returns void).
+
+## RowPackConfig fields
+
+All fields are optional. Struct defaults may differ from runtime defaults used by the encode pipeline.
+
+| Field | Runtime Default | Description |
+|-------|----------------|-------------|
+| `sample_rows` | 10,000 | Rows to sample when building context |
+| `max_dict_bytes_per_col` | 1,000,000 | Max bytes per string dictionary |
+| `max_dict_entries` | 50,000 | Max entries per string dictionary |
+| `bpe_max_dict_bytes` | 256,000 | Max bytes for BPE dictionary |
+| `bpe_max_dict_entries` | 512 | Max BPE dictionary entries |
+| `bpe_max_samples` | 2,000 | Max samples for BPE training |
+| `bpe_min_gain_ratio` | 0.95 | Minimum compression gain to keep BPE |
+| `bpe_min_avg_len` | 12 | Min average token length for BPE eligibility |
+| `string_dict_coverage` | 0.7 | Min coverage to enable dictionary encoding |
+| `string_long_min_len` | 128 | Min length for long-string compression |
+| `string_long_min_ratio` | 0.85 | Min ratio to keep long-string compression |
 ### Timestamps
 - Encoded as `(secs, nanos)` varints for full unit fidelity.
 - Parquet timestamp units (s/ms/us/ns) are normalized at ingest; timezones are accepted and normalized to UTC on output.

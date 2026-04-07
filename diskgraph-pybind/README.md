@@ -100,6 +100,46 @@ The crate keeps `extension-module` as an opt-in feature. Maturin enables it for
 Python extension builds, while plain Rust tests run without it to avoid Python
 C API linker issues in test binaries.
 
+## Training Table Generation API
+
+In addition to sampling/features, `diskgraph-pybind` exports the TT generation pipeline:
+
+### Python Classes
+
+| Class | Description |
+|-------|-------------|
+| `DiskGraphPlanCompiler` | Compiles a Kumo `ValidatedPredictiveQuery` AST into a DiskGraph execution plan (JSON). |
+| `DiskGraphTTBuilder` | Low-level plan builder with methods: `temporal()`, `for_each()`, `node_prediction()`, `link_prediction()`, `aggregate()`, `column()`, `compare()`, `filter()`, `split_ratio()`, `build()`. |
+| `TTPlanIterator` | Streaming iterator over RecordBatches from the Rust TT gen executor. Implements `__iter__`/`__next__`. Releases GIL during `recv()`. |
+| `EdgeRef` | Directed FK reference: `(src_table, src_col, dst_table, dst_col)`. |
+| `RowFilter` / `StageFilter` | Filter specifications for per-row and per-stage filtering. |
+| `SplitSpec` | Split configuration: ratio, kind, offsets, ranges, temporal flag. |
+
+### Python Functions
+
+| Function | Description |
+|----------|-------------|
+| `execute_tt_plan(plan_json, index_path)` | Execute a TT plan and return a `TTPlanIterator` for streaming results. |
+| `execute_tt_plan_with_artifacts(plan_json, index_path, output_path, ...)` | Execute TT plan with full artifact production (parquet, splits, stats, edges, manifest). |
+| `export_tt_artifacts(export_config)` | Export edge artifacts (fkey_cols, reverse edges) from a materialized TT. |
+| `compute_dense_split_assignments(split_config, ...)` | Compute split assignments for a TT. |
+| `ingest(config_json, output_path, ...)` | Run ingest from Python. |
+| `convert_kumo_config(kumo_config, ...)` | Convert Kumo GraphConfig to DiskGraph ingest config. |
+| `estimate_ingest_size(config_json)` | Estimate output size before ingest. |
+
+### Config Converter
+
+`DiskgraphConfigConverter` converts Kumo's `GraphConfig` (SDK-level graph definition) to DiskGraph's ingest config:
+
+```python
+from diskgraph import DiskgraphConfigConverter
+
+converter = DiskgraphConfigConverter(kumo_graph_config, data_persist_dir, table_data_versions)
+diskgraph_config = converter.convert()
+```
+
+Handles table type detection, FK resolution, timestamp format inference, num_shards estimation, and source path expansion.
+
 ## Environment variables
 
 | Variable | Default | Description |

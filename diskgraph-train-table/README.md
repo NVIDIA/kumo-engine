@@ -94,3 +94,18 @@ Currently supported families for dense row-stage assignment:
 Non-authoritative for now:
 
 - (none)
+
+## Core Modules
+
+| Module | Description |
+|--------|-------------|
+| `ttgen_executor.rs` | Entry point. Entity loop, rayon parallelism, stage execution, target writing. |
+| `ttgen_resolve.rs` | Plan resolution: converts string references to index handles (`ResolvedPlan`). Runs once on main thread. |
+| `ttgen_output.rs` | Arrow RecordBatch construction. `ChannelBatchWriter` for streaming output via crossbeam channel. |
+| `ttgen_traversal.rs` | Edge traversal with sort-key-based temporal windowing. `traverse_and_accumulate()` drives multi-hop walks. |
+| `ttgen_accumulator.rs` | Accumulator implementations: Welford (mean/std), Count, Min, Max, etc. |
+| `ttgen_filter.rs` | Row filter (`eval_row_filter`) and stage filter evaluation. Supports Compare, And, Or, Not, remote column lookups. |
+| `ttgen_stats.rs` | Statistics collection during execution. `TTExecutionSummary` and `ChunkStats` for per-timeframe counts, entity/target/timestamp tracking. |
+| `errors.rs` | `TTGenError` enum: SchemaError, InvalidPlan, Io, SystemError. |
+
+See `docs/tt_gen_and_pql_plan.md` for architecture details.
