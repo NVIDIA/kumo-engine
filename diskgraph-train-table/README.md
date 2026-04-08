@@ -2,6 +2,8 @@
 
 Generate a training-table parquet from an ingested DiskGraph index and a predictive query plan.
 
+See also: [`AGENTS.md`](./AGENTS.md) for TT-gen internals, execution semantics, and contributor guidance.
+
 ## CLI
 
 ```bash
