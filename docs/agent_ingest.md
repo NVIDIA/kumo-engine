@@ -145,6 +145,22 @@ When multiple rows share the same PK value, the last row (by input order) wins. 
 
 **What to watch when changing**: The encode phase's memory usage is bounded by batch buffer sizes, not by table size. If you add per-row state that grows with the table, you'll break the streaming property. Keep per-row state in the observer pattern (see col stats) or accumulate in fixed-size structures.
 
+### Timestamp Validity and Row Dropping
+
+Rows with invalid `create_time` (time_col) values are dropped during encode to match Spark's behavior. Two checks run in sequence:
+
+**Phase 2 null check (Arrow bitmap)**: Before encode, the `process_node_batch!` macro checks the Arrow validity bitmap for the time_col column. Arrow-null timestamps cause the row to be skipped via `continue` — no encode, no PK/FK/sort key entries. This is the original null-timestamp drop path.
+
+**Post-encode tag check**: After `encode_row_observed`, `write_node_row_from_access` inspects the time_col's 2-bit tag in the encoded rowpack data. If the tag is 0 (null), the encoded buffers are truncated and the function returns early — no PK, FK, or sort key entries are created. This catches:
+- Out-of-range Date32 values: `get_timestamp()` in `access.rs` returns `Err` for days outside `[-106752, 24855]` (~1677 to ~2038). The lower bound is pandas `Timestamp.min`; the upper bound prevents i32 sort key overflow (epoch seconds exceed `i32::MAX` after 2038-01-19).
+- String timestamp parse failures: unparseable strings also return `Err`, producing a null tag.
+
+**Edge tables**: The `process_edge_batch!` macro additionally calls `access.get_timestamp()` on the time_col after the Arrow null check. If it returns `Err` or `Ok(None)`, the edge row is dropped via `continue` before reaching `write_edge_row_from_access`.
+
+**Why two checks?** The Arrow bitmap only reflects parquet-level nulls. Values that are non-null in parquet but semantically invalid (out-of-range dates, malformed strings) pass the bitmap check but fail during encode. The post-encode tag check catches these. For non-time-col timestamp columns, the invalid value is encoded as a null feature (tag=0) but the row is kept — only the time_col triggers a row drop.
+
+**Reporting**: Dropped rows are counted in `node_data_dropped` (node tables) and `edge_dropped` (edge tables), aggregated into `dropped_rows_counts` in `ingest_stats.json`. Parse failures are recorded in `col_stats.json` via `observe_parse_failure`.
+
 ## Phase 2: PK Map (MPHF Construction)
 
 **Function**: `IngestContext::build_sharded_pk_maps()`

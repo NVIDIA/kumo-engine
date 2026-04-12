@@ -1941,6 +1941,14 @@ impl<'p> RowAccess<'p> {
                     .downcast_ref::<arrow_array::Date32Array>()
                     .ok_or_else(|| anyhow!("date cast"))?;
                 let days = arr.value(self.row);
+                // Reject dates outside safe range.
+                // Lower: pandas Timestamp.min (~1677-09-21 = day -106752)
+                // Upper: i32 seconds overflow (~2038-01-19 = day 24855)
+                // Sort keys use i32 epoch seconds; days beyond 24855 overflow.
+                // Matches Spark's cast_spark_df which nulls out-of-range dates.
+                if days < -106752 || days > 24855 {
+                    return Err(anyhow!("date out of range: day {days}"));
+                }
                 // Convert days since epoch to seconds since epoch
                 let secs = days as i64 * 86400;
                 Ok(Some(secs))

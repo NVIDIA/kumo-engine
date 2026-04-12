@@ -2615,6 +2615,7 @@ impl IngestContext {
                         timestamp_valid,
                         shard_override,
                         observer,
+                        create_time_info.as_ref().map(|(idx, _)| *idx),
                     )?;
                 }
             };
@@ -2793,6 +2794,7 @@ impl IngestContext {
         timestamp_valid: bool,
         shard_override: Option<usize>,
         observer: &mut O,
+        create_time_col_idx: Option<usize>,
     ) -> Result<()> {
         for buf in key_bufs.iter_mut() {
             buf.clear();
@@ -2878,6 +2880,25 @@ impl IngestContext {
             let lens = encoder.encode_row_observed(
                 access, sink.tags, sink.bools, sink.data, f16_buf, key_bufs, observer,
             )?;
+            // Drop row if time_col was encoded as null (tag bits == 0).
+            // This catches: Arrow null that slipped past Phase 2, string parse
+            // failures, and out-of-range dates (Change A in access.rs).
+            if let Some(ts_idx) = create_time_col_idx {
+                let bit_offset = ts_idx * 2; // 2 tag bits per column
+                let byte_idx = node_tag_start + (bit_offset / 8);
+                let bit_pos = (bit_offset % 8) as u8;
+                if byte_idx < sink.tags.len() {
+                    let tag_val = (sink.tags[byte_idx] >> bit_pos) & 0b11;
+                    if tag_val == 0 {
+                        sink.tags.truncate(node_tag_start);
+                        sink.bools.truncate(node_bool_start);
+                        sink.data.truncate(node_data_start);
+                        *node_data_dropped = node_data_dropped.saturating_add(1);
+                        *row_id = row_id.saturating_add(1);
+                        return Ok(());
+                    }
+                }
+            }
             let row_len = lens
                 .tag_bytes
                 .saturating_add(lens.bool_bytes)
@@ -2979,6 +3000,8 @@ impl IngestContext {
             Some((idx, spec.ingested_dtype.clone()))
         });
 
+        let mut edge_dropped = 0u64;
+
         let path = table
             .get_paths()
             .get(file_idx)
@@ -3002,12 +3025,27 @@ impl IngestContext {
                     .map(|kind| extract_batch_keys(&$cols[dst_fk_idx], kind))
                     .transpose()?;
 
+                let create_time_col_idx = create_time_info.as_ref().map(|(idx, _)| *idx);
                 for row in 0..$batch.num_rows() {
                     access.set_row(row);
-                    let timestamp_valid = validity_array
+                    let mut timestamp_valid = validity_array
                         .as_ref()
                         .map(|a| a.is_valid(row))
                         .unwrap_or(true);
+                    // Also check for out-of-range / parse failures on time_col.
+                    // get_timestamp() returns Err for out-of-range Date32 (Change A).
+                    if timestamp_valid {
+                        if let Some(ts_idx) = create_time_col_idx {
+                            match access.get_timestamp(ts_idx) {
+                                Ok(Some(_)) => {} // valid
+                                _ => { timestamp_valid = false; }
+                            }
+                        }
+                    }
+                    if !timestamp_valid {
+                        edge_dropped += 1;
+                        continue;
+                    }
                     let src_key_pre = src_keys_pre.as_ref().and_then(|v| v[row].as_ref());
                     let dst_key_pre = dst_keys_pre.as_ref().and_then(|v| v[row].as_ref());
 
@@ -3265,7 +3303,7 @@ impl IngestContext {
                 status: None,
             });
         }
-        Ok(0)
+        Ok(edge_dropped)
     }
 
     #[allow(clippy::too_many_arguments)]

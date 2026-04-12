@@ -35,15 +35,21 @@ pub fn iter_edge(
 ) -> Vec<EdgeEntry> {
     let view = match src_table.edges_for_node(src_node) {
         Ok(v) => v,
-        Err(_) => return Vec::new(),
+        Err(_) => {
+            return Vec::new();
+        }
     };
     let segments = match view.relation_segments() {
         Ok(s) => s,
-        Err(_) => return Vec::new(),
+        Err(_) => {
+            return Vec::new();
+        }
     };
     let segment = match segments.get(relation_idx) {
         Some(s) => s,
-        None => return Vec::new(),
+        None => {
+            return Vec::new();
+        }
     };
 
     if segment.count == 0 {

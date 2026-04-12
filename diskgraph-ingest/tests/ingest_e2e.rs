@@ -1339,8 +1339,10 @@ fn ingest_invalid_fields_records_failures_and_builds() -> Result<()> {
     let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
     let user_table = reader.table("User").unwrap();
     let visit_table = reader.table("Visit").unwrap();
-    assert_eq!(user_table.node_count(), 2);
-    assert_eq!(visit_table.node_count(), 3);
+    // User: alice(valid), bob(bad create_time → dropped), carol(bad pkey → dropped) = 1
+    assert_eq!(user_table.node_count(), 1);
+    // Visit: row10(valid), row11(valid), row12(bad create_time → dropped) = 2
+    assert_eq!(visit_table.node_count(), 2);
 
     assert!(stats.key_parse_failures >= 4);
     for context in [
@@ -2387,19 +2389,10 @@ fn ingest_parquet_drops_rows_with_null_create_time() -> Result<()> {
         .map(|c| c.parse_failures)
         .unwrap_or(0);
 
-    // Null create_time rows are now skipped before key parsing,
-    // so they don't appear in key_failures_by_context. They are
-    // counted in dropped_rows_counts (checked above).
+    // Null/invalid create_time rows are now dropped before key parsing
+    // in both node and edge paths, so they don't appear in key_failures.
     assert_eq!(node_failures, 0, "Null-time rows skip before key parse");
-    assert_eq!(edge_failures, 1, "Expected 1 recorded failure for Edge");
-
-    // No node sample expected (skipped before recording), edge sample still expected.
-    let has_edge_sample = stats
-        .key_failure_samples
-        .iter()
-        .any(|s| s.contains(edge_sample_key));
-
-    assert!(has_edge_sample, "Expected sample for dropped edge");
+    assert_eq!(edge_failures, 0, "Null-time edge rows also skip before key parse");
 
     Ok(())
 }

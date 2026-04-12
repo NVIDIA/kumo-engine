@@ -87,7 +87,6 @@ pub fn execute_with_summary(
     let num_entities = resolved.entity_table.node_count();
     let num_threads = rayon::current_num_threads();
     let num_chunks = (num_threads * 8).min(num_entities as usize).max(1);
-
     tracing::info!(
         entities = num_entities,
         threads = num_threads,
