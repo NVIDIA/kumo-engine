@@ -1,0 +1,19 @@
+name: Claude PR Meta-Review
+
+"on":
+  pull_request:
+    types: [opened, labeled]
+
+jobs:
+  meta-review:
+    if: |
+      github.event.action == 'opened' ||
+      github.event.label.name == 'ai-meta-review-requested'
+    uses: kumo-ai/.github/.github/workflows/claude-pr-review.yml@main
+    with:
+      pr_number: ${{ github.event.pull_request.number }}
+      pr_body: ${{ github.event.pull_request.body }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      GH_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
