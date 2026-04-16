@@ -47,6 +47,8 @@ class DiskGraphPlanCompiler:
     def __init__(self, builder: Optional[DiskGraphTTBuilder] = None):
         self.builder = builder or DiskGraphTTBuilder()
         self._alias_counter = 0
+        self._is_link_pred: bool = False
+        self._target_entity_table: Optional[str] = None
 
     def _next_alias(self, prefix: str) -> str:
         self._alias_counter += 1
@@ -111,6 +113,7 @@ class DiskGraphPlanCompiler:
         lag_offsets_secs: Optional[List[int]] = None,
         yoy_offsets_secs: Optional[List[int]] = None,
         split: Optional[SplitSpec] = None,
+        target_entity_table: Optional[str] = None,
     ) -> str:
         """
         Build the DiskGraph execution plan.
@@ -146,6 +149,8 @@ class DiskGraphPlanCompiler:
 
         # 2. Prediction Type detection
         is_link_pred = task_type in LINK_PRED_TASKS
+        self._is_link_pred = is_link_pred
+        self._target_entity_table = target_entity_table
 
         # 3. Entity Spec
         target_for_type = query.get_final_target_aggregation()
@@ -573,6 +578,19 @@ class DiskGraphPlanCompiler:
             # NOTE: limit stays None for training table generation.
             # top_k from PQL is only used at ML prediction time, not here.
 
+            # Orphan filter: target_entity_table is resolved by the caller
+            # (kumo) from the graph schema and passed through compile().
+            # NOTE: AggregationType.LIST_DISTINCT.value is uppercase
+            # ("LIST_DISTINCT"); compare case-insensitively since the Rust
+            # parser lowercases func anyway.
+            target_entity_table = None
+            if (
+                node.aggr.value.lower() == "list_distinct"
+                and self._is_link_pred
+                and isinstance(leaf, Column)
+            ):
+                target_entity_table = self._target_entity_table
+
             self.builder.aggregate(
                 alias=alias,
                 path=path,
@@ -582,6 +600,7 @@ class DiskGraphPlanCompiler:
                 window=window,
                 window_unit=window_unit,
                 row_filter=row_filter,
+                target_entity_table=target_entity_table,
             )
             return alias
 

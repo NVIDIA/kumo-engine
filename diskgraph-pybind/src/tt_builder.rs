@@ -473,7 +473,10 @@ impl DiskGraphTTBuilder {
 
     /// Add aggregate op. `path`: single `EdgeRef` or list for multi-hop.
     /// `limit`: early-termination hint (PQL `TOP k`), primarily for `ListDistinct`.
-    #[pyo3(signature = (alias, path, func, target_col=None, time_col=None, window=None, window_unit=None, row_filter=None, limit=None))]
+    /// `target_entity_table`: for LP `ListDistinct`, the target entity table
+    /// whose PK map is checked for orphan filtering. Resolved by the caller
+    /// using the graph schema. `None` disables the filter.
+    #[pyo3(signature = (alias, path, func, target_col=None, time_col=None, window=None, window_unit=None, row_filter=None, limit=None, target_entity_table=None))]
     #[allow(clippy::too_many_arguments)]
     fn aggregate(
         &mut self,
@@ -486,6 +489,7 @@ impl DiskGraphTTBuilder {
         window_unit: Option<&str>,
         row_filter: Option<RowFilter>,
         limit: Option<u32>,
+        target_entity_table: Option<String>,
     ) -> PyResult<()> {
         let edge_path = extract_edge_path(path)?;
         let agg_func = parse_agg_func(func)?;
@@ -501,6 +505,7 @@ impl DiskGraphTTBuilder {
             window_unit: unit,
             row_filter: row_filter.map(|f| f.inner),
             limit,
+            target_entity_table,
         });
         Ok(())
     }

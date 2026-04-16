@@ -659,6 +659,7 @@ fn count_orders_op(alias: &str, window: Option<(i64, i64)>) -> Op {
         window_unit: Some(TimeUnit::Seconds),
         row_filter: None,
         limit: None,
+                target_entity_table: None,
     }
 }
 
@@ -674,6 +675,7 @@ fn agg_orders_price(alias: &str, func: AggFunc, window: Option<(i64, i64)>) -> O
         window_unit: Some(TimeUnit::Seconds),
         row_filter: None,
         limit: None,
+                target_entity_table: None,
     }
 }
 
@@ -820,6 +822,7 @@ fn integ_count_distinct_basic() {
                 window_unit: Some(TimeUnit::Seconds),
                 row_filter: None,
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -857,6 +860,7 @@ fn integ_count_with_row_filter() {
                     rhs: RowFilterRhs::Constant(Value::Str("shipped".to_string())),
                 }),
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -892,6 +896,7 @@ fn integ_sum_with_row_filter() {
                     rhs: RowFilterRhs::Constant(Value::Str("shipped".to_string())),
                 }),
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -934,6 +939,7 @@ fn integ_filter_and() {
                     },
                 ])),
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -976,6 +982,7 @@ fn integ_filter_or() {
                     },
                 ])),
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -1011,6 +1018,7 @@ fn integ_filter_not() {
                     rhs: RowFilterRhs::Constant(Value::Str("pending".to_string())),
                 }))),
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -1048,6 +1056,7 @@ fn integ_compare_lt() {
                     rhs: RowFilterRhs::Constant(Value::Float(80.0)),
                 }),
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -1084,6 +1093,7 @@ fn integ_compare_lte() {
                     rhs: RowFilterRhs::Constant(Value::Float(80.0)),
                 }),
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -1120,6 +1130,7 @@ fn integ_compare_gte() {
                     rhs: RowFilterRhs::Constant(Value::Float(80.0)),
                 }),
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -1156,6 +1167,7 @@ fn integ_compare_neq() {
                     rhs: RowFilterRhs::Constant(Value::Str("shipped".to_string())),
                 }),
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -1194,6 +1206,7 @@ fn integ_filter_entity_column_rhs() {
                     rhs: RowFilterRhs::EntityColumn("level".to_string()),
                 }),
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -1234,6 +1247,7 @@ fn integ_filter_remote_lhs() {
                     rhs: RowFilterRhs::Constant(Value::Str("shoes".to_string())),
                 }),
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -2019,6 +2033,7 @@ fn integ_list_distinct_no_limit() {
                 window_unit: Some(TimeUnit::Seconds),
                 row_filter: None,
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -2053,6 +2068,7 @@ fn integ_list_distinct_with_limit() {
                 window_unit: Some(TimeUnit::Seconds),
                 row_filter: None,
                 limit: Some(1),
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -2087,6 +2103,7 @@ fn integ_list_distinct_with_row_filter() {
                     rhs: RowFilterRhs::Constant(Value::Float(50.0)),
                 }),
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -2222,6 +2239,7 @@ fn integ_timeunit_hours() {
                 window_unit: Some(TimeUnit::Hours),
                 row_filter: None,
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -2254,6 +2272,7 @@ fn integ_timeunit_days() {
                 window_unit: Some(TimeUnit::Days),
                 row_filter: None,
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -2281,6 +2300,7 @@ fn integ_timeunit_weeks() {
                 window_unit: Some(TimeUnit::Weeks),
                 row_filter: None,
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -2478,6 +2498,7 @@ fn integ_timeunit_months_calendar() {
                 window_unit: Some(TimeUnit::Months),
                 row_filter: None,
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -2529,6 +2550,7 @@ fn integ_timeunit_years_calendar() {
                 window_unit: Some(TimeUnit::Years),
                 row_filter: None,
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -2561,6 +2583,7 @@ fn integ_multi_hop_count_distinct_brand() {
                 window_unit: Some(TimeUnit::Seconds),
                 row_filter: None,
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -2594,6 +2617,7 @@ fn integ_multi_hop_avg_rating() {
                 window_unit: Some(TimeUnit::Seconds),
                 row_filter: None,
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -2631,6 +2655,7 @@ fn integ_multi_hop_with_filter() {
                     rhs: RowFilterRhs::Constant(Value::Str("shoes".to_string())),
                 }),
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -2666,6 +2691,7 @@ fn integ_multi_hop_temporal() {
                 window_unit: Some(TimeUnit::Seconds),
                 row_filter: None,
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -2712,6 +2738,7 @@ fn integ_all_agg_empty_states() {
                     window_unit: Some(TimeUnit::Seconds),
                     row_filter: None,
                     limit: None,
+                target_entity_table: None,
                 }],
                 filter: None,
             }],
@@ -2773,6 +2800,7 @@ fn integ_nested_filter_not_or() {
                     },
                 ])))),
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -2821,6 +2849,7 @@ fn integ_nested_filter_and_or() {
                     },
                 ])),
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -2982,6 +3011,7 @@ fn list_distinct_status_op(alias: &str, window: Option<(i64, i64)>, limit: Optio
         window_unit: Some(TimeUnit::Seconds),
         row_filter: None,
         limit,
+        target_entity_table: None,
     }
 }
 
@@ -2996,6 +3026,7 @@ fn list_distinct_product_id_op(alias: &str, window: Option<(i64, i64)>, limit: O
         window_unit: Some(TimeUnit::Seconds),
         row_filter: None,
         limit,
+        target_entity_table: None,
     }
 }
 
@@ -3336,6 +3367,7 @@ fn integ_link_exploded_with_row_filter_frequency() {
                     rhs: RowFilterRhs::Constant(Value::Float(50.0)),
                 }),
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -3435,6 +3467,7 @@ fn integ_link_static_exploded() {
                 window_unit: None,
                 row_filter: None,
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -3636,6 +3669,7 @@ fn integ_link_multi_hop_exploded() {
                 window_unit: Some(TimeUnit::Seconds),
                 row_filter: None,
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -3966,6 +4000,7 @@ fn g2_list_distinct_store_id(
         window_unit: Some(TimeUnit::Seconds),
         row_filter,
         limit,
+        target_entity_table: None,
     }
 }
 
@@ -4138,6 +4173,7 @@ fn integ_g2_lp_static_exploded() {
                 window_unit: None,
                 row_filter: None,
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -4189,6 +4225,7 @@ fn integ_g2_lp_static_array() {
                 window_unit: None,
                 row_filter: None,
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -4558,6 +4595,7 @@ fn integ_g3_lp_temporal_rank() {
                 window_unit: Some(TimeUnit::Seconds),
                 row_filter: None,
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -4613,6 +4651,7 @@ fn integ_g3_lp_filtered_brand() {
                     rhs: RowFilterRhs::Constant(Value::Str("PATAGONIA".to_string())),
                 }),
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -4657,6 +4696,7 @@ fn integ_g3_lp_static_rank() {
                 window_unit: None,
                 row_filter: None,
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -4712,6 +4752,7 @@ fn integ_g3_lp_dangling_entity() {
                 window_unit: Some(TimeUnit::Seconds),
                 row_filter: None,
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -4769,6 +4810,7 @@ fn integ_g3_lp_entity_filter() {
                 window_unit: None,
                 row_filter: None,
                 limit: None,
+                target_entity_table: None,
             }],
             filter: None,
         }],
@@ -5188,4 +5230,823 @@ fn integ_bp_forecasting_multiple_lags() {
     let bob = &map[&1];
     assert_eq!(bob.2, vec![0.0, 230.0]); // AUTOREGRESSION
     assert_eq!(bob.3.as_ref().unwrap(), &vec![0.0]); // YOY
+}
+// The filter is controlled entirely by the plan's `target_entity_table` field:
+//   - Some(name) + func==ListDistinct → filter on, check membership in `name`'s PK map.
+//   - None, or any other func         → filter off.
+// The compiler populates the field for LP ListDistinct; everything else is
+// expected to leave it None.
+
+/// Build a minimal graph where some `orders.product_id` values reference
+/// products that don't exist in the `products` table.
+///
+/// users    = [0]
+/// products = [10, 20, 30]                         (valid PKs)
+/// orders (for user 0, ts ascending):
+///   (order_id, product_id, price, ts)
+///     (0,      10,          100.0, 1000)
+///     (1,      20,          200.0, 1100)
+///     (2,      999,         300.0, 1200)         ← orphan FK
+///     (3,      888,         400.0, 1300)         ← orphan FK
+fn build_graph_orphan_fk(root: &Path) -> PathBuf {
+    let data_dir = root.join("data");
+    let index_dir = root.join("index");
+    fs::create_dir_all(&data_dir).unwrap();
+
+    // users
+    let mut user_id = Int64Builder::new();
+    user_id.append_value(0i64);
+    let users_schema = Schema::new(vec![
+        Field::new("user_id", DataType::Int64, false),
+    ]);
+    let users_batch = RecordBatch::try_new(
+        Arc::new(users_schema),
+        vec![Arc::new(user_id.finish())],
+    ).unwrap();
+    write_parquet(&data_dir.join("users.parquet"), &users_batch);
+
+    // products: PKs 10, 20, 30
+    let mut product_id = Int64Builder::new();
+    for pid in [10i64, 20, 30] {
+        product_id.append_value(pid);
+    }
+    let products_schema = Schema::new(vec![
+        Field::new("product_id", DataType::Int64, false),
+    ]);
+    let products_batch = RecordBatch::try_new(
+        Arc::new(products_schema),
+        vec![Arc::new(product_id.finish())],
+    ).unwrap();
+    write_parquet(&data_dir.join("products.parquet"), &products_batch);
+
+    // orders with 2 valid and 2 orphan product_ids
+    let mut order_id = Int64Builder::new();
+    let mut order_user_id = Int64Builder::new();
+    let mut order_product_id = Int64Builder::new();
+    let mut price = Float64Builder::new();
+    let mut ts = Int64Builder::new();
+    for (oid, uid, pid, p, t) in [
+        (0i64, 0i64, 10i64,  100.0, 1000i64),
+        (1,    0,    20,     200.0, 1100),
+        (2,    0,    999,    300.0, 1200),  // orphan
+        (3,    0,    888,    400.0, 1300),  // orphan
+    ] {
+        order_id.append_value(oid);
+        order_user_id.append_value(uid);
+        order_product_id.append_value(pid);
+        price.append_value(p);
+        ts.append_value(t);
+    }
+    let orders_schema = Schema::new(vec![
+        Field::new("order_id", DataType::Int64, false),
+        Field::new("user_id", DataType::Int64, false),
+        Field::new("product_id", DataType::Int64, false),
+        Field::new("price", DataType::Float64, false),
+        Field::new("ts", DataType::Int64, false),
+    ]);
+    let orders_batch = RecordBatch::try_new(
+        Arc::new(orders_schema),
+        vec![
+            Arc::new(order_id.finish()),
+            Arc::new(order_user_id.finish()),
+            Arc::new(order_product_id.finish()),
+            Arc::new(price.finish()),
+            Arc::new(ts.finish()),
+        ],
+    ).unwrap();
+    write_parquet(&data_dir.join("orders.parquet"), &orders_batch);
+
+    let orders_time = TimeSpec {
+        table: "orders".to_string(),
+        column: "ts".to_string(),
+        bitwidth: Some(16),
+        anchor_time: Some(0),
+        unit: "s".to_string(),
+    };
+
+    let config = GraphConfig {
+        dataset_name: "test_orphan_fk".to_string(),
+        tables: vec![
+            TableSpec {
+                name: "users".to_string(),
+                columns: vec![mk_col("user_id", IngestedType::Int64)],
+                primary_key: Some("user_id".to_string()),
+                create_time: None,
+                end_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+                source: DataSource::Parquet {
+                    paths: vec![data_dir.join("users.parquet").to_str().unwrap().to_string()],
+                },
+                fkeys: vec![],
+                data_version: None,
+                kumo_connector_id: None,
+                kumo_source_table_name: None,
+            },
+            TableSpec {
+                name: "products".to_string(),
+                columns: vec![mk_col("product_id", IngestedType::Int64)],
+                primary_key: Some("product_id".to_string()),
+                create_time: None,
+                end_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+                source: DataSource::Parquet {
+                    paths: vec![data_dir.join("products.parquet").to_str().unwrap().to_string()],
+                },
+                fkeys: vec![],
+                data_version: None,
+                kumo_connector_id: None,
+                kumo_source_table_name: None,
+            },
+            TableSpec {
+                name: "orders".to_string(),
+                columns: vec![
+                    mk_col("order_id", IngestedType::Int64),
+                    mk_col("user_id", IngestedType::Int64),
+                    mk_col("product_id", IngestedType::Int64),
+                    mk_col("price", IngestedType::Float64),
+                    mk_col("ts", IngestedType::Int64),
+                ],
+                primary_key: Some("order_id".to_string()),
+                create_time: None,
+                end_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+                source: DataSource::Parquet {
+                    paths: vec![data_dir.join("orders.parquet").to_str().unwrap().to_string()],
+                },
+                fkeys: vec![
+                    FKeySpec {
+                        src_column: "user_id".to_string(),
+                        dst_table: "users".to_string(),
+                        forward: None,
+                        reverse: Some(DirectionSpec {
+                            time: Some(orders_time.clone()),
+                            weight: None,
+                        }),
+                    },
+                    FKeySpec {
+                        src_column: "product_id".to_string(),
+                        dst_table: "products".to_string(),
+                        forward: None,
+                        reverse: Some(DirectionSpec {
+                            time: Some(orders_time.clone()),
+                            weight: None,
+                        }),
+                    },
+                ],
+                data_version: None,
+                kumo_connector_id: None,
+                kumo_source_table_name: None,
+            },
+        ],
+        rowpack: None,
+        num_shards: Some(1),
+        edge_format: None,
+        coercion_mode: CoercionMode::Lossless,
+    };
+    let config_path = data_dir.join("graph_config.json");
+    fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+    run_ingest(&config_path, &index_dir);
+    index_dir
+}
+
+/// Build a LP `ListDistinct(orders.product_id)` plan with configurable
+/// `target_entity_table`. Array-mode output with frequency so we can use
+/// `read_output_rows_array` to verify the collected set.
+fn orphan_ld_plan(target_entity_table: Option<String>) -> DiskGraphTTPlan {
+    DiskGraphTTPlan {
+        entity: EntitySpec {
+            table: "users".to_string(),
+            column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
+            time_col: None,
+            valid_to_col: None,
+            filter: None,
+        },
+        temporal: None,
+        prediction_type: PredictionType::Link {
+            explode: false,
+            include_frequency: true,
+        },
+        split: None,
+        stages: vec![Stage {
+            ops: vec![Op::Aggregate {
+                alias: "ld".to_string(),
+                path: vec![EdgeRef {
+                    src_table: "users".to_string(),
+                    src_col: "user_id".to_string(),
+                    dst_table: "orders".to_string(),
+                    dst_col: "user_id".to_string(),
+                }],
+                func: AggFunc::ListDistinct,
+                target_col: Some("product_id".to_string()),
+                time_col: None,
+                window: None,
+                window_unit: None,
+                row_filter: None,
+                limit: None,
+                target_entity_table,
+            }],
+            filter: None,
+        }],
+    }
+}
+
+#[test]
+fn integ_orphan_filter_drops_orphans() {
+    // target_entity_table = Some("products") → filter on.
+    // User 0 purchased product_ids {10, 20, 999, 888}. Only 10 and 20 exist
+    // in `products`, so the filter should drop 999 and 888.
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph_orphan_fk(dir.path());
+    let plan = orphan_ld_plan(Some("products".to_string()));
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_array(receiver);
+    handle.join().unwrap().unwrap();
+
+    assert_eq!(rows.len(), 1, "one row for user 0");
+    let (entity, _ts, targets, _freqs) = &rows[0];
+    assert_eq!(*entity, 0);
+    let target_set: std::collections::HashSet<_> = targets.iter().cloned().collect();
+    assert_eq!(
+        target_set.len(),
+        2,
+        "orphans should be dropped; got {target_set:?}"
+    );
+    assert!(target_set.contains("10"));
+    assert!(target_set.contains("20"));
+    assert!(!target_set.contains("999"));
+    assert!(!target_set.contains("888"));
+}
+
+#[test]
+fn integ_orphan_filter_disabled_without_target_entity_table() {
+    // target_entity_table = None → filter off. All 4 distinct product_ids,
+    // including orphans, should appear in the output.
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph_orphan_fk(dir.path());
+    let plan = orphan_ld_plan(None);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_array(receiver);
+    handle.join().unwrap().unwrap();
+
+    assert_eq!(rows.len(), 1);
+    let (_, _, targets, _) = &rows[0];
+    let target_set: std::collections::HashSet<_> = targets.iter().cloned().collect();
+    assert_eq!(
+        target_set.len(),
+        4,
+        "filter disabled → all 4 product_ids present; got {target_set:?}"
+    );
+    for pid in ["10", "20", "999", "888"] {
+        assert!(target_set.contains(pid), "missing {pid}");
+    }
+}
+
+#[test]
+fn integ_orphan_filter_missing_table_errors() {
+    // target_entity_table points to a table that doesn't exist in the index.
+    // Resolver should fail loudly and mention the missing table.
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph_orphan_fk(dir.path());
+    let plan = orphan_ld_plan(Some("nonexistent_table".to_string()));
+    let err = diskgraph_train_table::ttgen_executor::execute(&plan, &index)
+        .err()
+        .expect("execute should fail when target_entity_table doesn't exist");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("nonexistent_table"),
+        "error message should mention the missing table; got: {msg}"
+    );
+}
+
+#[test]
+fn integ_non_listdistinct_ignores_target_entity_table() {
+    // func=Sum with target_entity_table set → field is ignored, sum works normally.
+    // Sum of all order prices for user 0: 100 + 200 + 300 + 400 = 1000.
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph_orphan_fk(dir.path());
+    let plan = DiskGraphTTPlan {
+        entity: EntitySpec {
+            table: "users".to_string(),
+            column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
+            time_col: None,
+            valid_to_col: None,
+            filter: None,
+        },
+        temporal: None,
+        prediction_type: PredictionType::Node,
+        split: None,
+        stages: vec![Stage {
+            ops: vec![Op::Aggregate {
+                alias: "s".to_string(),
+                path: vec![EdgeRef {
+                    src_table: "users".to_string(),
+                    src_col: "user_id".to_string(),
+                    dst_table: "orders".to_string(),
+                    dst_col: "user_id".to_string(),
+                }],
+                func: AggFunc::Sum,
+                target_col: Some("price".to_string()),
+                time_col: None,
+                window: None,
+                window_unit: None,
+                row_filter: None,
+                limit: None,
+                // Set but must be ignored because func != ListDistinct.
+                target_entity_table: Some("products".to_string()),
+            }],
+            filter: None,
+        }],
+    };
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows(receiver);
+    handle.join().unwrap().unwrap();
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, 0);              // user 0
+    assert_eq!(rows[0].2, 1000.0);         // 100 + 200 + 300 + 400
+}
+
+/// Like `orphan_ld_plan` but with an additional row_filter on the traversal.
+fn orphan_ld_plan_with_row_filter(
+    target_entity_table: Option<String>,
+    row_filter: Option<RowFilter>,
+) -> DiskGraphTTPlan {
+    DiskGraphTTPlan {
+        entity: EntitySpec {
+            table: "users".to_string(),
+            column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
+            time_col: None,
+            valid_to_col: None,
+            filter: None,
+        },
+        temporal: None,
+        prediction_type: PredictionType::Link {
+            explode: false,
+            include_frequency: true,
+        },
+        split: None,
+        stages: vec![Stage {
+            ops: vec![Op::Aggregate {
+                alias: "ld".to_string(),
+                path: vec![EdgeRef {
+                    src_table: "users".to_string(),
+                    src_col: "user_id".to_string(),
+                    dst_table: "orders".to_string(),
+                    dst_col: "user_id".to_string(),
+                }],
+                func: AggFunc::ListDistinct,
+                target_col: Some("product_id".to_string()),
+                time_col: None,
+                window: None,
+                window_unit: None,
+                row_filter,
+                limit: None,
+                target_entity_table,
+            }],
+            filter: None,
+        }],
+    }
+}
+
+/// Build a variant of the orphan graph where ALL orders reference valid
+/// product_ids (no orphans). Same schema as `build_graph_orphan_fk`.
+///
+/// orders: [(0, 0, 10, 100.0, 1000), (1, 0, 20, 200.0, 1100)]
+fn build_graph_orphan_fk_all_valid(root: &Path) -> PathBuf {
+    let data_dir = root.join("data");
+    let index_dir = root.join("index");
+    fs::create_dir_all(&data_dir).unwrap();
+
+    // users
+    let mut user_id = Int64Builder::new();
+    user_id.append_value(0i64);
+    let users_schema = Schema::new(vec![
+        Field::new("user_id", DataType::Int64, false),
+    ]);
+    let users_batch = RecordBatch::try_new(
+        Arc::new(users_schema),
+        vec![Arc::new(user_id.finish())],
+    ).unwrap();
+    write_parquet(&data_dir.join("users.parquet"), &users_batch);
+
+    // products: PKs 10, 20, 30
+    let mut product_id = Int64Builder::new();
+    for pid in [10i64, 20, 30] {
+        product_id.append_value(pid);
+    }
+    let products_schema = Schema::new(vec![
+        Field::new("product_id", DataType::Int64, false),
+    ]);
+    let products_batch = RecordBatch::try_new(
+        Arc::new(products_schema),
+        vec![Arc::new(product_id.finish())],
+    ).unwrap();
+    write_parquet(&data_dir.join("products.parquet"), &products_batch);
+
+    // orders — all product_ids are valid (10 and 20)
+    let mut order_id = Int64Builder::new();
+    let mut order_user_id = Int64Builder::new();
+    let mut order_product_id = Int64Builder::new();
+    let mut price = Float64Builder::new();
+    let mut ts = Int64Builder::new();
+    for (oid, uid, pid, p, t) in [
+        (0i64, 0i64, 10i64,  100.0, 1000i64),
+        (1,    0,    20,     200.0, 1100),
+    ] {
+        order_id.append_value(oid);
+        order_user_id.append_value(uid);
+        order_product_id.append_value(pid);
+        price.append_value(p);
+        ts.append_value(t);
+    }
+    let orders_schema = Schema::new(vec![
+        Field::new("order_id", DataType::Int64, false),
+        Field::new("user_id", DataType::Int64, false),
+        Field::new("product_id", DataType::Int64, false),
+        Field::new("price", DataType::Float64, false),
+        Field::new("ts", DataType::Int64, false),
+    ]);
+    let orders_batch = RecordBatch::try_new(
+        Arc::new(orders_schema),
+        vec![
+            Arc::new(order_id.finish()),
+            Arc::new(order_user_id.finish()),
+            Arc::new(order_product_id.finish()),
+            Arc::new(price.finish()),
+            Arc::new(ts.finish()),
+        ],
+    ).unwrap();
+    write_parquet(&data_dir.join("orders.parquet"), &orders_batch);
+
+    let orders_time = TimeSpec {
+        table: "orders".to_string(),
+        column: "ts".to_string(),
+        bitwidth: Some(16),
+        anchor_time: Some(0),
+        unit: "s".to_string(),
+    };
+
+    let config = GraphConfig {
+        dataset_name: "test_orphan_fk_all_valid".to_string(),
+        tables: vec![
+            TableSpec {
+                name: "users".to_string(),
+                columns: vec![mk_col("user_id", IngestedType::Int64)],
+                primary_key: Some("user_id".to_string()),
+                create_time: None,
+                end_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+                source: DataSource::Parquet {
+                    paths: vec![data_dir.join("users.parquet").to_str().unwrap().to_string()],
+                },
+                fkeys: vec![],
+                data_version: None,
+                kumo_connector_id: None,
+                kumo_source_table_name: None,
+            },
+            TableSpec {
+                name: "products".to_string(),
+                columns: vec![mk_col("product_id", IngestedType::Int64)],
+                primary_key: Some("product_id".to_string()),
+                create_time: None,
+                end_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+                source: DataSource::Parquet {
+                    paths: vec![data_dir.join("products.parquet").to_str().unwrap().to_string()],
+                },
+                fkeys: vec![],
+                data_version: None,
+                kumo_connector_id: None,
+                kumo_source_table_name: None,
+            },
+            TableSpec {
+                name: "orders".to_string(),
+                columns: vec![
+                    mk_col("order_id", IngestedType::Int64),
+                    mk_col("user_id", IngestedType::Int64),
+                    mk_col("product_id", IngestedType::Int64),
+                    mk_col("price", IngestedType::Float64),
+                    mk_col("ts", IngestedType::Int64),
+                ],
+                primary_key: Some("order_id".to_string()),
+                create_time: None,
+                end_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+                source: DataSource::Parquet {
+                    paths: vec![data_dir.join("orders.parquet").to_str().unwrap().to_string()],
+                },
+                fkeys: vec![
+                    FKeySpec {
+                        src_column: "user_id".to_string(),
+                        dst_table: "users".to_string(),
+                        forward: None,
+                        reverse: Some(DirectionSpec {
+                            time: Some(orders_time.clone()),
+                            weight: None,
+                        }),
+                    },
+                    FKeySpec {
+                        src_column: "product_id".to_string(),
+                        dst_table: "products".to_string(),
+                        forward: None,
+                        reverse: Some(DirectionSpec {
+                            time: Some(orders_time.clone()),
+                            weight: None,
+                        }),
+                    },
+                ],
+                data_version: None,
+                kumo_connector_id: None,
+                kumo_source_table_name: None,
+            },
+        ],
+        rowpack: None,
+        num_shards: Some(1),
+        edge_format: None,
+        coercion_mode: CoercionMode::Lossless,
+    };
+    let config_path = data_dir.join("graph_config.json");
+    fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+    run_ingest(&config_path, &index_dir);
+    index_dir
+}
+
+/// Build a variant of the orphan graph where ALL product_ids in orders are
+/// orphans (none exist in the products table).
+///
+/// products = [10, 20, 30]  (valid PKs)
+/// orders: [(0, 0, 777, 100.0, 1000), (1, 0, 888, 200.0, 1100), (2, 0, 999, 300.0, 1200)]
+fn build_graph_orphan_fk_all_orphans(root: &Path) -> PathBuf {
+    let data_dir = root.join("data");
+    let index_dir = root.join("index");
+    fs::create_dir_all(&data_dir).unwrap();
+
+    // users
+    let mut user_id = Int64Builder::new();
+    user_id.append_value(0i64);
+    let users_schema = Schema::new(vec![
+        Field::new("user_id", DataType::Int64, false),
+    ]);
+    let users_batch = RecordBatch::try_new(
+        Arc::new(users_schema),
+        vec![Arc::new(user_id.finish())],
+    ).unwrap();
+    write_parquet(&data_dir.join("users.parquet"), &users_batch);
+
+    // products: PKs 10, 20, 30
+    let mut product_id = Int64Builder::new();
+    for pid in [10i64, 20, 30] {
+        product_id.append_value(pid);
+    }
+    let products_schema = Schema::new(vec![
+        Field::new("product_id", DataType::Int64, false),
+    ]);
+    let products_batch = RecordBatch::try_new(
+        Arc::new(products_schema),
+        vec![Arc::new(product_id.finish())],
+    ).unwrap();
+    write_parquet(&data_dir.join("products.parquet"), &products_batch);
+
+    // orders — ALL product_ids are orphans (777, 888, 999 not in products)
+    let mut order_id = Int64Builder::new();
+    let mut order_user_id = Int64Builder::new();
+    let mut order_product_id = Int64Builder::new();
+    let mut price = Float64Builder::new();
+    let mut ts = Int64Builder::new();
+    for (oid, uid, pid, p, t) in [
+        (0i64, 0i64, 777i64, 100.0, 1000i64),
+        (1,    0,    888,    200.0, 1100),
+        (2,    0,    999,    300.0, 1200),
+    ] {
+        order_id.append_value(oid);
+        order_user_id.append_value(uid);
+        order_product_id.append_value(pid);
+        price.append_value(p);
+        ts.append_value(t);
+    }
+    let orders_schema = Schema::new(vec![
+        Field::new("order_id", DataType::Int64, false),
+        Field::new("user_id", DataType::Int64, false),
+        Field::new("product_id", DataType::Int64, false),
+        Field::new("price", DataType::Float64, false),
+        Field::new("ts", DataType::Int64, false),
+    ]);
+    let orders_batch = RecordBatch::try_new(
+        Arc::new(orders_schema),
+        vec![
+            Arc::new(order_id.finish()),
+            Arc::new(order_user_id.finish()),
+            Arc::new(order_product_id.finish()),
+            Arc::new(price.finish()),
+            Arc::new(ts.finish()),
+        ],
+    ).unwrap();
+    write_parquet(&data_dir.join("orders.parquet"), &orders_batch);
+
+    let orders_time = TimeSpec {
+        table: "orders".to_string(),
+        column: "ts".to_string(),
+        bitwidth: Some(16),
+        anchor_time: Some(0),
+        unit: "s".to_string(),
+    };
+
+    let config = GraphConfig {
+        dataset_name: "test_orphan_fk_all_orphans".to_string(),
+        tables: vec![
+            TableSpec {
+                name: "users".to_string(),
+                columns: vec![mk_col("user_id", IngestedType::Int64)],
+                primary_key: Some("user_id".to_string()),
+                create_time: None,
+                end_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+                source: DataSource::Parquet {
+                    paths: vec![data_dir.join("users.parquet").to_str().unwrap().to_string()],
+                },
+                fkeys: vec![],
+                data_version: None,
+                kumo_connector_id: None,
+                kumo_source_table_name: None,
+            },
+            TableSpec {
+                name: "products".to_string(),
+                columns: vec![mk_col("product_id", IngestedType::Int64)],
+                primary_key: Some("product_id".to_string()),
+                create_time: None,
+                end_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+                source: DataSource::Parquet {
+                    paths: vec![data_dir.join("products.parquet").to_str().unwrap().to_string()],
+                },
+                fkeys: vec![],
+                data_version: None,
+                kumo_connector_id: None,
+                kumo_source_table_name: None,
+            },
+            TableSpec {
+                name: "orders".to_string(),
+                columns: vec![
+                    mk_col("order_id", IngestedType::Int64),
+                    mk_col("user_id", IngestedType::Int64),
+                    mk_col("product_id", IngestedType::Int64),
+                    mk_col("price", IngestedType::Float64),
+                    mk_col("ts", IngestedType::Int64),
+                ],
+                primary_key: Some("order_id".to_string()),
+                create_time: None,
+                end_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+                source: DataSource::Parquet {
+                    paths: vec![data_dir.join("orders.parquet").to_str().unwrap().to_string()],
+                },
+                fkeys: vec![
+                    FKeySpec {
+                        src_column: "user_id".to_string(),
+                        dst_table: "users".to_string(),
+                        forward: None,
+                        reverse: Some(DirectionSpec {
+                            time: Some(orders_time.clone()),
+                            weight: None,
+                        }),
+                    },
+                    FKeySpec {
+                        src_column: "product_id".to_string(),
+                        dst_table: "products".to_string(),
+                        forward: None,
+                        reverse: Some(DirectionSpec {
+                            time: Some(orders_time.clone()),
+                            weight: None,
+                        }),
+                    },
+                ],
+                data_version: None,
+                kumo_connector_id: None,
+                kumo_source_table_name: None,
+            },
+        ],
+        rowpack: None,
+        num_shards: Some(1),
+        edge_format: None,
+        coercion_mode: CoercionMode::Lossless,
+    };
+    let config_path = data_dir.join("graph_config.json");
+    fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+    run_ingest(&config_path, &index_dir);
+    index_dir
+}
+
+#[test]
+fn integ_orphan_filter_with_row_filter() {
+    // Row filter: price > 150.0 keeps orders with product_ids {20, 999, 888}.
+    // Orphan filter (target_entity_table="products") then drops 999 and 888.
+    // Expected result: only [20].
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph_orphan_fk(dir.path());
+
+    let row_filter = Some(RowFilter::Compare {
+        lhs: RowFilterLhs::Column("price".to_string()),
+        op: CompareOp::Gt,
+        rhs: RowFilterRhs::Constant(Value::Float(150.0)),
+    });
+    let plan = orphan_ld_plan_with_row_filter(
+        Some("products".to_string()),
+        row_filter,
+    );
+
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_array(receiver);
+    handle.join().unwrap().unwrap();
+
+    assert_eq!(rows.len(), 1, "one row for user 0");
+    let (entity, _ts, targets, _freqs) = &rows[0];
+    assert_eq!(*entity, 0);
+    let target_set: std::collections::HashSet<_> = targets.iter().cloned().collect();
+    assert_eq!(
+        target_set.len(),
+        1,
+        "row filter + orphan filter should leave only product 20; got {target_set:?}"
+    );
+    assert!(target_set.contains("20"));
+}
+
+#[test]
+fn integ_orphan_filter_all_valid() {
+    // Graph where all product_ids in orders are valid (no orphans).
+    // Orphan filter with target_entity_table="products" should pass all through.
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph_orphan_fk_all_valid(dir.path());
+    let plan = orphan_ld_plan(Some("products".to_string()));
+
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_array(receiver);
+    handle.join().unwrap().unwrap();
+
+    assert_eq!(rows.len(), 1, "one row for user 0");
+    let (entity, _ts, targets, _freqs) = &rows[0];
+    assert_eq!(*entity, 0);
+    let target_set: std::collections::HashSet<_> = targets.iter().cloned().collect();
+    assert_eq!(
+        target_set.len(),
+        2,
+        "all product_ids valid → none dropped; got {target_set:?}"
+    );
+    assert!(target_set.contains("10"));
+    assert!(target_set.contains("20"));
+}
+
+#[test]
+fn integ_orphan_filter_empty_result() {
+    // Graph where ALL product_ids in orders are orphans (none in products PK).
+    // Orphan filter should drop everything → empty target list.
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph_orphan_fk_all_orphans(dir.path());
+    let plan = orphan_ld_plan(Some("products".to_string()));
+
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_array(receiver);
+    handle.join().unwrap().unwrap();
+
+    // The entity row may still be emitted but with an empty target list,
+    // or it may be omitted entirely. Either is acceptable.
+    if !rows.is_empty() {
+        assert_eq!(rows.len(), 1, "at most one row for user 0");
+        let (entity, _ts, targets, _freqs) = &rows[0];
+        assert_eq!(*entity, 0);
+        assert!(
+            targets.is_empty(),
+            "all orphans → empty target list; got {targets:?}"
+        );
+    }
+    // If rows is empty, that's also correct — no valid targets means no output row.
 }

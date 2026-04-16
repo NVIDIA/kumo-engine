@@ -143,6 +143,21 @@ pub enum Op {
         /// Early-termination limit (PQL `TOP k`). The executor may stop
         /// accumulating after `limit` items, primarily useful for `ListDistinct`.
         limit: Option<u32>,
+        /// For `ListDistinct` in link prediction: the *target entity*
+        /// table — the table whose rows enumerate the items being
+        /// predicted. Used by the ttgen executor to drop values not
+        /// present in that table's PK map (orphan filter, matching
+        /// GraphEngine's inner-join label semantics).
+        ///
+        /// When `Some`, filter is enabled. When `None`, no filtering is
+        /// applied. Ignored for every other aggregation func.
+        ///
+        /// Resolution rules (performed by the caller, *not* inferred):
+        ///   * If the leaf column is a foreign key → the FK destination.
+        ///   * If the leaf column is the primary key of its own table →
+        ///     that same table.
+        ///   * Otherwise → `None`.
+        target_entity_table: Option<String>,
     },
     /// Direct column lookup (no traversal).
     Column {

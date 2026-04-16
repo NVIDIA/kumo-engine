@@ -519,6 +519,7 @@ fn resolve_op(
             window_unit,
             row_filter,
             limit,
+            target_entity_table,
         } => {
             let alias_idx = alias_to_idx[alias];
             let resolved_path = resolve_path(path, reader)?;
@@ -571,16 +572,31 @@ fn resolve_op(
                 .map(|f| resolve_row_filter(f, reader, dst_table, &dst_ctx, entity_col_indices))
                 .transpose().map_err(|e| TTGenError::SchemaError(format!("resolving aggregate row filter: {}", e)))?;
 
-            // For LP ListDistinct: resolve the table that the target column
-            // is a foreign key to.  This lets the executor skip target values
-            // whose PK doesn't exist in that table (orphaned FK rows).
-            let target_pk_table = if *func == AggFunc::ListDistinct {
-                match target_col.as_ref() {
-                    Some(col) => resolve_fk_destination(dst_table, col, reader)?,
-                    None => None,
+            // For LP `ListDistinct`: look up the target entity table whose PK
+            // map should be consulted for orphan filtering. The plan's
+            // `target_entity_table` is authoritative — the caller (kumo)
+            // resolved it from the graph schema. `None` means no filter.
+            let target_pk_table = match (func, target_entity_table.as_deref()) {
+                (AggFunc::ListDistinct, Some(name)) => {
+                    let table = reader.table(name).ok_or_else(|| {
+                        TTGenError::SchemaError(format!(
+                            "target_entity_table '{name}' not found in index"
+                        ))
+                    })?;
+                    if table.pk_map().is_none() {
+                        return Err(TTGenError::SchemaError(format!(
+                            "target_entity_table '{name}' has no primary key map"
+                        )));
+                    }
+                    tracing::info!(
+                        target_entity_table = name,
+                        pk_map_shards = table.pk_map().map(|m| m.shard_count()).unwrap_or(0),
+                        alias = %alias,
+                        "[orphan-filter] ACTIVATED for ListDistinct"
+                    );
+                    Some(table)
                 }
-            } else {
-                None
+                _ => None,
             };
 
             Ok(ResolvedOp::Aggregate(ResolvedAggregate {
@@ -964,44 +980,6 @@ fn find_relation<'a>(
         edge_ref.dst_col,
         candidates.iter().map(|(_, r)| r.name.as_str()).collect::<Vec<_>>().join(", "),
     )));
-}
-
-/// Look up the table that `col_name` on `src_table` is a foreign key to.
-///
-/// Scans `src_table`'s edge relations for one whose name contains
-/// `col_name` and returns the destination table's `TableReader` from the
-/// index.  Returns `Ok(None)` if no matching relation is found (the
-/// column is not a foreign key).  Returns `Err` if the destination table
-/// is missing from the index or was not ingested with a primary key.
-fn resolve_fk_destination(
-    src_table: &Arc<TableReader>,
-    col_name: &str,
-    reader: &GraphIndexReader,
-) -> TTGenResult<Option<Arc<TableReader>>> {
-    for rel in src_table.relations() {
-        if rel.name.contains(col_name) {
-            let table = reader.table(&rel.dst_type).ok_or_else(|| {
-                TTGenError::SchemaError(format!(
-                    "LP target FK table '{}' not found in index",
-                    rel.dst_type
-                ))
-            })?;
-            if table.pk_map().is_none() {
-                return Err(TTGenError::SchemaError(format!(
-                    "LP target FK table '{}' has no primary key map",
-                    rel.dst_type
-                )));
-            }
-            tracing::debug!(
-                src = src_table.node_type(),
-                col = col_name,
-                dst = rel.dst_type.as_str(),
-                "resolved LP target FK destination table"
-            );
-            return Ok(Some(table));
-        }
-    }
-    Ok(None)
 }
 
 /// Infer the Arrow DataType for the TARGET column.
