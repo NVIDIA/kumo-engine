@@ -1098,6 +1098,12 @@ pub enum ColumnStatsCollector {
         max_len: usize,
         welford: WelfordAccumulator,
     },
+    /// Image URL column — stores only universal stats (count, null_count).
+    /// Produces `kumo.image` keys in col_stats output.
+    ImageUrl {
+        count: u64,
+        null_count: u64,
+    },
     /// Skip this column (PK, Unsupported, Multicategorical).
     Skip,
 }
@@ -1397,6 +1403,10 @@ impl ColumnStatsCollector {
                 max_len: 0,
                 welford: WelfordAccumulator::new(),
             },
+            Some(SemanticType::ImageUrl) => ColumnStatsCollector::ImageUrl {
+                count: 0,
+                null_count: 0,
+            },
             Some(SemanticType::Multicategorical) | Some(SemanticType::Unsupported) | None => {
                 ColumnStatsCollector::Skip
             }
@@ -1525,6 +1535,16 @@ impl ColumnStatsCollector {
                 }
                 welford.merge(w2);
             }
+            (
+                ColumnStatsCollector::ImageUrl { count, null_count },
+                ColumnStatsCollector::ImageUrl {
+                    count: c2,
+                    null_count: nc2,
+                },
+            ) => {
+                *count += *c2;
+                *null_count += *nc2;
+            }
             (ColumnStatsCollector::Skip, ColumnStatsCollector::Skip) => {}
             _ => {
                 // Mismatched variants — should not happen if semantic types are consistent
@@ -1623,6 +1643,11 @@ impl ColumnStatsCollector {
                 "sequence_mean": welford.mean(),
                 "sequence_std": welford.std_dev(),
             })),
+            ColumnStatsCollector::ImageUrl { count, null_count } => Some(json!({
+                "semantic_type": "image_url",
+                "count": *count + *null_count,
+                "null_count": *null_count,
+            })),
             ColumnStatsCollector::Skip => None,
         }
     }
@@ -1652,6 +1677,7 @@ fn kumo_stype_key(col: &ColumnStatsCollector) -> &'static str {
         ColumnStatsCollector::Text { .. } => "kumo.text",
         ColumnStatsCollector::Timestamp { .. } => "kumo.timestamp",
         ColumnStatsCollector::Sequence { .. } => "kumo.sequence",
+        ColumnStatsCollector::ImageUrl { .. } => "kumo.image",
         ColumnStatsCollector::Skip => "",
     }
 }
@@ -1898,6 +1924,13 @@ impl FileColStats {
                     // Always emit min/max length (Python bridge emits even sentinels).
                     map.insert(kumo_key(name, sk, "SEQUENCE_MIN_LENGTH", false), kumo_entry(json!(*min_len), false, dv, total));
                     map.insert(kumo_key(name, sk, "SEQUENCE_MAX_LENGTH", false), kumo_entry(json!(*max_len), false, dv, total));
+                }
+                ColumnStatsCollector::ImageUrl { count, null_count } => {
+                    let total = *count + *null_count;
+                    map.insert(kumo_key(name, sk, "COUNT", false), kumo_entry(json!(total), false, dv, total));
+                    map.insert(kumo_key(name, sk, "NUM_NA", false), kumo_entry(json!(*null_count), false, dv, total));
+                    map.insert(kumo_key(name, sk, "NA_FRACTION", false), kumo_entry(json!(kumo_safe_div(*null_count, total)), false, dv, total));
+                    map.insert(kumo_key(name, sk, "INVALID_FRACTION", false), kumo_entry(json!(0.0), false, dv, total));
                 }
                 ColumnStatsCollector::Skip => {}
             }
@@ -2183,6 +2216,9 @@ impl ColumnValueObserver for FileColStats {
                 *count += 1;
                 hll.observe_bytes(value.as_bytes());
             }
+            ColumnStatsCollector::ImageUrl { count, .. } => {
+                *count += 1;
+            }
             _ => {}
         }
 
@@ -2242,6 +2278,7 @@ impl ColumnValueObserver for FileColStats {
             ColumnStatsCollector::Text { null_count, .. } => *null_count += 1,
             ColumnStatsCollector::Timestamp { null_count, .. } => *null_count += 1,
             ColumnStatsCollector::Sequence { null_count, .. } => *null_count += 1,
+            ColumnStatsCollector::ImageUrl { null_count, .. } => *null_count += 1,
             ColumnStatsCollector::Skip => {}
         }
     }

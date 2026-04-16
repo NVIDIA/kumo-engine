@@ -123,6 +123,12 @@ pub enum SemanticType {
     Multicategorical,
     /// Column type not supported for ML encoding.
     Unsupported,
+    /// Image URLs stored as strings. Kumo's training pipeline treats these
+    /// as `Stype.image` → `Image()` encoder → `UnsupportedPreMatMapper`
+    /// (the column is skipped during tensor creation). Col-stats emit only
+    /// the universal stats (COUNT, NUM_NA, NA_FRACTION) under the
+    /// `kumo.image` stype key so the strict-path cache check passes.
+    ImageUrl,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
