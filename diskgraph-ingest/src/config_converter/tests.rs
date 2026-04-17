@@ -46,12 +46,9 @@ fn test_map_dtype_temporal() {
 
 #[test]
 fn test_map_dtype_lists() {
-    assert_eq!(
-        map_kumo_dtype("floatlist"),
-        Ok(IngestedType::Float32Array)
-    );
-    assert!(map_kumo_dtype("intlist").is_err());
-    assert!(map_kumo_dtype("stringlist").is_err());
+    assert_eq!(map_kumo_dtype("floatlist"), Ok(IngestedType::Float32Array));
+    assert_eq!(map_kumo_dtype("intlist"), Ok(IngestedType::Int64Array));
+    assert_eq!(map_kumo_dtype("stringlist"), Ok(IngestedType::StringArray));
 }
 
 #[test]
@@ -1163,11 +1160,8 @@ fn test_detect_timestamp_formats_from_parquet() {
         None,
     ]);
 
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![Arc::new(id_array), Arc::new(ts_array)],
-    )
-    .unwrap();
+    let batch =
+        RecordBatch::try_new(schema.clone(), vec![Arc::new(id_array), Arc::new(ts_array)]).unwrap();
 
     let file = std::fs::File::create(&parquet_path).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
@@ -1265,9 +1259,11 @@ fn test_detect_timestamp_formats_skips_native_timestamp_columns() {
         true,
     )]));
 
-    let ts_array = TimestampMicrosecondArray::from(vec![Some(1700000000_000_000i64), Some(1700100000_000_000)]);
-    let batch =
-        RecordBatch::try_new(schema.clone(), vec![Arc::new(ts_array)]).unwrap();
+    let ts_array = TimestampMicrosecondArray::from(vec![
+        Some(1700000000_000_000i64),
+        Some(1700100000_000_000),
+    ]);
+    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(ts_array)]).unwrap();
 
     let file = std::fs::File::create(&parquet_path).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
@@ -1414,7 +1410,7 @@ fn test_detect_timestamp_formats_multi_value_sampling() {
         .map(|i| 20230101 + i * 100) // 20230101, 20230201, 20230301, ...
         .collect();
     // Add 2 outlier values that look like small epoch seconds
-    values.push(86400);  // 1 day in seconds
+    values.push(86400); // 1 day in seconds
     values.push(172800); // 2 days in seconds
     let int_array = Int64Array::from(values);
     let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(int_array)]).unwrap();
@@ -1506,11 +1502,8 @@ fn test_detect_timestamp_formats_skips_empty_parquet_files() {
         1538006400_000_000_000i64, // 2018-09-27 in nanos
         1600732800_000_000_000i64, // 2020-09-22 in nanos
     ]);
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![Arc::new(id_array), Arc::new(ts_array)],
-    )
-    .unwrap();
+    let batch =
+        RecordBatch::try_new(schema.clone(), vec![Arc::new(id_array), Arc::new(ts_array)]).unwrap();
     let file = std::fs::File::create(&data_path).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
     writer.write(&batch).unwrap();

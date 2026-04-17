@@ -110,3 +110,71 @@ def ifood_graph(tmp_path_factory):
         pytest.fail(f"Index ingestion failed with exit code {e.returncode}")
 
     return str(index_dir)
+
+
+@pytest.fixture(scope="session")
+def list_features_graph(tmp_path_factory):
+    """
+    Graph with intlist (int64_array) and stringlist (string_array) feature
+    columns. Used to verify that the pybind wheel can ingest and serve
+    these column types without crashing.
+
+    Schema:
+      items: item_id (int64 PK), tag_ids (List<Int64>), tags (List<Utf8>)
+    """
+    root = tmp_path_factory.mktemp("list_features")
+    data_dir = root / "data"
+    data_dir.mkdir()
+    index_dir = root / "index"
+
+    # Build Parquet with list columns
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    item_ids = pa.array([0, 1, 2, 3], type=pa.int64())
+    tag_ids  = pa.array([[10, 20, 30], [40], [], [1, 2, 3, 4, 5]],
+                         type=pa.list_(pa.int64()))
+    tags     = pa.array([["sports", "sale"], ["kids"], [], ["pro", "audio"]],
+                         type=pa.list_(pa.utf8()))
+
+    table = pa.table({"item_id": item_ids, "tag_ids": tag_ids, "tags": tags})
+    items_path = str(data_dir / "items.parquet")
+    pq.write_table(table, items_path)
+
+    config = {
+        "dataset_name": "list_features_test",
+        "num_shards": 1,
+        "tables": [
+            {
+                "name": "items",
+                "columns": [
+                    {"name": "item_id", "ingested_dtype": "int64"},
+                    {"name": "tag_ids", "ingested_dtype": "int64_array"},
+                    {"name": "tags",    "ingested_dtype": "string_array"},
+                ],
+                "primary_key": "item_id",
+                "source": {"type": "parquet", "paths": [items_path]},
+            }
+        ],
+    }
+
+    config_path = root / "config.json"
+    import json
+    with open(config_path, "w") as f:
+        json.dump(config, f)
+
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+    try:
+        subprocess.run(
+            ["cargo", "run", "--release", "--bin", "ingest", "--",
+             "--source", str(config_path),
+             "--dest",   "local",
+             "--output", str(index_dir)],
+            cwd=project_root,
+            check=True,
+            env={**os.environ, "RUSTFLAGS": "-C target-cpu=native"},
+        )
+    except subprocess.CalledProcessError as e:
+        pytest.fail(f"list_features ingest failed with exit code {e.returncode}")
+
+    return str(index_dir)

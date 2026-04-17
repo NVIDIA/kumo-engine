@@ -35,6 +35,8 @@ pub fn map_kumo_dtype(dtype: &str) -> Result<IngestedType, &str> {
 
         // Array types
         "floatlist" => Ok(IngestedType::Float32Array),
+        "intlist" => Ok(IngestedType::Int64Array),
+        "stringlist" => Ok(IngestedType::StringArray),
 
         // Binary
         "binary" => Ok(IngestedType::Bytes),

@@ -1,7 +1,7 @@
-//! Full 23×23 FK-PK coercion matrix tests.
+//! Full 25×25 FK-PK coercion matrix tests.
 //!
 //! This module contains the complete test matrix for all IngestedType × IngestedType
-//! combinations (529 tests total).
+//! combinations (625 tests total).
 //!
 //! Each cell tests that `coercion_kind(fk_type, pk_type, params)` returns the expected result.
 //! For scale-dependent coercions (Int → Decimal128), we test with scale=0 (default).
@@ -11,8 +11,8 @@ use crate::graph_config::IngestedType;
 
 const NO_SCALE: CoercionParams = CoercionParams { pk_scale: None };
 
-/// All 23 IngestedType variants.
-fn all_types() -> [IngestedType; 23] {
+/// All 25 IngestedType variants.
+fn all_types() -> [IngestedType; 25] {
     use IngestedType::*;
     [
         Int8,
@@ -38,6 +38,8 @@ fn all_types() -> [IngestedType; 23] {
         Float32Array,
         Float64Array,
         Float16Array,
+        Int64Array,
+        StringArray,
     ]
 }
 
@@ -180,15 +182,15 @@ fn expected_coercion(fk: &IngestedType, pk: &IngestedType) -> CoercionKind {
         (Ip, Uuid | Uuid256 | Float32Array | Float64Array | Float16Array) => Incompatible,
 
         // ===== Array types (Incompatible with everything except same) =====
-        (Float32Array | Float64Array | Float16Array, _) => Incompatible,
-        (_, Float32Array | Float64Array | Float16Array) => Incompatible,
+        (Float32Array | Float64Array | Float16Array | Int64Array | StringArray, _) => Incompatible,
+        (_, Float32Array | Float64Array | Float16Array | Int64Array | StringArray) => Incompatible,
 
         // ===== Default: Incompatible =====
         _ => Incompatible,
     }
 }
 
-/// Test the entire 23×23 matrix.
+/// Test the entire 25×25 matrix.
 /// Uses NO_SCALE (scale=None) for all tests. Scale-dependent tests are separate.
 #[test]
 fn test_full_coercion_matrix() {
@@ -231,7 +233,7 @@ fn test_matrix_coverage() {
         }
     }
 
-    assert_eq!(count, 529, "Should test 23×23 = 529 combinations");
+    assert_eq!(count, 625, "Should test 25×25 = 625 combinations");
 }
 
 // ============================================================================
@@ -378,7 +380,7 @@ fn test_bool_mostly_incompatible() {
 #[test]
 fn test_array_types_incompatible() {
     use IngestedType::*;
-    let arrays = [Float32Array, Float64Array, Float16Array];
+    let arrays = [Float32Array, Float64Array, Float16Array, Int64Array, StringArray];
     let types = all_types();
 
     for arr in &arrays {
@@ -423,7 +425,9 @@ fn test_to_string_safe_except_arrays() {
         }
 
         let expected = match fk {
-            Float32Array | Float64Array | Float16Array => CoercionKind::Incompatible,
+            Float32Array | Float64Array | Float16Array | Int64Array | StringArray => {
+                CoercionKind::Incompatible
+            }
             _ => CoercionKind::Safe,
         };
 

@@ -1,0 +1,35 @@
+{
+  "total_rows": 50000000,
+  "seed": 43,
+  "batch_size": 100000,
+  "row_group_size": 500000,
+  "tables": [
+    {
+      "name": "entities",
+      "row_percent": 20,
+      "shards": 16,
+      "columns": [
+        { "name": "entity_id", "dtype": "int64", "primary_key": true },
+        { "name": "region", "dtype": "string", "gen": { "type": "categorical", "values": ["us", "eu", "apac", "latam"] } }
+      ]
+    },
+    {
+      "name": "events",
+      "row_percent": 80,
+      "shards": 64,
+      "columns": [
+        { "name": "event_id", "dtype": "int64", "primary_key": true },
+        { "name": "entity_id", "dtype": "int64" },
+        { "name": "ts", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1640995200000, "step_ms": 25 } },
+        {
+          "name": "span_ids",
+          "dtype": "int64_array",
+          "gen": { "type": "array_int64", "len": 512, "min": 1099511627776, "max": 9223372036854775807 }
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    { "src_table": "events", "src_column": "entity_id", "dst_table": "entities", "dst_column": "entity_id" }
+  ]
+}

@@ -75,6 +75,8 @@ pub enum ColumnType {
     Timestamp,
     Float32Array,
     Float64Array,
+    Int64Array,
+    StringArray,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -197,6 +199,20 @@ pub enum GeneratorSpec {
         len: usize,
         min: f64,
         max: f64,
+    },
+    ArrayInt64 {
+        len: usize,
+        min: i64,
+        max: i64,
+    },
+    ArrayString {
+        len: usize,
+        #[serde(default)]
+        min_len: Option<usize>,
+        #[serde(default)]
+        max_len: Option<usize>,
+        #[serde(default)]
+        alphabet: Option<String>,
     },
 }
 

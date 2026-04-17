@@ -23,9 +23,11 @@ mod tests_arrow_matrix;
 #[cfg(test)]
 mod tests_casting;
 #[cfg(test)]
-mod tests_type_matrix;
+mod tests_int_string_list;
 #[cfg(test)]
 mod tests_string_float_array;
+#[cfg(test)]
+mod tests_type_matrix;
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests_unit;
@@ -243,6 +245,8 @@ pub enum IngestedType {
     Float16Array,
     Float32Array,
     Float64Array,
+    Int64Array,
+    StringArray,
 }
 
 #[derive(Debug, Clone)]
@@ -329,6 +333,10 @@ pub enum ColumnEncoding {
     FloatArray {
         storage: FloatStorage,
     },
+    Int64Array,
+    StringArray {
+        encoding: StringEncoding,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -378,6 +386,8 @@ pub enum ValueRef<'a> {
     Decimal256([u8; 32]),
     Float32Array(&'a [f32]),
     Float64Array(&'a [f64]),
+    Int64Array(&'a [i64]),
+    StringArray(&'a [&'a str]),
 }
 
 struct BitWriter {
@@ -852,6 +862,32 @@ impl RowPackContextBuilder {
                         stats.observe_null()
                     }
                 }
+                IngestedType::Int64Array => {
+                    if access
+                        .with_int64_array(idx, |values| {
+                            for &v in values {
+                                stats.observe_int64(v);
+                            }
+                            Ok(())
+                        })?
+                        .is_none()
+                    {
+                        stats.observe_null()
+                    }
+                }
+                IngestedType::StringArray => {
+                    if access
+                        .with_string_array(idx, |tokens| {
+                            for &token in tokens {
+                                stats.observe_string(token, &self.config);
+                            }
+                            Ok(())
+                        })?
+                        .is_none()
+                    {
+                        stats.observe_null()
+                    }
+                }
             }
         }
         self.samples_seen += 1;
@@ -1022,6 +1058,27 @@ fn estimate_column_bytes(encoding: &ColumnEncoding, stats: &ColumnStats) -> usiz
                 FloatStorage::F64 => 8,
             };
             varint_bytes_u64(avg_len as u64) + avg_len * elem
+        }
+        ColumnEncoding::Int64Array => {
+            // varint(N) + N * varint(i64) — assume average 2 bytes per varint
+            let avg_len = avg_len(stats.array_len_total, stats.array_count);
+            varint_bytes_u64(avg_len as u64) + avg_len * 2
+        }
+        ColumnEncoding::StringArray { encoding } => {
+            // varint(N) + N * (per-token cost)
+            let avg_tokens = avg_len(stats.array_len_total, stats.array_count);
+            let token_cost = match encoding {
+                StringEncoding::Dict { .. } => varint_bytes_u64(1024),
+                StringEncoding::Raw => {
+                    let avg = avg_len(stats.string_bytes, stats.string_total);
+                    varint_bytes_u64(avg as u64) + avg
+                }
+                _ => {
+                    let avg = avg_len(stats.string_bytes, stats.string_total);
+                    varint_bytes_u64(avg as u64) + avg
+                }
+            };
+            varint_bytes_u64(avg_tokens as u64) + avg_tokens * token_cost
         }
     }
 }
@@ -1288,6 +1345,16 @@ impl ColumnStats {
                     }
                 }
             }
+            ValueRef::Int64Array(values) => {
+                for &v in *values {
+                    self.observe_int64(v);
+                }
+            }
+            ValueRef::StringArray(tokens) => {
+                for &token in *tokens {
+                    self.observe_string(token, config);
+                }
+            }
             ValueRef::Float64Array(values) => {
                 self.array_len_total += values.len();
                 self.array_count += 1;
@@ -1536,6 +1603,10 @@ impl ColumnStats {
             }),
             IngestedType::Float16Array => Ok(ColumnEncoding::FloatArray {
                 storage: FloatStorage::F16,
+            }),
+            IngestedType::Int64Array => Ok(ColumnEncoding::Int64Array),
+            IngestedType::StringArray => Ok(ColumnEncoding::StringArray {
+                encoding: choose_string_encoding(self, config)?,
             }),
         }
     }
@@ -1852,6 +1923,9 @@ impl RowPackEncoder {
             match &col.encoding {
                 ColumnEncoding::String {
                     encoding: StringEncoding::Dict { values },
+                }
+                | ColumnEncoding::StringArray {
+                    encoding: StringEncoding::Dict { values },
                 } => {
                     let mut map = FastHashMap::with_capacity(values.len());
                     for (idx, value) in values.iter().enumerate() {
@@ -1863,6 +1937,9 @@ impl RowPackEncoder {
             }
             match &col.encoding {
                 ColumnEncoding::String {
+                    encoding: StringEncoding::Alphabet { alphabet },
+                }
+                | ColumnEncoding::StringArray {
                     encoding: StringEncoding::Alphabet { alphabet },
                 } => {
                     let mut map = [ALPHABET_INVALID; 256];
@@ -1885,6 +1962,9 @@ impl RowPackEncoder {
             }
             match &col.encoding {
                 ColumnEncoding::String {
+                    encoding: StringEncoding::Bpe { dict },
+                }
+                | ColumnEncoding::StringArray {
                     encoding: StringEncoding::Bpe { dict },
                 } => {
                     bpe_tries.push(Some(BpeTrie::from_dict(dict)));
@@ -2321,6 +2401,35 @@ impl RowPackEncoder {
                         }
                     }
                 },
+                IngestedType::Int64Array => {
+                    access.with_int64_array(idx, |values| {
+                        if matches!(col.encoding, ColumnEncoding::Int64Array) {
+                            encode_int64_list_with_tag(&mut scratch.data, values)?;
+                            Ok(1u8)
+                        } else {
+                            Err(anyhow!("rowpack int64 array encoding mismatch"))
+                        }
+                    })?.unwrap_or_default()
+                }
+                IngestedType::StringArray => {
+                    access.with_string_array(idx, |tokens| {
+                        if matches!(col.encoding, ColumnEncoding::StringArray { .. }) {
+                            encode_string_list_with_tag(
+                                &mut scratch.data,
+                                tokens,
+                                col,
+                                self.dict_maps[idx].as_ref(),
+                                self.alphabet_maps[idx].as_ref(),
+                                self.bpe_tries[idx].as_ref(),
+                                Some(&mut scratch.bpe_tokens),
+                                Some(&mut scratch.lz4_buf),
+                            )?;
+                            Ok(1u8)
+                        } else {
+                            Err(anyhow!("rowpack string array encoding mismatch"))
+                        }
+                    })?.unwrap_or_default()
+                }
             };
             scratch.tags.write_bits(tag, 2);
         }
@@ -2745,6 +2854,35 @@ impl RowPackEncoder {
                         }
                     }
                 },
+                IngestedType::Int64Array => {
+                    access.with_int64_array(idx, |values| {
+                        if matches!(col.encoding, ColumnEncoding::Int64Array) {
+                            encode_int64_list_with_tag(data, values)?;
+                            Ok(1u8)
+                        } else {
+                            Err(anyhow!("rowpack int64 array encoding mismatch"))
+                        }
+                    })?.unwrap_or_default()
+                }
+                IngestedType::StringArray => {
+                    access.with_string_array(idx, |tokens| {
+                        if matches!(col.encoding, ColumnEncoding::StringArray { .. }) {
+                            encode_string_list_with_tag(
+                                data,
+                                tokens,
+                                col,
+                                self.dict_maps[idx].as_ref(),
+                                self.alphabet_maps[idx].as_ref(),
+                                self.bpe_tries[idx].as_ref(),
+                                None,
+                                None,
+                            )?;
+                            Ok(1u8)
+                        } else {
+                            Err(anyhow!("rowpack string array encoding mismatch"))
+                        }
+                    })?.unwrap_or_default()
+                }
             };
             if tag == 0 {
                 observer.observe_null(idx);
@@ -2903,11 +3041,11 @@ fn encode_value_with_tag<'a>(
     out: &mut Vec<u8>,
     col: &ColumnContext,
     value: &ValueRef<'a>,
-    _dict: Option<&FastHashMap<Vec<u8>, u32>>,
-    _alphabet: Option<&AlphabetMap>,
-    _bpe: Option<&BpeTrie>,
-    _bpe_tokens: Option<&mut Vec<u32>>,
-    _lz4_buf: Option<&mut Vec<u8>>,
+    dict: Option<&FastHashMap<Vec<u8>, u32>>,
+    alphabet: Option<&AlphabetMap>,
+    bpe: Option<&BpeTrie>,
+    bpe_tokens: Option<&mut Vec<u32>>,
+    lz4_buf: Option<&mut Vec<u8>>,
 ) -> Result<u8> {
     match (&col.encoding, value) {
         (
@@ -3035,6 +3173,16 @@ fn encode_value_with_tag<'a>(
         (ColumnEncoding::FloatArray { storage }, ValueRef::Float64Array(values)) => {
             let tag = encode_float_slice_f64_with_tag(out, col.logical_type, *storage, values)?;
             Ok(tag)
+        }
+        (ColumnEncoding::Int64Array, ValueRef::Int64Array(values)) => {
+            encode_int64_list_with_tag(out, values)?;
+            Ok(1)
+        }
+        (ColumnEncoding::StringArray { .. }, ValueRef::StringArray(tokens)) => {
+            encode_string_list_with_tag(
+                out, tokens, col, dict, alphabet, bpe, bpe_tokens, lz4_buf,
+            )?;
+            Ok(1)
         }
         _ => Err(anyhow!("rowpack value type mismatch")),
     }
@@ -3421,6 +3569,67 @@ fn encode_float_slice_f64_with_tag(
     Ok(1)
 }
 
+/// Encode a list of i64 values as: varint(N) + [zigzag_varint(v) × N].
+/// Returns tag 1.
+fn encode_int64_list_with_tag(out: &mut Vec<u8>, values: &[i64]) -> Result<()> {
+    out.reserve(varint_bytes_u64(values.len() as u64) + values.len() * 2);
+    write_varint(values.len() as u64, out);
+    for &v in values {
+        write_varint(zigzag_encode(v), out);
+    }
+    Ok(())
+}
+
+/// Encode a list of string tokens using the column's StringEncoding.
+///
+/// Wire format: `varint(N)` + for each token: `u8(per_token_tag)` + encoded bytes.
+///   - per_token_tag=1: dict hit (varint index) or raw encoding succeeded
+///   - per_token_tag=2: dict miss / fallback (varint(len) + raw bytes)
+#[allow(clippy::too_many_arguments)]
+fn encode_string_list_with_tag(
+    out: &mut Vec<u8>,
+    tokens: &[&str],
+    col: &ColumnContext,
+    dict: Option<&FastHashMap<Vec<u8>, u32>>,
+    alphabet: Option<&AlphabetMap>,
+    bpe: Option<&BpeTrie>,
+    mut bpe_tokens: Option<&mut Vec<u32>>,
+    mut lz4_buf: Option<&mut Vec<u8>>,
+) -> Result<()> {
+    let ColumnEncoding::StringArray { encoding } = &col.encoding else {
+        return Err(anyhow!("rowpack string array encoding mismatch"));
+    };
+    write_varint(tokens.len() as u64, out);
+    // Temporary buffer to hold one token's bytes before we know the tag.
+    let mut token_buf = Vec::new();
+    let tmp_col = ColumnContext {
+        name: col.name.clone(),
+        logical_type: IngestedType::String,
+        encoding: ColumnEncoding::String {
+            encoding: encoding.clone(),
+        },
+    };
+    for &token in tokens {
+        token_buf.clear();
+        // Reborrow mutable references for each iteration so they aren't consumed.
+        let bpe_tok_ref: Option<&mut Vec<u32>> = bpe_tokens.as_deref_mut();
+        let lz4_ref: Option<&mut Vec<u8>> = lz4_buf.as_deref_mut();
+        let token_tag = encode_string(
+            &mut token_buf,
+            token,
+            &tmp_col,
+            dict,
+            alphabet,
+            bpe,
+            bpe_tok_ref,
+            lz4_ref,
+        )?;
+        out.push(token_tag);
+        out.extend_from_slice(&token_buf);
+    }
+    Ok(())
+}
+
 fn encode_int(out: &mut Vec<u8>, signed: bool, varint: bool, bits: u8, v: i128) -> Result<()> {
     if signed {
         if varint {
@@ -3789,6 +3998,10 @@ pub struct RowPackDecodeScratch {
     pub bytes: Vec<u8>,
     pub float32: Vec<f32>,
     pub float64: Vec<f64>,
+    pub int64: Vec<i64>,
+    /// Decoded string tokens for StringArray columns.
+    /// Each token is stored as a `String` and we return `&str` into them.
+    pub strings: Vec<String>,
     pub tags: Vec<u8>,
     pub bools: Vec<bool>,
 }
@@ -3800,6 +4013,8 @@ impl Default for RowPackDecodeScratch {
             bytes: Vec::with_capacity(1024),
             float32: Vec::with_capacity(1024),
             float64: Vec::with_capacity(1024),
+            int64: Vec::with_capacity(64),
+            strings: Vec::new(),
             tags: Vec::with_capacity(64),
             bools: Vec::with_capacity(64),
         }
@@ -3812,6 +4027,9 @@ impl RowPackDecoder {
         for col in &ctx.columns {
             match &col.encoding {
                 ColumnEncoding::String {
+                    encoding: StringEncoding::Dict { values },
+                }
+                | ColumnEncoding::StringArray {
                     encoding: StringEncoding::Dict { values },
                 } => dict_values.push(Some(values.clone())),
                 _ => dict_values.push(None),
@@ -4214,6 +4432,37 @@ fn decode_value_msgpack(
                 }
             }
         }
+        ColumnEncoding::Int64Array => {
+            let len = read_varint(data)? as usize;
+            if len > MAX_ARRAY_LEN {
+                return Err(anyhow!("rowpack int64 array length overflow"));
+            }
+            mp::write_array_len(out, len as u32)?;
+            for _ in 0..len {
+                let v = zigzag_decode(read_varint(data)?);
+                mp::write_sint(out, v)?;
+            }
+        }
+        ColumnEncoding::StringArray { encoding } => {
+            let len = read_varint(data)? as usize;
+            if len > MAX_ARRAY_LEN {
+                return Err(anyhow!("rowpack string array length overflow"));
+            }
+            mp::write_array_len(out, len as u32)?;
+            for _ in 0..len {
+                if data.is_empty() {
+                    return Err(anyhow!("rowpack string array token tag truncated"));
+                }
+                let token_tag = data[0];
+                *data = &data[1..];
+                let value = if token_tag == 2 {
+                    decode_string_fallback(data)?
+                } else {
+                    decode_string(data, encoding, dict)?
+                };
+                mp::write_str(out, &value)?;
+            }
+        }
         ColumnEncoding::Bool => unreachable!(),
     }
     Ok(())
@@ -4340,6 +4589,39 @@ fn decode_value_json(
             }
             JsonValue::from(values)
         }
+        ColumnEncoding::Int64Array => {
+            let len = read_varint(data)? as usize;
+            if len > MAX_ARRAY_LEN {
+                return Err(anyhow!("rowpack int64 array length overflow"));
+            }
+            let mut values = Vec::with_capacity(len);
+            for _ in 0..len {
+                let v = zigzag_decode(read_varint(data)?);
+                values.push(JsonValue::from(v));
+            }
+            JsonValue::from(values)
+        }
+        ColumnEncoding::StringArray { encoding } => {
+            let len = read_varint(data)? as usize;
+            if len > MAX_ARRAY_LEN {
+                return Err(anyhow!("rowpack string array length overflow"));
+            }
+            let mut values = Vec::with_capacity(len);
+            for _ in 0..len {
+                if data.is_empty() {
+                    return Err(anyhow!("rowpack string array token tag truncated"));
+                }
+                let token_tag = data[0];
+                *data = &data[1..];
+                let value = if token_tag == 2 {
+                    decode_string_fallback(data)?
+                } else {
+                    decode_string(data, encoding, dict)?
+                };
+                values.push(JsonValue::from(value));
+            }
+            JsonValue::from(values)
+        }
         ColumnEncoding::Bool => JsonValue::Null,
     };
     Ok(value)
@@ -4463,6 +4745,55 @@ fn decode_value_ref<'a>(
                 }
                 _ => Err(anyhow!("rowpack invalid array type")),
             }
+        }
+        ColumnEncoding::Int64Array => {
+            let len = read_varint(data)? as usize;
+            if len > MAX_ARRAY_LEN {
+                return Err(anyhow!("rowpack int64 array length overflow"));
+            }
+            scratch.int64.clear();
+            for _ in 0..len {
+                let v = zigzag_decode(read_varint(data)?);
+                scratch.int64.push(v);
+            }
+            Ok(ValueRef::Int64Array(&scratch.int64))
+        }
+        ColumnEncoding::StringArray { encoding } => {
+            // Decode tokens into scratch.strings, advancing `data` past the payload.
+            let len = read_varint(data)? as usize;
+            if len > MAX_ARRAY_LEN {
+                return Err(anyhow!("rowpack string array length overflow"));
+            }
+            scratch.strings.clear();
+            for _ in 0..len {
+                if data.is_empty() {
+                    return Err(anyhow!("rowpack string array token tag truncated"));
+                }
+                let token_tag = data[0];
+                *data = &data[1..];
+                let token = if token_tag == 2 {
+                    decode_string_fallback(data)?
+                } else {
+                    decode_string(data, encoding, dict)?
+                };
+                scratch.strings.push(token);
+            }
+            // StringArray cannot be returned as ValueRef::StringArray(&[&str]) from
+            // this function because &str elements would borrow from scratch.strings
+            // (a Vec<String>), but Rust cannot express that those borrows are valid
+            // for the caller's lifetime without unsafe code.
+            //
+            // The data pointer has been advanced past the payload above (correct), so
+            // subsequent columns in the same row decode cleanly.
+            //
+            // Callers must use decode_row_to_builders, which writes tokens directly
+            // into an Arrow ListBuilder that owns its memory — no borrowed references.
+            // If a zero-copy hot path is ever needed, consider a bump/arena allocator
+            // over scratch memory so all tokens sit in one contiguous slab.
+            Err(anyhow!(
+                "rowpack: StringArray columns must be decoded via decode_row_to_builders; \
+                 decode_column_value cannot return a borrowed &[&str] safely (see knowledge/rust/ownership-and-references.md)"
+            ))
         }
         ColumnEncoding::Bool => Err(anyhow!("rowpack bool unexpected")),
     }
@@ -4621,6 +4952,34 @@ fn decode_value_skip(
                 return Err(anyhow!("rowpack array truncated"));
             }
             *data = &data[total..];
+        }
+        ColumnEncoding::Int64Array => {
+            let len = read_varint(data)? as usize;
+            if len > MAX_ARRAY_LEN {
+                return Err(anyhow!("rowpack int64 array length overflow"));
+            }
+            for _ in 0..len {
+                let _ = read_varint(data)?;
+            }
+        }
+        ColumnEncoding::StringArray { encoding } => {
+            let len = read_varint(data)? as usize;
+            if len > MAX_ARRAY_LEN {
+                return Err(anyhow!("rowpack string array length overflow"));
+            }
+            for _ in 0..len {
+                if data.is_empty() {
+                    return Err(anyhow!("rowpack string array token tag truncated"));
+                }
+                let token_tag = data[0];
+                *data = &data[1..];
+                // Decode and discard the token value, advancing `data` correctly.
+                if token_tag == 2 {
+                    let _ = decode_string_fallback(data)?;
+                } else {
+                    let _ = decode_string(data, encoding, dict)?;
+                }
+            }
         }
         ColumnEncoding::Bool => {}
     }
@@ -5289,6 +5648,20 @@ fn append_null(builder: &mut dyn arrow_array::builder::ArrayBuilder) {
         .downcast_mut::<ListBuilder<Float64Builder>>()
     {
         b.append_null();
+        return;
+    }
+    if let Some(b) = builder
+        .as_any_mut()
+        .downcast_mut::<ListBuilder<Int64Builder>>()
+    {
+        b.append_null();
+        return;
+    }
+    if let Some(b) = builder
+        .as_any_mut()
+        .downcast_mut::<ListBuilder<StringBuilder>>()
+    {
+        b.append_null();
     }
 }
 
@@ -5380,6 +5753,20 @@ pub fn make_arrow_builder(
             let values_builder = Float64Builder::with_capacity(capacity * 32);
             (
                 DataType::new_list(DataType::Float64, true),
+                Box::new(ListBuilder::new(values_builder)),
+            )
+        }
+        IngestedType::Int64Array => {
+            let values_builder = Int64Builder::with_capacity(capacity * 32);
+            (
+                DataType::new_list(DataType::Int64, true),
+                Box::new(ListBuilder::new(values_builder)),
+            )
+        }
+        IngestedType::StringArray => {
+            let values_builder = StringBuilder::with_capacity(capacity * 32, capacity * 128);
+            (
+                DataType::new_list(DataType::Utf8, true),
                 Box::new(ListBuilder::new(values_builder)),
             )
         }
@@ -5636,6 +6023,48 @@ fn decode_and_append_to_builder(
                 }
                 _ => return Err(anyhow!("rowpack invalid array type")),
             }
+        }
+        ColumnEncoding::Int64Array => {
+            let len = read_varint(data)? as usize;
+            if len > MAX_ARRAY_LEN {
+                return Err(anyhow!("rowpack int64 array length overflow"));
+            }
+            scratch.int64.clear();
+            for _ in 0..len {
+                let v = zigzag_decode(read_varint(data)?);
+                scratch.int64.push(v);
+            }
+            let b = builder
+                .as_any_mut()
+                .downcast_mut::<ListBuilder<Int64Builder>>()
+                .unwrap();
+            b.values().append_slice(&scratch.int64);
+            b.append(true);
+        }
+        ColumnEncoding::StringArray { encoding } => {
+            let len = read_varint(data)? as usize;
+            if len > MAX_ARRAY_LEN {
+                return Err(anyhow!("rowpack string array length overflow"));
+            }
+            let b = builder
+                .as_any_mut()
+                .downcast_mut::<ListBuilder<StringBuilder>>()
+                .unwrap();
+            for _ in 0..len {
+                if data.is_empty() {
+                    return Err(anyhow!("rowpack string array token tag truncated"));
+                }
+                let token_tag = data[0];
+                *data = &data[1..];
+                scratch.string.clear();
+                if token_tag == 2 {
+                    decode_string_fallback_into(data, &mut scratch.string)?;
+                } else {
+                    decode_string_into(data, encoding, dict, scratch)?;
+                }
+                b.values().append_value(&scratch.string);
+            }
+            b.append(true);
         }
         ColumnEncoding::Bool => return Err(anyhow!("rowpack bool unexpected")),
     }

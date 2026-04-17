@@ -275,6 +275,17 @@ enum PreparedGenerator {
         min: f64,
         max: f64,
     },
+    ArrayI64 {
+        len: usize,
+        min: i64,
+        max: i64,
+    },
+    ArrayStr {
+        len: usize,
+        min_len: usize,
+        max_len: usize,
+        alphabet: Vec<u8>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -289,6 +300,8 @@ enum GeneratedValue {
     Timestamp(i64),
     ArrayF32(Vec<f32>),
     ArrayF64(Vec<f64>),
+    ArrayI64(Vec<i64>),
+    ArrayStr(Vec<String>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -806,6 +819,22 @@ fn generate_column_array(
             }
             Arc::new(builder.finish())
         }
+        ColumnType::Int64Array => {
+            let values = Int64Builder::new();
+            let mut builder = ListBuilder::new(values);
+            for i in 0..len {
+                append_value(&mut builder, column, table, row_start + i as u64, seed)?;
+            }
+            Arc::new(builder.finish())
+        }
+        ColumnType::StringArray => {
+            let values = StringBuilder::new();
+            let mut builder = ListBuilder::new(values);
+            for i in 0..len {
+                append_value(&mut builder, column, table, row_start + i as u64, seed)?;
+            }
+            Arc::new(builder.finish())
+        }
     };
     Ok(array)
 }
@@ -1065,6 +1094,44 @@ impl ValueAppender for ListBuilder<Float64Builder> {
     }
 }
 
+impl ValueAppender for ListBuilder<Int64Builder> {
+    fn append_value(&mut self, value: Option<GeneratedValue>) -> Result<()> {
+        match value {
+            Some(GeneratedValue::ArrayI64(values)) => {
+                let inner = self.values();
+                for value in values {
+                    inner.append_value(value);
+                }
+                self.append(true);
+            }
+            Some(_) => bail!("type mismatch for int64 array"),
+            None => {
+                self.append(false);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl ValueAppender for ListBuilder<StringBuilder> {
+    fn append_value(&mut self, value: Option<GeneratedValue>) -> Result<()> {
+        match value {
+            Some(GeneratedValue::ArrayStr(values)) => {
+                let inner = self.values();
+                for value in values {
+                    inner.append_value(&value);
+                }
+                self.append(true);
+            }
+            Some(_) => bail!("type mismatch for string array"),
+            None => {
+                self.append(false);
+            }
+        }
+        Ok(())
+    }
+}
+
 impl ColumnPlan {
     fn generate_value(
         &self,
@@ -1284,6 +1351,29 @@ impl PreparedGenerator {
                 }
                 Ok(GeneratedValue::ArrayF64(values))
             }
+            PreparedGenerator::ArrayI64 { len, min, max } => {
+                let span = ((*max as i128 - *min as i128) + 1).max(1) as u64;
+                let mut values = Vec::with_capacity(*len);
+                for idx in 0..*len {
+                    let value = *min + (mix64(seed ^ row_id ^ idx as u64) % span) as i64;
+                    values.push(value);
+                }
+                Ok(GeneratedValue::ArrayI64(values))
+            }
+            PreparedGenerator::ArrayStr {
+                len,
+                min_len,
+                max_len,
+                alphabet,
+            } => {
+                let mut values = Vec::with_capacity(*len);
+                for idx in 0..*len {
+                    let str_seed = mix64(seed ^ row_id ^ idx as u64);
+                    let elem_len = pick_len(*min_len, *max_len, str_seed);
+                    values.push(build_string(str_seed, elem_len, alphabet));
+                }
+                Ok(GeneratedValue::ArrayStr(values))
+            }
         }
     }
 }
@@ -1321,6 +1411,12 @@ fn column_arrow_type(column: &ColumnConfig) -> Result<DataType> {
         }
         ColumnType::Float64Array => {
             DataType::List(Arc::new(Field::new("item", DataType::Float64, true)))
+        }
+        ColumnType::Int64Array => {
+            DataType::List(Arc::new(Field::new("item", DataType::Int64, true)))
+        }
+        ColumnType::StringArray => {
+            DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)))
         }
     })
 }
@@ -1489,6 +1585,29 @@ fn prepare_generator(column: &ColumnConfig, gen: GeneratorSpec) -> Result<Prepar
             }
             Ok(PreparedGenerator::ArrayF64 { len, min, max })
         }
+        GeneratorSpec::ArrayInt64 { len, min, max } => {
+            ensure_dtype(column.dtype, &[ColumnType::Int64Array])?;
+            if min > max {
+                bail!("array_int64 min {} exceeds max {}", min, max);
+            }
+            Ok(PreparedGenerator::ArrayI64 { len, min, max })
+        }
+        GeneratorSpec::ArrayString {
+            len,
+            min_len,
+            max_len,
+            alphabet,
+        } => {
+            ensure_dtype(column.dtype, &[ColumnType::StringArray])?;
+            let (min_len, max_len) = resolve_len(None, min_len, max_len)?;
+            let alphabet = resolve_alphabet(alphabet);
+            Ok(PreparedGenerator::ArrayStr {
+                len,
+                min_len,
+                max_len,
+                alphabet,
+            })
+        }
     }
 }
 
@@ -1553,6 +1672,24 @@ fn parse_constant(dtype: ColumnType, value: serde_json::Value) -> Result<Generat
                 }
             }
             GeneratedValue::ArrayF64(values)
+        }
+        ColumnType::Int64Array => {
+            let mut values = Vec::new();
+            if let Some(array) = value.as_array() {
+                for entry in array {
+                    values.push(entry.as_i64().unwrap_or(0));
+                }
+            }
+            GeneratedValue::ArrayI64(values)
+        }
+        ColumnType::StringArray => {
+            let mut values = Vec::new();
+            if let Some(array) = value.as_array() {
+                for entry in array {
+                    values.push(entry.as_str().unwrap_or_default().to_string());
+                }
+            }
+            GeneratedValue::ArrayStr(values)
         }
     })
 }

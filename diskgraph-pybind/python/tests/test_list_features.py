@@ -1,0 +1,146 @@
+"""
+Pybind smoke tests for intlist (int64_array) and stringlist (string_array)
+feature columns.
+
+These tests verify:
+1. The wheel can load an index that contains list-type columns.
+2. fetch_features returns a RecordBatch with the correct Arrow types.
+3. The decoded values match the source Parquet data.
+4. Empty lists round-trip correctly.
+"""
+
+import json
+import pyarrow as pa
+import pytest
+import diskgraph as diskgraph_py
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def fetch_all_features(index_path: str, node_type: str, node_ids: list) -> pa.RecordBatch:
+    """Load index, call fetch_features, return the first feature batch."""
+    dg = diskgraph_py.SamplerEngine(index_path)
+    req = [{"node_type": node_type, "node_ids": node_ids, "feature_names": []}]
+    batches = [e["batch"] for e in dg.fetch_features(req) if e["type"] == "feature"]
+    assert batches, "fetch_features returned no feature events"
+    if len(batches) == 1:
+        return batches[0]
+    import pyarrow as pa
+    combined = pa.Table.from_batches(batches)
+    return combined.to_batches()[0]
+
+
+# ── tests ─────────────────────────────────────────────────────────────────────
+
+def test_list_features_index_loads(list_features_graph):
+    """Index with list columns can be opened by the SamplerEngine."""
+    dg = diskgraph_py.SamplerEngine(list_features_graph)
+    mapping = json.loads(dg.get_type_mapping())
+    assert "items" in mapping["node_types"], "items table should be present"
+
+
+def test_list_features_schema(list_features_graph):
+    """fetch_features returns a batch with the expected Arrow schema."""
+    batch = fetch_all_features(list_features_graph, "items", [0])
+    schema = batch.schema
+    field_names = schema.names
+
+    assert "tag_ids" in field_names, f"tag_ids missing from schema: {field_names}"
+    assert "tags"    in field_names, f"tags missing from schema: {field_names}"
+
+    tag_ids_field = schema.field("tag_ids")
+    tags_field    = schema.field("tags")
+
+    # Both should be list types
+    assert pa.types.is_list(tag_ids_field.type), \
+        f"tag_ids should be list type, got {tag_ids_field.type}"
+    assert pa.types.is_list(tags_field.type), \
+        f"tags should be list type, got {tags_field.type}"
+
+    # Inner types
+    assert pa.types.is_integer(tag_ids_field.type.value_type), \
+        f"tag_ids inner type should be integer, got {tag_ids_field.type.value_type}"
+    assert pa.types.is_string(tags_field.type.value_type) \
+        or pa.types.is_large_string(tags_field.type.value_type), \
+        f"tags inner type should be string, got {tags_field.type.value_type}"
+
+
+def test_intlist_values(list_features_graph):
+    """
+    tag_ids values match source data:
+      item 0 → [10, 20, 30]
+      item 1 → [40]
+      item 2 → []
+      item 3 → [1, 2, 3, 4, 5]
+    """
+    batch = fetch_all_features(list_features_graph, "items", [0, 1, 2, 3])
+
+    # Locate the row for each node_id via the node_id column
+    node_id_col = batch.column("node_id") if "node_id" in batch.schema.names \
+                  else batch.column(batch.schema.names[0])
+    tag_ids_col = batch.column("tag_ids")
+
+    expected = {
+        0: [10, 20, 30],
+        1: [40],
+        2: [],
+        3: [1, 2, 3, 4, 5],
+    }
+
+    for row_idx in range(batch.num_rows):
+        nid = node_id_col[row_idx].as_py()
+        if nid not in expected:
+            continue
+        got = tag_ids_col[row_idx].as_py()
+        assert got == expected[nid], \
+            f"item {nid}: expected tag_ids={expected[nid]}, got {got}"
+
+
+def test_stringlist_values(list_features_graph):
+    """
+    tags values match source data:
+      item 0 → ["sports", "sale"]
+      item 1 → ["kids"]
+      item 2 → []
+      item 3 → ["pro", "audio"]
+    """
+    batch = fetch_all_features(list_features_graph, "items", [0, 1, 2, 3])
+
+    node_id_col = batch.column("node_id") if "node_id" in batch.schema.names \
+                  else batch.column(batch.schema.names[0])
+    tags_col = batch.column("tags")
+
+    expected = {
+        0: ["sports", "sale"],
+        1: ["kids"],
+        2: [],
+        3: ["pro", "audio"],
+    }
+
+    for row_idx in range(batch.num_rows):
+        nid = node_id_col[row_idx].as_py()
+        if nid not in expected:
+            continue
+        got = tags_col[row_idx].as_py()
+        assert got == expected[nid], \
+            f"item {nid}: expected tags={expected[nid]}, got {got}"
+
+
+def test_empty_list_rows(list_features_graph):
+    """Item 2 has both empty intlist and stringlist — both must survive."""
+    batch = fetch_all_features(list_features_graph, "items", [2])
+
+    # Find the row for item 2
+    node_id_col = batch.column(batch.schema.names[0])
+    tag_ids_col = batch.column("tag_ids")
+    tags_col    = batch.column("tags")
+
+    for row_idx in range(batch.num_rows):
+        if node_id_col[row_idx].as_py() == 2:
+            assert tag_ids_col[row_idx].as_py() == [], \
+                f"item 2 tag_ids should be empty, got {tag_ids_col[row_idx].as_py()}"
+            assert tags_col[row_idx].as_py() == [], \
+                f"item 2 tags should be empty, got {tags_col[row_idx].as_py()}"
+            return
+
+    pytest.fail("item 2 not found in fetch_features result")

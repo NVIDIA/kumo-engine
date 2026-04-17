@@ -4,8 +4,8 @@ pub mod coercion;
 pub mod col_stats;
 pub mod config;
 pub mod config_converter;
-pub mod disk_manager;
 pub mod consts;
+pub mod disk_manager;
 pub mod errors;
 pub mod graph_config;
 pub mod io;
@@ -368,7 +368,8 @@ pub fn ingest_with_stats_from_source(
     }
 
     let total_pk_drops: u64 = ctx.pk_duplicate_drops.values().sum();
-    let total_null_ts_drops: u64 = ctx.pk_null_timestamp_drops.values().sum::<u64>() + ctx.edge_null_timestamp_drops.values().sum::<u64>();
+    let total_null_ts_drops: u64 = ctx.pk_null_timestamp_drops.values().sum::<u64>()
+        + ctx.edge_null_timestamp_drops.values().sum::<u64>();
     tracing::info!(
         total_pk_duplicates_dropped = total_pk_drops,
         total_null_timestamps_dropped = total_null_ts_drops,
@@ -409,8 +410,7 @@ impl CleanupGuard {
     }
 
     fn disarm(self) {
-        self.armed
-            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.armed.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -2241,16 +2241,20 @@ impl IngestContext {
                 if let Some(mut stats) = table_col_stats.remove(&table.name) {
                     let col_names: Vec<String> =
                         table.columns.iter().map(|c| c.name.clone()).collect();
-                    let ingested_types: Vec<_> =
-                        table.columns.iter().map(|c| c.ingested_dtype.clone()).collect();
+                    let ingested_types: Vec<_> = table
+                        .columns
+                        .iter()
+                        .map(|c| c.ingested_dtype.clone())
+                        .collect();
                     let tc = table_cat_counts.get(&table.name).map(|a| a.as_ref());
                     let tss = self.text_sample_stats.get(&table.name);
-                    root_map.insert(table.name.clone(), stats.to_json(&col_names, &ingested_types, tc, tss));
+                    root_map.insert(
+                        table.name.clone(),
+                        stats.to_json(&col_names, &ingested_types, tc, tss),
+                    );
                     // Write per-table kumo-format stats (replaces Python bridge)
                     if let Some(dv) = &table.data_version {
-                        let kumo_map = stats.to_kumo_json(
-                            &col_names, &ingested_types, tc, tss, dv,
-                        );
+                        let kumo_map = stats.to_kumo_json(&col_names, &ingested_types, tc, tss, dv);
                         let kumo_json = serde_json::to_string(&kumo_map)?;
                         std::fs::write(
                             kumo_stats_dir.join(format!("{}.json", table.name)),
@@ -2501,10 +2505,8 @@ impl IngestContext {
             file_len = ctx_file_len,
             "reading node_data.ctx",
         );
-        let ctx_bytes =
-            fs::read(&ctx_path).with_context(|| format!(
-                "read {} (file_len={})", ctx_path.display(), ctx_file_len,
-            ))?;
+        let ctx_bytes = fs::read(&ctx_path)
+            .with_context(|| format!("read {} (file_len={})", ctx_path.display(), ctx_file_len,))?;
         let node_context = diskgraph_rowpack::RowPackContext::from_bytes(&ctx_bytes)?;
         let node_encoder = Some(RowPackEncoder::new(node_context)?);
         let mut key_bufs: Vec<Vec<u8>> = vec![Vec::new(); table.columns.len()];
@@ -3038,7 +3040,9 @@ impl IngestContext {
                         if let Some(ts_idx) = create_time_col_idx {
                             match access.get_timestamp(ts_idx) {
                                 Ok(Some(_)) => {} // valid
-                                _ => { timestamp_valid = false; }
+                                _ => {
+                                    timestamp_valid = false;
+                                }
                             }
                         }
                     }
@@ -5320,7 +5324,11 @@ impl IngestContext {
                             let p = p.clone();
                             s.spawn(move || {
                                 if let Err(e) = std::fs::remove_dir_all(&p) {
-                                    tracing::warn!("cleanup_temp: failed to delete {}: {}", p.display(), e);
+                                    tracing::warn!(
+                                        "cleanup_temp: failed to delete {}: {}",
+                                        p.display(),
+                                        e
+                                    );
                                 }
                             });
                         }
@@ -5664,18 +5672,12 @@ impl IngestContext {
                 None => continue,
             };
 
-            let src_connector = src_table
-                .kumo_connector_id
-                .as_deref()
-                .unwrap_or("");
+            let src_connector = src_table.kumo_connector_id.as_deref().unwrap_or("");
             let src_source_name = src_table
                 .kumo_source_table_name
                 .as_deref()
                 .unwrap_or(&src_table.name);
-            let dst_connector = dst_table
-                .kumo_connector_id
-                .as_deref()
-                .unwrap_or("");
+            let dst_connector = dst_table.kumo_connector_id.as_deref().unwrap_or("");
             let dst_source_name = dst_table
                 .kumo_source_table_name
                 .as_deref()
@@ -5685,10 +5687,7 @@ impl IngestContext {
                 Some(pk) => pk.as_str(),
                 None => continue,
             };
-            let data_version = src_table
-                .data_version
-                .as_deref()
-                .unwrap_or("");
+            let data_version = src_table.data_version.as_deref().unwrap_or("");
 
             let edge_count = self
                 .edge_counts
@@ -5711,11 +5710,7 @@ impl IngestContext {
             let num_dst_nonzero = self
                 .edge_dst_degree_bits
                 .get(&rel.name_forward)
-                .map(|bits| {
-                    bits.iter()
-                        .map(|b| b.count_ones() as u64)
-                        .sum::<u64>()
-                })
+                .map(|bits| bits.iter().map(|b| b.count_ones() as u64).sum::<u64>())
                 .unwrap_or(0);
 
             let frac_src = if num_src_nodes > 0 {
@@ -5732,9 +5727,7 @@ impl IngestContext {
             // Build key prefix: src_table__src_connector__dst_table__dst_connector__fk__pk
             let key_prefix = format!(
                 "{}__{}__{}__{}__{}__{}",
-                src_source_name, src_connector,
-                dst_source_name, dst_connector,
-                fk_col, pk_col,
+                src_source_name, src_connector, dst_source_name, dst_connector, fk_col, pk_col,
             );
 
             let stat_value = |val: Value| -> Value {
@@ -6344,20 +6337,31 @@ fn read_temp_rows(path: &Path, mut f: impl FnMut(&[u8]) -> Result<()>) -> Result
         match file.read_exact(&mut len_buf) {
             Ok(()) => {}
             Err(err) if err.kind() == std_io::ErrorKind::UnexpectedEof => return Ok(()),
-            Err(err) => return Err(err).with_context(|| format!(
-                "read length prefix at row {} in {} (file_len={})",
-                row_count, path.display(), file_len,
-            )),
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!(
+                        "read length prefix at row {} in {} (file_len={})",
+                        row_count,
+                        path.display(),
+                        file_len,
+                    )
+                })
+            }
         }
         let len = u32::from_le_bytes(len_buf) as usize;
         if data.len() < len {
             data.resize(len, 0u8);
         }
         let slice = &mut data[..len];
-        file.read_exact(slice).with_context(|| format!(
-            "read {} bytes at row {} in {} (file_len={})",
-            len, row_count, path.display(), file_len,
-        ))?;
+        file.read_exact(slice).with_context(|| {
+            format!(
+                "read {} bytes at row {} in {} (file_len={})",
+                len,
+                row_count,
+                path.display(),
+                file_len,
+            )
+        })?;
         f(slice)?;
         row_count += 1;
     }
@@ -9291,6 +9295,8 @@ fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackCo
             IngestedType::Float32Array => RowpackType::Float32Array,
             IngestedType::Float64Array => RowpackType::Float64Array,
             IngestedType::Float16Array => RowpackType::Float16Array,
+            IngestedType::Int64Array => RowpackType::Int64Array,
+            IngestedType::StringArray => RowpackType::StringArray,
         };
         let fixed_len = match col.ingested_dtype {
             IngestedType::Uuid | IngestedType::Uuid256 | IngestedType::Ip => None,

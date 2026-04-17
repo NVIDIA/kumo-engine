@@ -96,6 +96,13 @@ fn print_encoding(encoding: &ColumnEncoding) -> Result<()> {
                 format_float_storage(*storage)
             );
         }
+        ColumnEncoding::Int64Array => {
+            println!("  Encoding: int64_array (varint)");
+        }
+        ColumnEncoding::StringArray { encoding } => {
+            print!("  Encoding: string_array ");
+            print_string_encoding(encoding)?;
+        }
     }
     Ok(())
 }

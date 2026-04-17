@@ -1518,6 +1518,10 @@ fn format_rowpack_encoding(encoding: &ColumnEncoding) -> String {
         ColumnEncoding::FloatArray { storage } => {
             format!("float_array({})", format_float_storage(*storage))
         }
+        ColumnEncoding::Int64Array => "int64_array".to_string(),
+        ColumnEncoding::StringArray { encoding } => {
+            format!("string_array({})", format_string_encoding(encoding))
+        }
     }
 }
 

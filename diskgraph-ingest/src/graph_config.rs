@@ -180,6 +180,8 @@ pub enum IngestedType {
     Float32Array,
     Float64Array,
     Float16Array,
+    Int64Array,
+    StringArray,
 }
 
 impl IngestedType {
@@ -455,9 +457,7 @@ impl GraphConfig {
                 }
             }
             if table_has_cloud && table_has_local {
-                errors.push(format!(
-                    "table {} mixes local and cloud paths", table.name
-                ));
+                errors.push(format!("table {} mixes local and cloud paths", table.name));
             }
             for col in &table.columns {
                 if col.name.trim().is_empty() {
@@ -940,8 +940,14 @@ pub fn infer_semantic_type(
         IngestedType::Uuid | IngestedType::Uuid256 | IngestedType::Ip => {
             return SemanticType::Id;
         }
-        IngestedType::Float32Array | IngestedType::Float64Array | IngestedType::Float16Array => {
+        IngestedType::Float32Array
+        | IngestedType::Float64Array
+        | IngestedType::Float16Array
+        | IngestedType::Int64Array => {
             return SemanticType::Sequence;
+        }
+        IngestedType::StringArray => {
+            return SemanticType::Multicategorical;
         }
         IngestedType::Float32
         | IngestedType::Float64

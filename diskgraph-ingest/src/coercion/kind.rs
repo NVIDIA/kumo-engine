@@ -272,7 +272,9 @@ pub fn coercion_kind(fk: IngestedType, pk: IngestedType, params: CoercionParams)
         (Bool, Int8 | Int16 | Int32 | Int64 | UInt8 | UInt16 | UInt32 | UInt64) => Incompatible,
         (Bool, Float32 | Float64 | Decimal128 | Decimal256) => Incompatible,
         (Bool, Bytes | Date | Timestamp | Uuid | Uuid256 | Ip) => Incompatible,
-        (Bool, Float32Array | Float64Array | Float16Array) => Incompatible,
+        (Bool, Float32Array | Float64Array | Float16Array | Int64Array | StringArray) => {
+            Incompatible
+        }
 
         // ===================================================================
         // Incompatible: Temporal to numeric
@@ -280,7 +282,10 @@ pub fn coercion_kind(fk: IngestedType, pk: IngestedType, params: CoercionParams)
         (Date | Timestamp, Int8 | Int16 | Int32 | UInt8 | UInt16 | UInt32 | UInt64) => Incompatible,
         (Date | Timestamp, Float32 | Float64 | Decimal128 | Decimal256) => Incompatible,
         (Date | Timestamp, Bool | Bytes | Uuid | Uuid256 | Ip) => Incompatible,
-        (Date | Timestamp, Float32Array | Float64Array | Float16Array) => Incompatible,
+        (
+            Date | Timestamp,
+            Float32Array | Float64Array | Float16Array | Int64Array | StringArray,
+        ) => Incompatible,
         // Note: Date/Timestamp to Int64 could be epoch conversion, but we mark as Incompatible
         // since it's a semantic change. If needed, make explicit via String intermediary.
         (Date | Timestamp, Int64) => Incompatible,
@@ -297,23 +302,32 @@ pub fn coercion_kind(fk: IngestedType, pk: IngestedType, params: CoercionParams)
         (Uuid, Float32 | Float64 | Decimal128 | Decimal256 | Bool | Date | Timestamp) => {
             Incompatible
         }
-        (Uuid, Uuid256 | Ip | Float32Array | Float64Array | Float16Array) => Incompatible,
+        (
+            Uuid,
+            Uuid256 | Ip | Float32Array | Float64Array | Float16Array | Int64Array | StringArray,
+        ) => Incompatible,
 
         (Uuid256, Int8 | Int16 | Int32 | Int64 | UInt8 | UInt16 | UInt32 | UInt64) => Incompatible,
         (Uuid256, Float32 | Float64 | Decimal128 | Decimal256 | Bool | Date | Timestamp) => {
             Incompatible
         }
-        (Uuid256, Uuid | Ip | Float32Array | Float64Array | Float16Array) => Incompatible,
+        (
+            Uuid256,
+            Uuid | Ip | Float32Array | Float64Array | Float16Array | Int64Array | StringArray,
+        ) => Incompatible,
 
         (Ip, Int8 | Int16 | Int32 | Int64 | UInt8 | UInt16 | UInt32 | UInt64) => Incompatible,
         (Ip, Float32 | Float64 | Decimal128 | Decimal256 | Bool | Date | Timestamp) => Incompatible,
-        (Ip, Uuid | Uuid256 | Float32Array | Float64Array | Float16Array) => Incompatible,
+        (
+            Ip,
+            Uuid | Uuid256 | Float32Array | Float64Array | Float16Array | Int64Array | StringArray,
+        ) => Incompatible,
 
         // ===================================================================
         // Incompatible: Array types
         // ===================================================================
-        (Float32Array | Float64Array | Float16Array, _) => Incompatible,
-        (_, Float32Array | Float64Array | Float16Array) => Incompatible,
+        (Float32Array | Float64Array | Float16Array | Int64Array | StringArray, _) => Incompatible,
+        (_, Float32Array | Float64Array | Float16Array | Int64Array | StringArray) => Incompatible,
 
         // ===================================================================
         // Default: Anything not explicitly handled is Incompatible
@@ -392,7 +406,9 @@ mod tests {
                 match t {
                     IngestedType::Float32Array
                     | IngestedType::Float64Array
-                    | IngestedType::Float16Array => {
+                    | IngestedType::Float16Array
+                    | IngestedType::Int64Array
+                    | IngestedType::StringArray => {
                         assert_eq!(kind, CoercionKind::Incompatible, "{:?} → String", t);
                     }
                     _ => {
@@ -536,6 +552,8 @@ mod tests {
             IngestedType::Float32Array,
             IngestedType::Float64Array,
             IngestedType::Float16Array,
+            IngestedType::Int64Array,
+            IngestedType::StringArray,
         ]
     }
 }
