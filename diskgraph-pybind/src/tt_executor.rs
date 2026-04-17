@@ -1018,6 +1018,54 @@ fn sha256_hex_path(path: &Path) -> anyhow::Result<String> {
     Ok(digest.iter().map(|b| format!("{:02x}", b)).collect())
 }
 
+fn collect_parquet_input_files(path: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    if path.is_file() {
+        return Ok(vec![path.to_path_buf()]);
+    }
+    if !path.is_dir() {
+        return Err(anyhow::anyhow!(
+            "expected parquet file or directory, got: {}",
+            path.display()
+        ));
+    }
+
+    let mut files = collect_files_recursive(path)?
+        .into_iter()
+        .filter(|p| {
+            p.extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("parquet"))
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+
+    if files.is_empty() {
+        return Err(anyhow::anyhow!(
+            "no parquet files found under directory: {}",
+            path.display()
+        ));
+    }
+
+    files.sort();
+    Ok(files)
+}
+
+fn read_parquet_batches_path(path: &str) -> anyhow::Result<Vec<RecordBatch>> {
+    let p = Path::new(path);
+    let files = collect_parquet_input_files(p)?;
+
+    let mut raw_batches = Vec::new();
+    for file_path in files {
+        let input_file = File::open(&file_path)?;
+        let builder = ParquetRecordBatchReaderBuilder::try_new(input_file)?;
+        let mut reader = builder.build()?;
+        while let Some(batch_res) = reader.next() {
+            raw_batches.push(batch_res?);
+        }
+    }
+    Ok(raw_batches)
+}
+
 fn build_table_edges_bundle_value(
     output_dir: &Path,
     table_name: &str,
@@ -4459,13 +4507,7 @@ pub fn build_prediction_table_col_stats_artifact(
 
     let payload = py
         .detach(|| -> anyhow::Result<Value> {
-            let file = File::open(&out)?;
-            let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-            let mut reader = builder.build()?;
-            let mut raw_batches = Vec::new();
-            while let Some(batch_res) = reader.next() {
-                raw_batches.push(batch_res?);
-            }
+            let raw_batches = read_parquet_batches_path(&out)?;
             compute_prediction_table_col_stats_from_batches(&raw_batches, &data_version)
         })
         .map_err(|e| {
