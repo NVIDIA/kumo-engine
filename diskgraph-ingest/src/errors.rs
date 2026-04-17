@@ -152,4 +152,7 @@ pub enum ConvertError {
         table: String,
         column: String,
     },
+
+    #[error("{0}")]
+    InferenceError(String),
 }

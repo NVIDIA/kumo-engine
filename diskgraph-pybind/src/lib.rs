@@ -101,7 +101,9 @@ pub(crate) fn map_anyhow_err(err: anyhow::Error) -> PyErr {
 }
 
 pub(crate) fn map_py_err<E: std::fmt::Display>(err: E) -> PyErr {
-    let msg = err.to_string();
+    // Use alternate Display ({:#}) for anyhow errors to include the full
+    // causal chain, not just the outermost context message.
+    let msg = format!("{err:#}");
     let msg_lower = msg.to_lowercase();
 
     // Data Errors (Schema/mismatches bubbling from anyhow in ingest/export)
@@ -567,11 +569,17 @@ impl SamplerEngine {
         let mut req_batch = Vec::new();
         for item in batch.iter() {
             let dict: Bound<'_, PyDict> = item.extract()?;
-            let node_type: String = dict.get_item("node_type")?.expect("node_type").extract()?;
-            let node_ids: Vec<u64> = dict.get_item("node_ids")?.expect("node_ids").extract()?;
+            let node_type: String = dict
+                .get_item("node_type")?
+                .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err("missing 'node_type' in feature request"))?
+                .extract()?;
+            let node_ids: Vec<u64> = dict
+                .get_item("node_ids")?
+                .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err("missing 'node_ids' in feature request"))?
+                .extract()?;
             let feature_names: Vec<String> = dict
                 .get_item("feature_names")?
-                .expect("feature_names")
+                .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err("missing 'feature_names' in feature request"))?
                 .extract()?;
 
             req_batch.push(FeatureRequest {

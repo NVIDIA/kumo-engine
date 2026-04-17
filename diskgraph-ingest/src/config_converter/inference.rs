@@ -275,17 +275,48 @@ pub fn detect_timestamp_formats(
             }
         }
 
-        // Emit warnings for columns we couldn't classify.
+        // Emit warnings (or errors for time columns) for columns we couldn't classify.
         for (col_idx, col_name) in &candidates {
             if votes.contains_key(col_idx) || native_temporal.contains(col_idx) {
                 continue;
             }
+            let is_time_col = table.create_time.as_ref() == Some(col_name)
+                || table.end_time.as_ref() == Some(col_name);
+
             if let Some(info) = unrecognized_info.get(col_idx) {
-                eprintln!("Warning: {}.{}: {}", table.name, col_name, info);
+                if is_time_col {
+                    let role = if table.create_time.as_ref() == Some(col_name) {
+                        "create_time"
+                    } else {
+                        "end_time"
+                    };
+                    return Err(anyhow::anyhow!(
+                        "table '{}' column '{}' ({}): could not detect timestamp format. \
+                         {}. Set timestamp_format explicitly in the config.",
+                        table.name, col_name, role, info,
+                    ));
+                }
+                tracing::warn!(
+                    table = %table.name, column = %col_name,
+                    "could not detect timestamp format: {}", info,
+                );
             } else if sample_counts.get(col_idx).copied().unwrap_or(0) == 0 {
-                eprintln!(
-                    "Warning: {}.{}: column is entirely null across {} file(s)",
-                    table.name, col_name, parquet_files.len().min(MAX_FILES)
+                if is_time_col {
+                    let role = if table.create_time.as_ref() == Some(col_name) {
+                        "create_time"
+                    } else {
+                        "end_time"
+                    };
+                    return Err(anyhow::anyhow!(
+                        "table '{}' column '{}' ({}): column is entirely null across {} file(s). \
+                         A time column must contain parseable timestamp values.",
+                        table.name, col_name, role, parquet_files.len().min(MAX_FILES),
+                    ));
+                }
+                tracing::warn!(
+                    table = %table.name, column = %col_name,
+                    "column is entirely null across {} file(s)",
+                    parquet_files.len().min(MAX_FILES),
                 );
             }
         }

@@ -863,7 +863,7 @@ fn time_spec_to_encoding(spec: &TimeSpec) -> TimestampEncodingSpec {
         Some(16) => TimestampEncodingKind::Int16,
         Some(32) | None => TimestampEncodingKind::Int32, // default to 32-bit
         Some(other) => {
-            eprintln!("warning: unsupported timestamp bitwidth {other}, using 32-bit");
+            tracing::warn!("unsupported timestamp bitwidth {other}, using 32-bit");
             TimestampEncodingKind::Int32
         }
     };
@@ -877,7 +877,7 @@ fn time_spec_to_encoding(spec: &TimeSpec) -> TimestampEncodingSpec {
         "day" | "days" | "d" => 86400,
         "week" | "weeks" | "w" => 604800,
         other => {
-            eprintln!("warning: unsupported timestamp unit '{other}', using seconds");
+            tracing::warn!("unsupported timestamp unit '{other}', using seconds");
             1
         }
     };
@@ -897,7 +897,7 @@ fn weight_spec_to_encoding(spec: &WeightSpec) -> WeightEncodingSpec {
         "float16" | "f16" => WeightEncodingKind::Float16,
         "float32" | "f32" => WeightEncodingKind::Float32,
         other => {
-            eprintln!("warning: unsupported weight dtype '{other}', using float32");
+            tracing::warn!("unsupported weight dtype '{other}', using float32");
             WeightEncodingKind::Float32
         }
     };

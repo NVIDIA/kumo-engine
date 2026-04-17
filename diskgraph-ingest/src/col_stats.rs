@@ -1088,6 +1088,8 @@ pub enum ColumnStatsCollector {
         count: u64,
         null_count: u64,
         parse_fail_count: u64,
+        /// Up to 3 sample values that failed to parse (for error messages).
+        parse_fail_samples: Vec<String>,
         min_secs: i64,
         max_secs: i64,
     },
@@ -1232,6 +1234,7 @@ impl FileColStats {
                 count,
                 null_count,
                 parse_fail_count,
+                parse_fail_samples,
                 ..
             } = col
             {
@@ -1241,21 +1244,31 @@ impl FileColStats {
                 }
                 if *parse_fail_count > 0 {
                     let fail_frac = *parse_fail_count as f64 / total as f64;
-                    eprintln!(
-                        "WARNING: table '{}' column '{}': {} parse failures out of {} rows ({:.1}%)",
-                        table_name,
-                        name,
-                        parse_fail_count,
-                        total,
-                        fail_frac * 100.0,
+                    tracing::warn!(
+                        table = table_name,
+                        column = name.as_str(),
+                        parse_failures = *parse_fail_count,
+                        total_rows = total,
+                        pct = format_args!("{:.1}%", fail_frac * 100.0),
+                        "timestamp parse failures detected",
                     );
                     // Only error on high parse failure rate — nulls are valid data.
                     let non_null = total - *null_count;
                     if non_null > 0 && *parse_fail_count as f64 / non_null as f64 > 0.5 {
+                        let samples_hint = if parse_fail_samples.is_empty() {
+                            String::new()
+                        } else {
+                            format!(
+                                " Sample values that failed: [{}].",
+                                parse_fail_samples.iter().map(|s| format!("'{}'", s)).collect::<Vec<_>>().join(", "),
+                            )
+                        };
                         return Err(anyhow::anyhow!(
                             "table '{}' column '{}': {:.1}% of non-null rows failed to parse \
-                             ({} parse failures out of {} non-null, {} null out of {} total). \
-                             This likely indicates a timestamp format mismatch.",
+                             ({} parse failures out of {} non-null, {} null out of {} total).{} \
+                             This likely indicates a timestamp format mismatch. \
+                             Set timestamp_format explicitly in the config if the column \
+                             uses a non-standard format.",
                             table_name,
                             name,
                             *parse_fail_count as f64 / non_null as f64 * 100.0,
@@ -1263,6 +1276,7 @@ impl FileColStats {
                             non_null,
                             null_count,
                             total,
+                            samples_hint,
                         ));
                     }
                 }
@@ -1393,6 +1407,7 @@ impl ColumnStatsCollector {
                 count: 0,
                 null_count: 0,
                 parse_fail_count: 0,
+                parse_fail_samples: Vec::new(),
                 min_secs: i64::MAX,
                 max_secs: i64::MIN,
             },
@@ -1488,6 +1503,7 @@ impl ColumnStatsCollector {
                     count,
                     null_count,
                     parse_fail_count,
+                    parse_fail_samples,
                     min_secs,
                     max_secs,
                 },
@@ -1495,6 +1511,7 @@ impl ColumnStatsCollector {
                     count: c2,
                     null_count: nc2,
                     parse_fail_count: pf2,
+                    parse_fail_samples: pfs2,
                     min_secs: ms2,
                     max_secs: xs2,
                 },
@@ -1502,6 +1519,12 @@ impl ColumnStatsCollector {
                 *count += *c2;
                 *null_count += *nc2;
                 *parse_fail_count += *pf2;
+                // Keep up to 3 sample values across merges.
+                for s in pfs2 {
+                    if parse_fail_samples.len() < 3 {
+                        parse_fail_samples.push(s.clone());
+                    }
+                }
                 if *ms2 < *min_secs {
                     *min_secs = *ms2;
                 }
@@ -1617,6 +1640,7 @@ impl ColumnStatsCollector {
                 parse_fail_count,
                 min_secs,
                 max_secs,
+                ..
             } => {
                 let total = *count + *null_count + *parse_fail_count;
                 Some(json!({
@@ -1897,6 +1921,7 @@ impl FileColStats {
                     parse_fail_count,
                     min_secs,
                     max_secs,
+                    ..
                 } => {
                     let total = *c + *null_count + *parse_fail_count;
                     map.insert(kumo_key(name, sk, "COUNT", false), kumo_entry(json!(total), false, dv, total));

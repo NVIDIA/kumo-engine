@@ -88,19 +88,22 @@ pub fn convert_kumo_to_diskgraph(
     // Run on a separate OS thread so this works even when called from inside a
     // tokio runtime (e.g., validate-s3-ingest). The I/O helpers create their own
     // tokio runtimes internally, which panics if nested inside an existing one.
-    std::thread::scope(|s| {
+    let inference_err: Option<anyhow::Error> = std::thread::scope(|s| {
         let cfg = &mut config;
-        s.spawn(move || {
+        s.spawn(move || -> Option<anyhow::Error> {
             let transfer = match crate::io::build_input_transfer(cfg) {
                 Ok(t) => t,
                 Err(e) => {
-                    eprintln!("Warning: could not build cloud transfer: {e}");
-                    return;
+                    tracing::warn!("could not build cloud transfer: {e}");
+                    return None;
                 }
             };
 
+            // Hard errors (e.g. time_col format detection failure) are
+            // propagated. Soft warnings for non-critical columns are
+            // logged via tracing::warn! inside detect_timestamp_formats.
             if let Err(e) = super::inference::detect_timestamp_formats(cfg, &transfer) {
-                eprintln!("Warning: timestamp format detection failed: {e}");
+                return Some(e);
             }
 
             match super::inference::compute_total_bytes(cfg, &transfer) {
@@ -109,14 +112,20 @@ pub fn convert_kumo_to_diskgraph(
                         Some(super::inference::estimate_num_shards(total_bytes));
                 }
                 Err(e) => {
-                    eprintln!("Warning: num_shards estimation failed: {e}");
+                    tracing::warn!("num_shards estimation failed: {e}");
                 }
                 _ => {}
             }
+            None
         })
         .join()
-        .ok();
+        .ok()
+        .flatten()
     });
+
+    if let Some(e) = inference_err {
+        return Err(crate::errors::ConvertError::InferenceError(format!("{e:#}")));
+    }
 
     Ok(config)
 }
