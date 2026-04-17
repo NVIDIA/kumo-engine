@@ -1036,7 +1036,7 @@ pub(crate) fn infer_parquet_schema_from_arrow(
         }
         let (fixed_len, precision, scale) = arrow_type_metadata(field.data_type())?;
         let mut ingested_dtype = match field.data_type() {
-            DataType::Float64 => IngestedType::Float32,
+            DataType::Float64 => IngestedType::Float64,
             DataType::List(field) | DataType::LargeList(field) => match field.data_type() {
                 DataType::Float16 | DataType::Float32 | DataType::Float64 => {
                     IngestedType::Float16Array

@@ -22,3 +22,6 @@ bytes = "1"
 url = "2"
 clap = { version = "4.4", features = ["derive"] }
 tempfile = "3"
+
+[dev-dependencies]
+diskgraph-index = { path = "../diskgraph-index" }

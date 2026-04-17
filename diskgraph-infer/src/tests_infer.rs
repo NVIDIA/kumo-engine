@@ -1410,6 +1410,42 @@ fn parquet_lists_infer_float16_arrays() {
 }
 
 #[test]
+fn parquet_infers_float64_from_float64() {
+    let schema = Schema::new(vec![Field::new(
+        "production_budget",
+        DataType::Float64,
+        true,
+    )]);
+    let cols = infer_parquet_schema_from_arrow(&schema, None).unwrap();
+    let col = cols.iter().find(|c| c.name == "production_budget").unwrap();
+    assert!(
+        matches!(col.ingested_dtype, IngestedType::Float64),
+        "expected Float64 to preserve precision, got {:?}",
+        col.ingested_dtype
+    );
+}
+
+#[test]
+fn parquet_infers_float32_from_float32() {
+    let schema = Schema::new(vec![Field::new("weight", DataType::Float32, true)]);
+    let cols = infer_parquet_schema_from_arrow(&schema, None).unwrap();
+    let col = cols.iter().find(|c| c.name == "weight").unwrap();
+    assert!(matches!(col.ingested_dtype, IngestedType::Float32));
+}
+
+#[test]
+fn parquet_list_float64_unchanged() {
+    let schema = Schema::new(vec![Field::new(
+        "embedding",
+        DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
+        true,
+    )]);
+    let cols = infer_parquet_schema_from_arrow(&schema, None).unwrap();
+    let col = cols.iter().find(|c| c.name == "embedding").unwrap();
+    assert!(matches!(col.ingested_dtype, IngestedType::Float16Array));
+}
+
+#[test]
 fn csv_infers_timestamp_from_common_format() {
     let mut stats = ColumnStats::default();
     for v in ["2024-01-01 12:34:56", "2024-01-01 12:35:56"] {
