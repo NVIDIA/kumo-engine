@@ -703,13 +703,73 @@ fn extract_value(value: &Bound<'_, PyAny>) -> PyResult<tt::Value> {
         Ok(tt::Value::Int(i))
     } else if let Ok(f) = value.extract::<f64>() {
         Ok(tt::Value::Float(f))
+    } else if is_datetime(value) {
+        // datetime.datetime (pd.Timestamp is a subclass, handled here too).
+        // Convert to epoch seconds via Python's .timestamp() method, then
+        // ceiling to match rowpack's div_ceil storage semantics.
+        let epoch_f: f64 = value
+            .call_method0("timestamp")
+            .map_err(|e| {
+                crate::DiskgraphConfigError::new_err(format!(
+                    "datetime.timestamp() failed: {e}"
+                ))
+            })?
+            .extract::<f64>()
+            .map_err(|e| {
+                crate::DiskgraphConfigError::new_err(format!(
+                    "datetime.timestamp() did not return float: {e}"
+                ))
+            })?;
+        Ok(tt::Value::Int(epoch_f.ceil() as i64))
+    } else if is_date(value) {
+        // datetime.date — convert to midnight UTC epoch seconds.
+        // date.toordinal() gives days since 0001-01-01; Unix epoch is ordinal 719163.
+        let ordinal: i64 = value
+            .call_method0("toordinal")
+            .map_err(|e| {
+                crate::DiskgraphConfigError::new_err(format!(
+                    "date.toordinal() failed: {e}"
+                ))
+            })?
+            .extract::<i64>()
+            .map_err(|e| {
+                crate::DiskgraphConfigError::new_err(format!(
+                    "date.toordinal() did not return int: {e}"
+                ))
+            })?;
+        let days_since_epoch = ordinal - 719_163;
+        Ok(tt::Value::Int(days_since_epoch * 86_400))
     } else if let Ok(s) = value.extract::<String>() {
         Ok(tt::Value::Str(s))
     } else {
         Err(crate::DiskgraphConfigError::new_err(
-            "value must be bool, int, float, or str",
+            "value must be bool, int, float, str, datetime.datetime, or datetime.date",
         ))
     }
+}
+
+/// Check if a Python object is an instance of `datetime.datetime`.
+/// Must be checked before `datetime.date` since datetime is a subclass of date.
+fn is_datetime(value: &Bound<'_, PyAny>) -> bool {
+    value
+        .py()
+        .import("datetime")
+        .and_then(|m| m.getattr("datetime"))
+        .and_then(|cls| value.is_instance(&cls))
+        .unwrap_or(false)
+}
+
+/// Check if a Python object is an instance of `datetime.date` (but not datetime).
+fn is_date(value: &Bound<'_, PyAny>) -> bool {
+    if is_datetime(value) {
+        return false;
+    }
+    value
+        .py()
+        .import("datetime")
+        .and_then(|m| m.getattr("date"))
+        .and_then(|cls| value.is_instance(&cls))
+        .unwrap_or(false)
 }
 
 fn extract_edge_path(path: &Bound<'_, PyAny>) -> PyResult<Vec<tt::EdgeRef>> {
