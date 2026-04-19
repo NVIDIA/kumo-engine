@@ -13,6 +13,7 @@ import os
 import subprocess
 
 import pyarrow as pa
+import pyarrow.dataset as pa_ds
 import pyarrow.parquet as pq
 import pytest
 
@@ -432,3 +433,119 @@ class TestMaterializeArtifacts:
             downsampling_config_json=_ds_config(),
         )
         assert result["split_family"] == "FixedSplit"
+
+
+class TestMaterializeParquetContract:
+    """Validate output parquet against the contract downstream consumers rely on.
+
+    The final TT parquet is consumed by kumo's pipeline via stricter readers
+    (e.g. pyarrow.dataset) and row-count helpers (io_utils.parquet_util.is_empty).
+    These impose constraints beyond what pyarrow.parquet.read_table enforces:
+    - unique column names (duplicates raise ArrowInvalid in dataset API)
+    - readable via dataset API (not just direct parquet read)
+    - arange column is a valid monotonic row index 0..N-1
+
+    These tests exist because regressions in the post-DS write path (e.g.
+    double-appending arange) only surface in downstream readers, not in our
+    own validation.
+    """
+
+    def _assert_unique_columns(self, parquet_path: str) -> None:
+        """Fail if the parquet schema has duplicate column names."""
+        pf = pq.ParquetFile(parquet_path)
+        names = [f.name for f in pf.schema_arrow]
+        duplicates = [n for n in set(names) if names.count(n) > 1]
+        assert not duplicates, (
+            f"parquet has duplicate column names {duplicates}; "
+            f"breaks pyarrow.dataset and downstream readers. schema: {names}"
+        )
+
+    def _assert_dataset_readable(self, parquet_path: str) -> int:
+        """Read via pyarrow.dataset (the strict API kumo uses).
+
+        Returns row count. Fails if schema has duplicates or file is malformed —
+        mirrors what io_utils.parquet_util.is_empty() does under the hood.
+        """
+        ds = pa_ds.dataset(parquet_path, format="parquet")
+        return ds.count_rows()
+
+    def test_final_parquet_has_unique_columns_no_ds(self, test_graph, tmp_path):
+        """Output parquet without downsampling must have unique column names."""
+        output = str(tmp_path / "tt.parquet")
+        plan = _make_plan(timestamps=[1000, 2000, 3000])
+        execute_tt_plan_materialize_with_split(
+            plan_json=plan, index_path=test_graph, output_path=output,
+            split_config_json=_fixed_split_config(),
+            split_family_hint="FixedSplit",
+            downsampling_config_json=_ds_config(enabled=False),
+        )
+        self._assert_unique_columns(output)
+
+    def test_final_parquet_has_unique_columns_with_ds(self, test_graph, tmp_path):
+        """Output parquet WITH downsampling must have unique column names.
+
+        Regression test: a prior streaming impl wrote arange in scratch AND
+        appended it again post-downsample, producing two 'arange' columns in
+        the final parquet. Broke pyarrow.dataset reads → false 'empty TT'.
+        """
+        output = str(tmp_path / "tt.parquet")
+        plan = _make_plan(timestamps=[1000, 2000, 3000, 4000])
+        execute_tt_plan_materialize_with_split(
+            plan_json=plan, index_path=test_graph, output_path=output,
+            split_config_json=_fixed_split_config(),
+            split_family_hint="FixedSplit",
+            downsampling_config_json=_ds_config(enabled=True, max_rows=3),
+        )
+        self._assert_unique_columns(output)
+
+    def test_pre_downsample_parquet_has_unique_columns(self, test_graph, tmp_path):
+        """The preserved pre_downsample artifact must also have unique columns."""
+        output = str(tmp_path / "tt.parquet")
+        plan = _make_plan(timestamps=[1000, 2000, 3000, 4000])
+        execute_tt_plan_materialize_with_split(
+            plan_json=plan, index_path=test_graph, output_path=output,
+            split_config_json=_fixed_split_config(),
+            split_family_hint="FixedSplit",
+            downsampling_config_json=_ds_config(enabled=True, max_rows=3),
+        )
+        pre_path = output + ".pre_downsample.parquet"
+        if os.path.exists(pre_path):
+            self._assert_unique_columns(pre_path)
+
+    def test_final_parquet_readable_via_dataset_api(self, test_graph, tmp_path):
+        """Output must be readable via pyarrow.dataset.
+
+        kumo's io_utils.parquet_util.is_empty() uses pyarrow.dataset; if that
+        fails due to schema issues, the file is silently treated as empty.
+        """
+        output = str(tmp_path / "tt.parquet")
+        plan = _make_plan(timestamps=[1000, 2000, 3000])
+        result = execute_tt_plan_materialize_with_split(
+            plan_json=plan, index_path=test_graph, output_path=output,
+            split_config_json=_fixed_split_config(),
+            split_family_hint="FixedSplit",
+            downsampling_config_json=_ds_config(enabled=True, max_rows=3),
+        )
+        row_count = self._assert_dataset_readable(output)
+        assert row_count == result["rows_written"]
+        assert row_count > 0
+
+    def test_arange_is_monotonic_row_index(self, test_graph, tmp_path):
+        """arange must be 0..N-1 contiguous on the final parquet.
+
+        After downsampling, arange should be re-indexed to match the final
+        row count — not carry gaps from pre-downsample rows that were filtered.
+        """
+        output = str(tmp_path / "tt.parquet")
+        plan = _make_plan(timestamps=[1000, 2000, 3000, 4000])
+        execute_tt_plan_materialize_with_split(
+            plan_json=plan, index_path=test_graph, output_path=output,
+            split_config_json=_fixed_split_config(),
+            split_family_hint="FixedSplit",
+            downsampling_config_json=_ds_config(enabled=True, max_rows=3),
+        )
+        table = pq.read_table(output)
+        arange = table.column("arange").to_pylist()
+        assert arange == list(range(len(arange))), (
+            f"arange must be 0..N-1 on final parquet; got {arange}"
+        )
