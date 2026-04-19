@@ -108,6 +108,12 @@ pub struct ResolvedAggregate {
     /// destination table (e.g., article_ids in transactions that have no
     /// matching row in the articles table).
     pub target_pk_table: Option<Arc<TableReader>>,
+    /// Pre-resolved rowpack column indices for the target entity table's
+    /// `create_time_col` and `end_time_col`. Used for temporal validity
+    /// filtering of LP targets (e.g., exclude a FIDO whose ADDED_DATE is
+    /// after the anchor timestamp).
+    pub target_temporal_create_col_idx: Option<usize>,
+    pub target_temporal_end_col_idx: Option<usize>,
 }
 
 pub struct ResolvedColumn {
@@ -591,6 +597,8 @@ fn resolve_op(
                     tracing::info!(
                         target_entity_table = name,
                         pk_map_shards = table.pk_map().map(|m| m.shard_count()).unwrap_or(0),
+                        create_time_col = ?table.create_time_col(),
+                        end_time_col = ?table.end_time_col(),
                         alias = %alias,
                         "[orphan-filter] ACTIVATED for ListDistinct"
                     );
@@ -598,6 +606,22 @@ fn resolve_op(
                 }
                 _ => None,
             };
+
+            // Pre-resolve temporal column indices for the target entity table.
+            let (target_temporal_create_col_idx, target_temporal_end_col_idx) =
+                target_pk_table
+                    .as_ref()
+                    .map(|t| t.temporal_col_indices())
+                    .unwrap_or((None, None));
+
+            if target_temporal_create_col_idx.is_some() || target_temporal_end_col_idx.is_some() {
+                tracing::info!(
+                    create_col_idx = ?target_temporal_create_col_idx,
+                    end_col_idx = ?target_temporal_end_col_idx,
+                    alias = %alias,
+                    "[orphan-filter] temporal validity check enabled"
+                );
+            }
 
             Ok(ResolvedOp::Aggregate(ResolvedAggregate {
                 alias_idx,
@@ -608,6 +632,8 @@ fn resolve_op(
                 row_filter: resolved_filter,
                 limit: *limit,
                 target_pk_table,
+                target_temporal_create_col_idx,
+                target_temporal_end_col_idx,
             }))
         }
         Op::HasEdges {

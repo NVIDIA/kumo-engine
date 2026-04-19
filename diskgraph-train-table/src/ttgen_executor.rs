@@ -953,6 +953,15 @@ fn execute_aggregate(
             let mut counts = Vec::new();
             let limit = agg.limit.unwrap_or(u32::MAX) as usize;
             let pk_filter = agg.target_pk_table.as_ref();
+            // Temporal validity filtering requires both an observation timestamp
+            // and pre-resolved temporal column indices on the target entity table.
+            // Without observation_ts (non-temporal plans), fall back to PK-only check.
+            let temporal_obs_ts = match observation_ts {
+                Some(ts) if agg.target_temporal_create_col_idx.is_some()
+                    || agg.target_temporal_end_col_idx.is_some() => Some(ts),
+                _ => None,
+            };
+            let mut rowpack_scratch = diskgraph_rowpack::RowPackDecodeScratch::default();
             traverse_and_accumulate(entity_node, &agg.path, window, true, &mut |dst, _sk| {
                 if let Some(ref f) = agg.row_filter {
                     if !eval_row_filter(f, dst, dst_table, entity_cols) {
@@ -962,9 +971,21 @@ fn execute_aggregate(
                 if let Some(col_idx) = agg.target_col_idx {
                     if let Some(val) = read_column_value(dst_table, dst, col_idx) {
                         // Skip target values whose FK doesn't exist in the
-                        // destination table (orphaned foreign keys).
+                        // destination table, or whose target entity is not
+                        // temporally valid at the observation timestamp
+                        // (e.g., FIDO added to catalog after anchor time).
                         if let Some(pk_table) = pk_filter {
-                            if !pk_table.contains_pk_value(&val) {
+                            if let Some(obs_ts) = temporal_obs_ts {
+                                if !pk_table.contains_pk_value_temporal(
+                                    &val,
+                                    obs_ts,
+                                    agg.target_temporal_create_col_idx,
+                                    agg.target_temporal_end_col_idx,
+                                    &mut rowpack_scratch,
+                                ) {
+                                    return true;
+                                }
+                            } else if !pk_table.contains_pk_value(&val) {
                                 return true;
                             }
                         }

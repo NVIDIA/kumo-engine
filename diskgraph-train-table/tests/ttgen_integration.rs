@@ -6050,3 +6050,312 @@ fn integ_orphan_filter_empty_result() {
     }
     // If rows is empty, that's also correct — no valid targets means no output row.
 }
+
+// ─── Temporal orphan filter tests ────────────────────────────────────────────
+
+/// Build a graph where the "products" table has create_time and end_time.
+///
+/// Products:
+///   10 → added_ts=500,  deleted_ts=NULL  (valid from 500 onward)
+///   20 → added_ts=1500, deleted_ts=NULL  (valid from 1500 onward — FUTURE at obs_ts=1000)
+///   30 → added_ts=200,  deleted_ts=800   (deleted before obs_ts=1000)
+///
+/// Orders: user 0 purchased product_ids {10, 20, 30} at ts=900.
+/// At observation_ts=1000:
+///   - product 10 is valid (added 500 <= 1000, no end)
+///   - product 20 is NOT valid (added 1500 > 1000)
+///   - product 30 is NOT valid (deleted 800 <= 1000)
+fn build_graph_temporal_orphan(root: &Path) -> PathBuf {
+    let data_dir = root.join("data");
+    let index_dir = root.join("index");
+    fs::create_dir_all(&data_dir).unwrap();
+
+    // users
+    let mut user_id = Int64Builder::new();
+    user_id.append_value(0i64);
+    let users_batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("user_id", DataType::Int64, false),
+        ])),
+        vec![Arc::new(user_id.finish())],
+    ).unwrap();
+    write_parquet(&data_dir.join("users.parquet"), &users_batch);
+
+    // products with added_ts and deleted_ts
+    let mut product_id = Int64Builder::new();
+    let mut added_ts = TimestampSecondBuilder::new();
+    let mut deleted_ts = TimestampSecondBuilder::new();
+    // product 10: valid from 500
+    product_id.append_value(10); added_ts.append_value(500); deleted_ts.append_null();
+    // product 20: valid from 1500 (future)
+    product_id.append_value(20); added_ts.append_value(1500); deleted_ts.append_null();
+    // product 30: valid 200-800 (deleted)
+    product_id.append_value(30); added_ts.append_value(200); deleted_ts.append_value(800);
+
+    let products_batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("product_id", DataType::Int64, false),
+            Field::new("added_ts", DataType::Timestamp(arrow_schema::TimeUnit::Second, None), true),
+            Field::new("deleted_ts", DataType::Timestamp(arrow_schema::TimeUnit::Second, None), true),
+        ])),
+        vec![
+            Arc::new(product_id.finish()),
+            Arc::new(added_ts.finish()),
+            Arc::new(deleted_ts.finish()),
+        ],
+    ).unwrap();
+    write_parquet(&data_dir.join("products.parquet"), &products_batch);
+
+    // orders: user 0 bought all 3 products at ts=900
+    let mut order_id = Int64Builder::new();
+    let mut order_user_id = Int64Builder::new();
+    let mut order_product_id = Int64Builder::new();
+    let mut ts = Int64Builder::new();
+    for (oid, uid, pid, t) in [
+        (0i64, 0i64, 10i64, 900i64),
+        (1,    0,    20,    900),
+        (2,    0,    30,    900),
+    ] {
+        order_id.append_value(oid);
+        order_user_id.append_value(uid);
+        order_product_id.append_value(pid);
+        ts.append_value(t);
+    }
+    let orders_batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("order_id", DataType::Int64, false),
+            Field::new("user_id", DataType::Int64, false),
+            Field::new("product_id", DataType::Int64, false),
+            Field::new("ts", DataType::Int64, false),
+        ])),
+        vec![
+            Arc::new(order_id.finish()),
+            Arc::new(order_user_id.finish()),
+            Arc::new(order_product_id.finish()),
+            Arc::new(ts.finish()),
+        ],
+    ).unwrap();
+    write_parquet(&data_dir.join("orders.parquet"), &orders_batch);
+
+    let orders_time = TimeSpec {
+        table: "orders".to_string(),
+        column: "ts".to_string(),
+        bitwidth: Some(16),
+        anchor_time: Some(0),
+        unit: "s".to_string(),
+    };
+
+    let config = GraphConfig {
+        dataset_name: "test_temporal_orphan".to_string(),
+        tables: vec![
+            TableSpec {
+                name: "users".to_string(),
+                columns: vec![mk_col("user_id", IngestedType::Int64)],
+                primary_key: Some("user_id".to_string()),
+                create_time: None,
+                end_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+                source: DataSource::Parquet {
+                    paths: vec![data_dir.join("users.parquet").to_str().unwrap().to_string()],
+                },
+                fkeys: vec![],
+                data_version: None,
+                kumo_connector_id: None,
+                kumo_source_table_name: None,
+            },
+            TableSpec {
+                name: "products".to_string(),
+                columns: vec![
+                    mk_col("product_id", IngestedType::Int64),
+                    mk_col("added_ts", IngestedType::Timestamp),
+                    mk_col("deleted_ts", IngestedType::Timestamp),
+                ],
+                primary_key: Some("product_id".to_string()),
+                create_time: Some("added_ts".to_string()),
+                end_time: Some("deleted_ts".to_string()),
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+                source: DataSource::Parquet {
+                    paths: vec![data_dir.join("products.parquet").to_str().unwrap().to_string()],
+                },
+                fkeys: vec![],
+                data_version: None,
+                kumo_connector_id: None,
+                kumo_source_table_name: None,
+            },
+            TableSpec {
+                name: "orders".to_string(),
+                columns: vec![
+                    mk_col("order_id", IngestedType::Int64),
+                    mk_col("user_id", IngestedType::Int64),
+                    mk_col("product_id", IngestedType::Int64),
+                    mk_col("ts", IngestedType::Int64),
+                ],
+                primary_key: Some("order_id".to_string()),
+                create_time: None,
+                end_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+                source: DataSource::Parquet {
+                    paths: vec![data_dir.join("orders.parquet").to_str().unwrap().to_string()],
+                },
+                fkeys: vec![
+                    FKeySpec {
+                        src_column: "user_id".to_string(),
+                        dst_table: "users".to_string(),
+                        forward: None,
+                        reverse: Some(DirectionSpec {
+                            time: Some(orders_time.clone()),
+                            weight: None,
+                        }),
+                    },
+                    FKeySpec {
+                        src_column: "product_id".to_string(),
+                        dst_table: "products".to_string(),
+                        forward: None,
+                        reverse: Some(DirectionSpec {
+                            time: Some(orders_time.clone()),
+                            weight: None,
+                        }),
+                    },
+                ],
+                data_version: None,
+                kumo_connector_id: None,
+                kumo_source_table_name: None,
+            },
+        ],
+        rowpack: None,
+        num_shards: Some(1),
+        edge_format: None,
+        coercion_mode: CoercionMode::Lossless,
+    };
+    let config_path = data_dir.join("graph_config.json");
+    fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+    run_ingest(&config_path, &index_dir);
+    index_dir
+}
+
+fn temporal_orphan_ld_plan(target_entity_table: Option<String>, obs_ts: i64) -> DiskGraphTTPlan {
+    DiskGraphTTPlan {
+        entity: EntitySpec {
+            table: "users".to_string(),
+            column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
+            time_col: None,
+            valid_to_col: None,
+            filter: None,
+        },
+        temporal: Some(TemporalSpec {
+            timestamps: vec![obs_ts],
+            forecast_length: 86400, // 1 day
+            lag_timesteps: None,
+        }),
+        prediction_type: PredictionType::Link {
+            explode: false,
+            include_frequency: true,
+        },
+        split: None,
+        stages: vec![Stage {
+            ops: vec![Op::Aggregate {
+                alias: "ld".to_string(),
+                path: vec![EdgeRef {
+                    src_table: "users".to_string(),
+                    src_col: "user_id".to_string(),
+                    dst_table: "orders".to_string(),
+                    dst_col: "user_id".to_string(),
+                }],
+                func: AggFunc::ListDistinct,
+                target_col: Some("product_id".to_string()),
+                time_col: None,
+                window: Some((-86400, 0)),
+                window_unit: None,
+                row_filter: None,
+                limit: None,
+                target_entity_table,
+            }],
+            filter: None,
+        }],
+    }
+}
+
+#[test]
+fn integ_temporal_orphan_filter_drops_future_and_deleted() {
+    // At observation_ts=1000:
+    //   product 10 (added 500) → valid, should be kept
+    //   product 20 (added 1500) → future, should be dropped
+    //   product 30 (added 200, deleted 800) → deleted, should be dropped
+    init_tracing();
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph_temporal_orphan(dir.path());
+    let plan = temporal_orphan_ld_plan(Some("products".to_string()), 1000);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_array(receiver);
+    handle.join().unwrap().unwrap();
+
+    assert_eq!(rows.len(), 1, "one row for user 0");
+    let (entity, _ts, targets, _freqs) = &rows[0];
+    assert_eq!(*entity, 0);
+    let target_set: std::collections::HashSet<_> = targets.iter().cloned().collect();
+    assert_eq!(
+        target_set.len(), 1,
+        "only product 10 should survive temporal filter; got {target_set:?}"
+    );
+    assert!(target_set.contains("10"), "product 10 should be present");
+    assert!(!target_set.contains("20"), "product 20 (future) should be dropped");
+    assert!(!target_set.contains("30"), "product 30 (deleted) should be dropped");
+}
+
+#[test]
+fn integ_temporal_orphan_filter_disabled_without_target_entity_table() {
+    // Without target_entity_table, temporal filter is off → all 3 products present.
+    init_tracing();
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph_temporal_orphan(dir.path());
+    let plan = temporal_orphan_ld_plan(None, 1000);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_array(receiver);
+    handle.join().unwrap().unwrap();
+
+    assert_eq!(rows.len(), 1);
+    let (_, _, targets, _) = &rows[0];
+    let target_set: std::collections::HashSet<_> = targets.iter().cloned().collect();
+    assert_eq!(
+        target_set.len(), 3,
+        "no filter → all 3 products; got {target_set:?}"
+    );
+}
+
+#[test]
+fn integ_temporal_orphan_filter_all_valid_at_later_time() {
+    // At observation_ts=2000, products 10 and 20 are valid:
+    //   product 10 (added 500) → valid (500 <= 2000, no end)
+    //   product 20 (added 1500) → valid (1500 <= 2000, no end)
+    //   product 30 (added 200, deleted 800) → invalid (800 <= 2000)
+    // Products 10 and 20 should pass, product 30 still filtered.
+    init_tracing();
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph_temporal_orphan(dir.path());
+    let plan = temporal_orphan_ld_plan(Some("products".to_string()), 2000);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_array(receiver);
+    handle.join().unwrap().unwrap();
+
+    assert_eq!(rows.len(), 1);
+    let (_, _, targets, _) = &rows[0];
+    let target_set: std::collections::HashSet<_> = targets.iter().cloned().collect();
+    assert_eq!(
+        target_set.len(), 2,
+        "products 10 and 20 valid at ts=2000; got {target_set:?}"
+    );
+    assert!(target_set.contains("10"));
+    assert!(target_set.contains("20"));
+    assert!(!target_set.contains("30"), "product 30 still deleted");
+}

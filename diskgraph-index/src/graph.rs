@@ -739,6 +739,125 @@ impl TableReader {
         }
         None
     }
+
+    /// Returns the rowpack column indices for `(create_time_col, end_time_col)`.
+    /// Returns `None` for each if the table lacks that temporal column or has no
+    /// rowpack decoder.
+    pub fn temporal_col_indices(&self) -> (Option<usize>, Option<usize>) {
+        let Some(decoder) = self.node_data_decoder.as_ref() else {
+            return (None, None);
+        };
+        let ctx = decoder.context();
+        let create_idx = self.create_time_col.as_deref().and_then(|name| {
+            ctx.columns.iter().position(|c| c.name == name)
+        });
+        let end_idx = self.end_time_col.as_deref().and_then(|name| {
+            ctx.columns.iter().position(|c| c.name == name)
+        });
+        (create_idx, end_idx)
+    }
+
+    /// Check whether the entity identified by `node_id` is temporally valid at
+    /// `observation_ts` (epoch seconds). Returns `true` if the entity's
+    /// `create_time_col <= observation_ts` and `(end_time_col IS NULL OR
+    /// end_time_col > observation_ts)`.
+    ///
+    /// `create_col_idx` / `end_col_idx` are pre-resolved rowpack column indices
+    /// from [`temporal_col_indices`]. If both are `None`, always returns `true`.
+    pub fn is_node_temporally_valid(
+        &self,
+        node_id: u64,
+        observation_ts: i64,
+        create_col_idx: Option<usize>,
+        end_col_idx: Option<usize>,
+        scratch: &mut diskgraph_rowpack::RowPackDecodeScratch,
+    ) -> Result<bool> {
+        if create_col_idx.is_none() && end_col_idx.is_none() {
+            return Ok(true);
+        }
+        let view = self.edges_for_node(node_id)?;
+        let Some(raw) = view.node_data()? else {
+            // No node data → can't check → conservatively include
+            return Ok(true);
+        };
+        let decoder = match self.node_data_decoder.as_ref() {
+            Some(d) => d,
+            None => return Ok(true),
+        };
+
+        // Check create_time_col <= observation_ts
+        if let Some(col_idx) = create_col_idx {
+            let val = decoder.decode_column_value(raw, col_idx, scratch)?;
+            let ts_secs = temporal_value_to_epoch_secs(&val);
+            if let Some(secs) = ts_secs {
+                if secs > observation_ts {
+                    return Ok(false);
+                }
+            }
+            // NULL create_time → conservatively include
+        }
+
+        // Check end_time_col IS NULL OR end_time_col > observation_ts
+        if let Some(col_idx) = end_col_idx {
+            let val = decoder.decode_column_value(raw, col_idx, scratch)?;
+            let ts_secs = temporal_value_to_epoch_secs(&val);
+            if let Some(secs) = ts_secs {
+                if secs <= observation_ts {
+                    return Ok(false);
+                }
+            }
+            // NULL end_time → entity still active → include
+        }
+
+        Ok(true)
+    }
+
+    /// Like [`contains_pk_value`] but also checks temporal validity.
+    /// Returns `true` only if the PK exists AND the node is temporally valid.
+    pub fn contains_pk_value_temporal(
+        &self,
+        value: &Value,
+        observation_ts: i64,
+        create_col_idx: Option<usize>,
+        end_col_idx: Option<usize>,
+        scratch: &mut diskgraph_rowpack::RowPackDecodeScratch,
+    ) -> bool {
+        let pk_map = match self.pk_map.as_ref() {
+            Some(m) => m,
+            None => return false,
+        };
+        let key = match Self::value_to_pk_key(value, pk_map.key_type()) {
+            Some(k) => k,
+            None => return false,
+        };
+        let node_id = match self.node_id_from_pk(&key) {
+            Ok(Some(id)) => id,
+            _ => return false,
+        };
+        // If no temporal columns, just PK existence is enough
+        if create_col_idx.is_none() && end_col_idx.is_none() {
+            return true;
+        }
+        self.is_node_temporally_valid(
+            node_id,
+            observation_ts,
+            create_col_idx,
+            end_col_idx,
+            scratch,
+        )
+        .unwrap_or(true) // on error, conservatively include
+    }
+}
+
+/// Convert a rowpack `ValueRef` representing a temporal column to epoch seconds.
+fn temporal_value_to_epoch_secs(val: &diskgraph_rowpack::ValueRef<'_>) -> Option<i64> {
+    match val {
+        diskgraph_rowpack::ValueRef::Timestamp(secs) => Some(*secs),
+        diskgraph_rowpack::ValueRef::Int64(ns) => Some(*ns / 1_000_000_000),
+        diskgraph_rowpack::ValueRef::Date(days) => Some(*days as i64 * 86400),
+        diskgraph_rowpack::ValueRef::Null => None,
+        _ => None,
+    }
 }
 
 fn load_pk_hash_table(
