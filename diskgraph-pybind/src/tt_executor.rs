@@ -506,6 +506,139 @@ fn row_count_of_batches(batches: &[RecordBatch]) -> usize {
     batches.iter().map(|b| b.num_rows()).sum()
 }
 
+/// Maximum TT rows allowed without downsampling. Beyond this the
+/// in-memory entity/target string vectors become prohibitively large.
+/// This is a transitional safety valve — once the streaming refactor
+/// (step 2+3) lands, this limit can be raised or removed.
+const MAX_TT_ROWS_WITHOUT_DOWNSAMPLING: u64 = 200_000_000;
+
+// ─── Scratch parquet writer/reader ──────────────────────────────────────
+
+/// Write RecordBatches to a scratch parquet file incrementally.
+/// Each batch becomes one row group for efficient sequential read-back.
+struct ScratchParquetWriter {
+    writer: Option<ArrowWriter<File>>,
+    path: String,
+    props: WriterProperties,
+    rows_written: u64,
+}
+
+impl ScratchParquetWriter {
+    fn new(path: &str) -> Self {
+        let props = WriterProperties::builder()
+            .set_compression(Compression::SNAPPY)
+            .build();
+        Self {
+            writer: None,
+            path: path.to_owned(),
+            props,
+            rows_written: 0,
+        }
+    }
+
+    /// Write a batch with an arange column appended. Lazily creates the
+    /// writer on the first batch (schema inferred from data, not upfront).
+    fn write_batch(&mut self, batch: &RecordBatch) -> anyhow::Result<()> {
+        let with_arange = append_arange_column(batch.clone(), self.rows_written as i64)?;
+        if self.writer.is_none() {
+            let file = File::create(&self.path)?;
+            self.writer = Some(ArrowWriter::try_new(
+                file,
+                with_arange.schema(),
+                Some(self.props.clone()),
+            )?);
+        }
+        self.rows_written += batch.num_rows() as u64;
+        self.writer.as_mut().unwrap().write(&with_arange)?;
+        Ok(())
+    }
+
+    fn finish(mut self) -> anyhow::Result<u64> {
+        if let Some(w) = self.writer.take() {
+            w.close()?;
+        }
+        Ok(self.rows_written)
+    }
+}
+
+/// Guard that deletes a scratch file on drop unless disarmed.
+/// Ensures cleanup on all error paths (panics, early returns via `?`).
+struct ScratchFileGuard {
+    path: String,
+    disarmed: bool,
+}
+
+impl ScratchFileGuard {
+    fn new(path: &str) -> Self {
+        Self {
+            path: path.to_owned(),
+            disarmed: false,
+        }
+    }
+
+    /// Disarm the guard (e.g., after rename to pre_downsample artifact).
+    fn disarm(&mut self) {
+        self.disarmed = true;
+    }
+}
+
+impl Drop for ScratchFileGuard {
+    fn drop(&mut self) {
+        if !self.disarmed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Read batches back from a scratch parquet, optionally filtering rows
+/// by entity membership and/or capping at max_rows.
+///
+/// When `sampled_entities` is Some, only rows whose ENTITY column value
+/// is in the set are kept. When None, all rows pass through.
+/// Reading stops once `max_rows` kept rows have been collected.
+fn read_scratch_filtered(
+    path: &str,
+    sampled_entities: Option<&std::collections::HashSet<String>>,
+    max_rows: usize,
+) -> anyhow::Result<Vec<RecordBatch>> {
+    let file = File::open(path)?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
+
+    let mut out = Vec::new();
+    let mut total_kept = 0usize;
+
+    for batch_result in reader {
+        let batch = batch_result?;
+
+        let to_push = if let Some(sampled) = sampled_entities {
+            // Filter rows by entity membership (O(1) HashSet lookup per row)
+            let entities = extract_entity_strings(&batch)?;
+            let mask: BooleanArray = entities
+                .iter()
+                .map(|e| Some(sampled.contains(e)))
+                .collect();
+            arrow::compute::filter_record_batch(&batch, &mask)?
+        } else {
+            batch
+        };
+
+        let rows = to_push.num_rows();
+        if rows > 0 {
+            let remaining = max_rows.saturating_sub(total_kept);
+            if rows <= remaining {
+                total_kept += rows;
+                out.push(to_push);
+            } else {
+                // Truncate final batch to not exceed max_rows
+                total_kept += remaining;
+                out.push(to_push.slice(0, remaining));
+                break;
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[derive(Clone)]
 enum ScalarCell {
     Int(i64),
@@ -3842,128 +3975,215 @@ pub fn execute_tt_plan_materialize_with_split(
                 diskgraph_train_table::ttgen_executor::execute_with_summary(&plan, Path::new(&idx))?;
 
             let mut row_offset = 0i64;
-            let mut total_memory_bytes = 0usize;
-            let mut timestamps_ns: Vec<i64> = Vec::new();
-            let mut include_mask: Option<Vec<bool>> = None;
-            let mut column_sort_values: Vec<SortValue> = Vec::new();
-            let mut manual_values: Vec<String> = Vec::new();
-            let mut entity_values: Vec<String> = Vec::new();
-            let mut target_values: Vec<String> = Vec::new();
-            let mut raw_batches: Vec<RecordBatch> = Vec::new();
+            let mut total_bytes_processed = 0usize;
+
+            // For downsampling (link_by_entity mode): track unique entities
+            // in encounter order. O(unique_entities) ≈ ~1.8 GB for Fetch.
+            // All other per-row data (timestamps, masks, entity/target
+            // strings) is extracted from post-DS final_batches after
+            // read-back — not accumulated during the consumer loop.
+            let mut entity_unique_ordered: Vec<String> = Vec::new();
+            let mut entity_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+            // Write raw batches to a scratch parquet file instead of
+            // accumulating in memory. The scratch file serves as:
+            //   1. The pre-downsample artifact (.pre_downsample.parquet)
+            //   2. The read-back source for post-downsample filtering
+            let scratch_path = format!("{}.scratch.parquet", out);
+            let mut scratch_guard = ScratchFileGuard::new(&scratch_path);
+            let mut scratch_writer = ScratchParquetWriter::new(&scratch_path);
+            let mut batch_count = 0u64;
 
             let mut last_logged_gb = 0usize;
             for batch in receiver.iter() {
                 let batch_memory = batch.get_array_memory_size();
-                total_memory_bytes += batch_memory;
+                total_bytes_processed += batch_memory;
+                batch_count += 1;
 
-                // Log progressive memory usage every 1GB of additional batch data
-                let current_gb = total_memory_bytes / (1024 * 1024 * 1024);
+                let current_gb = total_bytes_processed / (1024 * 1024 * 1024);
                 if current_gb > last_logged_gb {
                     info!(
-                        batches_buffered = raw_batches.len() + 1,
-                        batch_memory_mb = total_memory_bytes / 1024 / 1024,
+                        batch_count = batch_count,
+                        bytes_processed_mb = total_bytes_processed / 1024 / 1024,
                         process_rss_mb = get_current_rss_mb(),
-                        "TT-gen materialization memory checkpoint"
+                        "TT-gen materialization progress"
                     );
                     last_logged_gb = current_gb;
                 }
 
-                extend_timestamps_ns_from_batch(&batch, &mut timestamps_ns);
-                extend_include_mask_from_batch(&batch, &mut include_mask);
-
-                if family == "ColumnSplit" {
-                    let col_name = split_column_name
-                        .as_deref()
-                        .ok_or_else(|| anyhow::anyhow!("ColumnSplit requires split.col name"))?;
-                    let mut vals = extract_sort_values(&batch, col_name)?;
-                    column_sort_values.append(&mut vals);
-                } else if family == "ManualSplit" {
-                    let col_name = split_column_name
-                        .as_deref()
-                        .ok_or_else(|| anyhow::anyhow!("ManualSplit requires split.col name"))?;
-                    let mut vals = extract_string_values(&batch, col_name)?;
-                    manual_values.append(&mut vals);
-                }
-
-                if let Ok(mut entities) = extract_entity_strings(&batch) {
-                    entity_values.append(&mut entities);
-                }
-                if let Ok(mut targets) = extract_string_values(&batch, "TARGET") {
-                    target_values.append(&mut targets);
+                // Build unique entity set only when link_by_entity downsampling
+                // may be needed (LP with non-array targets and DS enabled).
+                if downsampling_cfg.enabled
+                    && downsampling_cfg.is_link_prediction
+                    && !downsampling_cfg.list_distinct_target_is_array
+                {
+                    let entities = extract_entity_strings(&batch)?;
+                    for e in entities {
+                        if entity_seen.insert(e.clone()) {
+                            entity_unique_ordered.push(e);
+                        }
+                    }
                 }
 
                 row_offset += batch.num_rows() as i64;
-                raw_batches.push(batch);
+                scratch_writer.write_batch(&batch)?;
             }
+            scratch_writer.finish()?;
 
             if row_offset == 0 {
                 return Err(anyhow::anyhow!("diskgraph execute_tt_plan returned zero rows"));
             }
 
             let pre_downsample_row_count = row_offset as usize;
+
+            // Safety valve: if row count exceeds the threshold and
+            // downsampling is disabled, fail fast instead of OOMing
+            // on the entity/target string vectors (which are still
+            // accumulated in memory until streaming step 2 lands).
+            if row_offset as u64 > MAX_TT_ROWS_WITHOUT_DOWNSAMPLING
+                && !downsampling_cfg.enabled
+            {
+                // scratch_guard handles cleanup on return
+                return Err(anyhow::anyhow!(
+                    "TT-gen produced {} rows, exceeding the {} row limit. \
+                     Enable downsampling via downsampling_config_json \
+                     or reduce the entity/anchor space.",
+                    row_offset,
+                    MAX_TT_ROWS_WITHOUT_DOWNSAMPLING,
+                ));
+            }
+
             info!(
                 rows_generated = pre_downsample_row_count,
-                batch_memory_mb = total_memory_bytes / 1024 / 1024,
+                bytes_processed_mb = total_bytes_processed / 1024 / 1024,
                 process_rss_mb = get_current_rss_mb(),
                 duration_ms = traversal_start.elapsed().as_millis(),
-                "Parallel traversal complete"
+                "Parallel traversal complete (batches written to scratch)"
             );
 
-            let mut selected_indices: Option<Vec<usize>> = None;
+            // Free the seen set — no longer needed after consumer loop.
+            drop(entity_seen);
+
+            // Downsampling decision: build entity filter HashSet if needed.
+            // The HashSet is passed to read_scratch_filtered for O(1) per-row
+            // filtering during a single scratch read pass.
+            let mut sampled_entities: Option<std::collections::HashSet<String>> = None;
             let mut downsampling_applied = false;
             let mut downsampling_handled = false;
+            let mut ds_max_rows = usize::MAX;
 
             if downsampling_cfg.enabled {
                 let downsample_start = std::time::Instant::now();
                 downsampling_handled = true;
-                if downsampling_cfg.is_link_prediction
-                    && !downsampling_cfg.list_distinct_target_is_array
-                    && entity_values.len() != pre_downsample_row_count
-                {
+
+                if pre_downsample_row_count <= downsampling_cfg.max_rows {
+                    info!(
+                        rows = pre_downsample_row_count,
+                        max_rows = downsampling_cfg.max_rows,
+                        "Downsampling: under limit, no action"
+                    );
+                } else if downsampling_cfg.uses_arl_labels {
                     return Err(anyhow::anyhow!(
-                        "downsampling requires ENTITY column for link_by_entity path"
+                        "downsampling refuses ARL labels parity path"
                     ));
-                }
-                let (idxs, _path) = downsample_indices_legacy(
-                    &downsampling_cfg,
-                    &entity_values,
-                    pre_downsample_row_count,
-                )?;
-                if idxs.len() != pre_downsample_row_count {
+                } else if downsampling_cfg.is_link_prediction
+                    && !downsampling_cfg.list_distinct_target_is_array
+                {
+                    // link_by_entity: sample first N unique entities
+                    let num_unique = entity_unique_ordered.len();
+                    let id_sample_size =
+                        ((num_unique as u64 * downsampling_cfg.max_rows as u64)
+                            / pre_downsample_row_count as u64)
+                            .max(1) as usize;
+                    let sampled: std::collections::HashSet<String> = entity_unique_ordered
+                        [..id_sample_size.min(num_unique)]
+                        .iter()
+                        .cloned()
+                        .collect();
+                    info!(
+                        unique_entities = num_unique,
+                        sampled_entities = sampled.len(),
+                        "Downsampling: link_by_entity entity sampling"
+                    );
+                    sampled_entities = Some(sampled);
+                    ds_max_rows = downsampling_cfg.max_rows;
                     downsampling_applied = true;
-                    selected_indices = Some(idxs);
+                } else {
+                    // Simple limit: cap at max_rows (no entity filter)
+                    ds_max_rows = downsampling_cfg.max_rows;
+                    downsampling_applied = true;
                 }
+
                 info!(
-                    rows_after_downsample = selected_indices.as_ref().map_or(pre_downsample_row_count, |v| v.len()),
+                    downsampling_applied = downsampling_applied,
+                    ds_max_rows = ds_max_rows,
                     duration_ms = downsample_start.elapsed().as_millis(),
-                    "Downsampling complete"
+                    "Downsampling decision complete"
                 );
             }
+            drop(entity_unique_ordered);
 
+            // Rename scratch to pre-downsample artifact path if preserving,
+            // otherwise read from scratch in place (guard handles cleanup).
+            let readback_path;
             if downsampling_cfg.enabled && downsampling_cfg.preserve_pre_downsample_tt {
                 let pre_path = format!("{}.pre_downsample.parquet", out);
-                let _ = write_batches_with_arange(&pre_path, &raw_batches, None)?;
+                std::fs::rename(&scratch_path, &pre_path).map_err(|e| {
+                    anyhow::anyhow!("failed to rename scratch to pre_downsample artifact: {e}")
+                })?;
+                scratch_guard.disarm(); // file renamed, guard should not delete
+                readback_path = pre_path;
+            } else {
+                readback_path = scratch_path.clone();
             }
 
-            let mut final_batches = materialize_selected_batches(&raw_batches, selected_indices.as_deref())?;
+            // Single-pass read-back with entity filter + row cap.
+            // Post-DS row count is bounded (≤max_rows) so final_batches fits in memory.
+            let readback_start = std::time::Instant::now();
+            let mut final_batches = read_scratch_filtered(
+                &readback_path,
+                sampled_entities.as_ref(),
+                ds_max_rows,
+            )?;
+            // Disarm guard after successful read-back; delete scratch if not preserved.
+            scratch_guard.disarm();
+            if readback_path == scratch_path {
+                let _ = std::fs::remove_file(&scratch_path);
+            }
             let mut row_offset = row_count_of_batches(&final_batches) as i64;
+            info!(
+                rows_after_readback = row_offset,
+                duration_ms = readback_start.elapsed().as_millis(),
+                "Scratch read-back complete"
+            );
 
-            if let Some(idxs) = selected_indices.as_ref() {
-                timestamps_ns = idxs.iter().map(|i| timestamps_ns[*i]).collect();
-                if let Some(mask) = include_mask.as_ref() {
-                    include_mask = Some(idxs.iter().map(|i| mask[*i]).collect());
+            // Extract ALL per-row data from post-DS final_batches.
+            // These are bounded (≤200M rows) so they fit in memory.
+            let mut timestamps_ns: Vec<i64> = Vec::new();
+            let mut include_mask: Option<Vec<bool>> = None;
+            let mut column_sort_values: Vec<SortValue> = Vec::new();
+            let mut manual_values: Vec<String> = Vec::new();
+            let mut entity_values: Vec<String> = Vec::new();
+            let mut target_values: Vec<String> = Vec::new();
+            for batch in &final_batches {
+                extend_timestamps_ns_from_batch(batch, &mut timestamps_ns);
+                extend_include_mask_from_batch(batch, &mut include_mask);
+                if family == "ColumnSplit" {
+                    let col_name = split_column_name
+                        .as_deref()
+                        .ok_or_else(|| anyhow::anyhow!("ColumnSplit requires split.col name"))?;
+                    column_sort_values.append(&mut extract_sort_values(batch, col_name)?);
+                } else if family == "ManualSplit" {
+                    let col_name = split_column_name
+                        .as_deref()
+                        .ok_or_else(|| anyhow::anyhow!("ManualSplit requires split.col name"))?;
+                    manual_values.append(&mut extract_string_values(batch, col_name)?);
                 }
-                if !column_sort_values.is_empty() {
-                    column_sort_values = idxs.iter().map(|i| column_sort_values[*i].clone()).collect();
+                if let Ok(mut e) = extract_entity_strings(batch) {
+                    entity_values.append(&mut e);
                 }
-                if !manual_values.is_empty() {
-                    manual_values = idxs.iter().map(|i| manual_values[*i].clone()).collect();
-                }
-                if entity_values.len() == pre_downsample_row_count {
-                    entity_values = idxs.iter().map(|i| entity_values[*i].clone()).collect();
-                }
-                if target_values.len() == pre_downsample_row_count {
-                    target_values = idxs.iter().map(|i| target_values[*i].clone()).collect();
+                if let Ok(mut t) = extract_string_values(batch, "TARGET") {
+                    target_values.append(&mut t);
                 }
             }
 
