@@ -344,15 +344,21 @@ fn append_arange_column(batch: RecordBatch, row_offset: i64) -> anyhow::Result<R
     let num_rows = batch.num_rows() as i64;
     let arange = Int64Array::from_iter_values(row_offset..(row_offset + num_rows));
 
-    let mut fields = batch
+    // Drop any existing arange column so the caller's fresh arange replaces
+    // it (e.g., when reading from the scratch parquet which already carries
+    // an arange from the consumer-loop write, we need to re-index post-DS).
+    let (fields, columns): (Vec<_>, Vec<_>) = batch
         .schema()
         .fields()
         .iter()
-        .map(|f| f.as_ref().clone())
-        .collect::<Vec<_>>();
-    fields.push(Field::new("arange", DataType::Int64, false));
+        .zip(batch.columns().iter())
+        .filter(|(f, _)| f.name() != "arange")
+        .map(|(f, c)| (f.as_ref().clone(), c.clone()))
+        .unzip();
 
-    let mut columns = batch.columns().to_vec();
+    let mut fields = fields;
+    fields.push(Field::new("arange", DataType::Int64, false));
+    let mut columns = columns;
     columns.push(Arc::new(arange));
 
     RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
