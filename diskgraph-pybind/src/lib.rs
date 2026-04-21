@@ -140,6 +140,7 @@ use diskgraph_engine::engine::DiskGraphEngine;
 use diskgraph_engine::output::OutputHandler;
 use diskgraph_engine::state::{SamplingState, StatePool};
 
+mod artifact_helpers;
 mod split_assignments;
 mod tt_builder;
 mod tt_executor;

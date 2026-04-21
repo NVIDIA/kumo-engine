@@ -7,6 +7,7 @@ import subprocess
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+
 @pytest.fixture(scope="session")
 def ifood_graph(tmp_path_factory):
     """
@@ -132,10 +133,14 @@ def list_features_graph(tmp_path_factory):
     import pyarrow.parquet as pq
 
     item_ids = pa.array([0, 1, 2, 3], type=pa.int64())
-    tag_ids  = pa.array([[10, 20, 30], [40], [], [1, 2, 3, 4, 5]],
-                         type=pa.list_(pa.int64()))
-    tags     = pa.array([["sports", "sale"], ["kids"], [], ["pro", "audio"]],
-                         type=pa.list_(pa.utf8()))
+    tag_ids = pa.array(
+        [[10, 20, 30], [40], [], [1, 2, 3, 4, 5]],
+        type=pa.list_(pa.int64()),
+    )
+    tags = pa.array(
+        [["sports", "sale"], ["kids"], [], ["pro", "audio"]],
+        type=pa.list_(pa.utf8()),
+    )
 
     table = pa.table({"item_id": item_ids, "tag_ids": tag_ids, "tags": tags})
     items_path = str(data_dir / "items.parquet")
@@ -150,7 +155,7 @@ def list_features_graph(tmp_path_factory):
                 "columns": [
                     {"name": "item_id", "ingested_dtype": "int64"},
                     {"name": "tag_ids", "ingested_dtype": "int64_array"},
-                    {"name": "tags",    "ingested_dtype": "string_array"},
+                    {"name": "tags", "ingested_dtype": "string_array"},
                 ],
                 "primary_key": "item_id",
                 "source": {"type": "parquet", "paths": [items_path]},
@@ -164,6 +169,10 @@ def list_features_graph(tmp_path_factory):
         json.dump(config, f)
 
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+    env = dict(os.environ)
+    if not env.get("GITHUB_ACTIONS"):
+        rustflags = env.get("RUSTFLAGS", "").strip()
+        env["RUSTFLAGS"] = (rustflags + " -C target-cpu=native").strip()
     try:
         subprocess.run(
             ["cargo", "run", "--release", "--bin", "ingest", "--",
@@ -172,7 +181,7 @@ def list_features_graph(tmp_path_factory):
              "--output", str(index_dir)],
             cwd=project_root,
             check=True,
-            env={**os.environ, "RUSTFLAGS": "-C target-cpu=native"},
+            env=env,
         )
     except subprocess.CalledProcessError as e:
         pytest.fail(f"list_features ingest failed with exit code {e.returncode}")

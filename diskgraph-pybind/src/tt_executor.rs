@@ -5,8 +5,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use tracing::info;
@@ -59,7 +58,6 @@ use pyo3::Py;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
 #[pyclass]
 pub struct TTPlanIterator {
@@ -1083,79 +1081,10 @@ fn transform_random_link_split_link_array(
     Ok((vec![out_batch], out_assignments))
 }
 
-fn sha256_hex_bytes(data: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    let digest = hasher.finalize();
-    digest.iter().map(|b| format!("{:02x}", b)).collect()
-}
-
-fn sha256_hex_file(path: &str) -> anyhow::Result<String> {
-    let mut hasher = Sha256::new();
-    let mut f = File::open(path)?;
-    let mut buf = [0u8; 1024 * 1024];
-    loop {
-        let n = f.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    let digest = hasher.finalize();
-    Ok(digest.iter().map(|b| format!("{:02x}", b)).collect())
-}
-
-fn collect_files_recursive(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
-    if root.is_file() {
-        return Ok(vec![root.to_path_buf()]);
-    }
-    let mut out = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.is_file() {
-                out.push(path);
-            }
-        }
-    }
-    out.sort();
-    Ok(out)
-}
-
-/// Compute SHA256 for a file or a deterministic directory digest.
-///
-/// Directory digest format (Linux path semantics):
-/// `sha256(rel_path + '\0' + file_sha256_hex + '\0' for each file sorted lexicographically)`.
-fn sha256_hex_path(path: &Path) -> anyhow::Result<String> {
-    if path.is_file() {
-        return sha256_hex_file(
-            path.to_str()
-                .ok_or_else(|| anyhow::anyhow!("non-utf8 path not supported"))?,
-        );
-    }
-
-    let mut hasher = Sha256::new();
-    let files = collect_files_recursive(path)?;
-    for file in files {
-        let rel = file
-            .strip_prefix(path)
-            .map_err(|_| anyhow::anyhow!("failed to strip prefix while hashing path"))?;
-        hasher.update(rel.to_string_lossy().as_bytes());
-        hasher.update([0u8]);
-        let file_hash = sha256_hex_file(
-            file.to_str()
-                .ok_or_else(|| anyhow::anyhow!("non-utf8 path not supported"))?,
-        )?;
-        hasher.update(file_hash.as_bytes());
-        hasher.update([0u8]);
-    }
-    let digest = hasher.finalize();
-    Ok(digest.iter().map(|b| format!("{:02x}", b)).collect())
-}
+use crate::artifact_helpers::{
+    artifact_ref, ensure_artifacts_dir, merge_prefixed_checksums, sha256_hex_bytes, sha256_hex_path,
+    write_artifact_file, write_manifest_json,
+};
 
 fn build_table_edges_bundle_value(
     output_dir: &Path,
@@ -4863,18 +4792,14 @@ pub fn persist_prediction_artifact_bundle(
     let (manifest_path, artifacts_dir) = py
         .detach(|| -> anyhow::Result<(String, String)> {
             let artifacts_dir = format!("{}.artifacts", out);
-            std::fs::create_dir_all(&artifacts_dir)?;
+            ensure_artifacts_dir(&artifacts_dir)?;
             let manifest_path = format!("{}.prediction.manifest.json", out);
             let edge_bundle_path = format!("{}/prediction_table_edges.bundle.json", artifacts_dir);
             let col_stats_path = format!("{}/stats.prediction_table_col_stats.json", artifacts_dir);
 
-            {
-                let mut f = File::create(&edge_bundle_path)?;
-                f.write_all(prediction_table_edges_payload.as_bytes())?;
-            }
+            write_artifact_file(&edge_bundle_path, prediction_table_edges_payload.as_bytes())?;
             if let Some(raw) = prediction_col_stats_payload.as_ref() {
-                let mut f = File::create(&col_stats_path)?;
-                f.write_all(raw.as_bytes())?;
+                write_artifact_file(&col_stats_path, raw.as_bytes())?;
             }
 
             let mut checksums = serde_json::Map::new();
@@ -4886,27 +4811,22 @@ pub fn persist_prediction_artifact_bundle(
                 "prediction_table_edges_sha256".to_string(),
                 json!(sha256_hex_bytes(prediction_table_edges_payload.as_bytes())),
             );
-            if let Some(edge_checksums) = prediction_table_edges_value
-                .get("checksums")
-                .and_then(|v| v.as_object())
-            {
-                for (k, v) in edge_checksums {
-                    checksums.insert(format!("prediction_table_edges__{k}"), v.clone());
-                }
-            }
+            merge_prefixed_checksums(
+                &mut checksums,
+                &prediction_table_edges_value,
+                "prediction_table_edges",
+            );
             if let Some(raw) = prediction_col_stats_payload.as_ref() {
                 checksums.insert(
                     "prediction_table_col_stats_sha256".to_string(),
                     json!(sha256_hex_bytes(raw.as_bytes())),
                 );
-                if let Some(stats_checksums) = prediction_col_stats_value
-                    .as_ref()
-                    .and_then(|v| v.get("checksums"))
-                    .and_then(|v| v.as_object())
-                {
-                    for (k, v) in stats_checksums {
-                        checksums.insert(format!("prediction_table_col_stats__{k}"), v.clone());
-                    }
+                if let Some(stats_value) = prediction_col_stats_value.as_ref() {
+                    merge_prefixed_checksums(
+                        &mut checksums,
+                        stats_value,
+                        "prediction_table_col_stats",
+                    );
                 }
             }
 
@@ -4915,7 +4835,7 @@ pub fn persist_prediction_artifact_bundle(
             manifest.insert("row_count".to_string(), json!(row_count));
             manifest.insert(
                 "prediction_table".to_string(),
-                json!({"path": out, "format": "parquet_with_arange"}),
+                artifact_ref(&out, "parquet_with_arange"),
             );
             manifest.insert(
                 "prediction_table_edges".to_string(),
@@ -4931,18 +4851,12 @@ pub fn persist_prediction_artifact_bundle(
             let mut prediction_artifacts = serde_json::Map::new();
             prediction_artifacts.insert(
                 "prediction_table_edges".to_string(),
-                json!({
-                    "path": edge_bundle_path,
-                    "format": "tt_prediction_table_edges_json"
-                }),
+                artifact_ref(&edge_bundle_path, "tt_prediction_table_edges_json"),
             );
             if prediction_col_stats_payload.is_some() {
                 prediction_artifacts.insert(
                     "prediction_table_col_stats".to_string(),
-                    json!({
-                        "path": col_stats_path,
-                        "format": "tt_prediction_table_col_stats_json"
-                    }),
+                    artifact_ref(&col_stats_path, "tt_prediction_table_col_stats_json"),
                 );
             }
             manifest.insert(
@@ -4954,8 +4868,8 @@ pub fn persist_prediction_artifact_bundle(
                 manifest.insert("producer_summary".to_string(), producer_summary_value);
             }
 
-            let mut mf = File::create(&manifest_path)?;
-            mf.write_all(serde_json::to_string(&manifest)?.as_bytes())?;
+            let manifest = Value::Object(manifest);
+            write_manifest_json(&manifest_path, &manifest)?;
             Ok((manifest_path, artifacts_dir))
         })
         .map_err(|e| {
@@ -5009,7 +4923,7 @@ pub fn persist_tt_artifact_bundle(
     let (manifest_path, artifacts_dir) = py
         .detach(|| -> anyhow::Result<(String, String)> {
             let artifacts_dir = format!("{}.artifacts", out);
-            std::fs::create_dir_all(&artifacts_dir)?;
+            ensure_artifacts_dir(&artifacts_dir)?;
 
             let stats_path = format!("{}/stats.tt.json", artifacts_dir);
             let split_path = format!("{}/split_assignments.row_stage.bin", artifacts_dir);
@@ -5018,22 +4932,13 @@ pub fn persist_tt_artifact_bundle(
                 format!("{}/stats.train_table_col_stats.json", artifacts_dir);
             let manifest_path = format!("{}.manifest.json", out);
 
-            {
-                let mut f = File::create(&stats_path)?;
-                f.write_all(stats_json.as_bytes())?;
-            }
-            {
-                let mut f = File::create(&split_path)?;
-                f.write_all(split_bytes)?;
-            }
-            {
-                let mut f = File::create(&split_stats_path)?;
-                f.write_all(split_stats_json.as_bytes())?;
-            }
-            {
-                let mut f = File::create(&train_table_col_stats_path)?;
-                f.write_all(train_table_col_stats_payload.as_bytes())?;
-            }
+            write_artifact_file(&stats_path, stats_json.as_bytes())?;
+            write_artifact_file(&split_path, split_bytes)?;
+            write_artifact_file(&split_stats_path, split_stats_json.as_bytes())?;
+            write_artifact_file(
+                &train_table_col_stats_path,
+                train_table_col_stats_payload.as_bytes(),
+            )?;
 
             let mut checksums = serde_json::Map::new();
             checksums.insert(
@@ -5064,13 +4969,7 @@ pub fn persist_tt_artifact_bundle(
                     "train_table_edges_sha256".to_string(),
                     json!(sha256_hex_bytes(raw.as_bytes())),
                 );
-                if let Some(edge_checksums) =
-                    edge_bundle.get("checksums").and_then(|v| v.as_object())
-                {
-                    for (k, v) in edge_checksums {
-                        checksums.insert(format!("train_table_edges__{k}"), v.clone());
-                    }
-                }
+                merge_prefixed_checksums(&mut checksums, edge_bundle, "train_table_edges");
             }
 
             let mut manifest = serde_json::Map::new();
@@ -5078,7 +4977,7 @@ pub fn persist_tt_artifact_bundle(
             manifest.insert("row_count".to_string(), json!(row_count));
             manifest.insert(
                 "train_table".to_string(),
-                json!({"path": out, "format": "parquet_with_arange"}),
+                artifact_ref(&out, "parquet_with_arange"),
             );
             manifest.insert(
                 "split".to_string(),
@@ -5092,18 +4991,15 @@ pub fn persist_tt_artifact_bundle(
             );
             manifest.insert(
                 "stats".to_string(),
-                json!({"path": stats_path, "format": "tt_stats_json"}),
+                artifact_ref(&stats_path, "tt_stats_json"),
             );
             manifest.insert(
                 "split_stats".to_string(),
-                json!({"path": split_stats_path, "format": "tt_split_stats_json"}),
+                artifact_ref(&split_stats_path, "tt_split_stats_json"),
             );
             manifest.insert(
                 "train_table_col_stats".to_string(),
-                json!({
-                    "path": train_table_col_stats_path,
-                    "format": "tt_train_table_col_stats_json"
-                }),
+                artifact_ref(&train_table_col_stats_path, "tt_train_table_col_stats_json"),
             );
             if let Some(edge_bundle) = train_table_edges_value.as_ref() {
                 manifest.insert("train_table_edges".to_string(), edge_bundle.clone());
@@ -5113,8 +5009,7 @@ pub fn persist_tt_artifact_bundle(
             manifest.insert("producer_summary".to_string(), producer_summary_value);
             let manifest = Value::Object(manifest);
 
-            let mut f = File::create(&manifest_path)?;
-            f.write_all(serde_json::to_string(&manifest)?.as_bytes())?;
+            write_manifest_json(&manifest_path, &manifest)?;
 
             Ok((manifest_path, artifacts_dir))
         })
