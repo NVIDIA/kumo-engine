@@ -2,6 +2,7 @@
 
 pub mod coercion;
 pub mod col_stats;
+pub mod col_stats_export;
 pub mod config;
 pub mod config_converter;
 pub mod consts;
@@ -365,8 +366,8 @@ pub fn ingest_with_stats_from_source(
     // Write kumo-format edge stats if kumo metadata is available.
     if let Some(edge_stats_bytes) = ctx.build_edge_stats_json(&index_metadata)? {
         ctx.target
-            .write_bytes("edge_stats.json", edge_stats_bytes)?;
-        tracing::info!("wrote edge_stats.json");
+            .write_bytes(col_stats_export::EDGE_STATS_FILENAME, edge_stats_bytes)?;
+        tracing::info!("wrote {}", col_stats_export::EDGE_STATS_FILENAME);
     }
 
     let total_pk_drops: u64 = ctx.pk_duplicate_drops.values().sum();
@@ -2235,8 +2236,12 @@ impl IngestContext {
                 }
             }
             let mut root_map = serde_json::Map::new();
-            let kumo_stats_dir = root.join("kumo_col_stats").join("col_stats_full");
-            let kumo_stats_min_dir = root.join("kumo_col_stats").join("col_stats_min");
+            let kumo_stats_dir = root
+                .join(col_stats_export::COL_STATS_DIR)
+                .join(col_stats_export::COL_STATS_FULL);
+            let kumo_stats_min_dir = root
+                .join(col_stats_export::COL_STATS_DIR)
+                .join(col_stats_export::COL_STATS_MIN);
             std::fs::create_dir_all(&kumo_stats_dir)?;
             std::fs::create_dir_all(&kumo_stats_min_dir)?;
             for table in &tables {
