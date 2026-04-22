@@ -14,6 +14,7 @@ pub mod progress;
 pub mod scratch;
 pub mod stats;
 pub mod stats_publish;
+pub mod success_marker;
 #[cfg(test)]
 mod tests_unit;
 pub mod utils;

@@ -142,6 +142,7 @@ use diskgraph_engine::state::{SamplingState, StatePool};
 
 mod artifact_helpers;
 mod split_assignments;
+mod success_marker;
 mod tt_builder;
 mod tt_executor;
 
@@ -1044,6 +1045,9 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTimeUnit>()?;
     m.add_class::<DiskManager>()?;
     m.add_function(wrap_pyfunction!(estimate_ingest_size, m)?)?;
+    m.add_function(wrap_pyfunction!(success_marker::read_success_marker, m)?)?;
+    m.add_function(wrap_pyfunction!(success_marker::write_success_marker, m)?)?;
+    m.add_function(wrap_pyfunction!(success_marker::touch_success_marker, m)?)?;
     m.add_class::<SamplerEngine>()?;
     m.add_class::<PySampleIterator>()?;
     m.add_class::<tt_builder::DiskGraphTTBuilder>()?;

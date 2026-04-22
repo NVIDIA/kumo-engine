@@ -18,6 +18,9 @@ from ._c import (
     DiskgraphSystemError,
     DiskManager,
     estimate_ingest_size,
+    read_success_marker,
+    write_success_marker,
+    touch_success_marker,
 )
 
 # Lazy imports for modules that have external dependencies (kumoapi)
@@ -85,6 +88,9 @@ __all__ = [
     "DiskgraphSystemError",
     "DiskManager",
     "estimate_ingest_size",
+    "read_success_marker",
+    "write_success_marker",
+    "touch_success_marker",
     "DiskGraphPlanCompiler",
     "SplitSpec",
     "DiskgraphConfigConverter",

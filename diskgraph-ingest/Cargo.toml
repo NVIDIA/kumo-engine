@@ -13,6 +13,7 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "fs"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+filetime = "0.2"
 diskgraph-core = { path = "../diskgraph-core" }
 diskgraph-fs = { path = "../diskgraph-fs" }
 diskgraph-rowpack = { path = "../diskgraph-rowpack" }
@@ -51,9 +52,6 @@ ureq = "2"
 ratatui = "0.26"
 crossterm = "0.27"
 dirs = "5"
-
-[dev-dependencies]
-filetime = "0.2"
 
 [features]
 mem-profile = ["jemallocator", "jemalloc-ctl", "jemallocator/profiling"]
