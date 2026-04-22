@@ -132,6 +132,125 @@ def test_graph(tmp_path_factory):
     return _build_test_graph(root)
 
 
+def _build_filter_graph(root):
+    """Graph designed to exercise the LP orphan + temporal filter.
+
+    - products table: 3 products with staggered `added_date`
+        p_valid_early  (added 0)     — valid from start
+        p_valid_late   (added 4000)  — NOT valid at anchor=2000
+        p_deleted      (added 0, deleted 2000)  — NOT valid at anchor=2000
+      (No `p_orphan` in products — but orders reference it, so it's a
+      dangling FK that must be filtered regardless of temporal logic.)
+
+    - orders reference {p_valid_early, p_valid_late, p_deleted, p_orphan}
+      at various timestamps. `p_orphan` is not a real product.
+
+    With a single anchor at ts=2000 and target window [0, 3000]:
+      - Without filter: targets = {p_valid_early, p_valid_late, p_deleted, p_orphan}
+      - With filter (orphan only, no temporal):
+        targets = {p_valid_early, p_valid_late, p_deleted}  (p_orphan dropped)
+      - With filter (orphan + temporal):
+        targets = {p_valid_early}  (future + deleted + orphan dropped)
+    """
+    data_dir = root / "data"
+    data_dir.mkdir()
+    index_dir = root / "index"
+
+    users = pa.table({"user_id": pa.array(["alice"])})
+    pq.write_table(users, str(data_dir / "users.parquet"))
+
+    # Products with temporal metadata (create/end time as second-precision
+    # timestamps, matching the ingest's expectation for create_time columns).
+    ts_s = pa.timestamp("s")
+    products = pa.table({
+        "product_id": pa.array(["p_valid_early", "p_valid_late", "p_deleted"]),
+        "added_date":   pa.array([0,    4000, 0],    type=ts_s),
+        "deleted_date": pa.array([None, None, 2000], type=ts_s),
+    })
+    pq.write_table(products, str(data_dir / "products.parquet"))
+
+    # Orders reference all 4 products (including orphan p_orphan that is
+    # not in the products table). Timestamps at 1000-2500.
+    orders = pa.table({
+        "order_id":   pa.array(["o1", "o2", "o3", "o4"]),
+        "user_id":    pa.array(["alice"] * 4),
+        "product_id": pa.array(
+            ["p_valid_early", "p_valid_late", "p_deleted", "p_orphan"]
+        ),
+        "ts":         pa.array([1000, 1500, 2000, 2500], type=pa.int64()),
+    })
+    pq.write_table(orders, str(data_dir / "orders.parquet"))
+
+    config = {
+        "dataset_name": "test_materialize_filter",
+        "num_shards": 1,
+        "tables": [
+            {
+                "name": "users",
+                "columns": [{"name": "user_id", "ingested_dtype": "string"}],
+                "primary_key": "user_id",
+                "source": {"type": "parquet", "paths": [str(data_dir / "users.parquet")]},
+            },
+            {
+                "name": "products",
+                "columns": [
+                    {"name": "product_id", "ingested_dtype": "string"},
+                    {"name": "added_date", "ingested_dtype": "timestamp"},
+                    {"name": "deleted_date", "ingested_dtype": "timestamp"},
+                ],
+                "primary_key": "product_id",
+                "create_time": "added_date",
+                "end_time": "deleted_date",
+                "source": {"type": "parquet", "paths": [str(data_dir / "products.parquet")]},
+            },
+            {
+                "name": "orders",
+                "columns": [
+                    {"name": "order_id", "ingested_dtype": "string"},
+                    {"name": "user_id", "ingested_dtype": "string"},
+                    {"name": "product_id", "ingested_dtype": "string"},
+                    {"name": "ts", "ingested_dtype": "int64"},
+                ],
+                "primary_key": "order_id",
+                "fkeys": [
+                    {
+                        "src_column": "user_id",
+                        "dst_table": "users",
+                        "reverse": {"time": {"table": "orders", "column": "ts", "unit": "s"}},
+                    },
+                    {
+                        "src_column": "product_id",
+                        "dst_table": "products",
+                        "reverse": {"time": {"table": "orders", "column": "ts", "unit": "s"}},
+                    },
+                ],
+                "source": {"type": "parquet", "paths": [str(data_dir / "orders.parquet")]},
+            },
+        ],
+    }
+    config_path = root / "config.json"
+    with open(config_path, "w") as f:
+        json.dump(config, f)
+
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+    subprocess.run(
+        ["cargo", "run", "--release", "--bin", "ingest", "--",
+         "--source", str(config_path),
+         "--dest", "local",
+         "--output", str(index_dir)],
+        cwd=project_root,
+        check=True,
+        capture_output=True,
+    )
+    return str(index_dir)
+
+
+@pytest.fixture(scope="session")
+def filter_graph(tmp_path_factory):
+    root = tmp_path_factory.mktemp("materialize_filter_e2e")
+    return _build_filter_graph(root)
+
+
 # ---------------------------------------------------------------------------
 # Plan builder helpers
 # ---------------------------------------------------------------------------
@@ -202,6 +321,56 @@ def _ds_config(enabled=False, max_rows=999999):
         "list_distinct_target_is_array": False,
         "uses_arl_labels": False,
     })
+
+
+def _make_filter_plan(
+    timestamps,
+    target_entity_table=None,
+    window=(-5000, 5000),
+):
+    """Plan for filter_graph: LIST_DISTINCT(orders.product_id) for users.
+
+    target_entity_table=None disables orphan+temporal filtering.
+    target_entity_table="products" enables both (automatic temporal if
+    the products table has create_time_col / end_time_col).
+    """
+    plan = {
+        "entity": {
+            "table": "users", "column": "user_id",
+            "output_time_col_name": "TIMESTAMP",
+            "default_time_value": 0,
+            "time_col": None, "valid_to_col": None, "filter": None,
+        },
+        "temporal": {
+            "timestamps": timestamps,
+            "forecast_length": 1, "lag_timesteps": None,
+        },
+        "prediction_type": {
+            "link": {"explode": True, "include_frequency": True}
+        },
+        "split": None,
+        "stages": [{
+            "ops": [{
+                "aggregate": {
+                    "alias": "agg_1",
+                    "path": [{
+                        "src_table": "users", "src_col": "user_id",
+                        "dst_table": "orders", "dst_col": "user_id",
+                    }],
+                    "func": "list_distinct",
+                    "target_col": "product_id",
+                    "time_col": "ts",
+                    "window": list(window),
+                    "window_unit": "seconds",
+                    "row_filter": None,
+                    "limit": None,
+                    "target_entity_table": target_entity_table,
+                }
+            }],
+            "filter": None,
+        }],
+    }
+    return json.dumps(plan)
 
 
 # ---------------------------------------------------------------------------
@@ -548,4 +717,105 @@ class TestMaterializeParquetContract:
         arange = table.column("arange").to_pylist()
         assert arange == list(range(len(arange))), (
             f"arange must be 0..N-1 on final parquet; got {arange}"
+        )
+
+
+class TestLpRhsEntityTableFiltering:
+    """E2E: verify target_entity_table in the plan JSON drives the orphan
+    + temporal filter correctly on the executor.
+
+    The fixture `filter_graph` has:
+    - products: {p_valid_early, p_valid_late, p_deleted} with temporal cols
+    - orders referencing {p_valid_early, p_valid_late, p_deleted, p_orphan}
+    - anchor ts=2000
+    """
+
+    def _final_targets(self, output_path):
+        """Collect the set of target values from the final parquet."""
+        table = pq.read_table(output_path)
+        return set(table.column("TARGET").to_pylist())
+
+    def test_no_filter_keeps_all_referenced_products(self, filter_graph, tmp_path):
+        """Without target_entity_table: orphan + temporally invalid targets
+        both pass through (baseline — shows what the filter is catching)."""
+        output = str(tmp_path / "tt.parquet")
+        plan = _make_filter_plan(timestamps=[2000], target_entity_table=None)
+        execute_tt_plan_materialize_with_split(
+            plan_json=plan, index_path=filter_graph, output_path=output,
+            split_config_json=_fixed_split_config(),
+            split_family_hint="FixedSplit",
+            downsampling_config_json=_ds_config(enabled=False),
+        )
+        targets = self._final_targets(output)
+        # All 4 targets present including the orphan and the temporally-invalid
+        assert targets == {
+            "p_valid_early", "p_valid_late", "p_deleted", "p_orphan"
+        }, f"got {targets}"
+
+    def test_orphan_and_temporal_filter_drops_invalid_targets(
+        self, filter_graph, tmp_path
+    ):
+        """With target_entity_table='products' and create_time/end_time on
+        products: orphan + future + deleted targets all get dropped.
+
+        At anchor=2000:
+          - p_valid_early (added=0, no delete)    → KEEP
+          - p_valid_late  (added=4000)            → DROP (future)
+          - p_deleted     (added=0, deleted=2000) → DROP (deleted)
+          - p_orphan      (not in products)       → DROP (orphan)
+        """
+        output = str(tmp_path / "tt.parquet")
+        plan = _make_filter_plan(
+            timestamps=[2000], target_entity_table="products"
+        )
+        execute_tt_plan_materialize_with_split(
+            plan_json=plan, index_path=filter_graph, output_path=output,
+            split_config_json=_fixed_split_config(),
+            split_family_hint="FixedSplit",
+            downsampling_config_json=_ds_config(enabled=False),
+        )
+        targets = self._final_targets(output)
+        assert targets == {"p_valid_early"}, (
+            f"expected only temporally-valid non-orphan target; got {targets}"
+        )
+
+    def test_filter_config_error_on_missing_target_table(
+        self, filter_graph, tmp_path
+    ):
+        """target_entity_table pointing at a non-existent table must error
+        loudly (not silently disable the filter)."""
+        output = str(tmp_path / "tt.parquet")
+        plan = _make_filter_plan(
+            timestamps=[2000], target_entity_table="nonexistent_table"
+        )
+        with pytest.raises(Exception) as excinfo:
+            execute_tt_plan_materialize_with_split(
+                plan_json=plan, index_path=filter_graph, output_path=output,
+                split_config_json=_fixed_split_config(),
+                split_family_hint="FixedSplit",
+                downsampling_config_json=_ds_config(enabled=False),
+            )
+        assert "nonexistent_table" in str(excinfo.value)
+
+    def test_filter_active_at_later_anchor(self, filter_graph, tmp_path):
+        """At anchor=5000 (after p_valid_late is added, p_deleted is gone):
+          - p_valid_early → KEEP
+          - p_valid_late  (added=4000 <= 5000) → KEEP
+          - p_deleted     (deleted=2000 <= 5000) → still DROP
+          - p_orphan      → DROP
+        """
+        output = str(tmp_path / "tt.parquet")
+        # Broaden window to include all orders at this later anchor
+        plan = _make_filter_plan(
+            timestamps=[5000], target_entity_table="products",
+        )
+        execute_tt_plan_materialize_with_split(
+            plan_json=plan, index_path=filter_graph, output_path=output,
+            split_config_json=_fixed_split_config(),
+            split_family_hint="FixedSplit",
+            downsampling_config_json=_ds_config(enabled=False),
+        )
+        targets = self._final_targets(output)
+        assert targets == {"p_valid_early", "p_valid_late"}, (
+            f"expected valid + now-created targets; got {targets}"
         )

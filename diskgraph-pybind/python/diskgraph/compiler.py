@@ -48,7 +48,7 @@ class DiskGraphPlanCompiler:
         self.builder = builder or DiskGraphTTBuilder()
         self._alias_counter = 0
         self._is_link_pred: bool = False
-        self._target_entity_table: Optional[str] = None
+        self._lp_rhs_entity_table: Optional[str] = None
 
     def _next_alias(self, prefix: str) -> str:
         self._alias_counter += 1
@@ -113,7 +113,6 @@ class DiskGraphPlanCompiler:
         lag_offsets_secs: Optional[List[int]] = None,
         yoy_offsets_secs: Optional[List[int]] = None,
         split: Optional[SplitSpec] = None,
-        target_entity_table: Optional[str] = None,
     ) -> str:
         """
         Build the DiskGraph execution plan.
@@ -132,8 +131,12 @@ class DiskGraphPlanCompiler:
             timestamp_unit: The target TimeUnit expected by the engine (defaults to Seconds).
             is_prediction: Whether this plan is for generating a batch prediction table.
             lp_prediction_mode: 'LHS' or 'RHS'. When set, emits a pass-through plan for Link Prediction candidates.
-            lp_rhs_entity_table: The explicitly resolved Target Node Table (used when lp_prediction_mode == 'RHS').
-            lp_rhs_entity_column: The explicitly resolved Target Node PK (used when lp_prediction_mode == 'RHS').
+            lp_rhs_entity_table: The LP RHS entity table name. Two uses:
+                - When lp_prediction_mode == 'RHS': identifies the entity table
+                  for RHS candidate extraction (BP flow).
+                - When is_link_pred and not is_prediction (TT-gen LP): drives the
+                  orphan + temporal filter on ListDistinct targets.
+            lp_rhs_entity_column: The LP RHS entity PK column (used when lp_prediction_mode == 'RHS').
             lag_offsets_secs: Optional lag offsets to be used in bp forecasting task.
             yoy_offsets_secs: Optional yoy offsets to be used in bp forecasting task.
             split: Optional canonical SplitSpec. Legacy dict payloads are not supported.
@@ -150,7 +153,7 @@ class DiskGraphPlanCompiler:
         # 2. Prediction Type detection
         is_link_pred = task_type in LINK_PRED_TASKS
         self._is_link_pred = is_link_pred
-        self._target_entity_table = target_entity_table
+        self._lp_rhs_entity_table = lp_rhs_entity_table
 
         # 3. Entity Spec
         target_for_type = query.get_final_target_aggregation()
@@ -578,8 +581,10 @@ class DiskGraphPlanCompiler:
             # NOTE: limit stays None for training table generation.
             # top_k from PQL is only used at ML prediction time, not here.
 
-            # Orphan filter: target_entity_table is resolved by the caller
-            # (kumo) from the graph schema and passed through compile().
+            # Orphan + temporal filter: lp_rhs_entity_table is resolved by
+            # the caller (kumo) from the graph schema and passed through
+            # compile(). Used during LP TT-gen to filter LIST_DISTINCT
+            # targets against the destination table's PK map + temporal cols.
             # NOTE: AggregationType.LIST_DISTINCT.value is uppercase
             # ("LIST_DISTINCT"); compare case-insensitively since the Rust
             # parser lowercases func anyway.
@@ -589,7 +594,7 @@ class DiskGraphPlanCompiler:
                 and self._is_link_pred
                 and isinstance(leaf, Column)
             ):
-                target_entity_table = self._target_entity_table
+                target_entity_table = self._lp_rhs_entity_table
 
             self.builder.aggregate(
                 alias=alias,
