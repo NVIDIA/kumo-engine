@@ -9,6 +9,7 @@ pub mod disk_manager;
 pub mod errors;
 pub mod graph_config;
 pub mod io;
+pub mod index_metadata;
 mod mapping;
 pub mod progress;
 pub mod scratch;
