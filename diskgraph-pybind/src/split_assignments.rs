@@ -282,7 +282,7 @@ pub fn assign_approx_date_offset_split(
     }
 
     let mut groups: Vec<(i64, usize)> = counts.into_iter().collect();
-    groups.sort_by(|a, b| a.0.cmp(&b.0));
+    groups.sort_by_key(|group| group.0);
 
     let total_rows: usize = groups.iter().map(|(_, c)| *c).sum();
     if total_rows == 0 {

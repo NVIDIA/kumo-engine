@@ -1104,11 +1104,7 @@ fn int_bits(min: i64, max: i64) -> u8 {
 }
 
 fn avg_len(total: usize, count: usize) -> usize {
-    if count == 0 {
-        0
-    } else {
-        total / count
-    }
+    total.checked_div(count).unwrap_or(0)
 }
 
 pub(crate) fn decimal_raw_bytes(precision: u32) -> Result<u8> {
@@ -1633,11 +1629,7 @@ fn choose_float_storage(is_f64: bool) -> FloatStorage {
 
 fn choose_string_encoding(stats: &ColumnStats, config: &RowPackConfig) -> Result<StringEncoding> {
     let total = stats.string_total.max(1) as f32;
-    let avg_len = if stats.string_total == 0 {
-        0
-    } else {
-        stats.string_bytes / stats.string_total
-    };
+    let avg_len = stats.string_bytes.checked_div(stats.string_total).unwrap_or(0);
     let bpe_allowed = avg_len >= config.bpe_min_avg_len() && avg_len < config.string_long_min_len();
     if stats.alphabet_ok && stats.alphabet_len > 1 {
         let coverage_ratio = stats.alphabet_hits as f32 / total;
@@ -1688,7 +1680,7 @@ fn choose_string_encoding(stats: &ColumnStats, config: &RowPackConfig) -> Result
             .iter()
             .map(|(k, v)| (k.clone(), *v))
             .collect();
-        entries.sort_by(|a, b| b.1.cmp(&a.1));
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.1));
         let mut values = Vec::new();
         let mut bytes = 0usize;
         let mut coverage = 0usize;
@@ -1804,7 +1796,7 @@ pub(crate) fn train_bpe_dict(
         }
     }
     let mut entries: Vec<(Vec<u8>, usize)> = dict_entries.into_iter().zip(dict_counts).collect();
-    entries.sort_by(|a, b| b.1.cmp(&a.1));
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     entries.into_iter().map(|(bytes, _)| bytes).collect()
 }
 

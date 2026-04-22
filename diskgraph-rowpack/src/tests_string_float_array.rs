@@ -55,8 +55,8 @@ fn test_parse_scientific_notation() {
         crate::access::parse_string_as_float32_array("[-1.926282793283463e-01, 5.763512849807739e-01]");
     let v = result.unwrap();
     assert_eq!(v.len(), 2);
-    assert!((v[0] - (-0.1926282793283463f32)).abs() < 1e-6);
-    assert!((v[1] - 0.5763512849807739f32).abs() < 1e-6);
+    assert!((v[0] - (-0.192_628_28_f32)).abs() < 1e-6);
+    assert!((v[1] - 0.576_351_3_f32).abs() < 1e-6);
 }
 
 #[test]

@@ -335,14 +335,14 @@ pub fn resolve_plan(
     if matches!(plan.prediction_type, PredictionType::Forecasting) {
         if let Some(idx) = alias_to_idx.get("AUTOREGRESSION_COL") {
             autoregression_alias_idx = Some(*idx);
-            autoregression_dtype = Some(infer_op_dtype(&plan.stages.iter().flat_map(|s| &s.ops).find(|op| match op {
+            autoregression_dtype = Some(infer_op_dtype(plan.stages.iter().flat_map(|s| &s.ops).find(|op| match op {
                 Op::Autoregression { alias, .. } => alias == "AUTOREGRESSION_COL",
                 _ => false,
             }).unwrap(), &resolved_stages));
         }
         if let Some(idx) = alias_to_idx.get("YOY_COL") {
             yoy_alias_idx = Some(*idx);
-            yoy_dtype = Some(infer_op_dtype(&plan.stages.iter().flat_map(|s| &s.ops).find(|op| match op {
+            yoy_dtype = Some(infer_op_dtype(plan.stages.iter().flat_map(|s| &s.ops).find(|op| match op {
                 Op::Autoregression { alias, .. } => alias == "YOY_COL",
                 _ => false,
             }).unwrap(), &resolved_stages));
@@ -775,7 +775,7 @@ fn resolve_path(
         let encoder = relation_meta
             .dest_sort_key
             .as_ref()
-            .map(|meta| SortKeyEncoder::new(meta));
+            .map(SortKeyEncoder::new);
 
         resolved.push(ResolvedEdge {
             src_table,
@@ -788,6 +788,7 @@ fn resolve_path(
     Ok(resolved)
 }
 
+#[allow(clippy::only_used_in_recursion)]
 fn resolve_row_filter(
     filter: &RowFilter,
     reader: &GraphIndexReader,
@@ -862,6 +863,7 @@ fn resolve_row_filter(
     }
 }
 
+#[allow(clippy::only_used_in_recursion)]
 fn resolve_stage_filter(
     filter: &StageFilter,
     reader: &GraphIndexReader,
@@ -940,8 +942,8 @@ fn resolve_stage_filter(
 /// Matching strategy:
 /// 1. Construct the expected relation name from EdgeRef columns
 ///    (FK forward: `{src}_{src_col}_to_{dst}_{dst_col}`,
-///     FK reverse: `...._reverse`,
-///     edge table: `edge_{table}_src_to_dst` / `edge_{table}_dst_to_src`).
+///    FK reverse: `...._reverse`,
+///    edge table: `edge_{table}_src_to_dst` / `edge_{table}_dst_to_src`).
 /// 2. Try exact name match.
 /// 3. Fall back to matching on dst_type alone (requires exactly one match).
 fn find_relation<'a>(
@@ -996,7 +998,7 @@ fn find_relation<'a>(
         }
     }
 
-    return Err(TTGenError::InvalidPlan(format!(
+    Err(TTGenError::InvalidPlan(format!(
         "ambiguous: {} relations from '{}' to '{}', none match columns '{}.{}'. \
          Relation names: [{}]",
         candidates.len(),
@@ -1005,7 +1007,7 @@ fn find_relation<'a>(
         edge_ref.src_col,
         edge_ref.dst_col,
         candidates.iter().map(|(_, r)| r.name.as_str()).collect::<Vec<_>>().join(", "),
-    )));
+    )))
 }
 
 /// Infer the Arrow DataType for the TARGET column.
@@ -1035,8 +1037,10 @@ fn infer_op_dtype(op: &Op, stages: &[ResolvedStage]) -> DataType {
     match op {
         Op::Compare { .. } | Op::LogicalOp { .. } => DataType::Boolean,
         // COUNT/COUNT_DISTINCT always produce integer counts.
-        Op::Aggregate { func, .. }
-            if matches!(func, AggFunc::Count | AggFunc::CountDistinct) =>
+        Op::Aggregate {
+            func: AggFunc::Count | AggFunc::CountDistinct,
+            ..
+        } =>
         {
             DataType::Int64
         }
@@ -1048,8 +1052,10 @@ fn infer_op_dtype(op: &Op, stages: &[ResolvedStage]) -> DataType {
         },
 
         // FIRST/LAST preserve the source column's dtype (e.g. FIRST of string → Utf8).
-        Op::Aggregate { func, .. }
-            if matches!(func, AggFunc::First | AggFunc::Last) =>
+        Op::Aggregate {
+            func: AggFunc::First | AggFunc::Last,
+            ..
+        } =>
         {
             lookup_last_agg_col_dtype(stages).unwrap_or(DataType::Float64)
         }

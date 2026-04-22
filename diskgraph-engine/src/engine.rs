@@ -246,6 +246,7 @@ impl DiskGraphEngine {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         readers_map: HashMap<String, Vec<ShardHandle>>,
         relation_info_map: HashMap<usize, (String, String, String)>,
@@ -936,6 +937,7 @@ impl DiskGraphEngine {
 
 
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     fn sample_segment_edges(
         &self,
         node: &NodeRecord,
@@ -981,9 +983,13 @@ impl DiskGraphEngine {
                         break;
                     }
 
-                    for i in 0..unpacked {
+                    for (&dst_global_id, &sort_key) in dst_scratch
+                        .iter()
+                        .zip(key_scratch.iter())
+                        .take(unpacked)
+                    {
                         if let (Some(dec), Some(anch)) = (decoder, anchor) {
-                            let (edge_ts, _) = dec.decode(key_scratch[i]);
+                            let (edge_ts, _) = dec.decode(sort_key);
                             if let Some(ts) = edge_ts {
                                 if ts > anch {
                                     continue;
@@ -991,7 +997,7 @@ impl DiskGraphEngine {
                             }
                         }
 
-                        on_edge(dst_scratch[i])?;
+                        on_edge(dst_global_id)?;
                         n += 1;
                         if n >= k {
                             break;
@@ -1012,8 +1018,8 @@ impl DiskGraphEngine {
                         if unpacked == 0 {
                             break;
                         }
-                        for i in 0..unpacked {
-                            on_edge(dst_scratch[i])?;
+                        for &dst_global_id in dst_scratch.iter().take(unpacked) {
+                            on_edge(dst_global_id)?;
                         }
                     }
                 } else {
@@ -1263,7 +1269,7 @@ impl DiskGraphEngine {
                     self.sample_segment_edges(
                         node,
                         rel_id,
-                        &segment,
+                        segment,
                         fanout_spec,
                         request,
                         &mut dst_scratch,

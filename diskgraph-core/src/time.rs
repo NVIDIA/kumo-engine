@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TimeUnit {
+    #[default]
     Seconds,
     Milliseconds,
     Microseconds,
@@ -13,12 +14,6 @@ pub enum TimeUnit {
     Weeks,
     Months,
     Years,
-}
-
-impl Default for TimeUnit {
-    fn default() -> Self {
-        Self::Seconds
-    }
 }
 
 impl TimeUnit {

@@ -96,8 +96,8 @@ mod tests {
 
     #[test]
     fn test_sum() {
-        let acc = Accumulator::Sum(3.14);
-        assert_eq!(acc.finalize(), Some(Value::Float(3.14)));
+        let acc = Accumulator::Sum(std::f64::consts::PI);
+        assert_eq!(acc.finalize(), Some(Value::Float(std::f64::consts::PI)));
     }
 
     #[test]
@@ -222,7 +222,7 @@ mod tests {
     #[test]
     fn test_list_distinct_with_limit() {
         let mut set = HashSet::new();
-        let vals: Vec<Value> = (0..5).map(|i| Value::Int(i)).collect();
+        let vals: Vec<Value> = (0..5).map(Value::Int).collect();
         for v in &vals {
             set.insert(hash_value(v));
         }
@@ -241,8 +241,8 @@ mod tests {
 
     #[test]
     fn test_first_with_float() {
-        let acc = Accumulator::First(Some(Value::Float(3.14)));
-        assert_eq!(acc.finalize(), Some(Value::Float(3.14)));
+        let acc = Accumulator::First(Some(Value::Float(std::f64::consts::PI)));
+        assert_eq!(acc.finalize(), Some(Value::Float(std::f64::consts::PI)));
     }
 
     #[test]

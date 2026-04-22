@@ -1,3 +1,9 @@
+#![allow(
+    clippy::manual_inspect,
+    clippy::manual_is_multiple_of,
+    clippy::too_many_arguments
+)]
+
 use arrow::pyarrow::ToPyArrow;
 use arrow_array::builder::{ArrayBuilder, UInt64Builder};
 use arrow_array::{Array, RecordBatch};

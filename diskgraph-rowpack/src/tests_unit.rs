@@ -1621,7 +1621,7 @@ fn int32_epoch_without_format_hint() {
 #[test]
 fn int64_epoch_millis_without_format_hint() {
     // Int64 with unit=Millisecond and no format → divide by 1000
-    let epoch_ms = 1709251200_000i64;
+    let epoch_ms = 1_709_251_200_000_i64;
     let arr: ArrayRef = Arc::new(arrow_array::Int64Array::from(vec![epoch_ms]));
     let secs = get_timestamp_from_array(arr, None, Some(arrow_schema::TimeUnit::Millisecond))
         .unwrap()

@@ -43,7 +43,7 @@ pub(crate) fn truncate_counts(
             .filter(|(_, &c)| c > 0)
             .map(|(i, &c)| (i, c))
             .collect();
-        items.sort_by(|a, b| b.1.cmp(&a.1));
+        items.sort_by_key(|item| std::cmp::Reverse(item.1));
 
         if items.is_empty() {
             return Err(IndexBuildError::OffsetDeltaOverflow);

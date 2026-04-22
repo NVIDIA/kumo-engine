@@ -503,7 +503,7 @@ fn test_sampling_determinism() {
         },
     };
     graph_diff.sampler.sample(&req_diff, &mut state, &mut output).unwrap();
-    let mut diff_globals: Vec<_> = state.type_states[&0].nodes.iter().skip(1).map(|n| n.global_id).collect();
+    let diff_globals: Vec<_> = state.type_states[&0].nodes.iter().skip(1).map(|n| n.global_id).collect();
 
     assert_ne!(first_sampled_globals, diff_globals, "Sampling should produce different results with different seeds");
 }
@@ -753,7 +753,7 @@ fn write_minimal_shard(shard_dir: &std::path::Path) {
     f.write_all(&offsets).unwrap();
     f.flush().unwrap();
 
-    assert_eq!(edges_len as u64, node_len as u64);
+    assert_eq!(edges_len, node_len as u64);
 }
 
 #[test]

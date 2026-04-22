@@ -451,10 +451,11 @@ fn read_int_value(array: &dyn arrow_array::Array, row: usize) -> Option<i64> {
         Some(a.value(row) as i64)
     } else if let Some(a) = array.as_any().downcast_ref::<UInt16Array>() {
         Some(a.value(row) as i64)
-    } else if let Some(a) = array.as_any().downcast_ref::<UInt8Array>() {
-        Some(a.value(row) as i64)
     } else {
-        None
+        array
+            .as_any()
+            .downcast_ref::<UInt8Array>()
+            .map(|a| a.value(row) as i64)
     }
 }
 
@@ -579,7 +580,7 @@ fn compute_cloud_dir_bytes(transfer: &CloudTransfer, path: &str) -> Result<u64> 
         .enable_all()
         .build()?;
     let objects = rt.block_on(transfer.list_objects(&prefix))?;
-    Ok(objects.iter().map(|o| o.size as u64).sum())
+    Ok(objects.iter().map(|o| o.size).sum())
 }
 
 /// Estimate the optimal number of shards based on total dataset size.
@@ -719,7 +720,7 @@ mod tests {
         // Case: 40GB total (Start of medium range)
         // Divisor starts at 4.0. Target = 4GB/4 = 1GB.
         let target_40gb = smooth_shard_target(per_cpu, 40 * GB);
-        assert_eq!(target_40gb, 1 * GB);
+        assert_eq!(target_40gb, GB);
 
         // Case: 1TB total (End of medium range)
         // Divisor ends at 1.0. Target = 4GB/1 = 4GB.
@@ -767,7 +768,7 @@ mod tests {
 
         // Range 1: Small to Medium (< 1TB)
         let mut prev_target = 0;
-        let mut bytes = 1 * GB;
+        let mut bytes = GB;
         while bytes < 1_000 * GB {
             let target = smooth_shard_target(per_cpu, bytes);
             assert!(

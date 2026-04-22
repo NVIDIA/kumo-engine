@@ -1995,7 +1995,7 @@ impl<'p> RowAccess<'p> {
                 // Upper: i32 seconds overflow (~2038-01-19 = day 24855)
                 // Sort keys use i32 epoch seconds; days beyond 24855 overflow.
                 // Matches Spark's cast_spark_df which nulls out-of-range dates.
-                if days < -106752 || days > 24855 {
+                if !(-106752..=24855).contains(&days) {
                     return Err(anyhow!("date out of range: day {days}"));
                 }
                 // Convert days since epoch to seconds since epoch

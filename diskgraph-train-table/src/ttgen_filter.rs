@@ -242,8 +242,16 @@ mod tests {
 
     #[test]
     fn test_compare_float() {
-        assert!(compare_values(&Value::Float(3.14), &CompareOp::Gt, &Value::Float(2.71)));
-        assert!(compare_values(&Value::Float(2.71), &CompareOp::Lt, &Value::Float(3.14)));
+        assert!(compare_values(
+            &Value::Float(std::f64::consts::PI),
+            &CompareOp::Gt,
+            &Value::Float(std::f64::consts::E)
+        ));
+        assert!(compare_values(
+            &Value::Float(std::f64::consts::E),
+            &CompareOp::Lt,
+            &Value::Float(std::f64::consts::PI)
+        ));
     }
 
     #[test]

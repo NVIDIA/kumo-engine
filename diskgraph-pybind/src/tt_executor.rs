@@ -2,6 +2,17 @@
 //!
 //! Exposes [`execute_tt_plan`] as a `#[pyfunction]` that returns a
 //! `TTPlanIterator` yielding `pyarrow.RecordBatch` objects one at a time.
+#![allow(
+    clippy::inconsistent_digit_grouping,
+    clippy::manual_contains,
+    clippy::needless_late_init,
+    clippy::needless_question_mark,
+    clippy::needless_range_loop,
+    clippy::redundant_closure,
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    clippy::while_let_on_iterator
+)]
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
@@ -33,13 +44,14 @@ use arrow_array::builder::{
     BooleanBuilder, Float64Builder, Int64Builder, ListBuilder, StringBuilder,
     TimestampNanosecondBuilder,
 };
-use arrow_array::types::Int64Type;
 use arrow_array::{
     Array, BooleanArray, Date32Array, Date64Array, Float32Array, Float64Array, Int16Array,
     Int32Array, Int64Array, Int8Array, LargeListArray, LargeStringArray, ListArray, RecordBatch,
     StringArray, TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
     TimestampSecondArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
 };
+#[cfg(test)]
+use arrow_array::types::Int64Type;
 use arrow_schema::{DataType, Field, Schema};
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use crossbeam_channel::Receiver;
@@ -99,7 +111,7 @@ impl Drop for TTPlanIterator {
         // pyo3-log and needs the GIL. Drop is called with GIL held (Python GC),
         // so we must release it before joining.
         if let Some(handle) = self.handle.take() {
-            let _ = pyo3::Python::with_gil(|py| py.detach(|| handle.join()));
+            let _ = pyo3::Python::attach(|py| py.detach(|| handle.join()));
         }
     }
 }
@@ -365,6 +377,7 @@ fn append_arange_column(batch: RecordBatch, row_offset: i64) -> anyhow::Result<R
 
 /// Distribute `total` items into `buckets` using largest-remainder method.
 /// Guarantees the result sums to exactly `total`.
+#[allow(dead_code)]
 fn largest_remainder_distribute(total: u64, buckets: usize) -> Vec<u64> {
     if buckets == 0 {
         return Vec::new();
@@ -474,6 +487,7 @@ fn write_batches_with_arange(
     Ok(row_offset as u64)
 }
 
+#[allow(dead_code)]
 fn materialize_selected_batches(
     batches: &[RecordBatch],
     selected_global_indices: Option<&[usize]>,
@@ -634,7 +648,6 @@ fn read_scratch_filtered(
                 out.push(to_push);
             } else {
                 // Truncate final batch to not exceed max_rows
-                total_kept += remaining;
                 out.push(to_push.slice(0, remaining));
                 break;
             }
@@ -1455,6 +1468,7 @@ fn extract_entity_strings(batch: &RecordBatch) -> anyhow::Result<Vec<String>> {
     extract_string_values(batch, "ENTITY")
 }
 
+#[allow(dead_code)]
 fn downsample_indices_legacy(
     cfg: &DownsamplingConfigNative,
     entities: &[String],
@@ -2369,6 +2383,7 @@ fn kumo_entry(value: Value, approx: bool, data_version: &str, num_entries: u64) 
     json!({"value": value, "approx": approx, "data_version": data_version, "num_entries": num_entries})
 }
 
+#[allow(dead_code)]
 fn observe_numeric_array_for_train_rows(
     arr: &dyn Array,
     assignment_slice: &[u8],
@@ -2488,6 +2503,7 @@ fn observe_numeric_array_all_rows(
     ))
 }
 
+#[allow(dead_code)]
 fn observe_category_array_for_train_rows(
     arr: &dyn Array,
     assignment_slice: &[u8],
@@ -2641,6 +2657,7 @@ fn observe_category_array_all_rows(
     ))
 }
 
+#[allow(dead_code)]
 fn observe_multicategory_array_for_train_rows(
     arr: &dyn Array,
     assignment_slice: &[u8],
@@ -2800,6 +2817,7 @@ fn observe_multicategory_array_all_rows(
     ))
 }
 
+#[allow(dead_code)]
 fn observe_sequence_array_for_train_rows(
     arr: &dyn Array,
     assignment_slice: &[u8],
@@ -2909,6 +2927,7 @@ fn observe_sequence_array_all_rows(
     ))
 }
 
+#[allow(dead_code)]
 fn observe_text_array_for_train_rows(
     arr: &dyn Array,
     assignment_slice: &[u8],

@@ -1312,7 +1312,7 @@ impl FileColStats {
                     if let JsonValue::Object(ref mut obj) = val {
                         let is_int = ingested_types
                             .get(col_idx)
-                            .map_or(false, |t| t.is_integer_like());
+                            .is_some_and(|t| t.is_integer_like());
                         let json_counts: Vec<JsonValue> = cc
                             .iter()
                             .map(|(k, v)| {
@@ -1731,7 +1731,7 @@ fn build_cat_count_json(
     };
     let ingested_type = ingested_types.get(col_idx);
     let is_bool = matches!(ingested_type, Some(IngestedType::Bool));
-    let is_int = ingested_type.map_or(false, |t| t.is_integer_like()) && !is_bool;
+    let is_int = ingested_type.is_some_and(|t| t.is_integer_like()) && !is_bool;
     let is_float = matches!(
         ingested_type,
         Some(IngestedType::Float32) | Some(IngestedType::Float64)
@@ -1753,7 +1753,7 @@ fn build_cat_count_json(
             } else if is_float {
                 k.parse::<f64>()
                     .ok()
-                    .and_then(|n| serde_json::Number::from_f64(n))
+                    .and_then(serde_json::Number::from_f64)
                     .map(JsonValue::Number)
                     .unwrap_or_else(|| JsonValue::String(k.clone()))
             } else {
@@ -2976,7 +2976,7 @@ mod tests {
         ] {
             let entry = map.get(qkey).unwrap_or_else(|| panic!("missing {qkey}"));
             let v = entry["value"].as_f64().unwrap();
-            assert!(v >= 10.0 && v <= 30.0, "{qkey} value {v} out of [10,30]");
+            assert!((10.0..=30.0).contains(&v), "{qkey} value {v} out of [10,30]");
             assert_eq!(entry["data_version"], json!("v42"));
         }
         {
@@ -2985,7 +2985,7 @@ mod tests {
             assert_eq!(arr.len(), 3);
             for v in arr {
                 let f = v.as_f64().unwrap();
-                assert!(f >= 10.0 && f <= 30.0, "quantile {f} out of range");
+                assert!((10.0..=30.0).contains(&f), "quantile {f} out of range");
             }
             // Monotonicity: q25 <= median <= q75
             assert!(arr[0].as_f64().unwrap() <= arr[1].as_f64().unwrap());
@@ -2995,7 +2995,7 @@ mod tests {
         {
             let nu = map.get("age__kumo.numerical__NUM_UNIQUE__False").unwrap();
             let v = nu["value"].as_u64().unwrap();
-            assert!(v >= 2 && v <= 4, "NUM_UNIQUE should be ~3, got {v}");
+            assert!((2..=4).contains(&v), "NUM_UNIQUE should be ~3, got {v}");
         }
         {
             let uf = map.get("age__kumo.numerical__UNIQUE_FRACTION__False").unwrap();
@@ -3013,7 +3013,7 @@ mod tests {
         {
             let nu = map.get("status__kumo.categorical__NUM_UNIQUE__False").unwrap();
             let v = nu["value"].as_u64().unwrap();
-            assert!(v >= 1 && v <= 4, "status NUM_UNIQUE should be ~2, got {v}");
+            assert!((1..=4).contains(&v), "status NUM_UNIQUE should be ~2, got {v}");
         }
 
         // ---- Id: user_id ----
@@ -3026,7 +3026,7 @@ mod tests {
         {
             let nu = map.get("user_id__kumo.ID__NUM_UNIQUE__False").unwrap();
             let v = nu["value"].as_u64().unwrap();
-            assert!(v >= 1 && v <= 2, "user_id NUM_UNIQUE should be ~2, got {v}");
+            assert!((1..=2).contains(&v), "user_id NUM_UNIQUE should be ~2, got {v}");
         }
 
         // ---- Text: bio ----
@@ -3042,7 +3042,7 @@ mod tests {
         {
             let nu = map.get("bio__kumo.text__NUM_UNIQUE__False").unwrap();
             let v = nu["value"].as_u64().unwrap();
-            assert!(v >= 1 && v <= 3, "bio NUM_UNIQUE should be ~2, got {v}");
+            assert!((1..=3).contains(&v), "bio NUM_UNIQUE should be ~2, got {v}");
         }
 
         // ---- Timestamp: created_at ----

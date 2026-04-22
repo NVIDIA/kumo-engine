@@ -1703,7 +1703,7 @@ fn sort_edge_ranges_by_sort_key(records: &mut [EdgeRecord]) {
             end += 1;
         }
         if end - start > 1 {
-            records[start..end].sort_unstable_by(|a, b| b.sort_key.cmp(&a.sort_key));
+            records[start..end].sort_unstable_by_key(|record| std::cmp::Reverse(record.sort_key));
         }
         start = end;
     }

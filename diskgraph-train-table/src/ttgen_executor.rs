@@ -271,7 +271,7 @@ fn execute_chunk(
 fn execute_entity(
     plan: &ResolvedPlan,
     entity_node: u64,
-    aliases: &mut Vec<Option<Value>>,
+    aliases: &mut [Option<Value>],
     link_frequencies: &mut Vec<i64>,
     writer: &mut ChannelBatchWriter,
     stats: &mut ChunkStats,
@@ -368,8 +368,7 @@ fn execute_entity(
     };
 
     // 5. Iterate valid timestamps
-    for ts_idx in first_valid..last_valid {
-        let ts = timestamps[ts_idx];
+    for &ts in timestamps.iter().take(last_valid).skip(first_valid) {
 
         // Execute all stages for this (entity, timestamp)
         link_frequencies.clear();
@@ -401,6 +400,7 @@ fn execute_entity(
 }
 
 /// Write the target value(s) for one (entity, timestamp) pair.
+#[allow(clippy::too_many_arguments)]
 fn write_target(
     plan: &ResolvedPlan,
     entity_pk: &Value,
@@ -660,10 +660,9 @@ fn execute_stages(
                     match cmp.op {
                         CompareOp::IsNull => Some(Value::Bool(l_opt.is_none())),
                         CompareOp::IsNotNull => Some(Value::Bool(l_opt.is_some())),
-                        _ => match l_opt {
-                            Some(lhs) => Some(Value::Bool(compare_values(lhs, &cmp.op, &cmp.rhs))),
-                            None => None,
-                        },
+                        _ => l_opt
+                            .as_ref()
+                            .map(|lhs| Value::Bool(compare_values(lhs, &cmp.op, &cmp.rhs))),
                     }
                 }
                 ResolvedOp::LogicalOp(lop) => {

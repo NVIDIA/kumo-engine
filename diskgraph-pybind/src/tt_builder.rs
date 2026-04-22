@@ -410,6 +410,7 @@ impl DiskGraphTTBuilder {
         manual_val_values=None,
         manual_test_values=None
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn split_ratio(
         &mut self,
         ratio: Option<Vec<f64>>,

@@ -167,6 +167,7 @@ impl StatsMerger {
         self.include_false_count += chunk.include_false_count;
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn finalize(
         self,
         num_total_rows: u64,
@@ -335,6 +336,7 @@ fn build_split_artifacts_v3(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn derive_split_mask_counts(
     num_total_rows: u64,
     split_ratio: Option<&[f64]>,
@@ -546,7 +548,7 @@ fn derive_ratio_mask_counts(
         }
     }
 
-    let train = sizes.get(0).copied().unwrap_or(0) as u64;
+    let train = sizes.first().copied().unwrap_or(0) as u64;
     let val = sizes.get(1).copied().unwrap_or(0) as u64;
     let test = sizes.get(2).copied().unwrap_or(0) as u64;
     Some(TrainTableSplitMaskCounts { train, val, test })
@@ -632,7 +634,7 @@ fn derive_approx_date_offset_timestamp_stage_assignments(
         .iter()
         .map(|(ts, c)| (*ts, *c))
         .collect();
-    latest_to_earliest.sort_by(|a, b| b.0.cmp(&a.0));
+    latest_to_earliest.sort_by_key(|entry| std::cmp::Reverse(entry.0));
 
     let earliest_to_latest: Vec<(i64, u64)> = latest_to_earliest.into_iter().rev().collect();
     let counts_only: Vec<u64> = earliest_to_latest.iter().map(|(_, c)| *c).collect();
@@ -669,9 +671,7 @@ fn derive_approx_date_offset_timestamp_stage_assignments(
     for (i, (ts, _)) in earliest_to_latest.into_iter().enumerate() {
         let stage = if i <= train_val_index {
             stage_name(0)
-        } else if num_split == 2 {
-            stage_name(1)
-        } else if i <= val_test_index.unwrap_or(i) {
+        } else if num_split == 2 || i <= val_test_index.unwrap_or(i) {
             stage_name(1)
         } else {
             stage_name(2)
@@ -805,9 +805,11 @@ mod tests {
     #[test]
     fn test_finalize_contains_exact_stats_payload() {
         let mut merger = StatsMerger::default();
-        let mut chunk = ChunkStats::default();
-        chunk.num_train_rows = 3;
-        chunk.num_links = 2;
+        let mut chunk = ChunkStats {
+            num_train_rows: 3,
+            num_links: 2,
+            ..Default::default()
+        };
         chunk.entities.insert(10);
         chunk.entities.insert(20);
         chunk.targets.insert(100);
@@ -964,8 +966,10 @@ mod tests {
     #[test]
     fn test_finalize_fixed_split_counts_match_largest_remainder() {
         let mut merger = StatsMerger::default();
-        let mut chunk = ChunkStats::default();
-        chunk.num_train_rows = 10;
+        let chunk = ChunkStats {
+            num_train_rows: 10,
+            ..Default::default()
+        };
         merger.merge(chunk);
 
         let out = merger.finalize(

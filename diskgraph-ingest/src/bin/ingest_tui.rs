@@ -522,15 +522,13 @@ fn handle_key(key: KeyEvent, store: &StatsStore, args: &Args, app: &mut AppState
         }
         Mode::ProfileView => {
             match key.code {
-                KeyCode::Left | KeyCode::Char('h') => {
-                    if app.profile_tab_index > 0 {
-                        app.profile_tab_index -= 1;
-                    }
+                KeyCode::Left | KeyCode::Char('h') if app.profile_tab_index > 0 => {
+                    app.profile_tab_index -= 1;
                 }
-                KeyCode::Right | KeyCode::Char('l') => {
-                    if app.profile_tab_index + 1 < app.profile_tabs.len() {
-                        app.profile_tab_index += 1;
-                    }
+                KeyCode::Right | KeyCode::Char('l')
+                    if app.profile_tab_index + 1 < app.profile_tabs.len() =>
+                {
+                    app.profile_tab_index += 1;
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
                     move_run_selection(1, app);

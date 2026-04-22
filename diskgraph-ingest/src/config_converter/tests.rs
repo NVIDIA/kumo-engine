@@ -1260,8 +1260,8 @@ fn test_detect_timestamp_formats_skips_native_timestamp_columns() {
     )]));
 
     let ts_array = TimestampMicrosecondArray::from(vec![
-        Some(1700000000_000_000i64),
-        Some(1700100000_000_000),
+        Some(1_700_000_000_000_000_i64),
+        Some(1_700_100_000_000_000),
     ]);
     let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(ts_array)]).unwrap();
 
@@ -1498,9 +1498,9 @@ fn test_detect_timestamp_formats_skips_empty_parquet_files() {
     let data_path = dir.path().join("part-00001.parquet");
     let id_array = StringArray::from(vec!["a", "b", "c"]);
     let ts_array = Int64Array::from(vec![
-        1537401600_000_000_000i64, // 2018-09-20 in nanos
-        1538006400_000_000_000i64, // 2018-09-27 in nanos
-        1600732800_000_000_000i64, // 2020-09-22 in nanos
+        1_537_401_600_000_000_000_i64, // 2018-09-20 in nanos
+        1_538_006_400_000_000_000_i64, // 2018-09-27 in nanos
+        1_600_732_800_000_000_000_i64, // 2020-09-22 in nanos
     ]);
     let batch =
         RecordBatch::try_new(schema.clone(), vec![Arc::new(id_array), Arc::new(ts_array)]).unwrap();

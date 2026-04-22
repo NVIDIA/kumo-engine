@@ -114,7 +114,10 @@ fn read_output_rows_pass_through(receiver: Receiver<RecordBatch>) -> (Vec<(i64, 
 }
 
 /// Read output rows for Forecasting tasks. Returns lists as Vec<f64>.
-fn read_output_rows_forecasting(receiver: Receiver<RecordBatch>) -> Vec<(i64, i64, Vec<f64>, Option<Vec<f64>>)> {
+type ForecastingRow = (i64, i64, Vec<f64>, Option<Vec<f64>>);
+
+/// Read output rows for Forecasting tasks. Returns lists as Vec<f64>.
+fn read_output_rows_forecasting(receiver: Receiver<RecordBatch>) -> Vec<ForecastingRow> {
     let mut rows = Vec::new();
     for batch in receiver {
         let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
@@ -1921,8 +1924,8 @@ fn integ_entity_create_time_metadata_fallback() {
     assert_eq!(groups[&0].len(), 2, "alice: 2 timestamps");
     assert_eq!(groups[&1].len(), 1, "bob: 1 timestamp");
     assert_eq!(groups[&1][0].0, 2000, "bob: only at ts=2000");
-    assert!(groups.get(&2).is_none(), "carol: excluded (expired at ts=2000)");
-    assert!(groups.get(&3).is_none(), "dave: should not appear (signup_ts=3000)");
+    assert!(!groups.contains_key(&2), "carol: excluded (expired at ts=2000)");
+    assert!(!groups.contains_key(&3), "dave: should not appear (signup_ts=3000)");
     assert_eq!(groups[&4].len(), 1, "eve: 1 timestamp (expired at ts=2000)");
     assert_eq!(groups[&4][0].0, 1000, "eve: only at ts=1000");
 }
@@ -2952,11 +2955,11 @@ fn read_output_rows_exploded(receiver: Receiver<RecordBatch>) -> Vec<(i64, i64, 
         let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
         let targets = read_target_column_as_strings(&batch, 2);
         let freqs = batch.column(3).as_any().downcast_ref::<Int64Array>().unwrap();
-        for i in 0..batch.num_rows() {
+        for (i, target) in targets.iter().enumerate().take(batch.num_rows()) {
             rows.push((
                 entities.value(i),
                 timestamps.value(i) / 1_000_000_000,
-                targets[i].clone(),
+                target.clone(),
                 freqs.value(i),
             ));
         }
@@ -3173,11 +3176,11 @@ fn integ_link_exploded_no_frequency() {
         let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
         let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
         let targets = read_target_column_as_strings(batch, 2);
-        for i in 0..batch.num_rows() {
+        for (i, target) in targets.iter().enumerate().take(batch.num_rows()) {
             rows.push((
                 entities.value(i),
                 timestamps.value(i) / 1_000_000_000,
-                targets[i].clone(),
+                target.clone(),
             ));
         }
     }
@@ -5519,8 +5522,7 @@ fn integ_orphan_filter_missing_table_errors() {
     let index = build_graph_orphan_fk(dir.path());
     let plan = orphan_ld_plan(Some("nonexistent_table".to_string()));
     let err = diskgraph_train_table::ttgen_executor::execute(&plan, &index)
-        .err()
-        .expect("execute should fail when target_entity_table doesn't exist");
+        .expect_err("execute should fail when target_entity_table doesn't exist");
     let msg = format!("{err}");
     assert!(
         msg.contains("nonexistent_table"),

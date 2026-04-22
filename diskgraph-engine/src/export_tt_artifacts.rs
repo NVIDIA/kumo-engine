@@ -138,7 +138,7 @@ fn read_key_from_column(col: &dyn Array, row: usize, key_type: KeyType) -> Optio
 
 /// Simple hex string decoder.
 fn parse_hex_bytes(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len())
@@ -193,9 +193,9 @@ pub fn process_export_internal<R: IdResolver>(
     for file_path in input_files {
         let input_file = File::open(file_path)?;
         let builder = ParquetRecordBatchReaderBuilder::try_new(input_file)?;
-        let mut reader = builder.build()?;
+        let reader = builder.build()?;
 
-        while let Some(maybe_batch) = reader.next() {
+        for maybe_batch in reader {
             let batch = maybe_batch?;
             let num_rows = batch.num_rows();
 
@@ -217,13 +217,14 @@ pub fn process_export_internal<R: IdResolver>(
                     .ok_or_else(|| anyhow!("Column {} not found", fkey_conf.column_name))?;
 
                 let kt = key_types[i];
+                let resolved_col = &mut resolved_matrix[i];
 
                 for row in 0..num_rows {
                     match read_key_from_column(col.as_ref(), row, kt) {
-                        None => resolved_matrix[i].push(-1),
+                        None => resolved_col.push(-1),
                         Some(key) => match resolver.resolve(i, &key)? {
-                            Some(local_id) => resolved_matrix[i].push(local_id as i64),
-                            None => resolved_matrix[i].push(-1),
+                            Some(local_id) => resolved_col.push(local_id as i64),
+                            None => resolved_col.push(-1),
                         },
                     }
                 }
@@ -234,13 +235,7 @@ pub fn process_export_internal<R: IdResolver>(
             }
 
             for row in 0..num_rows {
-                let mut valid = true;
-                for i in 0..config.fkeys.len() {
-                    if resolved_matrix[i][row] == -1 {
-                        valid = false;
-                        break;
-                    }
-                }
+                let valid = resolved_matrix.iter().all(|col| col[row] != -1);
                 mask_values.push(if valid { 1 } else { 0 });
             }
 
@@ -272,8 +267,7 @@ pub fn process_export_internal<R: IdResolver>(
                 let mut rows = Vec::new();
                 let mut cols = Vec::new();
 
-                for row in 0..num_rows {
-                    let target_id = resolved_matrix[i][row];
+                for (row, target_id) in resolved_matrix[i].iter().copied().enumerate() {
                     if target_id != -1 {
                         let arange_val = arange_array.value(row);
                         rows.push(target_id);
