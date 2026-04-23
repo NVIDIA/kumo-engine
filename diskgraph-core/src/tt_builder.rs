@@ -27,32 +27,36 @@
 //!   alias. RHS is a constant, entity column, remote column, or another alias.
 
 pub use crate::time::TimeUnit;
+use crate::time::{Abs, Dur, UnitSystem};
 use serde::{Deserialize, Serialize};
 
 // ─── Top-level plan ──────────────────────────────────────────────────────────
 
-/// A fully-specified training-table execution plan.
+/// A fully-specified training-table execution plan, parameterised by
+/// the index's timestamp unit system `U`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct DiskGraphTTPlan {
-    pub entity: EntitySpec,
-    pub temporal: Option<TemporalSpec>,
+#[serde(bound = "")]
+pub struct DiskGraphTTPlan<U: UnitSystem> {
+    pub entity: EntitySpec<U>,
+    pub temporal: Option<TemporalSpec<U>>,
     pub prediction_type: PredictionType,
     #[serde(default)]
-    pub split: Option<SplitSpec>,
-    pub stages: Vec<Stage>,
+    pub split: Option<SplitSpec<U>>,
+    pub stages: Vec<Stage<U>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct SplitSpec {
+#[serde(bound = "")]
+pub struct SplitSpec<U: UnitSystem> {
     pub ratio: Option<Vec<f64>>,
     pub kind: Option<String>,
     pub rnd_seed: Option<u64>,
     pub is_temporal: Option<bool>,
-    pub offsets: Option<Vec<i64>>,
-    pub ranges: Option<Vec<(i64, i64)>>,
-    pub backtesting_timestamp: Option<i64>,
+    pub offsets: Option<Vec<Dur<U>>>,
+    pub ranges: Option<Vec<(Abs<U>, Abs<U>)>>,
+    pub backtesting_timestamp: Option<Abs<U>>,
     pub split_column: Option<String>,
     pub manual_train_values: Option<Vec<String>>,
     pub manual_val_values: Option<Vec<String>>,
@@ -64,7 +68,8 @@ pub struct SplitSpec {
 /// Which table/column to iterate over.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct EntitySpec {
+#[serde(bound = "")]
+pub struct EntitySpec<U: UnitSystem> {
     pub table: String,
     pub column: String,
     /// Overrides the name of the output time column (defaults to "TIMESTAMP").
@@ -72,7 +77,7 @@ pub struct EntitySpec {
     pub output_time_col_name: Option<String>,
     /// The default timestamp value to emit for static queries (defaults to 0).
     #[serde(default)]
-    pub default_time_value: Option<i64>,
+    pub default_time_value: Option<Abs<U>>,
     /// Entity create-time column for temporal filtering.
     pub time_col: Option<String>,
     /// Entity valid-to column for temporal filtering (seed entities need both
@@ -87,9 +92,10 @@ pub struct EntitySpec {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct TemporalSpec {
-    /// Epoch microseconds for each anchor time.
-    pub timestamps: Vec<i64>,
+#[serde(bound = "")]
+pub struct TemporalSpec<U: UnitSystem> {
+    /// Anchor timestamps, already converted to the index unit system.
+    pub timestamps: Vec<Abs<U>>,
     pub forecast_length: i64,
     pub lag_timesteps: Option<i64>,
 }
@@ -118,14 +124,16 @@ pub enum PredictionType {
 /// Ops + optional short-circuit filter. If filter fails, skip remaining stages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct Stage {
-    pub ops: Vec<Op>,
+#[serde(bound = "")]
+pub struct Stage<U: UnitSystem> {
+    pub ops: Vec<Op<U>>,
     pub filter: Option<StageFilter>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Op {
+#[serde(bound = "")]
+pub enum Op<U: UnitSystem> {
     /// Traverse edges, apply filters, accumulate.
     Aggregate {
         alias: String,
@@ -136,7 +144,7 @@ pub enum Op {
         target_col: Option<String>,
         /// Column for temporal window filtering on the far-end table.
         time_col: Option<String>,
-        /// `(lo, hi)` relative to the current timestamp.
+        /// `(lo, hi)` in `window_unit`. Resolved to `Dur<U>` during plan resolution.
         window: Option<(i64, i64)>,
         window_unit: Option<TimeUnit>,
         row_filter: Option<RowFilter>,
@@ -183,15 +191,16 @@ pub enum Op {
     Autoregression {
         alias: String,
         /// The inner operation to evaluate (typically an Aggregate).
-        target_op: Box<Op>,
-        /// List of negative offsets (in seconds) applied to the anchor timestamp.
-        lag_offsets: Vec<i64>,
+        target_op: Box<Op<U>>,
+        /// Lag offsets applied to the anchor timestamp.
+        lag_offsets: Vec<Dur<U>>,
     },
     /// Fast boolean check: Returns true if any edge satisfies the path and filters.
     HasEdges {
         alias: String,
         path: Vec<EdgeRef>,
         time_col: Option<String>,
+        /// `(lo, hi)` in `window_unit`. Resolved to `Dur<U>` during plan resolution.
         window: Option<(i64, i64)>,
         window_unit: Option<TimeUnit>,
         row_filter: Option<RowFilter>,
@@ -338,4 +347,105 @@ pub enum StageFilter {
     And(Vec<StageFilter>),
     Or(Vec<StageFilter>),
     Not(Box<StageFilter>),
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::time::Seconds;
+
+    /// Verify that a `DiskGraphTTPlan<Seconds>` serialized as JSON produces
+    /// the same bytes as the old non-generic plan (plain i64 values).
+    #[test]
+    fn plan_serde_backward_compat() {
+        let plan = DiskGraphTTPlan::<Seconds> {
+            entity: EntitySpec {
+                table: "USERS".into(),
+                column: "USER_ID".into(),
+                output_time_col_name: None,
+                default_time_value: Some(Abs::from_secs(0)),
+                time_col: None,
+                valid_to_col: None,
+                filter: None,
+            },
+            temporal: Some(TemporalSpec {
+                timestamps: vec![
+                    Abs::from_secs(86400),
+                    Abs::from_secs(172800),
+                ],
+                forecast_length: 1,
+                lag_timesteps: None,
+            }),
+            prediction_type: PredictionType::Node,
+            split: Some(SplitSpec {
+                ratio: Some(vec![0.8, 0.2]),
+                kind: None,
+                rnd_seed: None,
+                is_temporal: Some(true),
+                offsets: Some(vec![Dur::from_days(-7), Dur::from_days(-3)]),
+                ranges: None,
+                backtesting_timestamp: None,
+                split_column: None,
+                manual_train_values: None,
+                manual_val_values: None,
+                manual_test_values: None,
+            }),
+            stages: vec![],
+        };
+
+        let json = serde_json::to_string(&plan).unwrap();
+
+        // Deserialize back
+        let back: DiskGraphTTPlan<Seconds> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.temporal.as_ref().unwrap().timestamps.len(), 2);
+        assert_eq!(back.temporal.as_ref().unwrap().timestamps[0].raw(), 86400);
+        assert_eq!(back.entity.default_time_value.unwrap().raw(), 0);
+        assert_eq!(
+            back.split.as_ref().unwrap().offsets.as_ref().unwrap()[0].raw(),
+            -7 * 86400
+        );
+    }
+
+    /// Verify that JSON with raw i64 timestamps (from older serializations)
+    /// deserializes into the generic types correctly.
+    #[test]
+    fn plan_deserialize_from_raw_i64_json() {
+        let json = r#"{
+            "entity": {"table": "T", "column": "C"},
+            "temporal": {"timestamps": [100, 200], "forecast_length": 1},
+            "prediction_type": "node",
+            "stages": []
+        }"#;
+
+        let plan: DiskGraphTTPlan<Seconds> = serde_json::from_str(json).unwrap();
+        assert_eq!(plan.temporal.as_ref().unwrap().timestamps[0].raw(), 100);
+        assert_eq!(plan.temporal.as_ref().unwrap().timestamps[1].raw(), 200);
+    }
+
+    /// Verify autoregression with typed Dur offsets.
+    #[test]
+    fn op_autoregression_serde() {
+        let op = Op::<Seconds>::Autoregression {
+            alias: "ar".into(),
+            target_op: Box::new(Op::Column {
+                alias: "col".into(),
+                table: "T".into(),
+                column: "C".into(),
+            }),
+            lag_offsets: vec![Dur::from_secs(-86400), Dur::from_secs(-172800)],
+        };
+
+        let json = serde_json::to_string(&op).unwrap();
+        let back: Op<Seconds> = serde_json::from_str(&json).unwrap();
+        if let Op::Autoregression { lag_offsets, .. } = back {
+            assert_eq!(lag_offsets[0].raw(), -86400);
+            assert_eq!(lag_offsets[1].raw(), -172800);
+        } else {
+            panic!("expected Autoregression");
+        }
+    }
 }

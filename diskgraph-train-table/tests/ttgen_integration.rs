@@ -11,6 +11,7 @@ use arrow_array::builder::*;
 use arrow_array::{Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray, TimestampNanosecondArray};
 use arrow_schema::{DataType, Field, Schema};
 use crossbeam_channel::Receiver;
+use diskgraph_core::time::{Seconds, Abs, Dur};
 use diskgraph_core::tt_builder::*;
 use diskgraph_ingest::coercion::CoercionMode;
 use diskgraph_ingest::config::IngestOptions;
@@ -203,7 +204,7 @@ fn run_ingest(config_path: &Path, index_path: &Path) {
 }
 
 fn execute_and_group(
-    plan: &DiskGraphTTPlan,
+    plan: &DiskGraphTTPlan<Seconds>,
     index_path: &Path,
 ) -> HashMap<i64, Vec<(i64, f64)>> {
     let (receiver, handle) =
@@ -214,7 +215,7 @@ fn execute_and_group(
 }
 
 fn execute_and_group_str(
-    plan: &DiskGraphTTPlan,
+    plan: &DiskGraphTTPlan<Seconds>,
     index_path: &Path,
 ) -> HashMap<i64, Vec<(i64, String)>> {
     let (receiver, handle) =
@@ -229,7 +230,7 @@ fn execute_and_group_str(
 }
 
 fn execute_and_group_bool(
-    plan: &DiskGraphTTPlan,
+    plan: &DiskGraphTTPlan<Seconds>,
     index_path: &Path,
 ) -> HashMap<i64, Vec<(i64, bool)>> {
     let (receiver, handle) =
@@ -592,9 +593,9 @@ fn mk_col(name: &str, dtype: IngestedType) -> ColumnSpec {
 
 // ─── Plan helpers ────────────────────────────────────────────────────────────
 
-fn g1_plan(stages: Vec<Stage>) -> DiskGraphTTPlan {
-    DiskGraphTTPlan {
-        entity: EntitySpec {
+fn g1_plan(stages: Vec<Stage<Seconds>>) -> DiskGraphTTPlan<Seconds> {
+    DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "users".to_string(),
             column: "user_id".to_string(),
             output_time_col_name: None,
@@ -610,9 +611,9 @@ fn g1_plan(stages: Vec<Stage>) -> DiskGraphTTPlan {
     }
 }
 
-fn g1_temporal(stages: Vec<Stage>, timestamps: Vec<i64>) -> DiskGraphTTPlan {
-    DiskGraphTTPlan {
-        entity: EntitySpec {
+fn g1_temporal(stages: Vec<Stage<Seconds>>, timestamps: Vec<i64>) -> DiskGraphTTPlan<Seconds> {
+    DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "users".to_string(),
             column: "user_id".to_string(),
             output_time_col_name: None,
@@ -621,8 +622,8 @@ fn g1_temporal(stages: Vec<Stage>, timestamps: Vec<i64>) -> DiskGraphTTPlan {
             valid_to_col: None,
             filter: None,
         },
-        temporal: Some(TemporalSpec {
-            timestamps,
+        temporal: Some(TemporalSpec::<Seconds> {
+            timestamps: timestamps.into_iter().map(Abs::from_raw).collect(),
             forecast_length: 1,
             lag_timesteps: None,
         }),
@@ -651,7 +652,7 @@ fn o2p_edge() -> EdgeRef {
 }
 
 /// COUNT(orders.*, window) — most common test pattern.
-fn count_orders_op(alias: &str, window: Option<(i64, i64)>) -> Op {
+fn count_orders_op(alias: &str, window: Option<(i64, i64)>) -> Op<Seconds> {
     Op::Aggregate {
         alias: alias.to_string(),
         path: vec![u2o_edge()],
@@ -667,7 +668,7 @@ fn count_orders_op(alias: &str, window: Option<(i64, i64)>) -> Op {
 }
 
 /// SUM/AVG/MIN/MAX/FIRST/LAST(orders.price, window)
-fn agg_orders_price(alias: &str, func: AggFunc, window: Option<(i64, i64)>) -> Op {
+fn agg_orders_price(alias: &str, func: AggFunc, window: Option<(i64, i64)>) -> Op<Seconds> {
     Op::Aggregate {
         alias: alias.to_string(),
         path: vec![u2o_edge()],
@@ -692,7 +693,7 @@ fn integ_count_basic() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
     let plan = g1_temporal(
-        vec![Stage { ops: vec![count_orders_op("cnt", Some((0, 5000)))], filter: None }],
+        vec![Stage::<Seconds> { ops: vec![count_orders_op("cnt", Some((0, 5000)))], filter: None }],
         vec![0],
     );
     let groups = execute_and_group(&plan, &index);
@@ -710,7 +711,7 @@ fn integ_sum_basic() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage { ops: vec![agg_orders_price("s", AggFunc::Sum, Some((0, 5000)))], filter: None }],
+        vec![Stage::<Seconds> { ops: vec![agg_orders_price("s", AggFunc::Sum, Some((0, 5000)))], filter: None }],
         vec![0],
     );
     let groups = execute_and_group(&plan, &index);
@@ -727,7 +728,7 @@ fn integ_avg_basic() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage { ops: vec![agg_orders_price("a", AggFunc::Avg, Some((0, 5000)))], filter: None }],
+        vec![Stage::<Seconds> { ops: vec![agg_orders_price("a", AggFunc::Avg, Some((0, 5000)))], filter: None }],
         vec![0],
     );
     let groups = execute_and_group(&plan, &index);
@@ -744,7 +745,7 @@ fn integ_min_basic() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage { ops: vec![agg_orders_price("m", AggFunc::Min, Some((0, 5000)))], filter: None }],
+        vec![Stage::<Seconds> { ops: vec![agg_orders_price("m", AggFunc::Min, Some((0, 5000)))], filter: None }],
         vec![0],
     );
     let groups = execute_and_group(&plan, &index);
@@ -761,7 +762,7 @@ fn integ_max_basic() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage { ops: vec![agg_orders_price("m", AggFunc::Max, Some((0, 5000)))], filter: None }],
+        vec![Stage::<Seconds> { ops: vec![agg_orders_price("m", AggFunc::Max, Some((0, 5000)))], filter: None }],
         vec![0],
     );
     let groups = execute_and_group(&plan, &index);
@@ -779,7 +780,7 @@ fn integ_first_basic() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage { ops: vec![agg_orders_price("f", AggFunc::First, Some((0, 5000)))], filter: None }],
+        vec![Stage::<Seconds> { ops: vec![agg_orders_price("f", AggFunc::First, Some((0, 5000)))], filter: None }],
         vec![0],
     );
     let groups = execute_and_group(&plan, &index);
@@ -797,7 +798,7 @@ fn integ_last_basic() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage { ops: vec![agg_orders_price("l", AggFunc::Last, Some((0, 5000)))], filter: None }],
+        vec![Stage::<Seconds> { ops: vec![agg_orders_price("l", AggFunc::Last, Some((0, 5000)))], filter: None }],
         vec![0],
     );
     let groups = execute_and_group(&plan, &index);
@@ -814,7 +815,7 @@ fn integ_count_distinct_basic() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "cd".to_string(),
                 path: vec![u2o_edge()],
@@ -848,7 +849,7 @@ fn integ_count_with_row_filter() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "cnt".to_string(),
                 path: vec![u2o_edge()],
@@ -884,7 +885,7 @@ fn integ_sum_with_row_filter() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "s".to_string(),
                 path: vec![u2o_edge()],
@@ -920,7 +921,7 @@ fn integ_filter_and() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "cnt".to_string(),
                 path: vec![u2o_edge()],
@@ -963,7 +964,7 @@ fn integ_filter_or() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "cnt".to_string(),
                 path: vec![u2o_edge()],
@@ -1006,7 +1007,7 @@ fn integ_filter_not() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "cnt".to_string(),
                 path: vec![u2o_edge()],
@@ -1044,7 +1045,7 @@ fn integ_compare_lt() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "cnt".to_string(),
                 path: vec![u2o_edge()],
@@ -1081,7 +1082,7 @@ fn integ_compare_lte() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "cnt".to_string(),
                 path: vec![u2o_edge()],
@@ -1118,7 +1119,7 @@ fn integ_compare_gte() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "cnt".to_string(),
                 path: vec![u2o_edge()],
@@ -1155,7 +1156,7 @@ fn integ_compare_neq() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "cnt".to_string(),
                 path: vec![u2o_edge()],
@@ -1194,7 +1195,7 @@ fn integ_filter_entity_column_rhs() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "cnt".to_string(),
                 path: vec![u2o_edge()],
@@ -1232,7 +1233,7 @@ fn integ_filter_remote_lhs() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "cnt".to_string(),
                 path: vec![u2o_edge()],
@@ -1277,7 +1278,7 @@ fn integ_stage_filter_constant() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![count_orders_op("cnt", Some((0, 5000)))],
             filter: Some(StageFilter::Compare {
                 alias: "cnt".to_string(),
@@ -1300,7 +1301,7 @@ fn integ_stage_filter_entity_column() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![agg_orders_price("total", AggFunc::Sum, Some((0, 5000)))],
             filter: Some(StageFilter::Compare {
                 alias: "total".to_string(),
@@ -1327,7 +1328,7 @@ fn integ_stage_filter_alias_vs_alias() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![
                 agg_orders_price("total", AggFunc::Sum, Some((0, 5000))),
                 agg_orders_price("average", AggFunc::Avg, Some((0, 5000))),
@@ -1359,7 +1360,7 @@ fn integ_three_stage_short_circuit() {
 
     let plan = g1_temporal(
         vec![
-            Stage {
+            Stage::<Seconds> {
                 ops: vec![count_orders_op("cnt", Some((0, 5000)))],
                 filter: Some(StageFilter::Compare {
                     alias: "cnt".to_string(),
@@ -1367,7 +1368,7 @@ fn integ_three_stage_short_circuit() {
                     rhs: StageFilterRhs::Constant(Value::Int(1)),
                 }),
             },
-            Stage {
+            Stage::<Seconds> {
                 ops: vec![agg_orders_price("total", AggFunc::Sum, Some((0, 5000)))],
                 filter: Some(StageFilter::Compare {
                     alias: "total".to_string(),
@@ -1375,7 +1376,7 @@ fn integ_three_stage_short_circuit() {
                     rhs: StageFilterRhs::Constant(Value::Float(240.0)),
                 }),
             },
-            Stage {
+            Stage::<Seconds> {
                 ops: vec![agg_orders_price("avg_price", AggFunc::Avg, Some((0, 5000)))],
                 filter: None,
             },
@@ -1397,7 +1398,7 @@ fn integ_multiple_ops_same_stage() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![
                 count_orders_op("cnt", Some((0, 5000))),
                 agg_orders_price("total", AggFunc::Sum, Some((0, 5000))),
@@ -1419,7 +1420,7 @@ fn integ_column_and_aggregate_same_stage() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![
                 Op::Column {
                     alias: "sc".to_string(),
@@ -1444,7 +1445,7 @@ fn integ_entity_filter_and_stage_filter() {
     let index = build_graph1(dir.path());
 
     let mut plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![count_orders_op("cnt", Some((0, 5000)))],
             filter: Some(StageFilter::Compare {
                 alias: "cnt".to_string(),
@@ -1475,7 +1476,7 @@ fn integ_entity_column() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
 
-    let plan = g1_plan(vec![Stage {
+    let plan = g1_plan(vec![Stage::<Seconds> {
         ops: vec![Op::Column {
             alias: "sc".to_string(),
             table: "users".to_string(),
@@ -1499,7 +1500,7 @@ fn integ_entity_filter() {
     let index = build_graph1(dir.path());
 
     let mut plan = g1_temporal(
-        vec![Stage { ops: vec![count_orders_op("cnt", Some((0, 5000)))], filter: None }],
+        vec![Stage::<Seconds> { ops: vec![count_orders_op("cnt", Some((0, 5000)))], filter: None }],
         vec![0],
     );
     plan.entity.filter = Some(RowFilter::Compare {
@@ -1522,8 +1523,8 @@ fn integ_entity_time_col() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
 
-    let plan = DiskGraphTTPlan {
-        entity: EntitySpec {
+    let plan = DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "users".to_string(),
             column: "user_id".to_string(),
             output_time_col_name: None,
@@ -1532,14 +1533,14 @@ fn integ_entity_time_col() {
             valid_to_col: None,
             filter: None,
         },
-        temporal: Some(TemporalSpec {
-            timestamps: vec![1000],
+        temporal: Some(TemporalSpec::<Seconds> {
+            timestamps: vec![Abs::from_raw(1000)],
             forecast_length: 1,
             lag_timesteps: None,
         }),
         prediction_type: PredictionType::Node,
         split: None,
-        stages: vec![Stage {
+        stages: vec![Stage::<Seconds> {
             ops: vec![count_orders_op("cnt", Some((0, 500)))],
             filter: None,
         }],
@@ -1558,8 +1559,8 @@ fn integ_entity_valid_to_col() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
 
-    let plan = DiskGraphTTPlan {
-        entity: EntitySpec {
+    let plan = DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "users".to_string(),
             column: "user_id".to_string(),
             output_time_col_name: None,
@@ -1568,14 +1569,14 @@ fn integ_entity_valid_to_col() {
             valid_to_col: Some("valid_to".to_string()),
             filter: None,
         },
-        temporal: Some(TemporalSpec {
-            timestamps: vec![1500],
+        temporal: Some(TemporalSpec::<Seconds> {
+            timestamps: vec![Abs::from_raw(1500)],
             forecast_length: 1,
             lag_timesteps: None,
         }),
         prediction_type: PredictionType::Node,
         split: None,
-        stages: vec![Stage {
+        stages: vec![Stage::<Seconds> {
             ops: vec![count_orders_op("cnt", Some((0, 5000)))],
             filter: None,
         }],
@@ -1879,8 +1880,8 @@ fn integ_entity_create_time_metadata_fallback() {
 
     // Plan has time_col=None AND valid_to_col=None — both fall back to index
     // metadata (create_time=signup_ts, end_time=valid_to).
-    let plan = DiskGraphTTPlan {
-        entity: EntitySpec {
+    let plan = DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "users".to_string(),
             column: "user_id".to_string(),
             output_time_col_name: None,
@@ -1889,14 +1890,14 @@ fn integ_entity_create_time_metadata_fallback() {
             valid_to_col: None,
             filter: None,
         },
-        temporal: Some(TemporalSpec {
-            timestamps: vec![1000, 2000],
+        temporal: Some(TemporalSpec::<Seconds> {
+            timestamps: vec![Abs::from_raw(1000), Abs::from_raw(2000)],
             forecast_length: 1,
             lag_timesteps: None,
         }),
         prediction_type: PredictionType::Node,
         split: None,
-        stages: vec![Stage {
+        stages: vec![Stage::<Seconds> {
             ops: vec![count_orders_op("cnt", Some((0, 500)))],
             filter: None,
         }],
@@ -1950,8 +1951,8 @@ fn integ_entity_end_time_metadata_fallback() {
     // create_time filter: at ts=1500, entities with signup_ts <= 1500: alice(1000), carol(1500), eve(500)
     // end_time filter: at ts=1500, entities with valid_to >= 1500: alice(2000), carol(1500)
     // Combined: alice, carol
-    let plan = DiskGraphTTPlan {
-        entity: EntitySpec {
+    let plan = DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "users".to_string(),
             column: "user_id".to_string(),
             output_time_col_name: None,
@@ -1960,14 +1961,14 @@ fn integ_entity_end_time_metadata_fallback() {
             valid_to_col: None,
             filter: None,
         },
-        temporal: Some(TemporalSpec {
-            timestamps: vec![1500],
+        temporal: Some(TemporalSpec::<Seconds> {
+            timestamps: vec![Abs::from_raw(1500)],
             forecast_length: 1,
             lag_timesteps: None,
         }),
         prediction_type: PredictionType::Node,
         split: None,
-        stages: vec![Stage {
+        stages: vec![Stage::<Seconds> {
             ops: vec![count_orders_op("cnt", Some((0, 5000)))],
             filter: None,
         }],
@@ -1992,7 +1993,7 @@ fn integ_compare_string() {
     let index = build_graph1(dir.path());
 
     let plan = g1_plan(vec![
-        Stage {
+        Stage::<Seconds> {
             ops: vec![Op::Column {
                 alias: "nm".to_string(),
                 table: "users".to_string(),
@@ -2000,7 +2001,7 @@ fn integ_compare_string() {
             }],
             filter: None,
         },
-        Stage {
+        Stage::<Seconds> {
             ops: vec![Op::Compare {
                 alias: "is_alice".to_string(),
                 lhs: "nm".to_string(),
@@ -2025,7 +2026,7 @@ fn integ_list_distinct_no_limit() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "ld".to_string(),
                 path: vec![u2o_edge()],
@@ -2060,7 +2061,7 @@ fn integ_list_distinct_with_limit() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "ld".to_string(),
                 path: vec![u2o_edge()],
@@ -2091,7 +2092,7 @@ fn integ_list_distinct_with_row_filter() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "ld".to_string(),
                 path: vec![u2o_edge()],
@@ -2132,7 +2133,7 @@ fn integ_temporal_future_window() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage { ops: vec![count_orders_op("cnt", Some((0, 200)))], filter: None }],
+        vec![Stage::<Seconds> { ops: vec![count_orders_op("cnt", Some((0, 200)))], filter: None }],
         vec![1000],
     );
     let groups = execute_and_group(&plan, &index);
@@ -2148,7 +2149,7 @@ fn integ_temporal_multiple_timestamps() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage { ops: vec![count_orders_op("cnt", Some((0, 5000)))], filter: None }],
+        vec![Stage::<Seconds> { ops: vec![count_orders_op("cnt", Some((0, 5000)))], filter: None }],
         vec![1000, 2000],
     );
     let groups = execute_and_group(&plan, &index);
@@ -2169,7 +2170,7 @@ fn integ_temporal_window_boundary() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage { ops: vec![count_orders_op("cnt", Some((0, 250)))], filter: None }],
+        vec![Stage::<Seconds> { ops: vec![count_orders_op("cnt", Some((0, 250)))], filter: None }],
         vec![1050],
     );
     let groups = execute_and_group(&plan, &index);
@@ -2184,7 +2185,7 @@ fn integ_temporal_window_splits_edges() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage { ops: vec![agg_orders_price("s", AggFunc::Sum, Some((0, 100)))], filter: None }],
+        vec![Stage::<Seconds> { ops: vec![agg_orders_price("s", AggFunc::Sum, Some((0, 100)))], filter: None }],
         vec![1150],
     );
     let groups = execute_and_group(&plan, &index);
@@ -2199,7 +2200,7 @@ fn integ_temporal_window_excludes() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage { ops: vec![agg_orders_price("s", AggFunc::Sum, Some((0, 50)))], filter: None }],
+        vec![Stage::<Seconds> { ops: vec![agg_orders_price("s", AggFunc::Sum, Some((0, 50)))], filter: None }],
         vec![1150],
     );
     let groups = execute_and_group(&plan, &index);
@@ -2214,7 +2215,7 @@ fn integ_temporal_multiple_windows_same_entity() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage { ops: vec![agg_orders_price("s", AggFunc::Sum, Some((0, 100)))], filter: None }],
+        vec![Stage::<Seconds> { ops: vec![agg_orders_price("s", AggFunc::Sum, Some((0, 100)))], filter: None }],
         vec![950, 1000],
     );
     let groups = execute_and_group(&plan, &index);
@@ -2231,7 +2232,7 @@ fn integ_timeunit_hours() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "cnt".to_string(),
                 path: vec![u2o_edge()],
@@ -2264,7 +2265,7 @@ fn integ_timeunit_days() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "cnt".to_string(),
                 path: vec![u2o_edge()],
@@ -2292,7 +2293,7 @@ fn integ_timeunit_weeks() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "cnt".to_string(),
                 path: vec![u2o_edge()],
@@ -2473,8 +2474,8 @@ fn integ_timeunit_months_calendar() {
     let jul1 = 1688169600i64;
     let oct1 = 1696118400i64;
 
-    let plan = DiskGraphTTPlan {
-        entity: EntitySpec {
+    let plan = DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "company".to_string(),
             column: "cik".to_string(),
             output_time_col_name: None,
@@ -2483,14 +2484,14 @@ fn integ_timeunit_months_calendar() {
             valid_to_col: None,
             filter: None,
         },
-        temporal: Some(TemporalSpec {
-            timestamps: vec![apr1, jul1, oct1],
+        temporal: Some(TemporalSpec::<Seconds> {
+            timestamps: vec![Abs::from_raw(apr1), Abs::from_raw(jul1), Abs::from_raw(oct1)],
             forecast_length: 1,
             lag_timesteps: None,
         }),
         prediction_type: PredictionType::Node,
         split: None,
-        stages: vec![Stage {
+        stages: vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "target".to_string(),
                 path: vec![c2f_edge()],
@@ -2525,8 +2526,8 @@ fn integ_timeunit_years_calendar() {
 
     let apr1 = 1680307200i64; // 2023-04-01
 
-    let plan = DiskGraphTTPlan {
-        entity: EntitySpec {
+    let plan = DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "company".to_string(),
             column: "cik".to_string(),
             output_time_col_name: None,
@@ -2535,14 +2536,14 @@ fn integ_timeunit_years_calendar() {
             valid_to_col: None,
             filter: None,
         },
-        temporal: Some(TemporalSpec {
-            timestamps: vec![apr1],
+        temporal: Some(TemporalSpec::<Seconds> {
+            timestamps: vec![Abs::from_raw(apr1)],
             forecast_length: 1,
             lag_timesteps: None,
         }),
         prediction_type: PredictionType::Node,
         split: None,
-        stages: vec![Stage {
+        stages: vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "target".to_string(),
                 path: vec![c2f_edge()],
@@ -2575,7 +2576,7 @@ fn integ_multi_hop_count_distinct_brand() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "cd".to_string(),
                 path: vec![u2o_edge(), o2p_edge()],
@@ -2609,7 +2610,7 @@ fn integ_multi_hop_avg_rating() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "avg".to_string(),
                 path: vec![u2o_edge(), o2p_edge()],
@@ -2643,7 +2644,7 @@ fn integ_multi_hop_with_filter() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "avg".to_string(),
                 path: vec![u2o_edge(), o2p_edge()],
@@ -2683,7 +2684,7 @@ fn integ_multi_hop_temporal() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "cd".to_string(),
                 path: vec![u2o_edge(), o2p_edge()],
@@ -2730,7 +2731,7 @@ fn integ_all_agg_empty_states() {
 
     for (name, func, target_col, expected) in cases {
         let plan = g1_temporal(
-            vec![Stage {
+            vec![Stage::<Seconds> {
                 ops: vec![Op::Aggregate {
                     alias: "v".to_string(),
                     path: vec![u2o_edge()],
@@ -2762,7 +2763,7 @@ fn integ_entity_filter_excludes_all() {
     let index = build_graph1(dir.path());
 
     let mut plan = g1_temporal(
-        vec![Stage { ops: vec![count_orders_op("cnt", Some((0, 5000)))], filter: None }],
+        vec![Stage::<Seconds> { ops: vec![count_orders_op("cnt", Some((0, 5000)))], filter: None }],
         vec![0],
     );
     plan.entity.filter = Some(RowFilter::Compare {
@@ -2781,7 +2782,7 @@ fn integ_nested_filter_not_or() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "cnt".to_string(),
                 path: vec![u2o_edge()],
@@ -2823,7 +2824,7 @@ fn integ_nested_filter_and_or() {
     let index = build_graph1(dir.path());
 
     let plan = g1_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "cnt".to_string(),
                 path: vec![u2o_edge()],
@@ -2876,8 +2877,8 @@ fn integ_lag_timesteps_entity_include_bit() {
     // carol (active=false) should still produce rows but with ENTITY_INCLUDE_BIT=false.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
-    let plan = DiskGraphTTPlan {
-        entity: EntitySpec {
+    let plan = DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "users".to_string(),
             column: "user_id".to_string(),
             output_time_col_name: None,
@@ -2890,14 +2891,14 @@ fn integ_lag_timesteps_entity_include_bit() {
                 rhs: RowFilterRhs::Constant(Value::Bool(true)),
             }),
         },
-        temporal: Some(TemporalSpec {
-            timestamps: vec![0],
+        temporal: Some(TemporalSpec::<Seconds> {
+            timestamps: vec![Abs::from_raw(0)],
             forecast_length: 1,
             lag_timesteps: Some(2),
         }),
         prediction_type: PredictionType::Node,
         split: None,
-        stages: vec![Stage {
+        stages: vec![Stage::<Seconds> {
             ops: vec![count_orders_op("cnt", Some((0, 5000)))],
             filter: None,
         }],
@@ -2931,7 +2932,7 @@ fn integ_lag_timesteps_zero_no_bit_column() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
     let mut plan = g1_temporal(
-        vec![Stage { ops: vec![count_orders_op("cnt", Some((0, 5000)))], filter: None }],
+        vec![Stage::<Seconds> { ops: vec![count_orders_op("cnt", Some((0, 5000)))], filter: None }],
         vec![0],
     );
     plan.entity.filter = Some(RowFilter::Compare {
@@ -3003,7 +3004,7 @@ fn read_output_rows_array(receiver: Receiver<RecordBatch>) -> Vec<(i64, i64, Vec
     rows
 }
 
-fn list_distinct_status_op(alias: &str, window: Option<(i64, i64)>, limit: Option<u32>) -> Op {
+fn list_distinct_status_op(alias: &str, window: Option<(i64, i64)>, limit: Option<u32>) -> Op<Seconds> {
     Op::Aggregate {
         alias: alias.to_string(),
         path: vec![u2o_edge()],
@@ -3018,7 +3019,7 @@ fn list_distinct_status_op(alias: &str, window: Option<(i64, i64)>, limit: Optio
     }
 }
 
-fn list_distinct_product_id_op(alias: &str, window: Option<(i64, i64)>, limit: Option<u32>) -> Op {
+fn list_distinct_product_id_op(alias: &str, window: Option<(i64, i64)>, limit: Option<u32>) -> Op<Seconds> {
     Op::Aggregate {
         alias: alias.to_string(),
         path: vec![u2o_edge()],
@@ -3034,13 +3035,13 @@ fn list_distinct_product_id_op(alias: &str, window: Option<(i64, i64)>, limit: O
 }
 
 fn g1_link_temporal(
-    stages: Vec<Stage>,
+    stages: Vec<Stage<Seconds>>,
     timestamps: Vec<i64>,
     explode: bool,
     include_frequency: bool,
-) -> DiskGraphTTPlan {
-    DiskGraphTTPlan {
-        entity: EntitySpec {
+) -> DiskGraphTTPlan<Seconds> {
+    DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "users".to_string(),
             column: "user_id".to_string(),
             output_time_col_name: None,
@@ -3049,8 +3050,8 @@ fn g1_link_temporal(
             valid_to_col: None,
             filter: None,
         },
-        temporal: Some(TemporalSpec {
-            timestamps,
+        temporal: Some(TemporalSpec::<Seconds> {
+            timestamps: timestamps.into_iter().map(Abs::from_raw).collect(),
             forecast_length: 1,
             lag_timesteps: None,
         }),
@@ -3061,12 +3062,12 @@ fn g1_link_temporal(
 }
 
 fn g1_link(
-    stages: Vec<Stage>,
+    stages: Vec<Stage<Seconds>>,
     explode: bool,
     include_frequency: bool,
-) -> DiskGraphTTPlan {
-    DiskGraphTTPlan {
-        entity: EntitySpec {
+) -> DiskGraphTTPlan<Seconds> {
+    DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "users".to_string(),
             column: "user_id".to_string(),
             output_time_col_name: None,
@@ -3098,7 +3099,7 @@ fn integ_link_exploded_with_frequency() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
     let plan = g1_link_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![list_distinct_status_op("ld", Some((0, 5000)), None)],
             filter: None,
         }],
@@ -3151,7 +3152,7 @@ fn integ_link_exploded_no_frequency() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
     let plan = g1_link_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![list_distinct_status_op("ld", Some((0, 5000)), None)],
             filter: None,
         }],
@@ -3215,7 +3216,7 @@ fn integ_link_array_with_frequency() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
     let plan = g1_link_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![list_distinct_status_op("ld", Some((0, 5000)), None)],
             filter: None,
         }],
@@ -3281,7 +3282,7 @@ fn integ_link_array_no_frequency() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
     let plan = g1_link_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![list_distinct_status_op("ld", Some((0, 5000)), None)],
             filter: None,
         }],
@@ -3355,7 +3356,7 @@ fn integ_link_exploded_with_row_filter_frequency() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
     let plan = g1_link_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "ld".to_string(),
                 path: vec![u2o_edge()],
@@ -3424,7 +3425,7 @@ fn integ_link_exploded_frequency_duplicates() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
     let plan = g1_link_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![list_distinct_status_op("ld", Some((0, 5000)), None)],
             filter: None,
         }],
@@ -3459,7 +3460,7 @@ fn integ_link_static_exploded() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
     let plan = g1_link(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "ld".to_string(),
                 path: vec![u2o_edge()],
@@ -3521,7 +3522,7 @@ fn integ_link_temporal_multiple_timestamps() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
     let plan = g1_link_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![list_distinct_product_id_op("ld", Some((-500, 0)), None)],
             filter: None,
         }],
@@ -3561,7 +3562,7 @@ fn integ_link_exploded_with_limit() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
     let plan = g1_link_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![list_distinct_status_op("ld", Some((0, 5000)), Some(1))],
             filter: None,
         }],
@@ -3600,7 +3601,7 @@ fn integ_link_empty_exploded() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
     let plan = g1_link_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![list_distinct_status_op("ld", Some((10000, 20000)), None)],
             filter: None,
         }],
@@ -3622,7 +3623,7 @@ fn integ_link_empty_array() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
     let plan = g1_link_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![list_distinct_status_op("ld", Some((10000, 20000)), None)],
             filter: None,
         }],
@@ -3661,7 +3662,7 @@ fn integ_link_multi_hop_exploded() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
     let plan = g1_link_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "ld".to_string(),
                 path: vec![u2o_edge(), o2p_edge()],
@@ -3939,13 +3940,13 @@ fn g2_u2o_edge() -> EdgeRef {
 }
 
 fn g2_link_temporal(
-    stages: Vec<Stage>,
+    stages: Vec<Stage<Seconds>>,
     timestamps: Vec<i64>,
     explode: bool,
     include_frequency: bool,
-) -> DiskGraphTTPlan {
-    DiskGraphTTPlan {
-        entity: EntitySpec {
+) -> DiskGraphTTPlan<Seconds> {
+    DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "users".to_string(),
             column: "user_id".to_string(),
             output_time_col_name: None,
@@ -3954,8 +3955,8 @@ fn g2_link_temporal(
             valid_to_col: None,
             filter: None,
         },
-        temporal: Some(TemporalSpec {
-            timestamps,
+        temporal: Some(TemporalSpec::<Seconds> {
+            timestamps: timestamps.into_iter().map(Abs::from_raw).collect(),
             forecast_length: 1,
             lag_timesteps: None,
         }),
@@ -3966,12 +3967,12 @@ fn g2_link_temporal(
 }
 
 fn g2_link_static(
-    stages: Vec<Stage>,
+    stages: Vec<Stage<Seconds>>,
     explode: bool,
     include_frequency: bool,
-) -> DiskGraphTTPlan {
-    DiskGraphTTPlan {
-        entity: EntitySpec {
+) -> DiskGraphTTPlan<Seconds> {
+    DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "users".to_string(),
             column: "user_id".to_string(),
             output_time_col_name: None,
@@ -3992,7 +3993,7 @@ fn g2_list_distinct_store_id(
     window: Option<(i64, i64)>,
     limit: Option<u32>,
     row_filter: Option<RowFilter>,
-) -> Op {
+) -> Op<Seconds> {
     Op::Aggregate {
         alias: alias.to_string(),
         path: vec![g2_u2o_edge()],
@@ -4026,7 +4027,7 @@ fn integ_g2_lp_temporal_exploded() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph2(dir.path());
     let plan = g2_link_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![g2_list_distinct_store_id("ld", Some((0, 2 * DAY)), None, None)],
             filter: None,
         }],
@@ -4063,7 +4064,7 @@ fn integ_g2_lp_temporal_array() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph2(dir.path());
     let plan = g2_link_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![g2_list_distinct_store_id("ld", Some((0, 2 * DAY)), None, None)],
             filter: None,
         }],
@@ -4120,7 +4121,7 @@ fn integ_g2_lp_temporal_filtered() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph2(dir.path());
     let plan = g2_link_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![g2_list_distinct_store_id(
                 "ld",
                 Some((0, 2 * DAY)),
@@ -4165,7 +4166,7 @@ fn integ_g2_lp_static_exploded() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph2(dir.path());
     let plan = g2_link_static(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "ld".to_string(),
                 path: vec![g2_u2o_edge()],
@@ -4217,7 +4218,7 @@ fn integ_g2_lp_static_array() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph2(dir.path());
     let plan = g2_link_static(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "ld".to_string(),
                 path: vec![g2_u2o_edge()],
@@ -4264,7 +4265,7 @@ fn integ_g2_lp_nonzero_offset() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph2(dir.path());
     let plan = g2_link_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![g2_list_distinct_store_id("ld", Some((6 * DAY, 8 * DAY)), None, None)],
             filter: None,
         }],
@@ -4527,13 +4528,13 @@ fn g3_t2p_edge() -> EdgeRef {
 }
 
 fn g3_link_temporal(
-    stages: Vec<Stage>,
+    stages: Vec<Stage<Seconds>>,
     timestamps: Vec<i64>,
     explode: bool,
     include_frequency: bool,
-) -> DiskGraphTTPlan {
-    DiskGraphTTPlan {
-        entity: EntitySpec {
+) -> DiskGraphTTPlan<Seconds> {
+    DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "users".to_string(),
             column: "user_id".to_string(),
             output_time_col_name: None,
@@ -4542,8 +4543,8 @@ fn g3_link_temporal(
             valid_to_col: None,
             filter: None,
         },
-        temporal: Some(TemporalSpec {
-            timestamps,
+        temporal: Some(TemporalSpec::<Seconds> {
+            timestamps: timestamps.into_iter().map(Abs::from_raw).collect(),
             forecast_length: 1,
             lag_timesteps: None,
         }),
@@ -4554,12 +4555,12 @@ fn g3_link_temporal(
 }
 
 fn g3_link_static(
-    stages: Vec<Stage>,
+    stages: Vec<Stage<Seconds>>,
     explode: bool,
     include_frequency: bool,
-) -> DiskGraphTTPlan {
-    DiskGraphTTPlan {
-        entity: EntitySpec {
+) -> DiskGraphTTPlan<Seconds> {
+    DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "users".to_string(),
             column: "user_id".to_string(),
             output_time_col_name: None,
@@ -4587,7 +4588,7 @@ fn integ_g3_lp_temporal_rank() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph3(dir.path());
     let plan = g3_link_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "ld".to_string(),
                 path: vec![g3_u2t_edge()],
@@ -4636,7 +4637,7 @@ fn integ_g3_lp_filtered_brand() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph3(dir.path());
     let plan = g3_link_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "ld".to_string(),
                 path: vec![g3_u2t_edge()],
@@ -4688,7 +4689,7 @@ fn integ_g3_lp_static_rank() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph3(dir.path());
     let plan = g3_link_static(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "ld".to_string(),
                 path: vec![g3_u2t_edge()],
@@ -4743,7 +4744,7 @@ fn integ_g3_lp_dangling_entity() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph3(dir.path());
     let plan = g3_link_temporal(
-        vec![Stage {
+        vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "ld".to_string(),
                 path: vec![g3_u2t_edge()],
@@ -4782,8 +4783,8 @@ fn integ_g3_lp_entity_filter() {
     // User 0 (age=17) filtered out. User 1 (age=25) passes.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph3(dir.path());
-    let plan = DiskGraphTTPlan {
-        entity: EntitySpec {
+    let plan = DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "users".to_string(),
             column: "user_id".to_string(),
             output_time_col_name: None,
@@ -4802,7 +4803,7 @@ fn integ_g3_lp_entity_filter() {
             include_frequency: true,
         },
         split: None,
-        stages: vec![Stage {
+        stages: vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "ld".to_string(),
                 path: vec![g3_u2t_edge()],
@@ -4846,7 +4847,7 @@ fn integ_logical_not_target() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
 
-    let plan = g1_plan(vec![Stage {
+    let plan = g1_plan(vec![Stage::<Seconds> {
         ops: vec![
             Op::Column {
                 alias: "nm".to_string(),
@@ -4885,11 +4886,11 @@ fn integ_logical_and_target() {
 
     let plan = g1_temporal(
         vec![
-            Stage {
+            Stage::<Seconds> {
                 ops: vec![count_orders_op("cnt", Some((0, 5000)))],
                 filter: None,
             },
-            Stage {
+            Stage::<Seconds> {
                 ops: vec![
                     Op::Compare {
                         alias: "gt2".to_string(),
@@ -4928,7 +4929,7 @@ fn integ_logical_or_target() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
 
-    let plan = g1_plan(vec![Stage {
+    let plan = g1_plan(vec![Stage::<Seconds> {
         ops: vec![
             Op::Column {
                 alias: "nm".to_string(),
@@ -4976,7 +4977,7 @@ fn integ_logical_nested_not_and() {
 
     let plan = g1_temporal(
         vec![
-            Stage {
+            Stage::<Seconds> {
                 ops: vec![
                     count_orders_op("cnt", Some((0, 5000))),
                     Op::Column {
@@ -4987,7 +4988,7 @@ fn integ_logical_nested_not_and() {
                 ],
                 filter: None,
             },
-            Stage {
+            Stage::<Seconds> {
                 ops: vec![
                     Op::Compare {
                         alias: "gt2".to_string(),
@@ -5032,8 +5033,8 @@ fn integ_bp_pass_through() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
 
-    let plan = DiskGraphTTPlan {
-        entity: EntitySpec {
+    let plan = DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "users".to_string(),
             column: "user_id".to_string(),
             output_time_col_name: None,
@@ -5046,8 +5047,8 @@ fn integ_bp_pass_through() {
                 rhs: RowFilterRhs::Constant(Value::Int(2)),
             }),
         },
-        temporal: Some(TemporalSpec {
-            timestamps: vec![1234],
+        temporal: Some(TemporalSpec::<Seconds> {
+            timestamps: vec![Abs::from_raw(1234)],
             forecast_length: 1,
             lag_timesteps: None,
         }),
@@ -5077,12 +5078,12 @@ fn integ_bp_pseudo_time_injection() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
 
-    let plan = DiskGraphTTPlan {
-        entity: EntitySpec {
+    let plan = DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "users".to_string(),
             column: "user_id".to_string(),
             output_time_col_name: Some("PSEUDO_TIMESTAMP".to_string()),
-            default_time_value: Some(100_000_000_000_000),
+            default_time_value: Some(Abs::from_raw(100_000_000_000_000)),
             time_col: None,
             valid_to_col: None,
             filter: None,
@@ -5116,7 +5117,7 @@ fn integ_bp_is_null_filter() {
     let index = build_graph1(dir.path());
 
     let plan = g1_plan(vec![
-        Stage {
+        Stage::<Seconds> {
             ops: vec![agg_orders_price("f_price", AggFunc::First, Some((0, 5000)))],
             filter: Some(StageFilter::Compare {
                 alias: "f_price".to_string(),
@@ -5125,7 +5126,7 @@ fn integ_bp_is_null_filter() {
             }),
         },
         // Dummy target so the test framework target extractor doesn't complain.
-        Stage {
+        Stage::<Seconds> {
             ops: vec![Op::Column {
                 alias: "dummy".to_string(),
                 table: "users".to_string(),
@@ -5147,7 +5148,7 @@ fn integ_bp_is_not_null_filter() {
     let index = build_graph1(dir.path());
 
     let plan = g1_plan(vec![
-        Stage {
+        Stage::<Seconds> {
             ops: vec![agg_orders_price("f_price", AggFunc::First, Some((0, 5000)))],
             filter: Some(StageFilter::Compare {
                 alias: "f_price".to_string(),
@@ -5155,7 +5156,7 @@ fn integ_bp_is_not_null_filter() {
                 rhs: StageFilterRhs::Constant(Value::Int(0)), // ignored
             }),
         },
-        Stage {
+        Stage::<Seconds> {
             ops: vec![Op::Column {
                 alias: "dummy".to_string(),
                 table: "users".to_string(),
@@ -5177,8 +5178,8 @@ fn integ_bp_forecasting_multiple_lags() {
     let index = build_graph1(dir.path());
 
     // Base timestamp is 3000
-    let plan = DiskGraphTTPlan {
-        entity: EntitySpec {
+    let plan = DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "users".to_string(),
             column: "user_id".to_string(),
             output_time_col_name: None,
@@ -5187,23 +5188,23 @@ fn integ_bp_forecasting_multiple_lags() {
             valid_to_col: None,
             filter: None,
         },
-        temporal: Some(TemporalSpec {
-            timestamps: vec![3000],
+        temporal: Some(TemporalSpec::<Seconds> {
+            timestamps: vec![Abs::from_raw(3000)],
             forecast_length: 1,
             lag_timesteps: Some(2),
         }),
         prediction_type: PredictionType::Forecasting,
-        stages: vec![Stage {
+        stages: vec![Stage::<Seconds> {
             ops: vec![
                 Op::Autoregression {
                     alias: "AUTOREGRESSION_COL".to_string(),
                     target_op: Box::new(agg_orders_price("inner", AggFunc::Sum, Some((0, 200)))),
-                    lag_offsets: vec![0, -1000], // evaluate at ts=3000, ts=2000
+                    lag_offsets: vec![Dur::from_raw(0), Dur::from_raw(-1000)], // evaluate at ts=3000, ts=2000
                 },
                 Op::Autoregression {
                     alias: "YOY_COL".to_string(),
                     target_op: Box::new(agg_orders_price("inner", AggFunc::Sum, Some((0, 200)))),
-                    lag_offsets: vec![-2000], // evaluate at ts=1000
+                    lag_offsets: vec![Dur::from_raw(-2000)], // evaluate at ts=1000
                 },
             ],
             filter: None,
@@ -5421,9 +5422,9 @@ fn build_graph_orphan_fk(root: &Path) -> PathBuf {
 /// Build a LP `ListDistinct(orders.product_id)` plan with configurable
 /// `target_entity_table`. Array-mode output with frequency so we can use
 /// `read_output_rows_array` to verify the collected set.
-fn orphan_ld_plan(target_entity_table: Option<String>) -> DiskGraphTTPlan {
-    DiskGraphTTPlan {
-        entity: EntitySpec {
+fn orphan_ld_plan(target_entity_table: Option<String>) -> DiskGraphTTPlan<Seconds> {
+    DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "users".to_string(),
             column: "user_id".to_string(),
             output_time_col_name: None,
@@ -5438,7 +5439,7 @@ fn orphan_ld_plan(target_entity_table: Option<String>) -> DiskGraphTTPlan {
             include_frequency: true,
         },
         split: None,
-        stages: vec![Stage {
+        stages: vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "ld".to_string(),
                 path: vec![EdgeRef {
@@ -5536,8 +5537,8 @@ fn integ_non_listdistinct_ignores_target_entity_table() {
     // Sum of all order prices for user 0: 100 + 200 + 300 + 400 = 1000.
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph_orphan_fk(dir.path());
-    let plan = DiskGraphTTPlan {
-        entity: EntitySpec {
+    let plan = DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "users".to_string(),
             column: "user_id".to_string(),
             output_time_col_name: None,
@@ -5549,7 +5550,7 @@ fn integ_non_listdistinct_ignores_target_entity_table() {
         temporal: None,
         prediction_type: PredictionType::Node,
         split: None,
-        stages: vec![Stage {
+        stages: vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "s".to_string(),
                 path: vec![EdgeRef {
@@ -5585,9 +5586,9 @@ fn integ_non_listdistinct_ignores_target_entity_table() {
 fn orphan_ld_plan_with_row_filter(
     target_entity_table: Option<String>,
     row_filter: Option<RowFilter>,
-) -> DiskGraphTTPlan {
-    DiskGraphTTPlan {
-        entity: EntitySpec {
+) -> DiskGraphTTPlan<Seconds> {
+    DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "users".to_string(),
             column: "user_id".to_string(),
             output_time_col_name: None,
@@ -5602,7 +5603,7 @@ fn orphan_ld_plan_with_row_filter(
             include_frequency: true,
         },
         split: None,
-        stages: vec![Stage {
+        stages: vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "ld".to_string(),
                 path: vec![EdgeRef {
@@ -6241,9 +6242,9 @@ fn build_graph_temporal_orphan(root: &Path) -> PathBuf {
     index_dir
 }
 
-fn temporal_orphan_ld_plan(target_entity_table: Option<String>, obs_ts: i64) -> DiskGraphTTPlan {
-    DiskGraphTTPlan {
-        entity: EntitySpec {
+fn temporal_orphan_ld_plan(target_entity_table: Option<String>, obs_ts: i64) -> DiskGraphTTPlan<Seconds> {
+    DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
             table: "users".to_string(),
             column: "user_id".to_string(),
             output_time_col_name: None,
@@ -6252,8 +6253,8 @@ fn temporal_orphan_ld_plan(target_entity_table: Option<String>, obs_ts: i64) -> 
             valid_to_col: None,
             filter: None,
         },
-        temporal: Some(TemporalSpec {
-            timestamps: vec![obs_ts],
+        temporal: Some(TemporalSpec::<Seconds> {
+            timestamps: vec![Abs::from_raw(obs_ts)],
             forecast_length: 86400, // 1 day
             lag_timesteps: None,
         }),
@@ -6262,7 +6263,7 @@ fn temporal_orphan_ld_plan(target_entity_table: Option<String>, obs_ts: i64) -> 
             include_frequency: true,
         },
         split: None,
-        stages: vec![Stage {
+        stages: vec![Stage::<Seconds> {
             ops: vec![Op::Aggregate {
                 alias: "ld".to_string(),
                 path: vec![EdgeRef {

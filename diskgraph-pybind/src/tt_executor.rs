@@ -55,6 +55,7 @@ use arrow_array::types::Int64Type;
 use arrow_schema::{DataType, Field, Schema};
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use crossbeam_channel::Receiver;
+use diskgraph_core::time::Seconds;
 use diskgraph_core::tt_builder::DiskGraphTTPlan;
 use diskgraph_train_table::errors::TTGenResult;
 use diskgraph_train_table::ttgen_stats::TTExecutionSummary;
@@ -332,7 +333,7 @@ pub fn execute_tt_plan(
     index_path: &str,
 ) -> PyResult<TTPlanIterator> {
     info!("Legacy execute_tt_plan started");
-    let plan: DiskGraphTTPlan = serde_json::from_str(plan_json)
+    let plan: DiskGraphTTPlan<Seconds> = serde_json::from_str(plan_json)
         .map_err(|e| crate::DiskgraphConfigError::new_err(format!("invalid plan JSON: {e}")))?;
 
     let idx = index_path.to_owned();
@@ -3872,7 +3873,7 @@ pub fn execute_tt_plan_materialize_with_split(
     downsampling_config_json: Option<&str>,
 ) -> PyResult<Py<PyAny>> {
     let overall_start = std::time::Instant::now();
-    let plan: DiskGraphTTPlan = serde_json::from_str(plan_json)
+    let plan: DiskGraphTTPlan<Seconds> = serde_json::from_str(plan_json)
         .map_err(|e| crate::DiskgraphConfigError::new_err(format!("invalid plan JSON: {e}")))?;
 
     let split_cfg: Option<Value> = match split_config_json {

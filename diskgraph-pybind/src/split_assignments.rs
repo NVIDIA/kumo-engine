@@ -1,12 +1,16 @@
-use chrono::{DateTime, Months, TimeZone, Utc};
+use diskgraph_core::time::{add_offset, Abs, Nanoseconds, TimeUnit};
 use pyo3::prelude::*;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use std::collections::{HashMap, HashSet};
 
+/// Nanosecond-unit absolute timestamp. All split functions work in this unit
+/// because Arrow provides `TimestampNanosecondArray` and the Python caller
+/// converts boundaries to nanoseconds via `to_nanoseconds()`.
+type AbsNs = Abs<Nanoseconds>;
+
 const UNUSED_STAGE_ID: u8 = 255;
-const NS_PER_SEC: i64 = 1_000_000_000;
 
 fn stage_assignments_by_ratio_on_perm(
     row_count: usize,
@@ -89,56 +93,16 @@ fn stage_assignments_by_ratio_on_perm(
     Ok(assignments)
 }
 
-fn ns_to_dt(ts_ns: i64) -> PyResult<DateTime<Utc>> {
-    let secs = ts_ns.div_euclid(NS_PER_SEC);
-    let nanos = ts_ns.rem_euclid(NS_PER_SEC) as u32;
-    Utc.timestamp_opt(secs, nanos).single().ok_or_else(|| {
-        crate::DiskgraphConfigError::new_err(format!("invalid timestamp ns: {}", ts_ns))
-    })
-}
-
-fn dt_to_ns(dt: DateTime<Utc>) -> PyResult<i64> {
-    dt.timestamp_nanos_opt()
-        .ok_or_else(|| crate::DiskgraphConfigError::new_err("timestamp nanos overflow"))
-}
-
-fn add_unit(ts_ns: i64, unit: &str, value: i64) -> PyResult<i64> {
-    match unit {
-        "seconds" => Ok(ts_ns.saturating_add(value.saturating_mul(NS_PER_SEC))),
-        "minutes" => Ok(ts_ns.saturating_add(value.saturating_mul(60 * NS_PER_SEC))),
-        "hours" => Ok(ts_ns.saturating_add(value.saturating_mul(3600 * NS_PER_SEC))),
-        "days" => Ok(ts_ns.saturating_add(value.saturating_mul(86_400 * NS_PER_SEC))),
-        "weeks" => Ok(ts_ns.saturating_add(value.saturating_mul(7 * 86_400 * NS_PER_SEC))),
-        "milliseconds" => Ok(ts_ns.saturating_add(value.saturating_mul(1_000_000))),
-        "microseconds" => Ok(ts_ns.saturating_add(value.saturating_mul(1_000))),
-        "nanoseconds" => Ok(ts_ns.saturating_add(value)),
-        "months" => {
-            let dt = ns_to_dt(ts_ns)?;
-            let months = value.unsigned_abs() as u32;
-            let out = if value >= 0 {
-                dt.checked_add_months(Months::new(months))
-            } else {
-                dt.checked_sub_months(Months::new(months))
-            }
-            .ok_or_else(|| crate::DiskgraphConfigError::new_err("month offset overflow"))?;
-            dt_to_ns(out)
-        }
-        "years" => {
-            let dt = ns_to_dt(ts_ns)?;
-            let months = value.saturating_mul(12).unsigned_abs() as u32;
-            let out = if value >= 0 {
-                dt.checked_add_months(Months::new(months))
-            } else {
-                dt.checked_sub_months(Months::new(months))
-            }
-            .ok_or_else(|| crate::DiskgraphConfigError::new_err("year offset overflow"))?;
-            dt_to_ns(out)
-        }
-        other => Err(crate::DiskgraphConfigError::new_err(format!(
-            "unsupported time unit: {}",
-            other
-        ))),
-    }
+/// Parse a unit name string and add an offset to a typed nanosecond timestamp.
+///
+/// Delegates to [`add_offset`] which handles both fixed-size units (seconds
+/// through weeks) via pure arithmetic and calendar units (months/years) via
+/// chrono-based calendar arithmetic.
+fn add_offset_ns(ts: AbsNs, unit_str: &str, value: i64) -> PyResult<AbsNs> {
+    let unit = TimeUnit::from_name(unit_str).ok_or_else(|| {
+        crate::DiskgraphConfigError::new_err(format!("unsupported time unit: {}", unit_str))
+    })?;
+    Ok(add_offset(ts, unit, value))
 }
 
 #[pyfunction]
@@ -252,9 +216,10 @@ pub fn assign_manual_split(
 
 #[pyfunction]
 pub fn assign_backtesting_split(timestamps_ns: Vec<i64>, target_timestamp_ns: i64) -> Vec<u8> {
+    let target = AbsNs::from_raw(target_timestamp_ns);
     let mut out = vec![UNUSED_STAGE_ID; timestamps_ns.len()];
-    for (i, ts) in timestamps_ns.iter().enumerate() {
-        if *ts == target_timestamp_ns {
+    for (i, raw) in timestamps_ns.iter().enumerate() {
+        if AbsNs::from_raw(*raw) == target {
             out[i] = 2;
         }
     }
@@ -276,13 +241,16 @@ pub fn assign_approx_date_offset_split(
         ));
     }
 
-    let mut counts: HashMap<i64, usize> = HashMap::new();
-    for ts in &timestamps_ns {
+    // Convert to typed timestamps for grouping/sorting
+    let typed: Vec<AbsNs> = timestamps_ns.iter().map(|&v| AbsNs::from_raw(v)).collect();
+
+    let mut counts: HashMap<AbsNs, usize> = HashMap::new();
+    for ts in &typed {
         *counts.entry(*ts).or_insert(0usize) += 1;
     }
 
-    let mut groups: Vec<(i64, usize)> = counts.into_iter().collect();
-    groups.sort_by_key(|group| group.0);
+    let mut groups: Vec<(AbsNs, usize)> = counts.into_iter().collect();
+    groups.sort_by_key(|a| a.0);
 
     let total_rows: usize = groups.iter().map(|(_, c)| *c).sum();
     if total_rows == 0 {
@@ -316,7 +284,7 @@ pub fn assign_approx_date_offset_split(
         val_test_idx = Some(idx);
     }
 
-    let mut stage_by_ts: HashMap<i64, u8> = HashMap::new();
+    let mut stage_by_ts: HashMap<AbsNs, u8> = HashMap::new();
     for (i, (ts, _)) in groups.iter().enumerate() {
         let stage = if i <= train_val_idx {
             0u8
@@ -333,7 +301,7 @@ pub fn assign_approx_date_offset_split(
         stage_by_ts.insert(*ts, stage);
     }
 
-    Ok(timestamps_ns
+    Ok(typed
         .iter()
         .map(|ts| *stage_by_ts.get(ts).unwrap_or(&UNUSED_STAGE_ID))
         .collect())
@@ -358,8 +326,10 @@ pub fn assign_date_offset_split(
         return Ok(Vec::new());
     }
 
-    let min_ts = *timestamps_ns.iter().min().unwrap();
-    let max_ts = *timestamps_ns.iter().max().unwrap();
+    // Convert to typed timestamps at the PyO3 boundary
+    let typed: Vec<AbsNs> = timestamps_ns.iter().map(|&v| AbsNs::from_raw(v)).collect();
+    let min_ts = *typed.iter().min().unwrap();
+    let max_ts = *typed.iter().max().unwrap();
 
     let tf = match timeframe {
         Some(v) => v,
@@ -372,19 +342,19 @@ pub fn assign_date_offset_split(
         }
     };
 
-    let mut boundaries: Vec<i64> = vec![min_ts];
+    let mut boundaries: Vec<AbsNs> = vec![min_ts];
     for off in &offsets {
-        boundaries.push(add_unit(max_ts, offset_unit, *off)?);
+        boundaries.push(add_offset_ns(max_ts, offset_unit, *off)?);
     }
-    boundaries.push(add_unit(
+    boundaries.push(add_offset_ns(
         max_ts,
         unit,
         tf.saturating_add(anchor_start_offset),
     )?);
 
-    let mut out = vec![UNUSED_STAGE_ID; timestamps_ns.len()];
-    for (i, ts) in timestamps_ns.iter().enumerate() {
-        let shifted = add_unit(add_unit(*ts, unit, tf)?, unit, anchor_start_offset)?;
+    let mut out = vec![UNUSED_STAGE_ID; typed.len()];
+    for (i, ts) in typed.iter().enumerate() {
+        let shifted = add_offset_ns(add_offset_ns(*ts, unit, tf)?, unit, anchor_start_offset)?;
         for (split_idx, (start, end)) in
             boundaries.iter().zip(boundaries.iter().skip(1)).enumerate()
         {
@@ -419,9 +389,14 @@ pub fn assign_time_range_split(
         ));
     }
 
-    let mut out = vec![UNUSED_STAGE_ID; timestamps_ns.len()];
-    for (i, ts) in timestamps_ns.iter().enumerate() {
-        for split_idx in 0..ranges_start_ns.len().min(3) {
+    // Convert to typed timestamps at the PyO3 boundary
+    let typed: Vec<AbsNs> = timestamps_ns.iter().map(|&v| AbsNs::from_raw(v)).collect();
+    let starts: Vec<AbsNs> = ranges_start_ns.iter().map(|&v| AbsNs::from_raw(v)).collect();
+    let ends: Vec<AbsNs> = ranges_end_ns.iter().map(|&v| AbsNs::from_raw(v)).collect();
+
+    let mut out = vec![UNUSED_STAGE_ID; typed.len()];
+    for (i, ts) in typed.iter().enumerate() {
+        for split_idx in 0..starts.len().min(3) {
             let stage_id = if split_idx == 0 {
                 0u8
             } else if split_idx == 1 {
@@ -429,10 +404,10 @@ pub fn assign_time_range_split(
             } else {
                 2u8
             };
-            let start = ranges_start_ns[split_idx];
-            let end = ranges_end_ns[split_idx];
+            let start = starts[split_idx];
+            let end = ends[split_idx];
             let cond = if let Some(tf) = timeframe {
-                let shifted = add_unit(add_unit(*ts, unit, tf)?, unit, anchor_start_offset)?;
+                let shifted = add_offset_ns(add_offset_ns(*ts, unit, tf)?, unit, anchor_start_offset)?;
                 *ts >= start && shifted <= end
             } else {
                 *ts > start && *ts <= end
@@ -471,5 +446,71 @@ mod tests {
         assert_eq!(a.iter().filter(|x| **x == 0).count(), 16);
         assert_eq!(a.iter().filter(|x| **x == 1).count(), 2);
         assert_eq!(a.iter().filter(|x| **x == 2).count(), 2);
+    }
+
+    #[test]
+    fn test_add_offset_ns_days() {
+        let ts = AbsNs::from_raw(1_000_000_000_000i64); // 1000 seconds in nanos
+        let result = add_offset_ns(ts, "days", 1).unwrap();
+        assert_eq!(result.raw(), 1_000_000_000_000 + 86_400_000_000_000);
+    }
+
+    #[test]
+    fn test_add_offset_ns_seconds() {
+        let ts = AbsNs::from_raw(0);
+        let result = add_offset_ns(ts, "seconds", 5).unwrap();
+        assert_eq!(result.raw(), 5_000_000_000);
+    }
+
+    #[test]
+    fn test_add_offset_ns_invalid_unit() {
+        let ts = AbsNs::from_raw(0);
+        assert!(add_offset_ns(ts, "invalid_unit", 1).is_err());
+    }
+
+    #[test]
+    fn test_backtesting_split_typed() {
+        // Timestamps in nanoseconds
+        let timestamps_ns = vec![
+            1_000_000_000_000i64,
+            2_000_000_000_000,
+            3_000_000_000_000,
+            2_000_000_000_000,
+        ];
+        let result = assign_backtesting_split(timestamps_ns, 2_000_000_000_000);
+        assert_eq!(result, vec![255, 2, 255, 2]);
+    }
+
+    #[test]
+    fn test_time_range_split_typed() {
+        // Two ranges: [1000s, 2000s] and [2000s, 3000s] in nanoseconds
+        let timestamps_ns = vec![
+            1_500_000_000_000i64,
+            2_500_000_000_000,
+            500_000_000_000,
+        ];
+        let starts = vec![1_000_000_000_000i64, 2_000_000_000_000];
+        let ends = vec![2_000_000_000_000i64, 3_000_000_000_000];
+        let result = assign_time_range_split(timestamps_ns, starts, ends, None, "days", 0).unwrap();
+        // ts > start && ts <= end: 1500 > 1000 && 1500 <= 2000 -> stage 0
+        // 2500 > 2000 && 2500 <= 3000 -> stage 1
+        // 500 > 1000 is false -> UNUSED
+        assert_eq!(result, vec![0, 1, 255]);
+    }
+
+    #[test]
+    fn test_approx_date_offset_split_typed() {
+        // 5 timestamps, ratio 0.6/0.4
+        let timestamps_ns = vec![
+            1_000_000_000_000i64,
+            2_000_000_000_000,
+            3_000_000_000_000,
+            4_000_000_000_000,
+            5_000_000_000_000,
+        ];
+        let result = assign_approx_date_offset_split(timestamps_ns, vec![0.6, 0.4]).unwrap();
+        // 60% of 5 = 3 rows in train, 2 in val
+        assert_eq!(result.iter().filter(|&&x| x == 0).count(), 3);
+        assert_eq!(result.iter().filter(|&&x| x == 1).count(), 2);
     }
 }

@@ -12,6 +12,7 @@
 
 use pyo3::prelude::*;
 
+use diskgraph_core::time::{abs_from_unit, dur_from_unit, Abs, Seconds};
 use diskgraph_core::tt_builder as tt;
 
 // ─── EdgeRef ─────────────────────────────────────────────────────────────────
@@ -294,12 +295,12 @@ impl StageFilter {
 
 #[pyclass]
 pub struct DiskGraphTTBuilder {
-    entity: Option<tt::EntitySpec>,
-    temporal: Option<tt::TemporalSpec>,
+    entity: Option<tt::EntitySpec<Seconds>>,
+    temporal: Option<tt::TemporalSpec<Seconds>>,
     prediction_type: tt::PredictionType,
-    split: Option<tt::SplitSpec>,
-    stages: Vec<tt::Stage>,
-    current_ops: Vec<tt::Op>,
+    split: Option<tt::SplitSpec<Seconds>>,
+    stages: Vec<tt::Stage<Seconds>>,
+    current_ops: Vec<tt::Op<Seconds>>,
 }
 
 #[pymethods]
@@ -329,7 +330,7 @@ impl DiskGraphTTBuilder {
             table,
             column,
             output_time_col_name,
-            default_time_value,
+            default_time_value: default_time_value.map(Abs::from_raw),
             time_col: None,
             valid_to_col: None,
             filter: None,
@@ -375,16 +376,23 @@ impl DiskGraphTTBuilder {
         }
     }
 
-    /// Timestamp windows. `timestamps`: list of epoch microseconds.
-    #[pyo3(signature = (timestamps, forecast_length, lag_timesteps=None))]
+    /// Set anchor timestamps. `unit` declares the source unit of the raw i64
+    /// values (e.g. "seconds", "nanoseconds"). Rust converts to the index
+    /// unit system internally.
+    #[pyo3(signature = (timestamps, forecast_length, lag_timesteps=None, unit="seconds"))]
     fn temporal(
         &mut self,
         timestamps: Vec<i64>,
         forecast_length: i64,
         lag_timesteps: Option<i64>,
+        unit: &str,
     ) -> PyResult<()> {
+        let time_unit = parse_time_unit(unit)?;
         self.temporal = Some(tt::TemporalSpec {
-            timestamps,
+            timestamps: timestamps
+                .into_iter()
+                .map(|v| abs_from_unit::<Seconds>(v, time_unit))
+                .collect(),
             forecast_length,
             lag_timesteps,
         });
@@ -397,6 +405,9 @@ impl DiskGraphTTBuilder {
     }
 
     /// Optional split metadata for native split payload derivation.
+    /// `offset_unit` declares the unit for `offsets` (default "days").
+    /// `range_unit` declares the unit for `ranges` and `backtesting_timestamp`
+    /// (default "seconds").
     #[pyo3(signature = (
         ratio,
         kind=None,
@@ -408,7 +419,9 @@ impl DiskGraphTTBuilder {
         split_column=None,
         manual_train_values=None,
         manual_val_values=None,
-        manual_test_values=None
+        manual_test_values=None,
+        offset_unit="days",
+        range_unit="seconds"
     ))]
     #[allow(clippy::too_many_arguments)]
     fn split_ratio(
@@ -424,6 +437,8 @@ impl DiskGraphTTBuilder {
         manual_train_values: Option<Vec<String>>,
         manual_val_values: Option<Vec<String>>,
         manual_test_values: Option<Vec<String>>,
+        offset_unit: &str,
+        range_unit: &str,
     ) -> PyResult<()> {
         if let Some(ratio_vals) = ratio.as_ref() {
             if ratio_vals.len() < 2 || ratio_vals.len() > 3 {
@@ -437,14 +452,30 @@ impl DiskGraphTTBuilder {
                 ));
             }
         }
+        let off_unit = parse_time_unit(offset_unit)?;
+        let rng_unit = parse_time_unit(range_unit)?;
         self.split = Some(tt::SplitSpec {
             ratio,
             kind,
             rnd_seed,
             is_temporal,
-            offsets,
-            ranges,
-            backtesting_timestamp,
+            offsets: offsets.map(|v| {
+                v.into_iter()
+                    .map(|o| dur_from_unit::<Seconds>(o, off_unit))
+                    .collect()
+            }),
+            ranges: ranges.map(|v| {
+                v.into_iter()
+                    .map(|(lo, hi)| {
+                        (
+                            abs_from_unit::<Seconds>(lo, rng_unit),
+                            abs_from_unit::<Seconds>(hi, rng_unit),
+                        )
+                    })
+                    .collect()
+            }),
+            backtesting_timestamp: backtesting_timestamp
+                .map(|v| abs_from_unit::<Seconds>(v, rng_unit)),
             split_column,
             manual_train_values,
             manual_val_values,
@@ -559,21 +590,24 @@ impl DiskGraphTTBuilder {
         Ok(())
     }
 
-    #[pyo3(signature = (alias, target_op_json, lag_offsets))]
+    /// `lag_offset_unit` declares the unit for `lag_offsets` (default "seconds").
+    #[pyo3(signature = (alias, target_op_json, lag_offsets, lag_offset_unit="seconds"))]
     pub fn autoregression(
         &mut self,
         alias: String,
         target_op_json: String,
         lag_offsets: Vec<i64>,
+        lag_offset_unit: &str,
     ) -> PyResult<()> {
-        let target_op: tt::Op = serde_json::from_str(&target_op_json).map_err(|e| {
+        let target_op: tt::Op<Seconds> = serde_json::from_str(&target_op_json).map_err(|e| {
             crate::DiskgraphConfigError::new_err(format!("Invalid target op JSON: {}", e))
         })?;
 
+        let unit = parse_time_unit(lag_offset_unit)?;
         self.current_ops.push(tt::Op::Autoregression {
             alias,
             target_op: Box::new(target_op),
-            lag_offsets,
+            lag_offsets: lag_offsets.into_iter().map(|v| dur_from_unit::<Seconds>(v, unit)).collect(),
         });
         Ok(())
     }
@@ -633,7 +667,7 @@ impl DiskGraphTTBuilder {
             crate::DiskgraphConfigError::new_err("call for_each() before build()")
         })?;
 
-        let plan = tt::DiskGraphTTPlan {
+        let plan: tt::DiskGraphTTPlan<Seconds> = tt::DiskGraphTTPlan {
             entity,
             temporal: self.temporal.take(),
             prediction_type: std::mem::replace(&mut self.prediction_type, tt::PredictionType::Node),
@@ -684,6 +718,9 @@ fn parse_agg_func(func: &str) -> PyResult<tt::AggFunc> {
 fn parse_time_unit(unit: &str) -> PyResult<tt::TimeUnit> {
     match unit.to_lowercase().as_str() {
         "seconds" | "second" | "s" => Ok(tt::TimeUnit::Seconds),
+        "milliseconds" | "millisecond" | "ms" => Ok(tt::TimeUnit::Milliseconds),
+        "microseconds" | "microsecond" | "us" => Ok(tt::TimeUnit::Microseconds),
+        "nanoseconds" | "nanosecond" | "ns" => Ok(tt::TimeUnit::Nanoseconds),
         "minutes" | "minute" | "min" => Ok(tt::TimeUnit::Minutes),
         "hours" | "hour" | "h" => Ok(tt::TimeUnit::Hours),
         "days" | "day" | "d" => Ok(tt::TimeUnit::Days),

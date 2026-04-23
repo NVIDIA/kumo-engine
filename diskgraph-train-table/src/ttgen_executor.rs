@@ -1,6 +1,6 @@
 //! TT-gen executor: drives the entity loop, staged execution, and threading.
 //!
-//! Entry point: [`execute`] takes a `DiskGraphTTPlan` and an index path,
+//! Entry point: [`execute`] takes a `DiskGraphTTPlan<U>` and an index path,
 //! returns output Parquet shard paths.
 
 use std::collections::{HashMap, HashSet};
@@ -12,32 +12,16 @@ use arrow_array::RecordBatch;
 use arrow_schema::DataType;
 use crossbeam_channel::{bounded, Receiver, Sender};
 use diskgraph_core::accumulators::WelfordAccumulator;
+use diskgraph_core::time::{Abs, Dur, UnitSystem, add_calendar_months};
 use diskgraph_core::tt_builder::*;
 use diskgraph_index::graph::GraphIndexReader;
 use rayon::prelude::*;
-
-use chrono::{DateTime, Months};
 
 use crate::ttgen_accumulator::{hash_value, Accumulator};
 use crate::ttgen_filter::{compare_values, eval_row_filter, eval_stage_filter};
 use crate::ttgen_output::{ChannelBatchWriter, OutputMode};
 use crate::ttgen_resolve::*;
 use crate::ttgen_stats::{ChunkStats, StatsMerger, TTExecutionSummary};
-
-/// Add calendar months to an epoch-seconds timestamp.
-/// Matches Kumo's `pd.DateOffset(months=N)` behavior.
-fn add_calendar_months(epoch_secs: i64, months: i32) -> i64 {
-    let dt = DateTime::from_timestamp(epoch_secs, 0)
-        .expect("invalid epoch timestamp for calendar month computation");
-    let result = if months >= 0 {
-        dt.checked_add_months(Months::new(months as u32))
-            .expect("calendar month addition overflow")
-    } else {
-        dt.checked_sub_months(Months::new((-months) as u32))
-            .expect("calendar month subtraction overflow")
-    };
-    result.timestamp()
-}
 use crate::ttgen_traversal::*;
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -49,8 +33,8 @@ use crate::ttgen_traversal::*;
 /// produce them. The caller should iterate until the receiver is exhausted.
 /// A background thread is spawned to drive the rayon parallel executor;
 /// it is joined via the returned `JoinHandle`.
-pub fn execute(
-    plan: &DiskGraphTTPlan,
+pub fn execute<U: UnitSystem>(
+    plan: &DiskGraphTTPlan<U>,
     index_path: &Path,
 ) -> TTGenResult<(
     Receiver<RecordBatch>,
@@ -67,8 +51,8 @@ pub fn execute(
 }
 
 /// Execute a TT-gen plan and return a rich summary payload.
-pub fn execute_with_summary(
-    plan: &DiskGraphTTPlan,
+pub fn execute_with_summary<U: UnitSystem>(
+    plan: &DiskGraphTTPlan<U>,
     index_path: &Path,
 ) -> TTGenResult<(
     Receiver<RecordBatch>,
@@ -114,9 +98,18 @@ pub fn execute_with_summary(
         .as_ref()
         .and_then(|s| s.is_temporal)
         .unwrap_or(false);
-    let split_offsets = plan.split.as_ref().and_then(|s| s.offsets.clone());
-    let split_ranges = plan.split.as_ref().and_then(|s| s.ranges.clone());
-    let split_backtesting_timestamp = plan.split.as_ref().and_then(|s| s.backtesting_timestamp);
+    let split_offsets: Option<Vec<Dur<U>>> = plan
+        .split
+        .as_ref()
+        .and_then(|s| s.offsets.clone());
+    let split_ranges: Option<Vec<(Abs<U>, Abs<U>)>> = plan
+        .split
+        .as_ref()
+        .and_then(|s| s.ranges.clone());
+    let split_backtesting_timestamp: Option<Abs<U>> = plan
+        .split
+        .as_ref()
+        .and_then(|s| s.backtesting_timestamp);
     let split_column = plan.split.as_ref().and_then(|s| s.split_column.clone());
     let manual_train_values = plan
         .split
@@ -133,7 +126,7 @@ pub fn execute_with_summary(
 
     let handle = std::thread::spawn(move || {
         // Parallel execution with fine-grained chunks
-        let results: Vec<TTGenResult<(u64, ChunkStats)>> = (0..num_chunks)
+        let results: Vec<TTGenResult<(u64, ChunkStats<U>)>> = (0..num_chunks)
             .into_par_iter()
             .map(|chunk_idx| {
                 let start = chunk_idx as u64 * num_entities / num_chunks as u64;
@@ -147,7 +140,7 @@ pub fn execute_with_summary(
 
         // Check for errors and report
         let mut total_rows = 0u64;
-        let mut stats = StatsMerger::default();
+        let mut stats: StatsMerger<U> = StatsMerger::default();
         for (i, result) in results.into_iter().enumerate() {
             match result {
                 Ok((rows, chunk_stats)) => {
@@ -220,11 +213,11 @@ fn output_mode_from_prediction_type(
     }
 }
 
-fn execute_chunk(
-    plan: &ResolvedPlan,
+fn execute_chunk<U: UnitSystem>(
+    plan: &ResolvedPlan<U>,
     entity_range: std::ops::Range<u64>,
     sender: &Sender<RecordBatch>,
-) -> TTGenResult<(u64, ChunkStats)> {
+) -> TTGenResult<(u64, ChunkStats<U>)> {
     let mode = output_mode_from_prediction_type(
         &plan.prediction_type,
         plan.target_dtype.clone(),
@@ -248,7 +241,7 @@ fn execute_chunk(
     let mut aliases: Vec<Option<Value>> = vec![None; plan.num_aliases];
     // Thread-local frequency counts for ListDistinct (reused across entities)
     let mut link_frequencies: Vec<i64> = Vec::new();
-    let mut stats = ChunkStats::default();
+    let mut stats: ChunkStats<U> = ChunkStats::default();
 
     for entity_node in entity_range {
         execute_entity(
@@ -268,13 +261,13 @@ fn execute_chunk(
 
 // ─── Per-entity execution ────────────────────────────────────────────────────
 
-fn execute_entity(
-    plan: &ResolvedPlan,
+fn execute_entity<U: UnitSystem>(
+    plan: &ResolvedPlan<U>,
     entity_node: u64,
     aliases: &mut [Option<Value>],
     link_frequencies: &mut Vec<i64>,
-    writer: &mut ChannelBatchWriter,
-    stats: &mut ChunkStats,
+    writer: &mut ChannelBatchWriter<U>,
+    stats: &mut ChunkStats<U>,
 ) -> TTGenResult<()> {
     // 0. Look up the entity PK value for output
     let entity_pk = read_column_value(&plan.entity_table, entity_node, plan.entity_pk_col_idx)
@@ -287,12 +280,14 @@ fn execute_entity(
     }
 
     // 1. Read entity time_col and valid_to_col
-    let time_col_val: Option<i64> = plan
+    let time_col_val: Option<Abs<U>> = plan
         .entity_time_col_idx
-        .and_then(|idx| read_column_i64(&plan.entity_table, entity_node, idx));
-    let valid_to_val: Option<i64> = plan
+        .and_then(|idx| read_column_i64(&plan.entity_table, entity_node, idx))
+        .map(Abs::<U>::from_secs);
+    let valid_to_val: Option<Abs<U>> = plan
         .entity_valid_to_col_idx
-        .and_then(|idx| read_column_i64(&plan.entity_table, entity_node, idx));
+        .and_then(|idx| read_column_i64(&plan.entity_table, entity_node, idx))
+        .map(Abs::<U>::from_secs);
 
     // 2. Pre-resolve entity column values (for filter RHS EntityColumn)
     let entity_cols: Vec<Option<Value>> = plan
@@ -316,7 +311,7 @@ fn execute_entity(
     if !plan.has_temporal {
         // Non-temporal: single row per entity.
         // Match Kumo drop_na_rows(TIMESTAMP): skip if entity time_col is NULL.
-        let default_ts = plan.entity_table_spec.default_time_value.unwrap_or(0);
+        let default_ts = plan.entity_table_spec.default_time_value.unwrap_or(Abs::<U>::from_raw(0));
         let ts = match (plan.entity_time_col_idx, time_col_val) {
             (Some(_), None) => return Ok(()), // time_col configured but NULL → drop
             (_, Some(t)) => t,
@@ -401,15 +396,15 @@ fn execute_entity(
 
 /// Write the target value(s) for one (entity, timestamp) pair.
 #[allow(clippy::too_many_arguments)]
-fn write_target(
-    plan: &ResolvedPlan,
+fn write_target<U: UnitSystem>(
+    plan: &ResolvedPlan<U>,
     entity_pk: &Value,
-    ts: i64,
+    ts: Abs<U>,
     aliases: &[Option<Value>],
     link_frequencies: &[i64],
     entity_include_bit: bool,
-    writer: &mut ChannelBatchWriter,
-    stats: &mut ChunkStats,
+    writer: &mut ChannelBatchWriter<U>,
+    stats: &mut ChunkStats<U>,
 ) -> TTGenResult<()> {
     match &plan.prediction_type {
         PredictionType::PassThrough => {
@@ -537,8 +532,14 @@ fn write_target(
                             stats.entities.insert(hash_value(entity_pk));
                             stats.timestamps.insert(ts);
                             *stats.timestamp_counts.entry(ts).or_insert(0) += 1;
-                            stats.timestamp_min = min_opt_i64(stats.timestamp_min, ts);
-                            stats.timestamp_max = max_opt_i64(stats.timestamp_max, ts);
+                            stats.timestamp_min = Some(match stats.timestamp_min {
+                                Some(existing) => existing.min(ts),
+                                None => ts,
+                            });
+                            stats.timestamp_max = Some(match stats.timestamp_max {
+                                Some(existing) => existing.max(ts),
+                                None => ts,
+                            });
                             if let Some(v) = value_to_i64_opt(entity_pk) {
                                 stats.entity_min = min_opt_i64(stats.entity_min, v);
                                 stats.entity_max = max_opt_i64(stats.entity_max, v);
@@ -561,10 +562,10 @@ fn write_target(
     Ok(())
 }
 
-fn update_exact_stats(
-    stats: &mut ChunkStats,
+fn update_exact_stats<U: UnitSystem>(
+    stats: &mut ChunkStats<U>,
     entity_pk: &Value,
-    ts: i64,
+    ts: Abs<U>,
     target: &Value,
     frequency: Option<i64>,
 ) {
@@ -573,8 +574,14 @@ fn update_exact_stats(
     stats.timestamps.insert(ts);
     *stats.timestamp_counts.entry(ts).or_insert(0) += 1;
 
-    stats.timestamp_min = min_opt_i64(stats.timestamp_min, ts);
-    stats.timestamp_max = max_opt_i64(stats.timestamp_max, ts);
+    stats.timestamp_min = Some(match stats.timestamp_min {
+        Some(existing) => existing.min(ts),
+        None => ts,
+    });
+    stats.timestamp_max = Some(match stats.timestamp_max {
+        Some(existing) => existing.max(ts),
+        None => ts,
+    });
 
     if let Some(v) = value_to_i64_opt(entity_pk) {
         stats.entity_min = min_opt_i64(stats.entity_min, v);
@@ -626,11 +633,11 @@ fn max_opt_i64(current: Option<i64>, value: i64) -> Option<i64> {
 ///
 /// `link_frequencies` is populated with occurrence counts when a `ListDistinct`
 /// aggregation runs. Only the last ListDistinct's counts are kept (the target).
-fn execute_stages(
-    plan: &ResolvedPlan,
+fn execute_stages<U: UnitSystem>(
+    plan: &ResolvedPlan<U>,
     entity_node: u64,
     entity_cols: &[Option<Value>],
-    observation_ts: Option<i64>,
+    observation_ts: Option<Abs<U>>,
     aliases: &mut [Option<Value>],
     link_frequencies: &mut Vec<i64>,
 ) -> bool {
@@ -703,7 +710,7 @@ fn execute_stages(
                 }
                 ResolvedOp::Autoregression(auto) => {
                     let mut results = Vec::with_capacity(auto.lag_offsets.len());
-                    let base_ts = observation_ts.unwrap_or(0);
+                    let base_ts = observation_ts.unwrap_or(Abs::<U>::from_raw(0));
 
                     if let ResolvedOp::Aggregate(ref agg) = *auto.target_op {
                         for &offset in &auto.lag_offsets {
@@ -747,23 +754,27 @@ fn execute_stages(
 
 // ─── Fast Existence Check (Null Emitting Target Logic) ───────────────────────
 
-fn execute_has_edges(
-    _plan: &ResolvedPlan,
+fn execute_has_edges<U: UnitSystem>(
+    _plan: &ResolvedPlan<U>,
     entity_node: u64,
-    has_edges: &ResolvedHasEdges,
+    has_edges: &ResolvedHasEdges<U>,
     entity_cols: &[Option<Value>],
-    observation_ts: Option<i64>,
+    observation_ts: Option<Abs<U>>,
 ) -> Option<Value> {
+    // SAFETY: encode_upper expects epoch-seconds (the index's internal unit).
+    // This is correct when U=Seconds. If the pipeline is ever monomorphized
+    // over a different unit (e.g. Nanoseconds), the encoder must be made
+    // unit-aware as part of the ingest/sampling unit awareness work.
     let window = has_edges.window.as_ref().map(|w| {
-        let obs = observation_ts.unwrap_or(0);
+        let obs = observation_ts.unwrap_or(Abs::<U>::from_raw(0));
         match w {
             ResolvedWindow::Fixed {
-                offset_lo_secs,
-                offset_hi_secs,
+                offset_lo,
+                offset_hi,
                 encoder,
             } => {
-                let lo = encoder.encode_upper(obs + offset_lo_secs);
-                let hi = encoder.encode_upper(obs + offset_hi_secs);
+                let lo = encoder.encode_upper((obs + *offset_lo).raw());
+                let hi = encoder.encode_upper((obs + *offset_hi).raw());
                 (lo, hi)
             }
             ResolvedWindow::Calendar {
@@ -771,10 +782,10 @@ fn execute_has_edges(
                 hi_months,
                 encoder,
             } => {
-                let lo_secs = add_calendar_months(obs, *lo_months);
-                let hi_secs = add_calendar_months(obs, *hi_months);
-                let lo = encoder.encode_upper(lo_secs);
-                let hi = encoder.encode_upper(hi_secs);
+                let lo_abs = add_calendar_months(obs, *lo_months);
+                let hi_abs = add_calendar_months(obs, *hi_months);
+                let lo = encoder.encode_upper(lo_abs.raw());
+                let hi = encoder.encode_upper(hi_abs.raw());
                 (lo, hi)
             }
         }
@@ -804,12 +815,12 @@ fn execute_has_edges(
 
 // ─── Aggregate execution (match-once monomorphization) ───────────────────────
 
-fn execute_aggregate(
-    _plan: &ResolvedPlan,
+fn execute_aggregate<U: UnitSystem>(
+    _plan: &ResolvedPlan<U>,
     entity_node: u64,
-    agg: &ResolvedAggregate,
+    agg: &ResolvedAggregate<U>,
     entity_cols: &[Option<Value>],
-    observation_ts: Option<i64>,
+    observation_ts: Option<Abs<U>>,
     link_frequencies: &mut Vec<i64>,
 ) -> Option<Value> {
     // Compute window bounds (sort key space).
@@ -819,15 +830,15 @@ fn execute_aggregate(
     // ensures edges exactly at the lower boundary are excluded and edges exactly
     // at the upper boundary are included.
     let window = agg.window.as_ref().map(|w| {
-        let obs = observation_ts.unwrap_or(0);
+        let obs = observation_ts.unwrap_or(Abs::<U>::from_raw(0));
         match w {
             ResolvedWindow::Fixed {
-                offset_lo_secs,
-                offset_hi_secs,
+                offset_lo,
+                offset_hi,
                 encoder,
             } => {
-                let lo = encoder.encode_upper(obs + offset_lo_secs);
-                let hi = encoder.encode_upper(obs + offset_hi_secs);
+                let lo = encoder.encode_upper((obs + *offset_lo).raw());
+                let hi = encoder.encode_upper((obs + *offset_hi).raw());
                 (lo, hi)
             }
             ResolvedWindow::Calendar {
@@ -835,10 +846,10 @@ fn execute_aggregate(
                 hi_months,
                 encoder,
             } => {
-                let lo_secs = add_calendar_months(obs, *lo_months);
-                let hi_secs = add_calendar_months(obs, *hi_months);
-                let lo = encoder.encode_upper(lo_secs);
-                let hi = encoder.encode_upper(hi_secs);
+                let lo_abs = add_calendar_months(obs, *lo_months);
+                let hi_abs = add_calendar_months(obs, *hi_months);
+                let lo = encoder.encode_upper(lo_abs.raw());
+                let hi = encoder.encode_upper(hi_abs.raw());
                 (lo, hi)
             }
         }
@@ -957,7 +968,7 @@ fn execute_aggregate(
             // Without observation_ts (non-temporal plans), fall back to PK-only check.
             let temporal_obs_ts = match observation_ts {
                 Some(ts) if agg.target_temporal_create_col_idx.is_some()
-                    || agg.target_temporal_end_col_idx.is_some() => Some(ts),
+                    || agg.target_temporal_end_col_idx.is_some() => Some(ts.raw()),
                 _ => None,
             };
             let mut rowpack_scratch = diskgraph_rowpack::RowPackDecodeScratch::default();
@@ -1054,65 +1065,66 @@ fn execute_aggregate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use diskgraph_core::time::Seconds;
 
     #[test]
     fn test_add_calendar_months_basic() {
         // 2024-01-01 00:00:00 UTC
-        let jan1 = 1704067200i64;
+        let jan1 = Abs::<Seconds>::from_raw(1704067200);
         // +3 months = 2024-04-01 (leap year, so Jan→Apr = 91 days)
         let apr1 = add_calendar_months(jan1, 3);
-        assert_eq!(apr1, 1704067200 + 91 * 86400);
+        assert_eq!(apr1.raw(), 1704067200 + 91 * 86400);
     }
 
     #[test]
     fn test_add_calendar_months_non_leap() {
         // 2023-01-01 00:00:00 UTC
-        let jan1 = 1672531200i64;
+        let jan1 = Abs::<Seconds>::from_raw(1672531200);
         // +3 months = 2023-04-01 (non-leap, Jan→Apr = 90 days)
         let apr1 = add_calendar_months(jan1, 3);
-        assert_eq!(apr1, 1672531200 + 90 * 86400);
+        assert_eq!(apr1.raw(), 1672531200 + 90 * 86400);
     }
 
     #[test]
     fn test_add_calendar_months_q2() {
         // 2023-04-01 00:00:00 UTC
-        let apr1 = 1680307200i64;
+        let apr1 = Abs::<Seconds>::from_raw(1680307200);
         // +3 months = 2023-07-01 (Apr→Jul = 91 days)
         let jul1 = add_calendar_months(apr1, 3);
-        assert_eq!(jul1, apr1 + 91 * 86400);
+        assert_eq!(jul1.raw(), apr1.raw() + 91 * 86400);
     }
 
     #[test]
     fn test_add_calendar_months_q3() {
         // 2023-07-01 00:00:00 UTC
-        let jul1 = 1688169600i64;
+        let jul1 = Abs::<Seconds>::from_raw(1688169600);
         // +3 months = 2023-10-01 (Jul→Oct = 92 days)
         let oct1 = add_calendar_months(jul1, 3);
-        assert_eq!(oct1, jul1 + 92 * 86400);
+        assert_eq!(oct1.raw(), jul1.raw() + 92 * 86400);
     }
 
     #[test]
     fn test_add_calendar_months_q4() {
         // 2023-10-01 00:00:00 UTC
-        let oct1 = 1696118400i64;
+        let oct1 = Abs::<Seconds>::from_raw(1696118400);
         // +3 months = 2024-01-01 (Oct→Jan = 92 days)
         let jan1 = add_calendar_months(oct1, 3);
-        assert_eq!(jan1, oct1 + 92 * 86400);
+        assert_eq!(jan1.raw(), oct1.raw() + 92 * 86400);
     }
 
     #[test]
     fn test_add_calendar_months_negative() {
         // 2023-04-01 → -3 months = 2023-01-01
-        let apr1 = 1680307200i64;
+        let apr1 = Abs::<Seconds>::from_raw(1680307200);
         let jan1 = add_calendar_months(apr1, -3);
-        assert_eq!(jan1, 1672531200);
+        assert_eq!(jan1.raw(), 1672531200);
     }
 
     #[test]
     fn test_add_calendar_months_years() {
         // 2023-01-01 + 12 months = 2024-01-01
-        let y2023 = 1672531200i64;
+        let y2023 = Abs::<Seconds>::from_raw(1672531200);
         let y2024 = add_calendar_months(y2023, 12);
-        assert_eq!(y2024, y2023 + 365 * 86400);
+        assert_eq!(y2024.raw(), y2023.raw() + 365 * 86400);
     }
 }

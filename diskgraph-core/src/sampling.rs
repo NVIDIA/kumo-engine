@@ -37,6 +37,20 @@ fn default_swap_edge_direction() -> bool {
 }
 
 /// A request to sample a neighborhood subgraph starting from a batch of seeds.
+///
+/// # Why `seed_timestamps` is `Vec<i64>` rather than `Vec<Abs<U>>`
+///
+/// This struct is a **wire-format / API contract**: callers (Python via PyO3,
+/// JSON over FlightSQL, bincode) specify the timestamp unit dynamically via
+/// `seed_timestamp_unit`. The concrete `UnitSystem` is not known at compile
+/// time at these API boundaries, so making the struct generic over
+/// `U: UnitSystem` would cascade into the gateway, pybind, and storage-trait
+/// layers (~20 files) for no safety gain. Instead, the `SamplingEngine`
+/// converts to the index's internal unit in a single pass at the start of
+/// `sample()` (see `engine.rs` lines ~527-544).
+///
+/// If the engine is ever made generic over `U`, this struct should grow a type
+/// parameter and the conversion would move to the API-boundary adapters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchSamplingRequest {
     /// Target dataset identifier.
@@ -45,8 +59,12 @@ pub struct BatchSamplingRequest {
     pub seed_nodes: HashMap<String, Vec<u64>>,
     /// Optional batch of timestamps (1:1 with seed_nodes), grouped by node type.
     /// If present, acts as the anchor time for temporal filtering.
+    /// These are raw i64 values in the unit specified by `seed_timestamp_unit`;
+    /// see the struct-level doc comment for why this is not `Vec<Abs<U>>`.
     pub seed_timestamps: Option<HashMap<String, Vec<i64>>>,
-    /// The unit of the provided seed_timestamps.
+    /// The unit of the provided seed_timestamps. Becomes redundant if this
+    /// struct is ever made generic over `UnitSystem` (the unit would be
+    /// encoded in the type), but is required for the current dynamic-unit API.
     #[serde(default)]
     pub seed_timestamp_unit: TimeUnit,
     /// The recursive sampling strategy.

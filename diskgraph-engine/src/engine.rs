@@ -524,17 +524,21 @@ impl DiskGraphEngine {
     ) -> Result<()> {
         let sample_start = Instant::now();
 
-        // Standardize seed timestamps to index unit in a single pass if needed
+        // Standardize seed timestamps to index unit in a single pass if needed.
+        // Use integer arithmetic to avoid f64 precision loss on large
+        // nanosecond timestamps (>2^53).
         let mut request_cow = std::borrow::Cow::Borrowed(request);
-        let multiplier = request
-            .seed_timestamp_unit
-            .multiplier_to(self.timestamp_unit);
+        let src_nanos = request.seed_timestamp_unit.to_nanos();
+        let dst_nanos = self.timestamp_unit.to_nanos();
 
-        if (multiplier - 1.0).abs() > f64::EPSILON {
+        if src_nanos != dst_nanos {
             if let Some(mut ts_map) = request.seed_timestamps.clone() {
                 for (_, ts_vec) in ts_map.iter_mut() {
                     for ts in ts_vec.iter_mut() {
-                        *ts = (*ts as f64 * multiplier) as i64;
+                        // Convert: value_in_src * src_nanos_per_unit / dst_nanos_per_unit.
+                        // Multiply-then-divide to preserve precision; use
+                        // saturating_mul to avoid panic on extreme dates.
+                        *ts = ts.saturating_mul(src_nanos) / dst_nanos;
                     }
                 }
                 let mut owned = request.clone();

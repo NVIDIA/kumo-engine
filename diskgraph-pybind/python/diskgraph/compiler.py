@@ -54,58 +54,17 @@ class DiskGraphPlanCompiler:
         self._alias_counter += 1
         return f"{prefix}_{self._alias_counter}"
 
-    def _infer_unit(self, timestamps: List[int]) -> TimeUnit:
-        """
-        Heuristically infer the unit of the given timestamps based on magnitude.
-        """
-        if not timestamps:
-            return TimeUnit.Seconds
-
-        # We use the maximum timestamp to check magnitude.
-        # Unix epoch 1.7B seconds is ~10^9.
-        # 10^12 -> Millis
-        # 10^15 -> Micros
-        # 10^18 -> Nanos
-        max_ts = max(abs(t) for t in timestamps)
-
-        if max_ts > 10**16: return TimeUnit.Nanoseconds
-        if max_ts > 10**13: return TimeUnit.Microseconds
-        if max_ts > 10**10: return TimeUnit.Milliseconds
-        return TimeUnit.Seconds
-
-    def _normalize_timestamps(self, timestamps: List[int], target_unit: TimeUnit) -> List[int]:
-        """
-        Convert timestamps from their inferred unit to the target unit.
-        """
-        input_unit = self._infer_unit(timestamps)
-        if input_unit == target_unit:
-            return timestamps
-
-        # Standard conversion ratios to nanoseconds
-        ratios = {
-            TimeUnit.Nanoseconds: 1,
-            TimeUnit.Microseconds: 1_000,
-            TimeUnit.Milliseconds: 1_000_000,
-            TimeUnit.Seconds: 1_000_000_000,
-        }
-
-        in_factor = ratios.get(input_unit, 1_000_000_000)
-        out_factor = ratios.get(target_unit, 1_000_000_000)
-
-        # Scale to nanos then to target
-        return [(t * in_factor) // out_factor for t in timestamps]
-
     def compile(
         self,
         query: ValidatedPredictiveQuery,
         timestamps: List[int],
         task_type: str,
+        input_timestamp_unit: str,
         forecast_length: int = 1,
         lag_timesteps: Optional[int] = None,
         list_distinct_target_is_array: bool = False,
         include_frequency: bool = False,
         entity_time_col: Optional[str] = None,
-        timestamp_unit: Optional[TimeUnit] = TimeUnit.Seconds,
         is_prediction: bool = False,
         lp_prediction_mode: Optional[str] = None,
         lp_rhs_entity_table: Optional[str] = None,
@@ -119,7 +78,8 @@ class DiskGraphPlanCompiler:
 
         Args:
             query: The ValidatedPredictiveQuery AST from Kumo.
-            timestamps: Observation anchor times for the batch (e.g., in Kumo Microseconds).
+            timestamps: Raw observation anchor times in the unit declared by
+                ``input_timestamp_unit``. Rust converts to the index unit.
             task_type: The ML task type (e.g., 'binary_classification', 'temporal_link_prediction').
             forecast_length: Number of future timesteps to ignore before the target window.
             lag_timesteps: Lookback window for autoregressive features.
@@ -128,7 +88,9 @@ class DiskGraphPlanCompiler:
                 __kumo_internal_frequency_column__ column counting occurrences of each distinct value.
                 Set for RANK problems; unset for CLASSIFY.
             entity_time_col: Optional column name to use as static observation timestamps.
-            timestamp_unit: The target TimeUnit expected by the engine (defaults to Seconds).
+            input_timestamp_unit: The unit of the raw ``timestamps`` values
+                (e.g. 'seconds', 'microseconds', 'nanoseconds'). Rust converts
+                to the index unit via the UnitSystem trait.
             is_prediction: Whether this plan is for generating a batch prediction table.
             lp_prediction_mode: 'LHS' or 'RHS'. When set, emits a pass-through plan for Link Prediction candidates.
             lp_rhs_entity_table: The LP RHS entity table name. Two uses:
@@ -145,10 +107,17 @@ class DiskGraphPlanCompiler:
         if task_type not in VALID_TASK_TYPES:
             raise DiskgraphConfigError(f"Invalid task_type '{task_type}'. Must be one of {VALID_TASK_TYPES}")
 
-        # 1. Temporal Spec
+        # 1. Temporal Spec — pass raw timestamps with declared source unit to
+        # Rust, which converts to the index unit system via UnitSystem trait.
         if query.query_type.name == "TEMPORAL" and timestamps:
-            normalized_ts = self._normalize_timestamps(timestamps, timestamp_unit)
-            self.builder.temporal(normalized_ts, forecast_length, lag_timesteps)
+            if isinstance(input_timestamp_unit, str):
+                unit_str = input_timestamp_unit
+            else:
+                unit_str = str(input_timestamp_unit).rsplit('.', 1)[-1].lower()
+            self.builder.temporal(
+                timestamps, forecast_length, lag_timesteps,
+                unit=unit_str,
+            )
 
         # 2. Prediction Type detection
         is_link_pred = task_type in LINK_PRED_TASKS

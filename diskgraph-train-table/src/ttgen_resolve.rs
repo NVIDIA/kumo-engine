@@ -8,6 +8,7 @@ use std::sync::Arc;
 use crate::errors::{TTGenError, TTGenResult};
 use arrow_schema::{DataType, Field};
 use diskgraph_core::sortkey::SortKeyEncoder;
+use diskgraph_core::time::{Abs, Dur, UnitSystem};
 use diskgraph_core::tt_builder::*;
 use diskgraph_index::graph::{GraphIndexReader, TableReader};
 use diskgraph_index::layout::RelationLayout;
@@ -16,9 +17,9 @@ use diskgraph_rowpack::{IngestedType, RowPackContext};
 // ─── Resolved plan types ─────────────────────────────────────────────────────
 
 /// A fully resolved plan ready for parallel execution.
-pub struct ResolvedPlan {
+pub struct ResolvedPlan<U: UnitSystem> {
     // Entity
-    pub entity_table_spec: EntitySpec,
+    pub entity_table_spec: EntitySpec<U>,
     pub entity_table: Arc<TableReader>,
     pub entity_time_col_idx: Option<usize>,
     pub entity_valid_to_col_idx: Option<usize>,
@@ -28,12 +29,12 @@ pub struct ResolvedPlan {
     pub entity_col_indices: Vec<(String, usize)>,
 
     // Temporal
-    pub timestamps: Vec<i64>,
+    pub timestamps: Vec<Abs<U>>,
     pub has_temporal: bool,
     pub lag_timesteps: i64,
 
     // Stages
-    pub stages: Vec<ResolvedStage>,
+    pub stages: Vec<ResolvedStage<U>>,
 
     // Aliases
     pub num_aliases: usize,
@@ -55,34 +56,34 @@ pub struct ResolvedPlan {
     pub yoy_dtype: Option<DataType>,
 }
 
-pub struct ResolvedStage {
-    pub ops: Vec<ResolvedOp>,
+pub struct ResolvedStage<U: UnitSystem> {
+    pub ops: Vec<ResolvedOp<U>>,
     pub filter: Option<ResolvedStageFilter>,
 }
 
-pub enum ResolvedOp {
-    Aggregate(ResolvedAggregate),
+pub enum ResolvedOp<U: UnitSystem> {
+    Aggregate(ResolvedAggregate<U>),
     Column(ResolvedColumn),
     Compare(ResolvedCompare),
     LogicalOp(ResolvedLogicalOp),
-    Autoregression(ResolvedAutoregression),
-    HasEdges(ResolvedHasEdges),
+    Autoregression(ResolvedAutoregression<U>),
+    HasEdges(ResolvedHasEdges<U>),
 }
 
-pub struct ResolvedHasEdges {
+pub struct ResolvedHasEdges<U: UnitSystem> {
     pub alias_idx: usize,
     pub path: Vec<ResolvedEdge>,
-    pub window: Option<ResolvedWindow>,
+    pub window: Option<ResolvedWindow<U>>,
     pub row_filter: Option<ResolvedRowFilter>,
 }
 
-pub struct ResolvedAutoregression {
+pub struct ResolvedAutoregression<U: UnitSystem> {
     pub alias_idx: usize,
-    pub target_op: Box<ResolvedOp>,
-    pub lag_offsets: Vec<i64>,
+    pub target_op: Box<ResolvedOp<U>>,
+    pub lag_offsets: Vec<Dur<U>>,
 }
 
-impl ResolvedOp {
+impl<U: UnitSystem> ResolvedOp<U> {
     pub fn alias_idx(&self) -> usize {
         match self {
             ResolvedOp::Aggregate(a) => a.alias_idx,
@@ -95,12 +96,12 @@ impl ResolvedOp {
     }
 }
 
-pub struct ResolvedAggregate {
+pub struct ResolvedAggregate<U: UnitSystem> {
     pub alias_idx: usize,
     pub path: Vec<ResolvedEdge>,
     pub func: AggFunc,
     pub target_col_idx: Option<usize>,
-    pub window: Option<ResolvedWindow>,
+    pub window: Option<ResolvedWindow<U>>,
     pub row_filter: Option<ResolvedRowFilter>,
     pub limit: Option<u32>,
     /// For LP ListDistinct: the table whose PK the target column references.
@@ -150,10 +151,10 @@ pub struct ResolvedEdge {
 /// `Calendar` is used for months/years which require calendar-aware arithmetic
 /// to match Kumo's `pd.DateOffset` behavior (e.g., 3 months from Jul 1 = Oct 1,
 /// not Sep 29).
-pub enum ResolvedWindow {
+pub enum ResolvedWindow<U: UnitSystem> {
     Fixed {
-        offset_lo_secs: i64,
-        offset_hi_secs: i64,
+        offset_lo: Dur<U>,
+        offset_hi: Dur<U>,
         encoder: SortKeyEncoder,
     },
     Calendar {
@@ -220,10 +221,10 @@ pub enum ResolvedStageFilterRhs {
 // ─── Resolution logic ────────────────────────────────────────────────────────
 
 /// Preprocess a plan: resolve all string references to index handles.
-pub fn resolve_plan(
-    plan: &DiskGraphTTPlan,
+pub fn resolve_plan<U: UnitSystem>(
+    plan: &DiskGraphTTPlan<U>,
     reader: &GraphIndexReader,
-) -> TTGenResult<ResolvedPlan> {
+) -> TTGenResult<ResolvedPlan<U>> {
     // 1. Resolve entity table
     let entity_table = reader
         .table(&plan.entity.table)
@@ -357,7 +358,7 @@ pub fn resolve_plan(
         .as_ref()
         .map(|t| t.timestamps.clone())
         .unwrap_or_default();
-    timestamps.sort_unstable();
+    timestamps.sort_unstable_by_key(|t| t.raw());
 
     // 9. Entity filter
     let entity_filter = plan
@@ -413,8 +414,8 @@ fn find_col_idx_in_context(
         .ok_or_else(|| TTGenError::SchemaError(format!("column '{}' not found in rowpack context", col_name)))
 }
 
-fn collect_entity_col_refs(
-    plan: &DiskGraphTTPlan,
+fn collect_entity_col_refs<U: UnitSystem>(
+    plan: &DiskGraphTTPlan<U>,
     entity_ctx: &Option<RowPackContext>,
 ) -> TTGenResult<Vec<(String, usize)>> {
     let mut refs = Vec::new();
@@ -483,14 +484,14 @@ fn collect_entity_col_refs(
     Ok(refs)
 }
 
-fn resolve_stage(
-    stage: &Stage,
+fn resolve_stage<U: UnitSystem>(
+    stage: &Stage<U>,
     reader: &GraphIndexReader,
     entity_table: &Arc<TableReader>,
     entity_ctx: &Option<RowPackContext>,
     alias_to_idx: &HashMap<String, usize>,
     entity_col_indices: &[(String, usize)],
-) -> TTGenResult<ResolvedStage> {
+) -> TTGenResult<ResolvedStage<U>> {
     let mut ops = Vec::new();
     for op in &stage.ops {
         let resolved = resolve_op(op, reader, entity_table, entity_ctx, alias_to_idx, entity_col_indices)?;
@@ -506,14 +507,14 @@ fn resolve_stage(
     Ok(ResolvedStage { ops, filter })
 }
 
-fn resolve_op(
-    op: &Op,
+fn resolve_op<U: UnitSystem>(
+    op: &Op<U>,
     reader: &GraphIndexReader,
     _entity_table: &Arc<TableReader>,
     _entity_ctx: &Option<RowPackContext>,
     alias_to_idx: &HashMap<String, usize>,
     entity_col_indices: &[(String, usize)],
-) -> TTGenResult<ResolvedOp> {
+) -> TTGenResult<ResolvedOp<U>> {
     match op {
         Op::Aggregate {
             alias,
@@ -540,7 +541,7 @@ fn resolve_op(
 
             // Resolve window — applies to the FIRST hop (reverse FK with sort keys),
             // matching Kumo's temporal join semantics.
-            let resolved_window: Option<ResolvedWindow> = match window {
+            let resolved_window: Option<ResolvedWindow<U>> = match window {
                 Some((lo, hi)) => {
                     let first_edge = resolved_path.first().unwrap();
                     let encoder = first_edge.encoder.clone().ok_or_else(|| {
@@ -561,8 +562,8 @@ fn resolve_op(
                         _ => {
                             let unit_secs = time_unit_to_secs(unit);
                             Some(ResolvedWindow::Fixed {
-                                offset_lo_secs: lo * unit_secs,
-                                offset_hi_secs: hi * unit_secs,
+                                offset_lo: Dur::<U>::from_secs(lo * unit_secs),
+                                offset_hi: Dur::<U>::from_secs(hi * unit_secs),
                                 encoder,
                             })
                         }
@@ -649,7 +650,7 @@ fn resolve_op(
             let dst_table = &resolved_path.last().unwrap().dst_table;
             let dst_ctx = dst_table.node_data_decoder().map(|d| d.context().clone());
 
-            let resolved_window: Option<ResolvedWindow> = match window {
+            let resolved_window: Option<ResolvedWindow<U>> = match window {
                 Some((lo, hi)) => {
                     let first_edge = resolved_path.first().unwrap();
                     let encoder = first_edge.encoder.clone().ok_or_else(|| {
@@ -670,8 +671,8 @@ fn resolve_op(
                         _ => {
                             let unit_secs = time_unit_to_secs(unit);
                             Some(ResolvedWindow::Fixed {
-                                offset_lo_secs: lo * unit_secs,
-                                offset_hi_secs: hi * unit_secs,
+                                offset_lo: Dur::<U>::from_secs(lo * unit_secs),
+                                offset_hi: Dur::<U>::from_secs(hi * unit_secs),
                                 encoder,
                             })
                         }
@@ -1011,7 +1012,7 @@ fn find_relation<'a>(
 }
 
 /// Infer the Arrow DataType for the TARGET column.
-fn infer_target_dtype(plan: &DiskGraphTTPlan, stages: &[ResolvedStage]) -> DataType {
+fn infer_target_dtype<U: UnitSystem>(plan: &DiskGraphTTPlan<U>, stages: &[ResolvedStage<U>]) -> DataType {
     let last_plan_op = plan.stages.iter().rev()
         .flat_map(|s| s.ops.iter().rev())
         .next();
@@ -1033,7 +1034,7 @@ fn infer_target_dtype(plan: &DiskGraphTTPlan, stages: &[ResolvedStage]) -> DataT
 }
 
 /// Infer Arrow DataType for a specific Op.
-fn infer_op_dtype(op: &Op, stages: &[ResolvedStage]) -> DataType {
+fn infer_op_dtype<U: UnitSystem>(op: &Op<U>, stages: &[ResolvedStage<U>]) -> DataType {
     match op {
         Op::Compare { .. } | Op::LogicalOp { .. } => DataType::Boolean,
         // COUNT/COUNT_DISTINCT always produce integer counts.
@@ -1079,7 +1080,7 @@ fn infer_op_dtype(op: &Op, stages: &[ResolvedStage]) -> DataType {
 }
 
 /// Look up the ingested column type from the last resolved aggregate.
-fn lookup_last_agg_col_dtype(stages: &[ResolvedStage]) -> Option<DataType> {
+fn lookup_last_agg_col_dtype<U: UnitSystem>(stages: &[ResolvedStage<U>]) -> Option<DataType> {
     let last_agg = stages.iter().rev()
         .flat_map(|s| s.ops.iter().rev())
         .find_map(|op| {

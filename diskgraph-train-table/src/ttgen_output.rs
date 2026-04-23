@@ -8,6 +8,7 @@
 //! - **LinkExploded**: one row per distinct target value (string target + i64 frequency)
 //! - **LinkArray**: one row per entity/timestamp with list columns
 
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::errors::{TTGenError, TTGenResult};
@@ -18,6 +19,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use crossbeam_channel::Sender;
+use diskgraph_core::time::{Abs, UnitSystem};
 use diskgraph_core::tt_builder::Value;
 
 /// Batch size: flush to Parquet every N rows.
@@ -44,7 +46,7 @@ pub enum OutputMode {
 
 /// Per-thread batch writer that buffers rows and sends Arrow RecordBatches
 /// through a crossbeam channel for streaming consumption by Python.
-pub struct ChannelBatchWriter {
+pub struct ChannelBatchWriter<U: UnitSystem> {
     sender: Sender<RecordBatch>,
     schema: Arc<Schema>,
     mode: OutputMode,
@@ -73,9 +75,10 @@ pub struct ChannelBatchWriter {
     yoy_list_buf: Vec<Vec<Value>>,
 
     rows_written: u64,
+    _unit: PhantomData<U>,
 }
 
-impl ChannelBatchWriter {
+impl<U: UnitSystem> ChannelBatchWriter<U> {
     /// Create a new batch writer that sends RecordBatches to `sender`.
     ///
     /// `entity_dtype` is the Arrow data type for the ENTITY column, matching
@@ -160,6 +163,7 @@ impl ChannelBatchWriter {
             autoregression_list_buf: Vec::new(),
             yoy_list_buf: Vec::new(),
             rows_written: 0,
+            _unit: PhantomData,
         })
     }
 
@@ -173,12 +177,12 @@ impl ChannelBatchWriter {
     pub fn write_row(
         &mut self,
         entity: Value,
-        timestamp: i64,
+        timestamp: Abs<U>,
         target: &Value,
         entity_include_bit: bool,
     ) -> TTGenResult<()> {
         self.entity_buf.push(entity);
-        self.timestamp_buf.push(timestamp);
+        self.timestamp_buf.push(timestamp.raw());
         match &self.mode {
             OutputMode::Node { target_dtype } if *target_dtype == DataType::Boolean => {
                 let b = match target {
@@ -214,13 +218,13 @@ impl ChannelBatchWriter {
     pub fn write_row_forecasting(
         &mut self,
         entity: Value,
-        timestamp: i64,
+        timestamp: Abs<U>,
         autoregression: Vec<Value>,
         yoy: Option<Vec<Value>>,
         entity_include_bit: bool,
     ) -> TTGenResult<()> {
         self.entity_buf.push(entity);
-        self.timestamp_buf.push(timestamp);
+        self.timestamp_buf.push(timestamp.raw());
         self.autoregression_list_buf.push(autoregression);
         if let OutputMode::Forecasting { yoy_dtype: Some(_), .. } = self.mode {
             self.yoy_list_buf.push(yoy.unwrap_or_default());
@@ -239,11 +243,11 @@ impl ChannelBatchWriter {
     pub fn write_row_pass_through(
         &mut self,
         entity: Value,
-        timestamp: i64,
+        timestamp: Abs<U>,
         entity_include_bit: bool,
     ) -> TTGenResult<()> {
         self.entity_buf.push(entity);
-        self.timestamp_buf.push(timestamp);
+        self.timestamp_buf.push(timestamp.raw());
         if self.has_include_bit {
             self.include_bit_buf.push(entity_include_bit);
         }
@@ -258,13 +262,13 @@ impl ChannelBatchWriter {
     pub fn write_row_exploded(
         &mut self,
         entity: Value,
-        timestamp: i64,
+        timestamp: Abs<U>,
         target: Value,
         frequency: i64,
         entity_include_bit: bool,
     ) -> TTGenResult<()> {
         self.entity_buf.push(entity);
-        self.timestamp_buf.push(timestamp);
+        self.timestamp_buf.push(timestamp.raw());
         self.target_value_buf.push(target);
         self.frequency_buf.push(frequency);
         if self.has_include_bit {
@@ -281,13 +285,13 @@ impl ChannelBatchWriter {
     pub fn write_row_array(
         &mut self,
         entity: Value,
-        timestamp: i64,
+        timestamp: Abs<U>,
         targets: Vec<Value>,
         frequencies: &[i64],
         entity_include_bit: bool,
     ) -> TTGenResult<()> {
         self.entity_buf.push(entity);
-        self.timestamp_buf.push(timestamp);
+        self.timestamp_buf.push(timestamp.raw());
         self.target_value_list_buf.push(targets);
         self.frequency_list_buf.push(frequencies.to_vec());
         if self.has_include_bit {
@@ -557,6 +561,7 @@ fn flush_entity_buf(buf: &mut Vec<Value>, dtype: &DataType) -> Arc<dyn arrow_arr
 mod tests {
     use super::*;
     use crossbeam_channel::bounded;
+    use diskgraph_core::time::Seconds;
 
     /// Helper: create a ChannelBatchWriter with a bounded channel and return
     /// both the writer and the receiver for collecting output batches.
@@ -564,7 +569,7 @@ mod tests {
         mode: OutputMode,
         include_entity_bit: bool,
         entity_dtype: DataType,
-    ) -> (ChannelBatchWriter, crossbeam_channel::Receiver<RecordBatch>) {
+    ) -> (ChannelBatchWriter<Seconds>, crossbeam_channel::Receiver<RecordBatch>) {
         let (sender, receiver) = bounded(64);
         let writer = ChannelBatchWriter::new(sender, mode, include_entity_bit, entity_dtype, "TIMESTAMP")
             .unwrap();
@@ -585,7 +590,7 @@ mod tests {
         );
 
         for i in 0..100i64 {
-            writer.write_row(Value::Int(i), i * 100, &Value::Float(i as f64 * 1.5), true)?;
+            writer.write_row(Value::Int(i), Abs::from_raw(i * 100), &Value::Float(i as f64 * 1.5), true)?;
         }
         let rows = writer.finish()?;
         assert_eq!(rows, 100);
@@ -616,9 +621,9 @@ mod tests {
             DataType::Int64,
         );
 
-        writer.write_row(Value::Int(0), 100, &Value::Float(1.0), true)?;
-        writer.write_row(Value::Int(1), 100, &Value::Float(2.0), false)?;
-        writer.write_row(Value::Int(2), 100, &Value::Float(3.0), true)?;
+        writer.write_row(Value::Int(0), Abs::from_raw(100), &Value::Float(1.0), true)?;
+        writer.write_row(Value::Int(1), Abs::from_raw(100), &Value::Float(2.0), false)?;
+        writer.write_row(Value::Int(2), Abs::from_raw(100), &Value::Float(3.0), true)?;
         let rows = writer.finish()?;
         assert_eq!(rows, 3);
 
@@ -644,7 +649,7 @@ mod tests {
 
         // Write more than BATCH_SIZE rows to trigger auto-flush
         for i in 0..(BATCH_SIZE as i64 + 100) {
-            writer.write_row(Value::Int(i), i, &Value::Float(i as f64), true)?;
+            writer.write_row(Value::Int(i), Abs::from_raw(i), &Value::Float(i as f64), true)?;
         }
         let rows = writer.finish()?;
         assert_eq!(rows, BATCH_SIZE as u64 + 100);
@@ -666,9 +671,9 @@ mod tests {
             DataType::Int64,
         );
 
-        writer.write_row_exploded(Value::Int(0), 100, Value::Str("Nike".into()), 3, true)?;
-        writer.write_row_exploded(Value::Int(0), 100, Value::Str("Adidas".into()), 1, true)?;
-        writer.write_row_exploded(Value::Int(1), 200, Value::Str("Puma".into()), 2, true)?;
+        writer.write_row_exploded(Value::Int(0), Abs::from_raw(100), Value::Str("Nike".into()), 3, true)?;
+        writer.write_row_exploded(Value::Int(0), Abs::from_raw(100), Value::Str("Adidas".into()), 1, true)?;
+        writer.write_row_exploded(Value::Int(1), Abs::from_raw(200), Value::Str("Puma".into()), 2, true)?;
         let rows = writer.finish()?;
         assert_eq!(rows, 3);
 
@@ -697,8 +702,8 @@ mod tests {
             DataType::Int64,
         );
 
-        writer.write_row_exploded(Value::Int(0), 100, Value::Str("Nike".into()), 0, true)?;
-        writer.write_row_exploded(Value::Int(0), 100, Value::Str("Adidas".into()), 0, true)?;
+        writer.write_row_exploded(Value::Int(0), Abs::from_raw(100), Value::Str("Nike".into()), 0, true)?;
+        writer.write_row_exploded(Value::Int(0), Abs::from_raw(100), Value::Str("Adidas".into()), 0, true)?;
         let rows = writer.finish()?;
         assert_eq!(rows, 2);
 
@@ -721,12 +726,12 @@ mod tests {
 
         writer.write_row_array(
             Value::Int(0),
-            100,
+            Abs::from_raw(100),
             vec![Value::Str("Nike".into()), Value::Str("Adidas".into())],
             &[3, 1],
             true,
         )?;
-        writer.write_row_array(Value::Int(1), 200, vec![Value::Str("Puma".into())], &[2], true)?;
+        writer.write_row_array(Value::Int(1), Abs::from_raw(200), vec![Value::Str("Puma".into())], &[2], true)?;
         let rows = writer.finish()?;
         assert_eq!(rows, 2);
 

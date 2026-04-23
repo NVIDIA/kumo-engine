@@ -51,7 +51,7 @@ def test_compiler_basic_aggregation():
         timestamps=timestamps,
         forecast_length=1,
         lag_timesteps=30,
-        task_type="binary_classification")
+        task_type="binary_classification", input_timestamp_unit="microseconds")
 
     plan = json.loads(plan_json)
 
@@ -124,6 +124,7 @@ def test_compiler_accepts_split_spec_object():
         forecast_length=1,
         lag_timesteps=30,
         task_type="binary_classification",
+        input_timestamp_unit="microseconds",
         split=SplitSpec(ratio=[0.8, 0.1, 0.1], kind="FixedSplit"),
     )
     plan = json.loads(plan_json)
@@ -141,12 +142,14 @@ def test_compiler_accepts_date_offset_split_without_ratio():
         forecast_length=1,
         lag_timesteps=30,
         task_type="temporal_link_prediction",
+        input_timestamp_unit="microseconds",
         split=SplitSpec(kind="DateOffsetSplit", offsets=[-30, -7], offset_unit="days"),
     )
 
     plan = json.loads(plan_json)
     assert plan["split"]["kind"] == "DateOffsetSplit"
-    assert plan["split"]["offsets"] == [-30, -7]
+    # Offsets are converted from days to seconds by the compiler
+    assert plan["split"]["offsets"] == [-30 * 86400, -7 * 86400]
     assert plan["split"]["ratio"] is None
 
 
@@ -160,6 +163,7 @@ def test_compiler_accepts_backtesting_split_without_ratio():
         forecast_length=1,
         lag_timesteps=30,
         task_type="binary_classification",
+        input_timestamp_unit="microseconds",
         split=SplitSpec(kind="BacktestingSplit", backtesting_timestamp=1704067200),
     )
 
@@ -180,6 +184,7 @@ def test_compiler_rejects_legacy_split_dict_payload():
             forecast_length=1,
             lag_timesteps=30,
             task_type="binary_classification",
+            input_timestamp_unit="microseconds",
             split={"split_kind": "FixedSplit", "ratio": [0.8, 0.1, 0.1]},
         )
 
@@ -195,6 +200,7 @@ def test_compiler_rejects_fixed_split_without_ratio():
             forecast_length=1,
             lag_timesteps=30,
             task_type="binary_classification",
+            input_timestamp_unit="microseconds",
             split=SplitSpec(kind="FixedSplit"),
         )
 
@@ -209,6 +215,7 @@ def test_compiler_accepts_random_link_split_with_ratio():
         forecast_length=1,
         lag_timesteps=30,
         task_type="temporal_link_prediction",
+        input_timestamp_unit="microseconds",
         split=SplitSpec(kind="RandomLinkSplit", ratio=[0.8, 0.1, 0.1], rnd_seed=11),
     )
     plan = json.loads(plan_json)
@@ -245,7 +252,7 @@ def test_compiler_with_row_filter():
     query._query_type = "STATIC"
 
     compiler = DiskGraphPlanCompiler()
-    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification")
+    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification", input_timestamp_unit="seconds")
     plan = json.loads(plan_json)
 
     op = plan["stages"][0]["ops"][0]["aggregate"]
@@ -300,7 +307,7 @@ def test_compiler_stage_filter():
     query._query_type = "STATIC"
 
     compiler = DiskGraphPlanCompiler()
-    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification")
+    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification", input_timestamp_unit="seconds")
     plan = json.loads(plan_json)
 
     # Should have 2 stages because of the filter on aggregation
@@ -343,7 +350,7 @@ def test_compiler_pql_e2e():
         timestamps=timestamps,
         forecast_length=1,
         lag_timesteps=30,
-        task_type="binary_classification")
+        task_type="binary_classification", input_timestamp_unit="microseconds")
 
     plan = json.loads(plan_json)
 
@@ -388,7 +395,7 @@ def test_compiler_not_target():
     query._query_type = "STATIC"
 
     compiler = DiskGraphPlanCompiler()
-    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification")
+    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification", input_timestamp_unit="seconds")
     plan = json.loads(plan_json)
 
     stage = plan["stages"][0]
@@ -435,7 +442,7 @@ def test_compiler_and_target():
     query._query_type = "STATIC"
 
     compiler = DiskGraphPlanCompiler()
-    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification")
+    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification", input_timestamp_unit="seconds")
     plan = json.loads(plan_json)
 
     stage = plan["stages"][0]
@@ -482,7 +489,7 @@ def test_compiler_or_target():
     query._query_type = "STATIC"
 
     compiler = DiskGraphPlanCompiler()
-    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification")
+    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification", input_timestamp_unit="seconds")
     plan = json.loads(plan_json)
 
     stage = plan["stages"][0]
@@ -493,26 +500,6 @@ def test_compiler_or_target():
     assert lop["op"] == "or"
     assert len(lop["operands"]) == 2
 
-
-def test_timestamp_normalization():
-    from diskgraph.compiler import DiskGraphPlanCompiler
-    from diskgraph import DiskgraphConfigError, TimeUnit
-    compiler = DiskGraphPlanCompiler()
-
-    # 1. Micros to Seconds (standard Kumo case)
-    us_ts = [1700000000000000] # Nov 2023 in micros
-    norm_s = compiler._normalize_timestamps(us_ts, TimeUnit.Seconds)
-    assert norm_s[0] == 1700000000
-
-    # 2. Seconds to Seconds (No change)
-    s_ts = [1700000000]
-    norm_s = compiler._normalize_timestamps(s_ts, TimeUnit.Seconds)
-    assert norm_s[0] == 1700000000
-
-    # 3. Nanos to Seconds
-    ns_ts = [1700000000000000000]
-    norm_s = compiler._normalize_timestamps(ns_ts, TimeUnit.Seconds)
-    assert norm_s[0] == 1700000000
 
 def test_compiler_static_node_prediction_is_null():
     target_ast = Aggregation(
@@ -532,7 +519,7 @@ def test_compiler_static_node_prediction_is_null():
 
     compiler = DiskGraphPlanCompiler()
     # is_prediction=True, task_type="binary_classification", timestamps=[] triggers static node prediction IS NULL injection
-    plan_json = compiler.compile(query=query, timestamps=[], is_prediction=True, task_type="binary_classification")
+    plan_json = compiler.compile(query=query, timestamps=[], is_prediction=True, task_type="binary_classification", input_timestamp_unit="seconds")
     plan = json.loads(plan_json)
 
     assert "node" in plan["prediction_type"]
@@ -579,6 +566,7 @@ def test_compiler_link_prediction_legacy_pseudo_time():
         query=query,
         timestamps=[],
         is_prediction=True, task_type="link_prediction",
+        input_timestamp_unit="seconds",
         list_distinct_target_is_array=False # Legacy HStack mode
     )
     plan = json.loads(plan_json)
@@ -620,6 +608,7 @@ def test_compiler_link_prediction_rhs_pass_through():
         query=query,
         timestamps=[1700000000000000],
         is_prediction=True, task_type="link_prediction",
+        input_timestamp_unit="microseconds",
         lp_prediction_mode='RHS', lp_rhs_entity_table="products", lp_rhs_entity_column="product_id"
     )
     plan = json.loads(plan_json)
@@ -666,6 +655,7 @@ def test_compiler_mixed_entity_filter_column_and_aggregation():
         query=query,
         timestamps=[1700000000],
         task_type="binary_classification",
+        input_timestamp_unit="seconds",
         forecast_length=1,
         entity_time_col="signup_date",
     )
@@ -724,6 +714,7 @@ def test_compiler_forecasting():
         query=query,
         timestamps=[1700000000000000],
         is_prediction=True, task_type="binary_classification",
+        input_timestamp_unit="microseconds",
         lag_offsets_secs=[-86400, -172800],
         yoy_offsets_secs=[-31536000]
     )
@@ -741,3 +732,105 @@ def test_compiler_forecasting():
 
     assert auto_ops[1]["alias"] == "YOY_COL"
     assert auto_ops[1]["lag_offsets"] == [-31536000]
+
+
+def test_autoregression_lag_offset_unit_days():
+    """Autoregression builder converts lag offsets from declared unit to seconds."""
+    query = _make_temporal_query()
+
+    compiler = DiskGraphPlanCompiler()
+    # Pass lag offsets as seconds (-86400 = 1 day, -604800 = 7 days)
+    # and verify they appear in the plan unchanged
+    plan_json = compiler.compile(
+        query=query,
+        timestamps=[1700000000],
+        is_prediction=True,
+        task_type="binary_classification",
+        input_timestamp_unit="seconds",
+        lag_offsets_secs=[-86400, -604800],
+    )
+    plan = json.loads(plan_json)
+    assert plan["prediction_type"] == "forecasting"
+    stage = plan["stages"][0]
+    auto_ops = [op["autoregression"] for op in stage["ops"] if "autoregression" in op]
+    assert len(auto_ops) == 1
+    # Offsets passed as seconds should appear as-is
+    assert auto_ops[0]["lag_offsets"] == [-86400, -604800]
+
+
+def test_autoregression_lag_offset_unit_days_via_builder():
+    """PyO3 builder converts lag offsets from days to seconds."""
+    from diskgraph import DiskGraphTTBuilder, EdgeRef
+    builder = DiskGraphTTBuilder()
+    builder.temporal([1700000000], forecast_length=1, unit="seconds")
+    builder.forecasting_prediction()
+    builder.for_each("users", "user_id")
+    # Aggregate op to get target_op_json for autoregression
+    edge = EdgeRef("users", "user_id", "transactions", "user_id")
+    builder.aggregate("x", edge, "sum", target_col="amount")
+    target_op_json = builder.pop_last_op_json()
+    builder.autoregression("LAG", target_op_json, [-1, -7], lag_offset_unit="days")
+    plan = json.loads(builder.build())
+    auto_ops = [op["autoregression"] for op in plan["stages"][0]["ops"] if "autoregression" in op]
+    assert len(auto_ops) == 1
+    # -1 day = -86400 seconds, -7 days = -604800 seconds
+    assert auto_ops[0]["lag_offsets"] == [-86400, -604800]
+
+
+def test_nanosecond_timestamps_converted_to_seconds():
+    """Regression: _infer_unit misclassified 15-digit nanos as micros.
+
+    Verify that nanosecond timestamps passed with input_timestamp_unit="nanoseconds"
+    are correctly converted to seconds in the emitted JSON plan.
+    """
+    query = _make_temporal_query()
+    compiler = DiskGraphPlanCompiler()
+
+    # 1609459200 seconds = 2021-01-01T00:00:00Z
+    nanos = [1609459200000000000, 1609545600000000000]
+    plan_json = compiler.compile(
+        query=query,
+        timestamps=nanos,
+        forecast_length=1,
+        lag_timesteps=30,
+        task_type="binary_classification",
+        input_timestamp_unit="nanoseconds",
+    )
+    plan = json.loads(plan_json)
+    assert plan["temporal"]["timestamps"] == [1609459200, 1609545600]
+
+
+def test_microsecond_timestamps_converted_to_seconds():
+    """Verify microsecond timestamps are correctly converted to seconds."""
+    query = _make_temporal_query()
+    compiler = DiskGraphPlanCompiler()
+
+    micros = [1609459200000000, 1609545600000000]
+    plan_json = compiler.compile(
+        query=query,
+        timestamps=micros,
+        forecast_length=1,
+        lag_timesteps=30,
+        task_type="binary_classification",
+        input_timestamp_unit="microseconds",
+    )
+    plan = json.loads(plan_json)
+    assert plan["temporal"]["timestamps"] == [1609459200, 1609545600]
+
+
+def test_second_timestamps_unchanged():
+    """Verify second timestamps pass through unchanged."""
+    query = _make_temporal_query()
+    compiler = DiskGraphPlanCompiler()
+
+    secs = [1609459200, 1609545600]
+    plan_json = compiler.compile(
+        query=query,
+        timestamps=secs,
+        forecast_length=1,
+        lag_timesteps=30,
+        task_type="binary_classification",
+        input_timestamp_unit="seconds",
+    )
+    plan = json.loads(plan_json)
+    assert plan["temporal"]["timestamps"] == [1609459200, 1609545600]
