@@ -32,8 +32,10 @@ mod tests_type_matrix;
 #[allow(clippy::field_reassign_with_default)]
 mod tests_unit;
 
-use crate::access::FloatListValues;
-pub use crate::access::{BinaryStringHint, FloatListView, RowAccess, RowAccessHints};
+pub use crate::access::{
+    BinaryStringHint, FloatListView, Int64ListView, RowAccess, RowAccessHints, StringListView,
+};
+use crate::access::{FloatListValues, Int64ListValues, StringListValues};
 pub use crate::parser::{detect_encoded_int_format, detect_timestamp_format, TIMESTAMP_FORMATS};
 
 pub(crate) const ROWPACK_VERSION: u8 = 3;
@@ -2393,22 +2395,24 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Int64Array => {
-                    access.with_int64_array(idx, |values| {
+                IngestedType::Int64Array => match access.int64_list_view(idx)? {
+                    None => 0u8,
+                    Some(view) => {
                         if matches!(col.encoding, ColumnEncoding::Int64Array) {
-                            encode_int64_list_with_tag(&mut scratch.data, values)?;
-                            Ok(1u8)
+                            encode_int64_list_view_with_tag(&mut scratch.data, view)?;
+                            1u8
                         } else {
-                            Err(anyhow!("rowpack int64 array encoding mismatch"))
+                            return Err(anyhow!("rowpack int64 array encoding mismatch"));
                         }
-                    })?.unwrap_or_default()
-                }
-                IngestedType::StringArray => {
-                    access.with_string_array(idx, |tokens| {
+                    }
+                },
+                IngestedType::StringArray => match access.string_list_view(idx)? {
+                    None => 0u8,
+                    Some(view) => {
                         if matches!(col.encoding, ColumnEncoding::StringArray { .. }) {
-                            encode_string_list_with_tag(
+                            encode_string_list_view_with_tag(
                                 &mut scratch.data,
-                                tokens,
+                                &view,
                                 col,
                                 self.dict_maps[idx].as_ref(),
                                 self.alphabet_maps[idx].as_ref(),
@@ -2416,12 +2420,12 @@ impl RowPackEncoder {
                                 Some(&mut scratch.bpe_tokens),
                                 Some(&mut scratch.lz4_buf),
                             )?;
-                            Ok(1u8)
+                            1u8
                         } else {
-                            Err(anyhow!("rowpack string array encoding mismatch"))
+                            return Err(anyhow!("rowpack string array encoding mismatch"));
                         }
-                    })?.unwrap_or_default()
-                }
+                    }
+                },
             };
             scratch.tags.write_bits(tag, 2);
         }
@@ -2846,22 +2850,24 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Int64Array => {
-                    access.with_int64_array(idx, |values| {
+                IngestedType::Int64Array => match access.int64_list_view(idx)? {
+                    None => 0u8,
+                    Some(view) => {
                         if matches!(col.encoding, ColumnEncoding::Int64Array) {
-                            encode_int64_list_with_tag(data, values)?;
-                            Ok(1u8)
+                            encode_int64_list_view_with_tag(data, view)?;
+                            1u8
                         } else {
-                            Err(anyhow!("rowpack int64 array encoding mismatch"))
+                            return Err(anyhow!("rowpack int64 array encoding mismatch"));
                         }
-                    })?.unwrap_or_default()
-                }
-                IngestedType::StringArray => {
-                    access.with_string_array(idx, |tokens| {
+                    }
+                },
+                IngestedType::StringArray => match access.string_list_view(idx)? {
+                    None => 0u8,
+                    Some(view) => {
                         if matches!(col.encoding, ColumnEncoding::StringArray { .. }) {
-                            encode_string_list_with_tag(
+                            encode_string_list_view_with_tag(
                                 data,
-                                tokens,
+                                &view,
                                 col,
                                 self.dict_maps[idx].as_ref(),
                                 self.alphabet_maps[idx].as_ref(),
@@ -2869,12 +2875,12 @@ impl RowPackEncoder {
                                 None,
                                 None,
                             )?;
-                            Ok(1u8)
+                            1u8
                         } else {
-                            Err(anyhow!("rowpack string array encoding mismatch"))
+                            return Err(anyhow!("rowpack string array encoding mismatch"));
                         }
-                    })?.unwrap_or_default()
-                }
+                    }
+                },
             };
             if tag == 0 {
                 observer.observe_null(idx);
@@ -3572,6 +3578,46 @@ fn encode_int64_list_with_tag(out: &mut Vec<u8>, values: &[i64]) -> Result<()> {
     Ok(())
 }
 
+fn encode_int64_list_view_with_tag(out: &mut Vec<u8>, view: Int64ListView) -> Result<()> {
+    match &view.values {
+        Int64ListValues::Native(values) => {
+            let values_arr = values
+                .as_any()
+                .downcast_ref::<arrow_array::Int64Array>()
+                .ok_or_else(|| anyhow!("int64 list element cast"))?;
+            let len = view.len();
+            if values_arr.null_count() == 0 {
+                out.reserve(varint_bytes_u64(len as u64) + len * 2);
+                write_varint(len as u64, out);
+                for &v in &values_arr.values()[view.start..view.end] {
+                    write_varint(zigzag_encode(v), out);
+                }
+            } else {
+                // Null elements are dropped: the persisted list length reflects
+                // only non-null positions. A legitimate zero value is preserved;
+                // only the validity bit filters.
+                let mut non_null_count = 0usize;
+                for idx in view.start..view.end {
+                    if !values_arr.is_null(idx) {
+                        non_null_count += 1;
+                    }
+                }
+                out.reserve(varint_bytes_u64(non_null_count as u64) + non_null_count * 2);
+                write_varint(non_null_count as u64, out);
+                for idx in view.start..view.end {
+                    if !values_arr.is_null(idx) {
+                        write_varint(zigzag_encode(values_arr.value(idx)), out);
+                    }
+                }
+            }
+            Ok(())
+        }
+        Int64ListValues::Parsed(values) => {
+            encode_int64_list_with_tag(out, &values[view.start..view.end])
+        }
+    }
+}
+
 /// Encode a list of string tokens using the column's StringEncoding.
 ///
 /// Wire format: `varint(N)` + for each token: `u8(per_token_tag)` + encoded bytes.
@@ -3618,6 +3664,108 @@ fn encode_string_list_with_tag(
         )?;
         out.push(token_tag);
         out.extend_from_slice(&token_buf);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_string_list_view_with_tag(
+    out: &mut Vec<u8>,
+    view: &StringListView,
+    col: &ColumnContext,
+    dict: Option<&FastHashMap<Vec<u8>, u32>>,
+    alphabet: Option<&AlphabetMap>,
+    bpe: Option<&BpeTrie>,
+    mut bpe_tokens: Option<&mut Vec<u32>>,
+    mut lz4_buf: Option<&mut Vec<u8>>,
+) -> Result<()> {
+    let ColumnEncoding::StringArray { encoding } = &col.encoding else {
+        return Err(anyhow!("rowpack string array encoding mismatch"));
+    };
+
+    // Compute the non-null element count up-front. Null elements are dropped
+    // from the persisted list; a legitimate empty string is preserved because
+    // only the validity bit filters. For the Parsed variant (which carries no
+    // per-element null information), every entry counts.
+    let non_null_count: usize = match &view.values {
+        StringListValues::Utf8(values) => {
+            let values_arr = values
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+                .ok_or_else(|| anyhow!("string list element cast"))?;
+            (view.start..view.end)
+                .filter(|&i| !values_arr.is_null(i))
+                .count()
+        }
+        StringListValues::LargeUtf8(values) => {
+            let values_arr = values
+                .as_any()
+                .downcast_ref::<arrow_array::LargeStringArray>()
+                .ok_or_else(|| anyhow!("string list element cast"))?;
+            (view.start..view.end)
+                .filter(|&i| !values_arr.is_null(i))
+                .count()
+        }
+        StringListValues::Parsed(values) => values[view.start..view.end].len(),
+    };
+    write_varint(non_null_count as u64, out);
+
+    let mut token_buf = Vec::new();
+    let tmp_col = ColumnContext {
+        name: col.name.clone(),
+        logical_type: IngestedType::String,
+        encoding: ColumnEncoding::String {
+            encoding: encoding.clone(),
+        },
+    };
+
+    let mut encode_token = |token: &str| -> Result<()> {
+        token_buf.clear();
+        let bpe_tok_ref: Option<&mut Vec<u32>> = bpe_tokens.as_deref_mut();
+        let lz4_ref: Option<&mut Vec<u8>> = lz4_buf.as_deref_mut();
+        let token_tag = encode_string(
+            &mut token_buf,
+            token,
+            &tmp_col,
+            dict,
+            alphabet,
+            bpe,
+            bpe_tok_ref,
+            lz4_ref,
+        )?;
+        out.push(token_tag);
+        out.extend_from_slice(&token_buf);
+        Ok(())
+    };
+
+    match &view.values {
+        StringListValues::Utf8(values) => {
+            let values_arr = values
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+                .ok_or_else(|| anyhow!("string list element cast"))?;
+            for i in view.start..view.end {
+                if !values_arr.is_null(i) {
+                    encode_token(values_arr.value(i))?;
+                }
+            }
+        }
+        StringListValues::LargeUtf8(values) => {
+            let values_arr = values
+                .as_any()
+                .downcast_ref::<arrow_array::LargeStringArray>()
+                .ok_or_else(|| anyhow!("string list element cast"))?;
+            for i in view.start..view.end {
+                if !values_arr.is_null(i) {
+                    encode_token(values_arr.value(i))?;
+                }
+            }
+        }
+        StringListValues::Parsed(values) => {
+            for token in &values[view.start..view.end] {
+                encode_token(token)?;
+            }
+        }
     }
     Ok(())
 }

@@ -886,3 +886,226 @@ fn integ_stringlist_from_string_column_roundtrip() -> Result<()> {
 
     Ok(())
 }
+
+// ── tests: inner-null drop-null contract ────────────────────────────────────
+
+#[test]
+fn integ_intlist_inner_nulls_dropped() -> Result<()> {
+    // Full ingest-to-decode: null elements inside an intlist column must be
+    // dropped at encode time. Decoded lists are shorter than the source
+    // Arrow lists; remaining values preserve their source order.
+    let dir = tempdir()?;
+    let data_dir = dir.path().join("data");
+    let index_dir = dir.path().join("index");
+    fs::create_dir_all(&data_dir)?;
+
+    let mut id_b = Int64Builder::new();
+    let mut list_b = ListBuilder::new(Int64Builder::new());
+
+    // node 0: [1, null, 3] → expect decoded [1, 3]
+    id_b.append_value(0);
+    list_b.values().append_value(1);
+    list_b.values().append_null();
+    list_b.values().append_value(3);
+    list_b.append(true);
+
+    // node 1: [null] → expect decoded []
+    id_b.append_value(1);
+    list_b.values().append_null();
+    list_b.append(true);
+
+    // node 2: [10, 20] dense → expect decoded [10, 20]
+    id_b.append_value(2);
+    list_b.values().append_value(10);
+    list_b.values().append_value(20);
+    list_b.append(true);
+
+    // node 3: [null, 0, null, 99, null] → expect decoded [0, 99]
+    // (legitimate zero must survive; only the nulls are dropped).
+    id_b.append_value(3);
+    list_b.values().append_null();
+    list_b.values().append_value(0);
+    list_b.values().append_null();
+    list_b.values().append_value(99);
+    list_b.values().append_null();
+    list_b.append(true);
+
+    let schema = Schema::new(vec![
+        Field::new("item_id", DataType::Int64, false),
+        Field::new(
+            "tag_ids",
+            DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
+            true,
+        ),
+    ]);
+    let batch = RecordBatch::try_new(
+        Arc::new(schema),
+        vec![
+            Arc::new(id_b.finish()) as ArrayRef,
+            Arc::new(list_b.finish()) as ArrayRef,
+        ],
+    )?;
+    write_parquet(&data_dir.join("items.parquet"), &batch);
+
+    let config = serde_json::json!({
+        "dataset_name": "intlist_inner_null_test",
+        "num_shards": 1,
+        "tables": [{
+            "name": "items",
+            "columns": [
+                {"name": "item_id", "ingested_dtype": "int64"},
+                {"name": "tag_ids", "ingested_dtype": "int64_array"}
+            ],
+            "primary_key": "item_id",
+            "source": {"type": "parquet",
+                       "paths": [data_dir.join("items.parquet").to_str().unwrap()]}
+        }]
+    });
+    let config_path = data_dir.join("config.json");
+    fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+    ingest(
+        &config_path,
+        index_dir.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions {
+            parallel: false,
+            ..Default::default()
+        },
+    )?;
+
+    let expected: &[&[i64]] = &[
+        &[1, 3],
+        &[],
+        &[10, 20],
+        &[0, 99],
+    ];
+    for (node_id, want) in expected.iter().enumerate() {
+        let json = decode_node_json(&index_dir, "items", node_id as u64)?;
+        let list = json["tag_ids"].as_array().expect("tag_ids should be array");
+        assert_eq!(
+            list.len(),
+            want.len(),
+            "node {node_id}: length mismatch, decoded={:?}, expected={:?}",
+            list,
+            want
+        );
+        for (i, &v) in want.iter().enumerate() {
+            assert_eq!(
+                list[i].as_i64().unwrap(),
+                v,
+                "node {node_id} element {i}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn integ_stringlist_inner_nulls_dropped() -> Result<()> {
+    // Full ingest-to-decode: null elements are dropped; legitimate empty
+    // strings are preserved.
+    let dir = tempdir()?;
+    let data_dir = dir.path().join("data");
+    let index_dir = dir.path().join("index");
+    fs::create_dir_all(&data_dir)?;
+
+    let mut id_b = Int64Builder::new();
+    let mut tags_b = ListBuilder::new(StringBuilder::new());
+
+    // product 0: ["a", null, "b"] → ["a", "b"]
+    id_b.append_value(0);
+    tags_b.values().append_value("a");
+    tags_b.values().append_null();
+    tags_b.values().append_value("b");
+    tags_b.append(true);
+
+    // product 1: [null, null] → []
+    id_b.append_value(1);
+    tags_b.values().append_null();
+    tags_b.values().append_null();
+    tags_b.append(true);
+
+    // product 2: ["x", "", "y"] → ["x", "", "y"] (empty string preserved)
+    id_b.append_value(2);
+    tags_b.values().append_value("x");
+    tags_b.values().append_value("");
+    tags_b.values().append_value("y");
+    tags_b.append(true);
+
+    // product 3: ["p", "", null, "q"] → ["p", "", "q"]
+    id_b.append_value(3);
+    tags_b.values().append_value("p");
+    tags_b.values().append_value("");
+    tags_b.values().append_null();
+    tags_b.values().append_value("q");
+    tags_b.append(true);
+
+    let schema = Schema::new(vec![
+        Field::new("product_id", DataType::Int64, false),
+        Field::new(
+            "tags",
+            DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+            true,
+        ),
+    ]);
+    let batch = RecordBatch::try_new(
+        Arc::new(schema),
+        vec![
+            Arc::new(id_b.finish()) as ArrayRef,
+            Arc::new(tags_b.finish()) as ArrayRef,
+        ],
+    )?;
+    write_parquet(&data_dir.join("products.parquet"), &batch);
+
+    let config = serde_json::json!({
+        "dataset_name": "stringlist_inner_null_test",
+        "num_shards": 1,
+        "tables": [{
+            "name": "products",
+            "columns": [
+                {"name": "product_id", "ingested_dtype": "int64"},
+                {"name": "tags",       "ingested_dtype": "string_array"}
+            ],
+            "primary_key": "product_id",
+            "source": {"type": "parquet",
+                       "paths": [data_dir.join("products.parquet").to_str().unwrap()]}
+        }]
+    });
+    let config_path = data_dir.join("config.json");
+    fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+    ingest(
+        &config_path,
+        index_dir.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions {
+            parallel: false,
+            ..Default::default()
+        },
+    )?;
+
+    let expected: &[&[&str]] = &[
+        &["a", "b"],
+        &[],
+        &["x", "", "y"],
+        &["p", "", "q"],
+    ];
+    for (node_id, want) in expected.iter().enumerate() {
+        let json = decode_node_json(&index_dir, "products", node_id as u64)?;
+        let list = json["tags"].as_array().expect("tags should be array");
+        assert_eq!(
+            list.len(),
+            want.len(),
+            "product {node_id}: length mismatch, decoded={:?}, expected={:?}",
+            list,
+            want
+        );
+        for (i, &tok) in want.iter().enumerate() {
+            assert_eq!(
+                list[i].as_str().unwrap(),
+                tok,
+                "product {node_id} token {i}"
+            );
+        }
+    }
+    Ok(())
+}

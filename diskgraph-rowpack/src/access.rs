@@ -55,6 +55,119 @@ pub struct FloatListView {
     pub values: FloatListValues,
 }
 
+pub enum Int64ListValues {
+    Native(ArrayRef),
+    /// Parsed from a string like "[1, 2, 3]".
+    Parsed(Vec<i64>),
+}
+
+pub struct Int64ListView {
+    pub start: usize,
+    pub end: usize,
+    pub values: Int64ListValues,
+}
+
+impl Int64ListView {
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.end.saturating_sub(self.start)
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.end <= self.start
+    }
+
+    /// Iterate over the non-null elements of this list. Null elements are
+    /// dropped; the callback is only invoked for validity-bit=true positions.
+    /// For the `Parsed` variant (which has no per-element null information)
+    /// every value is emitted.
+    #[inline]
+    pub fn for_each_i64(&self, mut f: impl FnMut(i64)) {
+        match &self.values {
+            Int64ListValues::Native(arr) => {
+                let arr = arr
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int64Array>()
+                    .unwrap();
+                for i in self.start..self.end {
+                    if !arr.is_null(i) {
+                        f(arr.value(i));
+                    }
+                }
+            }
+            Int64ListValues::Parsed(vec) => {
+                for &v in &vec[self.start..self.end] {
+                    f(v);
+                }
+            }
+        }
+    }
+}
+
+pub enum StringListValues {
+    Utf8(ArrayRef),
+    LargeUtf8(ArrayRef),
+    /// Parsed from a string like `["a","b","c"]`.
+    Parsed(Vec<String>),
+}
+
+pub struct StringListView {
+    pub start: usize,
+    pub end: usize,
+    pub values: StringListValues,
+}
+
+impl StringListView {
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.end.saturating_sub(self.start)
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.end <= self.start
+    }
+
+    /// Iterate over the non-null elements of this list. Null elements are
+    /// dropped; the callback is only invoked for validity-bit=true positions.
+    /// A legitimate empty string is preserved — only the null bit filters.
+    /// For the `Parsed` variant (which has no per-element null information)
+    /// every value is emitted.
+    #[inline]
+    pub fn for_each_str(&self, mut f: impl FnMut(&str)) {
+        match &self.values {
+            StringListValues::Utf8(arr) => {
+                let arr = arr
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+                    .unwrap();
+                for i in self.start..self.end {
+                    if !arr.is_null(i) {
+                        f(arr.value(i));
+                    }
+                }
+            }
+            StringListValues::LargeUtf8(arr) => {
+                let arr = arr
+                    .as_any()
+                    .downcast_ref::<arrow_array::LargeStringArray>()
+                    .unwrap();
+                for i in self.start..self.end {
+                    if !arr.is_null(i) {
+                        f(arr.value(i));
+                    }
+                }
+            }
+            StringListValues::Parsed(vec) => {
+                for v in &vec[self.start..self.end] {
+                    f(v.as_str());
+                }
+            }
+        }
+    }
+}
+
 impl FloatListView {
     /// Number of elements in this list.
     #[inline]
@@ -2454,6 +2567,141 @@ impl<'p> RowAccess<'p> {
         Ok(Some(FloatListView { start, end, values }))
     }
 
+    pub fn int64_list_view(&mut self, idx: usize) -> Result<Option<Int64ListView>> {
+        let array = self.array(idx)?.clone();
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        if let Some(str_arr) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
+            let parsed = parse_string_as_int64_array(str_arr.value(self.row))?;
+            let end = parsed.len();
+            return Ok(Some(Int64ListView {
+                start: 0,
+                end,
+                values: Int64ListValues::Parsed(parsed),
+            }));
+        }
+        if let Some(str_arr) = array
+            .as_any()
+            .downcast_ref::<arrow_array::LargeStringArray>()
+        {
+            let parsed = parse_string_as_int64_array(str_arr.value(self.row))?;
+            let end = parsed.len();
+            return Ok(Some(Int64ListView {
+                start: 0,
+                end,
+                values: Int64ListValues::Parsed(parsed),
+            }));
+        }
+        let (start, end, values) = if let Some(list) =
+            array.as_any().downcast_ref::<arrow_array::ListArray>()
+        {
+            let offsets = list.value_offsets();
+            (
+                offsets[self.row] as usize,
+                offsets[self.row + 1] as usize,
+                list.values(),
+            )
+        } else if let Some(list) = array.as_any().downcast_ref::<arrow_array::LargeListArray>() {
+            let offsets = list.value_offsets();
+            (
+                offsets[self.row] as usize,
+                offsets[self.row + 1] as usize,
+                list.values(),
+            )
+        } else {
+            return Err(anyhow!(
+                "int64 list cast: expected ListArray or LargeListArray"
+            ));
+        };
+        if values
+            .as_any()
+            .downcast_ref::<arrow_array::Int64Array>()
+            .is_none()
+        {
+            return Err(anyhow!("int64 list element cast"));
+        }
+        Ok(Some(Int64ListView {
+            start,
+            end,
+            values: Int64ListValues::Native(values.clone()),
+        }))
+    }
+
+    pub fn string_list_view(&mut self, idx: usize) -> Result<Option<StringListView>> {
+        let array = self.array(idx)?.clone();
+        if array.is_null(self.row) {
+            return Ok(None);
+        }
+        if let Some(str_arr) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
+            let parsed = parse_string_as_string_array(str_arr.value(self.row))?;
+            let end = parsed.len();
+            return Ok(Some(StringListView {
+                start: 0,
+                end,
+                values: StringListValues::Parsed(parsed),
+            }));
+        }
+        if let Some(str_arr) = array
+            .as_any()
+            .downcast_ref::<arrow_array::LargeStringArray>()
+        {
+            let parsed = parse_string_as_string_array(str_arr.value(self.row))?;
+            let end = parsed.len();
+            return Ok(Some(StringListView {
+                start: 0,
+                end,
+                values: StringListValues::Parsed(parsed),
+            }));
+        }
+        let (start, end, values) = if let Some(list) =
+            array.as_any().downcast_ref::<arrow_array::ListArray>()
+        {
+            let offsets = list.value_offsets();
+            (
+                offsets[self.row] as usize,
+                offsets[self.row + 1] as usize,
+                list.values(),
+            )
+        } else if let Some(list) = array.as_any().downcast_ref::<arrow_array::LargeListArray>() {
+            let offsets = list.value_offsets();
+            (
+                offsets[self.row] as usize,
+                offsets[self.row + 1] as usize,
+                list.values(),
+            )
+        } else {
+            return Err(anyhow!(
+                "string list cast: expected ListArray or LargeListArray"
+            ));
+        };
+        if values
+            .as_any()
+            .downcast_ref::<arrow_array::StringArray>()
+            .is_some()
+        {
+            return Ok(Some(StringListView {
+                start,
+                end,
+                values: StringListValues::Utf8(values.clone()),
+            }));
+        }
+        if values
+            .as_any()
+            .downcast_ref::<arrow_array::LargeStringArray>()
+            .is_some()
+        {
+            return Ok(Some(StringListView {
+                start,
+                end,
+                values: StringListValues::LargeUtf8(values.clone()),
+            }));
+        }
+        Err(anyhow!(
+            "string list element cast: expected StringArray or LargeStringArray"
+        ))
+    }
+
     pub fn with_float64_array<T>(
         &mut self,
         idx: usize,
@@ -2517,144 +2765,83 @@ impl<'p> RowAccess<'p> {
     /// Read a `List<Int64>` or `LargeList<Int64>` column for the current row.
     ///
     /// Returns `None` if the row-level value is null, `Some(f(slice))` otherwise.
-    /// Null elements inside the list are replaced by `0`.
+    /// Null elements inside the list are dropped from the slice handed to `f`;
+    /// the slice length reflects only non-null elements. A legitimate zero is
+    /// preserved — only the validity bit filters.
     pub fn with_int64_array<T>(
         &mut self,
         idx: usize,
         f: impl FnOnce(&[i64]) -> Result<T>,
     ) -> Result<Option<T>> {
-        let array = self.array(idx)?.clone();
-        if array.is_null(self.row) {
+        let Some(view) = self.int64_list_view(idx)? else {
             return Ok(None);
-        }
-        // String column fallback: parse "[1, 2, 3]" → Vec<i64>
-        if let Some(str_arr) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
-            let parsed = parse_string_as_int64_array(str_arr.value(self.row))?;
-            return Ok(Some(f(&parsed)?));
-        }
-        if let Some(str_arr) = array
-            .as_any()
-            .downcast_ref::<arrow_array::LargeStringArray>()
-        {
-            let parsed = parse_string_as_int64_array(str_arr.value(self.row))?;
-            return Ok(Some(f(&parsed)?));
-        }
-        let (start, end, values) = if let Some(list) =
-            array.as_any().downcast_ref::<arrow_array::ListArray>()
-        {
-            let offsets = list.value_offsets();
-            (
-                offsets[self.row] as usize,
-                offsets[self.row + 1] as usize,
-                list.values(),
-            )
-        } else if let Some(list) = array.as_any().downcast_ref::<arrow_array::LargeListArray>() {
-            let offsets = list.value_offsets();
-            (
-                offsets[self.row] as usize,
-                offsets[self.row + 1] as usize,
-                list.values(),
-            )
-        } else {
-            return Err(anyhow!(
-                "int64 list cast: expected ListArray or LargeListArray"
-            ));
         };
-        let values_arr = values
-            .as_any()
-            .downcast_ref::<arrow_array::Int64Array>()
-            .ok_or_else(|| anyhow!("int64 list element cast"))?;
-        if values_arr.null_count() == 0 {
-            return Ok(Some(f(&values_arr.values()[start..end])?));
-        }
-        let mut vec = Vec::with_capacity(end.saturating_sub(start));
-        for i in start..end {
-            if values_arr.is_null(i) {
-                vec.push(0i64);
-            } else {
-                vec.push(values_arr.value(i));
+        match &view.values {
+            Int64ListValues::Native(values) => {
+                let values_arr = values
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int64Array>()
+                    .ok_or_else(|| anyhow!("int64 list element cast"))?;
+                if values_arr.null_count() == 0 {
+                    return Ok(Some(f(&values_arr.values()[view.start..view.end])?));
+                }
+                let mut vec = Vec::with_capacity(view.len());
+                view.for_each_i64(|v| vec.push(v));
+                Ok(Some(f(&vec)?))
             }
+            Int64ListValues::Parsed(values) => Ok(Some(f(&values[view.start..view.end])?)),
         }
-        Ok(Some(f(&vec)?))
     }
 
     /// Read a `List<Utf8>` or `LargeList<LargeUtf8>` column for the current row.
     ///
     /// Returns `None` if the row-level value is null.
-    /// Calls `f` with a slice of `&str` tokens.
-    /// Null elements inside the list are replaced by `""`.
+    /// Calls `f` with a slice of `&str` tokens. Null elements inside the list
+    /// are dropped from the slice handed to `f`; the slice length reflects
+    /// only non-null elements. A legitimate empty string is preserved —
+    /// only the validity bit filters.
     pub fn with_string_array<T>(
         &mut self,
         idx: usize,
         f: impl FnOnce(&[&str]) -> Result<T>,
     ) -> Result<Option<T>> {
-        let array = self.array(idx)?.clone();
-        if array.is_null(self.row) {
+        let Some(view) = self.string_list_view(idx)? else {
             return Ok(None);
-        }
-        // String column fallback: parse `["a","b","c"]` → Vec<String>
-        if let Some(str_arr) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
-            let parsed = parse_string_as_string_array(str_arr.value(self.row))?;
-            let refs: Vec<&str> = parsed.iter().map(|s| s.as_str()).collect();
-            return Ok(Some(f(&refs)?));
-        }
-        if let Some(str_arr) = array
-            .as_any()
-            .downcast_ref::<arrow_array::LargeStringArray>()
-        {
-            let parsed = parse_string_as_string_array(str_arr.value(self.row))?;
-            let refs: Vec<&str> = parsed.iter().map(|s| s.as_str()).collect();
-            return Ok(Some(f(&refs)?));
-        }
-        let (start, end, values) = if let Some(list) =
-            array.as_any().downcast_ref::<arrow_array::ListArray>()
-        {
-            let offsets = list.value_offsets();
-            (
-                offsets[self.row] as usize,
-                offsets[self.row + 1] as usize,
-                list.values(),
-            )
-        } else if let Some(list) = array.as_any().downcast_ref::<arrow_array::LargeListArray>() {
-            let offsets = list.value_offsets();
-            (
-                offsets[self.row] as usize,
-                offsets[self.row + 1] as usize,
-                list.values(),
-            )
-        } else {
-            return Err(anyhow!(
-                "string list cast: expected ListArray or LargeListArray"
-            ));
         };
-        // Support both Utf8 (StringArray) and LargeUtf8 (LargeStringArray) as the value type.
-        if let Some(values_arr) = values.as_any().downcast_ref::<arrow_array::StringArray>() {
-            let mut vec: Vec<&str> = Vec::with_capacity(end.saturating_sub(start));
-            for i in start..end {
-                if values_arr.is_null(i) {
-                    vec.push("");
-                } else {
-                    vec.push(values_arr.value(i));
+        match &view.values {
+            StringListValues::Utf8(values) => {
+                let values_arr = values
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+                    .ok_or_else(|| anyhow!("string list element cast"))?;
+                let mut refs: Vec<&str> = Vec::with_capacity(view.len());
+                for i in view.start..view.end {
+                    if !values_arr.is_null(i) {
+                        refs.push(values_arr.value(i));
+                    }
                 }
+                Ok(Some(f(&refs)?))
             }
-            return Ok(Some(f(&vec)?));
-        }
-        if let Some(values_arr) = values
-            .as_any()
-            .downcast_ref::<arrow_array::LargeStringArray>()
-        {
-            let mut vec: Vec<&str> = Vec::with_capacity(end.saturating_sub(start));
-            for i in start..end {
-                if values_arr.is_null(i) {
-                    vec.push("");
-                } else {
-                    vec.push(values_arr.value(i));
+            StringListValues::LargeUtf8(values) => {
+                let values_arr = values
+                    .as_any()
+                    .downcast_ref::<arrow_array::LargeStringArray>()
+                    .ok_or_else(|| anyhow!("string list element cast"))?;
+                let mut refs: Vec<&str> = Vec::with_capacity(view.len());
+                for i in view.start..view.end {
+                    if !values_arr.is_null(i) {
+                        refs.push(values_arr.value(i));
+                    }
                 }
+                Ok(Some(f(&refs)?))
             }
-            return Ok(Some(f(&vec)?));
+            StringListValues::Parsed(values) => {
+                let refs: Vec<&str> = values[view.start..view.end]
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect();
+                Ok(Some(f(&refs)?))
+            }
         }
-        Err(anyhow!(
-            "string list element cast: expected StringArray or LargeStringArray"
-        ))
     }
 }

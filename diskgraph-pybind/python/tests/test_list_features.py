@@ -144,3 +144,73 @@ def test_empty_list_rows(list_features_graph):
             return
 
     pytest.fail("item 2 not found in fetch_features result")
+
+
+# ── tests: inner-null drop-null contract (Python pybind e2e) ────────────────
+
+def test_intlist_inner_nulls_dropped(list_features_graph_with_inner_nulls):
+    """
+    Null elements are dropped from the persisted intlist. Legitimate zeros
+    are preserved; only the null bit is the signal for dropping.
+
+      source tag_ids           → decoded tag_ids
+      [1, null, 3]             → [1, 3]
+      [null, null]             → []
+      [0, null, 7]             → [0, 7]          (zero preserved)
+      [10, 20]                 → [10, 20]
+    """
+    batch = fetch_all_features(list_features_graph_with_inner_nulls, "items", [0, 1, 2, 3])
+    node_id_col = batch.column("node_id") if "node_id" in batch.schema.names \
+                  else batch.column(batch.schema.names[0])
+    tag_ids_col = batch.column("tag_ids")
+
+    expected = {
+        0: [1, 3],
+        1: [],
+        2: [0, 7],
+        3: [10, 20],
+    }
+    seen = set()
+    for row_idx in range(batch.num_rows):
+        nid = node_id_col[row_idx].as_py()
+        if nid not in expected:
+            continue
+        seen.add(nid)
+        got = tag_ids_col[row_idx].as_py()
+        assert got == expected[nid], \
+            f"item {nid}: expected tag_ids={expected[nid]}, got {got}"
+    assert seen == set(expected.keys()), f"missing node_ids in result: {set(expected) - seen}"
+
+
+def test_stringlist_inner_nulls_dropped_preserves_empty_string(list_features_graph_with_inner_nulls):
+    """
+    Null elements are dropped from the persisted stringlist. Legitimate empty
+    strings are preserved.
+
+      source tags              → decoded tags
+      ["a", null, "b"]         → ["a", "b"]
+      [null, null]             → []
+      ["x", "", "y"]           → ["x", "", "y"]     (empty string preserved)
+      ["p", "", null, "q"]     → ["p", "", "q"]     (null dropped, "" kept)
+    """
+    batch = fetch_all_features(list_features_graph_with_inner_nulls, "items", [0, 1, 2, 3])
+    node_id_col = batch.column("node_id") if "node_id" in batch.schema.names \
+                  else batch.column(batch.schema.names[0])
+    tags_col = batch.column("tags")
+
+    expected = {
+        0: ["a", "b"],
+        1: [],
+        2: ["x", "", "y"],
+        3: ["p", "", "q"],
+    }
+    seen = set()
+    for row_idx in range(batch.num_rows):
+        nid = node_id_col[row_idx].as_py()
+        if nid not in expected:
+            continue
+        seen.add(nid)
+        got = tags_col[row_idx].as_py()
+        assert got == expected[nid], \
+            f"item {nid}: expected tags={expected[nid]}, got {got}"
+    assert seen == set(expected.keys()), f"missing node_ids in result: {set(expected) - seen}"

@@ -187,3 +187,87 @@ def list_features_graph(tmp_path_factory):
         pytest.fail(f"list_features ingest failed with exit code {e.returncode}")
 
     return str(index_dir)
+
+
+@pytest.fixture(scope="session")
+def list_features_graph_with_inner_nulls(tmp_path_factory):
+    """
+    Graph whose list feature columns contain inner null elements and
+    legitimate empty strings. Used to verify the drop-null contract:
+      * Null elements are dropped from the persisted on-disk list.
+      * Empty string elements are preserved (the null bit is the only signal).
+
+    Schema:
+      items: item_id (int64 PK), tag_ids (List<Int64>), tags (List<Utf8>)
+
+    Source data (with nulls marked as N and empty string as ""):
+      item 0 → tag_ids=[1, N, 3], tags=["a", N, "b"]
+      item 1 → tag_ids=[N, N],    tags=[N, N]
+      item 2 → tag_ids=[0, N, 7], tags=["x", "", "y"]
+      item 3 → tag_ids=[10, 20],  tags=["p", "", N, "q"]
+
+    Expected decoded data:
+      item 0 → tag_ids=[1, 3],     tags=["a", "b"]
+      item 1 → tag_ids=[],         tags=[]
+      item 2 → tag_ids=[0, 7],     tags=["x", "", "y"]
+      item 3 → tag_ids=[10, 20],   tags=["p", "", "q"]
+    """
+    root = tmp_path_factory.mktemp("list_features_inner_nulls")
+    data_dir = root / "data"
+    data_dir.mkdir()
+    index_dir = root / "index"
+
+    item_ids = pa.array([0, 1, 2, 3], type=pa.int64())
+    tag_ids = pa.array(
+        [[1, None, 3], [None, None], [0, None, 7], [10, 20]],
+        type=pa.list_(pa.int64()),
+    )
+    tags = pa.array(
+        [["a", None, "b"], [None, None], ["x", "", "y"], ["p", "", None, "q"]],
+        type=pa.list_(pa.utf8()),
+    )
+
+    table = pa.table({"item_id": item_ids, "tag_ids": tag_ids, "tags": tags})
+    items_path = str(data_dir / "items.parquet")
+    pq.write_table(table, items_path)
+
+    config = {
+        "dataset_name": "list_features_inner_nulls_test",
+        "num_shards": 1,
+        "tables": [
+            {
+                "name": "items",
+                "columns": [
+                    {"name": "item_id", "ingested_dtype": "int64"},
+                    {"name": "tag_ids", "ingested_dtype": "int64_array"},
+                    {"name": "tags", "ingested_dtype": "string_array"},
+                ],
+                "primary_key": "item_id",
+                "source": {"type": "parquet", "paths": [items_path]},
+            }
+        ],
+    }
+
+    config_path = root / "config.json"
+    with open(config_path, "w") as f:
+        json.dump(config, f)
+
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+    env = dict(os.environ)
+    if not env.get("GITHUB_ACTIONS"):
+        rustflags = env.get("RUSTFLAGS", "").strip()
+        env["RUSTFLAGS"] = (rustflags + " -C target-cpu=native").strip()
+    try:
+        subprocess.run(
+            ["cargo", "run", "--release", "--bin", "ingest", "--",
+             "--source", str(config_path),
+             "--dest",   "local",
+             "--output", str(index_dir)],
+            cwd=project_root,
+            check=True,
+            env=env,
+        )
+    except subprocess.CalledProcessError as e:
+        pytest.fail(f"list_features_with_inner_nulls ingest failed with exit code {e.returncode}")
+
+    return str(index_dir)
