@@ -4,7 +4,15 @@
 //! These are pure data structures with no crate-specific dependencies beyond
 //! `gxhash` (for HyperLogLog hashing).
 
-use std::hash::Hasher;
+use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasher, Hasher};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+
+use arc_swap::ArcSwap;
+use dashmap::DashMap;
+use parking_lot::Mutex;
+use serde_json::{json, Value as JsonValue};
 
 // ---------------------------------------------------------------------------
 // HyperLogLog cardinality estimator
@@ -421,4 +429,574 @@ mod tests {
         let est = hll.estimate();
         assert!(est < 2.0, "HLL should estimate ~1 for duplicates, got {}", est);
     }
+}
+
+// ---------------------------------------------------------------------------
+// TDigest quantile estimator
+// ---------------------------------------------------------------------------
+
+/// Streaming quantile estimator using the t-digest algorithm (Dunning 2019).
+///
+/// Maintains a sorted set of centroids (mean, weight). Incoming values are
+/// buffered; when the buffer fills, it is sorted and merged into the centroid
+/// list with compression controlled by the k1 scale function. Gives excellent
+/// accuracy at both tails and median, with O(δ) memory.
+pub struct TDigestEstimator {
+    centroids: Vec<(f64, f64)>, // (mean, weight), sorted by mean
+    max_size: usize,            // δ — compression parameter
+    count: f64,
+    buffer: Vec<f64>,
+    buf_cap: usize,
+}
+
+impl TDigestEstimator {
+    pub const DEFAULT_DELTA: usize = 200;
+
+    pub fn new(delta: usize) -> Self {
+        Self {
+            centroids: Vec::new(),
+            max_size: delta,
+            count: 0.0,
+            buffer: Vec::with_capacity(delta),
+            buf_cap: delta,
+        }
+    }
+
+    #[inline]
+    pub fn observe(&mut self, value: f64) {
+        if !value.is_finite() {
+            return;
+        }
+        self.buffer.push(value);
+        if self.buffer.len() >= self.buf_cap {
+            self.flush();
+        }
+    }
+
+    pub fn flush(&mut self) {
+        if self.buffer.is_empty() {
+            return;
+        }
+        self.buffer
+            .sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        let buf_centroids: Vec<(f64, f64)> = self.buffer.drain(..).map(|v| (v, 1.0)).collect();
+        self.merge_centroids(buf_centroids);
+    }
+
+    fn merge_centroids(&mut self, other: Vec<(f64, f64)>) {
+        // Merge two sorted centroid lists, then compress
+        let mut combined = Vec::with_capacity(self.centroids.len() + other.len());
+        let (mut i, mut j) = (0, 0);
+        while i < self.centroids.len() && j < other.len() {
+            if self.centroids[i].0 <= other[j].0 {
+                combined.push(self.centroids[i]);
+                i += 1;
+            } else {
+                combined.push(other[j]);
+                j += 1;
+            }
+        }
+        combined.extend_from_slice(&self.centroids[i..]);
+        combined.extend_from_slice(&other[j..]);
+
+        self.count = combined.iter().map(|(_, w)| w).sum();
+        self.centroids = self.compress(combined);
+    }
+
+    fn compress(&self, sorted: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+        if sorted.is_empty() || self.count == 0.0 {
+            return sorted;
+        }
+        let total = self.count;
+        let mut result: Vec<(f64, f64)> = Vec::with_capacity(self.max_size);
+        let mut cur_mean = sorted[0].0;
+        let mut cur_weight = sorted[0].1;
+        let mut weight_so_far = 0.0;
+
+        for &(mean, weight) in &sorted[1..] {
+            let q = (weight_so_far + (cur_weight + weight) / 2.0) / total;
+            let limit = 4.0 * total / self.max_size as f64 * q * (1.0 - q);
+            if cur_weight + weight <= limit {
+                let new_weight = cur_weight + weight;
+                cur_mean = (cur_mean * cur_weight + mean * weight) / new_weight;
+                cur_weight = new_weight;
+            } else {
+                weight_so_far += cur_weight;
+                result.push((cur_mean, cur_weight));
+                cur_mean = mean;
+                cur_weight = weight;
+            }
+        }
+        result.push((cur_mean, cur_weight));
+        result
+    }
+
+    fn quantile_inner(&self, q: f64) -> f64 {
+        if self.centroids.is_empty() {
+            return 0.0;
+        }
+        if self.centroids.len() == 1 {
+            return self.centroids[0].0;
+        }
+        let target = q * self.count;
+        let mut cum = 0.0;
+        for i in 0..self.centroids.len() {
+            let (mean, weight) = self.centroids[i];
+            if cum + weight > target {
+                if i == 0 {
+                    return mean;
+                }
+                let prev_mean = self.centroids[i - 1].0;
+                let prev_weight = self.centroids[i - 1].1;
+                let prev_mid = cum - prev_weight / 2.0;
+                let cur_mid = cum + weight / 2.0;
+                let frac = (target - prev_mid) / (cur_mid - prev_mid);
+                return prev_mean + (mean - prev_mean) * frac.clamp(0.0, 1.0);
+            }
+            cum += weight;
+        }
+        self.centroids.last().unwrap().0
+    }
+
+    pub fn quantiles(&mut self) -> Option<(f64, f64, f64)> {
+        self.flush();
+        if self.centroids.is_empty() {
+            return None;
+        }
+        Some((
+            self.quantile_inner(0.25),
+            self.quantile_inner(0.50),
+            self.quantile_inner(0.75),
+        ))
+    }
+
+    pub fn merge(&mut self, other: &mut TDigestEstimator) {
+        other.flush();
+        self.flush();
+        let other_centroids = other.centroids.clone();
+        self.merge_centroids(other_centroids);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Identity hasher for DashMap<u64, _> (keys are already hashed)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Default)]
+pub struct IdentityHasher(u64);
+
+impl Hasher for IdentityHasher {
+    #[inline(always)]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, _bytes: &[u8]) {
+        unreachable!("IdentityHasher only supports u64 keys");
+    }
+    #[inline(always)]
+    fn write_u64(&mut self, i: u64) {
+        self.0 = i;
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct IdentityBuildHasher;
+
+impl BuildHasher for IdentityBuildHasher {
+    type Hasher = IdentityHasher;
+    fn build_hasher(&self) -> Self::Hasher {
+        IdentityHasher(0)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Category count strategy
+// ---------------------------------------------------------------------------
+
+/// Strategy for collecting per-column category frequency counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CategoryCountStrategy {
+    /// No category counting (default).
+    None,
+    /// Per-thread small HashMap (5K cap) + spill to global DashMap.
+    Hybrid,
+    /// Categories "graduate" once count exceeds min_occ; graduated set is read-only.
+    Graduation,
+}
+
+// ---------------------------------------------------------------------------
+// Shared per-column category count state (used by all approaches)
+// ---------------------------------------------------------------------------
+
+/// Maximum number of unique categories per column before aborting collection.
+pub const MAX_CATEGORIES: u64 = 1_000_000;
+
+/// Internal storage for category counts.
+pub enum CountStorage {
+    /// Hash-based: hash→count + hash→string recovery (Hybrid).
+    Hashed {
+        counts: DashMap<u64, u64, IdentityBuildHasher>,
+        strings: DashMap<u64, String, IdentityBuildHasher>,
+    },
+    /// Graduation v2: ArcSwap frozen graduated set + DashMap pending + inbox coordinator.
+    Graduation {
+        /// Frozen graduated set — swapped atomically via ArcSwap.
+        graduated: ArcSwap<HashSet<u64>>,
+        /// Concurrent accumulation for not-yet-graduated categories.
+        pending: DashMap<u64, u64, IdentityBuildHasher>,
+        /// Write-once string recovery (hash → string) for all observed categories.
+        strings: DashMap<u64, String, IdentityBuildHasher>,
+        /// Graduation candidates waiting to be merged into the graduated set.
+        inbox: Mutex<Vec<u64>>,
+        /// Cached min_occ threshold: sqrt(max(10_000, unique_count)).
+        cached_min_occ: AtomicU64,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// Graduation helpers
+// ---------------------------------------------------------------------------
+
+/// Integer square root via Newton's method with f64 seed + one refinement.
+pub fn isqrt(n: u64) -> u64 {
+    if n == 0 {
+        return 0;
+    }
+    let mut x = (n as f64).sqrt() as u64;
+    // One Newton refinement to handle f64 rounding
+    x = (x + n / x.max(1)) / 2;
+    // Correct off-by-one
+    if x > 0 && x * x > n {
+        x -= 1;
+    }
+    // Ensure we didn't undershoot
+    while (x + 1) * (x + 1) <= n {
+        x += 1;
+    }
+    x
+}
+
+/// Compute min_occ threshold: sqrt(max(10_000, unique_count)), minimum 2.
+pub fn compute_min_occ(unique_count: u64) -> u64 {
+    isqrt(unique_count.max(10_000)).max(2)
+}
+
+/// Shared per-column category count state. One instance per eligible column,
+/// shared across all encode threads via `Arc`.
+pub struct SharedColumnCounts {
+    pub storage: CountStorage,
+    pub unique_count: AtomicU64,
+    pub aborted: AtomicBool,
+}
+
+impl SharedColumnCounts {
+    /// Create hash-based storage (for GlobalDashMap & Hybrid).
+    pub fn new_hashed() -> Self {
+        Self {
+            storage: CountStorage::Hashed {
+                counts: DashMap::with_capacity_and_hasher_and_shard_amount(
+                    1024,
+                    IdentityBuildHasher,
+                    256,
+                ),
+                strings: DashMap::with_capacity_and_hasher_and_shard_amount(
+                    1024,
+                    IdentityBuildHasher,
+                    256,
+                ),
+            },
+            unique_count: AtomicU64::new(0),
+            aborted: AtomicBool::new(false),
+        }
+    }
+
+    /// Create graduation v2 storage (ArcSwap frozen set + DashMap pending + inbox).
+    pub fn new_graduation() -> Self {
+        Self {
+            storage: CountStorage::Graduation {
+                graduated: ArcSwap::from_pointee(HashSet::new()),
+                pending: DashMap::with_capacity_and_hasher_and_shard_amount(
+                    1024,
+                    IdentityBuildHasher,
+                    256,
+                ),
+                strings: DashMap::with_capacity_and_hasher_and_shard_amount(
+                    1024,
+                    IdentityBuildHasher,
+                    256,
+                ),
+                inbox: Mutex::new(Vec::new()),
+                cached_min_occ: AtomicU64::new(100), // sqrt(10_000)
+            },
+            unique_count: AtomicU64::new(0),
+            aborted: AtomicBool::new(false),
+        }
+    }
+
+    /// Observe a hashed value into shared DashMap. Called from Hybrid spill path.
+    #[inline]
+    pub fn observe_hashed(&self, hash: u64, value_str: &str) {
+        if self.aborted.load(Ordering::Relaxed) {
+            return;
+        }
+        if let CountStorage::Hashed { counts, strings } = &self.storage {
+            let mut is_new = false;
+            counts
+                .entry(hash)
+                .and_modify(|c| *c += 1)
+                .or_insert_with(|| {
+                    is_new = true;
+                    1
+                });
+            if is_new {
+                strings.entry(hash).or_insert_with(|| value_str.to_owned());
+                if self.unique_count.fetch_add(1, Ordering::Relaxed) + 1 > MAX_CATEGORIES {
+                    self.aborted.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+    }
+
+    /// Merge a batch of local counts into the shared DashMap (Hybrid flush).
+    pub fn merge_local_batch(&self, local: &mut LocalColumnCounts) {
+        if self.aborted.load(Ordering::Relaxed) {
+            return;
+        }
+        if let CountStorage::Hashed { counts, strings } = &self.storage {
+            for (&hash, &count) in &local.counts {
+                let mut is_new = false;
+                counts
+                    .entry(hash)
+                    .and_modify(|c| *c += count)
+                    .or_insert_with(|| {
+                        is_new = true;
+                        count
+                    });
+                if is_new {
+                    if let Some(s) = local.strings.remove(&hash) {
+                        strings.entry(hash).or_insert(s);
+                    }
+                    if self.unique_count.fetch_add(1, Ordering::Relaxed) + 1 > MAX_CATEGORIES {
+                        self.aborted.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Merge a batch of local counts into graduation storage.
+    /// Returns the current graduated snapshot for caching by the caller.
+    pub fn merge_local_batch_graduation(&self, local: &mut LocalColumnCounts) -> Arc<HashSet<u64>> {
+        if let CountStorage::Graduation {
+            graduated,
+            pending,
+            strings,
+            inbox,
+            cached_min_occ,
+        } = &self.storage
+        {
+            let grad_snapshot = graduated.load_full();
+            if self.aborted.load(Ordering::Relaxed) {
+                return grad_snapshot;
+            }
+            let min_occ = cached_min_occ.load(Ordering::Relaxed);
+            let mut newly_graduated = Vec::new();
+            for (&hash, &count) in &local.counts {
+                // Skip already graduated
+                if grad_snapshot.contains(&hash) {
+                    continue;
+                }
+                // Check if this hash was ever seen before (strings is write-once).
+                // Must check before inserting the string below.
+                let is_truly_new = !strings.contains_key(&hash);
+                // Write-once string recovery
+                if let Some(s) = local.strings.remove(&hash) {
+                    strings.entry(hash).or_insert(s);
+                }
+                // Merge count into pending
+                let total = {
+                    let mut entry = pending.entry(hash).or_insert(0);
+                    *entry += count;
+                    *entry
+                };
+                if total >= min_occ {
+                    newly_graduated.push(hash);
+                    pending.remove(&hash);
+                } else if total == count && is_truly_new {
+                    // Truly new unique — hash never seen before in any thread.
+                    // Avoids double-counting when a graduated category is
+                    // re-inserted into pending from a stale snapshot.
+                    let uc = self.unique_count.fetch_add(1, Ordering::Relaxed) + 1;
+                    if uc > MAX_CATEGORIES {
+                        self.aborted.store(true, Ordering::Relaxed);
+                        return grad_snapshot;
+                    }
+                }
+            }
+            // Update cached_min_occ
+            let uc = self.unique_count.load(Ordering::Relaxed);
+            let new_min_occ = compute_min_occ(uc);
+            cached_min_occ.store(new_min_occ, Ordering::Relaxed);
+            // Push newly graduated to inbox; rebuild if inbox >= 64
+            if !newly_graduated.is_empty() {
+                let mut inbox_guard = inbox.lock();
+                inbox_guard.extend(newly_graduated);
+                if inbox_guard.len() >= 64 {
+                    let to_add: Vec<u64> = inbox_guard.drain(..).collect();
+                    self.rebuild_graduated(&to_add);
+                    drop(inbox_guard);
+                    return graduated.load_full();
+                }
+            }
+            grad_snapshot
+        } else {
+            Arc::new(HashSet::new())
+        }
+    }
+
+    /// Rebuild the graduated ArcSwap set by adding new hashes.
+    fn rebuild_graduated(&self, new_hashes: &[u64]) {
+        if let CountStorage::Graduation { graduated, .. } = &self.storage {
+            let old = graduated.load();
+            let mut new_set = HashSet::with_capacity(old.len() + new_hashes.len());
+            new_set.extend(old.iter());
+            new_set.extend(new_hashes.iter());
+            graduated.store(Arc::new(new_set));
+        }
+    }
+
+    /// Flush remaining inbox entries into the graduated set (call before drain_to_map).
+    fn finish_graduation(&self) {
+        if let CountStorage::Graduation { inbox, .. } = &self.storage {
+            let mut inbox_guard = inbox.lock();
+            if !inbox_guard.is_empty() {
+                let to_add: Vec<u64> = inbox_guard.drain(..).collect();
+                drop(inbox_guard);
+                self.rebuild_graduated(&to_add);
+            }
+        }
+    }
+
+    /// Drain into a HashMap<String, u64> for JSON output. Returns None if aborted.
+    pub fn drain_to_map(&self) -> Option<HashMap<String, u64>> {
+        if self.aborted.load(Ordering::Relaxed) {
+            return None;
+        }
+        match &self.storage {
+            CountStorage::Hashed { counts, strings } => {
+                let mut result = HashMap::with_capacity(counts.len());
+                for entry in counts.iter() {
+                    let hash = *entry.key();
+                    let count = *entry.value();
+                    if let Some(string_entry) = strings.get(&hash) {
+                        result.insert(string_entry.value().clone(), count);
+                    }
+                }
+                Some(result)
+            }
+            CountStorage::Graduation {
+                graduated,
+                pending,
+                strings,
+                cached_min_occ,
+                ..
+            } => {
+                // Flush remaining inbox into graduated set before draining.
+                self.finish_graduation();
+                let min_occ = cached_min_occ.load(Ordering::Relaxed);
+                let grad_set = graduated.load();
+                let mut result = HashMap::with_capacity(grad_set.len() + pending.len() / 2);
+                // 1. Graduated categories — known to exceed min_occ during encode.
+                for &hash in grad_set.iter() {
+                    if let Some(string_entry) = strings.get(&hash) {
+                        result.insert(string_entry.value().clone(), min_occ);
+                    }
+                }
+                // 2. Final sweep of pending — include categories whose accumulated
+                //    count meets min_occ. This catches categories that were never
+                //    checked at the right moment during encode.
+                for entry in pending.iter() {
+                    let count = *entry.value();
+                    if count >= min_occ {
+                        let hash = *entry.key();
+                        if let Some(string_entry) = strings.get(&hash) {
+                            result.insert(string_entry.value().clone(), count);
+                        }
+                    }
+                }
+                Some(result)
+            }
+        }
+    }
+
+    pub fn is_aborted(&self) -> bool {
+        self.aborted.load(Ordering::Relaxed)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-file local category count state (Hybrid & Graduation)
+// ---------------------------------------------------------------------------
+
+/// Per-file local category counts for a single column.
+pub struct LocalColumnCounts {
+    pub counts: HashMap<u64, u64>,
+    pub strings: HashMap<u64, String>,
+}
+
+impl LocalColumnCounts {
+    pub fn with_capacity(cap: usize) -> Self {
+        Self {
+            counts: HashMap::with_capacity(cap),
+            strings: HashMap::with_capacity(cap),
+        }
+    }
+
+    /// Observe a value locally. Returns true if the key is new.
+    #[inline]
+    pub fn observe(&mut self, hash: u64, value_str: &str) -> bool {
+        use std::collections::hash_map::Entry;
+        match self.counts.entry(hash) {
+            Entry::Occupied(mut e) => {
+                *e.get_mut() += 1;
+                false
+            }
+            Entry::Vacant(e) => {
+                e.insert(1);
+                self.strings.insert(hash, value_str.to_owned());
+                true
+            }
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.counts.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.counts.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.counts.clear();
+        self.strings.clear();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stat formatting helpers (kumo_key, kumo_entry, kumo_safe_div)
+// ---------------------------------------------------------------------------
+
+pub fn kumo_key(col: &str, stype: &str, stat: &str, approx: bool) -> String {
+    let approx_str = if approx { "True" } else { "False" };
+    format!("{col}__{stype}__{stat}__{approx_str}")
+}
+
+pub fn kumo_entry(value: JsonValue, approx: bool, dv: &str, n: u64) -> JsonValue {
+    json!({"value": value, "approx": approx, "data_version": dv, "num_entries": n})
+}
+
+pub fn kumo_safe_div(num: u64, den: u64) -> f64 {
+    if den == 0 { 0.0 } else { num as f64 / den as f64 }
 }

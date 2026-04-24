@@ -503,15 +503,21 @@ class TestMaterializeColStats:
             split_family_hint="FixedSplit",
             downsampling_config_json=_ds_config(),
         )
-        col_stats = json.loads(result["train_table_col_stats_json"])
+        col_stats_json = result.get("train_table_col_stats_json")
+        assert col_stats_json is not None, "train_table_col_stats_json missing from result"
+        col_stats = json.loads(col_stats_json)
         keys = list(col_stats.get("stats", {}).keys())
-        # Should have ENTITY, TARGET, TIMESTAMP stats at minimum
-        has_entity = any("ENTITY" in k for k in keys)
-        has_target = any("TARGET" in k for k in keys)
-        has_timestamp = any("TIMESTAMP" in k for k in keys)
-        assert has_entity, f"missing ENTITY stats in {keys[:10]}"
-        assert has_target, f"missing TARGET stats in {keys[:10]}"
-        assert has_timestamp, f"missing TIMESTAMP stats in {keys[:10]}"
+        # Inline stats produce encoder-ready distribution stats for generated columns.
+        # This plan is LIST_DISTINCT (link prediction) with include_frequency=True,
+        # so we expect FREQUENCY and ENTITY_INCLUDE_BIT stats.
+        # ENTITY/TIMESTAMP stats are in exact_stats (separate field), not here.
+        has_frequency = any("__kumo_internal_frequency_column__" in k for k in keys)
+        has_include_bit = any("__kumo_internal_entity_inclusive_bit_column__" in k for k in keys)
+        assert has_frequency, f"missing FREQUENCY stats in {keys[:10]}"
+        assert has_include_bit, f"missing ENTITY_INCLUDE_BIT stats in {keys[:10]}"
+        # Verify key format matches kumo_col_stats_v1
+        assert col_stats.get("kind") == "tt_train_table_col_stats", \
+            f"unexpected kind: {col_stats.get('kind')}"
 
 
 class TestMaterializeDownsampling:

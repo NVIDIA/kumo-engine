@@ -64,16 +64,6 @@ def test_validate_prediction_artifact_mask_present_requires_path():
         prediction_artifacts.validate_prediction_table_edges_artifact(payload)
 
 
-def test_parse_prediction_col_stats_artifact_rejects_non_json():
-    with pytest.raises(DiskgraphDataError, match='invalid prediction col-stats artifact JSON'):
-        prediction_artifacts.parse_prediction_table_col_stats_artifact('{')
-
-
-def test_validate_prediction_col_stats_artifact_kind():
-    with pytest.raises(DiskgraphDataError, match='kind must be tt_prediction_table_col_stats'):
-        prediction_artifacts.validate_prediction_table_col_stats_artifact({'kind': 'tt_train_table_col_stats'})
-
-
 def test_build_prediction_edges_success(tmp_path: Path, monkeypatch):
     _write_min_table(tmp_path / 'pred.parquet')
 
@@ -166,16 +156,14 @@ def test_build_prediction_artifact_bundle_persists_manifest(tmp_path: Path, monk
         }
         return {'payload_json': json.dumps(payload)}
 
-    def _fake_build_col_stats(**_kwargs):
-        payload = {
-            'version': 1,
-            'kind': 'tt_prediction_table_col_stats',
-            'stats_format': 'kumo_col_stats_v1',
-            'row_count': 2,
-            'stats': {'ENTITY__kumo.numerical__MEAN__True': {'value': 1.5}},
-            'provided_fields': ['stats'],
-        }
-        return {'payload_json': json.dumps(payload)}
+    inline_col_stats = json.dumps({
+        'version': 1,
+        'kind': 'tt_prediction_table_col_stats',
+        'stats_format': 'kumo_col_stats_v1',
+        'row_count': 2,
+        'stats': {'ENTITY__kumo.numerical__MEAN__True': {'value': 1.5}},
+        'provided_fields': ['stats'],
+    })
 
     def _fake_persist(**kwargs):
         assert kwargs['output_path'] == str(pred)
@@ -193,11 +181,6 @@ def test_build_prediction_artifact_bundle_persists_manifest(tmp_path: Path, monk
         '_build_prediction_table_edge_bundle_artifact_native',
         _fake_build,
     )
-    monkeypatch.setattr(
-        prediction_artifacts,
-        '_build_prediction_table_col_stats_artifact_native',
-        _fake_build_col_stats,
-    )
     monkeypatch.setattr(prediction_artifacts, '_persist_prediction_artifact_bundle_native', _fake_persist)
     monkeypatch.setattr(prediction_artifacts, '_fkey_config_cls', _FakeFkeyConfig)
     monkeypatch.setattr(prediction_artifacts, '_export_config_cls', _FakeExportConfig)
@@ -210,7 +193,12 @@ def test_build_prediction_artifact_bundle_persists_manifest(tmp_path: Path, monk
             'row_count': 2,
             'fkeys': [{'column_name': 'ENTITY', 'target_table': 'users'}],
         },
-        producer_summary={'path': 'native_materialize'},
+        producer_summary={
+            'path': 'native_materialize',
+            'stats': {
+                'parsed_train_table_col_stats_json': inline_col_stats,
+            },
+        },
     )
 
     assert out['manifest_path'].endswith('.prediction.manifest.json')
@@ -219,7 +207,7 @@ def test_build_prediction_artifact_bundle_persists_manifest(tmp_path: Path, monk
     assert out['prediction_table_size_bytes'] > 0
 
 
-def test_build_prediction_artifact_bundle_can_disable_col_stats(tmp_path: Path, monkeypatch):
+def test_build_prediction_artifact_bundle_no_inline_col_stats(tmp_path: Path, monkeypatch):
     pred = tmp_path / 'pred.parquet'
     _write_min_table(pred)
 
@@ -272,7 +260,6 @@ def test_build_prediction_artifact_bundle_can_disable_col_stats(tmp_path: Path, 
             'enabled': True,
             'row_count': 2,
             'fkeys': [{'column_name': 'ENTITY', 'target_table': 'users'}],
-            'prediction_table_col_stats_config': {'enabled': False},
         },
     )
     assert out['prediction_table_col_stats_json'] is None

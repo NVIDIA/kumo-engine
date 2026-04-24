@@ -2,8 +2,12 @@ use std::collections::{HashMap, HashSet};
 
 const SPLIT_RATIO_EPSILON: f64 = 1e-6;
 
+use diskgraph_core::accumulators::{
+    kumo_entry, kumo_key, kumo_safe_div, HyperLogLog, TDigestEstimator, WelfordAccumulator,
+};
 use diskgraph_core::time::{Abs, Dur, UnitSystem};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value as JsonValue};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -106,6 +110,11 @@ pub struct TrainTableStatsPayload {
     /// Used by the pybind layer to build accurate stats_per_timeframe.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub timestamp_counts: HashMap<i64, u64>,
+    /// Kumo-format column stats for encoder inference (TARGET, FREQUENCY, ENTITY_INCLUDE_BIT).
+    /// Format matches ingest's kumo_col_stats_v1 for compatibility with
+    /// seed_train_table_col_stats_from_manifest().
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parsed_train_table_col_stats: Option<JsonValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -133,6 +142,14 @@ pub(crate) struct ChunkStats<U: UnitSystem> {
     pub(crate) frequency_max: Option<i64>,
     pub(crate) include_true_count: u64,
     pub(crate) include_false_count: u64,
+    // Distribution stats for TARGET column (numerical targets)
+    pub(crate) target_welford: Option<WelfordAccumulator>,
+    pub(crate) target_tdigest: Option<TDigestEstimator>,
+    pub(crate) target_hll: Option<HyperLogLog>,
+    // Distribution stats for FREQUENCY column (link prediction)
+    pub(crate) frequency_welford: Option<WelfordAccumulator>,
+    pub(crate) frequency_tdigest: Option<TDigestEstimator>,
+    pub(crate) frequency_hll: Option<HyperLogLog>,
 }
 
 impl<U: UnitSystem> Default for ChunkStats<U> {
@@ -155,6 +172,12 @@ impl<U: UnitSystem> Default for ChunkStats<U> {
             frequency_max: None,
             include_true_count: 0,
             include_false_count: 0,
+            target_welford: None,
+            target_tdigest: None,
+            target_hll: None,
+            frequency_welford: None,
+            frequency_tdigest: None,
+            frequency_hll: None,
         }
     }
 }
@@ -176,6 +199,14 @@ pub(crate) struct StatsMerger<U: UnitSystem> {
     frequency_max: Option<i64>,
     include_true_count: u64,
     include_false_count: u64,
+    // Distribution stats for TARGET column (numerical targets)
+    target_welford: Option<WelfordAccumulator>,
+    target_tdigest: Option<TDigestEstimator>,
+    target_hll: Option<HyperLogLog>,
+    // Distribution stats for FREQUENCY column (link prediction)
+    frequency_welford: Option<WelfordAccumulator>,
+    frequency_tdigest: Option<TDigestEstimator>,
+    frequency_hll: Option<HyperLogLog>,
 }
 
 impl<U: UnitSystem> Default for StatsMerger<U> {
@@ -197,6 +228,12 @@ impl<U: UnitSystem> Default for StatsMerger<U> {
             frequency_max: None,
             include_true_count: 0,
             include_false_count: 0,
+            target_welford: None,
+            target_tdigest: None,
+            target_hll: None,
+            frequency_welford: None,
+            frequency_tdigest: None,
+            frequency_hll: None,
         }
     }
 }
@@ -222,11 +259,32 @@ impl<U: UnitSystem> StatsMerger<U> {
         self.frequency_max = max_opt(self.frequency_max, chunk.frequency_max);
         self.include_true_count += chunk.include_true_count;
         self.include_false_count += chunk.include_false_count;
+
+        // Merge target distribution accumulators
+        if let Some(chunk_w) = chunk.target_welford {
+            self.target_welford.get_or_insert_with(WelfordAccumulator::new).merge(&chunk_w);
+        }
+        if let Some(mut chunk_t) = chunk.target_tdigest {
+            self.target_tdigest.get_or_insert_with(|| TDigestEstimator::new(200)).merge(&mut chunk_t);
+        }
+        if let Some(chunk_h) = chunk.target_hll {
+            self.target_hll.get_or_insert_with(HyperLogLog::new).merge(&chunk_h);
+        }
+        // Merge frequency distribution accumulators
+        if let Some(chunk_w) = chunk.frequency_welford {
+            self.frequency_welford.get_or_insert_with(WelfordAccumulator::new).merge(&chunk_w);
+        }
+        if let Some(mut chunk_t) = chunk.frequency_tdigest {
+            self.frequency_tdigest.get_or_insert_with(|| TDigestEstimator::new(200)).merge(&mut chunk_t);
+        }
+        if let Some(chunk_h) = chunk.frequency_hll {
+            self.frequency_hll.get_or_insert_with(HyperLogLog::new).merge(&chunk_h);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn finalize(
-        self,
+        mut self,
         num_total_rows: u64,
         is_link_prediction: bool,
         has_frequency_col: bool,
@@ -314,6 +372,19 @@ impl<U: UnitSystem> StatsMerger<U> {
             .map(|(k, v)| (k.raw(), *v))
             .collect();
 
+        let parsed_train_table_col_stats = build_inline_col_stats(
+            &self.target_welford,
+            &mut self.target_tdigest,
+            &self.target_hll,
+            &self.frequency_welford,
+            &mut self.frequency_tdigest,
+            &self.frequency_hll,
+            self.include_true_count,
+            self.include_false_count,
+            num_total_rows,
+            "v1",
+        );
+
         TrainTableStatsPayload {
             version: 2,
             num_total_rows,
@@ -326,6 +397,7 @@ impl<U: UnitSystem> StatsMerger<U> {
                 None
             },
             timestamp_counts: raw_timestamp_counts,
+            parsed_train_table_col_stats,
             exact_stats: TrainTableExactStatsPayload {
                 entity: entity_stats,
                 timestamp: timestamp_stats,
@@ -359,6 +431,210 @@ impl<U: UnitSystem> StatsMerger<U> {
                 )),
             }),
         }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_inline_col_stats(
+    target_welford: &Option<WelfordAccumulator>,
+    target_tdigest: &mut Option<TDigestEstimator>,
+    target_hll: &Option<HyperLogLog>,
+    frequency_welford: &Option<WelfordAccumulator>,
+    frequency_tdigest: &mut Option<TDigestEstimator>,
+    frequency_hll: &Option<HyperLogLog>,
+    include_true_count: u64,
+    include_false_count: u64,
+    num_total_rows: u64,
+    data_version: &str,
+) -> Option<JsonValue> {
+    let mut stats = serde_json::Map::new();
+    let dv = data_version;
+
+    // TARGET numerical stats
+    if let Some(w) = target_welford {
+        let count = w.count; // null_count not tracked separately yet
+        let stype = "kumo.numerical";
+        let name = "TARGET";
+        stats.insert(
+            kumo_key(name, stype, "COUNT", false),
+            kumo_entry(json!(count), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "NUM_NA", false),
+            kumo_entry(json!(0u64), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "NA_FRACTION", false),
+            kumo_entry(json!(0.0), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "MEAN", false),
+            kumo_entry(json!(w.mean()), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "STD", false),
+            kumo_entry(json!(w.std_dev()), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "MIN", false),
+            kumo_entry(json!(w.min), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "MAX", false),
+            kumo_entry(json!(w.max), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "KURTOSIS", false),
+            kumo_entry(json!(w.kurtosis()), false, dv, count),
+        );
+
+        if let Some(ref mut td) = *target_tdigest {
+            let (q25, q50, q75) = td.quantiles().unwrap_or((0.0, 0.0, 0.0));
+            stats.insert(
+                kumo_key(name, stype, "QUANTILES", false),
+                kumo_entry(json!([q25, q50, q75]), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "QUANTILE25", false),
+                kumo_entry(json!(q25), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "MEDIAN", false),
+                kumo_entry(json!(q50), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "QUANTILE75", false),
+                kumo_entry(json!(q75), false, dv, count),
+            );
+        }
+
+        if let Some(h) = target_hll {
+            let num_unique = (h.estimate() as u64).min(count);
+            stats.insert(
+                kumo_key(name, stype, "NUM_UNIQUE", false),
+                kumo_entry(json!(num_unique), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "UNIQUE_FRACTION", false),
+                kumo_entry(json!(kumo_safe_div(num_unique, count)), false, dv, count),
+            );
+        }
+    }
+
+    // FREQUENCY numerical stats (same pattern)
+    if let Some(w) = frequency_welford {
+        let count = w.count;
+        let stype = "kumo.numerical";
+        let name = "__kumo_internal_frequency_column__";
+        stats.insert(
+            kumo_key(name, stype, "COUNT", false),
+            kumo_entry(json!(count), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "NUM_NA", false),
+            kumo_entry(json!(0u64), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "NA_FRACTION", false),
+            kumo_entry(json!(0.0), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "MEAN", false),
+            kumo_entry(json!(w.mean()), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "STD", false),
+            kumo_entry(json!(w.std_dev()), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "MIN", false),
+            kumo_entry(json!(w.min), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "MAX", false),
+            kumo_entry(json!(w.max), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "KURTOSIS", false),
+            kumo_entry(json!(w.kurtosis()), false, dv, count),
+        );
+
+        if let Some(ref mut td) = *frequency_tdigest {
+            let (q25, q50, q75) = td.quantiles().unwrap_or((0.0, 0.0, 0.0));
+            stats.insert(
+                kumo_key(name, stype, "QUANTILES", false),
+                kumo_entry(json!([q25, q50, q75]), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "QUANTILE25", false),
+                kumo_entry(json!(q25), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "MEDIAN", false),
+                kumo_entry(json!(q50), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "QUANTILE75", false),
+                kumo_entry(json!(q75), false, dv, count),
+            );
+        }
+
+        if let Some(h) = frequency_hll {
+            let num_unique = (h.estimate() as u64).min(count);
+            stats.insert(
+                kumo_key(name, stype, "NUM_UNIQUE", false),
+                kumo_entry(json!(num_unique), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "UNIQUE_FRACTION", false),
+                kumo_entry(json!(kumo_safe_div(num_unique, count)), false, dv, count),
+            );
+        }
+    }
+
+    // ENTITY_INCLUDE_BIT boolean stats (as categorical CATEGORY_COUNTS)
+    let total_include = include_true_count + include_false_count;
+    if total_include > 0 {
+        let name = "__kumo_internal_entity_inclusive_bit_column__";
+        let stype = "kumo.categorical";
+        stats.insert(
+            kumo_key(name, stype, "COUNT", false),
+            kumo_entry(json!(total_include), false, dv, total_include),
+        );
+        stats.insert(
+            kumo_key(name, stype, "NUM_NA", false),
+            kumo_entry(json!(0u64), false, dv, total_include),
+        );
+        stats.insert(
+            kumo_key(name, stype, "NA_FRACTION", false),
+            kumo_entry(json!(0.0), false, dv, total_include),
+        );
+        stats.insert(
+            kumo_key(name, stype, "CATEGORY_COUNTS", false),
+            kumo_entry(
+                json!([[true, include_true_count], [false, include_false_count]]),
+                false,
+                dv,
+                total_include,
+            ),
+        );
+        stats.insert(
+            kumo_key(name, stype, "NUM_UNIQUE", false),
+            kumo_entry(json!(2u64), false, dv, total_include),
+        );
+    }
+
+    if stats.is_empty() {
+        None
+    } else {
+        Some(json!({
+            "version": 1,
+            "kind": "tt_train_table_col_stats",
+            "stats_format": "kumo_col_stats_v1",
+            "row_count": num_total_rows,
+            "stats": stats,
+            "provided_fields": ["stats"]
+        }))
     }
 }
 

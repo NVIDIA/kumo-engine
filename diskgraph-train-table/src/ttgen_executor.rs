@@ -11,7 +11,7 @@ use crate::errors::{TTGenError, TTGenResult};
 use arrow_array::RecordBatch;
 use arrow_schema::DataType;
 use crossbeam_channel::{bounded, Receiver, Sender};
-use diskgraph_core::accumulators::WelfordAccumulator;
+use diskgraph_core::accumulators::{HyperLogLog, TDigestEstimator, WelfordAccumulator};
 use diskgraph_core::time::{Abs, Dur, UnitSystem, add_calendar_months};
 use diskgraph_core::tt_builder::*;
 use diskgraph_index::graph::GraphIndexReader;
@@ -241,7 +241,29 @@ fn execute_chunk<U: UnitSystem>(
     let mut aliases: Vec<Option<Value>> = vec![None; plan.num_aliases];
     // Thread-local frequency counts for ListDistinct (reused across entities)
     let mut link_frequencies: Vec<i64> = Vec::new();
+
+    let target_is_numerical = matches!(
+        plan.target_dtype,
+        DataType::Float64 | DataType::Float32 | DataType::Int64 | DataType::Int32 |
+        DataType::Int16 | DataType::Int8 | DataType::UInt64 | DataType::UInt32 |
+        DataType::UInt16 | DataType::UInt8
+    );
+    let include_frequency = matches!(
+        plan.prediction_type,
+        PredictionType::Link { include_frequency: true, .. }
+    );
+
     let mut stats: ChunkStats<U> = ChunkStats::default();
+    if target_is_numerical {
+        stats.target_welford = Some(WelfordAccumulator::new());
+        stats.target_tdigest = Some(TDigestEstimator::new(200));
+        stats.target_hll = Some(HyperLogLog::new());
+    }
+    if include_frequency {
+        stats.frequency_welford = Some(WelfordAccumulator::new());
+        stats.frequency_tdigest = Some(TDigestEstimator::new(200));
+        stats.frequency_hll = Some(HyperLogLog::new());
+    }
 
     for entity_node in entity_range {
         execute_entity(
@@ -249,6 +271,7 @@ fn execute_chunk<U: UnitSystem>(
             entity_node,
             &mut aliases,
             &mut link_frequencies,
+            target_is_numerical,
             &mut writer,
             &mut stats,
         )?;
@@ -266,6 +289,7 @@ fn execute_entity<U: UnitSystem>(
     entity_node: u64,
     aliases: &mut [Option<Value>],
     link_frequencies: &mut Vec<i64>,
+    target_is_numerical: bool,
     writer: &mut ChannelBatchWriter<U>,
     stats: &mut ChunkStats<U>,
 ) -> TTGenResult<()> {
@@ -333,6 +357,7 @@ fn execute_entity<U: UnitSystem>(
                 aliases,
                 link_frequencies,
                 entity_include_bit,
+                target_is_numerical,
                 writer,
                 stats,
             )?;
@@ -382,6 +407,7 @@ fn execute_entity<U: UnitSystem>(
                 aliases,
                 link_frequencies,
                 entity_include_bit,
+                target_is_numerical,
                 writer,
                 stats,
             )?;
@@ -403,6 +429,7 @@ fn write_target<U: UnitSystem>(
     aliases: &[Option<Value>],
     link_frequencies: &[i64],
     entity_include_bit: bool,
+    target_is_numerical: bool,
     writer: &mut ChannelBatchWriter<U>,
     stats: &mut ChunkStats<U>,
 ) -> TTGenResult<()> {
@@ -450,7 +477,7 @@ fn write_target<U: UnitSystem>(
             match &plan.prediction_type {
                 PredictionType::Node => {
                     writer.write_row(entity_pk.clone(), ts, target, entity_include_bit)?;
-                    update_exact_stats(stats, entity_pk, ts, target, None);
+                    update_exact_stats(stats, entity_pk, ts, target, None, target_is_numerical);
                     if entity_include_bit {
                         stats.include_true_count += 1;
                         stats.num_train_rows += 1;
@@ -476,7 +503,7 @@ fn write_target<U: UnitSystem>(
                                 freq,
                                 entity_include_bit,
                             )?;
-                            update_exact_stats(stats, entity_pk, ts, val, Some(freq));
+                            update_exact_stats(stats, entity_pk, ts, val, Some(freq), target_is_numerical);
                             if entity_include_bit {
                                 stats.include_true_count += 1;
                                 stats.num_links += 1;
@@ -511,7 +538,7 @@ fn write_target<U: UnitSystem>(
                             } else {
                                 None
                             };
-                            update_exact_stats(stats, entity_pk, ts, first_target, first_freq);
+                            update_exact_stats(stats, entity_pk, ts, first_target, first_freq, target_is_numerical);
                             for (idx, tgt) in targets.iter().enumerate().skip(1) {
                                 let freq = if *include_frequency {
                                     freqs.get(idx).copied()
@@ -568,6 +595,7 @@ fn update_exact_stats<U: UnitSystem>(
     ts: Abs<U>,
     target: &Value,
     frequency: Option<i64>,
+    target_is_numerical: bool,
 ) {
     stats.entities.insert(hash_value(entity_pk));
     stats.targets.insert(hash_value(target));
@@ -596,6 +624,42 @@ fn update_exact_stats<U: UnitSystem>(
     if let Some(freq) = frequency {
         stats.frequency_min = min_opt_i64(stats.frequency_min, freq);
         stats.frequency_max = max_opt_i64(stats.frequency_max, freq);
+    }
+
+    // Observe target value for distribution stats (numerical targets only)
+    if target_is_numerical {
+        if let Some(f) = match target {
+            Value::Int(i) => Some(*i as f64),
+            Value::Float(f) => Some(*f),
+            _ => None,
+        } {
+            if let Some(ref mut w) = stats.target_welford {
+                w.observe(f);
+            }
+            if let Some(ref mut t) = stats.target_tdigest {
+                t.observe(f);
+            }
+        }
+        if let Some(ref mut h) = stats.target_hll {
+            match target {
+                Value::Int(i) => h.observe_i64(*i),
+                Value::Float(f) => h.observe_f64(*f),
+                _ => {}
+            }
+        }
+    }
+
+    // Frequency distribution (if present)
+    if let Some(freq) = frequency {
+        if let Some(ref mut w) = stats.frequency_welford {
+            w.observe(freq as f64);
+        }
+        if let Some(ref mut t) = stats.frequency_tdigest {
+            t.observe(freq as f64);
+        }
+        if let Some(ref mut h) = stats.frequency_hll {
+            h.observe_i64(freq);
+        }
     }
 }
 

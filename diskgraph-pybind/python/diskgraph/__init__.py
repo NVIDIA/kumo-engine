@@ -58,15 +58,6 @@ def __getattr__(name):
     if name == "validate_prediction_table_edges_artifact":
         from .prediction_artifacts import validate_prediction_table_edges_artifact
         return validate_prediction_table_edges_artifact
-    if name == "build_prediction_table_col_stats_artifact":
-        from .prediction_artifacts import build_prediction_table_col_stats_artifact
-        return build_prediction_table_col_stats_artifact
-    if name == "parse_prediction_table_col_stats_artifact":
-        from .prediction_artifacts import parse_prediction_table_col_stats_artifact
-        return parse_prediction_table_col_stats_artifact
-    if name == "validate_prediction_table_col_stats_artifact":
-        from .prediction_artifacts import validate_prediction_table_col_stats_artifact
-        return validate_prediction_table_col_stats_artifact
     if name == "build_prediction_table_artifact_bundle":
         from .prediction_artifacts import build_prediction_table_artifact_bundle
         return build_prediction_table_artifact_bundle
@@ -108,8 +99,5 @@ __all__ = [
     "build_prediction_table_edges_artifact",
     "parse_prediction_table_edges_artifact",
     "validate_prediction_table_edges_artifact",
-    "build_prediction_table_col_stats_artifact",
-    "parse_prediction_table_col_stats_artifact",
-    "validate_prediction_table_col_stats_artifact",
     "build_prediction_table_artifact_bundle",
 ]

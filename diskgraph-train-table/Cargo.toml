@@ -16,9 +16,9 @@ crossbeam-channel = "0.5"
 chrono = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
 tempfile = "3"
 bincode = "1.3"
 diskgraph-ingest = { path = "../diskgraph-ingest" }

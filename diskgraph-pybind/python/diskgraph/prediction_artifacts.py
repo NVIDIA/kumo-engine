@@ -29,10 +29,6 @@ _build_prediction_table_edge_bundle_artifact_native = (
     getattr(_native_c, 'build_prediction_table_edge_bundle_artifact', None)
     if _native_c is not None else None
 )
-_build_prediction_table_col_stats_artifact_native = (
-    getattr(_native_c, 'build_prediction_table_col_stats_artifact', None)
-    if _native_c is not None else None
-)
 _export_config_cls = (
     getattr(_native_c, 'ExportConfig', None)
     if _native_c is not None else None
@@ -71,21 +67,6 @@ def _ensure_native_prediction_edge_capabilities() -> None:
         'diskgraph prediction artifact path missing native helper(s): '
         + ', '.join(missing)
         + '. Install a compatible diskgraph runtime wheel.'
-        + details
-    )
-
-
-def _ensure_native_prediction_col_stats_capabilities() -> None:
-    if callable(_build_prediction_table_col_stats_artifact_native):
-        return
-
-    details = ''
-    if _NATIVE_IMPORT_ERROR is not None:
-        details = f' native_import_error={_NATIVE_IMPORT_ERROR!r}'
-    raise DiskgraphSystemError(
-        'diskgraph prediction artifact path missing native helper(s): '
-        'build_prediction_table_col_stats_artifact. '
-        'Install a compatible diskgraph runtime wheel.'
         + details
     )
 
@@ -190,55 +171,6 @@ def parse_prediction_table_edges_artifact(payload_json: str) -> dict[str, Any]:
     return payload
 
 
-def validate_prediction_table_col_stats_artifact(payload: dict[str, Any]) -> None:
-    if payload.get('kind') != 'tt_prediction_table_col_stats':
-        raise DiskgraphDataError('prediction col-stats artifact kind must be tt_prediction_table_col_stats')
-    if payload.get('stats_format') != 'kumo_col_stats_v1':
-        raise DiskgraphDataError('prediction col-stats artifact stats_format must be kumo_col_stats_v1')
-
-    stats = payload.get('stats')
-    if not isinstance(stats, dict):
-        raise DiskgraphConfigError('prediction col-stats artifact requires stats object')
-
-
-def parse_prediction_table_col_stats_artifact(payload_json: str) -> dict[str, Any]:
-    try:
-        payload = json.loads(payload_json)
-    except Exception as e:
-        raise DiskgraphDataError(f'invalid prediction col-stats artifact JSON: {e}')
-    if not isinstance(payload, dict):
-        raise DiskgraphDataError('prediction col-stats artifact payload must be a JSON object')
-    validate_prediction_table_col_stats_artifact(payload)
-    return payload
-
-
-def build_prediction_table_col_stats_artifact(
-    *,
-    prediction_table_path: str,
-    cfg: Optional[dict[str, Any]] = None,
-) -> Optional[str]:
-    raw_cfg = cfg if isinstance(cfg, dict) else {}
-    if not bool(raw_cfg.get('enabled', True)):
-        return None
-
-    _ensure_native_prediction_col_stats_capabilities()
-
-    built = _build_prediction_table_col_stats_artifact_native(
-        output_path=prediction_table_path,
-        prediction_table_col_stats_config_json=json.dumps({
-            'data_version': str(raw_cfg.get('data_version', 'v1')),
-        }),
-    )
-    payload_json = built.get('payload_json') if isinstance(built, dict) else None
-    if not isinstance(payload_json, str) or not payload_json:
-        raise DiskgraphSystemError(
-            'diskgraph native prediction-table col-stats builder returned invalid payload_json'
-        )
-
-    payload = parse_prediction_table_col_stats_artifact(payload_json)
-    return json.dumps(payload, sort_keys=True)
-
-
 def build_prediction_table_edges_artifact(
     *,
     prediction_table_path: str,
@@ -337,10 +269,6 @@ def build_prediction_table_artifact_bundle(
             )
             if k in raw_cfg
         }
-    col_cfg = raw_cfg.get('prediction_table_col_stats_config')
-    if not isinstance(col_cfg, dict):
-        col_cfg = {}
-
     edges_json = build_prediction_table_edges_artifact(
         prediction_table_path=prediction_table_path,
         index_path=index_path,
@@ -349,10 +277,14 @@ def build_prediction_table_artifact_bundle(
     if edges_json is None:
         return None
 
-    col_stats_json = build_prediction_table_col_stats_artifact(
-        prediction_table_path=prediction_table_path,
-        cfg=col_cfg,
-    )
+    # Use inline col stats from execution summary if available
+    col_stats_json = None
+    if isinstance(producer_summary, dict):
+        stats = producer_summary.get('stats')
+        if isinstance(stats, dict):
+            inline_json = stats.get('parsed_train_table_col_stats_json')
+            if isinstance(inline_json, str):
+                col_stats_json = inline_json
 
     _ensure_native_prediction_manifest_capabilities()
 
