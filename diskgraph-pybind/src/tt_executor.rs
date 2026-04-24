@@ -3314,7 +3314,7 @@ fn build_train_table_col_stats_payload(
         sequence_trackers,
         text_trackers,
         data_version,
-        true,
+        false,
     );
     json!({
         "version": 1,
@@ -3336,8 +3336,8 @@ fn build_prediction_table_col_stats_payload(
     data_version: &str,
     row_count: usize,
 ) -> Value {
-    // Keep approx=True key suffix parity with train-table col stats so encoder
-    // lookup contracts can remain shared across train/prediction paths.
+    // Mark distribution stats as non-approx to match ingest's convention.
+    // The cache lookup uses approx=False first; using True here causes a miss.
     let stats = build_col_stats_map(
         numeric_trackers,
         category_trackers,
@@ -3345,7 +3345,7 @@ fn build_prediction_table_col_stats_payload(
         sequence_trackers,
         text_trackers,
         data_version,
-        true,
+        false,
     );
     json!({
         "version": 1,
@@ -5094,7 +5094,7 @@ mod tests {
             .and_then(|v| v.as_f64())
             .unwrap();
         let target_median = stats
-            .get("TARGET__kumo.numerical__MEDIAN__True")
+            .get("TARGET__kumo.numerical__MEDIAN__False")
             .and_then(|v| v.get("value"))
             .and_then(|v| v.as_f64())
             .unwrap();
