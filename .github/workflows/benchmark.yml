@@ -153,12 +153,21 @@ jobs:
             echo "::endgroup::"
           done < "${CONFIG_LIST}"
 
-          # Print summary
+          # Build summary markdown (used for step summary + optional PR comment)
+          {
+            echo "## Benchmark Summary"
+            echo ""
+            echo "| Dataset | Status | Delta | Notes |"
+            echo "|---------|--------|-------|-------|"
+            echo -e "$summary"
+          } > "${GITHUB_WORKSPACE}/benchmark_summary.md"
+
+          # Echo to stdout (log visibility)
           echo ""
-          echo "## Benchmark Summary"
-          echo "| Dataset | Status | Delta | Notes |"
-          echo "|---------|--------|-------|-------|"
-          echo -e "$summary"
+          cat "${GITHUB_WORKSPACE}/benchmark_summary.md"
+
+          # Publish to GitHub run summary (renders on Actions run page)
+          cat "${GITHUB_WORKSPACE}/benchmark_summary.md" >> "$GITHUB_STEP_SUMMARY"
 
           if [[ $overall_failed -ne 0 ]]; then
             echo "::error::One or more benchmarks failed regression check."
@@ -184,3 +193,51 @@ jobs:
               echo "Saved baseline for ${dataset}"
             fi
           done < "${CONFIG_LIST}"
+
+      - name: Comment benchmark result on PR
+        if: always() && github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f "${GITHUB_WORKSPACE}/benchmark_summary.md" ]]; then
+            echo "No summary file produced; skipping comment."
+            exit 0
+          fi
+
+          owner="${REPO%%/*}"
+          pr=$(curl -sS -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/pulls?head=${owner}:${REF_NAME}&state=open" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['number'] if d else '')")
+
+          if [[ -z "${pr}" ]]; then
+            echo "No open PR for branch ${REF_NAME}; skipping comment."
+            exit 0
+          fi
+
+          body_json=$(python3 -c "
+          import json, os
+          summary = open(os.environ['GITHUB_WORKSPACE'] + '/benchmark_summary.md').read()
+          header = f\"### EC2 Benchmark — [run {os.environ['RUN_ID']}]({os.environ['RUN_URL']})\n\n\"
+          print(json.dumps({'body': header + summary}))
+          ")
+
+          http_code=$(curl -sS -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/issues/${pr}/comments" \
+            -d "${body_json}" \
+            -o /tmp/comment_response.json \
+            -w "%{http_code}")
+          echo "HTTP ${http_code}"
+          if [[ "${http_code}" != "201" ]]; then
+            echo "Comment post failed:"
+            cat /tmp/comment_response.json
+            exit 1
+          fi
+          echo "Comment posted to PR #${pr}"
