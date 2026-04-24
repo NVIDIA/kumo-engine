@@ -4,6 +4,7 @@ use crate::output::OutputHandler;
 use crate::state::{LookupKey, NodeRecord, SamplingState};
 use diskgraph_core::sampling::*;
 use diskgraph_core::sortkey::SortKeyDecoder;
+use diskgraph_core::time::{abs_from_unit, Seconds, TimeUnit};
 use diskgraph_index::layout::{EdgeListView, RelationSegment};
 use diskgraph_index::reader::ShardReader;
 use rayon::prelude::*;
@@ -524,26 +525,26 @@ impl DiskGraphEngine {
     ) -> Result<()> {
         let sample_start = Instant::now();
 
-        // Standardize seed timestamps to index unit in a single pass if needed.
-        // Use integer arithmetic to avoid f64 precision loss on large
-        // nanosecond timestamps (>2^53).
+        // Convert seed timestamps from the caller's unit to the index unit (Seconds).
+        // The index always stores timestamps in seconds today; assert to catch if
+        // this assumption changes (at which point the engine should be made generic
+        // over UnitSystem).
+        assert_eq!(
+            self.timestamp_unit,
+            TimeUnit::Seconds,
+            "engine assumes seconds index; make engine generic over UnitSystem if this changes"
+        );
         let mut request_cow = std::borrow::Cow::Borrowed(request);
-        let src_nanos = request.seed_timestamp_unit.to_nanos();
-        let dst_nanos = self.timestamp_unit.to_nanos();
-
-        if src_nanos != dst_nanos {
+        if request.seed_timestamp_unit != TimeUnit::Seconds {
             if let Some(mut ts_map) = request.seed_timestamps.clone() {
                 for (_, ts_vec) in ts_map.iter_mut() {
                     for ts in ts_vec.iter_mut() {
-                        // Convert: value_in_src * src_nanos_per_unit / dst_nanos_per_unit.
-                        // Multiply-then-divide to preserve precision; use
-                        // saturating_mul to avoid panic on extreme dates.
-                        *ts = ts.saturating_mul(src_nanos) / dst_nanos;
+                        *ts = abs_from_unit::<Seconds>(*ts, request.seed_timestamp_unit).raw();
                     }
                 }
                 let mut owned = request.clone();
                 owned.seed_timestamps = Some(ts_map);
-                owned.seed_timestamp_unit = self.timestamp_unit;
+                owned.seed_timestamp_unit = TimeUnit::Seconds;
                 request_cow = std::borrow::Cow::Owned(owned);
             }
         }

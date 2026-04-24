@@ -59,7 +59,7 @@ class DiskGraphPlanCompiler:
         query: ValidatedPredictiveQuery,
         timestamps: List[int],
         task_type: str,
-        input_timestamp_unit: str,
+        input_timestamp_unit: 'TimeUnit',
         forecast_length: int = 1,
         lag_timesteps: Optional[int] = None,
         list_distinct_target_is_array: bool = False,
@@ -110,10 +110,7 @@ class DiskGraphPlanCompiler:
         # 1. Temporal Spec — pass raw timestamps with declared source unit to
         # Rust, which converts to the index unit system via UnitSystem trait.
         if query.query_type.name == "TEMPORAL" and timestamps:
-            if isinstance(input_timestamp_unit, str):
-                unit_str = input_timestamp_unit
-            else:
-                unit_str = str(input_timestamp_unit).rsplit('.', 1)[-1].lower()
+            unit_str = str(input_timestamp_unit).rsplit('.', 1)[-1].lower()
             self.builder.temporal(
                 timestamps, forecast_length, lag_timesteps,
                 unit=unit_str,

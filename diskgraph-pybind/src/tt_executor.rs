@@ -55,7 +55,7 @@ use arrow_array::types::Int64Type;
 use arrow_schema::{DataType, Field, Schema};
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use crossbeam_channel::Receiver;
-use diskgraph_core::time::Seconds;
+use diskgraph_core::time::{abs_from_unit, Nanoseconds, Seconds, TimeUnit};
 use diskgraph_core::tt_builder::DiskGraphTTPlan;
 use diskgraph_train_table::errors::TTGenResult;
 use diskgraph_train_table::ttgen_stats::TTExecutionSummary;
@@ -3671,16 +3671,9 @@ fn parse_timestamp_ns_json(v: &Value) -> anyhow::Result<i64> {
 
 /// Convert a timestamp value to nanoseconds based on the declared unit.
 fn to_nanoseconds(value: i64, timestamp_unit: &str) -> anyhow::Result<i64> {
-    match timestamp_unit {
-        "seconds" => Ok(value.checked_mul(1_000_000_000)
-            .ok_or_else(|| anyhow::anyhow!("timestamp ns overflow converting from seconds"))?),
-        "milliseconds" => Ok(value.checked_mul(1_000_000)
-            .ok_or_else(|| anyhow::anyhow!("timestamp ns overflow converting from milliseconds"))?),
-        "microseconds" => Ok(value.checked_mul(1_000)
-            .ok_or_else(|| anyhow::anyhow!("timestamp ns overflow converting from microseconds"))?),
-        "nanoseconds" => Ok(value),
-        _ => Err(anyhow::anyhow!("unsupported timestamp_unit: {}", timestamp_unit)),
-    }
+    let unit = TimeUnit::from_name(timestamp_unit)
+        .ok_or_else(|| anyhow::anyhow!("unsupported timestamp_unit: {}", timestamp_unit))?;
+    Ok(abs_from_unit::<Nanoseconds>(value, unit).raw())
 }
 
 /// Read `timestamp_unit` from split config, defaulting to "seconds".
