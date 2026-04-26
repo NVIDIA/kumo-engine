@@ -2113,15 +2113,13 @@ impl IngestContext {
                             return Ok(());
                         }
                         let (node, file_stats) = if col_stats_enabled {
-                            let stypes: Vec<_> =
-                                table.columns.iter().map(|c| c.semantic_type).collect();
                             let mut obs = if let Some(ref tc) = table_cat {
                                 crate::col_stats::FileColStats::new_with_categories(
-                                    &stypes,
+                                    &table.columns,
                                     std::sync::Arc::clone(tc),
                                 )
                             } else {
-                                crate::col_stats::FileColStats::new(&stypes)
+                                crate::col_stats::FileColStats::new(&table.columns)
                             };
                             let result = Self::build_temp_node_file(
                                 &table,

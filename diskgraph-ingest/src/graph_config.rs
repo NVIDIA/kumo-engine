@@ -152,6 +152,13 @@ pub struct ColumnSpec {
     /// Semantic type for ML encoding. Inferred from dtype/name if not provided.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_type: Option<SemanticType>,
+    /// For stype=multicategorical + IngestedType=String: the delimiter used to
+    /// split each row into tokens. `None` means the whole cell is one token.
+    /// Absent (serde skip) for non-String multicat and for non-multicat columns.
+    /// Populated by `config_converter` at convert time (sampling the source
+    /// parquet), or supplied by the user on the upstream Kumo config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multicategorical_delimiter: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -479,6 +486,22 @@ impl GraphConfig {
                     errors.push(format!(
                         "table {} column {} fixed_len only valid for string/bytes",
                         table.name, col.name
+                    ));
+                }
+                if col.semantic_type == Some(SemanticType::Multicategorical)
+                    && !matches!(
+                        col.ingested_dtype,
+                        IngestedType::String
+                            | IngestedType::StringArray
+                            | IngestedType::Int64Array
+                            | IngestedType::Float16Array
+                            | IngestedType::Float32Array
+                            | IngestedType::Float64Array
+                    )
+                {
+                    errors.push(format!(
+                        "table {} column {} multicategorical supports only string, string_array, int64_array, float16_array, float32_array, or float64_array; got {:?}",
+                        table.name, col.name, col.ingested_dtype
                     ));
                 }
                 let is_decimal = matches!(
@@ -1046,6 +1069,7 @@ mod tests {
             precision: None,
             scale: None,
             semantic_type: None,
+            multicategorical_delimiter: None,
         }
     }
 

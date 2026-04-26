@@ -8,6 +8,7 @@ set -euo pipefail
 #
 # Options:
 #   --data-dir DIR       Path to generated benchmark data (default: /mnt/localssd/col-stats-bench)
+#   --config-file NAME   Config filename inside each size dir (default: diskgraph_config.json)
 #   --iterations N       Number of iterations per mode (default: 3)
 #   --encode-only        Kill process after encode stage (default: run full pipeline)
 #   --sizes "100M 500M"  Space-separated list of dataset sizes to test
@@ -20,6 +21,7 @@ set -euo pipefail
 BIN="${COL_STATS_BIN:-$(dirname "$0")/../../target/release/ingest}"
 DATA_BASE="${COL_STATS_DATA:-/mnt/localssd/col-stats-bench}"
 OUTPUT_BASE="${COL_STATS_OUTPUT:-/mnt/localssd/col-stats-bench-output}"
+CONFIG_FILE="diskgraph_config.json"
 ITERATIONS=3
 ENCODE_ONLY=false
 SIZES="100M"
@@ -32,6 +34,7 @@ usage() {
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --data-dir) DATA_BASE="$2"; shift 2 ;;
+        --config-file) CONFIG_FILE="$2"; shift 2 ;;
         --iterations) ITERATIONS="$2"; shift 2 ;;
         --encode-only) ENCODE_ONLY=true; shift ;;
         --sizes) SIZES="$2"; shift 2 ;;
@@ -39,6 +42,8 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown option: $1"; usage ;;
     esac
 done
+
+CONFIG_TAG="${CONFIG_FILE%.json}"
 
 if [[ ! -x "$BIN" ]]; then
     echo "ERROR: binary not found: $BIN"
@@ -63,7 +68,7 @@ first_size=true
 
 for SIZE in $SIZES; do
     DATA_DIR="${DATA_BASE}/${SIZE}"
-    CONFIG="${DATA_DIR}/diskgraph_config.json"
+    CONFIG="${DATA_DIR}/${CONFIG_FILE}"
 
     if [[ ! -f "$CONFIG" ]]; then
         echo "SKIP: no config at $CONFIG (generate data first)"
@@ -85,8 +90,8 @@ for SIZE in $SIZES; do
     run_ingest() {
         local label="$1"
         local extra_args="$2"
-        local output_dir="${OUTPUT_BASE}/${SIZE}_${label}"
-        local log_file="${OUTPUT_BASE}/${SIZE}_${label}.log"
+        local output_dir="${OUTPUT_BASE}/${SIZE}_${CONFIG_TAG}_${label}"
+        local log_file="${OUTPUT_BASE}/${SIZE}_${CONFIG_TAG}_${label}.log"
 
         rm -rf "$output_dir"
 
@@ -130,19 +135,22 @@ for SIZE in $SIZES; do
             return 1
         fi
 
-        # Parse elapsed time (formats: "1m 23s", "45.2s", "1h 2m 3s")
-        local elapsed_str
-        elapsed_str=$(echo "$encode_line" | sed 's/.*elapsed=//')
-        local total_seconds=0
+        # Parse elapsed_ms from the encode log line.
+        # tracing's ANSI color codes split the literal "elapsed=" (e.g.
+        # `elapsed\e[0m\e[2m=`), so a naive sed that strips up to "elapsed="
+        # fails. Strip ANSI escapes first, then read the integer elapsed_ms.
+        local clean_line
+        clean_line=$(echo "$encode_line" | sed 's/\x1b\[[0-9;]*m//g')
+        local elapsed_ms
+        elapsed_ms=$(echo "$clean_line" | grep -oP 'elapsed_ms=\K[0-9]+')
+        if [[ -z "$elapsed_ms" ]]; then
+            echo "FAILED (could not parse elapsed_ms)"
+            return 1
+        fi
+        local total_seconds
+        total_seconds=$(echo "scale=2; $elapsed_ms / 1000" | bc)
 
-        # Extract hours, minutes, seconds
-        local hours=0 minutes=0 seconds=0
-        if [[ "$elapsed_str" =~ ([0-9]+)h ]]; then hours=${BASH_REMATCH[1]}; fi
-        if [[ "$elapsed_str" =~ ([0-9]+)m ]]; then minutes=${BASH_REMATCH[1]}; fi
-        if [[ "$elapsed_str" =~ ([0-9.]+)s ]]; then seconds=${BASH_REMATCH[1]}; fi
-        total_seconds=$(echo "$hours * 3600 + $minutes * 60 + $seconds" | bc)
-
-        echo "${total_seconds}s (${elapsed_str})"
+        echo "${total_seconds}s (elapsed_ms=${elapsed_ms})"
         echo "$total_seconds"
 
         # Cleanup output to save disk
@@ -193,6 +201,7 @@ for SIZE in $SIZES; do
     echo "  Overhead: ${overhead}%"
 
     # Write JSON
+    echo '      "config_file": "'$CONFIG_FILE'",' >> "$RESULTS_FILE"
     echo '      "baseline_times": ['$(IFS=,; echo "${baseline_times[*]:-}")'],' >> "$RESULTS_FILE"
     echo '      "colstats_times": ['$(IFS=,; echo "${colstats_times[*]:-}")'],' >> "$RESULTS_FILE"
     echo '      "baseline_avg": '$baseline_avg',' >> "$RESULTS_FILE"

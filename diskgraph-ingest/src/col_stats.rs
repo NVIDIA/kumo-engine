@@ -9,8 +9,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use crate::graph_config::{IngestedType, SemanticType};
-use diskgraph_rowpack::{ColumnValueObserver, FloatListView};
+use crate::graph_config::{ColumnSpec, IngestedType, SemanticType};
+use diskgraph_rowpack::{ColumnValueObserver, FloatListView, Int64ListView, StringListView};
 use serde_json::{json, Value as JsonValue};
 
 // ---------------------------------------------------------------------------
@@ -210,7 +210,10 @@ pub struct TableCategoryCounts {
 
 impl TableCategoryCounts {
     /// Create shared state for a table given its column semantic types.
-    /// Only Categorical and Id columns get category count collection.
+    /// Categorical, Id, and Multicategorical columns get category count collection.
+    /// Multicategorical reuses the same machinery: one DashMap entry per distinct
+    /// *token* (not per row), fed by the per-input-kind tokenization paths in
+    /// `ColumnStatsCollector::Multicategorical`.
     pub fn new(
         strategy: CategoryCountStrategy,
         semantic_types: &[Option<SemanticType>],
@@ -223,6 +226,15 @@ impl TableCategoryCounts {
                     let shared = match strategy {
                         CategoryCountStrategy::Graduation => SharedColumnCounts::new_graduation(),
                         _ => SharedColumnCounts::new_hashed(),
+                    };
+                    Some(Arc::new(shared))
+                }
+                Some(SemanticType::Multicategorical) => {
+                    let shared = match strategy {
+                        CategoryCountStrategy::Graduation => {
+                            SharedColumnCounts::new_graduation_uncapped()
+                        }
+                        _ => SharedColumnCounts::new_hashed_uncapped(),
                     };
                     Some(Arc::new(shared))
                 }
@@ -522,6 +534,23 @@ pub struct FileColStats {
     grad_snapshots: Vec<Option<Arc<HashSet<u64>>>>,
 }
 
+/// Dispatch discriminator for multicategorical tokenization. Frozen at
+/// collector construction based on the column's `IngestedType`. The inner
+/// loop specializes on this to avoid per-row branching on the list variant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MulticatInputKind {
+    /// IngestedType::String — split scalar on declared separator, or treat
+    /// the whole cell as one token when separator is None.
+    StringScalar,
+    /// IngestedType::StringArray — iterate list elements; nulls become "".
+    StringArray,
+    /// IngestedType::Int64Array — iterate list elements; nulls become 0.
+    Int64Array,
+    /// IngestedType::Float16Array/Float32Array/Float64Array — iterate, widen
+    /// to f64, drop NaN, stringify via Display; nulls become 0.0.
+    FloatArray,
+}
+
 /// Per-column stats collector, chosen by SemanticType.
 pub enum ColumnStatsCollector {
     Numerical {
@@ -563,23 +592,51 @@ pub enum ColumnStatsCollector {
     },
     /// Image URL column — stores only universal stats (count, null_count).
     /// Produces `kumo.image` keys in col_stats output.
-    ImageUrl {
+    ImageUrl { count: u64, null_count: u64 },
+    /// Multicategorical column — one row produces N tokens; per-token
+    /// counting reuses the existing `SharedColumnCounts` / `LocalColumnCounts`
+    /// machinery via `observe_category_{string,i64}`. This variant carries
+    /// only universal per-column state; token counts live in the shared
+    /// per-column category counts, same as Categorical/Id.
+    Multicategorical {
+        /// Non-null rows observed.
         count: u64,
+        /// Null rows observed.
         null_count: u64,
+        /// HLL over per-token hashes — source of `NUM_UNIQUE_MULTI`.
+        hll: HyperLogLog,
+        /// Tokenization dispatch; frozen at construction.
+        input_kind: MulticatInputKind,
+        /// Emit-only: separator string for `MULTI_CATEGORIES_SEPARATOR`.
+        /// `Some(sep)` for `StringScalar` with a configured delimiter;
+        /// `None` otherwise (native lists, or single-token-per-row string).
+        separator: Option<String>,
+        /// Hot-path split hint for the config-converter's ASCII delimiters.
+        /// Keeps scalar-string observation from cloning the separator per row.
+        separator_byte: Option<u8>,
     },
-    /// Skip this column (PK, Unsupported, Multicategorical).
+    /// Skip this column (PK, Unsupported).
     Skip,
 }
 
 impl FileColStats {
-    /// Create a new observer for a file, given the semantic types of each column.
-    /// No category count collection.
-    pub fn new(semantic_types: &[Option<SemanticType>]) -> Self {
-        let cols = semantic_types
+    /// Create a new observer for a file. No category count collection.
+    ///
+    /// `columns` supplies the per-column `semantic_type`, `ingested_dtype`,
+    /// and (for multicategorical string columns) `multicategorical_delimiter`
+    /// used to construct each collector.
+    pub fn new(columns: &[ColumnSpec]) -> Self {
+        let cols = columns
             .iter()
-            .map(ColumnStatsCollector::from_semantic_type)
+            .map(|c| {
+                ColumnStatsCollector::from_column_type(
+                    &c.semantic_type,
+                    &c.ingested_dtype,
+                    c.multicategorical_delimiter.as_deref(),
+                )
+            })
             .collect();
-        let n = semantic_types.len();
+        let n = columns.len();
         Self {
             cols,
             cat_strategy: CategoryCountStrategy::None,
@@ -593,12 +650,18 @@ impl FileColStats {
 
     /// Create a new observer for a file with category count collection.
     pub fn new_with_categories(
-        semantic_types: &[Option<SemanticType>],
+        columns: &[ColumnSpec],
         table_cat: Arc<TableCategoryCounts>,
     ) -> Self {
-        let cols = semantic_types
+        let cols: Vec<ColumnStatsCollector> = columns
             .iter()
-            .map(ColumnStatsCollector::from_semantic_type)
+            .map(|c| {
+                ColumnStatsCollector::from_column_type(
+                    &c.semantic_type,
+                    &c.ingested_dtype,
+                    c.multicategorical_delimiter.as_deref(),
+                )
+            })
             .collect();
         let strategy = table_cat.strategy;
         let row_subsample = table_cat.row_subsample;
@@ -616,7 +679,7 @@ impl FileColStats {
                         .map(|_| LocalColumnCounts::with_capacity(HYBRID_LOCAL_CAP))
                 })
                 .collect(),
-            _ => (0..semantic_types.len()).map(|_| None).collect(),
+            _ => (0..columns.len()).map(|_| None).collect(),
         };
         // Graduation: init grad_snapshots as empty sets for eligible columns
         let grad_snapshots = match strategy {
@@ -625,7 +688,7 @@ impl FileColStats {
                 .iter()
                 .map(|shared| shared.as_ref().map(|_| Arc::new(HashSet::new())))
                 .collect(),
-            _ => (0..semantic_types.len()).map(|_| None).collect(),
+            _ => (0..columns.len()).map(|_| None).collect(),
         };
         Self {
             cols,
@@ -689,7 +752,11 @@ impl FileColStats {
     /// Returns an error if any timestamp column has a high parse failure rate,
     /// indicating a likely format mismatch. High null rates are allowed — a
     /// column that is mostly or entirely null is valid (e.g. DELETED_DATE).
-    pub fn check_parse_failures(&self, column_names: &[String], table_name: &str) -> anyhow::Result<()> {
+    pub fn check_parse_failures(
+        &self,
+        column_names: &[String],
+        table_name: &str,
+    ) -> anyhow::Result<()> {
         for (col, name) in self.cols.iter().zip(column_names.iter()) {
             if let ColumnStatsCollector::Timestamp {
                 count,
@@ -721,7 +788,11 @@ impl FileColStats {
                         } else {
                             format!(
                                 " Sample values that failed: [{}].",
-                                parse_fail_samples.iter().map(|s| format!("'{}'", s)).collect::<Vec<_>>().join(", "),
+                                parse_fail_samples
+                                    .iter()
+                                    .map(|s| format!("'{}'", s))
+                                    .collect::<Vec<_>>()
+                                    .join(", "),
                             )
                         };
                         return Err(anyhow::anyhow!(
@@ -787,10 +858,7 @@ impl FileColStats {
                                 json!([key_val, v])
                             })
                             .collect();
-                        obj.insert(
-                            "category_counts".to_string(),
-                            JsonValue::Array(json_counts),
-                        );
+                        obj.insert("category_counts".to_string(), JsonValue::Array(json_counts));
                     }
                 }
                 // Merge text sample stats (from context phase) for text columns.
@@ -840,8 +908,29 @@ fn get_category_counts_for_col(
     }
 }
 
+#[inline]
+fn single_byte_ascii(s: &str) -> Option<u8> {
+    if s.len() == 1 && s.is_ascii() {
+        Some(s.as_bytes()[0])
+    } else {
+        None
+    }
+}
+
 impl ColumnStatsCollector {
-    fn from_semantic_type(stype: &Option<SemanticType>) -> Self {
+    /// Construct the per-column collector for an ingest scan.
+    ///
+    /// Multicategorical columns need both the declared `ingested_type` (to pick
+    /// the tokenization path) and, for `IngestedType::String`, the
+    /// config-time-detected `multicategorical_delimiter`. An unsupported
+    /// combination of `Multicategorical + IngestedType` falls back to `Skip` —
+    /// the convert layer is responsible for rejecting such columns upstream
+    /// with a clear error, so this fallback should be unreachable in practice.
+    fn from_column_type(
+        stype: &Option<SemanticType>,
+        ingested_type: &IngestedType,
+        multicategorical_delimiter: Option<&str>,
+    ) -> Self {
         match stype {
             Some(SemanticType::Numerical) => ColumnStatsCollector::Numerical {
                 null_count: 0,
@@ -883,9 +972,42 @@ impl ColumnStatsCollector {
                 count: 0,
                 null_count: 0,
             },
-            Some(SemanticType::Multicategorical) | Some(SemanticType::Unsupported) | None => {
-                ColumnStatsCollector::Skip
+            Some(SemanticType::Multicategorical) => {
+                let input_kind = match ingested_type {
+                    IngestedType::String => Some(MulticatInputKind::StringScalar),
+                    IngestedType::StringArray => Some(MulticatInputKind::StringArray),
+                    IngestedType::Int64Array => Some(MulticatInputKind::Int64Array),
+                    IngestedType::Float16Array
+                    | IngestedType::Float32Array
+                    | IngestedType::Float64Array => Some(MulticatInputKind::FloatArray),
+                    _ => None,
+                };
+                match input_kind {
+                    Some(kind) => ColumnStatsCollector::Multicategorical {
+                        count: 0,
+                        null_count: 0,
+                        hll: HyperLogLog::new(),
+                        input_kind: kind,
+                        separator: match kind {
+                            MulticatInputKind::StringScalar => {
+                                multicategorical_delimiter.map(String::from)
+                            }
+                            _ => None,
+                        },
+                        separator_byte: match kind {
+                            MulticatInputKind::StringScalar => {
+                                multicategorical_delimiter.and_then(single_byte_ascii)
+                            }
+                            _ => None,
+                        },
+                    },
+                    // Defensive: the convert layer should already have rejected
+                    // this combination. Falling back to Skip keeps ingest going
+                    // instead of panicking mid-scan.
+                    None => ColumnStatsCollector::Skip,
+                }
             }
+            Some(SemanticType::Unsupported) | None => ColumnStatsCollector::Skip,
         }
     }
 
@@ -1029,6 +1151,38 @@ impl ColumnStatsCollector {
                 *count += *c2;
                 *null_count += *nc2;
             }
+            (
+                ColumnStatsCollector::Multicategorical {
+                    count,
+                    null_count,
+                    hll,
+                    input_kind,
+                    separator: _,
+                    separator_byte: _,
+                },
+                ColumnStatsCollector::Multicategorical {
+                    count: c2,
+                    null_count: nc2,
+                    hll: h2,
+                    input_kind: ik2,
+                    separator: _,
+                    separator_byte: _,
+                },
+            ) => {
+                // Defensive: same stype on both sides must resolve to the same
+                // tokenization path. If this ever trips, the two FileColStats
+                // were built from inconsistent ColumnSpecs.
+                debug_assert_eq!(
+                    *input_kind, *ik2,
+                    "multicategorical merge: input_kind mismatch"
+                );
+                *count += *c2;
+                *null_count += *nc2;
+                hll.merge(h2);
+                // Token counts merge through SharedColumnCounts — no per-file
+                // state to combine here. The separator is read from the column
+                // config on both sides; it doesn't need merging.
+            }
             (ColumnStatsCollector::Skip, ColumnStatsCollector::Skip) => {}
             _ => {
                 // Mismatched variants — should not happen if semantic types are consistent
@@ -1133,6 +1287,17 @@ impl ColumnStatsCollector {
                 "count": *count + *null_count,
                 "null_count": *null_count,
             })),
+            ColumnStatsCollector::Multicategorical {
+                count,
+                null_count,
+                hll,
+                ..
+            } => Some(json!({
+                "semantic_type": "multicategorical",
+                "count": *count + *null_count,
+                "null_count": *null_count,
+                "num_unique_multi": hll.estimate() as u64,
+            })),
             ColumnStatsCollector::Skip => None,
         }
     }
@@ -1163,6 +1328,7 @@ fn kumo_stype_key(col: &ColumnStatsCollector) -> &'static str {
         ColumnStatsCollector::Timestamp { .. } => "kumo.timestamp",
         ColumnStatsCollector::Sequence { .. } => "kumo.sequence",
         ColumnStatsCollector::ImageUrl { .. } => "kumo.image",
+        ColumnStatsCollector::Multicategorical { .. } => "kumo.multicategorical",
         ColumnStatsCollector::Skip => "",
     }
 }
@@ -1179,10 +1345,25 @@ fn build_cat_count_json(
     };
     let ingested_type = ingested_types.get(col_idx);
     let is_bool = matches!(ingested_type, Some(IngestedType::Bool));
-    let is_int = ingested_type.is_some_and(|t| t.is_integer_like()) && !is_bool;
+    // Integer-emitting classification includes `Int64Array` so that a
+    // `list<int64> + multicategorical` column emits numeric keys byte-matching
+    // what `tt_executor` produces for train-table multicat stats.
+    let is_int = (ingested_type.is_some_and(|t| t.is_integer_like())
+        || matches!(ingested_type, Some(IngestedType::Int64Array)))
+        && !is_bool;
+    // Float-emitting classification includes the `Float*Array` shapes for the
+    // same reason. The token strings stored in `SharedColumnCounts::strings`
+    // come from `format!("{}", f)` / `to_string()` and parse cleanly back
+    // into JSON numbers for the common cases; non-finite paths (Inf,
+    // subnormals) fall back to a string key via the `.parse::<f64>().ok()`
+    // guard below.
     let is_float = matches!(
         ingested_type,
-        Some(IngestedType::Float32) | Some(IngestedType::Float64)
+        Some(IngestedType::Float32)
+            | Some(IngestedType::Float64)
+            | Some(IngestedType::Float16Array)
+            | Some(IngestedType::Float32Array)
+            | Some(IngestedType::Float64Array)
     );
     let pairs: Vec<JsonValue> = cc
         .iter()
@@ -1221,9 +1402,7 @@ pub fn minify_kumo_stats(
     stats
         .iter()
         .map(|(key, value)| {
-            if key.ends_with("CATEGORY_COUNTS__False")
-                || key.ends_with("CATEGORY_COUNTS__True")
-            {
+            if key.ends_with("CATEGORY_COUNTS__False") || key.ends_with("CATEGORY_COUNTS__True") {
                 let mut val = value.clone();
                 if let Some(obj) = val.as_object_mut() {
                     if let Some(arr) = obj.get_mut("value").and_then(|v| v.as_array_mut()) {
@@ -1258,12 +1437,7 @@ impl FileColStats {
         // Pre-collect category counts (same pattern as to_json to avoid borrow issues).
         let cat_counts: Vec<Option<HashMap<String, u64>>> = (0..self.cols.len())
             .map(|col_idx| {
-                get_category_counts_for_col(
-                    self.cat_strategy,
-                    &self.cat_local,
-                    table_cat,
-                    col_idx,
-                )
+                get_category_counts_for_col(self.cat_strategy, &self.cat_local, table_cat, col_idx)
             })
             .collect();
 
@@ -1283,28 +1457,83 @@ impl FileColStats {
                 } => {
                     let count = welford.count + *null_count;
                     // Base stats
-                    map.insert(kumo_key(name, sk, "COUNT", false), kumo_entry(json!(count), false, dv, count));
-                    map.insert(kumo_key(name, sk, "NUM_NA", false), kumo_entry(json!(*null_count), false, dv, count));
-                    map.insert(kumo_key(name, sk, "NA_FRACTION", false), kumo_entry(json!(kumo_safe_div(*null_count, count)), false, dv, count));
-                    map.insert(kumo_key(name, sk, "INVALID_FRACTION", false), kumo_entry(json!(0.0), false, dv, count));
+                    map.insert(
+                        kumo_key(name, sk, "COUNT", false),
+                        kumo_entry(json!(count), false, dv, count),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NUM_NA", false),
+                        kumo_entry(json!(*null_count), false, dv, count),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NA_FRACTION", false),
+                        kumo_entry(json!(kumo_safe_div(*null_count, count)), false, dv, count),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "INVALID_FRACTION", false),
+                        kumo_entry(json!(0.0), false, dv, count),
+                    );
                     // Numerical-specific
-                    map.insert(kumo_key(name, sk, "MEAN", false), kumo_entry(json!(welford.mean()), false, dv, count));
-                    map.insert(kumo_key(name, sk, "STD", false), kumo_entry(json!(welford.std_dev()), false, dv, count));
-                    map.insert(kumo_key(name, sk, "MIN", false), kumo_entry(json!(welford.min), false, dv, count));
-                    map.insert(kumo_key(name, sk, "MAX", false), kumo_entry(json!(welford.max), false, dv, count));
+                    map.insert(
+                        kumo_key(name, sk, "MEAN", false),
+                        kumo_entry(json!(welford.mean()), false, dv, count),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "STD", false),
+                        kumo_entry(json!(welford.std_dev()), false, dv, count),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "MIN", false),
+                        kumo_entry(json!(welford.min), false, dv, count),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "MAX", false),
+                        kumo_entry(json!(welford.max), false, dv, count),
+                    );
                     let (q25, q50, q75) = tdigest.quantiles().unwrap_or((0.0, 0.0, 0.0));
-                    map.insert(kumo_key(name, sk, "QUANTILES", false), kumo_entry(json!([q25, q50, q75]), false, dv, count));
-                    map.insert(kumo_key(name, sk, "QUANTILE25", false), kumo_entry(json!(q25), false, dv, count));
-                    map.insert(kumo_key(name, sk, "MEDIAN", false), kumo_entry(json!(q50), false, dv, count));
-                    map.insert(kumo_key(name, sk, "QUANTILE75", false), kumo_entry(json!(q75), false, dv, count));
-                    map.insert(kumo_key(name, sk, "MEDIAN", true), kumo_entry(json!(q50), true, dv, count));
+                    map.insert(
+                        kumo_key(name, sk, "QUANTILES", false),
+                        kumo_entry(json!([q25, q50, q75]), false, dv, count),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "QUANTILE25", false),
+                        kumo_entry(json!(q25), false, dv, count),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "MEDIAN", false),
+                        kumo_entry(json!(q50), false, dv, count),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "QUANTILE75", false),
+                        kumo_entry(json!(q75), false, dv, count),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "MEDIAN", true),
+                        kumo_entry(json!(q50), true, dv, count),
+                    );
                     let kurt = welford.kurtosis();
-                    map.insert(kumo_key(name, sk, "KURTOSIS", false), kumo_entry(json!(kurt), false, dv, count));
-                    map.insert(kumo_key(name, sk, "KURTOSIS", true), kumo_entry(json!(kurt), true, dv, count));
+                    map.insert(
+                        kumo_key(name, sk, "KURTOSIS", false),
+                        kumo_entry(json!(kurt), false, dv, count),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "KURTOSIS", true),
+                        kumo_entry(json!(kurt), true, dv, count),
+                    );
                     let num_unique = hll.estimate() as u64;
-                    let num_unique = if num_unique > count { count } else { num_unique };
-                    map.insert(kumo_key(name, sk, "NUM_UNIQUE", false), kumo_entry(json!(num_unique), false, dv, count));
-                    map.insert(kumo_key(name, sk, "UNIQUE_FRACTION", false), kumo_entry(json!(kumo_safe_div(num_unique, count)), false, dv, count));
+                    let num_unique = if num_unique > count {
+                        count
+                    } else {
+                        num_unique
+                    };
+                    map.insert(
+                        kumo_key(name, sk, "NUM_UNIQUE", false),
+                        kumo_entry(json!(num_unique), false, dv, count),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "UNIQUE_FRACTION", false),
+                        kumo_entry(json!(kumo_safe_div(num_unique, count)), false, dv, count),
+                    );
                 }
                 ColumnStatsCollector::Categorical {
                     count,
@@ -1312,17 +1541,42 @@ impl FileColStats {
                     hll,
                 } => {
                     let total = *count + *null_count;
-                    map.insert(kumo_key(name, sk, "COUNT", false), kumo_entry(json!(total), false, dv, total));
-                    map.insert(kumo_key(name, sk, "NUM_NA", false), kumo_entry(json!(*null_count), false, dv, total));
-                    map.insert(kumo_key(name, sk, "NA_FRACTION", false), kumo_entry(json!(kumo_safe_div(*null_count, total)), false, dv, total));
-                    map.insert(kumo_key(name, sk, "INVALID_FRACTION", false), kumo_entry(json!(0.0), false, dv, total));
+                    map.insert(
+                        kumo_key(name, sk, "COUNT", false),
+                        kumo_entry(json!(total), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NUM_NA", false),
+                        kumo_entry(json!(*null_count), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NA_FRACTION", false),
+                        kumo_entry(json!(kumo_safe_div(*null_count, total)), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "INVALID_FRACTION", false),
+                        kumo_entry(json!(0.0), false, dv, total),
+                    );
                     // Category counts
                     let values = build_cat_count_json(col_idx, &cat_counts, ingested_types);
-                    map.insert(kumo_key(name, sk, "CATEGORY_COUNTS", false), kumo_entry(values, false, dv, total));
+                    map.insert(
+                        kumo_key(name, sk, "CATEGORY_COUNTS", false),
+                        kumo_entry(values, false, dv, total),
+                    );
                     let num_unique = hll.estimate() as u64;
-                    let num_unique = if num_unique > total { total } else { num_unique };
-                    map.insert(kumo_key(name, sk, "NUM_UNIQUE", false), kumo_entry(json!(num_unique), false, dv, total));
-                    map.insert(kumo_key(name, sk, "UNIQUE_FRACTION", false), kumo_entry(json!(kumo_safe_div(num_unique, total)), false, dv, total));
+                    let num_unique = if num_unique > total {
+                        total
+                    } else {
+                        num_unique
+                    };
+                    map.insert(
+                        kumo_key(name, sk, "NUM_UNIQUE", false),
+                        kumo_entry(json!(num_unique), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "UNIQUE_FRACTION", false),
+                        kumo_entry(json!(kumo_safe_div(num_unique, total)), false, dv, total),
+                    );
                 }
                 ColumnStatsCollector::Id {
                     count,
@@ -1330,16 +1584,41 @@ impl FileColStats {
                     hll,
                 } => {
                     let total = *count + *null_count;
-                    map.insert(kumo_key(name, sk, "COUNT", false), kumo_entry(json!(total), false, dv, total));
-                    map.insert(kumo_key(name, sk, "NUM_NA", false), kumo_entry(json!(*null_count), false, dv, total));
-                    map.insert(kumo_key(name, sk, "NA_FRACTION", false), kumo_entry(json!(kumo_safe_div(*null_count, total)), false, dv, total));
-                    map.insert(kumo_key(name, sk, "INVALID_FRACTION", false), kumo_entry(json!(0.0), false, dv, total));
+                    map.insert(
+                        kumo_key(name, sk, "COUNT", false),
+                        kumo_entry(json!(total), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NUM_NA", false),
+                        kumo_entry(json!(*null_count), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NA_FRACTION", false),
+                        kumo_entry(json!(kumo_safe_div(*null_count, total)), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "INVALID_FRACTION", false),
+                        kumo_entry(json!(0.0), false, dv, total),
+                    );
                     let values = build_cat_count_json(col_idx, &cat_counts, ingested_types);
-                    map.insert(kumo_key(name, sk, "CATEGORY_COUNTS", false), kumo_entry(values, false, dv, total));
+                    map.insert(
+                        kumo_key(name, sk, "CATEGORY_COUNTS", false),
+                        kumo_entry(values, false, dv, total),
+                    );
                     let num_unique = hll.estimate() as u64;
-                    let num_unique = if num_unique > total { total } else { num_unique };
-                    map.insert(kumo_key(name, sk, "NUM_UNIQUE", false), kumo_entry(json!(num_unique), false, dv, total));
-                    map.insert(kumo_key(name, sk, "UNIQUE_FRACTION", false), kumo_entry(json!(kumo_safe_div(num_unique, total)), false, dv, total));
+                    let num_unique = if num_unique > total {
+                        total
+                    } else {
+                        num_unique
+                    };
+                    map.insert(
+                        kumo_key(name, sk, "NUM_UNIQUE", false),
+                        kumo_entry(json!(num_unique), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "UNIQUE_FRACTION", false),
+                        kumo_entry(json!(kumo_safe_div(num_unique, total)), false, dv, total),
+                    );
                 }
                 ColumnStatsCollector::Text {
                     count,
@@ -1347,21 +1626,55 @@ impl FileColStats {
                     hll,
                 } => {
                     let total = *count + *null_count;
-                    map.insert(kumo_key(name, sk, "COUNT", false), kumo_entry(json!(total), false, dv, total));
-                    map.insert(kumo_key(name, sk, "NUM_NA", false), kumo_entry(json!(*null_count), false, dv, total));
-                    map.insert(kumo_key(name, sk, "NA_FRACTION", false), kumo_entry(json!(kumo_safe_div(*null_count, total)), false, dv, total));
-                    map.insert(kumo_key(name, sk, "INVALID_FRACTION", false), kumo_entry(json!(0.0), false, dv, total));
+                    map.insert(
+                        kumo_key(name, sk, "COUNT", false),
+                        kumo_entry(json!(total), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NUM_NA", false),
+                        kumo_entry(json!(*null_count), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NA_FRACTION", false),
+                        kumo_entry(json!(kumo_safe_div(*null_count, total)), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "INVALID_FRACTION", false),
+                        kumo_entry(json!(0.0), false, dv, total),
+                    );
                     // Text sample stats (approx=true)
                     if let Some(tss) = text_sample_stats.and_then(|m| m.get(name.as_str())) {
-                        map.insert(kumo_key(name, sk, "STRING_AVG_TOKENS", true), kumo_entry(json!(tss.avg_tokens), true, dv, total));
-                        map.insert(kumo_key(name, sk, "STRING_MAX_TOKENS", true), kumo_entry(json!(tss.max_tokens), true, dv, total));
-                        map.insert(kumo_key(name, sk, "STRING_AVG_NON_CHAR", true), kumo_entry(json!(tss.non_char_fraction), true, dv, total));
-                        map.insert(kumo_key(name, sk, "STRING_GLOVE_OVERLAP", true), kumo_entry(json!(tss.glove_overlap), true, dv, total));
+                        map.insert(
+                            kumo_key(name, sk, "STRING_AVG_TOKENS", true),
+                            kumo_entry(json!(tss.avg_tokens), true, dv, total),
+                        );
+                        map.insert(
+                            kumo_key(name, sk, "STRING_MAX_TOKENS", true),
+                            kumo_entry(json!(tss.max_tokens), true, dv, total),
+                        );
+                        map.insert(
+                            kumo_key(name, sk, "STRING_AVG_NON_CHAR", true),
+                            kumo_entry(json!(tss.non_char_fraction), true, dv, total),
+                        );
+                        map.insert(
+                            kumo_key(name, sk, "STRING_GLOVE_OVERLAP", true),
+                            kumo_entry(json!(tss.glove_overlap), true, dv, total),
+                        );
                     }
                     let num_unique = hll.estimate() as u64;
-                    let num_unique = if num_unique > total { total } else { num_unique };
-                    map.insert(kumo_key(name, sk, "NUM_UNIQUE", false), kumo_entry(json!(num_unique), false, dv, total));
-                    map.insert(kumo_key(name, sk, "UNIQUE_FRACTION", false), kumo_entry(json!(kumo_safe_div(num_unique, total)), false, dv, total));
+                    let num_unique = if num_unique > total {
+                        total
+                    } else {
+                        num_unique
+                    };
+                    map.insert(
+                        kumo_key(name, sk, "NUM_UNIQUE", false),
+                        kumo_entry(json!(num_unique), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "UNIQUE_FRACTION", false),
+                        kumo_entry(json!(kumo_safe_div(num_unique, total)), false, dv, total),
+                    );
                 }
                 ColumnStatsCollector::Timestamp {
                     count: c,
@@ -1372,15 +1685,39 @@ impl FileColStats {
                     ..
                 } => {
                     let total = *c + *null_count + *parse_fail_count;
-                    map.insert(kumo_key(name, sk, "COUNT", false), kumo_entry(json!(total), false, dv, total));
-                    map.insert(kumo_key(name, sk, "NUM_NA", false), kumo_entry(json!(*null_count), false, dv, total));
-                    map.insert(kumo_key(name, sk, "NA_FRACTION", false), kumo_entry(json!(kumo_safe_div(*null_count, total)), false, dv, total));
-                    map.insert(kumo_key(name, sk, "INVALID_FRACTION", false), kumo_entry(json!(0.0), false, dv, total));
-                    map.insert(kumo_key(name, sk, "DROPPED_ROWS", false), kumo_entry(json!(*parse_fail_count), false, dv, total));
-                    map.insert(kumo_key(name, sk, "MIN", false), kumo_entry(json!(format_kumo_timestamp(*min_secs)), false, dv, total));
-                    map.insert(kumo_key(name, sk, "MAX", false), kumo_entry(json!(format_kumo_timestamp(*max_secs)), false, dv, total));
+                    map.insert(
+                        kumo_key(name, sk, "COUNT", false),
+                        kumo_entry(json!(total), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NUM_NA", false),
+                        kumo_entry(json!(*null_count), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NA_FRACTION", false),
+                        kumo_entry(json!(kumo_safe_div(*null_count, total)), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "INVALID_FRACTION", false),
+                        kumo_entry(json!(0.0), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "DROPPED_ROWS", false),
+                        kumo_entry(json!(*parse_fail_count), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "MIN", false),
+                        kumo_entry(json!(format_kumo_timestamp(*min_secs)), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "MAX", false),
+                        kumo_entry(json!(format_kumo_timestamp(*max_secs)), false, dv, total),
+                    );
                     // Timestamp has no HLL — use total as num_unique
-                    map.insert(kumo_key(name, sk, "NUM_UNIQUE", false), kumo_entry(json!(total), false, dv, total));
+                    map.insert(
+                        kumo_key(name, sk, "NUM_UNIQUE", false),
+                        kumo_entry(json!(total), false, dv, total),
+                    );
                 }
                 ColumnStatsCollector::Sequence {
                     count: c,
@@ -1390,27 +1727,121 @@ impl FileColStats {
                     ..
                 } => {
                     let total = *c + *null_count;
-                    map.insert(kumo_key(name, sk, "COUNT", false), kumo_entry(json!(total), false, dv, total));
-                    map.insert(kumo_key(name, sk, "NUM_NA", false), kumo_entry(json!(*null_count), false, dv, total));
-                    map.insert(kumo_key(name, sk, "NA_FRACTION", false), kumo_entry(json!(kumo_safe_div(*null_count, total)), false, dv, total));
-                    map.insert(kumo_key(name, sk, "INVALID_FRACTION", false), kumo_entry(json!(0.0), false, dv, total));
+                    map.insert(
+                        kumo_key(name, sk, "COUNT", false),
+                        kumo_entry(json!(total), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NUM_NA", false),
+                        kumo_entry(json!(*null_count), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NA_FRACTION", false),
+                        kumo_entry(json!(kumo_safe_div(*null_count, total)), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "INVALID_FRACTION", false),
+                        kumo_entry(json!(0.0), false, dv, total),
+                    );
                     // Always emit min/max length (Python bridge emits even sentinels).
-                    map.insert(kumo_key(name, sk, "SEQUENCE_MIN_LENGTH", false), kumo_entry(json!(*min_len), false, dv, total));
-                    map.insert(kumo_key(name, sk, "SEQUENCE_MAX_LENGTH", false), kumo_entry(json!(*max_len), false, dv, total));
+                    map.insert(
+                        kumo_key(name, sk, "SEQUENCE_MIN_LENGTH", false),
+                        kumo_entry(json!(*min_len), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "SEQUENCE_MAX_LENGTH", false),
+                        kumo_entry(json!(*max_len), false, dv, total),
+                    );
                 }
                 ColumnStatsCollector::ImageUrl { count, null_count } => {
                     let total = *count + *null_count;
-                    map.insert(kumo_key(name, sk, "COUNT", false), kumo_entry(json!(total), false, dv, total));
-                    map.insert(kumo_key(name, sk, "NUM_NA", false), kumo_entry(json!(*null_count), false, dv, total));
-                    map.insert(kumo_key(name, sk, "NA_FRACTION", false), kumo_entry(json!(kumo_safe_div(*null_count, total)), false, dv, total));
-                    map.insert(kumo_key(name, sk, "INVALID_FRACTION", false), kumo_entry(json!(0.0), false, dv, total));
+                    map.insert(
+                        kumo_key(name, sk, "COUNT", false),
+                        kumo_entry(json!(total), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NUM_NA", false),
+                        kumo_entry(json!(*null_count), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NA_FRACTION", false),
+                        kumo_entry(json!(kumo_safe_div(*null_count, total)), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "INVALID_FRACTION", false),
+                        kumo_entry(json!(0.0), false, dv, total),
+                    );
+                }
+                ColumnStatsCollector::Multicategorical {
+                    count,
+                    null_count,
+                    hll,
+                    separator,
+                    ..
+                } => {
+                    let total = *count + *null_count;
+                    // Universal stats (match Categorical/Id shape so downstream
+                    // readers can dispatch on kumo.multicategorical uniformly).
+                    map.insert(
+                        kumo_key(name, sk, "COUNT", false),
+                        kumo_entry(json!(total), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NUM_NA", false),
+                        kumo_entry(json!(*null_count), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NA_FRACTION", false),
+                        kumo_entry(json!(kumo_safe_div(*null_count, total)), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "INVALID_FRACTION", false),
+                        kumo_entry(json!(0.0), false, dv, total),
+                    );
+                    // Multicat-specific: separator, category counts, and HLL-based
+                    // NUM_UNIQUE_MULTI — the three keys `tt_executor` already
+                    // produces for train-table multicat stats.
+                    let sep_value = match separator {
+                        Some(s) => JsonValue::String(s.clone()),
+                        None => JsonValue::Null,
+                    };
+                    map.insert(
+                        kumo_key(name, sk, "MULTI_CATEGORIES_SEPARATOR", false),
+                        kumo_entry(sep_value, false, dv, total),
+                    );
+                    // Sort the [token, count] pairs count-desc then token-asc
+                    // to byte-match tt_executor's train-table output. Downstream
+                    // consumers treat this ordering as stable.
+                    let mut values = build_cat_count_json(col_idx, &cat_counts, ingested_types);
+                    if let JsonValue::Array(ref mut arr) = values {
+                        arr.sort_by(|a, b| {
+                            let ca = a.get(1).and_then(JsonValue::as_u64).unwrap_or(0);
+                            let cb = b.get(1).and_then(JsonValue::as_u64).unwrap_or(0);
+                            // count-desc
+                            cb.cmp(&ca).then_with(|| {
+                                let ka = a.get(0).map(|v| v.to_string()).unwrap_or_default();
+                                let kb = b.get(0).map(|v| v.to_string()).unwrap_or_default();
+                                ka.cmp(&kb)
+                            })
+                        });
+                    }
+                    map.insert(
+                        kumo_key(name, sk, "MULTI_CATEGORY_COUNTS", false),
+                        kumo_entry(values, false, dv, total),
+                    );
+                    // `__True` suffix to byte-match tt_executor's current output;
+                    // HLL is an approximate cardinality estimator.
+                    let num_unique = hll.estimate() as u64;
+                    map.insert(
+                        kumo_key(name, sk, "NUM_UNIQUE_MULTI", true),
+                        kumo_entry(json!(num_unique), true, dv, total),
+                    );
                 }
                 ColumnStatsCollector::Skip => {}
             }
         }
         map
     }
-
 }
 
 impl FileColStats {
@@ -1427,12 +1858,23 @@ impl FileColStats {
     }
 
     /// Observe a value for category counts (string-typed categorical/id column).
-    /// Dispatches to the appropriate strategy.
+    /// Gated by per-row subsampling; see `observe_category_string_inner` for
+    /// the sample-check-bypass variant used from the multicategorical path
+    /// (row-level sampling is enforced once at the top of the row observer,
+    /// not per token — see §3.1 of the multicat design).
     #[inline]
     fn observe_category_string(&mut self, col_idx: usize, hash: u64, value: &str) {
         if !self.should_sample_row() {
             return;
         }
+        self.observe_category_string_inner(col_idx, hash, value);
+    }
+
+    /// Sample-check-bypass variant of `observe_category_string`. The caller is
+    /// responsible for doing the row-level sample check exactly once per row
+    /// before the per-token loop.
+    #[inline]
+    fn observe_category_string_inner(&mut self, col_idx: usize, hash: u64, value: &str) {
         match self.cat_strategy {
             CategoryCountStrategy::None => {}
             CategoryCountStrategy::Hybrid => {
@@ -1486,11 +1928,19 @@ impl FileColStats {
     }
 
     /// Observe a value for category counts (integer-typed categorical/id column).
+    /// Gated by per-row subsampling; see `observe_category_i64_inner`.
     #[inline]
     fn observe_category_i64(&mut self, col_idx: usize, hash: u64, value: i64) {
         if !self.should_sample_row() {
             return;
         }
+        self.observe_category_i64_inner(col_idx, hash, value);
+    }
+
+    /// Sample-check-bypass variant of `observe_category_i64`. See
+    /// `observe_category_string_inner` for rationale.
+    #[inline]
+    fn observe_category_i64_inner(&mut self, col_idx: usize, hash: u64, value: i64) {
         match self.cat_strategy {
             CategoryCountStrategy::None => {}
             CategoryCountStrategy::Hybrid => {
@@ -1525,12 +1975,7 @@ impl FileColStats {
                                     );
                                     if is_new {
                                         strings.entry(hash).or_insert_with(|| value.to_string());
-                                        if col_shared.unique_count.fetch_add(1, Ordering::Relaxed)
-                                            + 1
-                                            > MAX_CATEGORIES
-                                        {
-                                            col_shared.aborted.store(true, Ordering::Relaxed);
-                                        }
+                                        col_shared.record_new_unique();
                                     }
                                 }
                             }
@@ -1581,6 +2026,95 @@ impl FileColStats {
                     }
                 }
             }
+        }
+    }
+}
+
+impl FileColStats {
+    #[inline]
+    fn for_each_split_ascii_byte(raw: &str, separator: u8, mut f: impl FnMut(&str)) {
+        let mut start = 0;
+        for (idx, byte) in raw.bytes().enumerate() {
+            if byte == separator {
+                f(&raw[start..idx]);
+                start = idx + 1;
+            }
+        }
+        f(&raw[start..]);
+    }
+
+    /// Multicategorical `StringScalar` row observer. Called from
+    /// `observe_string` when the collector's `input_kind` is `StringScalar`.
+    ///
+    /// Row-level work: increment `count`, snapshot the scalar split policy,
+    /// release the collector borrow, do one category-count sample check, then
+    /// enter the per-token loop. HLL observes every token for `NUM_UNIQUE_MULTI`;
+    /// category counts honor row-level subsampling.
+    /// Nulls take the `observe_null` path upstream; this method is only
+    /// entered for non-null rows.
+    #[inline]
+    fn observe_multicat_string_scalar(&mut self, col_idx: usize, raw: &str) {
+        let (separator_byte, separator_fallback) = if let ColumnStatsCollector::Multicategorical {
+            count,
+            separator,
+            separator_byte,
+            input_kind: MulticatInputKind::StringScalar,
+            ..
+        } = &mut self.cols[col_idx]
+        {
+            *count += 1;
+            let fallback = if separator_byte.is_none() {
+                separator.clone()
+            } else {
+                None
+            };
+            (*separator_byte, fallback)
+        } else {
+            return;
+        };
+        let count_category = self.should_sample_row();
+
+        if let Some(separator_byte) = separator_byte {
+            Self::for_each_split_ascii_byte(raw, separator_byte, |tok| {
+                self.observe_multicat_token_str(col_idx, tok.trim(), count_category);
+            });
+        } else if let Some(sep) = separator_fallback.as_deref() {
+            for tok in raw.split(sep) {
+                // `tok` borrows from `raw`; `trim()` borrows again —
+                // no heap activity on the scan path itself.
+                self.observe_multicat_token_str(col_idx, tok.trim(), count_category);
+            }
+        } else {
+            self.observe_multicat_token_str(col_idx, raw.trim(), count_category);
+        }
+    }
+
+    /// Per-token string primitive for Multicategorical columns. Updates the
+    /// per-column HLL (for `NUM_UNIQUE_MULTI`) for every token. If
+    /// `count_category` is true, it also feeds the hash into the shared
+    /// category counts through `observe_category_string_inner`.
+    #[inline]
+    fn observe_multicat_token_str(&mut self, col_idx: usize, tok: &str, count_category: bool) {
+        let hash = HyperLogLog::hash_bytes(tok.as_bytes());
+        if let ColumnStatsCollector::Multicategorical { hll, .. } = &mut self.cols[col_idx] {
+            hll.observe_hash(hash);
+        }
+        if count_category {
+            self.observe_category_string_inner(col_idx, hash, tok);
+        }
+    }
+
+    /// Per-token i64 primitive for Multicategorical columns (Int64Array
+    /// input kind). Identity-hashed via `HyperLogLog::hash_i64`, matching
+    /// the integer categorical path.
+    #[inline]
+    fn observe_multicat_token_i64(&mut self, col_idx: usize, n: i64, count_category: bool) {
+        let hash = HyperLogLog::hash_i64(n);
+        if let ColumnStatsCollector::Multicategorical { hll, .. } = &mut self.cols[col_idx] {
+            hll.observe_hash(hash);
+        }
+        if count_category {
+            self.observe_category_i64_inner(col_idx, hash, n);
         }
     }
 }
@@ -1668,6 +2202,20 @@ impl ColumnValueObserver for FileColStats {
 
     #[inline]
     fn observe_string(&mut self, col_idx: usize, value: &str) {
+        // Multicategorical scalar-string path: one row → N tokens. Dispatch
+        // early so the rest of this method keeps its categorical/id/text
+        // one-token-per-row shape.
+        if matches!(
+            &self.cols[col_idx],
+            ColumnStatsCollector::Multicategorical {
+                input_kind: MulticatInputKind::StringScalar,
+                ..
+            }
+        ) {
+            self.observe_multicat_string_scalar(col_idx, value);
+            return;
+        }
+
         // Pre-compute hash for categorical/id (shared between HLL and category counts).
         let cat_hash = match &self.cols[col_idx] {
             ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. } => {
@@ -1722,23 +2270,92 @@ impl ColumnValueObserver for FileColStats {
 
     #[inline]
     fn observe_float_list(&mut self, col_idx: usize, view: &FloatListView) {
-        if let ColumnStatsCollector::Sequence {
-            count,
-            min_len,
-            max_len,
-            welford,
-            ..
-        } = &mut self.cols[col_idx]
-        {
-            let len = view.len();
-            *count += 1;
-            if len < *min_len {
-                *min_len = len;
+        match &mut self.cols[col_idx] {
+            ColumnStatsCollector::Sequence {
+                count,
+                min_len,
+                max_len,
+                welford,
+                ..
+            } => {
+                let len = view.len();
+                *count += 1;
+                if len < *min_len {
+                    *min_len = len;
+                }
+                if len > *max_len {
+                    *max_len = len;
+                }
+                view.for_each_f64(|v| welford.observe(v));
             }
-            if len > *max_len {
-                *max_len = len;
+            ColumnStatsCollector::Multicategorical {
+                input_kind: MulticatInputKind::FloatArray,
+                count,
+                ..
+            } => {
+                *count += 1;
+                // Fall through to the per-token loop below. Releasing the &mut
+                // borrow on self.cols first.
+                let count_category = self.should_sample_row();
+                // Per-token loop: widen to f64, drop NaN, stringify via Display.
+                // HLL sees every token; category counts are gated once per row.
+                // `format!("{}", f)` is the unavoidable per-element allocation;
+                // graduated tokens only see this cost the first time they
+                // appear (and only for unique new token strings).
+                view.for_each_non_null_f64(|f| {
+                    if f.is_nan() {
+                        return;
+                    }
+                    let s = format!("{}", f);
+                    self.observe_multicat_token_str(col_idx, &s, count_category);
+                });
             }
-            view.for_each_f64(|v| welford.observe(v));
+            _ => {}
+        }
+    }
+
+    #[inline]
+    fn observe_int64_list(&mut self, col_idx: usize, view: &Int64ListView) {
+        if matches!(
+            &self.cols[col_idx],
+            ColumnStatsCollector::Multicategorical {
+                input_kind: MulticatInputKind::Int64Array,
+                ..
+            }
+        ) {
+            if let ColumnStatsCollector::Multicategorical { count, .. } = &mut self.cols[col_idx] {
+                *count += 1;
+            }
+            let count_category = self.should_sample_row();
+            view.for_each_i64(|n| {
+                // Integer tokens are identity-hashed via the same primitive
+                // categorical/id integer columns use; strings stored in
+                // `LocalColumnCounts::strings` are `n.to_string()`, matching
+                // tt_executor's stringified-int emit.
+                self.observe_multicat_token_i64(col_idx, n, count_category);
+            });
+        }
+    }
+
+    #[inline]
+    fn observe_string_list(&mut self, col_idx: usize, view: &StringListView) {
+        if matches!(
+            &self.cols[col_idx],
+            ColumnStatsCollector::Multicategorical {
+                input_kind: MulticatInputKind::StringArray,
+                ..
+            }
+        ) {
+            if let ColumnStatsCollector::Multicategorical { count, .. } = &mut self.cols[col_idx] {
+                *count += 1;
+            }
+            let count_category = self.should_sample_row();
+            // `view.for_each_str` drops null elements; legitimate empty strings
+            // still reach the callback and remain empty tokens after trim.
+            // `trim()` is a borrowed subslice — zero heap activity.
+            view.for_each_str(|s| {
+                self.observe_multicat_token_str(col_idx, s.trim(), count_category);
+            });
         }
     }
 
@@ -1752,6 +2369,7 @@ impl ColumnValueObserver for FileColStats {
             ColumnStatsCollector::Timestamp { null_count, .. } => *null_count += 1,
             ColumnStatsCollector::Sequence { null_count, .. } => *null_count += 1,
             ColumnStatsCollector::ImageUrl { null_count, .. } => *null_count += 1,
+            ColumnStatsCollector::Multicategorical { null_count, .. } => *null_count += 1,
             ColumnStatsCollector::Skip => {}
         }
     }
@@ -1770,6 +2388,52 @@ impl ColumnValueObserver for FileColStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a minimal `Vec<ColumnSpec>` for tests that only care about
+    /// `semantic_type`. All columns get `IngestedType::String` and no
+    /// multicat delimiter; callers that need a specific ingested type
+    /// should use `make_test_cols_with_types` instead.
+    fn make_test_cols(stypes: &[Option<SemanticType>]) -> Vec<ColumnSpec> {
+        stypes
+            .iter()
+            .enumerate()
+            .map(|(i, s)| ColumnSpec {
+                name: format!("c{i}"),
+                source_dtype: None,
+                ingested_dtype: IngestedType::String,
+                fixed_len: None,
+                timestamp_format: None,
+                timestamp_unit: None,
+                precision: None,
+                scale: None,
+                semantic_type: *s,
+                multicategorical_delimiter: None,
+            })
+            .collect()
+    }
+
+    /// Like `make_test_cols`, but lets the caller pick per-column
+    /// `ingested_dtype` and `multicategorical_delimiter`.
+    fn make_test_cols_with_types(
+        entries: &[(Option<SemanticType>, IngestedType, Option<&str>)],
+    ) -> Vec<ColumnSpec> {
+        entries
+            .iter()
+            .enumerate()
+            .map(|(i, (stype, dtype, delim))| ColumnSpec {
+                name: format!("c{i}"),
+                source_dtype: None,
+                ingested_dtype: dtype.clone(),
+                fixed_len: None,
+                timestamp_format: None,
+                timestamp_unit: None,
+                precision: None,
+                scale: None,
+                semantic_type: *stype,
+                multicategorical_delimiter: delim.map(str::to_string),
+            })
+            .collect()
+    }
 
     #[test]
     fn test_welford_basic() {
@@ -2103,6 +2767,27 @@ mod tests {
     }
 
     #[test]
+    fn test_shared_counts_cap_policy() {
+        let capped = SharedColumnCounts::new_hashed();
+        capped.unique_count.store(MAX_CATEGORIES, Ordering::Relaxed);
+        capped.record_new_unique();
+        assert!(capped.is_aborted());
+        assert!(capped.drain_to_map().is_none());
+
+        let uncapped = SharedColumnCounts::new_hashed_uncapped();
+        uncapped
+            .unique_count
+            .store(MAX_CATEGORIES, Ordering::Relaxed);
+        uncapped.record_new_unique();
+        assert!(!uncapped.is_aborted());
+        uncapped.observe_hashed(HyperLogLog::hash_bytes(b"a"), "a");
+        uncapped.observe_hashed(HyperLogLog::hash_bytes(b"b"), "b");
+        uncapped.observe_hashed(HyperLogLog::hash_bytes(b"c"), "c");
+        let counts = uncapped.drain_to_map().unwrap();
+        assert_eq!(counts.len(), 3);
+    }
+
+    #[test]
     fn test_graduation_threshold_adapts() {
         // With many unique categories, min_occ should increase
         let shared = SharedColumnCounts::new_graduation();
@@ -2193,7 +2878,7 @@ mod tests {
     #[test]
     fn test_to_kumo_json_numerical() {
         let stypes = vec![Some(SemanticType::Numerical)];
-        let mut stats = FileColStats::new(&stypes);
+        let mut stats = FileColStats::new(&make_test_cols(&stypes));
         stats.observe_f64(0, 10.0);
         stats.observe_f64(0, 20.0);
         stats.observe_null(0);
@@ -2228,7 +2913,7 @@ mod tests {
     #[test]
     fn test_to_kumo_json_timestamp() {
         let stypes = vec![Some(SemanticType::Timestamp)];
-        let mut stats = FileColStats::new(&stypes);
+        let mut stats = FileColStats::new(&make_test_cols(&stypes));
         stats.observe_timestamp(0, 1537401600); // 2018-09-20
         stats.observe_timestamp(0, 1700000000); // 2023-11-14
         stats.observe_null(0);
@@ -2250,7 +2935,7 @@ mod tests {
     #[test]
     fn test_to_kumo_json_timestamp_sentinel() {
         let stypes = vec![Some(SemanticType::Timestamp)];
-        let mut stats = FileColStats::new(&stypes);
+        let mut stats = FileColStats::new(&make_test_cols(&stypes));
         // No valid timestamps observed → min=MAX, max=MIN (sentinels)
         stats.observe_null(0);
 
@@ -2267,7 +2952,7 @@ mod tests {
     #[test]
     fn test_to_kumo_json_skip_column() {
         let stypes = vec![Some(SemanticType::Unsupported)];
-        let mut stats = FileColStats::new(&stypes);
+        let mut stats = FileColStats::new(&make_test_cols(&stypes));
         let col_names = vec!["x".to_string()];
         let ingested_types = vec![IngestedType::String];
         let map = stats.to_kumo_json(&col_names, &ingested_types, None, None, "v1");
@@ -2297,7 +2982,11 @@ mod tests {
                         }
                     }
                 }
-                format!("{}: {}", serde_json::to_string(k).unwrap(), serde_json::to_string(&val).unwrap())
+                format!(
+                    "{}: {}",
+                    serde_json::to_string(k).unwrap(),
+                    serde_json::to_string(&val).unwrap()
+                )
             })
             .collect();
         format!("{{\n{}\n}}", entries.join(",\n"))
@@ -2314,15 +3003,15 @@ mod tests {
     #[test]
     fn test_to_kumo_json_exact_snapshot() {
         let stypes = vec![
-            Some(SemanticType::Numerical),    // 0: "age"
-            Some(SemanticType::Categorical),  // 1: "status"
-            Some(SemanticType::Id),           // 2: "user_id"
-            Some(SemanticType::Text),         // 3: "bio"
-            Some(SemanticType::Timestamp),    // 4: "created_at"
-            Some(SemanticType::Sequence),     // 5: "embedding"
-            Some(SemanticType::Unsupported),  // 6: "skip_me"
+            Some(SemanticType::Numerical),   // 0: "age"
+            Some(SemanticType::Categorical), // 1: "status"
+            Some(SemanticType::Id),          // 2: "user_id"
+            Some(SemanticType::Text),        // 3: "bio"
+            Some(SemanticType::Timestamp),   // 4: "created_at"
+            Some(SemanticType::Sequence),    // 5: "embedding"
+            Some(SemanticType::Unsupported), // 6: "skip_me"
         ];
-        let mut stats = FileColStats::new(&stypes);
+        let mut stats = FileColStats::new(&make_test_cols(&stypes));
 
         // Numerical: 10, 20, 30 + 1 null → count=4
         stats.observe_f64(0, 10.0);
@@ -2350,19 +3039,38 @@ mod tests {
         stats.observe_null(5);
         stats.observe_null(5);
 
-        let col_names: Vec<String> =
-            ["age", "status", "user_id", "bio", "created_at", "embedding", "skip_me"]
-                .iter().map(|s| s.to_string()).collect();
+        let col_names: Vec<String> = [
+            "age",
+            "status",
+            "user_id",
+            "bio",
+            "created_at",
+            "embedding",
+            "skip_me",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
         let ingested_types = vec![
-            IngestedType::Float64, IngestedType::String, IngestedType::String,
-            IngestedType::String, IngestedType::Timestamp, IngestedType::Float32Array,
+            IngestedType::Float64,
+            IngestedType::String,
+            IngestedType::String,
+            IngestedType::String,
+            IngestedType::Timestamp,
+            IngestedType::Float32Array,
             IngestedType::String,
         ];
         let mut text_stats = HashMap::new();
-        text_stats.insert("bio".to_string(), TextSampleStats {
-            avg_tokens: 2.5, max_tokens: 3, non_char_fraction: 0.0,
-            string_truncation_scale: 1.0, glove_overlap: 0.8,
-        });
+        text_stats.insert(
+            "bio".to_string(),
+            TextSampleStats {
+                avg_tokens: 2.5,
+                max_tokens: 3,
+                non_char_fraction: 0.0,
+                string_truncation_scale: 1.0,
+                glove_overlap: 0.8,
+            },
+        );
 
         let map = stats.to_kumo_json(&col_names, &ingested_types, None, Some(&text_stats), "v42");
         let canonical = canonicalize_kumo_map(&map);
@@ -2373,13 +3081,21 @@ mod tests {
             v.sort();
             v
         };
-        assert!(!keys.iter().any(|k| k.starts_with("skip_me__")),
-            "Unsupported column must not appear");
+        assert!(
+            !keys.iter().any(|k| k.starts_with("skip_me__")),
+            "Unsupported column must not appear"
+        );
 
         // ---- Assert every entry exactly ----
         // Helper: assert a single stat entry's 4 fields
-        fn e(map: &serde_json::Map<String, JsonValue>, key: &str,
-             val: JsonValue, approx: bool, dv: &str, n: u64) {
+        fn e(
+            map: &serde_json::Map<String, JsonValue>,
+            key: &str,
+            val: JsonValue,
+            approx: bool,
+            dv: &str,
+            n: u64,
+        ) {
             let entry = map.get(key).unwrap_or_else(|| panic!("missing key: {key}"));
             let obj = entry.as_object().unwrap();
             assert_eq!(obj["approx"], json!(approx), "approx @ {key}");
@@ -2405,16 +3121,86 @@ mod tests {
         // mean=20, std=10, min=10, max=30, kurtosis=-1.5
         // With only 3 data points, tdigest quantiles = [10, 20, 30]
         // HLL with 3 distinct f64s → num_unique 3 (exact for small n)
-        e(&map, "age__kumo.numerical__COUNT__False",              json!(4), false, "v42", 4);
-        e(&map, "age__kumo.numerical__NUM_NA__False",             json!(1), false, "v42", 4);
-        e(&map, "age__kumo.numerical__NA_FRACTION__False",        json!(0.25), false, "v42", 4);
-        e(&map, "age__kumo.numerical__INVALID_FRACTION__False",   json!(0.0), false, "v42", 4);
-        e(&map, "age__kumo.numerical__MEAN__False",               json!(20.0), false, "v42", 4);
-        e(&map, "age__kumo.numerical__STD__False",                json!(10.0), false, "v42", 4);
-        e(&map, "age__kumo.numerical__MIN__False",                json!(10.0), false, "v42", 4);
-        e(&map, "age__kumo.numerical__MAX__False",                json!(30.0), false, "v42", 4);
-        e(&map, "age__kumo.numerical__KURTOSIS__False",           json!(-1.5), false, "v42", 4);
-        e(&map, "age__kumo.numerical__KURTOSIS__True",            json!(-1.5), true,  "v42", 4);
+        e(
+            &map,
+            "age__kumo.numerical__COUNT__False",
+            json!(4),
+            false,
+            "v42",
+            4,
+        );
+        e(
+            &map,
+            "age__kumo.numerical__NUM_NA__False",
+            json!(1),
+            false,
+            "v42",
+            4,
+        );
+        e(
+            &map,
+            "age__kumo.numerical__NA_FRACTION__False",
+            json!(0.25),
+            false,
+            "v42",
+            4,
+        );
+        e(
+            &map,
+            "age__kumo.numerical__INVALID_FRACTION__False",
+            json!(0.0),
+            false,
+            "v42",
+            4,
+        );
+        e(
+            &map,
+            "age__kumo.numerical__MEAN__False",
+            json!(20.0),
+            false,
+            "v42",
+            4,
+        );
+        e(
+            &map,
+            "age__kumo.numerical__STD__False",
+            json!(10.0),
+            false,
+            "v42",
+            4,
+        );
+        e(
+            &map,
+            "age__kumo.numerical__MIN__False",
+            json!(10.0),
+            false,
+            "v42",
+            4,
+        );
+        e(
+            &map,
+            "age__kumo.numerical__MAX__False",
+            json!(30.0),
+            false,
+            "v42",
+            4,
+        );
+        e(
+            &map,
+            "age__kumo.numerical__KURTOSIS__False",
+            json!(-1.5),
+            false,
+            "v42",
+            4,
+        );
+        e(
+            &map,
+            "age__kumo.numerical__KURTOSIS__True",
+            json!(-1.5),
+            true,
+            "v42",
+            4,
+        );
         // Quantiles are TDigest approximations — assert structure and reasonable range
         for qkey in [
             "age__kumo.numerical__QUANTILE25__False",
@@ -2424,7 +3210,10 @@ mod tests {
         ] {
             let entry = map.get(qkey).unwrap_or_else(|| panic!("missing {qkey}"));
             let v = entry["value"].as_f64().unwrap();
-            assert!((10.0..=30.0).contains(&v), "{qkey} value {v} out of [10,30]");
+            assert!(
+                (10.0..=30.0).contains(&v),
+                "{qkey} value {v} out of [10,30]"
+            );
             assert_eq!(entry["data_version"], json!("v42"));
         }
         {
@@ -2446,47 +3235,186 @@ mod tests {
             assert!((2..=4).contains(&v), "NUM_UNIQUE should be ~3, got {v}");
         }
         {
-            let uf = map.get("age__kumo.numerical__UNIQUE_FRACTION__False").unwrap();
+            let uf = map
+                .get("age__kumo.numerical__UNIQUE_FRACTION__False")
+                .unwrap();
             let v = uf["value"].as_f64().unwrap();
-            assert!(v > 0.0 && v <= 1.0, "UNIQUE_FRACTION should be in (0,1], got {v}");
+            assert!(
+                v > 0.0 && v <= 1.0,
+                "UNIQUE_FRACTION should be in (0,1], got {v}"
+            );
         }
 
         // ---- Categorical: status ----
         // 3 observations + 1 null = count 4, no cat counts (strategy=None)
-        e(&map, "status__kumo.categorical__COUNT__False",            json!(4), false, "v42", 4);
-        e(&map, "status__kumo.categorical__NUM_NA__False",           json!(1), false, "v42", 4);
-        e(&map, "status__kumo.categorical__NA_FRACTION__False",      json!(0.25), false, "v42", 4);
-        e(&map, "status__kumo.categorical__INVALID_FRACTION__False", json!(0.0), false, "v42", 4);
-        e(&map, "status__kumo.categorical__CATEGORY_COUNTS__False",  json!([]), false, "v42", 4);
+        e(
+            &map,
+            "status__kumo.categorical__COUNT__False",
+            json!(4),
+            false,
+            "v42",
+            4,
+        );
+        e(
+            &map,
+            "status__kumo.categorical__NUM_NA__False",
+            json!(1),
+            false,
+            "v42",
+            4,
+        );
+        e(
+            &map,
+            "status__kumo.categorical__NA_FRACTION__False",
+            json!(0.25),
+            false,
+            "v42",
+            4,
+        );
+        e(
+            &map,
+            "status__kumo.categorical__INVALID_FRACTION__False",
+            json!(0.0),
+            false,
+            "v42",
+            4,
+        );
+        e(
+            &map,
+            "status__kumo.categorical__CATEGORY_COUNTS__False",
+            json!([]),
+            false,
+            "v42",
+            4,
+        );
         {
-            let nu = map.get("status__kumo.categorical__NUM_UNIQUE__False").unwrap();
+            let nu = map
+                .get("status__kumo.categorical__NUM_UNIQUE__False")
+                .unwrap();
             let v = nu["value"].as_u64().unwrap();
-            assert!((1..=4).contains(&v), "status NUM_UNIQUE should be ~2, got {v}");
+            assert!(
+                (1..=4).contains(&v),
+                "status NUM_UNIQUE should be ~2, got {v}"
+            );
         }
 
         // ---- Id: user_id ----
         // 2 observations, 0 null = count 2
-        e(&map, "user_id__kumo.ID__COUNT__False",            json!(2), false, "v42", 2);
-        e(&map, "user_id__kumo.ID__NUM_NA__False",           json!(0), false, "v42", 2);
-        e(&map, "user_id__kumo.ID__NA_FRACTION__False",      json!(0.0), false, "v42", 2);
-        e(&map, "user_id__kumo.ID__INVALID_FRACTION__False", json!(0.0), false, "v42", 2);
-        e(&map, "user_id__kumo.ID__CATEGORY_COUNTS__False",  json!([]), false, "v42", 2);
+        e(
+            &map,
+            "user_id__kumo.ID__COUNT__False",
+            json!(2),
+            false,
+            "v42",
+            2,
+        );
+        e(
+            &map,
+            "user_id__kumo.ID__NUM_NA__False",
+            json!(0),
+            false,
+            "v42",
+            2,
+        );
+        e(
+            &map,
+            "user_id__kumo.ID__NA_FRACTION__False",
+            json!(0.0),
+            false,
+            "v42",
+            2,
+        );
+        e(
+            &map,
+            "user_id__kumo.ID__INVALID_FRACTION__False",
+            json!(0.0),
+            false,
+            "v42",
+            2,
+        );
+        e(
+            &map,
+            "user_id__kumo.ID__CATEGORY_COUNTS__False",
+            json!([]),
+            false,
+            "v42",
+            2,
+        );
         {
             let nu = map.get("user_id__kumo.ID__NUM_UNIQUE__False").unwrap();
             let v = nu["value"].as_u64().unwrap();
-            assert!((1..=2).contains(&v), "user_id NUM_UNIQUE should be ~2, got {v}");
+            assert!(
+                (1..=2).contains(&v),
+                "user_id NUM_UNIQUE should be ~2, got {v}"
+            );
         }
 
         // ---- Text: bio ----
         // 2 observations + 1 null = count 3
-        e(&map, "bio__kumo.text__COUNT__False",              json!(3), false, "v42", 3);
-        e(&map, "bio__kumo.text__NUM_NA__False",             json!(1), false, "v42", 3);
-        e(&map, "bio__kumo.text__NA_FRACTION__False",        json!(1.0 / 3.0), false, "v42", 3);
-        e(&map, "bio__kumo.text__INVALID_FRACTION__False",   json!(0.0), false, "v42", 3);
-        e(&map, "bio__kumo.text__STRING_AVG_TOKENS__True",   json!(2.5), true, "v42", 3);
-        e(&map, "bio__kumo.text__STRING_MAX_TOKENS__True",   json!(3), true, "v42", 3);
-        e(&map, "bio__kumo.text__STRING_AVG_NON_CHAR__True", json!(0.0), true, "v42", 3);
-        e(&map, "bio__kumo.text__STRING_GLOVE_OVERLAP__True",json!(0.8), true, "v42", 3);
+        e(
+            &map,
+            "bio__kumo.text__COUNT__False",
+            json!(3),
+            false,
+            "v42",
+            3,
+        );
+        e(
+            &map,
+            "bio__kumo.text__NUM_NA__False",
+            json!(1),
+            false,
+            "v42",
+            3,
+        );
+        e(
+            &map,
+            "bio__kumo.text__NA_FRACTION__False",
+            json!(1.0 / 3.0),
+            false,
+            "v42",
+            3,
+        );
+        e(
+            &map,
+            "bio__kumo.text__INVALID_FRACTION__False",
+            json!(0.0),
+            false,
+            "v42",
+            3,
+        );
+        e(
+            &map,
+            "bio__kumo.text__STRING_AVG_TOKENS__True",
+            json!(2.5),
+            true,
+            "v42",
+            3,
+        );
+        e(
+            &map,
+            "bio__kumo.text__STRING_MAX_TOKENS__True",
+            json!(3),
+            true,
+            "v42",
+            3,
+        );
+        e(
+            &map,
+            "bio__kumo.text__STRING_AVG_NON_CHAR__True",
+            json!(0.0),
+            true,
+            "v42",
+            3,
+        );
+        e(
+            &map,
+            "bio__kumo.text__STRING_GLOVE_OVERLAP__True",
+            json!(0.8),
+            true,
+            "v42",
+            3,
+        );
         {
             let nu = map.get("bio__kumo.text__NUM_UNIQUE__False").unwrap();
             let v = nu["value"].as_u64().unwrap();
@@ -2495,30 +3423,116 @@ mod tests {
 
         // ---- Timestamp: created_at ----
         // 2 observations + 1 null + 1 parse_fail = count 4
-        e(&map, "created_at__kumo.timestamp__COUNT__False",            json!(4), false, "v42", 4);
-        e(&map, "created_at__kumo.timestamp__NUM_NA__False",           json!(1), false, "v42", 4);
-        e(&map, "created_at__kumo.timestamp__NA_FRACTION__False",      json!(0.25), false, "v42", 4);
-        e(&map, "created_at__kumo.timestamp__INVALID_FRACTION__False", json!(0.0), false, "v42", 4);
-        e(&map, "created_at__kumo.timestamp__DROPPED_ROWS__False",     json!(1), false, "v42", 4);
-        e(&map, "created_at__kumo.timestamp__MIN__False",
-          json!("kumo_timestamp_2018-09-20 00:00:00"), false, "v42", 4);
-        e(&map, "created_at__kumo.timestamp__MAX__False",
-          json!("kumo_timestamp_2023-11-14 22:13:20"), false, "v42", 4);
-        e(&map, "created_at__kumo.timestamp__NUM_UNIQUE__False",       json!(4), false, "v42", 4);
+        e(
+            &map,
+            "created_at__kumo.timestamp__COUNT__False",
+            json!(4),
+            false,
+            "v42",
+            4,
+        );
+        e(
+            &map,
+            "created_at__kumo.timestamp__NUM_NA__False",
+            json!(1),
+            false,
+            "v42",
+            4,
+        );
+        e(
+            &map,
+            "created_at__kumo.timestamp__NA_FRACTION__False",
+            json!(0.25),
+            false,
+            "v42",
+            4,
+        );
+        e(
+            &map,
+            "created_at__kumo.timestamp__INVALID_FRACTION__False",
+            json!(0.0),
+            false,
+            "v42",
+            4,
+        );
+        e(
+            &map,
+            "created_at__kumo.timestamp__DROPPED_ROWS__False",
+            json!(1),
+            false,
+            "v42",
+            4,
+        );
+        e(
+            &map,
+            "created_at__kumo.timestamp__MIN__False",
+            json!("kumo_timestamp_2018-09-20 00:00:00"),
+            false,
+            "v42",
+            4,
+        );
+        e(
+            &map,
+            "created_at__kumo.timestamp__MAX__False",
+            json!("kumo_timestamp_2023-11-14 22:13:20"),
+            false,
+            "v42",
+            4,
+        );
+        e(
+            &map,
+            "created_at__kumo.timestamp__NUM_UNIQUE__False",
+            json!(4),
+            false,
+            "v42",
+            4,
+        );
 
         // ---- Sequence: embedding ----
         // 0 observations + 2 null = count 2
-        e(&map, "embedding__kumo.sequence__COUNT__False",            json!(2), false, "v42", 2);
-        e(&map, "embedding__kumo.sequence__NUM_NA__False",           json!(2), false, "v42", 2);
-        e(&map, "embedding__kumo.sequence__NA_FRACTION__False",      json!(1.0), false, "v42", 2);
-        e(&map, "embedding__kumo.sequence__INVALID_FRACTION__False", json!(0.0), false, "v42", 2);
+        e(
+            &map,
+            "embedding__kumo.sequence__COUNT__False",
+            json!(2),
+            false,
+            "v42",
+            2,
+        );
+        e(
+            &map,
+            "embedding__kumo.sequence__NUM_NA__False",
+            json!(2),
+            false,
+            "v42",
+            2,
+        );
+        e(
+            &map,
+            "embedding__kumo.sequence__NA_FRACTION__False",
+            json!(1.0),
+            false,
+            "v42",
+            2,
+        );
+        e(
+            &map,
+            "embedding__kumo.sequence__INVALID_FRACTION__False",
+            json!(0.0),
+            false,
+            "v42",
+            2,
+        );
         // min_len=usize::MAX, max_len=0 (sentinel values from zero observations)
         {
-            let min_l = map.get("embedding__kumo.sequence__SEQUENCE_MIN_LENGTH__False").unwrap();
+            let min_l = map
+                .get("embedding__kumo.sequence__SEQUENCE_MIN_LENGTH__False")
+                .unwrap();
             assert_eq!(min_l["value"], json!(usize::MAX));
         }
         {
-            let max_l = map.get("embedding__kumo.sequence__SEQUENCE_MAX_LENGTH__False").unwrap();
+            let max_l = map
+                .get("embedding__kumo.sequence__SEQUENCE_MAX_LENGTH__False")
+                .unwrap();
             assert_eq!(max_l["value"], json!(0));
         }
 
@@ -2531,12 +3545,20 @@ mod tests {
         // timestamp: 4 base + DROPPED_ROWS + MIN + MAX + NUM_UNIQUE = 8
         // sequence: 4 base + SEQ_MIN + SEQ_MAX = 6
         // Total = 17 + 7 + 7 + 10 + 8 + 6 = 55
-        assert_eq!(map.len(), 55, "Expected exactly 55 stat entries, got {}", map.len());
+        assert_eq!(
+            map.len(),
+            55,
+            "Expected exactly 55 stat entries, got {}",
+            map.len()
+        );
 
         // ---- Verify canonical JSON is stable ----
         // Re-run and assert identical canonical output
         let canonical2 = canonicalize_kumo_map(&map);
-        assert_eq!(canonical, canonical2, "Canonical output should be deterministic");
+        assert_eq!(
+            canonical, canonical2,
+            "Canonical output should be deterministic"
+        );
     }
 
     #[test]
@@ -2563,5 +3585,605 @@ mod tests {
             .get("col__kumo.categorical__CATEGORY_COUNTS__False")
             .unwrap();
         assert_eq!(cc["value"].as_array().unwrap().len(), 20);
+    }
+
+    // =========================================================================
+    // Multicategorical collector tests
+    //
+    // These exercise the §6.1 spec from the design doc at
+    // `knowledge/execution-notes/28187/design_doc.md`. They bypass the
+    // `config_converter` layer by constructing `FileColStats` directly via
+    // `make_test_cols_with_types` with explicit `IngestedType` +
+    // `multicategorical_delimiter`, so they test the collector's observation
+    // and emit logic in isolation.
+    //
+    // Category-count assertions use `CategoryCountStrategy::Hybrid` so every
+    // observed token ends up in `pending` (no graduation threshold to
+    // approximate). Helper `drain_counts` pulls the exact per-token tallies.
+    // =========================================================================
+
+    /// Build a `FileColStats` with `CategoryCountStrategy::Hybrid` so per-token
+    /// counts can be asserted exactly. Returns both the stats observer and
+    /// the shared `TableCategoryCounts` (needed for the emit call and for
+    /// draining counts post-observe).
+    fn make_hybrid_stats(
+        entries: &[(Option<SemanticType>, IngestedType, Option<&str>)],
+    ) -> (FileColStats, std::sync::Arc<TableCategoryCounts>) {
+        let cols = make_test_cols_with_types(entries);
+        let stypes: Vec<Option<SemanticType>> = cols.iter().map(|c| c.semantic_type).collect();
+        let table_cat = std::sync::Arc::new(TableCategoryCounts::new(
+            CategoryCountStrategy::Hybrid,
+            &stypes,
+            false,
+        ));
+        let stats = FileColStats::new_with_categories(&cols, std::sync::Arc::clone(&table_cat));
+        (stats, table_cat)
+    }
+
+    /// Drain per-column category counts for a single column index.
+    fn drain_counts(
+        table_cat: &TableCategoryCounts,
+        col_idx: usize,
+    ) -> std::collections::HashMap<String, u64> {
+        table_cat.columns[col_idx]
+            .as_ref()
+            .and_then(|shared| shared.drain_to_map())
+            .unwrap_or_default()
+    }
+
+    // --- StringScalar input kind -------------------------------------------
+
+    #[test]
+    fn col_stats_multicat_string_scalar_comma_delimited() {
+        let (mut stats, tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::String,
+            Some(","),
+        )]);
+        for row in ["kids,outdoor,sale", "audio,pro", "kids"] {
+            stats.observe_string(0, row);
+        }
+        stats.flush_categories();
+
+        let counts = drain_counts(&tc, 0);
+        assert_eq!(counts.get("kids").copied(), Some(2));
+        assert_eq!(counts.get("outdoor").copied(), Some(1));
+        assert_eq!(counts.get("sale").copied(), Some(1));
+        assert_eq!(counts.get("audio").copied(), Some(1));
+        assert_eq!(counts.get("pro").copied(), Some(1));
+        assert_eq!(counts.len(), 5);
+
+        // Separator + count/null are stored on the collector itself.
+        match &stats.cols[0] {
+            ColumnStatsCollector::Multicategorical {
+                count,
+                null_count,
+                separator,
+                ..
+            } => {
+                assert_eq!(*count, 3);
+                assert_eq!(*null_count, 0);
+                assert_eq!(separator.as_deref(), Some(","));
+            }
+            _ => panic!("expected Multicategorical collector"),
+        }
+    }
+
+    #[test]
+    fn col_stats_multicat_string_scalar_pipe_delimited() {
+        let (mut stats, tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::String,
+            Some("|"),
+        )]);
+        stats.observe_string(0, "a|b|c");
+        stats.flush_categories();
+        let counts = drain_counts(&tc, 0);
+        assert_eq!(counts.get("a").copied(), Some(1));
+        assert_eq!(counts.get("b").copied(), Some(1));
+        assert_eq!(counts.get("c").copied(), Some(1));
+        match &stats.cols[0] {
+            ColumnStatsCollector::Multicategorical { separator, .. } => {
+                assert_eq!(separator.as_deref(), Some("|"));
+            }
+            _ => panic!("expected Multicategorical collector"),
+        }
+    }
+
+    #[test]
+    fn col_stats_multicat_string_scalar_null_row_vs_empty_string() {
+        // A literal parquet null drives the null-row path; an empty-string cell
+        // is a non-null row that produces one empty-string token after trim.
+        let (mut stats, tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::String,
+            Some(","),
+        )]);
+        stats.observe_null(0);
+        stats.observe_string(0, "");
+        stats.flush_categories();
+
+        let counts = drain_counts(&tc, 0);
+        assert_eq!(counts.get("").copied(), Some(1));
+        assert_eq!(counts.len(), 1);
+        match &stats.cols[0] {
+            ColumnStatsCollector::Multicategorical {
+                count, null_count, ..
+            } => {
+                assert_eq!(*count, 1);
+                assert_eq!(*null_count, 1);
+            }
+            _ => panic!("expected Multicategorical collector"),
+        }
+    }
+
+    #[test]
+    fn col_stats_multicat_string_scalar_whitespace_trimmed() {
+        // §4.1.1: leading/trailing whitespace on each token is trimmed;
+        // internal whitespace is preserved. (The §6.1 test-spec name
+        // "whitespace_preserved" in the design doc is misleading — the
+        // explicit tokenization policy in §4.1.1 says trim is applied.
+        // Tracked in the session notes as spec-vs-test inconsistency.)
+        let (mut stats, tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::String,
+            Some(","),
+        )]);
+        stats.observe_string(0, "a, b ,c ");
+        stats.flush_categories();
+        let counts = drain_counts(&tc, 0);
+        assert_eq!(counts.get("a").copied(), Some(1));
+        assert_eq!(counts.get("b").copied(), Some(1));
+        assert_eq!(counts.get("c").copied(), Some(1));
+        assert_eq!(counts.len(), 3);
+    }
+
+    #[test]
+    fn col_stats_multicat_string_scalar_empty_between_delimiters() {
+        let (mut stats, tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::String,
+            Some(","),
+        )]);
+        stats.observe_string(0, "a,,b");
+        stats.flush_categories();
+        let counts = drain_counts(&tc, 0);
+        assert_eq!(counts.get("a").copied(), Some(1));
+        assert_eq!(counts.get("").copied(), Some(1));
+        assert_eq!(counts.get("b").copied(), Some(1));
+        assert_eq!(counts.len(), 3);
+    }
+
+    #[test]
+    fn col_stats_multicat_string_scalar_no_delimiter() {
+        // Declared `None` → each row's whole value is one token (after trim).
+        let (mut stats, tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::String,
+            None,
+        )]);
+        stats.observe_string(0, "hello world");
+        stats.observe_string(0, "hello world");
+        stats.observe_string(0, "foo");
+        stats.flush_categories();
+        let counts = drain_counts(&tc, 0);
+        assert_eq!(counts.get("hello world").copied(), Some(2));
+        assert_eq!(counts.get("foo").copied(), Some(1));
+        assert_eq!(counts.len(), 2);
+    }
+
+    // --- StringArray input kind --------------------------------------------
+
+    #[test]
+    fn col_stats_multicat_stringarray_tokens_as_is() {
+        let view = build_string_list_view(&[Some("a"), Some("b")]);
+        let view2 = build_string_list_view(&[Some("b"), Some("c"), Some("a")]);
+        let (mut stats, tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::StringArray,
+            None,
+        )]);
+        stats.observe_string_list(0, &view);
+        stats.observe_string_list(0, &view2);
+        stats.flush_categories();
+        let counts = drain_counts(&tc, 0);
+        assert_eq!(counts.get("a").copied(), Some(2));
+        assert_eq!(counts.get("b").copied(), Some(2));
+        assert_eq!(counts.get("c").copied(), Some(1));
+        assert_eq!(counts.len(), 3);
+    }
+
+    #[test]
+    fn col_stats_multicat_stringarray_empty_list_vs_null_row() {
+        // Empty list → non-null row, zero tokens. Null row → null_count += 1.
+        let (mut stats, tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::StringArray,
+            None,
+        )]);
+        let empty = build_string_list_view(&[]);
+        let x = build_string_list_view(&[Some("x")]);
+        stats.observe_string_list(0, &empty);
+        stats.observe_null(0);
+        stats.observe_string_list(0, &x);
+        stats.flush_categories();
+        let counts = drain_counts(&tc, 0);
+        assert_eq!(counts.get("x").copied(), Some(1));
+        assert_eq!(counts.len(), 1);
+        match &stats.cols[0] {
+            ColumnStatsCollector::Multicategorical {
+                count, null_count, ..
+            } => {
+                assert_eq!(*count, 2);
+                assert_eq!(*null_count, 1);
+            }
+            _ => panic!("expected Multicategorical collector"),
+        }
+    }
+
+    #[test]
+    fn col_stats_multicat_stringarray_null_elements_dropped() {
+        // Null list elements are dropped; legitimate empty-string elements
+        // still count as empty tokens.
+        let view = build_native_string_list_view(&[Some("a"), None, Some(""), Some("b")]);
+        let (mut stats, tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::StringArray,
+            None,
+        )]);
+        stats.observe_string_list(0, &view);
+        stats.flush_categories();
+        let counts = drain_counts(&tc, 0);
+        assert_eq!(counts.get("a").copied(), Some(1));
+        assert_eq!(counts.get("").copied(), Some(1));
+        assert_eq!(counts.get("b").copied(), Some(1));
+        assert_eq!(counts.len(), 3);
+    }
+
+    #[test]
+    fn col_stats_multicat_stringarray_trim_applied() {
+        // §4.1.1 policy: list elements also trim leading/trailing whitespace.
+        let view = build_string_list_view(&[Some(""), Some(" b"), Some("c ")]);
+        let (mut stats, tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::StringArray,
+            None,
+        )]);
+        stats.observe_string_list(0, &view);
+        stats.flush_categories();
+        let counts = drain_counts(&tc, 0);
+        assert_eq!(counts.get("").copied(), Some(1));
+        assert_eq!(counts.get("b").copied(), Some(1));
+        assert_eq!(counts.get("c").copied(), Some(1));
+        assert_eq!(counts.len(), 3);
+    }
+
+    // --- Int64Array input kind ---------------------------------------------
+
+    #[test]
+    fn col_stats_multicat_intarray_tokens_stringified() {
+        let v1 = build_int64_list_view(&[Some(10), Some(20)]);
+        let v2 = build_int64_list_view(&[Some(10), Some(-3)]);
+        let (mut stats, tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::Int64Array,
+            None,
+        )]);
+        stats.observe_int64_list(0, &v1);
+        stats.observe_int64_list(0, &v2);
+        stats.flush_categories();
+        let counts = drain_counts(&tc, 0);
+        assert_eq!(counts.get("10").copied(), Some(2));
+        assert_eq!(counts.get("20").copied(), Some(1));
+        assert_eq!(counts.get("-3").copied(), Some(1));
+        assert_eq!(counts.len(), 3);
+    }
+
+    #[test]
+    fn col_stats_multicat_intarray_null_elements_dropped() {
+        let view = build_native_int64_list_view(&[Some(5), None, Some(7)]);
+        let (mut stats, tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::Int64Array,
+            None,
+        )]);
+        stats.observe_int64_list(0, &view);
+        stats.flush_categories();
+        let counts = drain_counts(&tc, 0);
+        assert_eq!(counts.get("5").copied(), Some(1));
+        assert_eq!(counts.get("7").copied(), Some(1));
+        assert_eq!(counts.len(), 2);
+    }
+
+    #[test]
+    fn col_stats_multicat_intarray_negative_and_extremes() {
+        let view = build_int64_list_view(&[Some(0), Some(i64::MIN), Some(i64::MAX)]);
+        let (mut stats, tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::Int64Array,
+            None,
+        )]);
+        stats.observe_int64_list(0, &view);
+        stats.flush_categories();
+        let counts = drain_counts(&tc, 0);
+        assert_eq!(counts.get("0").copied(), Some(1));
+        assert_eq!(counts.get("-9223372036854775808").copied(), Some(1));
+        assert_eq!(counts.get("9223372036854775807").copied(), Some(1));
+    }
+
+    // --- FloatArray input kind ---------------------------------------------
+
+    #[test]
+    fn col_stats_multicat_floatarray_tokens_stringified() {
+        let view = build_float64_list_view(&[Some(1.0), Some(2.5), Some(1.0)]);
+        let (mut stats, tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::Float64Array,
+            None,
+        )]);
+        stats.observe_float_list(0, &view);
+        stats.flush_categories();
+        let counts = drain_counts(&tc, 0);
+        // Rust `Display`: 1.0 → "1", 2.5 → "2.5".
+        assert_eq!(counts.get("1").copied(), Some(2));
+        assert_eq!(counts.get("2.5").copied(), Some(1));
+        assert_eq!(counts.len(), 2);
+    }
+
+    #[test]
+    fn col_stats_multicat_floatarray_nan_dropped() {
+        let view = build_float64_list_view(&[Some(f64::NAN), Some(1.0), Some(f64::NAN)]);
+        let (mut stats, tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::Float64Array,
+            None,
+        )]);
+        stats.observe_float_list(0, &view);
+        stats.flush_categories();
+        let counts = drain_counts(&tc, 0);
+        assert_eq!(counts.get("1").copied(), Some(1));
+        assert_eq!(counts.len(), 1);
+        // The row itself is non-null; NaN elements don't bump null_count.
+        match &stats.cols[0] {
+            ColumnStatsCollector::Multicategorical {
+                count, null_count, ..
+            } => {
+                assert_eq!(*count, 1);
+                assert_eq!(*null_count, 0);
+            }
+            _ => panic!("expected Multicategorical collector"),
+        }
+    }
+
+    #[test]
+    fn col_stats_multicat_floatarray_null_elements_dropped() {
+        let view = build_native_float64_list_view(&[Some(1.0), None, Some(2.5)]);
+        let (mut stats, tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::Float64Array,
+            None,
+        )]);
+        stats.observe_float_list(0, &view);
+        stats.flush_categories();
+        let counts = drain_counts(&tc, 0);
+        assert_eq!(counts.get("1").copied(), Some(1));
+        assert_eq!(counts.get("2.5").copied(), Some(1));
+        assert!(!counts.contains_key("0"));
+        assert_eq!(counts.len(), 2);
+    }
+
+    #[test]
+    fn col_stats_multicat_floatarray_signed_zero_distinct() {
+        let view = build_float64_list_view(&[Some(0.0), Some(-0.0)]);
+        let (mut stats, tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::Float64Array,
+            None,
+        )]);
+        stats.observe_float_list(0, &view);
+        stats.flush_categories();
+        let counts = drain_counts(&tc, 0);
+        // Rust Display: -0.0 → "-0", 0.0 → "0".
+        assert_eq!(counts.get("0").copied(), Some(1));
+        assert_eq!(counts.get("-0").copied(), Some(1));
+    }
+
+    #[test]
+    fn col_stats_multicat_floatarray_infinity() {
+        let view = build_float64_list_view(&[Some(f64::INFINITY), Some(f64::NEG_INFINITY)]);
+        let (mut stats, tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::Float64Array,
+            None,
+        )]);
+        stats.observe_float_list(0, &view);
+        stats.flush_categories();
+        let counts = drain_counts(&tc, 0);
+        assert_eq!(counts.get("inf").copied(), Some(1));
+        assert_eq!(counts.get("-inf").copied(), Some(1));
+    }
+
+    // --- Merge -------------------------------------------------------------
+
+    #[test]
+    fn col_stats_multicat_merge_accumulates_row_counts() {
+        // Merge only exercises the per-column `count`, `null_count`, and HLL;
+        // token counts live in the shared `TableCategoryCounts` so they merge
+        // transparently across per-file `FileColStats` instances.
+        let cols = make_test_cols_with_types(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::String,
+            Some(","),
+        )]);
+        let mut a = FileColStats::new(&cols);
+        let mut b = FileColStats::new(&cols);
+        a.observe_string(0, "x,y");
+        a.observe_null(0);
+        b.observe_string(0, "z");
+        a.merge(&mut b);
+        match &a.cols[0] {
+            ColumnStatsCollector::Multicategorical {
+                count, null_count, ..
+            } => {
+                assert_eq!(*count, 2);
+                assert_eq!(*null_count, 1);
+            }
+            _ => panic!("expected Multicategorical collector"),
+        }
+    }
+
+    // --- Emit path --------------------------------------------------------
+
+    #[test]
+    fn col_stats_multicat_emit_keys_match_tt_executor_format() {
+        let (mut stats, tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::String,
+            Some(","),
+        )]);
+        stats.observe_string(0, "kids,sale");
+        stats.observe_string(0, "kids");
+        stats.observe_null(0);
+        stats.flush_categories();
+
+        let col_names = vec!["tags".to_string()];
+        let ingested_types = vec![IngestedType::String];
+        let map = stats.to_kumo_json(&col_names, &ingested_types, Some(&tc), None, "v1");
+
+        // The three keys tt_executor also emits for multicat stats.
+        let sep = map
+            .get("tags__kumo.multicategorical__MULTI_CATEGORIES_SEPARATOR__False")
+            .expect("separator key present");
+        assert_eq!(sep["value"], ",");
+
+        let counts = map
+            .get("tags__kumo.multicategorical__MULTI_CATEGORY_COUNTS__False")
+            .expect("category-counts key present");
+        let arr = counts["value"].as_array().expect("array");
+        // Sorted count-desc, then token-asc: [["kids",2],["sale",1]].
+        assert_eq!(arr[0][0], "kids");
+        assert_eq!(arr[0][1], 2);
+        assert_eq!(arr[1][0], "sale");
+        assert_eq!(arr[1][1], 1);
+
+        let uniq = map
+            .get("tags__kumo.multicategorical__NUM_UNIQUE_MULTI__True")
+            .expect("num-unique key present");
+        // HLL on 2 distinct tokens — estimate is tight on tiny sets.
+        assert_eq!(uniq["approx"], true);
+        assert!(uniq["value"].as_u64().unwrap() >= 1);
+
+        // Universal stats present with the kumo.multicategorical stype key.
+        assert!(map.contains_key("tags__kumo.multicategorical__COUNT__False"));
+        assert!(map.contains_key("tags__kumo.multicategorical__NUM_NA__False"));
+    }
+
+    #[test]
+    fn col_stats_multicat_emit_stringarray_separator_is_null() {
+        let view = build_string_list_view(&[Some("a"), Some("b")]);
+        let (mut stats, tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::StringArray,
+            None,
+        )]);
+        stats.observe_string_list(0, &view);
+        stats.flush_categories();
+        let col_names = vec!["tags".to_string()];
+        let ingested_types = vec![IngestedType::StringArray];
+        let map = stats.to_kumo_json(&col_names, &ingested_types, Some(&tc), None, "v1");
+        let sep = map
+            .get("tags__kumo.multicategorical__MULTI_CATEGORIES_SEPARATOR__False")
+            .expect("separator key present");
+        assert_eq!(sep["value"], JsonValue::Null);
+    }
+
+    // --- Helpers for building list views (using rowpack's Parsed variant to
+    //     avoid having to construct Arrow arrays for unit tests) ----------
+
+    fn build_string_list_view(elems: &[Option<&str>]) -> StringListView {
+        // rowpack's `Parsed` variant holds owned `String`s and does not expose
+        // element-level nulls. Use `build_native_string_list_view` for tests
+        // that need to exercise Arrow null bits.
+        let owned: Vec<String> = elems
+            .iter()
+            .map(|e| {
+                e.expect("Parsed StringListView cannot represent null elements")
+                    .to_string()
+            })
+            .collect();
+        let end = owned.len();
+        StringListView {
+            start: 0,
+            end,
+            values: diskgraph_rowpack::StringListValues::Parsed(owned),
+        }
+    }
+
+    fn build_int64_list_view(elems: &[Option<i64>]) -> Int64ListView {
+        // Parsed values cannot represent null elements. Use
+        // `build_native_int64_list_view` for Arrow null-bit tests.
+        let owned: Vec<i64> = elems
+            .iter()
+            .map(|e| e.expect("Parsed Int64ListView cannot represent null elements"))
+            .collect();
+        let end = owned.len();
+        Int64ListView {
+            start: 0,
+            end,
+            values: diskgraph_rowpack::Int64ListValues::Parsed(owned),
+        }
+    }
+
+    fn build_float64_list_view(elems: &[Option<f64>]) -> FloatListView {
+        // `FloatListValues::Parsed` only carries f32; for the NaN-drop /
+        // signed-zero tests we use f32 with `as f32` which preserves these
+        // behaviors for the values in scope. Use `build_native_float64_list_view`
+        // for Arrow null-bit tests.
+        let owned: Vec<f32> = elems
+            .iter()
+            .map(|e| e.expect("Parsed FloatListView cannot represent null elements") as f32)
+            .collect();
+        let end = owned.len();
+        FloatListView {
+            start: 0,
+            end,
+            values: diskgraph_rowpack::FloatListValues::Parsed(owned),
+        }
+    }
+
+    fn build_native_string_list_view(elems: &[Option<&str>]) -> StringListView {
+        let end = elems.len();
+        let array = arrow_array::StringArray::from(elems.to_vec());
+        StringListView {
+            start: 0,
+            end,
+            values: diskgraph_rowpack::StringListValues::Utf8(
+                std::sync::Arc::new(array) as arrow_array::ArrayRef
+            ),
+        }
+    }
+
+    fn build_native_int64_list_view(elems: &[Option<i64>]) -> Int64ListView {
+        let end = elems.len();
+        let array = arrow_array::Int64Array::from(elems.to_vec());
+        Int64ListView {
+            start: 0,
+            end,
+            values: diskgraph_rowpack::Int64ListValues::Native(
+                std::sync::Arc::new(array) as arrow_array::ArrayRef
+            ),
+        }
+    }
+
+    fn build_native_float64_list_view(elems: &[Option<f64>]) -> FloatListView {
+        let end = elems.len();
+        let array = arrow_array::Float64Array::from(elems.to_vec());
+        FloatListView {
+            start: 0,
+            end,
+            values: diskgraph_rowpack::FloatListValues::F64(
+                std::sync::Arc::new(array) as arrow_array::ArrayRef
+            ),
+        }
     }
 }

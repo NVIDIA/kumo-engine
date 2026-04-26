@@ -115,6 +115,7 @@ mod tests {
             precision: None,
             scale: None,
             semantic_type: None,
+            multicategorical_delimiter: None,
         }
     }
 

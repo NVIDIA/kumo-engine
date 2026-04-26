@@ -81,16 +81,17 @@ pub fn convert_kumo_to_diskgraph(
         coercion_mode: Default::default(),
     };
 
-    // Best-effort: detect timestamp formats and estimate num_shards.
+    // Best-effort: detect timestamp formats, multicat delimiters, and estimate num_shards.
     // These require I/O (reading parquet files, listing cloud objects) and may fail
     // when files aren't accessible (e.g., in tests). The config is still valid without them.
     //
-    // Run on a separate OS thread so this works even when called from inside a
-    // tokio runtime (e.g., validate-s3-ingest). The I/O helpers create their own
-    // tokio runtimes internally, which panics if nested inside an existing one.
-    let inference_err: Option<anyhow::Error> = std::thread::scope(|s| {
+    // Run all converter inference in one separate OS thread so this works even
+    // when called from inside a tokio runtime (e.g., validate-s3-ingest). The I/O
+    // helpers create their own tokio runtimes internally, which panics if nested
+    // inside an existing one.
+    let inference_err: Option<ConvertError> = std::thread::scope(|s| {
         let cfg = &mut config;
-        s.spawn(move || -> Option<anyhow::Error> {
+        s.spawn(move || -> Option<ConvertError> {
             let transfer = match crate::io::build_input_transfer(cfg) {
                 Ok(t) => t,
                 Err(e) => {
@@ -103,13 +104,16 @@ pub fn convert_kumo_to_diskgraph(
             // propagated. Soft warnings for non-critical columns are
             // logged via tracing::warn! inside detect_timestamp_formats.
             if let Err(e) = super::inference::detect_timestamp_formats(cfg, &transfer) {
+                return Some(ConvertError::InferenceError(format!("{e:#}")));
+            }
+
+            if let Err(e) = super::inference::detect_multicategorical_delimiters(cfg, &transfer) {
                 return Some(e);
             }
 
             match super::inference::compute_total_bytes(cfg, &transfer) {
                 Ok(total_bytes) if total_bytes > 0 => {
-                    cfg.num_shards =
-                        Some(super::inference::estimate_num_shards(total_bytes));
+                    cfg.num_shards = Some(super::inference::estimate_num_shards(total_bytes));
                 }
                 Err(e) => {
                     tracing::warn!("num_shards estimation failed: {e}");
@@ -124,7 +128,7 @@ pub fn convert_kumo_to_diskgraph(
     });
 
     if let Some(e) = inference_err {
-        return Err(crate::errors::ConvertError::InferenceError(format!("{e:#}")));
+        return Err(e);
     }
 
     Ok(config)
@@ -284,11 +288,14 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
     let mut columns = Vec::new();
     let mut seen_names: HashSet<String> = HashSet::new();
 
-    // Helper to add a column if not already seen
+    // Helper to add a column if not already seen.
+    // `multicategorical_delimiter` is only meaningful for regular columns with
+    // stype="multicategorical" + dtype="string"; other callers pass None.
     let mut add_column = |name: &str,
                           dtype: Option<&str>,
                           stype: Option<&str>,
-                          timestamp_unit: Option<&str>|
+                          timestamp_unit: Option<&str>,
+                          multicategorical_delimiter: Option<&str>|
      -> Result<(), ConvertError> {
         if seen_names.contains(name) {
             return Ok(());
@@ -310,9 +317,7 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
         // Error on dtype="string" + stype="sequence": the data is likely a
         // JSON-encoded float array that rowpack can't parse from a string column.
         // The Kumo config should use dtype="floatlist" instead.
-        if ingested_dtype == IngestedType::String
-            && semantic_type == Some(SemanticType::Sequence)
-        {
+        if ingested_dtype == IngestedType::String && semantic_type == Some(SemanticType::Sequence) {
             return Err(ConvertError::StringSequenceUnsupported {
                 table: kumo_table.table_name.clone(),
                 column: name.to_string(),
@@ -320,13 +325,28 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
             });
         }
 
-        // Error on stype="multicategorical": diskgraph does not yet support
-        // column stats collection or encoding for multicategorical columns.
+        // Multicategorical columns are accepted for a specific set of ingested
+        // dtypes; see `ColumnStatsCollector::from_column_type` for the full
+        // input-kind matrix. Unsupported combinations (e.g. a single int64
+        // scalar with stype=multicategorical) are rejected here with a
+        // clear error rather than silently degrading to Skip.
         if semantic_type == Some(SemanticType::Multicategorical) {
-            return Err(ConvertError::MulticategoricalUnsupported {
-                table: kumo_table.table_name.clone(),
-                column: name.to_string(),
-            });
+            let ok = matches!(
+                ingested_dtype,
+                IngestedType::String
+                    | IngestedType::StringArray
+                    | IngestedType::Int64Array
+                    | IngestedType::Float16Array
+                    | IngestedType::Float32Array
+                    | IngestedType::Float64Array
+            );
+            if !ok {
+                return Err(ConvertError::MulticategoricalOnUnsupportedInput {
+                    table: kumo_table.table_name.clone(),
+                    column: name.to_string(),
+                    dtype: ingested_dtype.clone(),
+                });
+            }
         }
 
         columns.push(ColumnSpec {
@@ -339,6 +359,12 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
             precision: None,
             scale: None,
             semantic_type,
+            // Detection (`detect_multicategorical_delimiters`) only runs when
+            // the user did not supply an explicit delimiter on the Kumo
+            // config. Pre-populated here so the explicit path is preserved
+            // even for columns that aren't `String + Multicategorical`
+            // (harmless for other shapes; the collector ignores the field).
+            multicategorical_delimiter: multicategorical_delimiter.map(str::to_string),
         });
 
         Ok(())
@@ -351,6 +377,7 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
             pkey.dtype.as_deref(),
             pkey.stype.as_deref(),
             None,
+            None,
         )?;
     }
 
@@ -360,6 +387,7 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
             &fkey.name,
             fkey.dtype.as_deref(),
             fkey.stype.as_deref(),
+            None,
             None,
         )?;
     }
@@ -371,6 +399,7 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
             col.dtype.as_deref(),
             col.stype.as_deref(),
             col.timestamp_unit.as_deref(),
+            col.multicategorical_delimiter.as_deref(),
         )?;
     }
 
@@ -381,6 +410,7 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
             time_col.dtype.as_deref(),
             time_col.stype.as_deref(),
             time_col.timestamp_unit.as_deref(),
+            None,
         )?;
     }
 
@@ -391,6 +421,7 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
             end_time_col.dtype.as_deref(),
             end_time_col.stype.as_deref(),
             end_time_col.timestamp_unit.as_deref(),
+            None,
         )?;
     }
 

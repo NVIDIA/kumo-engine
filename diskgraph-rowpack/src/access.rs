@@ -231,6 +231,53 @@ impl FloatListView {
             }
         }
     }
+
+    /// Iterate over non-null values as f64, calling `f` for each present value.
+    /// This is for stats paths where null list elements should be dropped,
+    /// without changing RowPack's encoding-time null-as-zero behaviour.
+    #[inline]
+    pub fn for_each_non_null_f64(&self, mut f: impl FnMut(f64)) {
+        match &self.values {
+            FloatListValues::F16(arr) => {
+                let arr = arr
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float16Array>()
+                    .unwrap();
+                for i in self.start..self.end {
+                    if !arr.is_null(i) {
+                        f(half::f16::to_f64(arr.value(i)));
+                    }
+                }
+            }
+            FloatListValues::F32(arr) => {
+                let arr = arr
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .unwrap();
+                for i in self.start..self.end {
+                    if !arr.is_null(i) {
+                        f(arr.value(i) as f64);
+                    }
+                }
+            }
+            FloatListValues::F64(arr) => {
+                let arr = arr
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .unwrap();
+                for i in self.start..self.end {
+                    if !arr.is_null(i) {
+                        f(arr.value(i));
+                    }
+                }
+            }
+            FloatListValues::Parsed(vec) => {
+                for &v in &vec[self.start..self.end] {
+                    f(v as f64);
+                }
+            }
+        }
+    }
 }
 
 /// Parse a JSON-style string like `"[1.0, 2.0, 3.0]"` or `"1.0, 2.0, 3.0"`

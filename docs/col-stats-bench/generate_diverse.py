@@ -9,10 +9,16 @@ Schema covers ALL semantic types for comprehensive col-stats validation:
   - Timestamp: Arrow timestamp[us]
   - Sequence: List<Float32> embeddings
 
-Category count benchmark (10 extra columns on items table):
-  - 2 baseline: uniform 10, 100 unique (tiny HashMap, L1)
-  - 8 stress: uniform/zipf × 4K/50K/500K/900K unique
-  - Tests per-file HashMap from L1 (~320B) to way past L3 (~29MB)
+    Category count benchmark (10 extra columns on items table):
+      - 2 baseline: uniform 10, 100 unique (tiny HashMap, L1)
+      - 8 stress: uniform/zipf × 4K/50K/500K/900K unique
+      - Tests per-file HashMap from L1 (~320B) to way past L3 (~29MB)
+
+    Multicategorical benchmark (6 extra columns on items table):
+      - scalar comma-delimited string, 1 token/row
+      - scalar comma-delimited string, 5 tokens/row
+      - scalar comma-delimited string, 5 tokens/row, wide vocab
+      - native list<utf8>, list<int64>, list<float64>, 5 tokens/row
 
 Tables (3 node + 2 edge):
   accounts (11 cols), items (19 cols), locations (7 cols)
@@ -124,6 +130,66 @@ CAT_BASELINES = [
     ("100", 100),
 ]
 
+# ── Multicategorical benchmark columns ────────────────────────────────────
+# Keep token fan-out fixed for the comparable 5-token columns so benchmark
+# deltas can be interpreted as split/stringify/list-access overhead.
+MULTICAT_TOKENS_PER_ROW = 5
+MULTICAT_NARROW_UNIQUE = 50_000
+MULTICAT_WIDE_UNIQUE = 900_000
+MULTICAT_COLUMNS = [
+    {
+        "name": "mcat_scalar_1tok",
+        "ingested_dtype": "string",
+        "semantic_type": "multicategorical",
+        "multicategorical_delimiter": ",",
+        "tokens_per_row": 1,
+        "unique": MULTICAT_NARROW_UNIQUE,
+        "shape": "scalar_string",
+    },
+    {
+        "name": "mcat_scalar_5tok",
+        "ingested_dtype": "string",
+        "semantic_type": "multicategorical",
+        "multicategorical_delimiter": ",",
+        "tokens_per_row": MULTICAT_TOKENS_PER_ROW,
+        "unique": MULTICAT_NARROW_UNIQUE,
+        "shape": "scalar_string",
+    },
+    {
+        "name": "mcat_scalar_5tok_wide",
+        "ingested_dtype": "string",
+        "semantic_type": "multicategorical",
+        "multicategorical_delimiter": ",",
+        "tokens_per_row": MULTICAT_TOKENS_PER_ROW,
+        "unique": MULTICAT_WIDE_UNIQUE,
+        "shape": "scalar_string",
+    },
+    {
+        "name": "mcat_string_list_5tok",
+        "ingested_dtype": "string_array",
+        "semantic_type": "multicategorical",
+        "tokens_per_row": MULTICAT_TOKENS_PER_ROW,
+        "unique": MULTICAT_NARROW_UNIQUE,
+        "shape": "list_utf8",
+    },
+    {
+        "name": "mcat_int64_list_5tok",
+        "ingested_dtype": "int64_array",
+        "semantic_type": "multicategorical",
+        "tokens_per_row": MULTICAT_TOKENS_PER_ROW,
+        "unique": MULTICAT_NARROW_UNIQUE,
+        "shape": "list_int64",
+    },
+    {
+        "name": "mcat_float64_list_5tok",
+        "ingested_dtype": "float64_array",
+        "semantic_type": "multicategorical",
+        "tokens_per_row": MULTICAT_TOKENS_PER_ROW,
+        "unique": MULTICAT_NARROW_UNIQUE,
+        "shape": "list_float64",
+    },
+]
+
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
@@ -151,6 +217,35 @@ def gen_zipf_cat(rng, prefix, n_unique, n_rows, alpha=1.3):
     width = max(len(str(n_unique - 1)), 1)
     indices = (rng.zipf(alpha, size=n_rows) - 1) % n_unique
     return np.array([f"{prefix}{i:0{width}d}" for i in indices])
+
+
+def gen_multicat_indices(rng, n_unique, n_rows, tokens_per_row, alpha=1.3):
+    """Generate Zipf-distributed token ids for multicat benchmark columns."""
+    return ((rng.zipf(alpha, size=n_rows * tokens_per_row) - 1) % n_unique).astype(np.int64)
+
+
+def format_multicat_tokens(indices, prefix, n_unique):
+    width = max(len(str(n_unique - 1)), 1)
+    return [f"{prefix}{int(i):0{width}d}" for i in indices]
+
+
+def gen_multicat_scalar(rng, prefix, n_unique, n_rows, tokens_per_row):
+    indices = gen_multicat_indices(rng, n_unique, n_rows, tokens_per_row)
+    tokens = format_multicat_tokens(indices, prefix, n_unique)
+    if tokens_per_row == 1:
+        return np.array(tokens)
+    return np.array([
+        ",".join(tokens[i:i + tokens_per_row])
+        for i in range(0, len(tokens), tokens_per_row)
+    ])
+
+
+def make_fixed_list_array(flat_values, n_rows, tokens_per_row, value_type):
+    offsets = np.arange(0, (n_rows + 1) * tokens_per_row, tokens_per_row, dtype=np.int32)
+    return pa.ListArray.from_arrays(
+        pa.array(offsets, type=pa.int32()),
+        pa.array(flat_values, type=value_type),
+    )
 
 
 def make_text_pool(rng, pool_size=50_000, min_words=5, max_words=20):
@@ -248,7 +343,7 @@ def generate_accounts_file(file_idx, rows_per_file, out_dir, total_accounts, no_
 
 def generate_items_file(file_idx, rows_per_file, out_dir, total_items):
     """items: Id, Text, Categorical, Numerical(f64+f32), Int16, Timestamp,
-    plus 10 category-count benchmark columns (2 baseline + 8 stress)."""
+    plus category-count and multicategorical benchmark columns."""
     rng = np.random.default_rng(seed=10007 + file_idx)
     n = rows_per_file
     offset = file_idx * rows_per_file
@@ -292,6 +387,51 @@ def generate_items_file(file_idx, rows_per_file, out_dir, total_items):
             gen_uniform_cat(rng, f"u{label}_", n_unique, n), type=pa.utf8())
         cols[f"cat_zipf_{label}"] = pa.array(
             gen_zipf_cat(rng, f"z{label}_", n_unique, n), type=pa.utf8())
+
+    # Multicategorical benchmark columns. The 5-token columns share the same
+    # fan-out so delta comparisons isolate scalar splitting, native list access,
+    # and numeric stringification costs.
+    cols["mcat_scalar_1tok"] = pa.array(
+        gen_multicat_scalar(rng, "mc_", MULTICAT_NARROW_UNIQUE, n, 1),
+        type=pa.utf8(),
+    )
+    cols["mcat_scalar_5tok"] = pa.array(
+        gen_multicat_scalar(
+            rng, "mc_", MULTICAT_NARROW_UNIQUE, n, MULTICAT_TOKENS_PER_ROW),
+        type=pa.utf8(),
+    )
+    cols["mcat_scalar_5tok_wide"] = pa.array(
+        gen_multicat_scalar(
+            rng, "mw_", MULTICAT_WIDE_UNIQUE, n, MULTICAT_TOKENS_PER_ROW),
+        type=pa.utf8(),
+    )
+
+    str_indices = gen_multicat_indices(
+        rng, MULTICAT_NARROW_UNIQUE, n, MULTICAT_TOKENS_PER_ROW)
+    cols["mcat_string_list_5tok"] = make_fixed_list_array(
+        format_multicat_tokens(str_indices, "ml_", MULTICAT_NARROW_UNIQUE),
+        n,
+        MULTICAT_TOKENS_PER_ROW,
+        pa.utf8(),
+    )
+
+    int_indices = gen_multicat_indices(
+        rng, MULTICAT_NARROW_UNIQUE, n, MULTICAT_TOKENS_PER_ROW)
+    cols["mcat_int64_list_5tok"] = make_fixed_list_array(
+        int_indices.astype(np.int64),
+        n,
+        MULTICAT_TOKENS_PER_ROW,
+        pa.int64(),
+    )
+
+    float_indices = gen_multicat_indices(
+        rng, MULTICAT_NARROW_UNIQUE, n, MULTICAT_TOKENS_PER_ROW)
+    cols["mcat_float64_list_5tok"] = make_fixed_list_array(
+        float_indices.astype(np.float64),
+        n,
+        MULTICAT_TOKENS_PER_ROW,
+        pa.float64(),
+    )
 
     table = pa.table(cols)
     pq.write_table(table, os.path.join(out_dir, "items", f"part_{file_idx:05d}.parquet"))
@@ -407,7 +547,13 @@ def _gen_wrapper(args):
 # ── Config generation ───────────────────────────────────────────────────────
 
 
-def generate_config(out_dir, tables_info, num_shards=256, dataset_name="diverse_bench"):
+def generate_config(
+    out_dir,
+    tables_info,
+    num_shards=256,
+    dataset_name="diverse_bench",
+    filename="diskgraph_config.json",
+):
     """Generate diskgraph_config.json."""
     tables = []
 
@@ -439,7 +585,7 @@ def generate_config(out_dir, tables_info, num_shards=256, dataset_name="diverse_
         tables.append(t)
 
     config = {"dataset_name": dataset_name, "num_shards": num_shards, "tables": tables}
-    config_path = os.path.join(out_dir, "diskgraph_config.json")
+    config_path = os.path.join(out_dir, filename)
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
     return config_path
@@ -494,6 +640,7 @@ def compute_ground_truth(out_dir, has_embeddings=True):
             "cat_zipf_50k": "categorical",      # 50K unique
             "cat_zipf_500k": "categorical",     # 500K unique
             "cat_zipf_900k": "categorical",     # 900K unique
+            **{col["name"]: "multicategorical" for col in MULTICAT_COLUMNS},
         },
         "locations": {
             "location_id": "id",         # PK, also "id" in name
@@ -723,6 +870,16 @@ def main():
     for label, _ in CAT_TIERS:
         items_cols.append({"name": f"cat_uniform_{label}", "ingested_dtype": "string"})
         items_cols.append({"name": f"cat_zipf_{label}", "ingested_dtype": "string"})
+    for col in MULTICAT_COLUMNS:
+        items_cols.append({
+            k: v for k, v in col.items()
+            if k in {
+                "name",
+                "ingested_dtype",
+                "semantic_type",
+                "multicategorical_delimiter",
+            }
+        })
 
     locations_cols = [
         {"name": "location_id", "ingested_dtype": "string"},
@@ -765,6 +922,55 @@ def main():
     config_path = generate_config(out_dir, tables_info, args.num_shards, dataset_name)
     print(f"Config written to {config_path}")
 
+    # Same physical columns, but multicat benchmark columns have no semantic_type.
+    # Run with --col-stats against this config to isolate multicat stats overhead
+    # from RowPack encoding and parquet IO for the extra columns.
+    items_cols_no_mcat_stats = []
+    mcat_names = {col["name"] for col in MULTICAT_COLUMNS}
+    for col in items_cols:
+        if col["name"] in mcat_names:
+            stripped = {
+                k: v for k, v in col.items()
+                if k not in {"semantic_type", "multicategorical_delimiter"}
+            }
+            items_cols_no_mcat_stats.append(stripped)
+        else:
+            items_cols_no_mcat_stats.append(col)
+    tables_info_no_mcat_stats = [
+        ("accounts", num_files, accounts_cols, "account_id", [], False),
+        ("items", num_files, items_cols_no_mcat_stats, "item_id", [], False),
+        ("locations", num_files, locations_cols, "location_id", [], False),
+        ("transactions", num_files, transactions_cols, None,
+         [{"src_column": "account_id", "dst_table": "accounts"},
+          {"src_column": "item_id", "dst_table": "items"}],
+         True),
+        ("visits", num_files, visits_cols, None,
+         [{"src_column": "account_id", "dst_table": "accounts"},
+          {"src_column": "location_id", "dst_table": "locations"}],
+         True),
+    ]
+    no_mcat_config_path = generate_config(
+        out_dir,
+        tables_info_no_mcat_stats,
+        args.num_shards,
+        f"{dataset_name}_no_multicat_stats",
+        filename="diskgraph_config_no_multicat_stats.json",
+    )
+    print(f"No-multicat-stats config written to {no_mcat_config_path}")
+
+    bench_meta = {
+        "rows_per_table": rows,
+        "rows_per_file": ROWS_PER_FILE,
+        "items_rows_total": rows,
+        "multicat_columns": MULTICAT_COLUMNS,
+        "primary_config": "diskgraph_config.json",
+        "no_multicat_stats_config": "diskgraph_config_no_multicat_stats.json",
+    }
+    meta_path = os.path.join(out_dir, "multicat_benchmark_metadata.json")
+    with open(meta_path, "w") as f:
+        json.dump(bench_meta, f, indent=2)
+    print(f"Multicat benchmark metadata written to {meta_path}")
+
     # Summary
     total_files = num_files * len(table_names)
     print(f"\nSummary:")
@@ -792,6 +998,9 @@ def main():
     print(f"    Baseline:    cat_uniform_10 (10 unique), cat_uniform_100 (100 unique)")
     print(f"    Uniform:     cat_uniform_{{4k,50k,500k,900k}}")
     print(f"    Zipf(1.3):   cat_zipf_{{4k,50k,500k,900k}}")
+    print(f"\n  Multicategorical benchmark columns (on items table):")
+    print(f"    Scalar:      mcat_scalar_1tok, mcat_scalar_5tok, mcat_scalar_5tok_wide")
+    print(f"    Native list: mcat_string_list_5tok, mcat_int64_list_5tok, mcat_float64_list_5tok")
 
     if not args.skip_truth:
         print(f"\nComputing ground truth stats...")

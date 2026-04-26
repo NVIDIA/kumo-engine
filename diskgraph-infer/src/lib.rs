@@ -1105,6 +1105,7 @@ pub(crate) fn infer_parquet_schema_from_arrow(
             precision,
             scale,
             semantic_type: None,
+            multicategorical_delimiter: None,
         });
     }
     Ok(columns)
@@ -1674,6 +1675,7 @@ impl ColumnStats {
             precision: None,
             scale: None,
             semantic_type: None,
+            multicategorical_delimiter: None,
         }
     }
 }

@@ -429,6 +429,35 @@ mod tests {
         let est = hll.estimate();
         assert!(est < 2.0, "HLL should estimate ~1 for duplicates, got {}", est);
     }
+
+    #[test]
+    fn test_shared_counts_cap_policy() {
+        let capped = SharedColumnCounts::new_hashed();
+        capped.unique_count.store(MAX_CATEGORIES, Ordering::Relaxed);
+        capped.record_new_unique();
+        assert!(capped.is_aborted());
+
+        let uncapped = SharedColumnCounts::new_hashed_uncapped();
+        uncapped
+            .unique_count
+            .store(MAX_CATEGORIES, Ordering::Relaxed);
+        uncapped.record_new_unique();
+        assert!(!uncapped.is_aborted());
+
+        let capped_grad = SharedColumnCounts::new_graduation();
+        capped_grad
+            .unique_count
+            .store(MAX_CATEGORIES, Ordering::Relaxed);
+        capped_grad.record_new_unique();
+        assert!(capped_grad.is_aborted());
+
+        let uncapped_grad = SharedColumnCounts::new_graduation_uncapped();
+        uncapped_grad
+            .unique_count
+            .store(MAX_CATEGORIES, Ordering::Relaxed);
+        uncapped_grad.record_new_unique();
+        assert!(!uncapped_grad.is_aborted());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -687,11 +716,21 @@ pub struct SharedColumnCounts {
     pub storage: CountStorage,
     pub unique_count: AtomicU64,
     pub aborted: AtomicBool,
+    max_categories: Option<u64>,
 }
 
 impl SharedColumnCounts {
     /// Create hash-based storage (for GlobalDashMap & Hybrid).
     pub fn new_hashed() -> Self {
+        Self::new_hashed_with_cap(Some(MAX_CATEGORIES))
+    }
+
+    /// Create hash-based storage without an ingestion-side unique cap.
+    pub fn new_hashed_uncapped() -> Self {
+        Self::new_hashed_with_cap(None)
+    }
+
+    fn new_hashed_with_cap(max_categories: Option<u64>) -> Self {
         Self {
             storage: CountStorage::Hashed {
                 counts: DashMap::with_capacity_and_hasher_and_shard_amount(
@@ -707,11 +746,21 @@ impl SharedColumnCounts {
             },
             unique_count: AtomicU64::new(0),
             aborted: AtomicBool::new(false),
+            max_categories,
         }
     }
 
     /// Create graduation v2 storage (ArcSwap frozen set + DashMap pending + inbox).
     pub fn new_graduation() -> Self {
+        Self::new_graduation_with_cap(Some(MAX_CATEGORIES))
+    }
+
+    /// Create graduation v2 storage without an ingestion-side unique cap.
+    pub fn new_graduation_uncapped() -> Self {
+        Self::new_graduation_with_cap(None)
+    }
+
+    fn new_graduation_with_cap(max_categories: Option<u64>) -> Self {
         Self {
             storage: CountStorage::Graduation {
                 graduated: ArcSwap::from_pointee(HashSet::new()),
@@ -730,6 +779,19 @@ impl SharedColumnCounts {
             },
             unique_count: AtomicU64::new(0),
             aborted: AtomicBool::new(false),
+            max_categories,
+        }
+    }
+
+    /// Record a newly observed unique category and abort only when this counter
+    /// was constructed with an explicit cap.
+    #[inline]
+    pub fn record_new_unique(&self) {
+        let new_unique = self.unique_count.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Some(max_categories) = self.max_categories {
+            if new_unique > max_categories {
+                self.aborted.store(true, Ordering::Relaxed);
+            }
         }
     }
 
@@ -750,9 +812,7 @@ impl SharedColumnCounts {
                 });
             if is_new {
                 strings.entry(hash).or_insert_with(|| value_str.to_owned());
-                if self.unique_count.fetch_add(1, Ordering::Relaxed) + 1 > MAX_CATEGORIES {
-                    self.aborted.store(true, Ordering::Relaxed);
-                }
+                self.record_new_unique();
             }
         }
     }
@@ -776,8 +836,8 @@ impl SharedColumnCounts {
                     if let Some(s) = local.strings.remove(&hash) {
                         strings.entry(hash).or_insert(s);
                     }
-                    if self.unique_count.fetch_add(1, Ordering::Relaxed) + 1 > MAX_CATEGORIES {
-                        self.aborted.store(true, Ordering::Relaxed);
+                    self.record_new_unique();
+                    if self.aborted.load(Ordering::Relaxed) {
                         return;
                     }
                 }
@@ -827,9 +887,8 @@ impl SharedColumnCounts {
                     // Truly new unique — hash never seen before in any thread.
                     // Avoids double-counting when a graduated category is
                     // re-inserted into pending from a stale snapshot.
-                    let uc = self.unique_count.fetch_add(1, Ordering::Relaxed) + 1;
-                    if uc > MAX_CATEGORIES {
-                        self.aborted.store(true, Ordering::Relaxed);
+                    self.record_new_unique();
+                    if self.aborted.load(Ordering::Relaxed) {
                         return grad_snapshot;
                     }
                 }

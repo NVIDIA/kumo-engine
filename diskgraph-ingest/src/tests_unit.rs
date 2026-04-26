@@ -17,6 +17,7 @@ fn test_negative_int64_key() {
         precision: None,
         scale: None,
         semantic_type: None,
+        multicategorical_delimiter: None,
     };
 
     let val: i64 = -1;
@@ -54,6 +55,7 @@ fn test_negative_decimal128_key() {
         precision: Some(38),
         scale: Some(0),
         semantic_type: None,
+        multicategorical_delimiter: None,
     };
 
     let val: i128 = -1;
@@ -93,6 +95,7 @@ fn test_decimal256_key_as_string() {
         precision: Some(76),
         scale: Some(0),
         semantic_type: None,
+        multicategorical_delimiter: None,
     };
 
     let val = arrow_buffer::i256::from_i128(12345);
@@ -217,6 +220,7 @@ fn single_col_table(ingested: IngestedType) -> TableSpec {
             precision: None,
             scale: None,
             semantic_type: None,
+            multicategorical_delimiter: None,
         }],
         primary_key: None,
         create_time: None,
@@ -313,6 +317,7 @@ fn convert_string_timestamp_to_rowpack_timestamp() {
             precision: None,
             scale: None,
             semantic_type: None,
+            multicategorical_delimiter: None,
         }],
         primary_key: None,
         create_time: None,
@@ -348,6 +353,7 @@ fn convert_int_timestamp_with_unit() {
             precision: None,
             scale: None,
             semantic_type: None,
+            multicategorical_delimiter: None,
         }],
         primary_key: None,
         create_time: None,
@@ -399,6 +405,7 @@ fn convert_string_date_to_rowpack_date() {
             precision: None,
             scale: None,
             semantic_type: None,
+            multicategorical_delimiter: None,
         }],
         primary_key: None,
         create_time: None,
@@ -442,6 +449,7 @@ fn convert_numeric_to_string_for_rowpack() {
             precision: None,
             scale: None,
             semantic_type: None,
+            multicategorical_delimiter: None,
         }],
         primary_key: None,
         create_time: None,
@@ -480,6 +488,7 @@ fn convert_bytes_to_int_for_rowpack() {
             precision: None,
             scale: None,
             semantic_type: None,
+            multicategorical_delimiter: None,
         }],
         primary_key: None,
         create_time: None,
@@ -599,6 +608,7 @@ fn test_precompute_shards_consistency() {
             precision: None,
             scale: None,
             semantic_type: None,
+            multicategorical_delimiter: None,
         };
 
         let precomputed =
@@ -643,6 +653,7 @@ fn test_precompute_shards_consistency() {
             precision: None,
             scale: None,
             semantic_type: None,
+            multicategorical_delimiter: None,
         };
 
         let precomputed =
@@ -689,6 +700,7 @@ fn test_precompute_shards_casting() {
             precision: None,
             scale: None,
             semantic_type: None,
+            multicategorical_delimiter: None,
         };
 
         let precomputed =
@@ -730,6 +742,7 @@ fn test_precompute_shards_casting() {
             precision: None,
             scale: None,
             semantic_type: None,
+            multicategorical_delimiter: None,
         };
 
         let precomputed =
@@ -848,6 +861,7 @@ fn int32_yyyymmdd_create_time_via_format() {
             precision: None,
             scale: None,
             semantic_type: Some(SemanticType::Timestamp),
+            multicategorical_delimiter: None,
         }],
         primary_key: None,
         create_time: Some("event_date".to_string()),
@@ -892,6 +906,7 @@ fn int32_epoch_secs_no_format_unchanged() {
             precision: None,
             scale: None,
             semantic_type: None,
+            multicategorical_delimiter: None,
         }],
         primary_key: None,
         create_time: Some("ts".to_string()),

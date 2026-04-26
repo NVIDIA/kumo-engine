@@ -1,6 +1,6 @@
 use diskgraph_ingest::graph_config::{
     ColumnSpec, DataSource, DirectionSpec, EdgeTableSpec, FKeySpec, ForeignKeySpec, GraphConfig,
-    IngestedType, TableSpec, TimeSpec, WeightSpec,
+    IngestedType, SemanticType, TableSpec, TimeSpec, WeightSpec,
 };
 
 fn base_table(name: &str) -> TableSpec {
@@ -17,6 +17,7 @@ fn base_table(name: &str) -> TableSpec {
                 precision: None,
                 scale: None,
                 semantic_type: None,
+                multicategorical_delimiter: None,
             },
             ColumnSpec {
                 name: "name".into(),
@@ -28,6 +29,7 @@ fn base_table(name: &str) -> TableSpec {
                 precision: None,
                 scale: None,
                 semantic_type: None,
+                multicategorical_delimiter: None,
             },
         ],
         primary_key: Some("id".into()),
@@ -82,6 +84,32 @@ fn validate_minimal_metadata() {
 }
 
 #[test]
+fn validate_rejects_unsupported_direct_multicategorical_dtype() {
+    let mut table = base_table("User");
+    table.columns.push(ColumnSpec {
+        name: "bad_multicat".into(),
+        ingested_dtype: IngestedType::Int64,
+        source_dtype: None,
+        timestamp_format: None,
+        timestamp_unit: None,
+        fixed_len: None,
+        precision: None,
+        scale: None,
+        semantic_type: Some(SemanticType::Multicategorical),
+        multicategorical_delimiter: None,
+    });
+    let meta = GraphConfig {
+        dataset_name: "test".into(),
+        tables: vec![table],
+        rowpack: None,
+        num_shards: None,
+        edge_format: None,
+        coercion_mode: Default::default(),
+    };
+    assert_err_contains(meta, "bad_multicat multicategorical supports only");
+}
+
+#[test]
 fn validate_missing_pk_column() {
     let meta = GraphConfig {
         dataset_name: "test".into(),
@@ -97,6 +125,7 @@ fn validate_missing_pk_column() {
                 precision: None,
                 scale: None,
                 semantic_type: None,
+                multicategorical_delimiter: None,
             }],
             primary_key: Some("id".into()),
             create_time: None,
@@ -168,6 +197,7 @@ fn validate_duplicate_column_names() {
         precision: None,
         scale: None,
         semantic_type: None,
+        multicategorical_delimiter: None,
     });
     assert_err_contains(meta, "table User has duplicate column id");
 }
@@ -224,6 +254,7 @@ fn validate_decimal_missing_precision() {
         precision: None,
         scale: Some(2),
         semantic_type: None,
+        multicategorical_delimiter: None,
     });
     assert_err_contains(meta, "missing precision");
 }
@@ -241,6 +272,7 @@ fn validate_decimal_missing_scale() {
         precision: Some(10),
         scale: None,
         semantic_type: None,
+        multicategorical_delimiter: None,
     });
     assert_err_contains(meta, "missing scale");
 }
@@ -258,6 +290,7 @@ fn validate_decimal_precision_out_of_range() {
         precision: Some(50),
         scale: Some(2),
         semantic_type: None,
+        multicategorical_delimiter: None,
     });
     assert_err_contains(meta, "precision out of range");
 }
@@ -275,6 +308,7 @@ fn validate_decimal_scale_out_of_range() {
         precision: Some(10),
         scale: Some(20),
         semantic_type: None,
+        multicategorical_delimiter: None,
     });
     assert_err_contains(meta, "scale out of range");
 }
@@ -292,6 +326,7 @@ fn validate_decimal_precision_on_non_decimal() {
         precision: Some(10),
         scale: None,
         semantic_type: None,
+        multicategorical_delimiter: None,
     });
     assert_err_contains(meta, "precision/scale only valid for decimal");
 }
@@ -309,6 +344,7 @@ fn validate_decimal_precision_allowed_with_source_decimal() {
         precision: Some(10),
         scale: Some(2),
         semantic_type: None,
+        multicategorical_delimiter: None,
     });
     assert!(meta.validate().is_ok());
 }
@@ -328,6 +364,7 @@ fn validate_edge_fk_missing_column() {
             precision: None,
             scale: None,
             semantic_type: None,
+            multicategorical_delimiter: None,
         }],
         primary_key: None,
         create_time: None,
@@ -373,6 +410,7 @@ fn validate_edge_fk_missing_table() {
                 precision: None,
                 scale: None,
                 semantic_type: None,
+                multicategorical_delimiter: None,
             },
             ColumnSpec {
                 name: "dst_id".into(),
@@ -384,6 +422,7 @@ fn validate_edge_fk_missing_table() {
                 precision: None,
                 scale: None,
                 semantic_type: None,
+                multicategorical_delimiter: None,
             },
         ],
         primary_key: None,
@@ -431,6 +470,7 @@ fn validate_edge_fk_ref_table_no_pk() {
                 precision: None,
                 scale: None,
                 semantic_type: None,
+                multicategorical_delimiter: None,
             },
             ColumnSpec {
                 name: "dst_id".into(),
@@ -442,6 +482,7 @@ fn validate_edge_fk_ref_table_no_pk() {
                 precision: None,
                 scale: None,
                 semantic_type: None,
+                multicategorical_delimiter: None,
             },
         ],
         primary_key: None,
@@ -490,6 +531,7 @@ fn validate_edge_fk_int_string_ok() {
                 precision: None,
                 scale: None,
                 semantic_type: None,
+                multicategorical_delimiter: None,
             },
             ColumnSpec {
                 name: "dst_id".into(),
@@ -501,6 +543,7 @@ fn validate_edge_fk_int_string_ok() {
                 precision: None,
                 scale: None,
                 semantic_type: None,
+                multicategorical_delimiter: None,
             },
         ],
         primary_key: None,
@@ -547,6 +590,7 @@ fn validate_edge_fk_string_int_ok() {
                 precision: None,
                 scale: None,
                 semantic_type: None,
+                multicategorical_delimiter: None,
             },
             ColumnSpec {
                 name: "dst_id".into(),
@@ -558,6 +602,7 @@ fn validate_edge_fk_string_int_ok() {
                 precision: None,
                 scale: None,
                 semantic_type: None,
+                multicategorical_delimiter: None,
             },
         ],
         primary_key: None,
@@ -612,6 +657,7 @@ fn validate_edge_fk_string_bytes_ok() {
                 precision: None,
                 scale: None,
                 semantic_type: None,
+                multicategorical_delimiter: None,
             },
             ColumnSpec {
                 name: "dst_id".into(),
@@ -623,6 +669,7 @@ fn validate_edge_fk_string_bytes_ok() {
                 precision: None,
                 scale: None,
                 semantic_type: None,
+                multicategorical_delimiter: None,
             },
         ],
         primary_key: None,
@@ -677,6 +724,7 @@ fn validate_edge_fk_string_bytes_len_mismatch() {
                 precision: None,
                 scale: None,
                 semantic_type: None,
+                multicategorical_delimiter: None,
             },
             ColumnSpec {
                 name: "dst_id".into(),
@@ -688,6 +736,7 @@ fn validate_edge_fk_string_bytes_len_mismatch() {
                 precision: None,
                 scale: None,
                 semantic_type: None,
+                multicategorical_delimiter: None,
             },
         ],
         primary_key: None,
@@ -736,6 +785,7 @@ fn validate_edge_fk_uuid_ok() {
             precision: None,
             scale: None,
             semantic_type: None,
+            multicategorical_delimiter: None,
         }],
         primary_key: None,
         create_time: None,
@@ -783,6 +833,7 @@ fn validate_edge_fk_uuid_mismatch() {
             precision: None,
             scale: None,
             semantic_type: None,
+            multicategorical_delimiter: None,
         }],
         primary_key: None,
         create_time: None,
@@ -1218,6 +1269,7 @@ mod new_schema_types {
                 precision: None,
                 scale: None,
                 semantic_type: None,
+                multicategorical_delimiter: None,
             }],
             primary_key: None,
             create_time: None,

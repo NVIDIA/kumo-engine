@@ -33,9 +33,9 @@ mod tests_type_matrix;
 mod tests_unit;
 
 pub use crate::access::{
-    BinaryStringHint, FloatListView, Int64ListView, RowAccess, RowAccessHints, StringListView,
+    BinaryStringHint, FloatListValues, FloatListView, Int64ListValues, Int64ListView, RowAccess,
+    RowAccessHints, StringListValues, StringListView,
 };
-use crate::access::{FloatListValues, Int64ListValues, StringListValues};
 pub use crate::parser::{detect_encoded_int_format, detect_timestamp_format, TIMESTAMP_FORMATS};
 
 pub(crate) const ROWPACK_VERSION: u8 = 3;
@@ -1813,6 +1813,8 @@ pub trait ColumnValueObserver {
     fn observe_string(&mut self, col_idx: usize, value: &str);
     fn observe_timestamp(&mut self, col_idx: usize, secs: i64);
     fn observe_float_list(&mut self, col_idx: usize, view: &FloatListView);
+    fn observe_int64_list(&mut self, col_idx: usize, view: &Int64ListView);
+    fn observe_string_list(&mut self, col_idx: usize, view: &StringListView);
     fn observe_null(&mut self, col_idx: usize);
     fn observe_parse_failure(&mut self, col_idx: usize);
 }
@@ -1831,6 +1833,10 @@ impl ColumnValueObserver for NoOpObserver {
     fn observe_timestamp(&mut self, _col_idx: usize, _secs: i64) {}
     #[inline(always)]
     fn observe_float_list(&mut self, _col_idx: usize, _view: &FloatListView) {}
+    #[inline(always)]
+    fn observe_int64_list(&mut self, _col_idx: usize, _view: &Int64ListView) {}
+    #[inline(always)]
+    fn observe_string_list(&mut self, _col_idx: usize, _view: &StringListView) {}
     #[inline(always)]
     fn observe_null(&mut self, _col_idx: usize) {}
     #[inline(always)]
@@ -2853,6 +2859,7 @@ impl RowPackEncoder {
                 IngestedType::Int64Array => match access.int64_list_view(idx)? {
                     None => 0u8,
                     Some(view) => {
+                        observer.observe_int64_list(idx, &view);
                         if matches!(col.encoding, ColumnEncoding::Int64Array) {
                             encode_int64_list_view_with_tag(data, view)?;
                             1u8
@@ -2864,6 +2871,7 @@ impl RowPackEncoder {
                 IngestedType::StringArray => match access.string_list_view(idx)? {
                     None => 0u8,
                     Some(view) => {
+                        observer.observe_string_list(idx, &view);
                         if matches!(col.encoding, ColumnEncoding::StringArray { .. }) {
                             encode_string_list_view_with_tag(
                                 data,

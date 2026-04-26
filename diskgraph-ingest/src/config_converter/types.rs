@@ -83,6 +83,12 @@ pub struct KumoColumn {
     pub stype: Option<String>,
     /// Timestamp unit for epoch-based timestamps (e.g., "s", "ms", "us", "ns").
     pub timestamp_unit: Option<String>,
+    /// For stype="multicategorical" + dtype="string": explicit token separator.
+    /// When provided, disables convert-time delimiter detection for this
+    /// column. Absent for other column shapes. Accepts `null` as "single
+    /// token per row" (leave unset to opt into detection).
+    #[serde(default)]
+    pub multicategorical_delimiter: Option<String>,
 }
 
 /// Kumo time column configuration.

@@ -89,9 +89,10 @@ pub fn detect_timestamp_formats(
                 let col_info: Vec<Option<(usize, arrow_schema::DataType)>> = candidates
                     .iter()
                     .map(|(_, name)| {
-                        $schema.index_of(name).ok().map(|idx| {
-                            (idx, $schema.field(idx).data_type().clone())
-                        })
+                        $schema
+                            .index_of(name)
+                            .ok()
+                            .map(|idx| (idx, $schema.field(idx).data_type().clone()))
                     })
                     .collect();
 
@@ -138,8 +139,8 @@ pub fn detect_timestamp_formats(
                                         Some(s.value(row))
                                     } else if let Some(s) = array
                                         .as_any()
-                                        .downcast_ref::<arrow_array::LargeStringArray>()
-                                    {
+                                        .downcast_ref::<arrow_array::LargeStringArray>(
+                                    ) {
                                         Some(s.value(row))
                                     } else if let Some(s) =
                                         array.as_any().downcast_ref::<arrow_array::BinaryArray>()
@@ -166,13 +167,13 @@ pub fn detect_timestamp_formats(
                                         } else {
                                             // Non-null string, not a recognized timestamp
                                             // format, not parseable as integer.
-                                            let sample = if text.len() > 50 {
-                                                &text[..50]
-                                            } else {
-                                                text
-                                            };
+                                            let sample =
+                                                if text.len() > 50 { &text[..50] } else { text };
                                             unrecognized_info.entry(col_key).or_insert_with(|| {
-                                                format!("unrecognized string format, sample: \"{}\"", sample)
+                                                format!(
+                                                    "unrecognized string format, sample: \"{}\"",
+                                                    sample
+                                                )
                                             });
                                         }
                                     }
@@ -231,15 +232,16 @@ pub fn detect_timestamp_formats(
 
             if let Some(pooled) = pooled {
                 let bytes = pooled.bytes();
-                let builder = match
-                    parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(bytes)
-                {
-                    Ok(b) => b,
-                    Err(e) => {
-                        tracing::warn!("Skipping {}: failed to read parquet: {e}", path);
-                        continue;
-                    }
-                };
+                let builder =
+                    match parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+                        bytes,
+                    ) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::warn!("Skipping {}: failed to read parquet: {e}", path);
+                            continue;
+                        }
+                    };
                 let schema = builder.schema().clone();
                 let reader = builder.with_batch_size(1024).build()?;
                 sample_from_reader!(reader, schema);
@@ -251,15 +253,16 @@ pub fn detect_timestamp_formats(
                         continue;
                     }
                 };
-                let builder = match
-                    parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)
-                {
-                    Ok(b) => b,
-                    Err(e) => {
-                        tracing::warn!("Skipping {}: failed to read parquet: {e}", path);
-                        continue;
-                    }
-                };
+                let builder =
+                    match parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+                        file,
+                    ) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::warn!("Skipping {}: failed to read parquet: {e}", path);
+                            continue;
+                        }
+                    };
                 let schema = builder.schema().clone();
                 let reader = builder.with_batch_size(1024).build()?;
                 sample_from_reader!(reader, schema);
@@ -293,7 +296,10 @@ pub fn detect_timestamp_formats(
                     return Err(anyhow::anyhow!(
                         "table '{}' column '{}' ({}): could not detect timestamp format. \
                          {}. Set timestamp_format explicitly in the config.",
-                        table.name, col_name, role, info,
+                        table.name,
+                        col_name,
+                        role,
+                        info,
                     ));
                 }
                 tracing::warn!(
@@ -310,7 +316,10 @@ pub fn detect_timestamp_formats(
                     return Err(anyhow::anyhow!(
                         "table '{}' column '{}' ({}): column is entirely null across {} file(s). \
                          A time column must contain parseable timestamp values.",
-                        table.name, col_name, role, parquet_files.len().min(MAX_FILES),
+                        table.name,
+                        col_name,
+                        role,
+                        parquet_files.len().min(MAX_FILES),
                     ));
                 }
                 tracing::warn!(
@@ -488,10 +497,7 @@ pub fn compute_total_bytes(
 /// - Cloud file paths: returned as a single-element vec if they end with `.parquet`.
 /// - Local directories: walks entries and collects all `.parquet` files, sorted by name.
 /// - Local file paths: returned as a single-element vec if they end with `.parquet`.
-fn resolve_parquet_files(
-    path: &str,
-    transfer: &Option<CloudTransfer>,
-) -> Result<Vec<String>> {
+fn resolve_parquet_files(path: &str, transfer: &Option<CloudTransfer>) -> Result<Vec<String>> {
     if is_cloud_path(path) {
         if path.ends_with('/') || !path.ends_with(".parquet") {
             // Directory prefix — list and collect all parquet files.
@@ -557,9 +563,7 @@ fn compute_local_dir_bytes(dir_path: &str) -> u64 {
         Ok(entries) => entries,
         Err(_) => {
             // Maybe it's a single file, not a directory
-            return std::fs::metadata(dir_path)
-                .map(|m| m.len())
-                .unwrap_or(0);
+            return std::fs::metadata(dir_path).map(|m| m.len()).unwrap_or(0);
         }
     };
     let mut total: u64 = 0;
@@ -651,7 +655,7 @@ fn smooth_shard_target(per_cpu_bytes: u64, total_bytes: u64) -> u64 {
         // Smooth interpolation t: 0.0 -> 1.0
         let t = ((total_gb - 10.0) / 30.0).clamp(0.0, 1.0);
         let smooth = t * t * (3.0 - 2.0 * t); // Smoothstep function
-        // Divisor: 16.0 -> 4.0
+                                              // Divisor: 16.0 -> 4.0
         16.0 - 12.0 * smooth
     } else if total_gb <= 1024.0 {
         // Range: 40GB - 1TB
@@ -689,6 +693,313 @@ fn read_system_memory_bytes() -> Option<u64> {
     None
 }
 
+// ---------------------------------------------------------------------------
+// Multicategorical delimiter detection
+// ---------------------------------------------------------------------------
+
+use crate::errors::ConvertError;
+use crate::graph_config::SemanticType;
+use arrow_array::Array;
+
+/// Candidate delimiters tried for `String + Multicategorical` columns.
+/// Order matters for deterministic reporting; the detector does not prefer
+/// earlier candidates, only uses the list for enumeration.
+const MULTICAT_DELIMITER_CANDIDATES: &[&str] = &[",", "|", ";", "\t"];
+
+/// Majority threshold for a candidate to win outright (fraction of non-null
+/// sample rows containing the delimiter).
+const MULTICAT_WIN_FRACTION: f64 = 0.50;
+/// Ambiguity threshold — a candidate at or above this fraction that is not
+/// the winner triggers `MulticategoricalDelimiterAmbiguous`.
+const MULTICAT_AMBIGUOUS_FRACTION: f64 = 0.20;
+/// Max number of non-null sample rows to pull per column.
+const MULTICAT_MAX_SAMPLES: usize = 1_000;
+/// Max number of files to inspect while looking for multicat delimiter samples.
+const MULTICAT_MAX_FILES: usize = 15;
+
+fn multicat_string_value(array: &dyn Array, row: usize) -> Option<&str> {
+    if let Some(str_arr) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
+        Some(str_arr.value(row))
+    } else if let Some(str_arr) = array
+        .as_any()
+        .downcast_ref::<arrow_array::LargeStringArray>()
+    {
+        Some(str_arr.value(row))
+    } else {
+        None
+    }
+}
+
+/// Detect the per-column `multicategorical_delimiter` for every
+/// `String + Multicategorical` column that didn't come with an explicit
+/// value on the upstream Kumo config.
+///
+/// Decision rule (§4.2 Step 0 of the multicat design doc):
+/// - A candidate `wins` if it appears in ≥50% of sampled rows AND no other
+///   candidate appears in ≥20% of sampled rows → bake that delimiter in.
+/// - No candidate reaches 20% → `delimiter = None` (legitimate
+///   single-token-per-row multicat).
+/// - 2+ candidates ≥20% OR a single candidate in `[20%, 50%)` with no
+///   other candidates → `MulticategoricalDelimiterAmbiguous` so users see
+///   the problem before ingest starts.
+///
+/// All-null columns fall through with a warning (nothing to detect against);
+/// ingest will treat the column as single-token-per-row.
+pub fn detect_multicategorical_delimiters(
+    config: &mut GraphConfig,
+    input_transfer: &Option<CloudTransfer>,
+) -> Result<(), ConvertError> {
+    for table in &mut config.tables {
+        // Candidate columns: String + Multicategorical, no explicit delimiter.
+        let candidates: Vec<(usize, String)> = table
+            .columns
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| {
+                c.ingested_dtype == IngestedType::String
+                    && c.semantic_type == Some(SemanticType::Multicategorical)
+                    && c.multicategorical_delimiter.is_none()
+            })
+            .map(|(i, c)| (i, c.name.clone()))
+            .collect();
+
+        if candidates.is_empty() {
+            continue;
+        }
+        if table.format() != TableFormat::Parquet {
+            continue;
+        }
+        let all_paths = table.get_paths();
+        if all_paths.is_empty() {
+            continue;
+        }
+        let parquet_files = resolve_parquet_files(&all_paths[0], input_transfer)
+            .map_err(|e| ConvertError::InferenceError(format!("{e:#}")))?;
+        if parquet_files.is_empty() {
+            continue;
+        }
+
+        // Per-column per-candidate occurrence counts, and total non-null
+        // sample rows for that column.
+        let mut per_col_totals: HashMap<usize, usize> = HashMap::new();
+        let mut per_col_hits: HashMap<usize, HashMap<&'static str, usize>> = HashMap::new();
+
+        // Sample multiple parquet files. Early files can be empty, all-null,
+        // or non-representative partitions, so continue until each candidate
+        // has enough non-null samples or the bounded file budget is exhausted.
+        for path in parquet_files.iter().take(MULTICAT_MAX_FILES) {
+            let pooled = if let Some(transfer) = input_transfer {
+                if is_cloud_path(path) {
+                    match download_cloud_bytes(transfer, path) {
+                        Ok(p) => Some(p),
+                        Err(e) => {
+                            tracing::warn!("Skipping {}: download failed: {e}", path);
+                            continue;
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            macro_rules! scan_reader {
+                ($reader:expr, $schema:expr) => {{
+                    let col_info: Vec<Option<usize>> = candidates
+                        .iter()
+                        .map(|(_, name)| $schema.index_of(name).ok())
+                        .collect();
+                    for batch in $reader {
+                        let batch =
+                            batch.map_err(|e| ConvertError::InferenceError(format!("{e:#}")))?;
+                        for (cand_idx, info) in col_info.iter().enumerate() {
+                            let Some(arr_idx) = info else { continue };
+                            let col_key = candidates[cand_idx].0;
+                            if *per_col_totals.get(&col_key).unwrap_or(&0) >= MULTICAT_MAX_SAMPLES {
+                                continue;
+                            }
+                            let array = batch.column(*arr_idx);
+                            for row in 0..batch.num_rows() {
+                                if *per_col_totals.get(&col_key).unwrap_or(&0)
+                                    >= MULTICAT_MAX_SAMPLES
+                                {
+                                    break;
+                                }
+                                if array.is_null(row) {
+                                    continue;
+                                }
+                                let Some(text) = multicat_string_value(array.as_ref(), row) else {
+                                    continue;
+                                };
+                                *per_col_totals.entry(col_key).or_insert(0) += 1;
+                                let hits = per_col_hits.entry(col_key).or_default();
+                                for cand in MULTICAT_DELIMITER_CANDIDATES {
+                                    if text.contains(cand) {
+                                        *hits.entry(*cand).or_insert(0) += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }};
+            }
+
+            if let Some(pooled) = pooled {
+                let bytes = pooled.bytes();
+                let builder =
+                    match parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+                        bytes,
+                    ) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::warn!("Skipping {}: failed to read parquet: {e}", path);
+                            continue;
+                        }
+                    };
+                let schema = builder.schema().clone();
+                let reader = builder
+                    .with_batch_size(1024)
+                    .build()
+                    .map_err(|e| ConvertError::InferenceError(format!("{e:#}")))?;
+                scan_reader!(reader, schema);
+            } else {
+                let file = match std::fs::File::open(path) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        tracing::warn!("Skipping {}: failed to open: {e}", path);
+                        continue;
+                    }
+                };
+                let builder =
+                    match parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+                        file,
+                    ) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::warn!("Skipping {}: failed to read parquet: {e}", path);
+                            continue;
+                        }
+                    };
+                let schema = builder.schema().clone();
+                let reader = builder
+                    .with_batch_size(1024)
+                    .build()
+                    .map_err(|e| ConvertError::InferenceError(format!("{e:#}")))?;
+                scan_reader!(reader, schema);
+            }
+
+            // Stop as soon as we have enough samples for every candidate.
+            let all_done = candidates.iter().all(|(col_idx, _)| {
+                *per_col_totals.get(col_idx).unwrap_or(&0) >= MULTICAT_MAX_SAMPLES
+            });
+            if all_done {
+                break;
+            }
+        }
+
+        // Decision per candidate column.
+        for (col_idx, col_name) in &candidates {
+            let total = *per_col_totals.get(col_idx).unwrap_or(&0);
+            let hits = per_col_hits.remove(col_idx).unwrap_or_default();
+            let decision = decide_multicat_delimiter(total, &hits);
+            match decision {
+                MulticatDelimiterDecision::NoDelimiter => {
+                    // Leave `multicategorical_delimiter = None`.
+                    if total == 0 {
+                        tracing::warn!(
+                            table = %table.name, column = %col_name,
+                            "multicategorical column was entirely null in sampled file — \
+                             treating as single-token-per-row",
+                        );
+                    } else {
+                        tracing::info!(
+                            table = %table.name, column = %col_name,
+                            "no delimiter candidate reached the threshold; \
+                             treating as single-token-per-row",
+                        );
+                    }
+                }
+                MulticatDelimiterDecision::Winner(sep) => {
+                    table.columns[*col_idx].multicategorical_delimiter = Some(sep.to_string());
+                }
+                MulticatDelimiterDecision::Ambiguous(candidates_with_counts) => {
+                    return Err(ConvertError::MulticategoricalDelimiterAmbiguous {
+                        table: table.name.clone(),
+                        column: col_name.clone(),
+                        candidates: candidates_with_counts,
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+enum MulticatDelimiterDecision {
+    NoDelimiter,
+    Winner(&'static str),
+    Ambiguous(Vec<(String, usize)>),
+}
+
+/// Pure decision function — exposed for unit testing so we can cover the
+/// threshold logic without parquet fixtures.
+fn decide_multicat_delimiter(
+    total: usize,
+    hits: &HashMap<&'static str, usize>,
+) -> MulticatDelimiterDecision {
+    if total == 0 {
+        return MulticatDelimiterDecision::NoDelimiter;
+    }
+    let win_cutoff = (MULTICAT_WIN_FRACTION * total as f64).ceil() as usize;
+    let ambig_cutoff = (MULTICAT_AMBIGUOUS_FRACTION * total as f64).ceil() as usize;
+
+    let mut winner: Option<&'static str> = None;
+    let mut above_ambig: Vec<(&'static str, usize)> = Vec::new();
+    for cand in MULTICAT_DELIMITER_CANDIDATES {
+        let count = hits.get(cand).copied().unwrap_or(0);
+        if count >= ambig_cutoff {
+            above_ambig.push((cand, count));
+        }
+        if count >= win_cutoff {
+            // Pick the first qualifier; ties are resolved by the
+            // "no other candidate ≥ ambig_cutoff" invariant below.
+            if winner.is_none() {
+                winner = Some(cand);
+            }
+        }
+    }
+    match winner {
+        Some(w) => {
+            let others_above_ambig = above_ambig.iter().any(|(c, _)| *c != w);
+            if others_above_ambig {
+                let counts: Vec<(String, usize)> = above_ambig
+                    .into_iter()
+                    .map(|(c, n)| (c.to_string(), n))
+                    .collect();
+                MulticatDelimiterDecision::Ambiguous(counts)
+            } else {
+                MulticatDelimiterDecision::Winner(w)
+            }
+        }
+        None => {
+            if above_ambig.is_empty() {
+                // No candidate reached even the ambiguity floor — treat as
+                // single-token-per-row.
+                MulticatDelimiterDecision::NoDelimiter
+            } else {
+                // At least one candidate between 20% and 50% — unstable.
+                let counts: Vec<(String, usize)> = above_ambig
+                    .into_iter()
+                    .map(|(c, n)| (c.to_string(), n))
+                    .collect();
+                MulticatDelimiterDecision::Ambiguous(counts)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -703,8 +1014,8 @@ mod tests {
     #[test]
     fn test_smooth_shard_target_small() {
         let per_cpu = 2 * GB; // 2GB per core
-        // Case: 10GB total (Start of small range)
-        // t=0, smooth=0, divisor=16. Target = 2GB/16 = 128MB.
+                              // Case: 10GB total (Start of small range)
+                              // t=0, smooth=0, divisor=16. Target = 2GB/16 = 128MB.
         let target_10gb = smooth_shard_target(per_cpu, 10 * GB);
         assert_eq!(target_10gb, 128 * 1024 * 1024);
 
@@ -717,8 +1028,8 @@ mod tests {
     #[test]
     fn test_smooth_shard_target_medium() {
         let per_cpu = 4 * GB; // 4GB per core
-        // Case: 40GB total (Start of medium range)
-        // Divisor starts at 4.0. Target = 4GB/4 = 1GB.
+                              // Case: 40GB total (Start of medium range)
+                              // Divisor starts at 4.0. Target = 4GB/4 = 1GB.
         let target_40gb = smooth_shard_target(per_cpu, 40 * GB);
         assert_eq!(target_40gb, GB);
 
@@ -809,7 +1120,10 @@ mod tests {
         // Unix epoch 2024-03-01 ~= 1709251200
         assert_eq!(detect_epoch_unit(1709251200), Some(TimestampUnit::Seconds));
         // Small value (year 2001)
-        assert_eq!(detect_epoch_unit(1_000_000_000), Some(TimestampUnit::Seconds));
+        assert_eq!(
+            detect_epoch_unit(1_000_000_000),
+            Some(TimestampUnit::Seconds)
+        );
         // Negative (before epoch)
         assert_eq!(detect_epoch_unit(-86400), Some(TimestampUnit::Seconds));
     }
@@ -870,10 +1184,13 @@ mod tests {
         let result = detect_int_timestamp(20230408);
         match result {
             Some(TimestampDetection::Format(fmt)) => assert_eq!(fmt, "%Y%m%d"),
-            other => panic!("Expected Format(\"%Y%m%d\"), got {:?}", other.map(|d| match d {
-                TimestampDetection::Format(f) => format!("Format({})", f),
-                TimestampDetection::Unit(u) => format!("Unit({:?})", u),
-            })),
+            other => panic!(
+                "Expected Format(\"%Y%m%d\"), got {:?}",
+                other.map(|d| match d {
+                    TimestampDetection::Format(f) => format!("Format({})", f),
+                    TimestampDetection::Unit(u) => format!("Unit({:?})", u),
+                })
+            ),
         }
     }
 
@@ -882,10 +1199,13 @@ mod tests {
         let result = detect_int_timestamp(20230408120530);
         match result {
             Some(TimestampDetection::Format(fmt)) => assert_eq!(fmt, "%Y%m%d%H%M%S"),
-            other => panic!("Expected Format(\"%Y%m%d%H%M%S\"), got {:?}", other.map(|d| match d {
-                TimestampDetection::Format(f) => format!("Format({})", f),
-                TimestampDetection::Unit(u) => format!("Unit({:?})", u),
-            })),
+            other => panic!(
+                "Expected Format(\"%Y%m%d%H%M%S\"), got {:?}",
+                other.map(|d| match d {
+                    TimestampDetection::Format(f) => format!("Format({})", f),
+                    TimestampDetection::Unit(u) => format!("Unit({:?})", u),
+                })
+            ),
         }
     }
 
@@ -895,10 +1215,103 @@ mod tests {
         let result = detect_int_timestamp(1709251200);
         match result {
             Some(TimestampDetection::Unit(TimestampUnit::Seconds)) => {}
-            other => panic!("Expected Unit(Seconds), got {:?}", other.map(|d| match d {
-                TimestampDetection::Format(f) => format!("Format({})", f),
-                TimestampDetection::Unit(u) => format!("Unit({:?})", u),
-            })),
+            other => panic!(
+                "Expected Unit(Seconds), got {:?}",
+                other.map(|d| match d {
+                    TimestampDetection::Format(f) => format!("Format({})", f),
+                    TimestampDetection::Unit(u) => format!("Unit({:?})", u),
+                })
+            ),
+        }
+    }
+
+    // =====================================================================
+    // Multicategorical delimiter decision-function tests
+    //
+    // These cover the threshold logic in `decide_multicat_delimiter` without
+    // requiring parquet fixtures. End-to-end detection against real parquet
+    // is exercised by the integration tests in `diskgraph-ingest/tests/`.
+    // =====================================================================
+
+    fn hits(pairs: &[(&'static str, usize)]) -> HashMap<&'static str, usize> {
+        pairs.iter().copied().collect()
+    }
+
+    #[test]
+    fn multicat_decide_zero_samples_is_no_delimiter() {
+        let h = hits(&[]);
+        assert!(matches!(
+            decide_multicat_delimiter(0, &h),
+            MulticatDelimiterDecision::NoDelimiter
+        ));
+    }
+
+    #[test]
+    fn multicat_decide_clear_majority_comma_wins() {
+        // 80 / 100 rows have comma, none have others.
+        let h = hits(&[(",", 80)]);
+        match decide_multicat_delimiter(100, &h) {
+            MulticatDelimiterDecision::Winner(",") => {}
+            other => panic!("expected Winner(\",\"), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn multicat_decide_pipe_wins_against_noise() {
+        // 60% pipe, 10% comma (noise below 20% floor).
+        let h = hits(&[("|", 60), (",", 10)]);
+        match decide_multicat_delimiter(100, &h) {
+            MulticatDelimiterDecision::Winner("|") => {}
+            other => panic!("expected Winner(\"|\"), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn multicat_decide_ambiguous_two_candidates_above_20pct() {
+        // Comma in 50% of rows AND pipe in 30% — winner candidate exists
+        // but is ambiguous because pipe is above the 20% floor.
+        let h = hits(&[(",", 50), ("|", 30)]);
+        match decide_multicat_delimiter(100, &h) {
+            MulticatDelimiterDecision::Ambiguous(counts) => {
+                // Both candidates surface in the error payload.
+                let has_comma = counts.iter().any(|(c, _)| c == ",");
+                let has_pipe = counts.iter().any(|(c, _)| c == "|");
+                assert!(has_comma && has_pipe);
+            }
+            other => panic!("expected Ambiguous, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn multicat_decide_ambiguous_single_candidate_below_50pct() {
+        // Only one candidate, but it's in the [20%, 50%) band — not a stable
+        // enough signal to commit to a delimiter; surface as ambiguous so
+        // the user adjudicates.
+        let h = hits(&[(",", 30)]);
+        match decide_multicat_delimiter(100, &h) {
+            MulticatDelimiterDecision::Ambiguous(_) => {}
+            other => panic!("expected Ambiguous, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn multicat_decide_no_candidate_above_20pct_is_no_delimiter() {
+        // Every candidate below floor → treat as single-token-per-row.
+        let h = hits(&[(",", 5), ("|", 10), (";", 2)]);
+        assert!(matches!(
+            decide_multicat_delimiter(100, &h),
+            MulticatDelimiterDecision::NoDelimiter
+        ));
+    }
+
+    #[test]
+    fn multicat_decide_thresholds_scale_with_total() {
+        // At very small sample counts, the ceil() in cutoffs matters. 3 rows,
+        // 2 with comma (66%, above 50%), 0 others → winner.
+        let h = hits(&[(",", 2)]);
+        match decide_multicat_delimiter(3, &h) {
+            MulticatDelimiterDecision::Winner(",") => {}
+            other => panic!("expected Winner(\",\"), got {:?}", other),
         }
     }
 }

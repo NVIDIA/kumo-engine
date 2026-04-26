@@ -145,12 +145,25 @@ pub enum ConvertError {
     },
 
     #[error(
-        "table '{table}' column '{column}': stype 'multicategorical' is not supported by diskgraph. \
-         Column stats collection and encoding for multicategorical columns are not yet implemented"
+        "table '{table}' column '{column}': multicategorical columns with dtype '{dtype:?}' \
+         are not supported. Use a string (comma/pipe-delimited), list<utf8>, list<int64>, \
+         or list<float32/float64/float16> dtype."
     )]
-    MulticategoricalUnsupported {
+    MulticategoricalOnUnsupportedInput {
         table: String,
         column: String,
+        dtype: IngestedType,
+    },
+
+    #[error(
+        "table '{table}' column '{column}': multicategorical string column has ambiguous delimiter. \
+         Candidates and sample-row occurrence counts: {candidates:?}. \
+         Either clean the source data or set `multicategorical_delimiter` explicitly on the column."
+    )]
+    MulticategoricalDelimiterAmbiguous {
+        table: String,
+        column: String,
+        candidates: Vec<(String, usize)>,
     },
 
     #[error("{0}")]
