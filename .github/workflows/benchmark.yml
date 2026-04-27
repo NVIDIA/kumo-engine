@@ -6,6 +6,16 @@ on:
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:
+    inputs:
+      reset_baselines:
+        description: >-
+          Comma-separated dataset names to wipe from BASELINE_ROOT before the
+          run. Use when a feature legitimately shifts the baseline (e.g.
+          activating col-stats on a previously skipped column shape). After the
+          run, the existing auto-save logic captures the new baseline. Leave
+          empty for normal runs.
+        required: false
+        default: ''
 
 concurrency:
   group: ec2-benchmark
@@ -66,6 +76,23 @@ jobs:
               --output "${local_dir}/diskgraph_config.json"
             echo "Prepared local config: ${local_dir}/diskgraph_config.json"
           done < "${CONFIG_LIST}"
+
+      - name: Reset specified baselines
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.reset_baselines != ''
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra DATASETS <<< "${{ github.event.inputs.reset_baselines }}"
+          for ds in "${DATASETS[@]}"; do
+            ds_trimmed=$(echo "$ds" | xargs)
+            [[ -z "$ds_trimmed" ]] && continue
+            target="${BASELINE_ROOT}/${ds_trimmed}/ingest_stats.json"
+            if [[ -f "$target" ]]; then
+              rm -f "$target"
+              echo "Removed baseline: $target"
+            else
+              echo "::warning::No baseline found at $target (already missing)"
+            fi
+          done
 
       - name: Run all benchmarks
         id: benchmark
