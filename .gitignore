@@ -17,3 +17,4 @@ diskgraph-ingest/data/*
 temp_data
 diskgraph_output
 benchmark/
+temp_doc/

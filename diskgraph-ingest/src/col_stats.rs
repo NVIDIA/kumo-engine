@@ -2093,6 +2093,10 @@ impl FileColStats {
     /// per-column HLL (for `NUM_UNIQUE_MULTI`) for every token. If
     /// `count_category` is true, it also feeds the hash into the shared
     /// category counts through `observe_category_string_inner`.
+    ///
+    /// Hot path — shares hashing + HLL + category-count infra with the
+    /// Categorical arm of `observe_string`. `bin/multicat_microbench`
+    /// pins the per-token cost; keep it ≈ Categorical observe.
     #[inline]
     fn observe_multicat_token_str(&mut self, col_idx: usize, tok: &str, count_category: bool) {
         let hash = HyperLogLog::hash_bytes(tok.as_bytes());
@@ -2119,6 +2123,15 @@ impl FileColStats {
     }
 }
 
+// Hot path. Per-token cost dominates encode time for Multicategorical and
+// large Categorical/Id columns. The Multicat per-token primitives
+// (`observe_multicat_token_str`, `observe_multicat_token_i64`) share their
+// hashing + HLL + category-count infrastructure with the Categorical/Id arms
+// of `observe_string` / `observe_i64`. If you change either path, rerun
+// `cargo run --release --bin multicat_microbench` and confirm
+//   C2 - C3 ≈ C1   (multicat token observe ≈ Categorical observe)
+// stays within ~10%. Drift here amplifies linearly across hundreds of
+// millions of tokens on list-heavy fixtures.
 impl ColumnValueObserver for FileColStats {
     #[inline]
     fn observe_i64(&mut self, col_idx: usize, value: i64) {
