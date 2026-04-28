@@ -2,13 +2,11 @@ name: Claude PR Meta-Review
 
 "on":
   pull_request:
-    types: [opened, labeled]
+    types: [labeled]
 
 jobs:
   meta-review:
-    if: |
-      github.event.action == 'opened' ||
-      github.event.label.name == 'ai-meta-review-requested'
+    if: github.event.label.name == 'ai-meta-review-requested'
     uses: kumo-ai/.github/.github/workflows/claude-pr-review.yml@main
     with:
       pr_number: ${{ github.event.pull_request.number }}
