@@ -2116,7 +2116,22 @@ impl ColumnValueObserver for FileColStats {
                 *count += 1;
                 hll.observe_hash(cat_hash.unwrap());
             }
-            ColumnStatsCollector::Timestamp { count, .. } => *count += 1,
+            ColumnStatsCollector::Timestamp {
+                count,
+                min_secs,
+                max_secs,
+                hll,
+                ..
+            } => {
+                *count += 1;
+                if value < *min_secs {
+                    *min_secs = value;
+                }
+                if value > *max_secs {
+                    *max_secs = value;
+                }
+                hll.observe_i64(value);
+            }
             _ => {}
         }
 
