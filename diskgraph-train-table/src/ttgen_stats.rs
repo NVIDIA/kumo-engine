@@ -236,6 +236,9 @@ pub(crate) struct StatsMerger<U: UnitSystem> {
     timestamp_welford: Option<WelfordAccumulator>,
     timestamp_tdigest: Option<TDigestEstimator>,
     timestamp_hll: Option<HyperLogLog>,
+    /// True when the TARGET Arrow column was BooleanArray. Required so
+    /// CATEGORY_COUNTS gets emitted as JSON booleans (matching GE/Spark).
+    pub(crate) target_is_bool_dtype: bool,
 }
 
 impl<U: UnitSystem> Default for StatsMerger<U> {
@@ -271,6 +274,7 @@ impl<U: UnitSystem> Default for StatsMerger<U> {
             timestamp_welford: None,
             timestamp_tdigest: None,
             timestamp_hll: None,
+            target_is_bool_dtype: false,
         }
     }
 }
@@ -449,6 +453,7 @@ impl<U: UnitSystem> StatsMerger<U> {
             "v1",
             target_category_counts,
             target_stype,
+            self.target_is_bool_dtype,
             &self.entity_hll,
             &self.entity_welford,
             &mut self.entity_tdigest,
@@ -523,6 +528,7 @@ pub fn build_inline_col_stats(
     data_version: &str,
     target_category_counts: Option<HashMap<String, u64>>,
     target_stype: &str,
+    target_is_bool_dtype: bool,
     entity_hll: &Option<HyperLogLog>,
     entity_welford: &Option<WelfordAccumulator>,
     entity_tdigest: &mut Option<TDigestEstimator>,
@@ -565,11 +571,31 @@ pub fn build_inline_col_stats(
             );
 
             // CATEGORY_COUNTS: [[key, count], ...]
+            //
+            // For boolean targets we emit JSON booleans (true/false), not
+            // strings, so the kumo encoder builds its mapping with bool keys
+            // — matching pandas/GE behaviour. Otherwise pd.Series.map() over
+            // a bool column with string keys yields all-NaN -> all -1, and
+            // the trainer fails the val-imbalance check on the first batch.
             let mut pairs: Vec<(&String, &u64)> = cat_counts.iter().collect();
             pairs.sort_by(|a, b| b.1.cmp(a.1)); // descending by count
+            // target_stype "boolean" OR Arrow BooleanArray rehydration both
+            // signal that the kumo encoder will see a bool-dtype column.
+            let target_is_boolean = target_stype == "boolean" || target_is_bool_dtype;
             let category_array: Vec<JsonValue> = pairs
                 .iter()
-                .map(|(k, c)| json!([k, c]))
+                .map(|(k, c)| {
+                    let key_value = if target_is_boolean {
+                        match k.as_str() {
+                            "true" => json!(true),
+                            "false" => json!(false),
+                            _ => json!(k),
+                        }
+                    } else {
+                        json!(k)
+                    };
+                    json!([key_value, c])
+                })
                 .collect();
             stats.insert(
                 kumo_key(name, stype, "CATEGORY_COUNTS", false),

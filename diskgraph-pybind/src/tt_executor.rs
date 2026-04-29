@@ -3084,6 +3084,9 @@ fn compute_train_table_col_stats_payload(
 
     let mut num_total_rows: u64 = 0;
     let mut global_row: usize = 0;
+    // Detected once from the first batch's TARGET column. Required for boolean
+    // CATEGORY_COUNTS to round-trip as JSON booleans (matching GE/Spark).
+    let mut target_is_bool_dtype: bool = false;
 
     let mut reader = builder.build()?;
     while let Some(batch_res) = reader.next() {
@@ -3095,6 +3098,11 @@ fn compute_train_table_col_stats_payload(
         let timestamp_col = batch.column(timestamp_idx);
         let frequency_col = frequency_idx.map(|i| batch.column(i));
         let include_bit_col = include_bit_idx.map(|i| batch.column(i));
+        if !target_is_bool_dtype
+            && target_col.as_any().downcast_ref::<BooleanArray>().is_some()
+        {
+            target_is_bool_dtype = true;
+        }
 
         for row in 0..n {
             let assign = split_assignments[global_row];
@@ -3343,6 +3351,7 @@ fn compute_train_table_col_stats_payload(
         data_version,
         target_category_counts,
         target_stype,
+        target_is_bool_dtype,
         &entity_hll,
         &entity_welford,
         &mut entity_tdigest,
