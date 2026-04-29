@@ -11,7 +11,7 @@ use crossbeam_channel::{bounded, Receiver, Sender};
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyDict, PyList, PyString, PyTuple};
 
 create_exception!(diskgraph, DiskgraphDataError, PyException);
 create_exception!(diskgraph, DiskgraphConfigError, PyException);
@@ -154,7 +154,7 @@ mod success_marker;
 mod tt_builder;
 mod tt_executor;
 
-#[pyclass(eq, eq_int, name = "TimeUnit")]
+#[pyclass(eq, eq_int, name = "TimeUnit", module = "diskgraph._c")]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PyTimeUnit {
     Seconds,
@@ -173,6 +173,33 @@ pub enum PyTimeUnit {
 impl PyTimeUnit {
     fn __hash__(&self) -> u64 {
         *self as u64
+    }
+
+    /// Make ``TimeUnit`` picklable across process boundaries.
+    ///
+    /// Pickle calls ``__reduce__`` to get a ``(callable, args)`` pair such
+    /// that ``callable(*args)`` reconstructs the object on unpickle. We
+    /// return ``(getattr, (TimeUnit, "<VariantName>"))`` so reconstruction
+    /// resolves to the same class attribute (``TimeUnit.Nanoseconds`` etc.)
+    /// without leaking integer reprs into the pickle stream.
+    fn __reduce__<'py>(slf: PyRef<'py, Self>) -> PyResult<Bound<'py, PyTuple>> {
+        let py = slf.py();
+        let getattr = py.import("builtins")?.getattr("getattr")?;
+        let cls = py.get_type::<Self>();
+        let name = match *slf {
+            PyTimeUnit::Seconds => "Seconds",
+            PyTimeUnit::Milliseconds => "Milliseconds",
+            PyTimeUnit::Microseconds => "Microseconds",
+            PyTimeUnit::Nanoseconds => "Nanoseconds",
+            PyTimeUnit::Minutes => "Minutes",
+            PyTimeUnit::Hours => "Hours",
+            PyTimeUnit::Days => "Days",
+            PyTimeUnit::Weeks => "Weeks",
+            PyTimeUnit::Months => "Months",
+            PyTimeUnit::Years => "Years",
+        };
+        let args = PyTuple::new(py, [cls.into_any(), PyString::new(py, name).into_any()])?;
+        PyTuple::new(py, [getattr, args.into_any()])
     }
 }
 
