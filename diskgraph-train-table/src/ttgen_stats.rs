@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 const SPLIT_RATIO_EPSILON: f64 = 1e-6;
 
 use diskgraph_core::accumulators::{
-    kumo_entry, kumo_key, kumo_safe_div, HyperLogLog, TDigestEstimator, WelfordAccumulator,
+    build_multicat_emit_stats, kumo_entry, kumo_key, kumo_safe_div, HyperLogLog,
+    TDigestEstimator, WelfordAccumulator,
 };
 use diskgraph_core::time::{Abs, Dur, UnitSystem};
 use serde::{Deserialize, Serialize};
@@ -146,10 +147,20 @@ pub(crate) struct ChunkStats<U: UnitSystem> {
     pub(crate) target_welford: Option<WelfordAccumulator>,
     pub(crate) target_tdigest: Option<TDigestEstimator>,
     pub(crate) target_hll: Option<HyperLogLog>,
+    pub(crate) target_invalid_count: u64,
     // Distribution stats for FREQUENCY column (link prediction)
     pub(crate) frequency_welford: Option<WelfordAccumulator>,
     pub(crate) frequency_tdigest: Option<TDigestEstimator>,
     pub(crate) frequency_hll: Option<HyperLogLog>,
+    pub(crate) frequency_invalid_count: u64,
+    // Distribution stats for ENTITY column (categorical/ID + optional numerical)
+    pub(crate) entity_hll: Option<HyperLogLog>,
+    pub(crate) entity_welford: Option<WelfordAccumulator>,
+    pub(crate) entity_tdigest: Option<TDigestEstimator>,
+    // Distribution stats for TIMESTAMP column (numerical, epoch seconds)
+    pub(crate) timestamp_welford: Option<WelfordAccumulator>,
+    pub(crate) timestamp_tdigest: Option<TDigestEstimator>,
+    pub(crate) timestamp_hll: Option<HyperLogLog>,
 }
 
 impl<U: UnitSystem> Default for ChunkStats<U> {
@@ -175,9 +186,17 @@ impl<U: UnitSystem> Default for ChunkStats<U> {
             target_welford: None,
             target_tdigest: None,
             target_hll: None,
+            target_invalid_count: 0,
             frequency_welford: None,
             frequency_tdigest: None,
             frequency_hll: None,
+            frequency_invalid_count: 0,
+            entity_hll: None,
+            entity_welford: None,
+            entity_tdigest: None,
+            timestamp_welford: None,
+            timestamp_tdigest: None,
+            timestamp_hll: None,
         }
     }
 }
@@ -203,10 +222,20 @@ pub(crate) struct StatsMerger<U: UnitSystem> {
     target_welford: Option<WelfordAccumulator>,
     target_tdigest: Option<TDigestEstimator>,
     target_hll: Option<HyperLogLog>,
+    target_invalid_count: u64,
     // Distribution stats for FREQUENCY column (link prediction)
     frequency_welford: Option<WelfordAccumulator>,
     frequency_tdigest: Option<TDigestEstimator>,
     frequency_hll: Option<HyperLogLog>,
+    frequency_invalid_count: u64,
+    // Distribution stats for ENTITY column (categorical/ID + optional numerical)
+    entity_hll: Option<HyperLogLog>,
+    entity_welford: Option<WelfordAccumulator>,
+    entity_tdigest: Option<TDigestEstimator>,
+    // Distribution stats for TIMESTAMP column (numerical, epoch seconds)
+    timestamp_welford: Option<WelfordAccumulator>,
+    timestamp_tdigest: Option<TDigestEstimator>,
+    timestamp_hll: Option<HyperLogLog>,
 }
 
 impl<U: UnitSystem> Default for StatsMerger<U> {
@@ -231,9 +260,17 @@ impl<U: UnitSystem> Default for StatsMerger<U> {
             target_welford: None,
             target_tdigest: None,
             target_hll: None,
+            target_invalid_count: 0,
             frequency_welford: None,
             frequency_tdigest: None,
             frequency_hll: None,
+            frequency_invalid_count: 0,
+            entity_hll: None,
+            entity_welford: None,
+            entity_tdigest: None,
+            timestamp_welford: None,
+            timestamp_tdigest: None,
+            timestamp_hll: None,
         }
     }
 }
@@ -270,6 +307,7 @@ impl<U: UnitSystem> StatsMerger<U> {
         if let Some(chunk_h) = chunk.target_hll {
             self.target_hll.get_or_insert_with(HyperLogLog::new).merge(&chunk_h);
         }
+        self.target_invalid_count += chunk.target_invalid_count;
         // Merge frequency distribution accumulators
         if let Some(chunk_w) = chunk.frequency_welford {
             self.frequency_welford.get_or_insert_with(WelfordAccumulator::new).merge(&chunk_w);
@@ -279,6 +317,27 @@ impl<U: UnitSystem> StatsMerger<U> {
         }
         if let Some(chunk_h) = chunk.frequency_hll {
             self.frequency_hll.get_or_insert_with(HyperLogLog::new).merge(&chunk_h);
+        }
+        self.frequency_invalid_count += chunk.frequency_invalid_count;
+        // Merge entity distribution accumulators
+        if let Some(chunk_h) = chunk.entity_hll {
+            self.entity_hll.get_or_insert_with(HyperLogLog::new).merge(&chunk_h);
+        }
+        if let Some(chunk_w) = chunk.entity_welford {
+            self.entity_welford.get_or_insert_with(WelfordAccumulator::new).merge(&chunk_w);
+        }
+        if let Some(mut chunk_t) = chunk.entity_tdigest {
+            self.entity_tdigest.get_or_insert_with(|| TDigestEstimator::new(200)).merge(&mut chunk_t);
+        }
+        // Merge timestamp distribution accumulators
+        if let Some(chunk_w) = chunk.timestamp_welford {
+            self.timestamp_welford.get_or_insert_with(WelfordAccumulator::new).merge(&chunk_w);
+        }
+        if let Some(mut chunk_t) = chunk.timestamp_tdigest {
+            self.timestamp_tdigest.get_or_insert_with(|| TDigestEstimator::new(200)).merge(&mut chunk_t);
+        }
+        if let Some(chunk_h) = chunk.timestamp_hll {
+            self.timestamp_hll.get_or_insert_with(HyperLogLog::new).merge(&chunk_h);
         }
     }
 
@@ -299,6 +358,9 @@ impl<U: UnitSystem> StatsMerger<U> {
         manual_train_values: Option<&[String]>,
         manual_val_values: Option<&[String]>,
         manual_test_values: Option<&[String]>,
+        target_category_counts: Option<HashMap<String, u64>>,
+        target_stype: &str,
+        entity_category_counts: Option<HashMap<String, u64>>,
     ) -> TrainTableStatsPayload {
         let num_entities = self.entities.len() as u64;
         let num_targets = self.targets.len() as u64;
@@ -376,13 +438,24 @@ impl<U: UnitSystem> StatsMerger<U> {
             &self.target_welford,
             &mut self.target_tdigest,
             &self.target_hll,
+            self.target_invalid_count,
             &self.frequency_welford,
             &mut self.frequency_tdigest,
             &self.frequency_hll,
+            self.frequency_invalid_count,
             self.include_true_count,
             self.include_false_count,
             num_total_rows,
             "v1",
+            target_category_counts,
+            target_stype,
+            &self.entity_hll,
+            &self.entity_welford,
+            &mut self.entity_tdigest,
+            entity_category_counts,
+            &self.timestamp_welford,
+            &mut self.timestamp_tdigest,
+            &self.timestamp_hll,
         );
 
         TrainTableStatsPayload {
@@ -435,95 +508,205 @@ impl<U: UnitSystem> StatsMerger<U> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_inline_col_stats(
+pub fn build_inline_col_stats(
     target_welford: &Option<WelfordAccumulator>,
     target_tdigest: &mut Option<TDigestEstimator>,
     target_hll: &Option<HyperLogLog>,
+    target_invalid_count: u64,
     frequency_welford: &Option<WelfordAccumulator>,
     frequency_tdigest: &mut Option<TDigestEstimator>,
     frequency_hll: &Option<HyperLogLog>,
+    frequency_invalid_count: u64,
     include_true_count: u64,
     include_false_count: u64,
     num_total_rows: u64,
     data_version: &str,
+    target_category_counts: Option<HashMap<String, u64>>,
+    target_stype: &str,
+    entity_hll: &Option<HyperLogLog>,
+    entity_welford: &Option<WelfordAccumulator>,
+    entity_tdigest: &mut Option<TDigestEstimator>,
+    entity_category_counts: Option<HashMap<String, u64>>,
+    timestamp_welford: &Option<WelfordAccumulator>,
+    timestamp_tdigest: &mut Option<TDigestEstimator>,
+    timestamp_hll: &Option<HyperLogLog>,
 ) -> Option<JsonValue> {
     let mut stats = serde_json::Map::new();
     let dv = data_version;
 
-    // TARGET numerical stats
-    if let Some(w) = target_welford {
-        let count = w.count; // null_count not tracked separately yet
-        let stype = "kumo.numerical";
-        let name = "TARGET";
-        stats.insert(
-            kumo_key(name, stype, "COUNT", false),
-            kumo_entry(json!(count), false, dv, count),
-        );
-        stats.insert(
-            kumo_key(name, stype, "NUM_NA", false),
-            kumo_entry(json!(0u64), false, dv, count),
-        );
-        stats.insert(
-            kumo_key(name, stype, "NA_FRACTION", false),
-            kumo_entry(json!(0.0), false, dv, count),
-        );
-        stats.insert(
-            kumo_key(name, stype, "MEAN", false),
-            kumo_entry(json!(w.mean()), false, dv, count),
-        );
-        stats.insert(
-            kumo_key(name, stype, "STD", false),
-            kumo_entry(json!(w.std_dev()), false, dv, count),
-        );
-        stats.insert(
-            kumo_key(name, stype, "MIN", false),
-            kumo_entry(json!(w.min), false, dv, count),
-        );
-        stats.insert(
-            kumo_key(name, stype, "MAX", false),
-            kumo_entry(json!(w.max), false, dv, count),
-        );
-        stats.insert(
-            kumo_key(name, stype, "KURTOSIS", false),
-            kumo_entry(json!(w.kurtosis()), false, dv, count),
-        );
+    let is_categorical_target = matches!(
+        target_stype,
+        "categorical" | "boolean" | "ID"
+    );
+    let is_multicat_target = target_stype == "multicategorical";
 
-        if let Some(ref mut td) = *target_tdigest {
-            let (q25, q50, q75) = td.quantiles().unwrap_or((0.0, 0.0, 0.0));
+    // TARGET categorical stats
+    if is_categorical_target {
+        if let Some(ref cat_counts) = target_category_counts {
+            let count: u64 = cat_counts.values().sum();
+            let stype = "kumo.categorical";
+            let name = "TARGET";
+
             stats.insert(
-                kumo_key(name, stype, "QUANTILES", false),
-                kumo_entry(json!([q25, q50, q75]), false, dv, count),
+                kumo_key(name, stype, "COUNT", false),
+                kumo_entry(json!(count), false, dv, count),
             );
             stats.insert(
-                kumo_key(name, stype, "QUANTILE25", false),
-                kumo_entry(json!(q25), false, dv, count),
+                kumo_key(name, stype, "NUM_NA", false),
+                kumo_entry(json!(0u64), false, dv, count),
             );
             stats.insert(
-                kumo_key(name, stype, "MEDIAN", false),
-                kumo_entry(json!(q50), false, dv, count),
+                kumo_key(name, stype, "NA_FRACTION", false),
+                kumo_entry(json!(0.0), false, dv, count),
             );
             stats.insert(
-                kumo_key(name, stype, "QUANTILE75", false),
-                kumo_entry(json!(q75), false, dv, count),
+                kumo_key(name, stype, "INVALID_FRACTION", false),
+                kumo_entry(json!(0.0), false, dv, count),
             );
+
+            // CATEGORY_COUNTS: [[key, count], ...]
+            let mut pairs: Vec<(&String, &u64)> = cat_counts.iter().collect();
+            pairs.sort_by(|a, b| b.1.cmp(a.1)); // descending by count
+            let category_array: Vec<JsonValue> = pairs
+                .iter()
+                .map(|(k, c)| json!([k, c]))
+                .collect();
+            stats.insert(
+                kumo_key(name, stype, "CATEGORY_COUNTS", false),
+                kumo_entry(json!(category_array), false, dv, count),
+            );
+
+            let num_unique = cat_counts.len() as u64;
+            if let Some(h) = target_hll {
+                let hll_estimate = (h.estimate() as u64).min(count);
+                stats.insert(
+                    kumo_key(name, stype, "NUM_UNIQUE", false),
+                    kumo_entry(json!(hll_estimate.max(num_unique)), false, dv, count),
+                );
+            } else {
+                stats.insert(
+                    kumo_key(name, stype, "NUM_UNIQUE", false),
+                    kumo_entry(json!(num_unique), false, dv, count),
+                );
+            }
         }
+    }
 
-        if let Some(h) = target_hll {
-            let num_unique = (h.estimate() as u64).min(count);
+    // TARGET multicategorical stats
+    if is_multicat_target {
+        if let Some(ref cat_counts) = target_category_counts {
+            let count: u64 = cat_counts.values().sum();
+            let stype = "kumo.multicategorical";
+            let name = "TARGET";
+
+            // Sort category counts count-desc, token-asc
+            let mut sorted_cats: Vec<(String, u64)> = cat_counts
+                .iter()
+                .map(|(k, v)| (k.clone(), *v))
+                .collect();
+            sorted_cats.sort_by(|a, b| {
+                b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0))
+            });
+
+            let fallback_hll = HyperLogLog::new();
+            let hll = target_hll.as_ref().unwrap_or(&fallback_hll);
+
+            let pairs = build_multicat_emit_stats(
+                name,
+                stype,
+                dv,
+                count,
+                0, // null_count — ttgen targets are never null
+                hll,
+                Some("|"), // standard LIST_DISTINCT delimiter
+                &sorted_cats,
+            );
+            for (key, value) in pairs {
+                stats.insert(key, value);
+            }
+        }
+    }
+
+    // TARGET numerical stats
+    if !is_categorical_target && !is_multicat_target {
+        if let Some(w) = target_welford {
+            let count = w.count + target_invalid_count;
+            let stype = "kumo.numerical";
+            let name = "TARGET";
             stats.insert(
-                kumo_key(name, stype, "NUM_UNIQUE", false),
-                kumo_entry(json!(num_unique), false, dv, count),
+                kumo_key(name, stype, "COUNT", false),
+                kumo_entry(json!(count), false, dv, count),
             );
             stats.insert(
-                kumo_key(name, stype, "UNIQUE_FRACTION", false),
-                kumo_entry(json!(kumo_safe_div(num_unique, count)), false, dv, count),
+                kumo_key(name, stype, "NUM_NA", false),
+                kumo_entry(json!(0u64), false, dv, count),
             );
+            stats.insert(
+                kumo_key(name, stype, "NA_FRACTION", false),
+                kumo_entry(json!(0.0), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "INVALID_FRACTION", false),
+                kumo_entry(json!(kumo_safe_div(target_invalid_count, count)), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "MEAN", false),
+                kumo_entry(json!(w.mean()), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "STD", false),
+                kumo_entry(json!(w.std_dev()), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "MIN", false),
+                kumo_entry(json!(w.min), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "MAX", false),
+                kumo_entry(json!(w.max), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "KURTOSIS", false),
+                kumo_entry(json!(w.kurtosis()), false, dv, count),
+            );
+
+            if let Some(ref mut td) = *target_tdigest {
+                let (q25, q50, q75) = td.quantiles().unwrap_or((0.0, 0.0, 0.0));
+                stats.insert(
+                    kumo_key(name, stype, "QUANTILES", false),
+                    kumo_entry(json!([q25, q50, q75]), false, dv, count),
+                );
+                stats.insert(
+                    kumo_key(name, stype, "QUANTILE25", false),
+                    kumo_entry(json!(q25), false, dv, count),
+                );
+                stats.insert(
+                    kumo_key(name, stype, "MEDIAN", false),
+                    kumo_entry(json!(q50), false, dv, count),
+                );
+                stats.insert(
+                    kumo_key(name, stype, "QUANTILE75", false),
+                    kumo_entry(json!(q75), false, dv, count),
+                );
+            }
+
+            if let Some(h) = target_hll {
+                let num_unique = (h.estimate() as u64).min(count);
+                stats.insert(
+                    kumo_key(name, stype, "NUM_UNIQUE", false),
+                    kumo_entry(json!(num_unique), false, dv, count),
+                );
+                stats.insert(
+                    kumo_key(name, stype, "UNIQUE_FRACTION", false),
+                    kumo_entry(json!(kumo_safe_div(num_unique, count)), false, dv, count),
+                );
+            }
         }
     }
 
     // FREQUENCY numerical stats (same pattern)
     if let Some(w) = frequency_welford {
-        let count = w.count;
+        let count = w.count + frequency_invalid_count;
         let stype = "kumo.numerical";
         let name = "__kumo_internal_frequency_column__";
         stats.insert(
@@ -537,6 +720,10 @@ fn build_inline_col_stats(
         stats.insert(
             kumo_key(name, stype, "NA_FRACTION", false),
             kumo_entry(json!(0.0), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "INVALID_FRACTION", false),
+            kumo_entry(json!(kumo_safe_div(frequency_invalid_count, count)), false, dv, count),
         );
         stats.insert(
             kumo_key(name, stype, "MEAN", false),
@@ -610,6 +797,10 @@ fn build_inline_col_stats(
             kumo_entry(json!(0.0), false, dv, total_include),
         );
         stats.insert(
+            kumo_key(name, stype, "INVALID_FRACTION", false),
+            kumo_entry(json!(0.0), false, dv, total_include),
+        );
+        stats.insert(
             kumo_key(name, stype, "CATEGORY_COUNTS", false),
             kumo_entry(
                 json!([[true, include_true_count], [false, include_false_count]]),
@@ -622,6 +813,235 @@ fn build_inline_col_stats(
             kumo_key(name, stype, "NUM_UNIQUE", false),
             kumo_entry(json!(2u64), false, dv, total_include),
         );
+    }
+
+    // ENTITY categorical stats (ID column — with CATEGORY_COUNTS)
+    {
+        let count = num_total_rows;
+        let stype = "kumo.categorical";
+        let name = "ENTITY";
+
+        if let Some(ref cat_counts) = entity_category_counts {
+            let cat_total: u64 = cat_counts.values().sum();
+            let effective_count = if cat_total > 0 { cat_total } else { count };
+            stats.insert(
+                kumo_key(name, stype, "COUNT", false),
+                kumo_entry(json!(effective_count), false, dv, effective_count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "NUM_NA", false),
+                kumo_entry(json!(0u64), false, dv, effective_count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "NA_FRACTION", false),
+                kumo_entry(json!(0.0), false, dv, effective_count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "INVALID_FRACTION", false),
+                kumo_entry(json!(0.0), false, dv, effective_count),
+            );
+
+            // CATEGORY_COUNTS: [[key, count], ...]
+            let mut pairs: Vec<(&String, &u64)> = cat_counts.iter().collect();
+            pairs.sort_by(|a, b| b.1.cmp(a.1)); // descending by count
+            let category_array: Vec<JsonValue> = pairs
+                .iter()
+                .map(|(k, c)| json!([k, c]))
+                .collect();
+            stats.insert(
+                kumo_key(name, stype, "CATEGORY_COUNTS", false),
+                kumo_entry(json!(category_array), false, dv, effective_count),
+            );
+
+            let num_unique_exact = cat_counts.len() as u64;
+            if let Some(h) = entity_hll {
+                let hll_estimate = (h.estimate() as u64).min(effective_count);
+                stats.insert(
+                    kumo_key(name, stype, "NUM_UNIQUE", false),
+                    kumo_entry(json!(hll_estimate.max(num_unique_exact)), false, dv, effective_count),
+                );
+            } else {
+                stats.insert(
+                    kumo_key(name, stype, "NUM_UNIQUE", false),
+                    kumo_entry(json!(num_unique_exact), false, dv, effective_count),
+                );
+            }
+        } else if let Some(h) = entity_hll {
+            // Fallback: no category counts available, emit HLL-only stats
+            let num_unique = (h.estimate() as u64).min(count);
+            stats.insert(
+                kumo_key(name, stype, "COUNT", false),
+                kumo_entry(json!(count), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "NUM_NA", false),
+                kumo_entry(json!(0u64), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "NA_FRACTION", false),
+                kumo_entry(json!(0.0), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "INVALID_FRACTION", false),
+                kumo_entry(json!(0.0), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "NUM_UNIQUE", false),
+                kumo_entry(json!(num_unique), false, dv, count),
+            );
+        }
+    }
+
+    // ENTITY numerical stats (when entity is Int64 — welford will have observations)
+    if let Some(w) = entity_welford {
+        if w.count > 0 {
+            let count = w.count;
+            let stype = "kumo.numerical";
+            let name = "ENTITY";
+            stats.insert(
+                kumo_key(name, stype, "COUNT", false),
+                kumo_entry(json!(count), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "NUM_NA", false),
+                kumo_entry(json!(0u64), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "NA_FRACTION", false),
+                kumo_entry(json!(0.0), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "INVALID_FRACTION", false),
+                kumo_entry(json!(0.0), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "MEAN", false),
+                kumo_entry(json!(w.mean()), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "STD", false),
+                kumo_entry(json!(w.std_dev()), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "MIN", false),
+                kumo_entry(json!(w.min), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "MAX", false),
+                kumo_entry(json!(w.max), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "KURTOSIS", false),
+                kumo_entry(json!(w.kurtosis()), false, dv, count),
+            );
+
+            if let Some(ref mut td) = *entity_tdigest {
+                let (q25, q50, q75) = td.quantiles().unwrap_or((0.0, 0.0, 0.0));
+                stats.insert(
+                    kumo_key(name, stype, "QUANTILES", false),
+                    kumo_entry(json!([q25, q50, q75]), false, dv, count),
+                );
+                stats.insert(
+                    kumo_key(name, stype, "QUANTILE25", false),
+                    kumo_entry(json!(q25), false, dv, count),
+                );
+                stats.insert(
+                    kumo_key(name, stype, "MEDIAN", false),
+                    kumo_entry(json!(q50), false, dv, count),
+                );
+                stats.insert(
+                    kumo_key(name, stype, "QUANTILE75", false),
+                    kumo_entry(json!(q75), false, dv, count),
+                );
+            }
+
+            if let Some(h) = entity_hll {
+                let num_unique = (h.estimate() as u64).min(count);
+                stats.insert(
+                    kumo_key(name, stype, "NUM_UNIQUE", false),
+                    kumo_entry(json!(num_unique), false, dv, count),
+                );
+                stats.insert(
+                    kumo_key(name, stype, "UNIQUE_FRACTION", false),
+                    kumo_entry(json!(kumo_safe_div(num_unique, count)), false, dv, count),
+                );
+            }
+        }
+    }
+
+    // TIMESTAMP numerical stats (epoch seconds — full stats including quantiles)
+    if let Some(w) = timestamp_welford {
+        let count = w.count;
+        let stype = "kumo.numerical";
+        let name = "TIMESTAMP";
+        stats.insert(
+            kumo_key(name, stype, "COUNT", false),
+            kumo_entry(json!(count), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "NUM_NA", false),
+            kumo_entry(json!(0u64), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "NA_FRACTION", false),
+            kumo_entry(json!(0.0), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "INVALID_FRACTION", false),
+            kumo_entry(json!(0.0), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "MEAN", false),
+            kumo_entry(json!(w.mean()), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "STD", false),
+            kumo_entry(json!(w.std_dev()), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "MIN", false),
+            kumo_entry(json!(w.min), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "MAX", false),
+            kumo_entry(json!(w.max), false, dv, count),
+        );
+        stats.insert(
+            kumo_key(name, stype, "KURTOSIS", false),
+            kumo_entry(json!(w.kurtosis()), false, dv, count),
+        );
+
+        if let Some(ref mut td) = *timestamp_tdigest {
+            let (q25, q50, q75) = td.quantiles().unwrap_or((0.0, 0.0, 0.0));
+            stats.insert(
+                kumo_key(name, stype, "QUANTILES", false),
+                kumo_entry(json!([q25, q50, q75]), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "QUANTILE25", false),
+                kumo_entry(json!(q25), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "MEDIAN", false),
+                kumo_entry(json!(q50), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "QUANTILE75", false),
+                kumo_entry(json!(q75), false, dv, count),
+            );
+        }
+
+        if let Some(h) = timestamp_hll {
+            let num_unique = (h.estimate() as u64).min(count);
+            stats.insert(
+                kumo_key(name, stype, "NUM_UNIQUE", false),
+                kumo_entry(json!(num_unique), false, dv, count),
+            );
+            stats.insert(
+                kumo_key(name, stype, "UNIQUE_FRACTION", false),
+                kumo_entry(json!(kumo_safe_div(num_unique, count)), false, dv, count),
+            );
+        }
     }
 
     if stats.is_empty() {
@@ -1213,6 +1633,9 @@ mod tests {
             None,
             None,
             None,
+            None,
+            "numerical",
+            None,
         );
 
         assert_eq!(out.version, 2);
@@ -1285,6 +1708,9 @@ mod tests {
             None,
             None,
             None,
+            None,
+            "numerical",
+            None,
         );
 
         let counts = out
@@ -1323,6 +1749,9 @@ mod tests {
             None,
             None,
             None,
+            None,
+            "numerical",
+            None,
         );
         let counts = out
             .split_payload
@@ -1357,6 +1786,9 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            "numerical",
             None,
         );
 

@@ -60,6 +60,7 @@ class DiskGraphPlanCompiler:
         timestamps: List[int],
         task_type: str,
         input_timestamp_unit: 'TimeUnit',
+        target_stype: str,
         forecast_length: int = 1,
         lag_timesteps: Optional[int] = None,
         list_distinct_target_is_array: bool = False,
@@ -106,6 +107,9 @@ class DiskGraphPlanCompiler:
         task_type = task_type.lower()
         if task_type not in VALID_TASK_TYPES:
             raise DiskgraphConfigError(f"Invalid task_type '{task_type}'. Must be one of {VALID_TASK_TYPES}")
+
+        # 0. Target semantic type
+        self.builder.set_target_stype(target_stype)
 
         # 1. Temporal Spec — pass raw timestamps with declared source unit to
         # Rust, which converts to the index unit system via UnitSystem trait.

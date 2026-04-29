@@ -2,3 +2,4 @@
 python/diskgraph/*.so
 python/diskgraph/*.pyd
 __pycache__/
+.venv/

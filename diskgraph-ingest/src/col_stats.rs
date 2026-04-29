@@ -188,8 +188,8 @@ pub fn compute_text_sample_stats(values: &[&str]) -> TextSampleStats {
 
 pub use diskgraph_core::accumulators::{
     CategoryCountStrategy, CountStorage, IdentityBuildHasher, IdentityHasher, LocalColumnCounts,
-    SharedColumnCounts, compute_min_occ, isqrt, kumo_entry, kumo_key, kumo_safe_div,
-    MAX_CATEGORIES,
+    MulticatInputKind, SharedColumnCounts, build_multicat_emit_stats, compute_min_occ,
+    for_each_split_ascii_byte, isqrt, kumo_entry, kumo_key, kumo_safe_div, MAX_CATEGORIES,
 };
 
 // ---------------------------------------------------------------------------
@@ -534,27 +534,11 @@ pub struct FileColStats {
     grad_snapshots: Vec<Option<Arc<HashSet<u64>>>>,
 }
 
-/// Dispatch discriminator for multicategorical tokenization. Frozen at
-/// collector construction based on the column's `IngestedType`. The inner
-/// loop specializes on this to avoid per-row branching on the list variant.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MulticatInputKind {
-    /// IngestedType::String — split scalar on declared separator, or treat
-    /// the whole cell as one token when separator is None.
-    StringScalar,
-    /// IngestedType::StringArray — iterate list elements; nulls become "".
-    StringArray,
-    /// IngestedType::Int64Array — iterate list elements; nulls become 0.
-    Int64Array,
-    /// IngestedType::Float16Array/Float32Array/Float64Array — iterate, widen
-    /// to f64, drop NaN, stringify via Display; nulls become 0.0.
-    FloatArray,
-}
-
 /// Per-column stats collector, chosen by SemanticType.
 pub enum ColumnStatsCollector {
     Numerical {
         null_count: u64,
+        invalid_count: u64,
         welford: WelfordAccumulator,
         hll: HyperLogLog,
         tdigest: TDigestEstimator,
@@ -582,6 +566,7 @@ pub enum ColumnStatsCollector {
         parse_fail_samples: Vec<String>,
         min_secs: i64,
         max_secs: i64,
+        hll: HyperLogLog,
     },
     Sequence {
         count: u64,
@@ -934,6 +919,7 @@ impl ColumnStatsCollector {
         match stype {
             Some(SemanticType::Numerical) => ColumnStatsCollector::Numerical {
                 null_count: 0,
+                invalid_count: 0,
                 welford: WelfordAccumulator::new(),
                 hll: HyperLogLog::new(),
                 tdigest: TDigestEstimator::new(TDigestEstimator::DEFAULT_DELTA),
@@ -960,6 +946,7 @@ impl ColumnStatsCollector {
                 parse_fail_samples: Vec::new(),
                 min_secs: i64::MAX,
                 max_secs: i64::MIN,
+                hll: HyperLogLog::new(),
             },
             Some(SemanticType::Sequence) => ColumnStatsCollector::Sequence {
                 count: 0,
@@ -1017,18 +1004,21 @@ impl ColumnStatsCollector {
             (
                 ColumnStatsCollector::Numerical {
                     null_count,
+                    invalid_count,
                     welford,
                     hll,
                     tdigest,
                 },
                 ColumnStatsCollector::Numerical {
                     null_count: nc2,
+                    invalid_count: ic2,
                     welford: w2,
                     hll: h2,
                     tdigest: td2,
                 },
             ) => {
                 *null_count += *nc2;
+                *invalid_count += *ic2;
                 welford.merge(w2);
                 hll.merge(h2);
                 tdigest.merge(td2);
@@ -1089,6 +1079,7 @@ impl ColumnStatsCollector {
                     parse_fail_samples,
                     min_secs,
                     max_secs,
+                    hll,
                 },
                 ColumnStatsCollector::Timestamp {
                     count: c2,
@@ -1097,11 +1088,13 @@ impl ColumnStatsCollector {
                     parse_fail_samples: pfs2,
                     min_secs: ms2,
                     max_secs: xs2,
+                    hll: hll2,
                 },
             ) => {
                 *count += *c2;
                 *null_count += *nc2;
                 *parse_fail_count += *pf2;
+                hll.merge(hll2);
                 // Keep up to 3 sample values across merges.
                 for s in pfs2 {
                     if parse_fail_samples.len() < 3 {
@@ -1197,16 +1190,18 @@ impl ColumnStatsCollector {
         match self {
             ColumnStatsCollector::Numerical {
                 null_count,
+                invalid_count,
                 welford,
                 hll,
                 tdigest,
             } => {
-                let total = welford.count + *null_count;
+                let total = welford.count + *null_count + *invalid_count;
                 let (q25, q50, q75) = tdigest.quantiles().unwrap_or((0.0, 0.0, 0.0));
                 Some(json!({
                     "semantic_type": "numerical",
                     "count": total,
                     "null_count": *null_count,
+                    "invalid_count": *invalid_count,
                     "mean": welford.mean(),
                     "std": welford.std_dev(),
                     "min": welford.min,
@@ -1255,6 +1250,7 @@ impl ColumnStatsCollector {
                 parse_fail_count,
                 min_secs,
                 max_secs,
+                hll,
                 ..
             } => {
                 let total = *count + *null_count + *parse_fail_count;
@@ -1263,6 +1259,7 @@ impl ColumnStatsCollector {
                     "count": total,
                     "null_count": *null_count,
                     "parse_fail_count": *parse_fail_count,
+                    "num_unique": hll.estimate() as u64,
                     "min_secs": *min_secs,
                     "max_secs": *max_secs,
                 }))
@@ -1451,11 +1448,12 @@ impl FileColStats {
             match col {
                 ColumnStatsCollector::Numerical {
                     null_count,
+                    invalid_count,
                     welford,
                     hll,
                     tdigest,
                 } => {
-                    let count = welford.count + *null_count;
+                    let count = welford.count + *null_count + *invalid_count;
                     // Base stats
                     map.insert(
                         kumo_key(name, sk, "COUNT", false),
@@ -1471,7 +1469,7 @@ impl FileColStats {
                     );
                     map.insert(
                         kumo_key(name, sk, "INVALID_FRACTION", false),
-                        kumo_entry(json!(0.0), false, dv, count),
+                        kumo_entry(json!(kumo_safe_div(*invalid_count, count)), false, dv, count),
                     );
                     // Numerical-specific
                     map.insert(
@@ -1682,6 +1680,7 @@ impl FileColStats {
                     parse_fail_count,
                     min_secs,
                     max_secs,
+                    hll,
                     ..
                 } => {
                     let total = *c + *null_count + *parse_fail_count;
@@ -1713,10 +1712,10 @@ impl FileColStats {
                         kumo_key(name, sk, "MAX", false),
                         kumo_entry(json!(format_kumo_timestamp(*max_secs)), false, dv, total),
                     );
-                    // Timestamp has no HLL — use total as num_unique
+                    let num_unique = (hll.estimate() as u64).min(total);
                     map.insert(
                         kumo_key(name, sk, "NUM_UNIQUE", false),
-                        kumo_entry(json!(total), false, dv, total),
+                        kumo_entry(json!(num_unique), false, dv, total),
                     );
                 }
                 ColumnStatsCollector::Sequence {
@@ -1779,63 +1778,28 @@ impl FileColStats {
                     separator,
                     ..
                 } => {
-                    let total = *count + *null_count;
-                    // Universal stats (match Categorical/Id shape so downstream
-                    // readers can dispatch on kumo.multicategorical uniformly).
-                    map.insert(
-                        kumo_key(name, sk, "COUNT", false),
-                        kumo_entry(json!(total), false, dv, total),
+                    // Sort category counts count-desc then token-asc to
+                    // byte-match tt_executor's train-table output.
+                    let mut sorted_cats: Vec<(String, u64)> = cat_counts[col_idx]
+                        .as_ref()
+                        .map(|cc| cc.iter().map(|(k, v)| (k.clone(), *v)).collect())
+                        .unwrap_or_default();
+                    sorted_cats.sort_by(|a, b| {
+                        b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0))
+                    });
+                    let pairs = build_multicat_emit_stats(
+                        name,
+                        sk,
+                        dv,
+                        *count,
+                        *null_count,
+                        hll,
+                        separator.as_deref(),
+                        &sorted_cats,
                     );
-                    map.insert(
-                        kumo_key(name, sk, "NUM_NA", false),
-                        kumo_entry(json!(*null_count), false, dv, total),
-                    );
-                    map.insert(
-                        kumo_key(name, sk, "NA_FRACTION", false),
-                        kumo_entry(json!(kumo_safe_div(*null_count, total)), false, dv, total),
-                    );
-                    map.insert(
-                        kumo_key(name, sk, "INVALID_FRACTION", false),
-                        kumo_entry(json!(0.0), false, dv, total),
-                    );
-                    // Multicat-specific: separator, category counts, and HLL-based
-                    // NUM_UNIQUE_MULTI — the three keys `tt_executor` already
-                    // produces for train-table multicat stats.
-                    let sep_value = match separator {
-                        Some(s) => JsonValue::String(s.clone()),
-                        None => JsonValue::Null,
-                    };
-                    map.insert(
-                        kumo_key(name, sk, "MULTI_CATEGORIES_SEPARATOR", false),
-                        kumo_entry(sep_value, false, dv, total),
-                    );
-                    // Sort the [token, count] pairs count-desc then token-asc
-                    // to byte-match tt_executor's train-table output. Downstream
-                    // consumers treat this ordering as stable.
-                    let mut values = build_cat_count_json(col_idx, &cat_counts, ingested_types);
-                    if let JsonValue::Array(ref mut arr) = values {
-                        arr.sort_by(|a, b| {
-                            let ca = a.get(1).and_then(JsonValue::as_u64).unwrap_or(0);
-                            let cb = b.get(1).and_then(JsonValue::as_u64).unwrap_or(0);
-                            // count-desc
-                            cb.cmp(&ca).then_with(|| {
-                                let ka = a.get(0).map(|v| v.to_string()).unwrap_or_default();
-                                let kb = b.get(0).map(|v| v.to_string()).unwrap_or_default();
-                                ka.cmp(&kb)
-                            })
-                        });
+                    for (key, value) in pairs {
+                        map.insert(key, value);
                     }
-                    map.insert(
-                        kumo_key(name, sk, "MULTI_CATEGORY_COUNTS", false),
-                        kumo_entry(values, false, dv, total),
-                    );
-                    // `__True` suffix to byte-match tt_executor's current output;
-                    // HLL is an approximate cardinality estimator.
-                    let num_unique = hll.estimate() as u64;
-                    map.insert(
-                        kumo_key(name, sk, "NUM_UNIQUE_MULTI", true),
-                        kumo_entry(json!(num_unique), true, dv, total),
-                    );
                 }
                 ColumnStatsCollector::Skip => {}
             }
@@ -2031,18 +1995,6 @@ impl FileColStats {
 }
 
 impl FileColStats {
-    #[inline]
-    fn for_each_split_ascii_byte(raw: &str, separator: u8, mut f: impl FnMut(&str)) {
-        let mut start = 0;
-        for (idx, byte) in raw.bytes().enumerate() {
-            if byte == separator {
-                f(&raw[start..idx]);
-                start = idx + 1;
-            }
-        }
-        f(&raw[start..]);
-    }
-
     /// Multicategorical `StringScalar` row observer. Called from
     /// `observe_string` when the collector's `input_kind` is `StringScalar`.
     ///
@@ -2075,7 +2027,7 @@ impl FileColStats {
         let count_category = self.should_sample_row();
 
         if let Some(separator_byte) = separator_byte {
-            Self::for_each_split_ascii_byte(raw, separator_byte, |tok| {
+            for_each_split_ascii_byte(raw, separator_byte, |tok| {
                 self.observe_multicat_token_str(col_idx, tok.trim(), count_category);
             });
         } else if let Some(sep) = separator_fallback.as_deref() {
@@ -2186,14 +2138,19 @@ impl ColumnValueObserver for FileColStats {
 
         match &mut self.cols[col_idx] {
             ColumnStatsCollector::Numerical {
+                invalid_count,
                 welford,
                 hll,
                 tdigest,
                 ..
             } => {
-                welford.observe(value);
-                hll.observe_f64(value);
-                tdigest.observe(value);
+                if value.is_finite() {
+                    welford.observe(value);
+                    hll.observe_f64(value);
+                    tdigest.observe(value);
+                } else {
+                    *invalid_count += 1;
+                }
             }
             ColumnStatsCollector::Categorical { count, hll, .. } => {
                 *count += 1;
@@ -2268,6 +2225,7 @@ impl ColumnValueObserver for FileColStats {
             count,
             min_secs,
             max_secs,
+            hll,
             ..
         } = &mut self.cols[col_idx]
         {
@@ -2278,6 +2236,7 @@ impl ColumnValueObserver for FileColStats {
             if secs > *max_secs {
                 *max_secs = secs;
             }
+            hll.observe_i64(secs);
         }
     }
 
@@ -3495,7 +3454,7 @@ mod tests {
         e(
             &map,
             "created_at__kumo.timestamp__NUM_UNIQUE__False",
-            json!(4),
+            json!(2),
             false,
             "v42",
             4,

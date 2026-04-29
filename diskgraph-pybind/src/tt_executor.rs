@@ -2682,6 +2682,41 @@ pub fn execute_tt_plan_materialize_with_split(
                 "Final materialization complete"
             );
 
+            // If downsampling actually ran, the inline col stats produced
+            // during the executor pass reflect pre-downsample rows, including
+            // ones that were dropped. Recompute over the final parquet so the
+            // stats artifact matches the rows that survived downsampling.
+            let train_table_col_stats_json = if downsampling_applied {
+                let split_bytes_ref = split_assignments.as_deref().unwrap_or(&[]);
+                if split_bytes_ref.len() == rows_written as usize {
+                    let target_stype = plan
+                        .target_stype
+                        .as_deref()
+                        .ok_or_else(|| anyhow::anyhow!(
+                            "post-downsample col stats recompute requires target_stype on plan"
+                        ))?;
+                    let recompute_start = std::time::Instant::now();
+                    let payload = compute_train_table_col_stats_payload(
+                        &out,
+                        split_bytes_ref,
+                        "v1",
+                        target_stype,
+                    )?;
+                    info!(
+                        rows = rows_written,
+                        duration_ms = recompute_start.elapsed().as_millis(),
+                        "Recomputed train_table col stats post-downsample"
+                    );
+                    Some(serde_json::to_string(&payload)?)
+                } else {
+                    // Length mismatch: keep inline stats. Should not happen.
+                    train_table_col_stats_json
+                }
+            } else {
+                // Downsampling didn't run, inline stats are correct.
+                train_table_col_stats_json
+            };
+
             let summary_json = patch_summary_for_final_rows(
                 raw_summary_json,
                 row_offset as usize,
@@ -2933,6 +2968,449 @@ pub fn build_prediction_table_edge_bundle_artifact(
         .map_err(|e| {
             crate::DiskgraphConfigError::new_err(format!(
                 "build_prediction_table_edge_bundle_artifact failed: {e:#}"
+            ))
+        })?;
+
+    let out_dict = PyDict::new(py);
+    out_dict.set_item(
+        "payload_json",
+        serde_json::to_string(&payload)
+            .map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
+    )?;
+    Ok(out_dict.into())
+}
+
+/// Pure Rust core of [`build_train_table_col_stats_artifact`].
+///
+/// Opens the parquet at `parquet_path`, observes each non-downsampled row
+/// (assignment != 255), and returns the inline col-stats payload as a
+/// `serde_json::Value`. Safe to call from any thread; no Python interaction.
+fn compute_train_table_col_stats_payload(
+    parquet_path: &str,
+    split_assignments: &[u8],
+    data_version: &str,
+    target_stype: &str,
+) -> anyhow::Result<Value> {
+    use diskgraph_core::accumulators::{
+        for_each_split_ascii_byte, HyperLogLog, TDigestEstimator, WelfordAccumulator,
+    };
+    use diskgraph_train_table::ttgen_stats::build_inline_col_stats;
+
+    let file = File::open(parquet_path)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+    let schema = builder.schema().clone();
+
+    // Verify row count
+    let file2 = File::open(parquet_path)?;
+    let row_count = parquet::file::serialized_reader::SerializedFileReader::new(file2)?
+        .metadata()
+        .file_metadata()
+        .num_rows() as usize;
+    if row_count != split_assignments.len() {
+        return Err(anyhow::anyhow!(
+            "col stats row count mismatch (table_rows={}, assignment_rows={})",
+            row_count,
+            split_assignments.len()
+        ));
+    }
+
+    // Find column indices
+    let target_idx = schema
+        .index_of("TARGET")
+        .map_err(|_| anyhow::anyhow!("missing TARGET column"))?;
+    let entity_idx = schema
+        .index_of("ENTITY")
+        .map_err(|_| anyhow::anyhow!("missing ENTITY column"))?;
+    let timestamp_idx = schema
+        .index_of("TIMESTAMP")
+        .map_err(|_| anyhow::anyhow!("missing TIMESTAMP column"))?;
+    let frequency_idx = schema.index_of("__kumo_internal_frequency_column__").ok();
+    let include_bit_idx = schema.index_of("ENTITY_INCLUDE_BIT").ok();
+
+    let target_is_categorical = matches!(
+        target_stype,
+        "categorical" | "boolean" | "ID" | "multicategorical"
+    );
+    let target_is_numerical = !target_is_categorical;
+    let is_multicat = target_stype == "multicategorical";
+
+    // Initialize accumulators
+    let mut target_welford = if target_is_numerical {
+        Some(WelfordAccumulator::new())
+    } else {
+        None
+    };
+    let mut target_tdigest = if target_is_numerical {
+        Some(TDigestEstimator::new(TDigestEstimator::DEFAULT_DELTA))
+    } else {
+        None
+    };
+    let mut target_hll = Some(HyperLogLog::new());
+    let mut target_invalid_count: u64 = 0;
+    let mut target_category_counts: Option<HashMap<String, u64>> = if target_is_categorical {
+        Some(HashMap::new())
+    } else {
+        None
+    };
+
+    let mut entity_hll = Some(HyperLogLog::new());
+    let mut entity_welford = Some(WelfordAccumulator::new());
+    let mut entity_tdigest = Some(TDigestEstimator::new(TDigestEstimator::DEFAULT_DELTA));
+    let mut entity_category_counts: HashMap<String, u64> = HashMap::new();
+
+    let mut timestamp_welford = Some(WelfordAccumulator::new());
+    let mut timestamp_tdigest = Some(TDigestEstimator::new(TDigestEstimator::DEFAULT_DELTA));
+    let mut timestamp_hll = Some(HyperLogLog::new());
+
+    let mut frequency_welford: Option<WelfordAccumulator> = if frequency_idx.is_some() {
+        Some(WelfordAccumulator::new())
+    } else {
+        None
+    };
+    let mut frequency_tdigest: Option<TDigestEstimator> = if frequency_idx.is_some() {
+        Some(TDigestEstimator::new(TDigestEstimator::DEFAULT_DELTA))
+    } else {
+        None
+    };
+    let mut frequency_hll: Option<HyperLogLog> = if frequency_idx.is_some() {
+        Some(HyperLogLog::new())
+    } else {
+        None
+    };
+    let mut frequency_invalid_count: u64 = 0;
+
+    let mut include_true_count: u64 = 0;
+    let mut include_false_count: u64 = 0;
+
+    let mut num_total_rows: u64 = 0;
+    let mut global_row: usize = 0;
+
+    let mut reader = builder.build()?;
+    while let Some(batch_res) = reader.next() {
+        let batch = batch_res?;
+        let n = batch.num_rows();
+
+        let target_col = batch.column(target_idx);
+        let entity_col = batch.column(entity_idx);
+        let timestamp_col = batch.column(timestamp_idx);
+        let frequency_col = frequency_idx.map(|i| batch.column(i));
+        let include_bit_col = include_bit_idx.map(|i| batch.column(i));
+
+        for row in 0..n {
+            let assign = split_assignments[global_row];
+            global_row += 1;
+
+            // Skip downsampled-out rows (assignment == 255).
+            // Compute stats on all selected rows (train + val + test),
+            // matching GE/Spark behavior.
+            if assign == 255 {
+                continue;
+            }
+            num_total_rows += 1;
+
+            // --- ENTITY ---
+            let entity_str = if let Some(a) = entity_col.as_any().downcast_ref::<StringArray>() {
+                if a.is_null(row) {
+                    String::new()
+                } else {
+                    a.value(row).to_string()
+                }
+            } else if let Some(a) = entity_col.as_any().downcast_ref::<Int64Array>() {
+                if a.is_null(row) {
+                    String::new()
+                } else {
+                    a.value(row).to_string()
+                }
+            } else if let Some(a) = entity_col.as_any().downcast_ref::<Float64Array>() {
+                if a.is_null(row) {
+                    String::new()
+                } else {
+                    a.value(row).to_string()
+                }
+            } else {
+                String::new()
+            };
+
+            // Entity HLL
+            if let Some(ref mut h) = entity_hll {
+                h.observe_bytes(entity_str.as_bytes());
+            }
+
+            // Entity category counts
+            *entity_category_counts.entry(entity_str.clone()).or_insert(0) += 1;
+
+            // Entity Welford + TDigest (for integer entities)
+            if let Some(a) = entity_col.as_any().downcast_ref::<Int64Array>() {
+                if !a.is_null(row) {
+                    let v = a.value(row) as f64;
+                    if let Some(ref mut w) = entity_welford {
+                        w.observe(v);
+                    }
+                    if let Some(ref mut t) = entity_tdigest {
+                        t.observe(v);
+                    }
+                }
+            }
+
+            // --- TIMESTAMP ---
+            if let Some(a) = timestamp_col.as_any().downcast_ref::<Int64Array>() {
+                if !a.is_null(row) {
+                    let ts = a.value(row) as f64;
+                    if let Some(ref mut w) = timestamp_welford {
+                        w.observe(ts);
+                    }
+                    if let Some(ref mut t) = timestamp_tdigest {
+                        t.observe(ts);
+                    }
+                    if let Some(ref mut h) = timestamp_hll {
+                        h.observe_i64(a.value(row));
+                    }
+                }
+            } else if let Some(a) = timestamp_col.as_any().downcast_ref::<Float64Array>() {
+                if !a.is_null(row) {
+                    let ts = a.value(row);
+                    if let Some(ref mut w) = timestamp_welford {
+                        w.observe(ts);
+                    }
+                    if let Some(ref mut t) = timestamp_tdigest {
+                        t.observe(ts);
+                    }
+                    if let Some(ref mut h) = timestamp_hll {
+                        h.observe_f64(ts);
+                    }
+                }
+            }
+
+            // --- TARGET ---
+            if target_is_numerical {
+                let fval = if let Some(a) = target_col.as_any().downcast_ref::<Float64Array>() {
+                    if a.is_null(row) {
+                        None
+                    } else {
+                        Some(a.value(row))
+                    }
+                } else if let Some(a) = target_col.as_any().downcast_ref::<Int64Array>() {
+                    if a.is_null(row) {
+                        None
+                    } else {
+                        Some(a.value(row) as f64)
+                    }
+                } else {
+                    None
+                };
+                if let Some(f) = fval {
+                    if f.is_finite() {
+                        if let Some(ref mut w) = target_welford {
+                            w.observe(f);
+                        }
+                        if let Some(ref mut t) = target_tdigest {
+                            t.observe(f);
+                        }
+                    } else {
+                        target_invalid_count += 1;
+                    }
+                    // HLL for numerical target
+                    if let Some(ref mut h) = target_hll {
+                        if let Some(a) = target_col.as_any().downcast_ref::<Int64Array>() {
+                            h.observe_i64(a.value(row));
+                        } else {
+                            h.observe_f64(f);
+                        }
+                    }
+                }
+            } else {
+                // Categorical / multicategorical / boolean target
+                let target_str = if let Some(a) =
+                    target_col.as_any().downcast_ref::<StringArray>()
+                {
+                    if a.is_null(row) {
+                        None
+                    } else {
+                        Some(a.value(row).to_string())
+                    }
+                } else if let Some(a) = target_col.as_any().downcast_ref::<Int64Array>() {
+                    if a.is_null(row) {
+                        None
+                    } else {
+                        Some(a.value(row).to_string())
+                    }
+                } else if let Some(a) = target_col.as_any().downcast_ref::<Float64Array>() {
+                    if a.is_null(row) {
+                        None
+                    } else {
+                        Some(a.value(row).to_string())
+                    }
+                } else if let Some(a) = target_col.as_any().downcast_ref::<BooleanArray>() {
+                    if a.is_null(row) {
+                        None
+                    } else {
+                        Some(a.value(row).to_string())
+                    }
+                } else {
+                    None
+                };
+                if let Some(ts) = target_str {
+                    if is_multicat {
+                        for_each_split_ascii_byte(&ts, b'|', |tok| {
+                            let tok = tok.trim();
+                            let hash = HyperLogLog::hash_bytes(tok.as_bytes());
+                            if let Some(ref mut h) = target_hll {
+                                h.observe_hash(hash);
+                            }
+                            if let Some(ref mut counts) = target_category_counts {
+                                *counts.entry(tok.to_string()).or_insert(0) += 1;
+                            }
+                        });
+                    } else {
+                        if let Some(ref mut counts) = target_category_counts {
+                            *counts.entry(ts.clone()).or_insert(0) += 1;
+                        }
+                        if let Some(ref mut h) = target_hll {
+                            h.observe_bytes(ts.as_bytes());
+                        }
+                    }
+                }
+            }
+
+            // --- FREQUENCY ---
+            if let Some(ref freq_col) = frequency_col {
+                if let Some(a) = freq_col.as_any().downcast_ref::<Int64Array>() {
+                    if !a.is_null(row) {
+                        let freq = a.value(row);
+                        if let Some(ref mut w) = frequency_welford {
+                            w.observe(freq as f64);
+                        }
+                        if let Some(ref mut t) = frequency_tdigest {
+                            t.observe(freq as f64);
+                        }
+                        if let Some(ref mut h) = frequency_hll {
+                            h.observe_i64(freq);
+                        }
+                    }
+                } else if let Some(a) = freq_col.as_any().downcast_ref::<Float64Array>() {
+                    if !a.is_null(row) {
+                        let freq = a.value(row);
+                        if freq.is_finite() {
+                            if let Some(ref mut w) = frequency_welford {
+                                w.observe(freq);
+                            }
+                            if let Some(ref mut t) = frequency_tdigest {
+                                t.observe(freq);
+                            }
+                        } else {
+                            frequency_invalid_count += 1;
+                        }
+                        if let Some(ref mut h) = frequency_hll {
+                            h.observe_f64(freq);
+                        }
+                    }
+                }
+            }
+
+            // --- ENTITY_INCLUDE_BIT ---
+            if let Some(ref bit_col) = include_bit_col {
+                if let Some(a) = bit_col.as_any().downcast_ref::<BooleanArray>() {
+                    if !a.is_null(row) {
+                        if a.value(row) {
+                            include_true_count += 1;
+                        } else {
+                            include_false_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // If entity_welford has no observations (entity was not Int64), clear it
+    if entity_welford.as_ref().is_none_or(|w| w.count == 0) {
+        entity_welford = None;
+        entity_tdigest = None;
+    }
+
+    let result = build_inline_col_stats(
+        &target_welford,
+        &mut target_tdigest,
+        &target_hll,
+        target_invalid_count,
+        &frequency_welford,
+        &mut frequency_tdigest,
+        &frequency_hll,
+        frequency_invalid_count,
+        include_true_count,
+        include_false_count,
+        num_total_rows,
+        data_version,
+        target_category_counts,
+        target_stype,
+        &entity_hll,
+        &entity_welford,
+        &mut entity_tdigest,
+        Some(entity_category_counts),
+        &timestamp_welford,
+        &mut timestamp_tdigest,
+        &timestamp_hll,
+    );
+
+    Ok(result.unwrap_or_else(|| {
+        json!({
+            "version": 1,
+            "kind": "tt_train_table_col_stats",
+            "stats_format": "kumo_col_stats_v1",
+            "row_count": num_total_rows,
+            "stats": {},
+            "provided_fields": ["stats"]
+        })
+    }))
+}
+
+#[pyfunction]
+#[tracing::instrument(level = "info", skip_all)]
+#[pyo3(signature=(output_path, split_assignments, train_table_col_stats_config_json=None))]
+pub fn build_train_table_col_stats_artifact(
+    py: Python<'_>,
+    output_path: &str,
+    split_assignments: &[u8],
+    train_table_col_stats_config_json: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let out = output_path.to_owned();
+    let assignments = split_assignments.to_vec();
+    let cfg_value = train_table_col_stats_config_json
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .unwrap_or_else(|| json!({}));
+    let data_version = cfg_value
+        .get("data_version")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            crate::DiskgraphConfigError::new_err(
+                "build_train_table_col_stats_artifact: data_version is required in \
+                 train_table_col_stats_config (no fallback)",
+            )
+        })?
+        .to_string();
+    let target_stype = cfg_value
+        .get("target_stype")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            crate::DiskgraphConfigError::new_err(
+                "build_train_table_col_stats_artifact: target_stype is required in \
+                 train_table_col_stats_config (no fallback)",
+            )
+        })?
+        .to_string();
+
+    let payload = py
+        .detach(|| -> anyhow::Result<Value> {
+            compute_train_table_col_stats_payload(
+                &out,
+                &assignments,
+                &data_version,
+                &target_stype,
+            )
+        })
+        .map_err(|e| {
+            crate::DiskgraphConfigError::new_err(format!(
+                "build_train_table_col_stats_artifact failed: {e:#}"
             ))
         })?;
 

@@ -342,17 +342,17 @@ fn ingest_multicategorical_int64array_stringifies_tokens() -> Result<()> {
         .get("ids__kumo.multicategorical__MULTI_CATEGORY_COUNTS__False")
         .expect("category-counts key present");
     let arr = counts["value"].as_array().expect("array");
-    let map: std::collections::HashMap<i64, u64> = arr
+    let map: std::collections::HashMap<String, u64> = arr
         .iter()
         .filter_map(|pair| {
             let p = pair.as_array()?;
-            Some((p.first()?.as_i64()?, p.get(1)?.as_u64()?))
+            Some((p.first()?.as_str()?.to_owned(), p.get(1)?.as_u64()?))
         })
         .collect();
-    assert_eq!(map.get(&10).copied(), Some(2));
-    assert_eq!(map.get(&20).copied(), Some(1));
-    assert_eq!(map.get(&-3).copied(), Some(1));
-    assert!(!map.contains_key(&0));
+    assert_eq!(map.get("10").copied(), Some(2));
+    assert_eq!(map.get("20").copied(), Some(1));
+    assert_eq!(map.get("-3").copied(), Some(1));
+    assert!(!map.contains_key("0"));
     Ok(())
 }
 
@@ -433,14 +433,14 @@ fn ingest_multicategorical_float64array_drops_nan() -> Result<()> {
         .get("vals__kumo.multicategorical__MULTI_CATEGORY_COUNTS__False")
         .expect("category-counts key present");
     let arr = counts["value"].as_array().expect("array");
-    // float ingested_type → numeric keys. NaN and native Arrow null elements
-    // were dropped; row 0 contributes {1.0, 2.5}, row 1 contributes {1.0}.
+    // String keys now (core helper always emits strings). NaN and native Arrow
+    // null elements were dropped; row 0 contributes {1.0, 2.5}, row 1 contributes {1.0}.
     // Expected: 1.0×2, 2.5×1.
     let map: std::collections::HashMap<String, u64> = arr
         .iter()
         .filter_map(|pair| {
             let p = pair.as_array()?;
-            let k = p.first()?.as_f64().map(|f| format!("{}", f))?;
+            let k = p.first()?.as_str()?.to_owned();
             Some((k, p.get(1)?.as_u64()?))
         })
         .collect();

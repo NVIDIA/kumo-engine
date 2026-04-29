@@ -51,7 +51,7 @@ def test_compiler_basic_aggregation():
         timestamps=timestamps,
         forecast_length=1,
         lag_timesteps=30,
-        task_type="binary_classification", input_timestamp_unit=TimeUnit.Microseconds)
+        task_type="binary_classification", target_stype="categorical", input_timestamp_unit=TimeUnit.Microseconds)
 
     plan = json.loads(plan_json)
 
@@ -123,7 +123,7 @@ def test_compiler_accepts_split_spec_object():
         timestamps=[1609459200000000],
         forecast_length=1,
         lag_timesteps=30,
-        task_type="binary_classification",
+        task_type="binary_classification", target_stype="categorical",
         input_timestamp_unit=TimeUnit.Microseconds,
         split=SplitSpec(ratio=[0.8, 0.1, 0.1], kind="FixedSplit"),
     )
@@ -141,7 +141,7 @@ def test_compiler_accepts_date_offset_split_without_ratio():
         timestamps=[1609459200000000],
         forecast_length=1,
         lag_timesteps=30,
-        task_type="temporal_link_prediction",
+        task_type="temporal_link_prediction", target_stype="categorical",
         input_timestamp_unit=TimeUnit.Microseconds,
         split=SplitSpec(kind="DateOffsetSplit", offsets=[-30, -7], offset_unit="days"),
     )
@@ -162,7 +162,7 @@ def test_compiler_accepts_backtesting_split_without_ratio():
         timestamps=[1609459200000000],
         forecast_length=1,
         lag_timesteps=30,
-        task_type="binary_classification",
+        task_type="binary_classification", target_stype="categorical",
         input_timestamp_unit=TimeUnit.Microseconds,
         split=SplitSpec(kind="BacktestingSplit", backtesting_timestamp=1704067200),
     )
@@ -183,7 +183,7 @@ def test_compiler_rejects_legacy_split_dict_payload():
             timestamps=[1609459200000000],
             forecast_length=1,
             lag_timesteps=30,
-            task_type="binary_classification",
+            task_type="binary_classification", target_stype="categorical",
             input_timestamp_unit=TimeUnit.Microseconds,
             split={"split_kind": "FixedSplit", "ratio": [0.8, 0.1, 0.1]},
         )
@@ -199,7 +199,7 @@ def test_compiler_rejects_fixed_split_without_ratio():
             timestamps=[1609459200000000],
             forecast_length=1,
             lag_timesteps=30,
-            task_type="binary_classification",
+            task_type="binary_classification", target_stype="categorical",
             input_timestamp_unit=TimeUnit.Microseconds,
             split=SplitSpec(kind="FixedSplit"),
         )
@@ -214,7 +214,7 @@ def test_compiler_accepts_random_link_split_with_ratio():
         timestamps=[1609459200000000],
         forecast_length=1,
         lag_timesteps=30,
-        task_type="temporal_link_prediction",
+        task_type="temporal_link_prediction", target_stype="categorical",
         input_timestamp_unit=TimeUnit.Microseconds,
         split=SplitSpec(kind="RandomLinkSplit", ratio=[0.8, 0.1, 0.1], rnd_seed=11),
     )
@@ -252,7 +252,7 @@ def test_compiler_with_row_filter():
     query._query_type = "STATIC"
 
     compiler = DiskGraphPlanCompiler()
-    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification", input_timestamp_unit=TimeUnit.Seconds)
+    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification", target_stype="categorical", input_timestamp_unit=TimeUnit.Seconds)
     plan = json.loads(plan_json)
 
     op = plan["stages"][0]["ops"][0]["aggregate"]
@@ -307,7 +307,7 @@ def test_compiler_stage_filter():
     query._query_type = "STATIC"
 
     compiler = DiskGraphPlanCompiler()
-    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification", input_timestamp_unit=TimeUnit.Seconds)
+    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification", target_stype="categorical", input_timestamp_unit=TimeUnit.Seconds)
     plan = json.loads(plan_json)
 
     # Should have 2 stages because of the filter on aggregation
@@ -350,7 +350,7 @@ def test_compiler_pql_e2e():
         timestamps=timestamps,
         forecast_length=1,
         lag_timesteps=30,
-        task_type="binary_classification", input_timestamp_unit=TimeUnit.Microseconds)
+        task_type="binary_classification", target_stype="categorical", input_timestamp_unit=TimeUnit.Microseconds)
 
     plan = json.loads(plan_json)
 
@@ -395,7 +395,7 @@ def test_compiler_not_target():
     query._query_type = "STATIC"
 
     compiler = DiskGraphPlanCompiler()
-    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification", input_timestamp_unit=TimeUnit.Seconds)
+    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification", target_stype="categorical", input_timestamp_unit=TimeUnit.Seconds)
     plan = json.loads(plan_json)
 
     stage = plan["stages"][0]
@@ -442,7 +442,7 @@ def test_compiler_and_target():
     query._query_type = "STATIC"
 
     compiler = DiskGraphPlanCompiler()
-    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification", input_timestamp_unit=TimeUnit.Seconds)
+    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification", target_stype="categorical", input_timestamp_unit=TimeUnit.Seconds)
     plan = json.loads(plan_json)
 
     stage = plan["stages"][0]
@@ -489,7 +489,7 @@ def test_compiler_or_target():
     query._query_type = "STATIC"
 
     compiler = DiskGraphPlanCompiler()
-    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification", input_timestamp_unit=TimeUnit.Seconds)
+    plan_json = compiler.compile(query=query, timestamps=[], forecast_length=1, lag_timesteps=None, task_type="binary_classification", target_stype="categorical", input_timestamp_unit=TimeUnit.Seconds)
     plan = json.loads(plan_json)
 
     stage = plan["stages"][0]
@@ -518,8 +518,8 @@ def test_compiler_static_node_prediction_is_null():
     query._query_type = "STATIC"
 
     compiler = DiskGraphPlanCompiler()
-    # is_prediction=True, task_type="binary_classification", timestamps=[] triggers static node prediction IS NULL injection
-    plan_json = compiler.compile(query=query, timestamps=[], is_prediction=True, task_type="binary_classification", input_timestamp_unit=TimeUnit.Seconds)
+    # is_prediction=True, task_type="binary_classification", target_stype="categorical", timestamps=[] triggers static node prediction IS NULL injection
+    plan_json = compiler.compile(query=query, timestamps=[], is_prediction=True, task_type="binary_classification", target_stype="categorical", input_timestamp_unit=TimeUnit.Seconds)
     plan = json.loads(plan_json)
 
     assert "node" in plan["prediction_type"]
@@ -565,7 +565,7 @@ def test_compiler_link_prediction_legacy_pseudo_time():
     plan_json = compiler.compile(
         query=query,
         timestamps=[],
-        is_prediction=True, task_type="link_prediction",
+        is_prediction=True, task_type="link_prediction", target_stype="categorical",
         input_timestamp_unit=TimeUnit.Seconds,
         list_distinct_target_is_array=False # Legacy HStack mode
     )
@@ -607,7 +607,7 @@ def test_compiler_link_prediction_rhs_pass_through():
     plan_json = compiler.compile(
         query=query,
         timestamps=[1700000000000000],
-        is_prediction=True, task_type="link_prediction",
+        is_prediction=True, task_type="link_prediction", target_stype="categorical",
         input_timestamp_unit=TimeUnit.Microseconds,
         lp_prediction_mode='RHS', lp_rhs_entity_table="products", lp_rhs_entity_column="product_id"
     )
@@ -654,7 +654,7 @@ def test_compiler_mixed_entity_filter_column_and_aggregation():
     plan_json = compiler.compile(
         query=query,
         timestamps=[1700000000],
-        task_type="binary_classification",
+        task_type="binary_classification", target_stype="categorical",
         input_timestamp_unit=TimeUnit.Seconds,
         forecast_length=1,
         entity_time_col="signup_date",
@@ -713,7 +713,7 @@ def test_compiler_forecasting():
     plan_json = compiler.compile(
         query=query,
         timestamps=[1700000000000000],
-        is_prediction=True, task_type="binary_classification",
+        is_prediction=True, task_type="binary_classification", target_stype="categorical",
         input_timestamp_unit=TimeUnit.Microseconds,
         lag_offsets_secs=[-86400, -172800],
         yoy_offsets_secs=[-31536000]
@@ -745,7 +745,7 @@ def test_autoregression_lag_offset_unit_days():
         query=query,
         timestamps=[1700000000],
         is_prediction=True,
-        task_type="binary_classification",
+        task_type="binary_classification", target_stype="categorical",
         input_timestamp_unit=TimeUnit.Seconds,
         lag_offsets_secs=[-86400, -604800],
     )
@@ -793,7 +793,7 @@ def test_nanosecond_timestamps_converted_to_seconds():
         timestamps=nanos,
         forecast_length=1,
         lag_timesteps=30,
-        task_type="binary_classification",
+        task_type="binary_classification", target_stype="categorical",
         input_timestamp_unit=TimeUnit.Nanoseconds,
     )
     plan = json.loads(plan_json)
@@ -811,7 +811,7 @@ def test_microsecond_timestamps_converted_to_seconds():
         timestamps=micros,
         forecast_length=1,
         lag_timesteps=30,
-        task_type="binary_classification",
+        task_type="binary_classification", target_stype="categorical",
         input_timestamp_unit=TimeUnit.Microseconds,
     )
     plan = json.loads(plan_json)
@@ -829,7 +829,7 @@ def test_second_timestamps_unchanged():
         timestamps=secs,
         forecast_length=1,
         lag_timesteps=30,
-        task_type="binary_classification",
+        task_type="binary_classification", target_stype="categorical",
         input_timestamp_unit=TimeUnit.Seconds,
     )
     plan = json.loads(plan_json)

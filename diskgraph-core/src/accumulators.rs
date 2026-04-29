@@ -1059,3 +1059,103 @@ pub fn kumo_entry(value: JsonValue, approx: bool, dv: &str, n: u64) -> JsonValue
 pub fn kumo_safe_div(num: u64, den: u64) -> f64 {
     if den == 0 { 0.0 } else { num as f64 / den as f64 }
 }
+
+// ---------------------------------------------------------------------------
+// Multicategorical primitives
+// ---------------------------------------------------------------------------
+
+/// Dispatch discriminator for multicategorical tokenization. Frozen at
+/// collector construction based on the column's `IngestedType`. The inner
+/// loop specializes on this to avoid per-row branching on the list variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MulticatInputKind {
+    /// IngestedType::String — split scalar on declared separator, or treat
+    /// the whole cell as one token when separator is None.
+    StringScalar,
+    /// IngestedType::StringArray — iterate list elements; nulls become "".
+    StringArray,
+    /// IngestedType::Int64Array — iterate list elements; nulls become 0.
+    Int64Array,
+    /// IngestedType::Float16Array/Float32Array/Float64Array — iterate, widen
+    /// to f64, drop NaN, stringify via Display; nulls become 0.0.
+    FloatArray,
+}
+
+/// Split `raw` by a single ASCII byte separator and call `f` for each token.
+/// Does not allocate.
+#[inline]
+pub fn for_each_split_ascii_byte(raw: &str, separator: u8, mut f: impl FnMut(&str)) {
+    let mut start = 0;
+    for (idx, byte) in raw.bytes().enumerate() {
+        if byte == separator {
+            f(&raw[start..idx]);
+            start = idx + 1;
+        }
+    }
+    f(&raw[start..]);
+}
+
+/// Build kumo-format MULTI_* key-value pairs for multicategorical stats.
+///
+/// `category_counts` must be pre-sorted (count-desc, token-asc).
+#[allow(clippy::too_many_arguments)]
+pub fn build_multicat_emit_stats(
+    name: &str,
+    stype: &str,
+    dv: &str,
+    count: u64,
+    null_count: u64,
+    hll: &HyperLogLog,
+    separator: Option<&str>,
+    category_counts: &[(String, u64)],
+) -> Vec<(String, JsonValue)> {
+    let total = count + null_count;
+    let mut pairs = Vec::with_capacity(7);
+
+    // Universal stats (match Categorical/Id shape)
+    pairs.push((
+        kumo_key(name, stype, "COUNT", false),
+        kumo_entry(json!(total), false, dv, total),
+    ));
+    pairs.push((
+        kumo_key(name, stype, "NUM_NA", false),
+        kumo_entry(json!(null_count), false, dv, total),
+    ));
+    pairs.push((
+        kumo_key(name, stype, "NA_FRACTION", false),
+        kumo_entry(json!(kumo_safe_div(null_count, total)), false, dv, total),
+    ));
+    pairs.push((
+        kumo_key(name, stype, "INVALID_FRACTION", false),
+        kumo_entry(json!(0.0), false, dv, total),
+    ));
+
+    // Multicat-specific: separator
+    let sep_value = match separator {
+        Some(s) => JsonValue::String(s.to_owned()),
+        None => JsonValue::Null,
+    };
+    pairs.push((
+        kumo_key(name, stype, "MULTI_CATEGORIES_SEPARATOR", false),
+        kumo_entry(sep_value, false, dv, total),
+    ));
+
+    // MULTI_CATEGORY_COUNTS: [[token, count], ...]
+    let values: Vec<JsonValue> = category_counts
+        .iter()
+        .map(|(tok, cnt)| json!([tok, cnt]))
+        .collect();
+    pairs.push((
+        kumo_key(name, stype, "MULTI_CATEGORY_COUNTS", false),
+        kumo_entry(json!(values), false, dv, total),
+    ));
+
+    // NUM_UNIQUE_MULTI (approx=true, HLL estimate)
+    let num_unique = hll.estimate() as u64;
+    pairs.push((
+        kumo_key(name, stype, "NUM_UNIQUE_MULTI", true),
+        kumo_entry(json!(num_unique), true, dv, total),
+    ));
+
+    pairs
+}

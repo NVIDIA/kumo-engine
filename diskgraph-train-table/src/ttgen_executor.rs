@@ -11,7 +11,7 @@ use crate::errors::{TTGenError, TTGenResult};
 use arrow_array::RecordBatch;
 use arrow_schema::DataType;
 use crossbeam_channel::{bounded, Receiver, Sender};
-use diskgraph_core::accumulators::{HyperLogLog, TDigestEstimator, WelfordAccumulator};
+use diskgraph_core::accumulators::{HyperLogLog, LocalColumnCounts, SharedColumnCounts, TDigestEstimator, WelfordAccumulator, for_each_split_ascii_byte};
 use diskgraph_core::time::{Abs, Dur, UnitSystem, add_calendar_months};
 use diskgraph_core::tt_builder::*;
 use diskgraph_index::graph::GraphIndexReader;
@@ -124,14 +124,33 @@ pub fn execute_with_summary<U: UnitSystem>(
         .as_ref()
         .and_then(|s| s.manual_test_values.clone());
 
+    // Determine target stype for categorical vs numerical stats
+    let target_stype_str = resolved.target_stype.clone();
+    let target_is_categorical = matches!(
+        target_stype_str.as_str(),
+        "categorical" | "boolean" | "ID" | "multicategorical"
+    );
+
+    // Shared concurrent category counts for categorical targets
+    let shared_target_counts: Option<Arc<SharedColumnCounts>> = if target_is_categorical {
+        Some(Arc::new(SharedColumnCounts::new_hashed()))
+    } else {
+        None
+    };
+
+    // Shared concurrent category counts for ENTITY (always needed for CATEGORY_COUNTS)
+    let shared_entity_counts: Arc<SharedColumnCounts> = Arc::new(SharedColumnCounts::new_hashed());
+
     let handle = std::thread::spawn(move || {
+        let shared_tc = shared_target_counts.clone();
+        let shared_ec = shared_entity_counts.clone();
         // Parallel execution with fine-grained chunks
         let results: Vec<TTGenResult<(u64, ChunkStats<U>)>> = (0..num_chunks)
             .into_par_iter()
             .map(|chunk_idx| {
                 let start = chunk_idx as u64 * num_entities / num_chunks as u64;
                 let end = (chunk_idx as u64 + 1) * num_entities / num_chunks as u64;
-                execute_chunk(&resolved, start..end, &sender)
+                execute_chunk(&resolved, start..end, &sender, shared_tc.as_ref().map(Arc::clone), Arc::clone(&shared_ec))
             })
             .collect();
 
@@ -156,6 +175,14 @@ pub fn execute_with_summary<U: UnitSystem>(
             }
         }
 
+        // Drain shared categorical target counts after all chunks are done
+        let target_category_counts = shared_target_counts
+            .as_ref()
+            .and_then(|s| s.drain_to_map());
+
+        // Drain shared entity category counts after all chunks are done
+        let entity_category_counts = shared_entity_counts.drain_to_map();
+
         tracing::info!(total_rows, "TT-gen execution finished");
         Ok(TTExecutionSummary {
             rows_written: total_rows,
@@ -174,6 +201,9 @@ pub fn execute_with_summary<U: UnitSystem>(
                 manual_train_values.as_deref(),
                 manual_val_values.as_deref(),
                 manual_test_values.as_deref(),
+                target_category_counts,
+                target_stype_str.as_str(),
+                entity_category_counts,
             )),
         })
     });
@@ -217,6 +247,8 @@ fn execute_chunk<U: UnitSystem>(
     plan: &ResolvedPlan<U>,
     entity_range: std::ops::Range<u64>,
     sender: &Sender<RecordBatch>,
+    shared_target_counts: Option<Arc<SharedColumnCounts>>,
+    shared_entity_counts: Arc<SharedColumnCounts>,
 ) -> TTGenResult<(u64, ChunkStats<U>)> {
     let mode = output_mode_from_prediction_type(
         &plan.prediction_type,
@@ -242,11 +274,12 @@ fn execute_chunk<U: UnitSystem>(
     // Thread-local frequency counts for ListDistinct (reused across entities)
     let mut link_frequencies: Vec<i64> = Vec::new();
 
-    let target_is_numerical = matches!(
-        plan.target_dtype,
-        DataType::Float64 | DataType::Float32 | DataType::Int64 | DataType::Int32 |
-        DataType::Int16 | DataType::Int8 | DataType::UInt64 | DataType::UInt32 |
-        DataType::UInt16 | DataType::UInt8
+    // Determine target stats mode from target_stype
+    let target_stype = plan.target_stype.as_str();
+    let target_is_numerical = target_stype == "numerical";
+    let target_is_categorical = matches!(
+        target_stype,
+        "categorical" | "boolean" | "ID" | "multicategorical"
     );
     let include_frequency = matches!(
         plan.prediction_type,
@@ -259,11 +292,31 @@ fn execute_chunk<U: UnitSystem>(
         stats.target_tdigest = Some(TDigestEstimator::new(200));
         stats.target_hll = Some(HyperLogLog::new());
     }
+    if target_is_categorical {
+        stats.target_hll = Some(HyperLogLog::new());
+    }
     if include_frequency {
         stats.frequency_welford = Some(WelfordAccumulator::new());
         stats.frequency_tdigest = Some(TDigestEstimator::new(200));
         stats.frequency_hll = Some(HyperLogLog::new());
     }
+    // Always create entity and timestamp accumulators
+    stats.entity_hll = Some(HyperLogLog::new());
+    stats.entity_welford = Some(WelfordAccumulator::new());
+    stats.entity_tdigest = Some(TDigestEstimator::new(200));
+    stats.timestamp_welford = Some(WelfordAccumulator::new());
+    stats.timestamp_tdigest = Some(TDigestEstimator::new(200));
+    stats.timestamp_hll = Some(HyperLogLog::new());
+
+    // Thread-local categorical target counts (flushed to shared at end)
+    let mut local_target_counts: Option<LocalColumnCounts> = if target_is_categorical {
+        Some(LocalColumnCounts::with_capacity(5000))
+    } else {
+        None
+    };
+
+    // Thread-local entity category counts (flushed to shared at end)
+    let mut local_entity_counts = LocalColumnCounts::with_capacity(5000);
 
     for entity_node in entity_range {
         execute_entity(
@@ -272,10 +325,21 @@ fn execute_chunk<U: UnitSystem>(
             &mut aliases,
             &mut link_frequencies,
             target_is_numerical,
+            target_is_categorical,
+            target_stype,
+            &mut local_target_counts,
+            &mut local_entity_counts,
             &mut writer,
             &mut stats,
         )?;
     }
+
+    // Flush local categorical counts to shared
+    if let (Some(ref shared), Some(ref mut local)) = (&shared_target_counts, &mut local_target_counts) {
+        shared.merge_local_batch(local);
+    }
+    // Flush local entity counts to shared
+    shared_entity_counts.merge_local_batch(&mut local_entity_counts);
 
     let rows = writer.finish()?;
     stats.num_total_rows = rows;
@@ -284,12 +348,17 @@ fn execute_chunk<U: UnitSystem>(
 
 // ─── Per-entity execution ────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn execute_entity<U: UnitSystem>(
     plan: &ResolvedPlan<U>,
     entity_node: u64,
     aliases: &mut [Option<Value>],
     link_frequencies: &mut Vec<i64>,
     target_is_numerical: bool,
+    target_is_categorical: bool,
+    target_stype: &str,
+    local_target_counts: &mut Option<LocalColumnCounts>,
+    local_entity_counts: &mut LocalColumnCounts,
     writer: &mut ChannelBatchWriter<U>,
     stats: &mut ChunkStats<U>,
 ) -> TTGenResult<()> {
@@ -358,6 +427,10 @@ fn execute_entity<U: UnitSystem>(
                 link_frequencies,
                 entity_include_bit,
                 target_is_numerical,
+                target_is_categorical,
+                target_stype,
+                local_target_counts,
+                local_entity_counts,
                 writer,
                 stats,
             )?;
@@ -408,6 +481,10 @@ fn execute_entity<U: UnitSystem>(
                 link_frequencies,
                 entity_include_bit,
                 target_is_numerical,
+                target_is_categorical,
+                target_stype,
+                local_target_counts,
+                local_entity_counts,
                 writer,
                 stats,
             )?;
@@ -430,6 +507,10 @@ fn write_target<U: UnitSystem>(
     link_frequencies: &[i64],
     entity_include_bit: bool,
     target_is_numerical: bool,
+    target_is_categorical: bool,
+    target_stype: &str,
+    local_target_counts: &mut Option<LocalColumnCounts>,
+    local_entity_counts: &mut LocalColumnCounts,
     writer: &mut ChannelBatchWriter<U>,
     stats: &mut ChunkStats<U>,
 ) -> TTGenResult<()> {
@@ -477,7 +558,7 @@ fn write_target<U: UnitSystem>(
             match &plan.prediction_type {
                 PredictionType::Node => {
                     writer.write_row(entity_pk.clone(), ts, target, entity_include_bit)?;
-                    update_exact_stats(stats, entity_pk, ts, target, None, target_is_numerical);
+                    update_exact_stats(stats, entity_pk, ts, target, None, target_is_numerical, target_is_categorical, target_stype, local_target_counts, local_entity_counts);
                     if entity_include_bit {
                         stats.include_true_count += 1;
                         stats.num_train_rows += 1;
@@ -503,7 +584,7 @@ fn write_target<U: UnitSystem>(
                                 freq,
                                 entity_include_bit,
                             )?;
-                            update_exact_stats(stats, entity_pk, ts, val, Some(freq), target_is_numerical);
+                            update_exact_stats(stats, entity_pk, ts, val, Some(freq), target_is_numerical, target_is_categorical, target_stype, local_target_counts, local_entity_counts);
                             if entity_include_bit {
                                 stats.include_true_count += 1;
                                 stats.num_links += 1;
@@ -538,7 +619,7 @@ fn write_target<U: UnitSystem>(
                             } else {
                                 None
                             };
-                            update_exact_stats(stats, entity_pk, ts, first_target, first_freq, target_is_numerical);
+                            update_exact_stats(stats, entity_pk, ts, first_target, first_freq, target_is_numerical, target_is_categorical, target_stype, local_target_counts, local_entity_counts);
                             for (idx, tgt) in targets.iter().enumerate().skip(1) {
                                 let freq = if *include_frequency {
                                     freqs.get(idx).copied()
@@ -589,6 +670,7 @@ fn write_target<U: UnitSystem>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_exact_stats<U: UnitSystem>(
     stats: &mut ChunkStats<U>,
     entity_pk: &Value,
@@ -596,6 +678,10 @@ fn update_exact_stats<U: UnitSystem>(
     target: &Value,
     frequency: Option<i64>,
     target_is_numerical: bool,
+    target_is_categorical: bool,
+    target_stype: &str,
+    local_target_counts: &mut Option<LocalColumnCounts>,
+    local_entity_counts: &mut LocalColumnCounts,
 ) {
     stats.entities.insert(hash_value(entity_pk));
     stats.targets.insert(hash_value(target));
@@ -616,6 +702,47 @@ fn update_exact_stats<U: UnitSystem>(
         stats.entity_max = max_opt_i64(stats.entity_max, v);
     }
 
+    // Observe entity value into HLL for cardinality
+    if let Some(ref mut h) = stats.entity_hll {
+        match entity_pk {
+            Value::Int(i) => h.observe_i64(*i),
+            Value::Str(s) => h.observe_bytes(s.as_bytes()),
+            Value::Float(f) => h.observe_f64(*f),
+            _ => {}
+        }
+    }
+
+    // Observe entity value into local category counts (for CATEGORY_COUNTS stat)
+    {
+        let entity_str = value_to_string(entity_pk);
+        let entity_hash = hash_value(entity_pk);
+        local_entity_counts.observe(entity_hash, &entity_str);
+    }
+
+    // Observe entity value into Welford + TDigest (numeric entities only — Int values)
+    if let Value::Int(i) = entity_pk {
+        if let Some(ref mut w) = stats.entity_welford {
+            w.observe(*i as f64);
+        }
+        if let Some(ref mut t) = stats.entity_tdigest {
+            t.observe(*i as f64);
+        }
+    }
+
+    // Observe timestamp value into Welford + TDigest + HLL
+    {
+        let ts_raw = ts.raw();
+        if let Some(ref mut w) = stats.timestamp_welford {
+            w.observe(ts_raw as f64);
+        }
+        if let Some(ref mut t) = stats.timestamp_tdigest {
+            t.observe(ts_raw as f64);
+        }
+        if let Some(ref mut h) = stats.timestamp_hll {
+            h.observe_i64(ts_raw);
+        }
+    }
+
     if let Some(v) = value_to_i64_opt(target) {
         stats.target_min = min_opt_i64(stats.target_min, v);
         stats.target_max = max_opt_i64(stats.target_max, v);
@@ -633,11 +760,15 @@ fn update_exact_stats<U: UnitSystem>(
             Value::Float(f) => Some(*f),
             _ => None,
         } {
-            if let Some(ref mut w) = stats.target_welford {
-                w.observe(f);
-            }
-            if let Some(ref mut t) = stats.target_tdigest {
-                t.observe(f);
+            if f.is_finite() {
+                if let Some(ref mut w) = stats.target_welford {
+                    w.observe(f);
+                }
+                if let Some(ref mut t) = stats.target_tdigest {
+                    t.observe(f);
+                }
+            } else {
+                stats.target_invalid_count += 1;
             }
         }
         if let Some(ref mut h) = stats.target_hll {
@@ -645,6 +776,32 @@ fn update_exact_stats<U: UnitSystem>(
                 Value::Int(i) => h.observe_i64(*i),
                 Value::Float(f) => h.observe_f64(*f),
                 _ => {}
+            }
+        }
+    }
+
+    // Observe target value for categorical stats
+    if target_is_categorical {
+        let target_str = value_to_string(target);
+        if target_stype == "multicategorical" {
+            // Split pipe-delimited target, observe each token independently
+            for_each_split_ascii_byte(&target_str, b'|', |tok| {
+                let tok = tok.trim();
+                let hash = HyperLogLog::hash_bytes(tok.as_bytes());
+                if let Some(ref mut h) = stats.target_hll {
+                    h.observe_hash(hash);
+                }
+                if let Some(ref mut local) = local_target_counts {
+                    local.observe(hash, tok);
+                }
+            });
+        } else {
+            let target_hash = hash_value(target);
+            if let Some(ref mut local) = local_target_counts {
+                local.observe(target_hash, &target_str);
+            }
+            if let Some(ref mut h) = stats.target_hll {
+                h.observe_i64(target_hash as i64);
             }
         }
     }
@@ -660,6 +817,16 @@ fn update_exact_stats<U: UnitSystem>(
         if let Some(ref mut h) = stats.frequency_hll {
             h.observe_i64(freq);
         }
+    }
+}
+
+fn value_to_string(v: &Value) -> String {
+    match v {
+        Value::Str(s) => s.clone(),
+        Value::Int(i) => i.to_string(),
+        Value::Float(f) => f.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::List(_) => "<list>".to_string(),
     }
 }
 

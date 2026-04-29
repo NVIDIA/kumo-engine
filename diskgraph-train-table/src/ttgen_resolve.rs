@@ -54,6 +54,9 @@ pub struct ResolvedPlan<U: UnitSystem> {
     pub target_dtype: DataType,
     pub autoregression_dtype: Option<DataType>,
     pub yoy_dtype: Option<DataType>,
+
+    /// Semantic type of the target column ("numerical", "categorical", etc.).
+    pub target_stype: String,
 }
 
 pub struct ResolvedStage<U: UnitSystem> {
@@ -396,6 +399,9 @@ pub fn resolve_plan<U: UnitSystem>(
         target_dtype,
         autoregression_dtype,
         yoy_dtype,
+        target_stype: plan.target_stype.clone().ok_or_else(|| {
+            TTGenError::InvalidPlan("target_stype is required".to_string())
+        })?,
     })
 }
 

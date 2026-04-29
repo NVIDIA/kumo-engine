@@ -255,7 +255,7 @@ def filter_graph(tmp_path_factory):
 # Plan builder helpers
 # ---------------------------------------------------------------------------
 
-def _make_plan(timestamps, split=None, explode=True, include_frequency=True):
+def _make_plan(timestamps, split=None, explode=True, include_frequency=True, target_stype="numerical"):
     """Build a LIST_DISTINCT(orders.product_id) plan for the test graph."""
     plan = {
         "entity": {
@@ -305,6 +305,7 @@ def _make_plan(timestamps, split=None, explode=True, include_frequency=True):
             }
         ],
     }
+    plan["target_stype"] = target_stype
     return json.dumps(plan)
 
 
@@ -348,6 +349,7 @@ def _make_filter_plan(
         "prediction_type": {
             "link": {"explode": True, "include_frequency": True}
         },
+        "target_stype": "categorical",
         "split": None,
         "stages": [{
             "ops": [{
@@ -495,7 +497,9 @@ class TestMaterializeColStats:
 
     def test_col_stats_has_expected_columns(self, test_graph, tmp_path):
         output = str(tmp_path / "tt.parquet")
-        plan = _make_plan(timestamps=[1000, 2000, 3000])
+        # This plan uses LIST_DISTINCT (link prediction) with target_stype=categorical,
+        # so TARGET stats should use categorical format (CATEGORY_COUNTS).
+        plan = _make_plan(timestamps=[1000, 2000, 3000], target_stype="categorical")
         result = execute_tt_plan_materialize_with_split(
             plan_json=plan,
             index_path=test_graph, output_path=output,
@@ -509,12 +513,19 @@ class TestMaterializeColStats:
         keys = list(col_stats.get("stats", {}).keys())
         # Inline stats produce encoder-ready distribution stats for generated columns.
         # This plan is LIST_DISTINCT (link prediction) with include_frequency=True,
-        # so we expect FREQUENCY and ENTITY_INCLUDE_BIT stats.
-        # ENTITY/TIMESTAMP stats are in exact_stats (separate field), not here.
+        # so we expect TARGET (categorical), FREQUENCY (numerical), and ENTITY_INCLUDE_BIT stats.
+        has_target = any("TARGET" in k and "kumo.categorical" in k for k in keys)
+        has_category_counts = any("CATEGORY_COUNTS" in k for k in keys)
         has_frequency = any("__kumo_internal_frequency_column__" in k for k in keys)
         has_include_bit = any("__kumo_internal_entity_inclusive_bit_column__" in k for k in keys)
+        has_entity = any("ENTITY" in k and "kumo.categorical" in k for k in keys)
+        has_timestamp = any("TIMESTAMP" in k and "kumo.numerical" in k for k in keys)
+        assert has_target, f"missing TARGET categorical stats in {keys[:10]}"
+        assert has_category_counts, f"missing CATEGORY_COUNTS in {keys[:10]}"
         assert has_frequency, f"missing FREQUENCY stats in {keys[:10]}"
         assert has_include_bit, f"missing ENTITY_INCLUDE_BIT stats in {keys[:10]}"
+        assert has_entity, f"missing ENTITY categorical stats in {keys[:10]}"
+        assert has_timestamp, f"missing TIMESTAMP numerical stats in {keys[:10]}"
         # Verify key format matches kumo_col_stats_v1
         assert col_stats.get("kind") == "tt_train_table_col_stats", \
             f"unexpected kind: {col_stats.get('kind')}"

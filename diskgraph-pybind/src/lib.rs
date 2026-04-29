@@ -1076,6 +1076,10 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(
+        tt_executor::build_train_table_col_stats_artifact,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
         tt_executor::build_train_table_edge_bundle_artifact,
         m
     )?)?;

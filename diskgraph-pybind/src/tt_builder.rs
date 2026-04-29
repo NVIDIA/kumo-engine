@@ -301,6 +301,7 @@ pub struct DiskGraphTTBuilder {
     split: Option<tt::SplitSpec<Seconds>>,
     stages: Vec<tt::Stage<Seconds>>,
     current_ops: Vec<tt::Op<Seconds>>,
+    target_stype: Option<String>,
 }
 
 #[pymethods]
@@ -314,6 +315,7 @@ impl DiskGraphTTBuilder {
             split: None,
             stages: Vec::new(),
             current_ops: Vec::new(),
+            target_stype: None,
         }
     }
 
@@ -503,6 +505,12 @@ impl DiskGraphTTBuilder {
         self.prediction_type = tt::PredictionType::Forecasting;
     }
 
+    /// Set the semantic type of the target column (e.g. "numerical",
+    /// "categorical", "boolean", "ID", "multicategorical").
+    fn set_target_stype(&mut self, stype: String) {
+        self.target_stype = Some(stype);
+    }
+
     /// Add aggregate op. `path`: single `EdgeRef` or list for multi-hop.
     /// `limit`: early-termination hint (PQL `TOP k`), primarily for `ListDistinct`.
     /// `target_entity_table`: for LP `ListDistinct`, the target entity table
@@ -673,6 +681,7 @@ impl DiskGraphTTBuilder {
             prediction_type: std::mem::replace(&mut self.prediction_type, tt::PredictionType::Node),
             split: self.split.take(),
             stages: std::mem::take(&mut self.stages),
+            target_stype: self.target_stype.take(),
         };
 
         serde_json::to_string(&plan)

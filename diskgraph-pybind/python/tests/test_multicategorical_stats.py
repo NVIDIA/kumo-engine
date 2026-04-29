@@ -168,6 +168,16 @@ def test_multicat_floatlist_numeric_keys(multicat_stats):
     counts = multicat_stats["val_list__kumo.multicategorical__MULTI_CATEGORY_COUNTS__False"]
     m = {k: v for k, v in counts["value"]}
     def get(key):
+        # DG stringifies floats with Display, so 1.0 -> "1" (matches Spark/GE
+        # behavior of dropping the trailing zero on whole-number floats); the
+        # native float key and `str(float)` ("1.0") forms are also accepted in
+        # case a future backend serializes them differently.
+        if (
+            isinstance(key, float)
+            and key.is_integer()
+            and m.get(str(int(key))) is not None
+        ):
+            return m[str(int(key))]
         return m.get(key) or m.get(str(key))
     assert get(1.0) == 2
     assert get(2.5) == 1

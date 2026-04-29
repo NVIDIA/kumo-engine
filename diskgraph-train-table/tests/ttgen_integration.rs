@@ -609,6 +609,7 @@ fn g1_plan(stages: Vec<Stage<Seconds>>) -> DiskGraphTTPlan<Seconds> {
         prediction_type: PredictionType::Node,
         split: None,
         stages,
+        target_stype: Some("numerical".to_string()),
     }
 }
 
@@ -631,6 +632,7 @@ fn g1_temporal(stages: Vec<Stage<Seconds>>, timestamps: Vec<i64>) -> DiskGraphTT
         prediction_type: PredictionType::Node,
         split: None,
         stages,
+        target_stype: Some("numerical".to_string()),
     }
 }
 
@@ -1545,6 +1547,7 @@ fn integ_entity_time_col() {
             ops: vec![count_orders_op("cnt", Some((0, 500)))],
             filter: None,
         }],
+        target_stype: Some("numerical".to_string()),
     };
     let groups = execute_and_group(&plan, &index);
     // alice: orders at 1050,1100,1200,1300 all in [1000,1500) → 4. eve: 0 orders.
@@ -1581,6 +1584,7 @@ fn integ_entity_valid_to_col() {
             ops: vec![count_orders_op("cnt", Some((0, 5000)))],
             filter: None,
         }],
+        target_stype: Some("numerical".to_string()),
     };
     let groups = execute_and_group(&plan, &index);
     // Window [1500,6500). alice: 0 (orders<1500). bob: 2100,2200→2. carol: 1600→1. dave: 3100,3200,3300→3.
@@ -1902,6 +1906,7 @@ fn integ_entity_create_time_metadata_fallback() {
             ops: vec![count_orders_op("cnt", Some((0, 500)))],
             filter: None,
         }],
+        target_stype: Some("numerical".to_string()),
     };
     let groups = execute_and_group(&plan, &index);
 
@@ -1973,6 +1978,7 @@ fn integ_entity_end_time_metadata_fallback() {
             ops: vec![count_orders_op("cnt", Some((0, 5000)))],
             filter: None,
         }],
+        target_stype: Some("numerical".to_string()),
     };
     let groups = execute_and_group(&plan, &index);
 
@@ -2507,6 +2513,7 @@ fn integ_timeunit_months_calendar() {
             }],
             filter: None,
         }],
+        target_stype: Some("numerical".to_string()),
     };
 
     let groups = execute_and_group(&plan, &index);
@@ -2559,6 +2566,7 @@ fn integ_timeunit_years_calendar() {
             }],
             filter: None,
         }],
+        target_stype: Some("numerical".to_string()),
     };
 
     let groups = execute_and_group(&plan, &index);
@@ -2903,6 +2911,7 @@ fn integ_lag_timesteps_entity_include_bit() {
             ops: vec![count_orders_op("cnt", Some((0, 5000)))],
             filter: None,
         }],
+        target_stype: Some("numerical".to_string()),
     };
     let (receiver, handle) =
         diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
@@ -3059,6 +3068,7 @@ fn g1_link_temporal(
         prediction_type: PredictionType::Link { explode, include_frequency },
         split: None,
         stages,
+        target_stype: Some("numerical".to_string()),
     }
 }
 
@@ -3081,6 +3091,7 @@ fn g1_link(
         prediction_type: PredictionType::Link { explode, include_frequency },
         split: None,
         stages,
+        target_stype: Some("numerical".to_string()),
     }
 }
 
@@ -3964,6 +3975,7 @@ fn g2_link_temporal(
         prediction_type: PredictionType::Link { explode, include_frequency },
         split: None,
         stages,
+        target_stype: Some("numerical".to_string()),
     }
 }
 
@@ -3986,6 +3998,7 @@ fn g2_link_static(
         prediction_type: PredictionType::Link { explode, include_frequency },
         split: None,
         stages,
+        target_stype: Some("numerical".to_string()),
     }
 }
 
@@ -4552,6 +4565,7 @@ fn g3_link_temporal(
         prediction_type: PredictionType::Link { explode, include_frequency },
         split: None,
         stages,
+        target_stype: Some("numerical".to_string()),
     }
 }
 
@@ -4574,6 +4588,7 @@ fn g3_link_static(
         prediction_type: PredictionType::Link { explode, include_frequency },
         split: None,
         stages,
+        target_stype: Some("numerical".to_string()),
     }
 }
 
@@ -4819,6 +4834,7 @@ fn integ_g3_lp_entity_filter() {
             }],
             filter: None,
         }],
+        target_stype: Some("numerical".to_string()),
     };
     let (receiver, handle) =
         diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
@@ -5056,6 +5072,7 @@ fn integ_bp_pass_through() {
         prediction_type: PredictionType::PassThrough,
         stages: vec![],
         split: None,
+        target_stype: Some("numerical".to_string()),
     };
 
     let (receiver, handle) =
@@ -5093,6 +5110,7 @@ fn integ_bp_pseudo_time_injection() {
         prediction_type: PredictionType::PassThrough,
         stages: vec![],
         split: None,
+        target_stype: Some("numerical".to_string()),
     };
 
     let (receiver, handle) =
@@ -5211,6 +5229,7 @@ fn integ_bp_forecasting_multiple_lags() {
             filter: None,
         }],
         split: None,
+        target_stype: Some("numerical".to_string()),
     };
 
     let (receiver, handle) =
@@ -5460,6 +5479,7 @@ fn orphan_ld_plan(target_entity_table: Option<String>) -> DiskGraphTTPlan<Second
             }],
             filter: None,
         }],
+        target_stype: Some("numerical".to_string()),
     }
 }
 
@@ -5572,6 +5592,7 @@ fn integ_non_listdistinct_ignores_target_entity_table() {
             }],
             filter: None,
         }],
+        target_stype: Some("numerical".to_string()),
     };
     let (receiver, handle) =
         diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
@@ -5624,6 +5645,7 @@ fn orphan_ld_plan_with_row_filter(
             }],
             filter: None,
         }],
+        target_stype: Some("numerical".to_string()),
     }
 }
 
@@ -6284,6 +6306,7 @@ fn temporal_orphan_ld_plan(target_entity_table: Option<String>, obs_ts: i64) -> 
             }],
             filter: None,
         }],
+        target_stype: Some("numerical".to_string()),
     }
 }
 

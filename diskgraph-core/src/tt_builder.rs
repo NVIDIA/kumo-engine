@@ -44,6 +44,11 @@ pub struct DiskGraphTTPlan<U: UnitSystem> {
     #[serde(default)]
     pub split: Option<SplitSpec<U>>,
     pub stages: Vec<Stage<U>>,
+    /// Semantic type of the target column (e.g. "numerical", "categorical",
+    /// "boolean", "ID", "multicategorical"). Drives the choice of inline
+    /// col-stats accumulators (Welford/TDigest vs category counts).
+    #[serde(default)]
+    pub target_stype: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -395,6 +400,7 @@ mod tests {
                 manual_test_values: None,
             }),
             stages: vec![],
+            target_stype: None,
         };
 
         let json = serde_json::to_string(&plan).unwrap();
