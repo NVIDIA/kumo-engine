@@ -182,7 +182,11 @@ def _assign_for_column_split(split_cfg: dict[str, Any], train_table_path: str) -
 def _assign_for_manual_split(split_cfg: dict[str, Any], train_table_path: str) -> np.ndarray:
     _require_rust_split_core()
     col_spec = split_cfg.get('col')
-    col_name = col_spec.get('name') if isinstance(col_spec, dict) else col_spec
+    col_name = (
+        split_cfg.get('split_output_column')
+        or split_cfg.get('split_projection')
+        or (col_spec.get('name') if isinstance(col_spec, dict) else col_spec)
+    )
     if not isinstance(col_name, str) or not col_name:
         raise DiskgraphConfigError('ManualSplit requires split.col name')
 
@@ -402,6 +406,13 @@ def compute_dense_split_assignments(
         assignments = _assign_for_column_split(split_cfg, train_table_path)
     elif family == 'ManualSplit':
         assignments = _assign_for_manual_split(split_cfg, train_table_path)
+    elif family == 'CustomSplit':
+        assignments = _assign_for_manual_split(split_cfg, train_table_path)
+    elif family == 'CustomLinkSplit':
+        raise DiskgraphConfigError(
+            'CustomLinkSplit cannot be rehydrated from parquet alone; '
+            're-run tt-gen to regenerate the split artifact'
+        )
     elif family == 'RandomLinkSplit':
         assignments = _assign_for_random_split(
             split_cfg,

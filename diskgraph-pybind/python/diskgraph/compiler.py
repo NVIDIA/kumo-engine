@@ -201,6 +201,7 @@ class DiskGraphPlanCompiler:
                 ranges=split_spec.ranges,
                 backtesting_timestamp=split_spec.backtesting_timestamp,
                 split_column=split_spec.split_column,
+                split_output_column=split_spec.split_output_column,
                 manual_train_values=split_spec.manual_train_values,
                 manual_val_values=split_spec.manual_val_values,
                 manual_test_values=split_spec.manual_test_values,

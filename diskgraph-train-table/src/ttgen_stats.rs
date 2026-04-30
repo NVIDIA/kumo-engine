@@ -1251,7 +1251,7 @@ fn derive_split_mask_counts<U: UnitSystem>(
                 supports_native_execution: true,
             }
         }
-        (Some("ManualSplit"), false) => {
+        (Some("ManualSplit" | "CustomSplit"), false) => {
             let counts = derive_manual_split_mask_counts(
                 split_column,
                 manual_train_values,
@@ -1267,7 +1267,7 @@ fn derive_split_mask_counts<U: UnitSystem>(
                 supports_native_execution: true,
             }
         }
-        (Some("RandomSplit"), false) | (Some("RandomLinkSplit"), false) => {
+        (Some("RandomSplit"), false) | (Some("RandomLinkSplit" | "CustomLinkSplit"), false) => {
             let counts = validate_split_ratio(split_ratio)
                 .and_then(|ratio| derive_ratio_mask_counts(num_total_rows, ratio));
             SplitMaskDerivation {

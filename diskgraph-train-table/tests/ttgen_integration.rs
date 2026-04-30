@@ -285,12 +285,12 @@ fn assert_target_eq(actual: f64, expected: f64, msg: &str) {
 // ─── Graph 1: users → orders → products ─────────────────────────────────────
 //
 // users (5 rows):
-//   node  name    level  score   signup_ts  active  valid_to
-//   0     alice   3      75.0    1000       true    2000
-//   1     bob     1      120.0   2000       true    3000
-//   2     carol   2      50.0    1500       false   1500
-//   3     dave    1      200.0   3000       true    4000
-//   4     eve     5      10.0    500        true    1000
+//   node  name    level  score   signup_ts  active  valid_to  split_bucket
+//   0     alice   3      75.0    1000       true    2000      0
+//   1     bob     1      120.0   2000       true    3000      1
+//   2     carol   2      50.0    1500       false   1500      null
+//   3     dave    1      200.0   3000       true    4000      2
+//   4     eve     5      10.0    500        true    1000      null
 //
 // products (4 rows):
 //   node  brand   rating  category
@@ -325,13 +325,14 @@ fn build_graph1(root: &Path) -> PathBuf {
     let mut signup_ts = Int64Builder::new();
     let mut active = BooleanBuilder::new();
     let mut valid_to = Int64Builder::new();
+    let mut split_bucket = Int64Builder::new();
 
-    for (uid, n, l, s, ts, a, vt) in [
-        (0i64, "alice", 3i64, 75.0, 1000i64, true, 2000i64),
-        (1, "bob", 1, 120.0, 2000, true, 3000),
-        (2, "carol", 2, 50.0, 1500, false, 1500),
-        (3, "dave", 1, 200.0, 3000, true, 4000),
-        (4, "eve", 5, 10.0, 500, true, 1000),
+    for (uid, n, l, s, ts, a, vt, bucket) in [
+        (0i64, "alice", 3i64, 75.0, 1000i64, true, 2000i64, Some(0i64)),
+        (1, "bob", 1, 120.0, 2000, true, 3000, Some(1)),
+        (2, "carol", 2, 50.0, 1500, false, 1500, None),
+        (3, "dave", 1, 200.0, 3000, true, 4000, Some(2)),
+        (4, "eve", 5, 10.0, 500, true, 1000, None),
     ] {
         user_id.append_value(uid);
         name.append_value(n);
@@ -340,6 +341,10 @@ fn build_graph1(root: &Path) -> PathBuf {
         signup_ts.append_value(ts);
         active.append_value(a);
         valid_to.append_value(vt);
+        match bucket {
+            Some(v) => split_bucket.append_value(v),
+            None => split_bucket.append_null(),
+        }
     }
 
     let users_schema = Schema::new(vec![
@@ -350,6 +355,7 @@ fn build_graph1(root: &Path) -> PathBuf {
         Field::new("signup_ts", DataType::Int64, false),
         Field::new("active", DataType::Boolean, false),
         Field::new("valid_to", DataType::Int64, false),
+        Field::new("split_bucket", DataType::Int64, true),
     ]);
     let users_batch = RecordBatch::try_new(
         Arc::new(users_schema),
@@ -361,6 +367,7 @@ fn build_graph1(root: &Path) -> PathBuf {
             Arc::new(signup_ts.finish()),
             Arc::new(active.finish()),
             Arc::new(valid_to.finish()),
+            Arc::new(split_bucket.finish()),
         ],
     )
     .unwrap();
@@ -470,6 +477,7 @@ fn build_graph1(root: &Path) -> PathBuf {
                     mk_col("signup_ts", IngestedType::Int64),
                     mk_col("active", IngestedType::Bool),
                     mk_col("valid_to", IngestedType::Int64),
+                    mk_col("split_bucket", IngestedType::Int64),
                 ],
                 primary_key: Some("user_id".to_string()),
                 create_time: None,
@@ -706,6 +714,153 @@ fn integ_count_basic() {
     assert_target_eq(groups[&2][0].1, 1.0, "carol");
     assert_target_eq(groups[&3][0].1, 3.0, "dave");
     assert_target_eq(groups[&4][0].1, 0.0, "eve");
+}
+
+#[test]
+fn integ_manual_split_emits_split_column() {
+    init_tracing();
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+    let mut plan = g1_temporal(
+        vec![Stage::<Seconds> { ops: vec![count_orders_op("cnt", Some((0, 5000)))], filter: None }],
+        vec![0],
+    );
+    plan.split = Some(SplitSpec::<Seconds> {
+        ratio: None,
+        kind: Some("ManualSplit".to_string()),
+        rnd_seed: None,
+        is_temporal: None,
+        offsets: None,
+        ranges: None,
+        backtesting_timestamp: None,
+        split_column: Some("users.name".to_string()),
+        split_output_column: None,
+        manual_train_values: Some(vec!["alice".to_string(), "bob".to_string()]),
+        manual_val_values: Some(vec!["carol".to_string()]),
+        manual_test_values: Some(vec!["dave".to_string(), "eve".to_string()]),
+    });
+
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let mut rows = Vec::new();
+    for batch in receiver {
+        let split_idx = batch.schema().index_of("users.name").unwrap();
+        let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        let split_values = batch
+            .column(split_idx)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for i in 0..batch.num_rows() {
+            rows.push((entities.value(i), split_values.value(i).to_string()));
+        }
+    }
+    handle.join().unwrap().unwrap();
+    rows.sort_by_key(|row| row.0);
+
+    assert_eq!(
+        rows,
+        vec![
+            (0, "alice".to_string()),
+            (1, "bob".to_string()),
+            (2, "carol".to_string()),
+            (3, "dave".to_string()),
+            (4, "eve".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn integ_manual_split_numeric_null_projection_is_utf8() {
+    init_tracing();
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+    let mut plan = g1_temporal(
+        vec![Stage::<Seconds> { ops: vec![count_orders_op("cnt", Some((0, 5000)))], filter: None }],
+        vec![0],
+    );
+    plan.split = Some(SplitSpec::<Seconds> {
+        ratio: None,
+        kind: Some("ManualSplit".to_string()),
+        rnd_seed: None,
+        is_temporal: None,
+        offsets: None,
+        ranges: None,
+        backtesting_timestamp: None,
+        split_column: Some("users.split_bucket".to_string()),
+        split_output_column: None,
+        manual_train_values: Some(vec!["0".to_string()]),
+        manual_val_values: Some(vec!["1".to_string()]),
+        manual_test_values: Some(vec!["2".to_string(), "None".to_string()]),
+    });
+
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let mut rows = HashMap::new();
+    for batch in receiver {
+        let split_idx = batch.schema().index_of("users.split_bucket").unwrap();
+        assert_eq!(batch.schema().field(split_idx).data_type(), &DataType::Utf8);
+        let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+        let split_values = batch
+            .column(split_idx)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        for i in 0..batch.num_rows() {
+            rows.insert(entities.value(i), split_values.value(i).to_string());
+        }
+    }
+    handle.join().unwrap().unwrap();
+
+    assert_eq!(rows.get(&0).map(String::as_str), Some("0"));
+    assert_eq!(rows.get(&1).map(String::as_str), Some("1"));
+    assert_eq!(rows.get(&2).map(String::as_str), Some("None"));
+    assert_eq!(rows.get(&3).map(String::as_str), Some("2"));
+    assert_eq!(rows.get(&4).map(String::as_str), Some("None"));
+}
+
+#[test]
+fn integ_split_projection_rejects_missing_split_column_for_manual_and_custom_splits() {
+    init_tracing();
+    for kind in ["ManualSplit", "CustomSplit"] {
+        let dir = tempfile::tempdir().unwrap();
+        let index = build_graph1(dir.path());
+        let mut plan = g1_temporal(
+            vec![Stage::<Seconds> {
+                ops: vec![count_orders_op("cnt", Some((0, 5000)))],
+                filter: None,
+            }],
+            vec![0],
+        );
+        plan.split = Some(SplitSpec::<Seconds> {
+            ratio: None,
+            kind: Some(kind.to_string()),
+            rnd_seed: None,
+            is_temporal: None,
+            offsets: None,
+            ranges: None,
+            backtesting_timestamp: None,
+            split_column: None,
+            split_output_column: None,
+            manual_train_values: Some(vec!["train".to_string()]),
+            manual_val_values: Some(vec!["val".to_string()]),
+            manual_test_values: Some(vec!["test".to_string()]),
+        });
+
+        let err = match diskgraph_train_table::ttgen_executor::execute(&plan, &index) {
+            Ok((receiver, handle)) => {
+                drop(receiver);
+                let _ = handle.join();
+                panic!("expected {kind} missing split_column validation to fail")
+            }
+            Err(err) => err,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&format!("{kind} requires split_column")),
+            "error should mention missing split_column for {kind}; got: {msg}"
+        );
+    }
 }
 
 #[test]
@@ -3283,6 +3438,147 @@ fn integ_link_array_with_frequency() {
             _ => panic!("unexpected entity {entity}"),
         }
     }
+}
+
+#[test]
+fn integ_custom_link_split_emits_aligned_split_array() {
+    use arrow_array::ListArray;
+
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+    let mut plan = g1_link_temporal(
+        vec![Stage::<Seconds> {
+            ops: vec![list_distinct_product_id_op("ld", Some((0, 5000)), None)],
+            filter: None,
+        }],
+        vec![0],
+        false, // no explode → array mode
+        true,
+    );
+    plan.split = Some(SplitSpec::<Seconds> {
+        ratio: None,
+        kind: Some("CustomLinkSplit".to_string()),
+        rnd_seed: None,
+        is_temporal: None,
+        offsets: None,
+        ranges: None,
+        backtesting_timestamp: None,
+        split_column: Some("orders.status".to_string()),
+        split_output_column: Some("__kumo_internal_split_column__".to_string()),
+        manual_train_values: Some(vec!["shipped".to_string()]),
+        manual_val_values: Some(vec!["pending".to_string()]),
+        manual_test_values: Some(vec!["returned".to_string()]),
+    });
+
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    for batch in receiver {
+        let target_idx = batch.schema().index_of("TARGET").unwrap();
+        let split_idx = batch
+            .schema()
+            .index_of("__kumo_internal_split_column__")
+            .unwrap();
+        let targets = batch.column(target_idx).as_any().downcast_ref::<ListArray>().unwrap();
+        let splits = batch.column(split_idx).as_any().downcast_ref::<ListArray>().unwrap();
+        for row in 0..batch.num_rows() {
+            assert_eq!(
+                targets.value_length(row),
+                splits.value_length(row),
+                "split labels must align with TARGET at row {row}"
+            );
+        }
+    }
+    handle.join().unwrap().unwrap();
+}
+
+#[test]
+fn integ_custom_link_split_rejects_unmatched_source_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+    let mut plan = g1_link_temporal(
+        vec![Stage::<Seconds> {
+            ops: vec![list_distinct_product_id_op("ld", Some((0, 5000)), None)],
+            filter: None,
+        }],
+        vec![0],
+        false,
+        true,
+    );
+    plan.split = Some(SplitSpec::<Seconds> {
+        ratio: None,
+        kind: Some("CustomLinkSplit".to_string()),
+        rnd_seed: None,
+        is_temporal: None,
+        offsets: None,
+        ranges: None,
+        backtesting_timestamp: None,
+        split_column: Some("products.brand".to_string()),
+        split_output_column: Some("__kumo_internal_split_column__".to_string()),
+        manual_train_values: Some(vec!["Nike".to_string()]),
+        manual_val_values: Some(vec!["Adidas".to_string()]),
+        manual_test_values: Some(vec!["Puma".to_string()]),
+    });
+
+    let err = match diskgraph_train_table::ttgen_executor::execute(&plan, &index) {
+        Ok((receiver, handle)) => {
+            drop(receiver);
+            let _ = handle.join();
+            panic!("expected CustomLinkSplit source-table validation to fail")
+        }
+        Err(err) => err,
+    };
+    let msg = err.to_string();
+    assert!(
+        msg.contains("CustomLinkSplit split_column 'products.brand' references table 'products'"),
+        "error should mention requested split source table; got: {msg}"
+    );
+    assert!(
+        msg.contains("ListDistinct traversed table(s): orders"),
+        "error should mention traversed ListDistinct table; got: {msg}"
+    );
+}
+
+#[test]
+fn integ_custom_link_split_rejects_missing_split_column() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+    let mut plan = g1_link_temporal(
+        vec![Stage::<Seconds> {
+            ops: vec![list_distinct_product_id_op("ld", Some((0, 5000)), None)],
+            filter: None,
+        }],
+        vec![0],
+        false,
+        true,
+    );
+    plan.split = Some(SplitSpec::<Seconds> {
+        ratio: None,
+        kind: Some("CustomLinkSplit".to_string()),
+        rnd_seed: None,
+        is_temporal: None,
+        offsets: None,
+        ranges: None,
+        backtesting_timestamp: None,
+        split_column: None,
+        split_output_column: Some("__kumo_internal_split_column__".to_string()),
+        manual_train_values: Some(vec!["shipped".to_string()]),
+        manual_val_values: Some(vec!["pending".to_string()]),
+        manual_test_values: Some(vec!["returned".to_string()]),
+    });
+
+    let err = match diskgraph_train_table::ttgen_executor::execute(&plan, &index) {
+        Ok((receiver, handle)) => {
+            drop(receiver);
+            let _ = handle.join();
+            panic!("expected CustomLinkSplit missing split_column validation to fail")
+        }
+        Err(err) => err,
+    };
+    let msg = err.to_string();
+    assert!(
+        msg.contains("CustomLinkSplit requires split_column"),
+        "error should mention missing CustomLinkSplit split_column; got: {msg}"
+    );
 }
 
 // ─── Tests: Link prediction — array without frequency (CLASSIFY array) ───────

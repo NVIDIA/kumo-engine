@@ -46,7 +46,7 @@ use arrow_array::builder::{
 };
 use arrow_array::{
     Array, BooleanArray, Float64Array, Int64Array, ListArray, RecordBatch, StringArray,
-    TimestampNanosecondArray,
+    TimestampNanosecondArray, UInt8Array,
 };
 use arrow_schema::{DataType, Field, Schema};
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
@@ -919,32 +919,59 @@ fn is_link_array_batches(batches: &[RecordBatch]) -> bool {
     }
 }
 
-fn transform_random_link_split_link_array(
+const STAGE_ID_COL_NAME: &str = "__internal_kumo_split_id_col__";
+
+struct ExplodedLinkData {
+    row_targets: Vec<Vec<ScalarCell>>,
+    row_freqs: Vec<Vec<i64>>,
+    row_scalar_cols: Vec<Vec<ScalarCell>>,
+    exploded_refs: Vec<(usize, usize)>,
+    split_col_values: Vec<String>,
+    schema: arrow_schema::SchemaRef,
+    target_idx: usize,
+    freq_idx: Option<usize>,
+    split_col_idx: Option<usize>,
+}
+
+fn collect_link_array_batches(
     batches: &[RecordBatch],
-    ratio: Vec<f64>,
-    seed: Option<u64>,
-) -> anyhow::Result<(Vec<RecordBatch>, Vec<u8>)> {
+    split_col: Option<&str>,
+    kind_label: &str,
+) -> anyhow::Result<ExplodedLinkData> {
     let first = batches.first().ok_or_else(|| {
-        anyhow::anyhow!("RandomLinkSplit cannot transform empty LinkArray batches")
+        anyhow::anyhow!("{kind_label} cannot transform empty LinkArray batches")
     })?;
     let schema = first.schema();
 
     let target_idx = schema
         .index_of("TARGET")
-        .map_err(|_| anyhow::anyhow!("RandomLinkSplit requires TARGET column"))?;
+        .map_err(|_| anyhow::anyhow!("{kind_label} requires TARGET column"))?;
     let freq_idx = schema.index_of("__kumo_internal_frequency_column__").ok();
-
-    let target_field = schema.field(target_idx);
-    let DataType::List(_) = target_field.data_type() else {
+    if !matches!(schema.field(target_idx).data_type(), DataType::List(_)) {
         return Err(anyhow::anyhow!(
-            "RandomLinkSplit LinkArray transform requires TARGET as List type"
+            "{kind_label} LinkArray transform requires TARGET as List type"
         ));
+    }
+
+    let split_col_idx = if let Some(name) = split_col {
+        let idx = schema
+            .index_of(name)
+            .map_err(|_| anyhow::anyhow!("{kind_label} requires split column {name:?}"))?;
+        if !matches!(schema.field(idx).data_type(), DataType::List(_)) {
+            return Err(anyhow::anyhow!(
+                "{kind_label} requires split column {name:?} to be List type"
+            ));
+        }
+        Some(idx)
+    } else {
+        None
     };
 
     let mut row_targets: Vec<Vec<ScalarCell>> = Vec::new();
     let mut row_freqs: Vec<Vec<i64>> = Vec::new();
     let mut row_scalar_cols: Vec<Vec<ScalarCell>> = vec![Vec::new(); schema.fields().len()];
     let mut exploded_refs: Vec<(usize, usize)> = Vec::new();
+    let mut split_col_values: Vec<String> = Vec::new();
 
     for batch in batches {
         for i in 0..batch.num_rows() {
@@ -952,8 +979,7 @@ fn transform_random_link_split_link_array(
                 .column(target_idx)
                 .as_any()
                 .downcast_ref::<ListArray>()
-                .ok_or_else(|| anyhow::anyhow!("RandomLinkSplit TARGET must be ListArray"))?;
-
+                .ok_or_else(|| anyhow::anyhow!("{kind_label} TARGET must be ListArray"))?;
             let values = list.values();
             let start = list.value_offsets()[i] as usize;
             let end = list.value_offsets()[i + 1] as usize;
@@ -982,13 +1008,42 @@ fn transform_random_link_split_link_array(
                 }
                 if fv.len() != targets.len() {
                     return Err(anyhow::anyhow!(
-                        "frequency/target list length mismatch for RandomLinkSplit"
+                        "frequency/target list length mismatch for {kind_label}"
                     ));
                 }
                 fv
             } else {
                 vec![1; targets.len()]
             };
+
+            if let Some(sci) = split_col_idx {
+                let slist = batch
+                    .column(sci)
+                    .as_any()
+                    .downcast_ref::<ListArray>()
+                    .ok_or_else(|| anyhow::anyhow!("{kind_label} split column must be ListArray"))?;
+                let ss = slist.value_offsets()[i] as usize;
+                let se = slist.value_offsets()[i + 1] as usize;
+                if se - ss != targets.len() {
+                    return Err(anyhow::anyhow!(
+                        "{kind_label} split-column list length mismatch with TARGET at row {i}: split={} target={}",
+                        se - ss,
+                        targets.len(),
+                    ));
+                }
+                let svals = slist.values();
+                for j in ss..se {
+                    let cell = scalar_from_array_at(svals.as_ref(), j, "split_col.item")?;
+                    split_col_values.push(match cell {
+                        ScalarCell::Str(s) => s,
+                        ScalarCell::Int(v) => v.to_string(),
+                        ScalarCell::Float(v) => v.to_string(),
+                        ScalarCell::Bool(v) => v.to_string(),
+                        ScalarCell::Ts(v) => v.to_string(),
+                        ScalarCell::Null => "None".to_string(),
+                    });
+                }
+            }
 
             let row_idx = row_targets.len();
             for link_idx in 0..targets.len() {
@@ -999,13 +1054,16 @@ fn transform_random_link_split_link_array(
             row_freqs.push(freqs);
 
             for col_idx in 0..schema.fields().len() {
-                if col_idx == target_idx || Some(col_idx) == freq_idx {
+                if col_idx == target_idx
+                    || Some(col_idx) == freq_idx
+                    || Some(col_idx) == split_col_idx
+                {
                     continue;
                 }
                 let field = schema.field(col_idx);
                 if matches!(field.data_type(), DataType::List(_)) {
                     return Err(anyhow::anyhow!(
-                        "RandomLinkSplit unsupported passthrough list column: {}",
+                        "{kind_label} unsupported passthrough list column: {}",
                         field.name()
                     ));
                 }
@@ -1018,16 +1076,69 @@ fn transform_random_link_split_link_array(
         }
     }
 
-    if exploded_refs.is_empty() {
-        return Ok((vec![first.slice(0, 0)], Vec::new()));
-    }
+    Ok(ExplodedLinkData {
+        row_targets,
+        row_freqs,
+        row_scalar_cols,
+        exploded_refs,
+        split_col_values,
+        schema,
+        target_idx,
+        freq_idx,
+        split_col_idx,
+    })
+}
 
-    let mut perm: Vec<usize> = (0..exploded_refs.len()).collect();
-    let mut rng = StdRng::seed_from_u64(seed.unwrap_or(0));
-    use rand::seq::SliceRandom;
-    perm.shuffle(&mut rng);
-    let link_stage = split_assignments::assign_by_ratio_on_perm(exploded_refs.len(), ratio, perm)
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+fn regroup_output_schema(
+    input_schema: &arrow_schema::SchemaRef,
+    split_col_idx: Option<usize>,
+) -> arrow_schema::SchemaRef {
+    let mut fields: Vec<Field> = Vec::with_capacity(input_schema.fields().len() + 1);
+    for (col_idx, field) in input_schema.fields().iter().enumerate() {
+        if Some(col_idx) == split_col_idx {
+            continue;
+        }
+        fields.push(field.as_ref().clone());
+    }
+    fields.push(Field::new(STAGE_ID_COL_NAME, DataType::UInt8, false));
+    Arc::new(Schema::new(fields))
+}
+
+fn regroup_link_array_by_stage(
+    data: ExplodedLinkData,
+    link_stages: Vec<u8>,
+    kind_label: &str,
+) -> anyhow::Result<(Vec<RecordBatch>, Vec<u8>)> {
+    let ExplodedLinkData {
+        row_targets,
+        row_freqs,
+        row_scalar_cols,
+        exploded_refs,
+        schema,
+        target_idx,
+        freq_idx,
+        split_col_idx,
+        ..
+    } = data;
+    let out_schema = regroup_output_schema(&schema, split_col_idx);
+
+    if exploded_refs.is_empty() {
+        let empty_cols: Vec<Arc<dyn Array>> = out_schema
+            .fields()
+            .iter()
+            .map(|f| arrow_array::new_empty_array(f.data_type()))
+            .collect();
+        let empty = RecordBatch::try_new(out_schema.clone(), empty_cols)
+            .map_err(|e| anyhow::anyhow!("failed to build empty {kind_label} batch: {e}"))?;
+        return Ok((vec![empty], Vec::new()));
+    }
+    if link_stages.len() != exploded_refs.len() {
+        return Err(anyhow::anyhow!(
+            "{kind_label} stage/link count mismatch: stages={} links={}",
+            link_stages.len(),
+            exploded_refs.len(),
+        ));
+    }
 
     let mut grouped_targets: Vec<[Vec<ScalarCell>; 3]> = (0..row_targets.len())
         .map(|_| [Vec::new(), Vec::new(), Vec::new()])
@@ -1037,10 +1148,7 @@ fn transform_random_link_split_link_array(
         .collect();
 
     for (eid, (row_idx, link_idx)) in exploded_refs.iter().enumerate() {
-        let stage = *link_stage
-            .get(eid)
-            .ok_or_else(|| anyhow::anyhow!("RandomLinkSplit assignment index out of bounds"))?
-            as usize;
+        let stage = link_stages[eid] as usize;
         if stage > 2 {
             continue;
         }
@@ -1052,7 +1160,6 @@ fn transform_random_link_split_link_array(
     let mut out_targets: Vec<Vec<ScalarCell>> = Vec::new();
     let mut out_freqs: Vec<Vec<i64>> = Vec::new();
     let mut out_assignments: Vec<u8> = Vec::new();
-
     for row_idx in 0..row_targets.len() {
         for stage in 0..3usize {
             if grouped_targets[row_idx][stage].is_empty() {
@@ -1065,14 +1172,17 @@ fn transform_random_link_split_link_array(
         }
     }
 
-    let mut columns: Vec<Arc<dyn Array>> = Vec::with_capacity(schema.fields().len());
+    let mut columns: Vec<Arc<dyn Array>> = Vec::with_capacity(out_schema.fields().len());
     for (col_idx, field) in schema.fields().iter().enumerate() {
+        if Some(col_idx) == split_col_idx {
+            continue;
+        }
         let col = if col_idx == target_idx {
             build_list_array_from_cells(field.data_type(), &out_targets, "TARGET")?
         } else if Some(col_idx) == freq_idx {
             if !matches!(field.data_type(), DataType::List(_)) {
                 return Err(anyhow::anyhow!(
-                    "RandomLinkSplit frequency column must be List type"
+                    "{kind_label} frequency column must be List type"
                 ));
             }
             let mut b = ListBuilder::new(Int64Builder::new());
@@ -1092,10 +1202,52 @@ fn transform_random_link_split_link_array(
         };
         columns.push(col);
     }
+    columns.push(Arc::new(UInt8Array::from(out_assignments.clone())));
 
-    let out_batch = RecordBatch::try_new(schema.clone(), columns)
-        .map_err(|e| anyhow::anyhow!("failed to build RandomLinkSplit transformed batch: {e}"))?;
+    let out_batch = RecordBatch::try_new(out_schema.clone(), columns)
+        .map_err(|e| anyhow::anyhow!("failed to build {kind_label} transformed batch: {e}"))?;
     Ok((vec![out_batch], out_assignments))
+}
+
+fn transform_random_link_split_link_array(
+    batches: &[RecordBatch],
+    ratio: Vec<f64>,
+    seed: Option<u64>,
+) -> anyhow::Result<(Vec<RecordBatch>, Vec<u8>)> {
+    let data = collect_link_array_batches(batches, None, "RandomLinkSplit")?;
+    let link_stages = if data.exploded_refs.is_empty() {
+        Vec::new()
+    } else {
+        let mut perm: Vec<usize> = (0..data.exploded_refs.len()).collect();
+        let mut rng = StdRng::seed_from_u64(seed.unwrap_or(0));
+        use rand::seq::SliceRandom;
+        perm.shuffle(&mut rng);
+        split_assignments::assign_by_ratio_on_perm(data.exploded_refs.len(), ratio, perm)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?
+    };
+    regroup_link_array_by_stage(data, link_stages, "RandomLinkSplit")
+}
+
+fn transform_custom_link_split_link_array(
+    batches: &[RecordBatch],
+    split_col: &str,
+    manual_train_values: Vec<String>,
+    manual_val_values: Vec<String>,
+    manual_test_values: Vec<String>,
+) -> anyhow::Result<(Vec<RecordBatch>, Vec<u8>)> {
+    let data = collect_link_array_batches(batches, Some(split_col), "CustomLinkSplit")?;
+    let link_stages = if data.exploded_refs.is_empty() {
+        Vec::new()
+    } else {
+        split_assignments::assign_manual_split(
+            data.split_col_values.clone(),
+            manual_train_values,
+            manual_val_values,
+            manual_test_values,
+        )
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?
+    };
+    regroup_link_array_by_stage(data, link_stages, "CustomLinkSplit")
 }
 
 use crate::artifact_helpers::{
@@ -1404,13 +1556,24 @@ fn parse_optional_string_list(split_cfg: &Value, key: &str) -> Vec<String> {
 }
 
 fn parse_split_column_name(split_cfg: &Value) -> Option<String> {
+    for key in ["split_output_column", "split_projection"] {
+        if let Some(s) = split_cfg.get(key).and_then(|v| v.as_str()) {
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
     match split_cfg.get("col") {
         Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
         Some(Value::Object(m)) => m
             .get("name")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
-        _ => None,
+        _ => split_cfg
+            .get("split_column")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string()),
     }
 }
 
@@ -2438,10 +2601,10 @@ pub fn execute_tt_plan_materialize_with_split(
                         .as_deref()
                         .ok_or_else(|| anyhow::anyhow!("ColumnSplit requires split.col name"))?;
                     column_sort_values.append(&mut extract_sort_values(batch, col_name)?);
-                } else if family == "ManualSplit" {
+                } else if family == "ManualSplit" || family == "CustomSplit" {
                     let col_name = split_column_name
                         .as_deref()
-                        .ok_or_else(|| anyhow::anyhow!("ManualSplit requires split.col name"))?;
+                        .ok_or_else(|| anyhow::anyhow!("{family} requires split.col name"))?;
                     manual_values.append(&mut extract_string_values(batch, col_name)?);
                 }
                 if let Ok(mut e) = extract_entity_strings(batch) {
@@ -2581,10 +2744,10 @@ pub fn execute_tt_plan_materialize_with_split(
                         )
                         .map_err(|e| anyhow::anyhow!(e.to_string()))?
                     }
-                    "ManualSplit" => {
+                    "ManualSplit" | "CustomSplit" => {
                         if manual_values.len() != row_offset as usize {
                             return Err(anyhow::anyhow!(
-                                "ManualSplit collected values mismatch rows (values={}, rows={})",
+                                "{family} collected values mismatch rows (values={}, rows={})",
                                 manual_values.len(),
                                 row_offset
                             ));
@@ -2596,6 +2759,43 @@ pub fn execute_tt_plan_materialize_with_split(
                             manual_test_values.clone(),
                         )
                         .map_err(|e| anyhow::anyhow!(e.to_string()))?
+                    }
+                    "CustomLinkSplit" => {
+                        if !is_link_array_batches(&final_batches) {
+                            return Err(anyhow::anyhow!(
+                                "CustomLinkSplit requires array-target link-prediction batches"
+                            ));
+                        }
+                        let col_name = split_column_name
+                            .as_deref()
+                            .ok_or_else(|| anyhow::anyhow!("CustomLinkSplit requires split.col name"))?;
+                        let (transformed_batches, transformed_assignments) =
+                            transform_custom_link_split_link_array(
+                                &final_batches,
+                                col_name,
+                                manual_train_values.clone(),
+                                manual_val_values.clone(),
+                                manual_test_values.clone(),
+                            )?;
+                        final_batches = transformed_batches;
+                        row_offset = row_count_of_batches(&final_batches) as i64;
+
+                        if let Ok(mut entities) = final_batches
+                            .iter()
+                            .map(extract_entity_strings)
+                            .collect::<anyhow::Result<Vec<_>>>()
+                            .map(|chunks| chunks.into_iter().flatten().collect::<Vec<_>>())
+                        {
+                            entity_values = std::mem::take(&mut entities);
+                        }
+                        timestamps_ns.clear();
+                        include_mask = None;
+                        for batch in &final_batches {
+                            extend_timestamps_ns_from_batch(batch, &mut timestamps_ns);
+                            extend_include_mask_from_batch(batch, &mut include_mask);
+                        }
+
+                        transformed_assignments
                     }
                     "RandomLinkSplit" => {
                         let ratio = parse_ratio(split_cfg)?;
@@ -3872,6 +4072,107 @@ mod tests {
             assert!(!warr.is_null(i));
             assert!((warr.value(i) - 2.5).abs() < 1e-9);
         }
+    }
+
+    fn make_custom_link_split_batch(targets: &[&str], split_labels: &[&str]) -> RecordBatch {
+        let target_values = {
+            let mut b = ListBuilder::new(StringBuilder::new());
+            for target in targets {
+                b.values().append_value(target);
+            }
+            b.append(true);
+            Arc::new(b.finish()) as Arc<dyn Array>
+        };
+        let freq_values = {
+            let mut b = ListBuilder::new(Int64Builder::new());
+            for _ in targets {
+                b.values().append_value(1);
+            }
+            b.append(true);
+            Arc::new(b.finish()) as Arc<dyn Array>
+        };
+        let split_values = {
+            let mut b = ListBuilder::new(StringBuilder::new());
+            for label in split_labels {
+                b.values().append_value(label);
+            }
+            b.append(true);
+            Arc::new(b.finish()) as Arc<dyn Array>
+        };
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("ENTITY", DataType::Int64, true),
+            Field::new(
+                "TIMESTAMP",
+                DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new(
+                "TARGET",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+                true,
+            ),
+            Field::new(
+                "__kumo_internal_frequency_column__",
+                DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
+                true,
+            ),
+            Field::new(
+                "__kumo_internal_split_column__",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+                true,
+            ),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![Some(1)])),
+                Arc::new(TimestampNanosecondArray::from(vec![Some(100)])),
+                target_values,
+                freq_values,
+                split_values,
+            ],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_transform_custom_link_split_link_array_basic() {
+        let batch = make_custom_link_split_batch(&["a", "b", "c"], &["train", "val", "train"]);
+        let (out_batches, assignments) = transform_custom_link_split_link_array(
+            &[batch],
+            "__kumo_internal_split_column__",
+            vec!["train".to_string()],
+            vec!["val".to_string()],
+            vec!["test".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(row_count_of_batches(&out_batches), assignments.len());
+        assert_eq!(assignments, vec![0u8, 1]);
+        let out = &out_batches[0];
+        assert!(out.schema().index_of("__kumo_internal_split_column__").is_err());
+        let stage_idx = out.schema().index_of("__internal_kumo_split_id_col__").unwrap();
+        let stage_arr = out
+            .column(stage_idx)
+            .as_any()
+            .downcast_ref::<UInt8Array>()
+            .unwrap();
+        assert_eq!(stage_arr.values(), &[0u8, 1]);
+    }
+
+    #[test]
+    fn test_transform_custom_link_split_rejects_misaligned_arrays() {
+        let batch = make_custom_link_split_batch(&["a", "b", "c"], &["train", "val"]);
+        let err = transform_custom_link_split_link_array(
+            &[batch],
+            "__kumo_internal_split_column__",
+            vec!["train".to_string()],
+            vec!["val".to_string()],
+            vec!["test".to_string()],
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("split-column list length mismatch with TARGET"));
     }
 
     #[test]

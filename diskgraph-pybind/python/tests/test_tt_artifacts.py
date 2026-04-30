@@ -376,6 +376,28 @@ def test_build_artifacts_for_existing_table_rejects_random_link_split(tmp_path: 
         )
 
 
+def test_build_artifacts_for_existing_table_rejects_custom_link_split(tmp_path: Path, monkeypatch):
+    table_path = tmp_path / 'existing.parquet'
+    _write_min_table(table_path)
+
+    def _fail_if_called(*_args, **_kwargs):
+        raise AssertionError('compute_dense_split_assignments should not be called')
+
+    monkeypatch.setattr(tt_artifacts, 'compute_dense_split_assignments', _fail_if_called)
+
+    with pytest.raises(DiskgraphConfigError, match='does not support CustomLinkSplit'):
+        tt_artifacts.build_train_table_artifacts_for_existing_table(
+            output_path=str(table_path),
+            split_config=SplitSpec(
+                kind='CustomLinkSplit',
+                split_column='orders.bucket',
+                manual_train_values=['train'],
+                manual_val_values=['val'],
+                manual_test_values=['test'],
+            ),
+        )
+
+
 def test_build_artifacts_for_existing_table_fails_row_count_mismatch(tmp_path: Path, monkeypatch):
     table_path = tmp_path / 'existing.parquet'
     _write_min_table(table_path)

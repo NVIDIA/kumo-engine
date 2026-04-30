@@ -2,7 +2,7 @@
 //!
 //! Runs once on the main thread before the parallel entity loop.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crate::errors::{TTGenError, TTGenResult};
@@ -57,6 +57,21 @@ pub struct ResolvedPlan<U: UnitSystem> {
 
     /// Semantic type of the target column ("numerical", "categorical", etc.).
     pub target_stype: String,
+    pub split_projection: Option<ResolvedSplitProjection>,
+}
+
+#[derive(Clone)]
+struct SplitProjectionRequest {
+    kind: SplitProjectionKind,
+    source_table: String,
+    source_column: String,
+    output_name: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SplitProjectionKind {
+    ScalarEntity,
+    LinkArray,
 }
 
 pub struct ResolvedStage<U: UnitSystem> {
@@ -118,12 +133,19 @@ pub struct ResolvedAggregate<U: UnitSystem> {
     /// after the anchor timestamp).
     pub target_temporal_create_col_idx: Option<usize>,
     pub target_temporal_end_col_idx: Option<usize>,
+    pub link_split_col_idx: Option<usize>,
 }
 
 pub struct ResolvedColumn {
     pub alias_idx: usize,
     pub table: Arc<TableReader>,
     pub col_idx: usize,
+}
+
+pub struct ResolvedSplitProjection {
+    pub output_name: String,
+    pub entity_col_idx: Option<usize>,
+    pub dtype: DataType,
 }
 
 pub struct ResolvedCompare {
@@ -304,13 +326,23 @@ pub fn resolve_plan<U: UnitSystem>(
 
     // 5. Collect all entity column references for pre-resolution
     let entity_col_indices = collect_entity_col_refs(plan, &entity_ctx)?;
+    let split_request = split_projection_request(plan)?;
 
     // 6. Resolve stages
     let mut resolved_stages = Vec::new();
     for stage in &plan.stages {
-        let resolved = resolve_stage(stage, reader, &entity_table, &entity_ctx, &alias_to_idx, &entity_col_indices)?;
+        let resolved = resolve_stage(
+            stage,
+            reader,
+            &entity_table,
+            &entity_ctx,
+            &alias_to_idx,
+            &entity_col_indices,
+            split_request.as_ref(),
+        )?;
         resolved_stages.push(resolved);
     }
+    validate_link_split_projection_attached(split_request.as_ref(), &resolved_stages)?;
 
     // 7. Determine target alias and dtype
     let target_alias_idx = if num_aliases > 0 {
@@ -376,6 +408,7 @@ pub fn resolve_plan<U: UnitSystem>(
         .as_ref()
         .and_then(|t| t.lag_timesteps)
         .unwrap_or(0);
+    let split_projection = resolve_split_projection(plan, &entity_ctx, split_request.as_ref())?;
 
     Ok(ResolvedPlan {
         entity_table_spec: plan.entity.clone(),
@@ -402,10 +435,153 @@ pub fn resolve_plan<U: UnitSystem>(
         target_stype: plan.target_stype.clone().ok_or_else(|| {
             TTGenError::InvalidPlan("target_stype is required".to_string())
         })?,
+        split_projection,
     })
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+fn split_projection_request<U: UnitSystem>(
+    plan: &DiskGraphTTPlan<U>,
+) -> TTGenResult<Option<SplitProjectionRequest>> {
+    let Some(split) = &plan.split else {
+        return Ok(None);
+    };
+    let (kind, split_kind) = match split.kind.as_deref() {
+        Some("ManualSplit") => (SplitProjectionKind::ScalarEntity, "ManualSplit"),
+        Some("CustomSplit") => (SplitProjectionKind::ScalarEntity, "CustomSplit"),
+        Some("CustomLinkSplit") => (SplitProjectionKind::LinkArray, "CustomLinkSplit"),
+        _ => return Ok(None),
+    };
+    let split_column = split
+        .split_column
+        .as_deref()
+        .ok_or_else(|| TTGenError::InvalidPlan(format!("{split_kind} requires split_column")))?;
+    let (table_name, column_name) = split_column_table_and_column(split_column, &plan.entity.table);
+    Ok(Some(SplitProjectionRequest {
+        kind,
+        source_table: table_name,
+        source_column: column_name,
+        output_name: split
+            .split_output_column
+            .clone()
+            .unwrap_or_else(|| split_column.to_string()),
+    }))
+}
+
+fn resolve_split_projection<U: UnitSystem>(
+    plan: &DiskGraphTTPlan<U>,
+    entity_ctx: &Option<RowPackContext>,
+    request: Option<&SplitProjectionRequest>,
+) -> TTGenResult<Option<ResolvedSplitProjection>> {
+    let Some(request) = request else {
+        return Ok(None);
+    };
+    if request.kind == SplitProjectionKind::LinkArray {
+        return Ok(Some(ResolvedSplitProjection {
+            output_name: request.output_name.clone(),
+            entity_col_idx: None,
+            dtype: DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+        }));
+    }
+
+    let split_kind = plan
+        .split
+        .as_ref()
+        .and_then(|s| s.kind.as_deref())
+        .unwrap_or("ManualSplit");
+    let split_column = plan
+        .split
+        .as_ref()
+        .and_then(|s| s.split_column.as_deref())
+        .unwrap_or(&request.source_column);
+    if request.source_table != plan.entity.table {
+        return Err(TTGenError::InvalidPlan(format!(
+            "{split_kind} split_column must reference entity table '{}' for scalar tt-gen projection, got '{}'",
+            plan.entity.table, split_column
+        )));
+    }
+
+    let col_idx = find_col_idx_in_context(entity_ctx, &request.source_column)
+        .map_err(|e| TTGenError::SchemaError(format!("resolving {split_kind} split_column: {}", e)))?;
+    Ok(Some(ResolvedSplitProjection {
+        output_name: request.output_name.clone(),
+        entity_col_idx: Some(col_idx),
+        dtype: DataType::Utf8,
+    }))
+}
+
+fn validate_link_split_projection_attached<U: UnitSystem>(
+    request: Option<&SplitProjectionRequest>,
+    stages: &[ResolvedStage<U>],
+) -> TTGenResult<()> {
+    let Some(request) = request else {
+        return Ok(());
+    };
+    if request.kind != SplitProjectionKind::LinkArray {
+        return Ok(());
+    }
+
+    let mut has_attached_projection = false;
+    let mut traversed_tables = BTreeSet::new();
+    for stage in stages {
+        for op in &stage.ops {
+            collect_list_distinct_split_projection_state(
+                op,
+                &mut has_attached_projection,
+                &mut traversed_tables,
+            );
+        }
+    }
+    if has_attached_projection {
+        return Ok(());
+    }
+
+    let traversed = if traversed_tables.is_empty() {
+        "none".to_string()
+    } else {
+        traversed_tables.into_iter().collect::<Vec<_>>().join(", ")
+    };
+    Err(TTGenError::InvalidPlan(format!(
+        "CustomLinkSplit split_column '{}.{}' references table '{}', but no ListDistinct aggregate in the plan traverses that table; ListDistinct traversed table(s): {}",
+        request.source_table, request.source_column, request.source_table, traversed
+    )))
+}
+
+fn collect_list_distinct_split_projection_state<U: UnitSystem>(
+    op: &ResolvedOp<U>,
+    has_attached_projection: &mut bool,
+    traversed_tables: &mut BTreeSet<String>,
+) {
+    match op {
+        ResolvedOp::Aggregate(agg) if agg.func == AggFunc::ListDistinct => {
+            if let Some(edge) = agg.path.last() {
+                traversed_tables.insert(edge.dst_table.node_type().to_string());
+            }
+            if agg.link_split_col_idx.is_some() {
+                *has_attached_projection = true;
+            }
+        }
+        ResolvedOp::Autoregression(agg) => collect_list_distinct_split_projection_state(
+            &agg.target_op,
+            has_attached_projection,
+            traversed_tables,
+        ),
+        _ => {}
+    }
+}
+
+fn split_column_table_and_column<'a>(
+    split_column: &'a str,
+    default_table: &'a str,
+) -> (String, String) {
+    match split_column.rsplit_once('.') {
+        Some((table, column)) if !table.is_empty() && !column.is_empty() => {
+            (table.to_string(), column.to_string())
+        }
+        _ => (default_table.to_string(), split_column.to_string()),
+    }
+}
 
 fn find_col_idx_in_context(
     ctx: &Option<RowPackContext>,
@@ -497,10 +673,19 @@ fn resolve_stage<U: UnitSystem>(
     entity_ctx: &Option<RowPackContext>,
     alias_to_idx: &HashMap<String, usize>,
     entity_col_indices: &[(String, usize)],
+    split_request: Option<&SplitProjectionRequest>,
 ) -> TTGenResult<ResolvedStage<U>> {
     let mut ops = Vec::new();
     for op in &stage.ops {
-        let resolved = resolve_op(op, reader, entity_table, entity_ctx, alias_to_idx, entity_col_indices)?;
+        let resolved = resolve_op(
+            op,
+            reader,
+            entity_table,
+            entity_ctx,
+            alias_to_idx,
+            entity_col_indices,
+            split_request,
+        )?;
         ops.push(resolved);
     }
 
@@ -520,6 +705,7 @@ fn resolve_op<U: UnitSystem>(
     _entity_ctx: &Option<RowPackContext>,
     alias_to_idx: &HashMap<String, usize>,
     entity_col_indices: &[(String, usize)],
+    split_request: Option<&SplitProjectionRequest>,
 ) -> TTGenResult<ResolvedOp<U>> {
     match op {
         Op::Aggregate {
@@ -630,6 +816,21 @@ fn resolve_op<U: UnitSystem>(
                 );
             }
 
+            let link_split_col_idx = match (func, split_request) {
+                (AggFunc::ListDistinct, Some(req))
+                    if req.kind == SplitProjectionKind::LinkArray
+                        && req.source_table == dst_table.node_type() =>
+                {
+                    Some(find_col_idx_in_context(&dst_ctx, &req.source_column).map_err(|e| {
+                        TTGenError::SchemaError(format!(
+                            "resolving CustomLinkSplit split_column: {}",
+                            e
+                        ))
+                    })?)
+                }
+                _ => None,
+            };
+
             Ok(ResolvedOp::Aggregate(ResolvedAggregate {
                 alias_idx,
                 path: resolved_path,
@@ -641,6 +842,7 @@ fn resolve_op<U: UnitSystem>(
                 target_pk_table,
                 target_temporal_create_col_idx,
                 target_temporal_end_col_idx,
+                link_split_col_idx,
             }))
         }
         Op::HasEdges {
@@ -743,7 +945,15 @@ fn resolve_op<U: UnitSystem>(
         }
         Op::Autoregression { alias, target_op, lag_offsets } => {
             let alias_idx = alias_to_idx[alias];
-            let resolved_target = resolve_op(target_op, reader, _entity_table, _entity_ctx, alias_to_idx, entity_col_indices)?;
+            let resolved_target = resolve_op(
+                target_op,
+                reader,
+                _entity_table,
+                _entity_ctx,
+                alias_to_idx,
+                entity_col_indices,
+                split_request,
+            )?;
             Ok(ResolvedOp::Autoregression(ResolvedAutoregression {
                 alias_idx,
                 target_op: Box::new(resolved_target),

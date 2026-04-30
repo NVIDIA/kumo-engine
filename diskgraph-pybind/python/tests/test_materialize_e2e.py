@@ -474,6 +474,37 @@ class TestMaterializeSplit:
         assert result.get("split_assignments") is not None
         assert len(result["split_assignments"]) > 0
 
+    def test_manual_split_uses_projected_split_column(self, test_graph, tmp_path):
+        output = str(tmp_path / "tt.parquet")
+        split = {
+            "kind": "ManualSplit",
+            "split_column": "users.user_id",
+            "manual_train_values": ["alice"],
+            "manual_val_values": ["bob"],
+            "manual_test_values": ["carol"],
+        }
+        result = execute_tt_plan_materialize_with_split(
+            plan_json=_make_plan(timestamps=[1000, 2000, 3000], split=split),
+            index_path=test_graph,
+            output_path=output,
+            split_config_json=json.dumps(split),
+            split_family_hint="ManualSplit",
+            downsampling_config_json=_ds_config(),
+        )
+
+        assert result["rows_written"] > 0
+        assignments = result["split_assignments"]
+        assert assignments is not None
+        assert len(assignments) == result["rows_written"]
+        entities = pq.read_table(output, columns=["ENTITY"]).column("ENTITY").to_pylist()
+        expected = {"alice": 0, "bob": 1, "carol": 2}
+        assert len(entities) == len(assignments)
+        seen = set()
+        for entity, assignment in zip(entities, assignments):
+            assert assignment == expected[entity]
+            seen.add(entity)
+        assert seen == set(expected)
+
 
 class TestMaterializeColStats:
     """Verify col_stats are produced."""

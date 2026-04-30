@@ -63,6 +63,8 @@ pub struct SplitSpec<U: UnitSystem> {
     pub ranges: Option<Vec<(Abs<U>, Abs<U>)>>,
     pub backtesting_timestamp: Option<Abs<U>>,
     pub split_column: Option<String>,
+    #[serde(default, alias = "split_projection")]
+    pub split_output_column: Option<String>,
     pub manual_train_values: Option<Vec<String>>,
     pub manual_val_values: Option<Vec<String>>,
     pub manual_test_values: Option<Vec<String>>,
@@ -395,6 +397,7 @@ mod tests {
                 ranges: None,
                 backtesting_timestamp: None,
                 split_column: None,
+                split_output_column: None,
                 manual_train_values: None,
                 manual_val_values: None,
                 manual_test_values: None,

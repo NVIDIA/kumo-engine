@@ -260,3 +260,66 @@ def test_time_range_split_timestamp_unit_in_split_spec():
     spec2 = SplitSpec(kind='FixedSplit', ratio=[0.8, 0.1, 0.1])
     cfg2 = spec2.to_assignment_config()
     assert cfg2['timestamp_unit'] == 'seconds'  # default
+
+
+def test_custom_split_allowlisted_by_contract():
+    SplitSpec(
+        kind='CustomSplit',
+        split_column='users.bucket',
+        split_output_column='__kumo_internal_split_column__',
+        manual_train_values=['train'],
+        manual_val_values=['val'],
+        manual_test_values=['test'],
+    ).validate_for_compiler()
+
+
+def test_custom_link_split_allowlisted_by_contract():
+    SplitSpec(
+        kind='CustomLinkSplit',
+        split_column='orders.bucket',
+        split_output_column='__kumo_internal_split_column__',
+        manual_train_values=['train'],
+        manual_val_values=['val'],
+        manual_test_values=['test'],
+    ).validate_for_compiler()
+
+
+def test_custom_split_rehydrates_via_manual_assigner(tmp_path):
+    p = tmp_path / 'tt.parquet'
+    _write_tt(
+        p,
+        {
+            'arange': [0, 1, 2, 3, 4, 5],
+            '__kumo_internal_split_column__': ['train', 'train', 'val', 'test', 'train', 'val'],
+        },
+    )
+    assignments, meta = M.compute_dense_split_assignments(
+        train_table_path=str(p),
+        split_config=SplitSpec(
+            kind='CustomSplit',
+            split_column='users.bucket',
+            split_output_column='__kumo_internal_split_column__',
+            manual_train_values=['train'],
+            manual_val_values=['val'],
+            manual_test_values=['test'],
+        ),
+    )
+    assert meta['family'] == 'CustomSplit'
+    assert meta['authoritative'] is True
+    assert assignments.tolist() == [0, 0, 1, 2, 0, 1]
+
+
+def test_custom_link_split_rehydration_is_unsupported(tmp_path):
+    p = tmp_path / 'tt.parquet'
+    _write_tt(p, {'arange': [0, 1], 'SPLIT_COL': ['train', 'val']})
+    with pytest.raises(DiskgraphConfigError, match='CustomLinkSplit cannot be rehydrated'):
+        M.compute_dense_split_assignments(
+            train_table_path=str(p),
+            split_config=SplitSpec(
+                kind='CustomLinkSplit',
+                split_column='orders.bucket',
+                manual_train_values=['train'],
+                manual_val_values=['val'],
+                manual_test_values=['test'],
+            ),
+        )

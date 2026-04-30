@@ -44,6 +44,20 @@ pub enum OutputMode {
     },
 }
 
+/// Extra column emitted alongside each generated training-table row.
+#[derive(Debug, Clone)]
+pub struct ExtraColumnOutput {
+    pub name: String,
+    pub dtype: DataType,
+}
+
+/// Borrowed extra column value passed from the executor into the writer.
+#[derive(Debug, Clone, Copy)]
+pub enum ExtraValueRef<'a> {
+    Scalar(Option<&'a Value>),
+    List(&'a [Value]),
+}
+
 /// Per-thread batch writer that buffers rows and sends Arrow RecordBatches
 /// through a crossbeam channel for streaming consumption by Python.
 pub struct ChannelBatchWriter<U: UnitSystem> {
@@ -52,11 +66,14 @@ pub struct ChannelBatchWriter<U: UnitSystem> {
     mode: OutputMode,
     has_include_bit: bool,
     entity_dtype: DataType,
+    extra_column: Option<ExtraColumnOutput>,
 
     // Common buffers
     entity_buf: Vec<Value>,
     timestamp_buf: Vec<i64>,
     include_bit_buf: Vec<bool>,
+    extra_value_buf: Vec<Value>,
+    extra_list_value_buf: Vec<Vec<Value>>,
 
     // Node mode
     target_f64_buf: Vec<f64>,
@@ -93,6 +110,7 @@ impl<U: UnitSystem> ChannelBatchWriter<U> {
         include_entity_bit: bool,
         entity_dtype: DataType,
         time_col_name: &str,
+        extra_column: Option<ExtraColumnOutput>,
     ) -> TTGenResult<Self> {
         let mut fields = vec![
             Field::new("ENTITY", entity_dtype.clone(), false),
@@ -140,6 +158,10 @@ impl<U: UnitSystem> ChannelBatchWriter<U> {
             }
         }
 
+        if let Some(extra) = &extra_column {
+            fields.push(Field::new(&extra.name, extra.dtype.clone(), true));
+        }
+
         if include_entity_bit {
             fields.push(Field::new("ENTITY_INCLUDE_BIT", DataType::Boolean, false));
         }
@@ -151,9 +173,12 @@ impl<U: UnitSystem> ChannelBatchWriter<U> {
             mode,
             has_include_bit: include_entity_bit,
             entity_dtype,
+            extra_column,
             entity_buf: Vec::with_capacity(BATCH_SIZE),
             timestamp_buf: Vec::with_capacity(BATCH_SIZE),
             include_bit_buf: Vec::with_capacity(if include_entity_bit { BATCH_SIZE } else { 0 }),
+            extra_value_buf: Vec::new(),
+            extra_list_value_buf: Vec::new(),
             target_f64_buf: Vec::new(),
             target_bool_buf: Vec::new(),
             target_value_buf: Vec::new(),
@@ -179,10 +204,12 @@ impl<U: UnitSystem> ChannelBatchWriter<U> {
         entity: Value,
         timestamp: Abs<U>,
         target: &Value,
+        extra_value: ExtraValueRef<'_>,
         entity_include_bit: bool,
     ) -> TTGenResult<()> {
         self.entity_buf.push(entity);
         self.timestamp_buf.push(timestamp.raw());
+        self.push_extra_value(extra_value);
         match &self.mode {
             OutputMode::Node { target_dtype } if *target_dtype == DataType::Boolean => {
                 let b = match target {
@@ -221,10 +248,12 @@ impl<U: UnitSystem> ChannelBatchWriter<U> {
         timestamp: Abs<U>,
         autoregression: Vec<Value>,
         yoy: Option<Vec<Value>>,
+        extra_value: ExtraValueRef<'_>,
         entity_include_bit: bool,
     ) -> TTGenResult<()> {
         self.entity_buf.push(entity);
         self.timestamp_buf.push(timestamp.raw());
+        self.push_extra_value(extra_value);
         self.autoregression_list_buf.push(autoregression);
         if let OutputMode::Forecasting { yoy_dtype: Some(_), .. } = self.mode {
             self.yoy_list_buf.push(yoy.unwrap_or_default());
@@ -244,10 +273,12 @@ impl<U: UnitSystem> ChannelBatchWriter<U> {
         &mut self,
         entity: Value,
         timestamp: Abs<U>,
+        extra_value: ExtraValueRef<'_>,
         entity_include_bit: bool,
     ) -> TTGenResult<()> {
         self.entity_buf.push(entity);
         self.timestamp_buf.push(timestamp.raw());
+        self.push_extra_value(extra_value);
         if self.has_include_bit {
             self.include_bit_buf.push(entity_include_bit);
         }
@@ -265,10 +296,12 @@ impl<U: UnitSystem> ChannelBatchWriter<U> {
         timestamp: Abs<U>,
         target: Value,
         frequency: i64,
+        extra_value: ExtraValueRef<'_>,
         entity_include_bit: bool,
     ) -> TTGenResult<()> {
         self.entity_buf.push(entity);
         self.timestamp_buf.push(timestamp.raw());
+        self.push_extra_value(extra_value);
         self.target_value_buf.push(target);
         self.frequency_buf.push(frequency);
         if self.has_include_bit {
@@ -288,10 +321,12 @@ impl<U: UnitSystem> ChannelBatchWriter<U> {
         timestamp: Abs<U>,
         targets: Vec<Value>,
         frequencies: &[i64],
+        extra_value: ExtraValueRef<'_>,
         entity_include_bit: bool,
     ) -> TTGenResult<()> {
         self.entity_buf.push(entity);
         self.timestamp_buf.push(timestamp.raw());
+        self.push_extra_value(extra_value);
         self.target_value_list_buf.push(targets);
         self.frequency_list_buf.push(frequencies.to_vec());
         if self.has_include_bit {
@@ -301,6 +336,27 @@ impl<U: UnitSystem> ChannelBatchWriter<U> {
             self.flush_batch()?;
         }
         Ok(())
+    }
+
+    fn push_extra_value(&mut self, extra_value: ExtraValueRef<'_>) {
+        if let Some(extra) = &self.extra_column {
+            if matches!(extra.dtype, DataType::List(_)) {
+                let list = match extra_value {
+                    ExtraValueRef::List(values) => values.to_vec(),
+                    ExtraValueRef::Scalar(Some(Value::List(values))) => values.clone(),
+                    ExtraValueRef::Scalar(Some(value)) => vec![value.clone()],
+                    ExtraValueRef::Scalar(None) => Vec::new(),
+                };
+                self.extra_list_value_buf.push(list);
+            } else {
+                let value = match extra_value {
+                    ExtraValueRef::Scalar(Some(value)) => value.clone(),
+                    ExtraValueRef::Scalar(None) => Value::Str("None".to_string()),
+                    ExtraValueRef::List(values) => Value::List(values.to_vec()),
+                };
+                self.extra_value_buf.push(value);
+            }
+        }
     }
 
     /// Flush buffered rows as an Arrow RecordBatch and send through channel.
@@ -379,6 +435,15 @@ impl<U: UnitSystem> ChannelBatchWriter<U> {
                     let yoy_lists = std::mem::take(&mut self.yoy_list_buf);
                     columns.push(flush_value_list_buf(yoy_lists, inner_field.data_type()));
                 }
+            }
+        }
+
+        if let Some(extra) = &self.extra_column {
+            if let DataType::List(inner_field) = &extra.dtype {
+                let lists = std::mem::take(&mut self.extra_list_value_buf);
+                columns.push(flush_value_list_buf(lists, inner_field.data_type()));
+            } else {
+                columns.push(flush_value_buf(&mut self.extra_value_buf, &extra.dtype));
             }
         }
 
@@ -571,7 +636,7 @@ mod tests {
         entity_dtype: DataType,
     ) -> (ChannelBatchWriter<Seconds>, crossbeam_channel::Receiver<RecordBatch>) {
         let (sender, receiver) = bounded(64);
-        let writer = ChannelBatchWriter::new(sender, mode, include_entity_bit, entity_dtype, "TIMESTAMP")
+        let writer = ChannelBatchWriter::new(sender, mode, include_entity_bit, entity_dtype, "TIMESTAMP", None)
             .unwrap();
         (writer, receiver)
     }
@@ -590,7 +655,7 @@ mod tests {
         );
 
         for i in 0..100i64 {
-            writer.write_row(Value::Int(i), Abs::from_raw(i * 100), &Value::Float(i as f64 * 1.5), true)?;
+            writer.write_row(Value::Int(i), Abs::from_raw(i * 100), &Value::Float(i as f64 * 1.5), ExtraValueRef::Scalar(None), true)?;
         }
         let rows = writer.finish()?;
         assert_eq!(rows, 100);
@@ -621,9 +686,9 @@ mod tests {
             DataType::Int64,
         );
 
-        writer.write_row(Value::Int(0), Abs::from_raw(100), &Value::Float(1.0), true)?;
-        writer.write_row(Value::Int(1), Abs::from_raw(100), &Value::Float(2.0), false)?;
-        writer.write_row(Value::Int(2), Abs::from_raw(100), &Value::Float(3.0), true)?;
+        writer.write_row(Value::Int(0), Abs::from_raw(100), &Value::Float(1.0), ExtraValueRef::Scalar(None), true)?;
+        writer.write_row(Value::Int(1), Abs::from_raw(100), &Value::Float(2.0), ExtraValueRef::Scalar(None), false)?;
+        writer.write_row(Value::Int(2), Abs::from_raw(100), &Value::Float(3.0), ExtraValueRef::Scalar(None), true)?;
         let rows = writer.finish()?;
         assert_eq!(rows, 3);
 
@@ -649,7 +714,7 @@ mod tests {
 
         // Write more than BATCH_SIZE rows to trigger auto-flush
         for i in 0..(BATCH_SIZE as i64 + 100) {
-            writer.write_row(Value::Int(i), Abs::from_raw(i), &Value::Float(i as f64), true)?;
+            writer.write_row(Value::Int(i), Abs::from_raw(i), &Value::Float(i as f64), ExtraValueRef::Scalar(None), true)?;
         }
         let rows = writer.finish()?;
         assert_eq!(rows, BATCH_SIZE as u64 + 100);
@@ -671,9 +736,9 @@ mod tests {
             DataType::Int64,
         );
 
-        writer.write_row_exploded(Value::Int(0), Abs::from_raw(100), Value::Str("Nike".into()), 3, true)?;
-        writer.write_row_exploded(Value::Int(0), Abs::from_raw(100), Value::Str("Adidas".into()), 1, true)?;
-        writer.write_row_exploded(Value::Int(1), Abs::from_raw(200), Value::Str("Puma".into()), 2, true)?;
+        writer.write_row_exploded(Value::Int(0), Abs::from_raw(100), Value::Str("Nike".into()), 3, ExtraValueRef::Scalar(None), true)?;
+        writer.write_row_exploded(Value::Int(0), Abs::from_raw(100), Value::Str("Adidas".into()), 1, ExtraValueRef::Scalar(None), true)?;
+        writer.write_row_exploded(Value::Int(1), Abs::from_raw(200), Value::Str("Puma".into()), 2, ExtraValueRef::Scalar(None), true)?;
         let rows = writer.finish()?;
         assert_eq!(rows, 3);
 
@@ -702,8 +767,8 @@ mod tests {
             DataType::Int64,
         );
 
-        writer.write_row_exploded(Value::Int(0), Abs::from_raw(100), Value::Str("Nike".into()), 0, true)?;
-        writer.write_row_exploded(Value::Int(0), Abs::from_raw(100), Value::Str("Adidas".into()), 0, true)?;
+        writer.write_row_exploded(Value::Int(0), Abs::from_raw(100), Value::Str("Nike".into()), 0, ExtraValueRef::Scalar(None), true)?;
+        writer.write_row_exploded(Value::Int(0), Abs::from_raw(100), Value::Str("Adidas".into()), 0, ExtraValueRef::Scalar(None), true)?;
         let rows = writer.finish()?;
         assert_eq!(rows, 2);
 
@@ -729,9 +794,10 @@ mod tests {
             Abs::from_raw(100),
             vec![Value::Str("Nike".into()), Value::Str("Adidas".into())],
             &[3, 1],
+            ExtraValueRef::Scalar(None),
             true,
         )?;
-        writer.write_row_array(Value::Int(1), Abs::from_raw(200), vec![Value::Str("Puma".into())], &[2], true)?;
+        writer.write_row_array(Value::Int(1), Abs::from_raw(200), vec![Value::Str("Puma".into())], &[2], ExtraValueRef::Scalar(None), true)?;
         let rows = writer.finish()?;
         assert_eq!(rows, 2);
 

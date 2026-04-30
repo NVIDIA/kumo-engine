@@ -18,8 +18,8 @@ _RATIO_REQUIRED_FAMILIES = {
 _OFFSET_REQUIRED_FAMILIES = {'DateOffsetSplit'}
 _RANGES_REQUIRED_FAMILIES = {'TimeRangeSplit'}
 _BACKTESTING_REQUIRED_FAMILIES = {'BacktestingSplit'}
-_COLUMN_REQUIRED_FAMILIES = {'ColumnSplit', 'ManualSplit'}
-_MANUAL_VALUES_REQUIRED_FAMILIES = {'ManualSplit'}
+_COLUMN_REQUIRED_FAMILIES = {'ColumnSplit', 'ManualSplit', 'CustomSplit', 'CustomLinkSplit'}
+_MANUAL_VALUES_REQUIRED_FAMILIES = {'ManualSplit', 'CustomSplit', 'CustomLinkSplit'}
 _SUPPORTED_FAMILIES = {
     *_RATIO_REQUIRED_FAMILIES,
     *_OFFSET_REQUIRED_FAMILIES,
@@ -39,6 +39,7 @@ class SplitSpec:
     ranges: Optional[list[tuple[Any, Any]]] = None
     backtesting_timestamp: Optional[Any] = None
     split_column: Optional[str] = None
+    split_output_column: Optional[str] = None
     manual_train_values: Optional[list[str]] = None
     manual_val_values: Optional[list[str]] = None
     manual_test_values: Optional[list[str]] = None
@@ -62,6 +63,9 @@ class SplitSpec:
         if self.split_column is not None:
             cfg['col'] = {'name': self.split_column}
             cfg['split_column'] = self.split_column
+        if self.split_output_column is not None:
+            cfg['split_output_column'] = self.split_output_column
+            cfg['split_projection'] = self.split_output_column
         if self.manual_train_values is not None:
             cfg['manual_train_values'] = list(self.manual_train_values)
         if self.manual_val_values is not None:
@@ -200,6 +204,7 @@ def normalize_split_spec(
             split_column = col_spec.get('name')
         elif isinstance(col_spec, str):
             split_column = col_spec
+    split_output_column = payload.get('split_output_column') or payload.get('split_projection')
 
     ratio = payload.get('ratio')
     if ratio is not None:
@@ -244,6 +249,7 @@ def normalize_split_spec(
         ranges=ranges,
         backtesting_timestamp=payload.get('backtesting_timestamp'),
         split_column=str(split_column) if isinstance(split_column, str) and split_column else None,
+        split_output_column=str(split_output_column) if isinstance(split_output_column, str) and split_output_column else None,
         manual_train_values=_string_list('manual_train_values'),
         manual_val_values=_string_list('manual_val_values'),
         manual_test_values=_string_list('manual_test_values'),

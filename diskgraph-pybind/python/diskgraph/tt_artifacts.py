@@ -332,6 +332,10 @@ def build_train_table_artifacts_for_existing_table(
         raise DiskgraphConfigError(
             'diskgraph existing-table artifact rehydration does not support RandomLinkSplit yet '
             f'(output_path={output_path})')
+    if resolved_family == 'CustomLinkSplit':
+        raise DiskgraphConfigError(
+            'diskgraph existing-table artifact rehydration does not support CustomLinkSplit; '
+            f're-run tt-gen to regenerate the split artifact (output_path={output_path})')
 
     _ensure_native_existing_table_rehydration_capabilities()
 

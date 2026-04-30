@@ -19,7 +19,7 @@ use rayon::prelude::*;
 
 use crate::ttgen_accumulator::{hash_value, Accumulator};
 use crate::ttgen_filter::{compare_values, eval_row_filter, eval_stage_filter};
-use crate::ttgen_output::{ChannelBatchWriter, OutputMode};
+use crate::ttgen_output::{ChannelBatchWriter, ExtraColumnOutput, ExtraValueRef, OutputMode};
 use crate::ttgen_resolve::*;
 use crate::ttgen_stats::{ChunkStats, StatsMerger, TTExecutionSummary};
 use crate::ttgen_traversal::*;
@@ -267,12 +267,17 @@ fn execute_chunk<U: UnitSystem>(
         plan.lag_timesteps > 0,
         plan.entity_dtype.clone(),
         time_col_name,
+        plan.split_projection.as_ref().map(|p| ExtraColumnOutput {
+            name: p.output_name.clone(),
+            dtype: p.dtype.clone(),
+        }),
     )?;
 
     // Thread-local aliases Vec, reused across entities
     let mut aliases: Vec<Option<Value>> = vec![None; plan.num_aliases];
     // Thread-local frequency counts for ListDistinct (reused across entities)
     let mut link_frequencies: Vec<i64> = Vec::new();
+    let mut link_split_values: Vec<Value> = Vec::new();
 
     // Determine target stats mode from target_stype
     let target_stype = plan.target_stype.as_str();
@@ -332,6 +337,7 @@ fn execute_chunk<U: UnitSystem>(
             entity_node,
             &mut aliases,
             &mut link_frequencies,
+            &mut link_split_values,
             target_is_numerical,
             target_is_categorical,
             target_stype,
@@ -362,6 +368,7 @@ fn execute_entity<U: UnitSystem>(
     entity_node: u64,
     aliases: &mut [Option<Value>],
     link_frequencies: &mut Vec<i64>,
+    link_split_values: &mut Vec<Value>,
     target_is_numerical: bool,
     target_is_categorical: bool,
     target_stype: &str,
@@ -396,6 +403,15 @@ fn execute_entity<U: UnitSystem>(
         .iter()
         .map(|(_, col_idx)| read_column_value(&plan.entity_table, entity_node, *col_idx))
         .collect();
+    let split_value = plan
+        .split_projection
+        .as_ref()
+        .and_then(|projection| projection.entity_col_idx)
+        .map(|col_idx| {
+            read_column_value_nullable(&plan.entity_table, entity_node, col_idx)
+                .flatten()
+                .unwrap_or_else(|| Value::Str("None".to_string()))
+        });
 
     // 3. Entity-level filter
     //    When lag_timesteps > 0, don't skip entities that fail the filter.
@@ -419,6 +435,7 @@ fn execute_entity<U: UnitSystem>(
             (None, None) => default_ts,
         };
         link_frequencies.clear();
+        link_split_values.clear();
         if execute_stages(
             plan,
             entity_node,
@@ -426,6 +443,7 @@ fn execute_entity<U: UnitSystem>(
             None,
             aliases,
             link_frequencies,
+            link_split_values,
         ) {
             write_target(
                 plan,
@@ -433,6 +451,8 @@ fn execute_entity<U: UnitSystem>(
                 ts,
                 aliases,
                 link_frequencies,
+                link_split_values.as_slice(),
+                split_value.as_ref(),
                 entity_include_bit,
                 target_is_numerical,
                 target_is_categorical,
@@ -473,6 +493,7 @@ fn execute_entity<U: UnitSystem>(
 
         // Execute all stages for this (entity, timestamp)
         link_frequencies.clear();
+        link_split_values.clear();
         if execute_stages(
             plan,
             entity_node,
@@ -480,6 +501,7 @@ fn execute_entity<U: UnitSystem>(
             Some(ts),
             aliases,
             link_frequencies,
+            link_split_values,
         ) {
             write_target(
                 plan,
@@ -487,6 +509,8 @@ fn execute_entity<U: UnitSystem>(
                 ts,
                 aliases,
                 link_frequencies,
+                link_split_values.as_slice(),
+                split_value.as_ref(),
                 entity_include_bit,
                 target_is_numerical,
                 target_is_categorical,
@@ -513,6 +537,8 @@ fn write_target<U: UnitSystem>(
     ts: Abs<U>,
     aliases: &[Option<Value>],
     link_frequencies: &[i64],
+    link_split_values: &[Value],
+    split_value: Option<&Value>,
     entity_include_bit: bool,
     target_is_numerical: bool,
     target_is_categorical: bool,
@@ -522,9 +548,18 @@ fn write_target<U: UnitSystem>(
     writer: &mut ChannelBatchWriter<U>,
     stats: &mut ChunkStats<U>,
 ) -> TTGenResult<()> {
+    let extra_value = if matches!(
+        plan.split_projection.as_ref().map(|p| &p.dtype),
+        Some(DataType::List(_))
+    ) {
+        ExtraValueRef::List(link_split_values)
+    } else {
+        ExtraValueRef::Scalar(split_value)
+    };
+
     match &plan.prediction_type {
         PredictionType::PassThrough => {
-            writer.write_row_pass_through(entity_pk.clone(), ts, entity_include_bit)?;
+            writer.write_row_pass_through(entity_pk.clone(), ts, extra_value, entity_include_bit)?;
         }
         PredictionType::Forecasting => {
             let mut autoregression = Vec::new();
@@ -544,6 +579,7 @@ fn write_target<U: UnitSystem>(
                 ts,
                 autoregression,
                 yoy,
+                extra_value,
                 entity_include_bit,
             )?;
         }
@@ -565,8 +601,19 @@ fn write_target<U: UnitSystem>(
 
             match &plan.prediction_type {
                 PredictionType::Node => {
-                    writer.write_row(entity_pk.clone(), ts, target, entity_include_bit)?;
-                    update_exact_stats(stats, entity_pk, ts, target, None, target_is_numerical, target_is_categorical, target_stype, local_target_counts, local_entity_counts);
+                    writer.write_row(entity_pk.clone(), ts, target, extra_value, entity_include_bit)?;
+                    update_exact_stats(
+                        stats,
+                        entity_pk,
+                        ts,
+                        target,
+                        None,
+                        target_is_numerical,
+                        target_is_categorical,
+                        target_stype,
+                        local_target_counts,
+                        local_entity_counts,
+                    );
                     if entity_include_bit {
                         stats.include_true_count += 1;
                         stats.num_train_rows += 1;
@@ -590,6 +637,7 @@ fn write_target<U: UnitSystem>(
                                 ts,
                                 val.clone(),
                                 freq,
+                                extra_value,
                                 entity_include_bit,
                             )?;
                             update_exact_stats(stats, entity_pk, ts, val, Some(freq), target_is_numerical, target_is_categorical, target_stype, local_target_counts, local_entity_counts);
@@ -618,6 +666,7 @@ fn write_target<U: UnitSystem>(
                             ts,
                             targets.clone(),
                             &freqs,
+                            extra_value,
                             entity_include_bit,
                         )?;
 
@@ -879,6 +928,7 @@ fn execute_stages<U: UnitSystem>(
     observation_ts: Option<Abs<U>>,
     aliases: &mut [Option<Value>],
     link_frequencies: &mut Vec<i64>,
+    link_split_values: &mut Vec<Value>,
 ) -> bool {
     for stage in &plan.stages {
         for op in &stage.ops {
@@ -890,6 +940,7 @@ fn execute_stages<U: UnitSystem>(
                     entity_cols,
                     observation_ts,
                     link_frequencies,
+                    link_split_values,
                 ),
                 ResolvedOp::HasEdges(has_edges) => {
                     execute_has_edges(plan, entity_node, has_edges, entity_cols, observation_ts)
@@ -960,6 +1011,7 @@ fn execute_stages<U: UnitSystem>(
                                 agg,
                                 entity_cols,
                                 Some(shifted_ts),
+                                &mut Vec::new(),
                                 &mut Vec::new(),
                             );
                             match val_opt {
@@ -1061,6 +1113,7 @@ fn execute_aggregate<U: UnitSystem>(
     entity_cols: &[Option<Value>],
     observation_ts: Option<Abs<U>>,
     link_frequencies: &mut Vec<i64>,
+    link_split_values: &mut Vec<Value>,
 ) -> Option<Value> {
     // Compute window bounds (sort key space).
     // Kumo uses half-open interval (start, end]: exclusive lower, inclusive upper.
@@ -1200,6 +1253,7 @@ fn execute_aggregate<U: UnitSystem>(
             let mut seen: HashMap<u64, usize> = HashMap::new();
             let mut values = Vec::new();
             let mut counts = Vec::new();
+            let mut split_values = Vec::new();
             let limit = agg.limit.unwrap_or(u32::MAX) as usize;
             let pk_filter = agg.target_pk_table.as_ref();
             // Temporal validity filtering requires both an observation timestamp
@@ -1245,6 +1299,13 @@ fn execute_aggregate<U: UnitSystem>(
                             }
                             std::collections::hash_map::Entry::Vacant(e) => {
                                 e.insert(values.len());
+                                if let Some(split_col_idx) = agg.link_split_col_idx {
+                                    split_values.push(
+                                        read_column_value_nullable(dst_table, dst, split_col_idx)
+                                            .flatten()
+                                            .unwrap_or_else(|| Value::Str("None".to_string())),
+                                    );
+                                }
                                 values.push(val);
                                 counts.push(1i64);
                             }
@@ -1256,6 +1317,8 @@ fn execute_aggregate<U: UnitSystem>(
             // Store frequency counts for link prediction output
             link_frequencies.clear();
             link_frequencies.extend_from_slice(&counts);
+            link_split_values.clear();
+            link_split_values.extend(split_values);
             Some(Value::List(values))
         }
         AggFunc::First => {

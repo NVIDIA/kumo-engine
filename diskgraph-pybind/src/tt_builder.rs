@@ -419,6 +419,7 @@ impl DiskGraphTTBuilder {
         ranges=None,
         backtesting_timestamp=None,
         split_column=None,
+        split_output_column=None,
         manual_train_values=None,
         manual_val_values=None,
         manual_test_values=None,
@@ -436,6 +437,7 @@ impl DiskGraphTTBuilder {
         ranges: Option<Vec<(i64, i64)>>,
         backtesting_timestamp: Option<i64>,
         split_column: Option<String>,
+        split_output_column: Option<String>,
         manual_train_values: Option<Vec<String>>,
         manual_val_values: Option<Vec<String>>,
         manual_test_values: Option<Vec<String>>,
@@ -479,6 +481,7 @@ impl DiskGraphTTBuilder {
             backtesting_timestamp: backtesting_timestamp
                 .map(|v| abs_from_unit::<Seconds>(v, rng_unit)),
             split_column,
+            split_output_column,
             manual_train_values,
             manual_val_values,
             manual_test_values,
