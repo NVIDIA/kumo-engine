@@ -286,7 +286,15 @@ fn execute_chunk<U: UnitSystem>(
         PredictionType::Link { include_frequency: true, .. }
     );
 
-    let mut stats: ChunkStats<U> = ChunkStats::default();
+    // Propagate the resolved target dtype into the stats accumulator so
+    // bool-target CATEGORY_COUNTS emits JSON booleans (matches the
+    // BooleanArray downcast in tt_executor.rs:compute_train_table_col_stats_payload
+    // for the rehydration path; without this the ttgen path silently
+    // emits lowercase "true"/"false" strings).
+    let mut stats: ChunkStats<U> = ChunkStats {
+        target_is_bool_dtype: matches!(plan.target_dtype, DataType::Boolean),
+        ..ChunkStats::default()
+    };
     if target_is_numerical {
         stats.target_welford = Some(WelfordAccumulator::new());
         stats.target_tdigest = Some(TDigestEstimator::new(200));

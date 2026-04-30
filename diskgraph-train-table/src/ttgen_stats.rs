@@ -161,6 +161,11 @@ pub(crate) struct ChunkStats<U: UnitSystem> {
     pub(crate) timestamp_welford: Option<WelfordAccumulator>,
     pub(crate) timestamp_tdigest: Option<TDigestEstimator>,
     pub(crate) timestamp_hll: Option<HyperLogLog>,
+    /// Mirrors the StatsMerger field. Set once per chunk from
+    /// ``plan.target_dtype == DataType::Boolean`` and OR'd into the
+    /// merger so CATEGORY_COUNTS emits JSON booleans (not lowercase
+    /// strings) for bool targets.
+    pub(crate) target_is_bool_dtype: bool,
 }
 
 impl<U: UnitSystem> Default for ChunkStats<U> {
@@ -197,6 +202,7 @@ impl<U: UnitSystem> Default for ChunkStats<U> {
             timestamp_welford: None,
             timestamp_tdigest: None,
             timestamp_hll: None,
+            target_is_bool_dtype: false,
         }
     }
 }
@@ -343,6 +349,9 @@ impl<U: UnitSystem> StatsMerger<U> {
         if let Some(chunk_h) = chunk.timestamp_hll {
             self.timestamp_hll.get_or_insert_with(HyperLogLog::new).merge(&chunk_h);
         }
+        // Sticky: any chunk that observed a bool target column flips the
+        // merger flag for the rest of the run.
+        self.target_is_bool_dtype |= chunk.target_is_bool_dtype;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1826,5 +1835,150 @@ mod tests {
         assert_eq!(counts.train, 4);
         assert_eq!(counts.val, 3);
         assert_eq!(counts.test, 3);
+    }
+
+    // ─── target_is_bool_dtype propagation ────────────────────────────────────
+
+    #[test]
+    fn test_merge_propagates_target_is_bool_dtype_when_chunk_sets_it() {
+        // A single chunk that observed a bool target dtype must flip the
+        // merger flag. This is the regression guard for the ttgen path.
+        let mut merger: StatsMerger<Seconds> = StatsMerger::default();
+        assert!(!merger.target_is_bool_dtype, "merger starts false");
+
+        let chunk: ChunkStats<Seconds> = ChunkStats {
+            target_is_bool_dtype: true,
+            ..Default::default()
+        };
+        merger.merge(chunk);
+        assert!(
+            merger.target_is_bool_dtype,
+            "merge must OR target_is_bool_dtype from chunk into merger"
+        );
+    }
+
+    #[test]
+    fn test_merge_target_is_bool_dtype_is_sticky_across_chunks() {
+        // Once any chunk flips the flag, subsequent chunks (even with
+        // false) must not unset it. Defensive in case some chunks see
+        // an empty target column and default to false.
+        let mut merger: StatsMerger<Seconds> = StatsMerger::default();
+
+        merger.merge(ChunkStats::<Seconds> {
+            target_is_bool_dtype: true,
+            ..Default::default()
+        });
+        merger.merge(ChunkStats::<Seconds> {
+            target_is_bool_dtype: false,
+            ..Default::default()
+        });
+        assert!(
+            merger.target_is_bool_dtype,
+            "false-valued chunk must not clear the flag"
+        );
+    }
+
+    #[test]
+    fn test_finalize_emits_json_booleans_for_bool_target() {
+        // End-to-end: a categorical target with target_is_bool_dtype = true
+        // and string-keyed category counts ("true"/"false", as ttgen records
+        // them via Display for bool) must surface as JSON booleans in the
+        // emitted CATEGORY_COUNTS array.
+        let mut merger: StatsMerger<Seconds> = StatsMerger::default();
+        merger.merge(ChunkStats::<Seconds> {
+            num_train_rows: 10,
+            target_is_bool_dtype: true,
+            ..Default::default()
+        });
+
+        let mut counts = HashMap::new();
+        counts.insert("false".to_string(), 7);
+        counts.insert("true".to_string(), 3);
+
+        let payload = merger.finalize(
+            10,
+            false,
+            false,
+            false,
+            Some(&[0.8, 0.1, 0.1]),
+            Some("RandomSplit"),
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(counts),
+            "categorical",
+            None,
+        );
+
+        let outer = payload
+            .parsed_train_table_col_stats
+            .as_ref()
+            .expect("parsed_train_table_col_stats must be present");
+        let stats = outer.get("stats").expect("outer must have 'stats' wrapper");
+        let key = stats
+            .as_object()
+            .unwrap()
+            .keys()
+            .find(|k| k.starts_with("TARGET__") && k.contains("CATEGORY_COUNTS"))
+            .expect("TARGET CATEGORY_COUNTS key must exist");
+        let entry = stats.get(key).unwrap();
+        let pairs = entry.get("value").and_then(|v| v.as_array()).unwrap();
+        assert!(!pairs.is_empty());
+        for pair in pairs {
+            let arr = pair.as_array().unwrap();
+            let key = &arr[0];
+            assert!(
+                key.is_boolean(),
+                "expected JSON boolean key, got {key:?} (type {:?})",
+                key
+            );
+        }
+    }
+
+    #[test]
+    fn test_finalize_emits_string_keys_when_target_is_bool_dtype_is_false() {
+        // Mirror of the previous test: when the flag is NOT set and stype
+        // is "categorical" (kumo's convention for binary classification),
+        // emit must NOT promote string keys to JSON booleans. Asserts the
+        // fix is gated correctly and doesn't over-fire on plain string
+        // categoricals that happen to use "true"/"false" as labels.
+        let mut merger: StatsMerger<Seconds> = StatsMerger::default();
+        merger.merge(ChunkStats::<Seconds> {
+            num_train_rows: 10,
+            target_is_bool_dtype: false,
+            ..Default::default()
+        });
+
+        let mut counts = HashMap::new();
+        counts.insert("false".to_string(), 7);
+        counts.insert("true".to_string(), 3);
+
+        let payload = merger.finalize(
+            10, false, false, false,
+            Some(&[0.8, 0.1, 0.1]), Some("RandomSplit"), false,
+            None, None, None, None, None, None, None,
+            Some(counts), "categorical", None,
+        );
+        let outer = payload.parsed_train_table_col_stats.unwrap();
+        let stats = outer.get("stats").expect("outer must have 'stats' wrapper");
+        let key = stats
+            .as_object()
+            .unwrap()
+            .keys()
+            .find(|k| k.starts_with("TARGET__") && k.contains("CATEGORY_COUNTS"))
+            .expect("TARGET CATEGORY_COUNTS key must exist");
+        let pairs = stats.get(key).unwrap().get("value").unwrap().as_array().unwrap();
+        for pair in pairs {
+            let key = &pair.as_array().unwrap()[0];
+            assert!(
+                key.is_string(),
+                "expected JSON string key when flag is false, got {key:?}"
+            );
+        }
     }
 }
