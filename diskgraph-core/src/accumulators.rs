@@ -1069,10 +1069,17 @@ pub fn kumo_safe_div(num: u64, den: u64) -> f64 {
 /// loop specializes on this to avoid per-row branching on the list variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MulticatInputKind {
-    /// IngestedType::String — split scalar on declared separator, or treat
-    /// the whole cell as one token when separator is None.
-    StringScalar,
+    /// IngestedType::String, no `multicategorical_delimiter` declared —
+    /// the whole cell is treated as one token. Multicat columns that
+    /// arrive with a delimiter are normalized to `IngestedType::StringArray`
+    /// at config conversion (kumo-ai/kumo#28478) and dispatch through the
+    /// `StringArray` arm below; this variant is the single-token-per-row
+    /// degenerate case only.
+    SingleStringToken,
     /// IngestedType::StringArray — iterate list elements; nulls become "".
+    /// Reached for both native `List<Utf8>` parquet sources and for
+    /// `Utf8`-scalar sources whose declared `multicategorical_delimiter`
+    /// caused the convert-time normalize pass to flip them.
     StringArray,
     /// IngestedType::Int64Array — iterate list elements; nulls become 0.
     Int64Array,

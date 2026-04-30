@@ -189,7 +189,7 @@ pub fn compute_text_sample_stats(values: &[&str]) -> TextSampleStats {
 pub use diskgraph_core::accumulators::{
     CategoryCountStrategy, CountStorage, IdentityBuildHasher, IdentityHasher, LocalColumnCounts,
     MulticatInputKind, SharedColumnCounts, build_multicat_emit_stats, compute_min_occ,
-    for_each_split_ascii_byte, isqrt, kumo_entry, kumo_key, kumo_safe_div, MAX_CATEGORIES,
+    isqrt, kumo_entry, kumo_key, kumo_safe_div, MAX_CATEGORIES,
 };
 
 // ---------------------------------------------------------------------------
@@ -961,7 +961,7 @@ impl ColumnStatsCollector {
             },
             Some(SemanticType::Multicategorical) => {
                 let input_kind = match ingested_type {
-                    IngestedType::String => Some(MulticatInputKind::StringScalar),
+                    IngestedType::String => Some(MulticatInputKind::SingleStringToken),
                     IngestedType::StringArray => Some(MulticatInputKind::StringArray),
                     IngestedType::Int64Array => Some(MulticatInputKind::Int64Array),
                     IngestedType::Float16Array
@@ -1993,50 +1993,34 @@ impl FileColStats {
 }
 
 impl FileColStats {
-    /// Multicategorical `StringScalar` row observer. Called from
-    /// `observe_string` when the collector's `input_kind` is `StringScalar`.
+    /// Multicategorical `SingleStringToken` row observer. Called from
+    /// `observe_string` when the collector's `input_kind` is
+    /// `SingleStringToken` — i.e. a `(stype=multicategorical,
+    /// IngestedType::String)` column with no `multicategorical_delimiter`
+    /// declared. Each cell contributes exactly one token (the trimmed
+    /// cell value); HLL observes it for `NUM_UNIQUE_MULTI` and category
+    /// counts honor row-level subsampling. Nulls take the `observe_null`
+    /// path upstream; this method is only entered for non-null rows.
     ///
-    /// Row-level work: increment `count`, snapshot the scalar split policy,
-    /// release the collector borrow, do one category-count sample check, then
-    /// enter the per-token loop. HLL observes every token for `NUM_UNIQUE_MULTI`;
-    /// category counts honor row-level subsampling.
-    /// Nulls take the `observe_null` path upstream; this method is only
-    /// entered for non-null rows.
+    /// Pre-#28478 this method also handled the `(String, delim)` shape by
+    /// splitting on the configured delimiter inline. After the
+    /// normalize-at-ingest flip such columns become `IngestedType::StringArray`
+    /// at convert time and dispatch through `observe_string_list`, leaving
+    /// only the single-token-per-row case here.
     #[inline]
-    fn observe_multicat_string_scalar(&mut self, col_idx: usize, raw: &str) {
-        let (separator_byte, separator_fallback) = if let ColumnStatsCollector::Multicategorical {
+    fn observe_multicat_single_string_token(&mut self, col_idx: usize, raw: &str) {
+        if let ColumnStatsCollector::Multicategorical {
             count,
-            separator,
-            separator_byte,
-            input_kind: MulticatInputKind::StringScalar,
+            input_kind: MulticatInputKind::SingleStringToken,
             ..
         } = &mut self.cols[col_idx]
         {
             *count += 1;
-            let fallback = if separator_byte.is_none() {
-                separator.clone()
-            } else {
-                None
-            };
-            (*separator_byte, fallback)
         } else {
             return;
-        };
-        let count_category = self.should_sample_row();
-
-        if let Some(separator_byte) = separator_byte {
-            for_each_split_ascii_byte(raw, separator_byte, |tok| {
-                self.observe_multicat_token_str(col_idx, tok.trim(), count_category);
-            });
-        } else if let Some(sep) = separator_fallback.as_deref() {
-            for tok in raw.split(sep) {
-                // `tok` borrows from `raw`; `trim()` borrows again —
-                // no heap activity on the scan path itself.
-                self.observe_multicat_token_str(col_idx, tok.trim(), count_category);
-            }
-        } else {
-            self.observe_multicat_token_str(col_idx, raw.trim(), count_category);
         }
+        let count_category = self.should_sample_row();
+        self.observe_multicat_token_str(col_idx, raw.trim(), count_category);
     }
 
     /// Per-token string primitive for Multicategorical columns. Updates the
@@ -2191,11 +2175,11 @@ impl ColumnValueObserver for FileColStats {
         if matches!(
             &self.cols[col_idx],
             ColumnStatsCollector::Multicategorical {
-                input_kind: MulticatInputKind::StringScalar,
+                input_kind: MulticatInputKind::SingleStringToken,
                 ..
             }
         ) {
-            self.observe_multicat_string_scalar(col_idx, value);
+            self.observe_multicat_single_string_token(col_idx, value);
             return;
         }
 
@@ -3616,131 +3600,17 @@ mod tests {
             .unwrap_or_default()
     }
 
-    // --- StringScalar input kind -------------------------------------------
+    // --- SingleStringToken input kind --------------------------------------
+    //
+    // This input kind handles `(stype=multicategorical, IngestedType::String)`
+    // columns with no `multicategorical_delimiter` declared — i.e. each cell
+    // contributes exactly one token. Multicat columns that arrive with a
+    // delimiter are normalized to `IngestedType::StringArray` at convert
+    // time (kumo-ai/kumo#28478) and exercised through the `StringArray`
+    // section below + the `ingest_multicategorical_e2e` integration tests.
 
     #[test]
-    fn col_stats_multicat_string_scalar_comma_delimited() {
-        let (mut stats, tc) = make_hybrid_stats(&[(
-            Some(SemanticType::Multicategorical),
-            IngestedType::String,
-            Some(","),
-        )]);
-        for row in ["kids,outdoor,sale", "audio,pro", "kids"] {
-            stats.observe_string(0, row);
-        }
-        stats.flush_categories();
-
-        let counts = drain_counts(&tc, 0);
-        assert_eq!(counts.get("kids").copied(), Some(2));
-        assert_eq!(counts.get("outdoor").copied(), Some(1));
-        assert_eq!(counts.get("sale").copied(), Some(1));
-        assert_eq!(counts.get("audio").copied(), Some(1));
-        assert_eq!(counts.get("pro").copied(), Some(1));
-        assert_eq!(counts.len(), 5);
-
-        // Separator + count/null are stored on the collector itself.
-        match &stats.cols[0] {
-            ColumnStatsCollector::Multicategorical {
-                count,
-                null_count,
-                separator,
-                ..
-            } => {
-                assert_eq!(*count, 3);
-                assert_eq!(*null_count, 0);
-                assert_eq!(separator.as_deref(), Some(","));
-            }
-            _ => panic!("expected Multicategorical collector"),
-        }
-    }
-
-    #[test]
-    fn col_stats_multicat_string_scalar_pipe_delimited() {
-        let (mut stats, tc) = make_hybrid_stats(&[(
-            Some(SemanticType::Multicategorical),
-            IngestedType::String,
-            Some("|"),
-        )]);
-        stats.observe_string(0, "a|b|c");
-        stats.flush_categories();
-        let counts = drain_counts(&tc, 0);
-        assert_eq!(counts.get("a").copied(), Some(1));
-        assert_eq!(counts.get("b").copied(), Some(1));
-        assert_eq!(counts.get("c").copied(), Some(1));
-        match &stats.cols[0] {
-            ColumnStatsCollector::Multicategorical { separator, .. } => {
-                assert_eq!(separator.as_deref(), Some("|"));
-            }
-            _ => panic!("expected Multicategorical collector"),
-        }
-    }
-
-    #[test]
-    fn col_stats_multicat_string_scalar_null_row_vs_empty_string() {
-        // A literal parquet null drives the null-row path; an empty-string cell
-        // is a non-null row that produces one empty-string token after trim.
-        let (mut stats, tc) = make_hybrid_stats(&[(
-            Some(SemanticType::Multicategorical),
-            IngestedType::String,
-            Some(","),
-        )]);
-        stats.observe_null(0);
-        stats.observe_string(0, "");
-        stats.flush_categories();
-
-        let counts = drain_counts(&tc, 0);
-        assert_eq!(counts.get("").copied(), Some(1));
-        assert_eq!(counts.len(), 1);
-        match &stats.cols[0] {
-            ColumnStatsCollector::Multicategorical {
-                count, null_count, ..
-            } => {
-                assert_eq!(*count, 1);
-                assert_eq!(*null_count, 1);
-            }
-            _ => panic!("expected Multicategorical collector"),
-        }
-    }
-
-    #[test]
-    fn col_stats_multicat_string_scalar_whitespace_trimmed() {
-        // §4.1.1: leading/trailing whitespace on each token is trimmed;
-        // internal whitespace is preserved. (The §6.1 test-spec name
-        // "whitespace_preserved" in the design doc is misleading — the
-        // explicit tokenization policy in §4.1.1 says trim is applied.
-        // Tracked in the session notes as spec-vs-test inconsistency.)
-        let (mut stats, tc) = make_hybrid_stats(&[(
-            Some(SemanticType::Multicategorical),
-            IngestedType::String,
-            Some(","),
-        )]);
-        stats.observe_string(0, "a, b ,c ");
-        stats.flush_categories();
-        let counts = drain_counts(&tc, 0);
-        assert_eq!(counts.get("a").copied(), Some(1));
-        assert_eq!(counts.get("b").copied(), Some(1));
-        assert_eq!(counts.get("c").copied(), Some(1));
-        assert_eq!(counts.len(), 3);
-    }
-
-    #[test]
-    fn col_stats_multicat_string_scalar_empty_between_delimiters() {
-        let (mut stats, tc) = make_hybrid_stats(&[(
-            Some(SemanticType::Multicategorical),
-            IngestedType::String,
-            Some(","),
-        )]);
-        stats.observe_string(0, "a,,b");
-        stats.flush_categories();
-        let counts = drain_counts(&tc, 0);
-        assert_eq!(counts.get("a").copied(), Some(1));
-        assert_eq!(counts.get("").copied(), Some(1));
-        assert_eq!(counts.get("b").copied(), Some(1));
-        assert_eq!(counts.len(), 3);
-    }
-
-    #[test]
-    fn col_stats_multicat_string_scalar_no_delimiter() {
+    fn col_stats_multicat_single_string_token_each_cell_is_one_token() {
         // Declared `None` → each row's whole value is one token (after trim).
         let (mut stats, tc) = make_hybrid_stats(&[(
             Some(SemanticType::Multicategorical),
@@ -3755,6 +3625,30 @@ mod tests {
         assert_eq!(counts.get("hello world").copied(), Some(2));
         assert_eq!(counts.get("foo").copied(), Some(1));
         assert_eq!(counts.len(), 2);
+    }
+
+    #[test]
+    fn col_stats_multicat_single_string_token_null_row() {
+        let (mut stats, tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::String,
+            None,
+        )]);
+        stats.observe_null(0);
+        stats.observe_string(0, "tag");
+        stats.flush_categories();
+        let counts = drain_counts(&tc, 0);
+        assert_eq!(counts.get("tag").copied(), Some(1));
+        assert_eq!(counts.len(), 1);
+        match &stats.cols[0] {
+            ColumnStatsCollector::Multicategorical {
+                count, null_count, ..
+            } => {
+                assert_eq!(*count, 1);
+                assert_eq!(*null_count, 1);
+            }
+            _ => panic!("expected Multicategorical collector"),
+        }
     }
 
     // --- StringArray input kind --------------------------------------------
@@ -4021,18 +3915,28 @@ mod tests {
 
     #[test]
     fn col_stats_multicat_emit_keys_match_tt_executor_format() {
+        // Post-#28478 the `(stype=multicategorical, dtype=String, delim)`
+        // shape is normalized to `IngestedType::StringArray` at convert
+        // time. The collector still records the original delimiter so the
+        // emitted `MULTI_CATEGORIES_SEPARATOR` stat preserves the
+        // tokenization documentation; observation flows through
+        // `observe_string_list` from the access layer's batch-tokenized
+        // list. Mirror that here: declare StringArray + delim, feed the
+        // pre-tokenized list views directly.
         let (mut stats, tc) = make_hybrid_stats(&[(
             Some(SemanticType::Multicategorical),
-            IngestedType::String,
+            IngestedType::StringArray,
             Some(","),
         )]);
-        stats.observe_string(0, "kids,sale");
-        stats.observe_string(0, "kids");
+        let row0 = build_string_list_view(&[Some("kids"), Some("sale")]);
+        let row1 = build_string_list_view(&[Some("kids")]);
+        stats.observe_string_list(0, &row0);
+        stats.observe_string_list(0, &row1);
         stats.observe_null(0);
         stats.flush_categories();
 
         let col_names = vec!["tags".to_string()];
-        let ingested_types = vec![IngestedType::String];
+        let ingested_types = vec![IngestedType::StringArray];
         let map = stats.to_kumo_json(&col_names, &ingested_types, Some(&tc), None, "v1");
 
         // The three keys tt_executor also emits for multicat stats.
