@@ -166,6 +166,24 @@ pub enum ConvertError {
         candidates: Vec<(String, usize)>,
     },
 
+    #[error(
+        "table '{table}' column '{column}': declared multicategorical_delimiter \
+         {declared:?} does not match the source data — only {hits} of {total} \
+         sampled non-empty rows contain it (need at least {required}). \
+         Sample row that did not contain the delimiter: {sample:?}. \
+         Either fix the delimiter on the column config or omit it to let \
+         ingest auto-detect from the data."
+    )]
+    MulticategoricalDelimiterMismatch {
+        table: String,
+        column: String,
+        declared: String,
+        hits: usize,
+        total: usize,
+        required: usize,
+        sample: String,
+    },
+
     #[error("{0}")]
     InferenceError(String),
 }

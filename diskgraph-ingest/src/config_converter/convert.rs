@@ -111,6 +111,32 @@ pub fn convert_kumo_to_diskgraph(
                 return Some(e);
             }
 
+            // Validate any user-declared multicategorical delimiters against
+            // the source data. Post-#28478 a wrong delimiter bakes into the
+            // rowpack on disk because ingest pre-splits, so a mistake here is
+            // irreversible without re-ingest. Surface mismatches loudly with
+            // column + sample-row context. The check piggybacks on the same
+            // bounded sampling budget the auto-detect path uses.
+            if let Err(e) =
+                super::inference::validate_explicit_multicat_delimiters(cfg, &transfer)
+            {
+                return Some(e);
+            }
+
+            // After delimiters are finalized + validated, normalize the on-disk
+            // shape of multicategorical "pseudo list" columns: a `String`
+            // source with a delimiter becomes a `StringArray` on disk so
+            // downstream consumers (TT-gen, infer, tensor mapper) only ever see
+            // native lists. The translation happens at read time in
+            // `RowAccess::string_list_view`, driven by
+            // `RowAccessHints.multicategorical_delimiter`. The same pass is
+            // also called unconditionally at ingest entry
+            // (`ingest_with_stats_from_source`); applying it here too keeps
+            // `convert_kumo_to_diskgraph`'s returned config in normalized form
+            // for callers that inspect it before ingest. The pass is
+            // idempotent. See kumo-ai/kumo#28478.
+            cfg.normalize_multicat_pseudo_list();
+
             match super::inference::compute_total_bytes(cfg, &transfer) {
                 Ok(total_bytes) if total_bytes > 0 => {
                     cfg.num_shards = Some(super::inference::estimate_num_shards(total_bytes));
@@ -548,3 +574,4 @@ fn map_time_unit_for_spec(unit: &str) -> String {
         _ => "s".to_string(), // Default to seconds
     }
 }
+

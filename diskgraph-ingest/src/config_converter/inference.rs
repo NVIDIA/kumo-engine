@@ -936,6 +936,236 @@ pub fn detect_multicategorical_delimiters(
     Ok(())
 }
 
+/// Validate that an explicitly-declared `multicategorical_delimiter` actually
+/// matches the source data. Today an unmatched delimiter silently produces
+/// one-token-per-row tokenization at every read site; post-#28478 the same
+/// mistake bakes into the rowpack on disk because ingest pre-splits, so a
+/// wrong choice is irreversible without re-ingest. Surface it loudly at
+/// convert time with column + sample-row context instead.
+///
+/// Sampling and threshold mirror `detect_multicategorical_delimiters` so
+/// auto-detect and explicit-declare paths agree on what "delimiter present
+/// in the data" means.
+pub fn validate_explicit_multicat_delimiters(
+    config: &GraphConfig,
+    input_transfer: &Option<CloudTransfer>,
+) -> Result<(), ConvertError> {
+    for table in &config.tables {
+        // Validate any multicat column whose source comes off parquet as a
+        // scalar string with a declared delimiter — whether the rowpack
+        // logical type is `String` (delimited string of string tokens),
+        // `StringArray` (delim-string post-normalize), or `Int64Array`
+        // (delim-string of int tokens). Native `List<...>` source columns
+        // never carry a delimiter and don't need this check; the access
+        // layer reads their elements directly without splitting.
+        let candidates: Vec<(usize, String, String)> = table
+            .columns
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| {
+                let scalar_string_source = matches!(
+                    c.ingested_dtype,
+                    IngestedType::String | IngestedType::StringArray | IngestedType::Int64Array,
+                );
+                if scalar_string_source
+                    && c.semantic_type == Some(SemanticType::Multicategorical)
+                {
+                    c.multicategorical_delimiter
+                        .as_deref()
+                        .map(|d| (i, c.name.clone(), d.to_string()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if candidates.is_empty() {
+            continue;
+        }
+        if table.format() != TableFormat::Parquet {
+            continue;
+        }
+        let all_paths = table.get_paths();
+        if all_paths.is_empty() {
+            continue;
+        }
+        let parquet_files = resolve_parquet_files(&all_paths[0], input_transfer)
+            .map_err(|e| ConvertError::InferenceError(format!("{e:#}")))?;
+        if parquet_files.is_empty() {
+            continue;
+        }
+
+        // Per-column occurrence counts + the first sample row that didn't
+        // contain the declared delimiter. The first miss is plenty for the
+        // error message — diagnostic, not exhaustive.
+        let mut totals: HashMap<usize, usize> = HashMap::new();
+        let mut hits: HashMap<usize, usize> = HashMap::new();
+        let mut miss_sample: HashMap<usize, String> = HashMap::new();
+
+        for path in parquet_files.iter().take(MULTICAT_MAX_FILES) {
+            let pooled = if let Some(transfer) = input_transfer {
+                if is_cloud_path(path) {
+                    match download_cloud_bytes(transfer, path) {
+                        Ok(p) => Some(p),
+                        Err(e) => {
+                            tracing::warn!("Skipping {}: download failed: {e}", path);
+                            continue;
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            macro_rules! scan_reader {
+                ($reader:expr, $schema:expr) => {{
+                    let col_info: Vec<Option<usize>> = candidates
+                        .iter()
+                        .map(|(_, name, _)| $schema.index_of(name).ok())
+                        .collect();
+                    for batch in $reader {
+                        let batch = batch
+                            .map_err(|e| ConvertError::InferenceError(format!("{e:#}")))?;
+                        for (cand_idx, info) in col_info.iter().enumerate() {
+                            let Some(arr_idx) = info else { continue };
+                            let (col_key, _, declared) = &candidates[cand_idx];
+                            if *totals.get(col_key).unwrap_or(&0) >= MULTICAT_MAX_SAMPLES {
+                                continue;
+                            }
+                            let array = batch.column(*arr_idx);
+                            for row in 0..batch.num_rows() {
+                                if *totals.get(col_key).unwrap_or(&0) >= MULTICAT_MAX_SAMPLES {
+                                    break;
+                                }
+                                if array.is_null(row) {
+                                    continue;
+                                }
+                                let Some(text) = multicat_string_value(array.as_ref(), row)
+                                else {
+                                    continue;
+                                };
+                                if text.is_empty() {
+                                    continue;
+                                }
+                                *totals.entry(*col_key).or_insert(0) += 1;
+                                if text.contains(declared.as_str()) {
+                                    *hits.entry(*col_key).or_insert(0) += 1;
+                                } else {
+                                    miss_sample
+                                        .entry(*col_key)
+                                        .or_insert_with(|| text.to_string());
+                                }
+                            }
+                        }
+                    }
+                }};
+            }
+
+            if let Some(pooled) = pooled {
+                let bytes = pooled.bytes();
+                let builder = match parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(bytes) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!("Skipping {}: failed to read parquet: {e}", path);
+                        continue;
+                    }
+                };
+                let schema = builder.schema().clone();
+                let reader = builder
+                    .with_batch_size(1024)
+                    .build()
+                    .map_err(|e| ConvertError::InferenceError(format!("{e:#}")))?;
+                scan_reader!(reader, schema);
+            } else {
+                let file = match std::fs::File::open(path) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        tracing::warn!("Skipping {}: failed to open: {e}", path);
+                        continue;
+                    }
+                };
+                let builder = match parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!("Skipping {}: failed to read parquet: {e}", path);
+                        continue;
+                    }
+                };
+                let schema = builder.schema().clone();
+                let reader = builder
+                    .with_batch_size(1024)
+                    .build()
+                    .map_err(|e| ConvertError::InferenceError(format!("{e:#}")))?;
+                scan_reader!(reader, schema);
+            }
+
+            let all_done = candidates.iter().all(|(col_idx, _, _)| {
+                *totals.get(col_idx).unwrap_or(&0) >= MULTICAT_MAX_SAMPLES
+            });
+            if all_done {
+                break;
+            }
+        }
+
+        for (col_idx, col_name, declared) in &candidates {
+            let total = *totals.get(col_idx).unwrap_or(&0);
+            let hit = *hits.get(col_idx).unwrap_or(&0);
+            // Empty column / all-null sample → can't validate, skip silently.
+            // The auto-detect path also tolerates this with a tracing warn.
+            if total == 0 {
+                tracing::warn!(
+                    table = %table.name, column = %col_name,
+                    "explicit multicategorical_delimiter could not be validated: \
+                     no non-empty sample rows in the bounded scan",
+                );
+                continue;
+            }
+            // The hit threshold for explicit-delim validation is intentionally
+            // looser than the auto-detect winner threshold
+            // (`MULTICAT_WIN_FRACTION = 50%`). Auto-detect picks among
+            // candidates and needs a clear majority; here the user has already
+            // committed to a specific delimiter, so the only failure mode we
+            // need to catch is total mismatch (typo, wrong column). A column
+            // where most rows have a single tag and only a few rows are
+            // multi-token is valid: each single-token row tokenizes correctly
+            // as a one-element list under GE-parity drop-empty. Reject only
+            // when `hits == 0` — i.e. the declared delimiter NEVER appears in
+            // any sampled non-empty row. Anything else gets a tracing warn so
+            // a sparse-but-real configuration is preserved while still
+            // surfacing suspiciously low rates.
+            if hit == 0 {
+                let sample = miss_sample
+                    .remove(col_idx)
+                    .unwrap_or_else(|| "<no sample>".to_string());
+                return Err(ConvertError::MulticategoricalDelimiterMismatch {
+                    table: table.name.clone(),
+                    column: col_name.clone(),
+                    declared: declared.clone(),
+                    hits: hit,
+                    total,
+                    required: 1,
+                    sample,
+                });
+            }
+            let suspicious_floor =
+                (MULTICAT_AMBIGUOUS_FRACTION * total as f64).ceil() as usize;
+            if hit < suspicious_floor {
+                tracing::warn!(
+                    table = %table.name, column = %col_name,
+                    declared = %declared,
+                    hits = hit,
+                    total = total,
+                    "explicit multicategorical_delimiter appears in fewer rows than \
+                     expected; data may be mostly single-token, but verify the \
+                     declared delimiter is correct",
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 enum MulticatDelimiterDecision {
     NoDelimiter,

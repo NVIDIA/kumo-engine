@@ -975,18 +975,16 @@ impl ColumnStatsCollector {
                         null_count: 0,
                         hll: HyperLogLog::new(),
                         input_kind: kind,
-                        separator: match kind {
-                            MulticatInputKind::StringScalar => {
-                                multicategorical_delimiter.map(String::from)
-                            }
-                            _ => None,
-                        },
-                        separator_byte: match kind {
-                            MulticatInputKind::StringScalar => {
-                                multicategorical_delimiter.and_then(single_byte_ascii)
-                            }
-                            _ => None,
-                        },
+                        // Emit `MULTI_CATEGORIES_SEPARATOR` whenever a delimiter
+                        // is on the column config — including for columns that
+                        // were pre-split into `StringArray` at config-time
+                        // (kumo-ai/kumo#28478). The stat documents the original
+                        // tokenization choice; downstream readers don't need it
+                        // to reconstruct tokens (the on-disk shape is already a
+                        // list) but it preserves stat-schema parity with the
+                        // pre-normalization world.
+                        separator: multicategorical_delimiter.map(String::from),
+                        separator_byte: multicategorical_delimiter.and_then(single_byte_ascii),
                     },
                     // Defensive: the convert layer should already have rejected
                     // this combination. Falling back to Skip keeps ingest going

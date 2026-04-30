@@ -30,6 +30,8 @@ fn test_negative_int64_key() {
         timestamp_unit: None,
         decimal_scale: None,
         binary_string_hint: BinaryStringHint::Utf8,
+        multicategorical_delimiter: None,
+        column_name: None,
     }];
 
     let mut access = RowAccess::new(hints, stats);
@@ -70,6 +72,8 @@ fn test_negative_decimal128_key() {
         timestamp_unit: None,
         decimal_scale: Some(0),
         binary_string_hint: BinaryStringHint::Utf8,
+        multicategorical_delimiter: None,
+        column_name: None,
     }];
 
     let mut access = RowAccess::new(hints, stats);
@@ -110,6 +114,8 @@ fn test_decimal256_key_as_string() {
         timestamp_unit: None,
         decimal_scale: Some(0),
         binary_string_hint: BinaryStringHint::Utf8,
+        multicategorical_delimiter: None,
+        column_name: None,
     }];
 
     let mut access = RowAccess::new(hints, stats);

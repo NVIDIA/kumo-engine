@@ -515,3 +515,182 @@ fn test_stats_collection_string_source() -> anyhow::Result<()> {
     assert!((sum - 6.0).abs() < 1e-6);
     Ok(())
 }
+
+// =============================================================================
+// kumo#28478 audit — IngestedType-vs-parquet mismatch error surfaces
+// =============================================================================
+
+fn access_with_named_hint(
+    array: ArrayRef,
+    column_name: &str,
+) -> (RowAccess<'static>, Vec<ArrayRef>) {
+    let arrays = vec![array];
+    let stats = crate::RowAccessStats::default();
+    let hints = RowAccessHints {
+        column_name: Some(column_name.to_string()),
+        ..Default::default()
+    };
+    let access = RowAccess::new(vec![hints], stats);
+    (access, arrays)
+}
+
+/// Case D: declared `Int64Array` on a parquet `Utf8` scalar with content
+/// that doesn't parse as a JSON-style int list. The error must localize
+/// the column + row + offending value.
+#[test]
+fn case_d_int64array_on_utf8_scalar_unparseable_errors() {
+    let (mut access, arrays) =
+        access_with_named_hint(Arc::new(StringArray::from(vec![Some("not numbers")])), "vals");
+    access.set_cols(&arrays);
+    access.set_row(0);
+    let err = match access.int64_list_view(0) {
+        Ok(_) => panic!("expected type-mismatch error, got success"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err.contains("ingest type mismatch") && err.contains("column=vals") && err.contains("row=0"),
+        "expected localized type-mismatch error, got: {}",
+        err,
+    );
+    assert!(
+        err.contains("declared=Int64Array"),
+        "expected declared dtype in error, got: {}",
+        err,
+    );
+}
+
+/// Case E: declared `StringArray` on a parquet `Int64` scalar (not a list,
+/// not a string). Error must point at the column + row.
+#[test]
+fn case_e_stringarray_on_int_scalar_errors() {
+    let (mut access, arrays) =
+        access_with_named_hint(Arc::new(Int64Array::from(vec![Some(42)])), "tags");
+    access.set_cols(&arrays);
+    access.set_row(0);
+    let err = match access.string_list_view(0) {
+        Ok(_) => panic!("expected type-mismatch error, got success"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err.contains("ingest type mismatch") && err.contains("column=tags") && err.contains("row=0"),
+        "expected localized type-mismatch error, got: {}",
+        err,
+    );
+    assert!(
+        err.contains("declared=StringArray"),
+        "expected declared dtype in error, got: {}",
+        err,
+    );
+}
+
+/// Case C happy: declared `Int64Array` on a parquet `Utf8` scalar with a
+/// declared `multicategorical_delimiter`. Tokens parse as i64; result is
+/// the native list view the encoder expects.
+#[test]
+fn case_c_int64array_on_utf8_with_delim_happy_path() -> anyhow::Result<()> {
+    let arrays: Vec<ArrayRef> =
+        vec![Arc::new(StringArray::from(vec![Some("1,2,3"), Some("42"), Some("")]))];
+    let stats = crate::RowAccessStats::default();
+    let hints = RowAccessHints {
+        column_name: Some("ids".to_string()),
+        multicategorical_delimiter: Some(",".to_string()),
+        ..Default::default()
+    };
+    let mut access = RowAccess::new(vec![hints], stats);
+    access.set_cols(&arrays);
+
+    access.set_row(0);
+    let view = access.int64_list_view(0)?.expect("non-null row");
+    // Iterate the parsed view by indexing into the values vec.
+    if let crate::access::Int64ListValues::Parsed(v) = &view.values {
+        assert_eq!(v.as_slice(), &[1, 2, 3]);
+    } else {
+        panic!("expected Parsed values");
+    }
+
+    access.set_row(1);
+    let view = access.int64_list_view(0)?.expect("non-null row");
+    if let crate::access::Int64ListValues::Parsed(v) = &view.values {
+        assert_eq!(v.as_slice(), &[42]);
+    } else {
+        panic!("expected Parsed values");
+    }
+
+    // Empty row produces empty list under GE drop-empty.
+    access.set_row(2);
+    let view = access.int64_list_view(0)?.expect("non-null row");
+    if let crate::access::Int64ListValues::Parsed(v) = &view.values {
+        assert!(v.is_empty(), "empty input row → empty token list");
+    }
+    Ok(())
+}
+
+/// Case C error: declared `Int64Array` on a parquet `Utf8` scalar with a
+/// declared `multicategorical_delimiter`, but a token can't parse as i64.
+/// Error must localize column + row + offending token.
+#[test]
+fn case_c_int64array_on_utf8_parse_error_localized() {
+    let arrays: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![Some("1,2,abc")]))];
+    let stats = crate::RowAccessStats::default();
+    let hints = RowAccessHints {
+        column_name: Some("ids".to_string()),
+        multicategorical_delimiter: Some(",".to_string()),
+        ..Default::default()
+    };
+    let mut access = RowAccess::new(vec![hints], stats);
+    access.set_cols(&arrays);
+    access.set_row(0);
+    let err = match access.int64_list_view(0) {
+        Ok(_) => panic!("expected parse error, got success"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err.contains("column=ids"),
+        "expected column localization, got: {}",
+        err,
+    );
+    assert!(
+        err.contains("row=0"),
+        "expected row localization, got: {}",
+        err,
+    );
+    assert!(
+        err.contains("\"abc\""),
+        "expected offending token in error, got: {}",
+        err,
+    );
+    assert!(
+        err.contains("declared=Int64Array"),
+        "expected declared dtype in error, got: {}",
+        err,
+    );
+}
+
+/// Case F: declared `Int64Array` on a parquet `List<Utf8>` (string elements
+/// instead of int). Error must point at the column + row and explain the
+/// element-type mismatch.
+#[test]
+fn case_f_int64array_on_list_utf8_errors() {
+    let mut list_builder = arrow_array::builder::ListBuilder::new(arrow_array::builder::StringBuilder::new());
+    list_builder.values().append_value("abc");
+    list_builder.values().append_value("def");
+    list_builder.append(true);
+    let array: ArrayRef = Arc::new(list_builder.finish());
+    let (mut access, arrays) = access_with_named_hint(array, "ids");
+    access.set_cols(&arrays);
+    access.set_row(0);
+    let err = match access.int64_list_view(0) {
+        Ok(_) => panic!("expected type-mismatch error, got success"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err.contains("ingest type mismatch") && err.contains("column=ids") && err.contains("row=0"),
+        "expected localized type-mismatch error, got: {}",
+        err,
+    );
+    assert!(
+        err.contains("element type"),
+        "expected element-type wording in error, got: {}",
+        err,
+    );
+}

@@ -138,7 +138,12 @@ fn ingest_multicategorical_string_scalar_emits_three_multi_keys() -> Result<()> 
         .get("tags__kumo.multicategorical__MULTI_CATEGORY_COUNTS__False")
         .expect("category-counts key present");
     let arr = counts["value"].as_array().expect("array");
-    // Expected: kids:2 (rows 0 and 2), outdoor:1, sale:1, audio:1, pro:1, "":1 (empty row 3).
+    // Expected: kids:2 (rows 0 and 2), outdoor:1, sale:1, audio:1, pro:1.
+    // Row 3 is the empty string `""`; under GraphEngine-parity drop-empty
+    // semantics it produces zero tokens (matches `pyspark.sql.functions.split`
+    // followed by `filter(elem != '')` in `kumo/data/data_processing_backend/
+    // pyspark_processing_backend.py:267`). Pre-#28478 this row contributed an
+    // empty `""` token to category counts.
     let map: std::collections::HashMap<String, u64> = arr
         .iter()
         .filter_map(|pair| {
@@ -153,7 +158,11 @@ fn ingest_multicategorical_string_scalar_emits_three_multi_keys() -> Result<()> 
     assert_eq!(map.get("sale").copied(), Some(1));
     assert_eq!(map.get("audio").copied(), Some(1));
     assert_eq!(map.get("pro").copied(), Some(1));
-    assert_eq!(map.get("").copied(), Some(1));
+    assert_eq!(
+        map.get("").copied(),
+        None,
+        "empty-string row should produce zero tokens under GE-parity drop-empty"
+    );
 
     let uniq = stats
         .get("tags__kumo.multicategorical__NUM_UNIQUE_MULTI__True")
@@ -710,12 +719,18 @@ fn convert_multicat_string_explicit_delimiter_respected() -> Result<()> {
     let dir = tempdir()?;
     let data_dir = dir.path().join("data");
     fs::create_dir_all(&data_dir)?;
-    // Ambiguous content — if detection were run, it'd error. But the user
-    // set an explicit delimiter, so detection should be skipped and the
-    // declared value passed through.
+    // Content that would also trip the auto-detector (commas + pipes both
+    // present), but using `\t` as the actual separator so the explicit
+    // declaration matches the source. Detection should be skipped because
+    // the user set an explicit delimiter, and post-#28478 the
+    // delim-vs-data validation should pass because the declared `\t`
+    // really does appear in every row. Pre-#28478 the data could be
+    // arbitrary and detection-skipping was the only assertion; post-flip
+    // a wrong delim would bake into the rowpack on disk, so the data
+    // fixture is tightened to match the declared delimiter.
     let mut rows: Vec<&str> = Vec::new();
-    rows.extend(std::iter::repeat_n("a,b,c", 50));
-    rows.extend(std::iter::repeat_n("x|y|z", 50));
+    rows.extend(std::iter::repeat_n("a,b\tc|d", 50));
+    rows.extend(std::iter::repeat_n("x|y\tz,w", 50));
     write_tags_parquet(&data_dir.join("items.parquet"), &rows);
 
     let kumo_json = build_kumo_config(&data_dir, Some("\t"));
@@ -738,5 +753,427 @@ fn convert_multicat_string_explicit_delimiter_respected() -> Result<()> {
         .find(|c| c.name == "tags")
         .expect("tags col");
     assert_eq!(col.multicategorical_delimiter.as_deref(), Some("\t"));
+    Ok(())
+}
+
+// =============================================================================
+// kumo#28478 — pseudo-list normalize-at-ingest tests
+// =============================================================================
+
+/// Drive each GraphEngine drop-empty edge case through ingest and verify the
+/// emitted category counts. Reference:
+/// `kumo/data/data_processing_backend/pyspark_processing_backend.py:267-279`.
+#[test]
+fn ingest_multicat_delim_string_edge_rows_match_ge_drop_empty() -> Result<()> {
+    let dir = tempdir()?;
+    let data_dir = dir.path().join("data");
+    let index_dir = dir.path().join("index");
+    fs::create_dir_all(&data_dir)?;
+
+    // Each fixture row exercises one edge case.
+    //   row 0: "a,b"   → ["a", "b"]
+    //   row 1: ""      → []                   (empty input → empty list)
+    //   row 2: "a,"    → ["a"]                (trailing empty dropped)
+    //   row 3: "a,,b"  → ["a", "b"]           (middle empty dropped)
+    //   row 4: ",a,"   → ["a"]                (leading + trailing empty dropped)
+    //   row 5: ","     → []                   (delim-only row → empty list)
+    //   row 6: "x"     → ["x"]                (single token, no delim)
+    let item_ids: Vec<i64> = vec![0, 1, 2, 3, 4, 5, 6];
+    let tags = vec!["a,b", "", "a,", "a,,b", ",a,", ",", "x"];
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("item_id", DataType::Int64, false),
+        Field::new("tags", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(arrow_array::Int64Array::from(item_ids)) as ArrayRef,
+            Arc::new(ArrowStringArray::from(tags)) as ArrayRef,
+        ],
+    )?;
+    write_parquet(&data_dir.join("items.parquet"), &batch);
+
+    let config = serde_json::json!({
+        "dataset_name": "mc_edge_rows",
+        "num_shards": 1,
+        "tables": [{
+            "name": "items",
+            "columns": [
+                {"name": "item_id", "ingested_dtype": "int64"},
+                {
+                    "name": "tags",
+                    "ingested_dtype": "string",
+                    "semantic_type": "multicategorical",
+                    "multicategorical_delimiter": ","
+                }
+            ],
+            "primary_key": "item_id",
+            "data_version": "v1",
+            "source": {"type": "parquet", "paths": [data_dir.join("items.parquet").to_str().unwrap()]}
+        }]
+    });
+    let config_path = data_dir.join("config.json");
+    fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+
+    ingest_with_stats(
+        &config_path,
+        index_dir.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions {
+            parallel: false,
+            col_stats: true,
+            cat_count_strategy: CategoryCountStrategy::Hybrid,
+            ..IngestOptions::default()
+        },
+    )?;
+
+    let stats = read_kumo_stats(&index_dir, "items")?;
+    let counts = stats
+        .get("tags__kumo.multicategorical__MULTI_CATEGORY_COUNTS__False")
+        .expect("category-counts key present");
+    let arr = counts["value"].as_array().expect("array");
+    let map: std::collections::HashMap<String, u64> = arr
+        .iter()
+        .filter_map(|pair| {
+            let p = pair.as_array()?;
+            let k = p.first()?.as_str()?.to_string();
+            let v = p.get(1)?.as_u64()?;
+            Some((k, v))
+        })
+        .collect();
+
+    // Expected per-token tallies (after drop-empty):
+    //   a: 4 (rows 0, 2, 3, 4)
+    //   b: 2 (rows 0, 3)
+    //   x: 1 (row 6)
+    //   "": 0
+    assert_eq!(map.get("a").copied(), Some(4));
+    assert_eq!(map.get("b").copied(), Some(2));
+    assert_eq!(map.get("x").copied(), Some(1));
+    assert_eq!(
+        map.get("").copied(),
+        None,
+        "GE-parity drop-empty: empty tokens never appear in counts",
+    );
+
+    // Separator stat is preserved post-flip so downstream stat consumers
+    // continue to see the same schema regardless of the pre-split.
+    let sep = stats
+        .get("tags__kumo.multicategorical__MULTI_CATEGORIES_SEPARATOR__False")
+        .expect("separator key present");
+    assert_eq!(sep["value"], ",");
+    Ok(())
+}
+
+/// `convert_kumo_to_diskgraph` is the canonical Kumo→DiskGraph conversion entry.
+/// After it returns, a `(stype=multicategorical, dtype=string, delim)` column
+/// must already be normalized to `IngestedType::StringArray` so callers that
+/// inspect the converted config see the post-flip shape (the same shape is
+/// re-applied unconditionally at ingest entry as a defense-in-depth guarantee).
+#[test]
+fn convert_normalizes_multicat_delim_string_to_stringarray() -> Result<()> {
+    let dir = tempdir()?;
+    let data_dir = dir.path().join("data");
+    fs::create_dir_all(&data_dir)?;
+
+    // Parquet with tags column whose token universe is unambiguously
+    // comma-delimited so the auto-detector picks `,`.
+    let item_ids: Vec<i64> = vec![0, 1, 2];
+    let tags = vec!["a,b,c", "d,e", "a,c"];
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("item_id", DataType::Int64, false),
+        Field::new("tags", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(arrow_array::Int64Array::from(item_ids)) as ArrayRef,
+            Arc::new(ArrowStringArray::from(tags)) as ArrayRef,
+        ],
+    )?;
+    write_parquet(&data_dir.join("items.parquet"), &batch);
+
+    let kumo_json = serde_json::json!({
+        "tables": [{
+            "table_name": "items",
+            "data_source": "test",
+            "data_version": "v1",
+            "pkey": {"name": "item_id", "dtype": "int", "stype": "ID"},
+            "fkeys": [],
+            "cols": [{
+                "name": "tags",
+                "dtype": "string",
+                "stype": "multicategorical"
+            }],
+            "time_col": null,
+            "end_time_col": null,
+            "edge_table": null
+        }]
+    });
+    let kumo: KumoGraphConfig = serde_json::from_value(kumo_json)?;
+    let opts = ConvertOptions {
+        data_persist_dir: data_dir.to_string_lossy().to_string(),
+        dataset_name: "mc_normalize".to_string(),
+        table_data_versions: None,
+        source_paths_base: None,
+        source_paths: Some({
+            let mut m = std::collections::HashMap::new();
+            m.insert("items".to_string(), data_dir.to_string_lossy().to_string());
+            m
+        }),
+    };
+    let cfg = convert_kumo_to_diskgraph(&kumo, &opts)?;
+    let col = cfg.tables[0]
+        .columns
+        .iter()
+        .find(|c| c.name == "tags")
+        .expect("tags col");
+    // The flip lives in `convert_kumo_to_diskgraph` post-detect; verify it ran.
+    assert_eq!(
+        col.ingested_dtype,
+        diskgraph_ingest::graph_config::IngestedType::StringArray,
+        "convert should leave the multicat column in post-normalize StringArray shape",
+    );
+    assert_eq!(col.multicategorical_delimiter.as_deref(), Some(","));
+    Ok(())
+}
+
+/// Sparse multi-token data is *valid* under an explicit delimiter: rows with
+/// a single tag tokenize as a one-element list under GE-parity drop-empty.
+/// The validator should not reject a config just because most rows have
+/// only one token — only total mismatch (zero rows containing the delim)
+/// is the real error.
+#[test]
+fn convert_accepts_explicit_delim_with_mostly_single_token_rows() -> Result<()> {
+    let dir = tempdir()?;
+    let data_dir = dir.path().join("data");
+    fs::create_dir_all(&data_dir)?;
+
+    // 90% single-token rows, 10% multi-token. Comma appears in only 10% of
+    // rows, well below the 50% auto-detect winner threshold but the user
+    // declared it explicitly so the validator should accept.
+    let mut tags: Vec<&str> = Vec::new();
+    tags.extend(std::iter::repeat_n("solo", 90));
+    tags.extend(std::iter::repeat_n("a,b", 10));
+    let item_ids: Vec<i64> = (0..tags.len() as i64).collect();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("item_id", DataType::Int64, false),
+        Field::new("tags", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(arrow_array::Int64Array::from(item_ids)) as ArrayRef,
+            Arc::new(ArrowStringArray::from(tags)) as ArrayRef,
+        ],
+    )?;
+    write_parquet(&data_dir.join("items.parquet"), &batch);
+
+    let kumo_json = serde_json::json!({
+        "tables": [{
+            "table_name": "items",
+            "data_source": "test",
+            "data_version": "v1",
+            "pkey": {"name": "item_id", "dtype": "int", "stype": "ID"},
+            "fkeys": [],
+            "cols": [{
+                "name": "tags",
+                "dtype": "string",
+                "stype": "multicategorical",
+                "multicategorical_delimiter": ","
+            }],
+            "time_col": null,
+            "end_time_col": null,
+            "edge_table": null
+        }]
+    });
+    let kumo: KumoGraphConfig = serde_json::from_value(kumo_json)?;
+    let opts = ConvertOptions {
+        data_persist_dir: data_dir.to_string_lossy().to_string(),
+        dataset_name: "mc_sparse_delim".to_string(),
+        table_data_versions: None,
+        source_paths_base: None,
+        source_paths: Some({
+            let mut m = std::collections::HashMap::new();
+            m.insert("items".to_string(), data_dir.to_string_lossy().to_string());
+            m
+        }),
+    };
+    // Should succeed — explicit declarations get the floor of "delim must
+    // appear at least once", not the 50% auto-detect-winner threshold.
+    let cfg = convert_kumo_to_diskgraph(&kumo, &opts)?;
+    let col = cfg.tables[0]
+        .columns
+        .iter()
+        .find(|c| c.name == "tags")
+        .expect("tags col");
+    assert_eq!(
+        col.ingested_dtype,
+        diskgraph_ingest::graph_config::IngestedType::StringArray,
+    );
+    Ok(())
+}
+
+/// Direct DiskGraph configs (i.e. configs hand-authored or emitted by
+/// non-kumo tooling, fed straight to `ingest_with_stats`) must also see
+/// the wrong-delimiter validation. Pre-#28478 the convert path was the
+/// only entry; post-flip we run the validation universally at ingest entry
+/// so a typo'd delimiter on a direct config does not silently bake into the
+/// rowpack on disk.
+#[test]
+fn ingest_errors_on_direct_config_explicit_delim_mismatch() -> Result<()> {
+    let dir = tempdir()?;
+    let data_dir = dir.path().join("data");
+    let index_dir = dir.path().join("index");
+    fs::create_dir_all(&data_dir)?;
+
+    // Source uses ';'. User declares ',' below. Direct-config flow,
+    // bypassing convert_kumo_to_diskgraph entirely.
+    let item_ids: Vec<i64> = vec![0, 1, 2, 3];
+    let tags = vec!["a;b;c", "d;e", "a;c", "x;y;z"];
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("item_id", DataType::Int64, false),
+        Field::new("tags", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(arrow_array::Int64Array::from(item_ids)) as ArrayRef,
+            Arc::new(ArrowStringArray::from(tags)) as ArrayRef,
+        ],
+    )?;
+    write_parquet(&data_dir.join("items.parquet"), &batch);
+
+    let config = serde_json::json!({
+        "dataset_name": "mc_direct_wrong_delim",
+        "num_shards": 1,
+        "tables": [{
+            "name": "items",
+            "columns": [
+                {"name": "item_id", "ingested_dtype": "int64"},
+                {
+                    "name": "tags",
+                    "ingested_dtype": "string",
+                    "semantic_type": "multicategorical",
+                    "multicategorical_delimiter": ","
+                }
+            ],
+            "primary_key": "item_id",
+            "data_version": "v1",
+            "source": {"type": "parquet", "paths": [data_dir.join("items.parquet").to_str().unwrap()]}
+        }]
+    });
+    let config_path = data_dir.join("config.json");
+    fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+
+    let res = ingest_with_stats(
+        &config_path,
+        index_dir.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions {
+            parallel: false,
+            col_stats: true,
+            cat_count_strategy: CategoryCountStrategy::Hybrid,
+            ..IngestOptions::default()
+        },
+    );
+    let err = res.expect_err("ingest should error on declared-vs-data mismatch");
+    let s = err.to_string();
+    assert!(
+        s.contains("does not match the source data") && s.contains("tags"),
+        "expected delim-mismatch error pointing at column `tags`, got: {}",
+        s,
+    );
+    assert!(
+        s.contains(';'),
+        "expected sample row containing actual `;` separator in error, got: {}",
+        s,
+    );
+    Ok(())
+}
+
+/// User declares `multicategorical_delimiter=","` on a column whose source
+/// data uses `;`. Today (pre-#28478) the mistake silently produces
+/// one-token-per-row tokenization at every read site; post-flip it bakes
+/// into the rowpack on disk because ingest pre-splits, so the wrong choice
+/// is irreversible without re-ingest. `convert_kumo_to_diskgraph` must
+/// surface this loudly with column + sample-row context.
+#[test]
+fn convert_errors_on_explicit_delim_mismatch_with_data() -> Result<()> {
+    let dir = tempdir()?;
+    let data_dir = dir.path().join("data");
+    fs::create_dir_all(&data_dir)?;
+
+    let item_ids: Vec<i64> = vec![0, 1, 2, 3];
+    // Source data uses ';'. User will declare ',' below.
+    let tags = vec!["a;b;c", "d;e", "a;c", "x;y;z"];
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("item_id", DataType::Int64, false),
+        Field::new("tags", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(arrow_array::Int64Array::from(item_ids)) as ArrayRef,
+            Arc::new(ArrowStringArray::from(tags)) as ArrayRef,
+        ],
+    )?;
+    write_parquet(&data_dir.join("items.parquet"), &batch);
+
+    let kumo_json = serde_json::json!({
+        "tables": [{
+            "table_name": "items",
+            "data_source": "test",
+            "data_version": "v1",
+            "pkey": {"name": "item_id", "dtype": "int", "stype": "ID"},
+            "fkeys": [],
+            "cols": [{
+                "name": "tags",
+                "dtype": "string",
+                "stype": "multicategorical",
+                "multicategorical_delimiter": ","
+            }],
+            "time_col": null,
+            "end_time_col": null,
+            "edge_table": null
+        }]
+    });
+    let kumo: KumoGraphConfig = serde_json::from_value(kumo_json)?;
+    let opts = ConvertOptions {
+        data_persist_dir: data_dir.to_string_lossy().to_string(),
+        dataset_name: "mc_wrong_delim".to_string(),
+        table_data_versions: None,
+        source_paths_base: None,
+        source_paths: Some({
+            let mut m = std::collections::HashMap::new();
+            m.insert("items".to_string(), data_dir.to_string_lossy().to_string());
+            m
+        }),
+    };
+    let err = convert_kumo_to_diskgraph(&kumo, &opts)
+        .expect_err("convert should error on delim mismatch");
+    match err {
+        ConvertError::MulticategoricalDelimiterMismatch {
+            table,
+            column,
+            declared,
+            hits,
+            total,
+            sample,
+            ..
+        } => {
+            assert_eq!(table, "items");
+            assert_eq!(column, "tags");
+            assert_eq!(declared, ",");
+            assert_eq!(hits, 0, "comma absent from every sampled row");
+            assert!(total >= 1, "scan should have sampled at least one row");
+            assert!(
+                sample.contains(';'),
+                "sample row should be a real source row containing the actual delimiter; got {:?}",
+                sample,
+            );
+        }
+        other => panic!("unexpected error variant: {:?}", other),
+    }
     Ok(())
 }

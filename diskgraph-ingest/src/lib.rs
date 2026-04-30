@@ -159,6 +159,32 @@ pub fn ingest_with_stats_from_source(
     if let Some(base_dir) = base_dir {
         resolve_local_paths(&mut source, base_dir);
     }
+    // Universal entry-point pre-pass: collapse multicategorical "pseudo list"
+    // columns (delimited string + delimiter) into the native list on-disk
+    // shape. Applies to every config that flows into ingest, regardless of
+    // whether it came from `convert_kumo_to_diskgraph` (which calls the
+    // same pass) or was loaded directly from JSON. Idempotent. See
+    // kumo-ai/kumo#28478.
+    source.normalize_multicat_pseudo_list();
+    // Validate explicit multicategorical delimiters even on direct DiskGraph
+    // configs (not just kumo→diskgraph converted ones). Pre-#28478 a wrong
+    // delimiter would silently produce one-token tokenization downstream;
+    // post-flip the same mistake bakes into the on-disk rowpack and is
+    // irreversible without re-ingest. Convert the error into an anyhow form
+    // here since `ingest_with_stats_from_source` already propagates anyhow.
+    let transfer = match crate::io::build_input_transfer(&source) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(
+                "could not build input transfer for delim validation: {e}"
+            );
+            None
+        }
+    };
+    crate::config_converter::inference::validate_explicit_multicat_delimiters(
+        &source, &transfer,
+    )
+    .map_err(|e| anyhow!("{e}"))?;
     source.validate()?;
 
     // NOTE: We no longer call resolve_fk_types() here.
@@ -9258,6 +9284,8 @@ pub(crate) fn build_row_access_hints(table: &TableSpec) -> Vec<RowAccessHints> {
                 IngestedType::Ip => BinaryStringHint::Ip,
                 _ => BinaryStringHint::Utf8,
             },
+            multicategorical_delimiter: col.multicategorical_delimiter.clone(),
+            column_name: Some(col.name.clone()),
         })
         .collect()
 }

@@ -387,6 +387,31 @@ fn parse_cloud_source(path: &str) -> Result<Option<CloudSource>> {
 }
 
 impl GraphConfig {
+    /// Normalize multicategorical "pseudo list" columns to the native list
+    /// shape on disk. For any column with `(stype=Multicategorical,
+    /// dtype=String, multicategorical_delimiter=Some(_))`, flip
+    /// `ingested_dtype` to `StringArray`. The parquet column stays `Utf8`
+    /// scalar; the access layer (`RowAccess::string_list_view`) sees the
+    /// delimiter on the per-column hint and splits scalar→list at read time
+    /// using GraphEngine-parity drop-empty semantics. Result: rowpack
+    /// persists a native list, downstream readers (TT-gen, infer,
+    /// tensor mapper) never re-split.
+    ///
+    /// Called automatically by `ingest_with_stats_from_source` and by
+    /// `convert_kumo_to_diskgraph`. Idempotent. See kumo-ai/kumo#28478.
+    pub fn normalize_multicat_pseudo_list(&mut self) {
+        for table in self.tables.iter_mut() {
+            for col in table.columns.iter_mut() {
+                if col.semantic_type == Some(SemanticType::Multicategorical)
+                    && col.ingested_dtype == IngestedType::String
+                    && col.multicategorical_delimiter.is_some()
+                {
+                    col.ingested_dtype = IngestedType::StringArray;
+                }
+            }
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         let mut errors = Vec::new();
         if self.dataset_name.trim().is_empty() {
@@ -1327,5 +1352,125 @@ mod tests {
             result.is_none(),
             "Lossy coercion Int64→Int32 should not resolve"
         );
+    }
+
+    fn make_multicat_column(
+        name: &str,
+        dtype: IngestedType,
+        delim: Option<&str>,
+    ) -> ColumnSpec {
+        ColumnSpec {
+            name: name.to_string(),
+            source_dtype: None,
+            ingested_dtype: dtype,
+            fixed_len: None,
+            timestamp_format: None,
+            timestamp_unit: None,
+            precision: None,
+            scale: None,
+            semantic_type: Some(SemanticType::Multicategorical),
+            multicategorical_delimiter: delim.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn normalize_flips_string_multicat_with_delim_to_stringarray() {
+        let col = make_multicat_column("tags", IngestedType::String, Some(","));
+        let mut cfg = GraphConfig {
+            dataset_name: "t".into(),
+            tables: vec![make_table("items", vec![col], None)],
+            rowpack: None,
+            num_shards: None,
+            edge_format: None,
+            coercion_mode: CoercionMode::default(),
+        };
+        cfg.normalize_multicat_pseudo_list();
+        assert_eq!(
+            cfg.tables[0].columns[0].ingested_dtype,
+            IngestedType::StringArray,
+        );
+        // Delim is preserved on the spec — it drives the access-layer split
+        // at read time even after the dtype flip.
+        assert_eq!(
+            cfg.tables[0].columns[0].multicategorical_delimiter.as_deref(),
+            Some(","),
+        );
+    }
+
+    #[test]
+    fn normalize_leaves_string_multicat_without_delim_alone() {
+        let col = make_multicat_column("tags", IngestedType::String, None);
+        let mut cfg = GraphConfig {
+            dataset_name: "t".into(),
+            tables: vec![make_table("items", vec![col], None)],
+            rowpack: None,
+            num_shards: None,
+            edge_format: None,
+            coercion_mode: CoercionMode::default(),
+        };
+        cfg.normalize_multicat_pseudo_list();
+        assert_eq!(
+            cfg.tables[0].columns[0].ingested_dtype,
+            IngestedType::String,
+            "no delim ⇒ single-token-per-row, scalar string encoding stays",
+        );
+    }
+
+    #[test]
+    fn normalize_leaves_native_stringarray_alone() {
+        let col = make_multicat_column("tags", IngestedType::StringArray, None);
+        let mut cfg = GraphConfig {
+            dataset_name: "t".into(),
+            tables: vec![make_table("items", vec![col], None)],
+            rowpack: None,
+            num_shards: None,
+            edge_format: None,
+            coercion_mode: CoercionMode::default(),
+        };
+        cfg.normalize_multicat_pseudo_list();
+        assert_eq!(
+            cfg.tables[0].columns[0].ingested_dtype,
+            IngestedType::StringArray,
+        );
+    }
+
+    #[test]
+    fn normalize_leaves_non_multicat_columns_alone() {
+        // Non-multicat semantic type with an irrelevant delimiter should not flip.
+        let mut col = make_column("x", IngestedType::String);
+        col.semantic_type = Some(SemanticType::Text);
+        col.multicategorical_delimiter = Some(",".into());
+        let mut cfg = GraphConfig {
+            dataset_name: "t".into(),
+            tables: vec![make_table("items", vec![col], None)],
+            rowpack: None,
+            num_shards: None,
+            edge_format: None,
+            coercion_mode: CoercionMode::default(),
+        };
+        cfg.normalize_multicat_pseudo_list();
+        assert_eq!(
+            cfg.tables[0].columns[0].ingested_dtype,
+            IngestedType::String,
+        );
+    }
+
+    #[test]
+    fn normalize_is_idempotent() {
+        let col = make_multicat_column("tags", IngestedType::String, Some(","));
+        let mut cfg = GraphConfig {
+            dataset_name: "t".into(),
+            tables: vec![make_table("items", vec![col], None)],
+            rowpack: None,
+            num_shards: None,
+            edge_format: None,
+            coercion_mode: CoercionMode::default(),
+        };
+        cfg.normalize_multicat_pseudo_list();
+        let after_first = cfg.tables[0].columns[0].ingested_dtype.clone();
+        cfg.normalize_multicat_pseudo_list();
+        let after_second = cfg.tables[0].columns[0].ingested_dtype.clone();
+        assert_eq!(after_first, after_second, "pass should be idempotent");
+        assert_eq!(after_first, IngestedType::StringArray);
     }
 }

@@ -9,6 +9,7 @@ use anyhow::{anyhow, Result};
 use arrow_array::{Array, ArrayRef};
 use arrow_schema::DataType;
 use num_traits::ToPrimitive;
+use std::sync::Arc;
 
 /// How to format binary data when converting to string via `with_string()`.
 #[derive(Debug, Clone, Copy, Default)]
@@ -30,6 +31,16 @@ pub struct RowAccessHints {
     pub timestamp_unit: Option<arrow_schema::TimeUnit>,
     pub decimal_scale: Option<i32>,
     pub binary_string_hint: BinaryStringHint,
+    /// Delimiter to use when reading a parquet `Utf8` scalar as a list.
+    /// When set, scalar-to-list conversion in `string_list_view` /
+    /// `int64_list_view` splits on this byte (with GE-parity drop-empty
+    /// semantics) instead of JSON-parsing. Carrying this on the access layer
+    /// is what lets a `multicategorical` column declared with a delimiter
+    /// flow into the `IngestedType::StringArray` / `Int64Array` writer path
+    /// without changing the source parquet shape.
+    pub multicategorical_delimiter: Option<String>,
+    /// Column name, used only for error messages on parse failure.
+    pub column_name: Option<String>,
 }
 
 pub struct RowAccess<'p> {
@@ -39,6 +50,16 @@ pub struct RowAccess<'p> {
     _stats: RowAccessStats<'p>,
     hints: Vec<RowAccessHints>,
     fast_parsers: Vec<Option<TimestampFormatParser>>,
+    /// Per-column pre-tokenized `ListArray<Utf8>` for multicategorical
+    /// columns whose source is a `Utf8`/`LargeUtf8` scalar with a declared
+    /// delimiter. Built once per batch in `set_cols` so per-row
+    /// `string_list_view` calls don't have to re-split, re-allocate a
+    /// `Vec<String>` per row, or memcpy each token into its own heap
+    /// buffer. The whole batch's tokens land in one Arrow value buffer
+    /// (one allocation), with two offsets arrays (list + value) on top.
+    /// Indexed by column index; `None` for columns that don't need it.
+    /// kumo-ai/kumo#28478.
+    tokenized_lists: Vec<Option<ArrayRef>>,
 }
 
 pub enum FloatListValues {
@@ -312,6 +333,102 @@ pub fn parse_string_as_int64_array(s: &str) -> Result<Vec<i64>> {
         .collect()
 }
 
+/// Split `s` on `delim` and drop empty tokens (leading, trailing, middle).
+/// Matches GraphEngine PySpark behavior:
+/// `pyspark.sql.functions.split(col, sep)` then `filter(elem != '')`
+/// (`kumo/data/data_processing_backend/pyspark_processing_backend.py:267`).
+/// Examples: `""` → `[]`, `"a,"` → `["a"]`, `"a,,b"` → `["a","b"]`,
+/// `",a,"` → `["a"]`.
+pub fn split_multicat_string(s: &str, delim: &str) -> Vec<String> {
+    if s.is_empty() {
+        return Vec::new();
+    }
+    s.split(delim)
+        .filter(|tok| !tok.is_empty())
+        .map(|tok| tok.to_string())
+        .collect()
+}
+
+/// Build a `ListArray<Utf8>` over an entire batch by tokenizing every row
+/// of a parquet `Utf8`/`LargeUtf8` scalar column on the declared delimiter
+/// (drop-empty, GE-parity). All non-empty tokens across all rows go into a
+/// single shared value buffer; the per-row token boundaries land in one
+/// list-offsets array and the per-token byte boundaries in one value-offsets
+/// array. Net allocations for the whole batch: one growing-bytes buffer +
+/// two offsets buffers + one validity buffer, all amortized across N rows
+/// regardless of token count. Replaces the per-row `Vec<String>` /
+/// `String::to_string()` allocator round-trips that dominated the original
+/// post-#28478 ingest path. kumo-ai/kumo#28478.
+fn build_multicat_list_array(arr: &dyn Array, delim: &str) -> Result<ArrayRef> {
+    use arrow_array::builder::{ListBuilder, StringBuilder};
+    let mut builder = ListBuilder::new(StringBuilder::new());
+    if let Some(s) = arr.as_any().downcast_ref::<arrow_array::StringArray>() {
+        for row in 0..s.len() {
+            if s.is_null(row) {
+                builder.append(false);
+                continue;
+            }
+            let cell = s.value(row);
+            if !cell.is_empty() {
+                for tok in cell.split(delim).filter(|t| !t.is_empty()) {
+                    builder.values().append_value(tok);
+                }
+            }
+            builder.append(true);
+        }
+        return Ok(Arc::new(builder.finish()));
+    }
+    if let Some(s) = arr.as_any().downcast_ref::<arrow_array::LargeStringArray>() {
+        for row in 0..s.len() {
+            if s.is_null(row) {
+                builder.append(false);
+                continue;
+            }
+            let cell = s.value(row);
+            if !cell.is_empty() {
+                for tok in cell.split(delim).filter(|t| !t.is_empty()) {
+                    builder.values().append_value(tok);
+                }
+            }
+            builder.append(true);
+        }
+        return Ok(Arc::new(builder.finish()));
+    }
+    Err(anyhow!(
+        "build_multicat_list_array: expected Utf8/LargeUtf8 scalar source"
+    ))
+}
+
+/// Same split as `split_multicat_string`, but parses each token as i64.
+/// Returns a structured error with row + token + column context on the first
+/// parse failure; the caller is expected to surface it directly to the user.
+pub fn split_multicat_string_as_int64(
+    s: &str,
+    delim: &str,
+    column: Option<&str>,
+    row: usize,
+) -> Result<Vec<i64>> {
+    if s.is_empty() {
+        return Ok(Vec::new());
+    }
+    s.split(delim)
+        .filter(|tok| !tok.is_empty())
+        .map(|tok| {
+            tok.parse::<i64>().map_err(|_| {
+                anyhow!(
+                    "ingest type mismatch: column={} row={} declared=Int64Array \
+                     but parquet token {:?} could not be parsed as i64 \
+                     (sample row text: {:?})",
+                    column.unwrap_or("?"),
+                    row,
+                    tok,
+                    s,
+                )
+            })
+        })
+        .collect()
+}
+
 /// Parse a JSON-encoded string like `["a","b","c"]` into a Vec<String>.
 /// Uses serde_json for correctness (handles escapes, nested quotes, etc.).
 /// Empty array → empty vec. Non-array JSON → hard error.
@@ -368,6 +485,7 @@ impl<'p> RowAccess<'p> {
                     .and_then(TimestampFormatParser::compile)
             })
             .collect();
+        let n = hints.len();
         Self {
             row: 0,
             cols_ptr: std::ptr::null(),
@@ -375,12 +493,38 @@ impl<'p> RowAccess<'p> {
             _stats: stats,
             hints,
             fast_parsers,
+            tokenized_lists: vec![None; n],
         }
     }
 
     pub fn set_cols(&mut self, cols: &[ArrayRef]) {
         self.cols_ptr = cols.as_ptr();
         self.cols_len = cols.len();
+        // Reset and rebuild the per-column pre-tokenized list cache.
+        // Any column whose hint declares a `multicategorical_delimiter` and
+        // whose source is a parquet `Utf8`/`LargeUtf8` scalar gets its
+        // entire batch's tokens flattened into a single `ListArray<Utf8>`
+        // up-front. Subsequent `string_list_view(idx)` calls then read row
+        // ranges out of the cached list — one allocation amortized across
+        // the whole batch instead of `Vec<String>` per row. kumo-ai/kumo#28478.
+        for slot in self.tokenized_lists.iter_mut() {
+            *slot = None;
+        }
+        for (idx, hint) in self.hints.iter().enumerate() {
+            let Some(delim) = hint.multicategorical_delimiter.as_deref() else {
+                continue;
+            };
+            let Some(arr) = cols.get(idx) else { continue };
+            let dt = arr.data_type();
+            if !matches!(dt, DataType::Utf8 | DataType::LargeUtf8) {
+                continue;
+            }
+            // On build failure, leave the slot `None` and let the per-row
+            // path in `string_list_view` hit the same failure with row
+            // context. Avoids surfacing batch-level errors at `set_cols`
+            // time where the caller may not be ready for them.
+            self.tokenized_lists[idx] = build_multicat_list_array(arr.as_ref(), delim).ok();
+        }
     }
 
     pub fn set_row(&mut self, row: usize) {
@@ -2619,8 +2763,33 @@ impl<'p> RowAccess<'p> {
         if array.is_null(self.row) {
             return Ok(None);
         }
+        // Snapshot the multicat-delim hint and column name up-front so we can
+        // use them inside the scalar-string branch without holding a borrow on
+        // `self.hints`.
+        let multicat_delim = self.hint(idx)?.multicategorical_delimiter.clone();
+        let col_name = self.hint(idx)?.column_name.clone();
+        let row = self.row;
+        let col_label = col_name.as_deref().unwrap_or("?");
         if let Some(str_arr) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
-            let parsed = parse_string_as_int64_array(str_arr.value(self.row))?;
+            let raw = str_arr.value(self.row);
+            let parsed = match multicat_delim.as_deref() {
+                Some(delim) => split_multicat_string_as_int64(
+                    raw,
+                    delim,
+                    col_name.as_deref(),
+                    row,
+                )?,
+                None => parse_string_as_int64_array(raw).map_err(|e| {
+                    anyhow!(
+                        "ingest type mismatch: column={} row={} declared=Int64Array \
+                         but parquet scalar string {:?} could not be parsed as a \
+                         JSON-style int list ({}). If the source uses a custom delimiter, \
+                         declare `multicategorical_delimiter` on the column and \
+                         `semantic_type=multicategorical`.",
+                        col_label, row, raw, e,
+                    )
+                })?,
+            };
             let end = parsed.len();
             return Ok(Some(Int64ListView {
                 start: 0,
@@ -2632,7 +2801,23 @@ impl<'p> RowAccess<'p> {
             .as_any()
             .downcast_ref::<arrow_array::LargeStringArray>()
         {
-            let parsed = parse_string_as_int64_array(str_arr.value(self.row))?;
+            let raw = str_arr.value(self.row);
+            let parsed = match multicat_delim.as_deref() {
+                Some(delim) => split_multicat_string_as_int64(
+                    raw,
+                    delim,
+                    col_name.as_deref(),
+                    row,
+                )?,
+                None => parse_string_as_int64_array(raw).map_err(|e| {
+                    anyhow!(
+                        "ingest type mismatch: column={} row={} declared=Int64Array \
+                         but parquet scalar string {:?} could not be parsed as a \
+                         JSON-style int list ({})",
+                        col_label, row, raw, e,
+                    )
+                })?,
+            };
             let end = parsed.len();
             return Ok(Some(Int64ListView {
                 start: 0,
@@ -2658,7 +2843,13 @@ impl<'p> RowAccess<'p> {
             )
         } else {
             return Err(anyhow!(
-                "int64 list cast: expected ListArray or LargeListArray"
+                "ingest type mismatch: column={} row={} declared=Int64Array \
+                 but parquet column is neither a list nor a string scalar \
+                 (got {:?}). Either change the declared dtype to match the \
+                 source, or convert the source column to List<Int64>.",
+                col_label,
+                row,
+                array.data_type(),
             ));
         };
         if values
@@ -2666,7 +2857,16 @@ impl<'p> RowAccess<'p> {
             .downcast_ref::<arrow_array::Int64Array>()
             .is_none()
         {
-            return Err(anyhow!("int64 list element cast"));
+            return Err(anyhow!(
+                "ingest type mismatch: column={} row={} declared=Int64Array \
+                 but parquet list element type is {:?} (need Int64). \
+                 If the elements are stringified ints, change the declared \
+                 dtype to StringArray + add a multicategorical_delimiter, or \
+                 cast the source list elements to Int64 upstream.",
+                col_label,
+                row,
+                values.data_type(),
+            ));
         }
         Ok(Some(Int64ListView {
             start,
@@ -2676,12 +2876,40 @@ impl<'p> RowAccess<'p> {
     }
 
     pub fn string_list_view(&mut self, idx: usize) -> Result<Option<StringListView>> {
+        // Fast path: pre-tokenized batch list built in `set_cols` for
+        // (multicat-delim, Utf8 source) columns. Read the row's token
+        // range directly out of the cached `ListArray<Utf8>`; no per-row
+        // splitting or allocation. kumo-ai/kumo#28478.
+        if let Some(list_ref) = self.tokenized_lists.get(idx).and_then(|s| s.clone()) {
+            let list = list_ref
+                .as_any()
+                .downcast_ref::<arrow_array::ListArray>()
+                .ok_or_else(|| anyhow!("tokenized list cache: not a ListArray"))?;
+            if list.is_null(self.row) {
+                return Ok(None);
+            }
+            let offsets = list.value_offsets();
+            let start = offsets[self.row] as usize;
+            let end = offsets[self.row + 1] as usize;
+            return Ok(Some(StringListView {
+                start,
+                end,
+                values: StringListValues::Utf8(list.values().clone()),
+            }));
+        }
         let array = self.array(idx)?.clone();
         if array.is_null(self.row) {
             return Ok(None);
         }
+        let multicat_delim = self.hint(idx)?.multicategorical_delimiter.clone();
+        let col_name = self.hint(idx)?.column_name.clone();
+        let col_label = col_name.as_deref().unwrap_or("?");
+        let row = self.row;
         if let Some(str_arr) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
-            let parsed = parse_string_as_string_array(str_arr.value(self.row))?;
+            let parsed = match multicat_delim.as_deref() {
+                Some(delim) => split_multicat_string(str_arr.value(self.row), delim),
+                None => parse_string_as_string_array(str_arr.value(self.row))?,
+            };
             let end = parsed.len();
             return Ok(Some(StringListView {
                 start: 0,
@@ -2693,7 +2921,10 @@ impl<'p> RowAccess<'p> {
             .as_any()
             .downcast_ref::<arrow_array::LargeStringArray>()
         {
-            let parsed = parse_string_as_string_array(str_arr.value(self.row))?;
+            let parsed = match multicat_delim.as_deref() {
+                Some(delim) => split_multicat_string(str_arr.value(self.row), delim),
+                None => parse_string_as_string_array(str_arr.value(self.row))?,
+            };
             let end = parsed.len();
             return Ok(Some(StringListView {
                 start: 0,
@@ -2719,7 +2950,13 @@ impl<'p> RowAccess<'p> {
             )
         } else {
             return Err(anyhow!(
-                "string list cast: expected ListArray or LargeListArray"
+                "ingest type mismatch: column={} row={} declared=StringArray \
+                 but parquet column is neither a list nor a string scalar \
+                 (got {:?}). Either change the declared dtype to match the \
+                 source, or convert the source column to List<Utf8>.",
+                col_label,
+                row,
+                array.data_type(),
             ));
         };
         if values
@@ -2745,7 +2982,12 @@ impl<'p> RowAccess<'p> {
             }));
         }
         Err(anyhow!(
-            "string list element cast: expected StringArray or LargeStringArray"
+            "ingest type mismatch: column={} row={} declared=StringArray \
+             but parquet list element type is {:?} (need Utf8 or LargeUtf8). \
+             Cast the source list elements to a string type upstream.",
+            col_label,
+            row,
+            values.data_type(),
         ))
     }
 

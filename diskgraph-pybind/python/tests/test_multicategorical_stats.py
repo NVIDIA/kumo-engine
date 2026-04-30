@@ -126,8 +126,12 @@ def test_multicat_string_scalar_keys_present(multicat_stats):
     assert m.get("sale") == 1
     assert m.get("audio") == 1
     assert m.get("pro") == 1
-    # Empty-string row contributes one `""` token (non-null-row semantics).
-    assert m.get("") == 1
+    # Empty-string row produces zero tokens under GraphEngine-parity drop-empty
+    # semantics (matches `pyspark.sql.functions.split` followed by
+    # `filter(elem != '')` in
+    # `kumo/data/data_processing_backend/pyspark_processing_backend.py:267`).
+    # Pre-#28478 this row contributed an empty `""` token to category counts.
+    assert m.get("") is None
     # Approx num-unique key is present.
     assert "str_tags__kumo.multicategorical__NUM_UNIQUE_MULTI__True" in multicat_stats
 
