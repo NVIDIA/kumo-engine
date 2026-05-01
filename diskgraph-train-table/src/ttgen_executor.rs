@@ -17,12 +17,12 @@ use diskgraph_core::tt_builder::*;
 use diskgraph_index::graph::GraphIndexReader;
 use rayon::prelude::*;
 
-use crate::ttgen_accumulator::{hash_value, Accumulator};
+use crate::ttgen_accumulator::{hash_i64, hash_str, hash_value, Accumulator};
 use crate::ttgen_filter::{compare_values, eval_row_filter, eval_stage_filter};
 use crate::ttgen_output::{ChannelBatchWriter, ExtraColumnOutput, ExtraValueRef, OutputMode};
 use crate::ttgen_resolve::*;
 use crate::ttgen_stats::{ChunkStats, StatsMerger, TTExecutionSummary};
-use crate::ttgen_traversal::*;
+use crate::ttgen_traversal::{*, MulticatToken};
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -676,22 +676,27 @@ fn write_target<U: UnitSystem>(
                             } else {
                                 None
                             };
+                            // Index 0: full row + target observation.
                             update_exact_stats(stats, entity_pk, ts, first_target, first_freq, target_is_numerical, target_is_categorical, target_stype, local_target_counts, local_entity_counts);
+                            // Index 1+: target-only observation. Without this,
+                            // multicat `MULTI_CATEGORY_COUNTS` and `target_hll`
+                            // miss every token after the first under the
+                            // array-output writer arm (kumo#28400 codex review).
                             for (idx, tgt) in targets.iter().enumerate().skip(1) {
                                 let freq = if *include_frequency {
                                     freqs.get(idx).copied()
                                 } else {
                                     None
                                 };
-                                stats.targets.insert(hash_value(tgt));
-                                if let Some(v) = value_to_i64_opt(tgt) {
-                                    stats.target_min = min_opt_i64(stats.target_min, v);
-                                    stats.target_max = max_opt_i64(stats.target_max, v);
-                                }
-                                if let Some(freq) = freq {
-                                    stats.frequency_min = min_opt_i64(stats.frequency_min, freq);
-                                    stats.frequency_max = max_opt_i64(stats.frequency_max, freq);
-                                }
+                                observe_target_value(
+                                    stats,
+                                    tgt,
+                                    freq,
+                                    target_is_numerical,
+                                    target_is_categorical,
+                                    target_stype,
+                                    local_target_counts,
+                                );
                             }
                         } else {
                             stats.entities.insert(hash_value(entity_pk));
@@ -741,7 +746,6 @@ fn update_exact_stats<U: UnitSystem>(
     local_entity_counts: &mut LocalColumnCounts,
 ) {
     stats.entities.insert(hash_value(entity_pk));
-    stats.targets.insert(hash_value(target));
     stats.timestamps.insert(ts);
     *stats.timestamp_counts.entry(ts).or_insert(0) += 1;
 
@@ -800,6 +804,60 @@ fn update_exact_stats<U: UnitSystem>(
         }
     }
 
+    observe_target_value(
+        stats,
+        target,
+        frequency,
+        target_is_numerical,
+        target_is_categorical,
+        target_stype,
+        local_target_counts,
+    );
+
+    // Frequency distribution (if present)
+    if let Some(freq) = frequency {
+        if let Some(ref mut w) = stats.frequency_welford {
+            w.observe(freq as f64);
+        }
+        if let Some(ref mut t) = stats.frequency_tdigest {
+            t.observe(freq as f64);
+        }
+        if let Some(ref mut h) = stats.frequency_hll {
+            h.observe_i64(freq);
+        }
+    }
+}
+
+/// Observe one target value (and its frequency, if any) into the per-target
+/// stat aggregates: targets-set hash, target_min/max, frequency_min/max,
+/// numerical Welford/tdigest/HLL, categorical HLL + local category counts.
+///
+/// Called once per target by `update_exact_stats` for the row's primary
+/// target, and additionally per-element by the link-pred array-output writer
+/// arm so `MULTI_CATEGORY_COUNTS` and `target_hll` see every distinct token
+/// in the array, not just index 0.
+///
+/// Multicat shapes after the per-token observe fix (kumo#28400):
+///   - `Value::List(tokens)` — node-pred multilabel-classification with a
+///     multicat source (FIRST/LAST/Route A/Node-pred LIST_DISTINCT). Iterate
+///     items directly; do NOT call `value_to_string` on the list (it
+///     yields the literal `"<list>"`, collapsing every row into one
+///     synthetic category).
+///   - `Value::Str(tok)` — link-pred-explode arm: each row is one token.
+///     The legacy `'|'`-split path is preserved for compatibility with
+///     pre-fix callers that may still emit a pipe-joined whole-cell string;
+///     for single-token Value::Str the split is a no-op.
+fn observe_target_value<U: UnitSystem>(
+    stats: &mut ChunkStats<U>,
+    target: &Value,
+    frequency: Option<i64>,
+    target_is_numerical: bool,
+    target_is_categorical: bool,
+    target_stype: &str,
+    local_target_counts: &mut Option<LocalColumnCounts>,
+) {
+    stats.targets.insert(hash_value(target));
+
     if let Some(v) = value_to_i64_opt(target) {
         stats.target_min = min_opt_i64(stats.target_min, v);
         stats.target_max = max_opt_i64(stats.target_max, v);
@@ -810,7 +868,6 @@ fn update_exact_stats<U: UnitSystem>(
         stats.frequency_max = max_opt_i64(stats.frequency_max, freq);
     }
 
-    // Observe target value for distribution stats (numerical targets only)
     if target_is_numerical {
         if let Some(f) = match target {
             Value::Int(i) => Some(*i as f64),
@@ -837,42 +894,44 @@ fn update_exact_stats<U: UnitSystem>(
         }
     }
 
-    // Observe target value for categorical stats
     if target_is_categorical {
-        let target_str = value_to_string(target);
         if target_stype == "multicategorical" {
-            // Split pipe-delimited target, observe each token independently
-            for_each_split_ascii_byte(&target_str, b'|', |tok| {
-                let tok = tok.trim();
-                let hash = HyperLogLog::hash_bytes(tok.as_bytes());
-                if let Some(ref mut h) = stats.target_hll {
-                    h.observe_hash(hash);
+            match target {
+                Value::List(items) => {
+                    for item in items {
+                        let tok = value_to_string(item);
+                        let hash = HyperLogLog::hash_bytes(tok.as_bytes());
+                        if let Some(ref mut h) = stats.target_hll {
+                            h.observe_hash(hash);
+                        }
+                        if let Some(ref mut local) = local_target_counts {
+                            local.observe(hash, &tok);
+                        }
+                    }
                 }
-                if let Some(ref mut local) = local_target_counts {
-                    local.observe(hash, tok);
+                _ => {
+                    let target_str = value_to_string(target);
+                    for_each_split_ascii_byte(&target_str, b'|', |tok| {
+                        let tok = tok.trim();
+                        let hash = HyperLogLog::hash_bytes(tok.as_bytes());
+                        if let Some(ref mut h) = stats.target_hll {
+                            h.observe_hash(hash);
+                        }
+                        if let Some(ref mut local) = local_target_counts {
+                            local.observe(hash, tok);
+                        }
+                    });
                 }
-            });
+            }
         } else {
             let target_hash = hash_value(target);
+            let target_str = value_to_string(target);
             if let Some(ref mut local) = local_target_counts {
                 local.observe(target_hash, &target_str);
             }
             if let Some(ref mut h) = stats.target_hll {
                 h.observe_i64(target_hash as i64);
             }
-        }
-    }
-
-    // Frequency distribution (if present)
-    if let Some(freq) = frequency {
-        if let Some(ref mut w) = stats.frequency_welford {
-            w.observe(freq as f64);
-        }
-        if let Some(ref mut t) = stats.frequency_tdigest {
-            t.observe(freq as f64);
-        }
-        if let Some(ref mut h) = stats.frequency_hll {
-            h.observe_i64(freq);
         }
     }
 }
@@ -946,10 +1005,50 @@ fn execute_stages<U: UnitSystem>(
                     execute_has_edges(plan, entity_node, has_edges, entity_cols, observation_ts)
                 }
                 ResolvedOp::Column(col) => {
-                    match read_column_value_nullable(&col.table, entity_node, col.col_idx) {
-                        Some(Some(v)) => Some(v),
-                        Some(None) => None,
-                        None => None,
+                    // Route A direct-target read site (kumo#28400). For
+                    // multicat sources, emit `Value::List(tokens)` so the
+                    // downstream alias consumer (the writer) sees the row's
+                    // flat token set. Non-multicat path is unchanged.
+                    //
+                    // NULL handling: distinguish "source NULL" (return None,
+                    // skip the row) from "source present, list of zero
+                    // tokens" (return Some(Value::List(vec![]))). The dispatch
+                    // outcome reports SourceNull when the row's source data
+                    // is missing; without this check, NULL rows mis-render as
+                    // empty-target training rows and skew downstream stats.
+                    let is_multicat = col.target_semantic_type.as_deref()
+                        == Some("multicategorical");
+                    if is_multicat {
+                        let mut tokens: Vec<Value> = Vec::new();
+                        let outcome = dispatch_multicat_source(
+                            &col.table,
+                            entity_node,
+                            col.col_idx,
+                            true,
+                            |tok| {
+                                tokens.push(match tok {
+                                    MulticatToken::Str(s) => Value::Str(s.to_string()),
+                                    MulticatToken::Int(n) => Value::Int(n),
+                                    MulticatToken::Legacy(v) => v,
+                                });
+                                true
+                            },
+                        );
+                        if outcome.observed() {
+                            Some(Value::List(tokens))
+                        } else {
+                            None
+                        }
+                    } else {
+                        match read_column_value_nullable(
+                            &col.table,
+                            entity_node,
+                            col.col_idx,
+                        ) {
+                            Some(Some(v)) => Some(v),
+                            Some(None) => None,
+                            None => None,
+                        }
                     }
                 }
                 ResolvedOp::Compare(cmp) => {
@@ -1233,6 +1332,9 @@ fn execute_aggregate<U: UnitSystem>(
             Accumulator::Max(acc).finalize()
         }
         AggFunc::CountDistinct => {
+            // Multicat: hash per token (not per cell). Output is the count of
+            // distinct tokens across the window.
+            let is_multicat = agg.target_semantic_type.as_deref() == Some("multicategorical");
             let mut set = HashSet::new();
             traverse_and_accumulate(entity_node, &agg.path, window, true, &mut |dst, _sk| {
                 if let Some(ref f) = agg.row_filter {
@@ -1240,10 +1342,29 @@ fn execute_aggregate<U: UnitSystem>(
                         return true;
                     }
                 }
-                if let Some(col_idx) = agg.target_col_idx {
-                    if let Some(val) = read_column_value(dst_table, dst, col_idx) {
-                        set.insert(hash_value(&val));
-                    }
+                let Some(col_idx) = agg.target_col_idx else {
+                    return true;
+                };
+                if is_multicat {
+                    // COUNT_DISTINCT only needs the hash; never materialize
+                    // a Value (zero allocations on every observation).
+                    let _ = dispatch_multicat_source(
+                        dst_table,
+                        dst,
+                        col_idx,
+                        true,
+                        |tok| {
+                            let h = match tok {
+                                MulticatToken::Str(s) => hash_str(s),
+                                MulticatToken::Int(n) => hash_i64(n),
+                                MulticatToken::Legacy(ref v) => hash_value(v),
+                            };
+                            set.insert(h);
+                            true
+                        },
+                    );
+                } else if let Some(val) = read_column_value(dst_table, dst, col_idx) {
+                    set.insert(hash_value(&val));
                 }
                 true
             });
@@ -1265,54 +1386,101 @@ fn execute_aggregate<U: UnitSystem>(
                 _ => None,
             };
             let mut rowpack_scratch = diskgraph_rowpack::RowPackDecodeScratch::default();
+
+            let is_multicat = agg.target_semantic_type.as_deref() == Some("multicategorical");
+
+            // PK / temporal-validity filter: only meaningful for FK-shaped LP
+            // ListDistinct (`target_pk_table` is set). Multicat sources are
+            // never FK columns, so the filter is unreachable on the multicat
+            // branch.
+            //
+            // Hot-path discipline: hash the borrowed token first; only
+            // materialize `Value::Str(String)` on the Vacant branch. Repeated
+            // tokens hit Occupied and never allocate.
+
             traverse_and_accumulate(entity_node, &agg.path, window, true, &mut |dst, _sk| {
                 if let Some(ref f) = agg.row_filter {
                     if !eval_row_filter(f, dst, dst_table, entity_cols) {
                         return true;
                     }
                 }
-                if let Some(col_idx) = agg.target_col_idx {
-                    if let Some(val) = read_column_value(dst_table, dst, col_idx) {
-                        // Skip target values whose FK doesn't exist in the
-                        // destination table, or whose target entity is not
-                        // temporally valid at the observation timestamp
-                        // (e.g., FIDO added to catalog after anchor time).
-                        if let Some(pk_table) = pk_filter {
-                            if let Some(obs_ts) = temporal_obs_ts {
-                                if !pk_table.contains_pk_value_temporal(
-                                    &val,
-                                    obs_ts,
-                                    agg.target_temporal_create_col_idx,
-                                    agg.target_temporal_end_col_idx,
-                                    &mut rowpack_scratch,
-                                ) {
-                                    return true;
+                let Some(col_idx) = agg.target_col_idx else {
+                    return values.len() < limit;
+                };
+
+                if is_multicat {
+                    let _ = dispatch_multicat_source(
+                        dst_table,
+                        dst,
+                        col_idx,
+                        true,
+                        |tok| {
+                            let h = match &tok {
+                                MulticatToken::Str(s) => hash_str(s),
+                                MulticatToken::Int(n) => hash_i64(*n),
+                                MulticatToken::Legacy(v) => hash_value(v),
+                            };
+                            match seen.entry(h) {
+                                std::collections::hash_map::Entry::Occupied(e) => {
+                                    counts[*e.get()] += 1;
                                 }
-                            } else if !pk_table.contains_pk_value(&val) {
+                                std::collections::hash_map::Entry::Vacant(e) => {
+                                    e.insert(values.len());
+                                    values.push(match tok {
+                                        MulticatToken::Str(s) => Value::Str(s.to_string()),
+                                        MulticatToken::Int(n) => Value::Int(n),
+                                        MulticatToken::Legacy(v) => v,
+                                    });
+                                    counts.push(1i64);
+                                }
+                            }
+                            values.len() < limit
+                        },
+                    );
+                    return values.len() < limit;
+                }
+
+                // Legacy whole-cell path (FK ListDistinct, scalar ListDistinct).
+                if let Some(val) = read_column_value(dst_table, dst, col_idx) {
+                    // Skip target values whose FK doesn't exist in the
+                    // destination table, or whose target entity is not
+                    // temporally valid at the observation timestamp
+                    // (e.g., FIDO added to catalog after anchor time).
+                    if let Some(pk_table) = pk_filter {
+                        if let Some(obs_ts) = temporal_obs_ts {
+                            if !pk_table.contains_pk_value_temporal(
+                                &val,
+                                obs_ts,
+                                agg.target_temporal_create_col_idx,
+                                agg.target_temporal_end_col_idx,
+                                &mut rowpack_scratch,
+                            ) {
                                 return true;
                             }
+                        } else if !pk_table.contains_pk_value(&val) {
+                            return true;
                         }
-                        let h = hash_value(&val);
-                        match seen.entry(h) {
-                            std::collections::hash_map::Entry::Occupied(e) => {
-                                counts[*e.get()] += 1;
+                    }
+                    let h = hash_value(&val);
+                    match seen.entry(h) {
+                        std::collections::hash_map::Entry::Occupied(e) => {
+                            counts[*e.get()] += 1;
+                        }
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            e.insert(values.len());
+                            if let Some(split_col_idx) = agg.link_split_col_idx {
+                                split_values.push(
+                                    read_column_value_nullable(dst_table, dst, split_col_idx)
+                                        .flatten()
+                                        .unwrap_or_else(|| Value::Str("None".to_string())),
+                                );
                             }
-                            std::collections::hash_map::Entry::Vacant(e) => {
-                                e.insert(values.len());
-                                if let Some(split_col_idx) = agg.link_split_col_idx {
-                                    split_values.push(
-                                        read_column_value_nullable(dst_table, dst, split_col_idx)
-                                            .flatten()
-                                            .unwrap_or_else(|| Value::Str("None".to_string())),
-                                    );
-                                }
-                                values.push(val);
-                                counts.push(1i64);
-                            }
+                            values.push(val);
+                            counts.push(1i64);
                         }
                     }
                 }
-                values.len() < limit // early exit when limit reached
+                values.len() < limit
             });
             // Store frequency counts for link prediction output
             link_frequencies.clear();
@@ -1324,7 +1492,11 @@ fn execute_aggregate<U: UnitSystem>(
         AggFunc::First => {
             // Edges iterate DESCENDING by sort key (newest first),
             // so "first" (earliest) = keep overwriting, last encountered wins.
-            let mut val = None;
+            //
+            // Multicat semantic shift: the slot stores `Value::List(tokens)`
+            // (the row's full token set), not the cell value.
+            let is_multicat = agg.target_semantic_type.as_deref() == Some("multicategorical");
+            let mut val: Option<Value> = None;
             traverse_and_accumulate(entity_node, &agg.path, window, true, &mut |dst, _sk| {
                 if let Some(ref f) = agg.row_filter {
                     if !eval_row_filter(f, dst, dst_table, entity_cols) {
@@ -1332,7 +1504,26 @@ fn execute_aggregate<U: UnitSystem>(
                     }
                 }
                 if let Some(col_idx) = agg.target_col_idx {
-                    val = read_column_value(dst_table, dst, col_idx);
+                    if is_multicat {
+                        let mut tokens: Vec<Value> = Vec::new();
+                        let _ = dispatch_multicat_source(
+                            dst_table,
+                            dst,
+                            col_idx,
+                            true,
+                            |tok| {
+                                tokens.push(match tok {
+                                    MulticatToken::Str(s) => Value::Str(s.to_string()),
+                                    MulticatToken::Int(n) => Value::Int(n),
+                                    MulticatToken::Legacy(v) => v,
+                                });
+                                true
+                            },
+                        );
+                        val = Some(Value::List(tokens));
+                    } else {
+                        val = read_column_value(dst_table, dst, col_idx);
+                    }
                 } else {
                     val = Some(Value::Int(dst as i64));
                 }
@@ -1343,7 +1534,11 @@ fn execute_aggregate<U: UnitSystem>(
         AggFunc::Last => {
             // Edges iterate DESCENDING by sort key (newest first),
             // so "last" (latest) = first encountered, stop early.
-            let mut val = None;
+            //
+            // Multicat semantic shift: same as `First` — slot stores
+            // `Value::List(tokens)` of the chosen row's full token set.
+            let is_multicat = agg.target_semantic_type.as_deref() == Some("multicategorical");
+            let mut val: Option<Value> = None;
             traverse_and_accumulate(entity_node, &agg.path, window, true, &mut |dst, _sk| {
                 if let Some(ref f) = agg.row_filter {
                     if !eval_row_filter(f, dst, dst_table, entity_cols) {
@@ -1351,7 +1546,26 @@ fn execute_aggregate<U: UnitSystem>(
                     }
                 }
                 if let Some(col_idx) = agg.target_col_idx {
-                    val = read_column_value(dst_table, dst, col_idx);
+                    if is_multicat {
+                        let mut tokens: Vec<Value> = Vec::new();
+                        let _ = dispatch_multicat_source(
+                            dst_table,
+                            dst,
+                            col_idx,
+                            true,
+                            |tok| {
+                                tokens.push(match tok {
+                                    MulticatToken::Str(s) => Value::Str(s.to_string()),
+                                    MulticatToken::Int(n) => Value::Int(n),
+                                    MulticatToken::Legacy(v) => v,
+                                });
+                                true
+                            },
+                        );
+                        val = Some(Value::List(tokens));
+                    } else {
+                        val = read_column_value(dst_table, dst, col_idx);
+                    }
                 } else {
                     val = Some(Value::Int(dst as i64));
                 }

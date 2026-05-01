@@ -106,7 +106,10 @@ fn validate_rejects_unsupported_direct_multicategorical_dtype() {
         edge_format: None,
         coercion_mode: Default::default(),
     };
-    assert_err_contains(meta, "bad_multicat multicategorical supports only");
+    assert_err_contains(
+        meta,
+        "bad_multicat stype=multicategorical requires a list-shaped",
+    );
 }
 
 #[test]

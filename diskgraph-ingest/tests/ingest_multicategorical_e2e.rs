@@ -1177,3 +1177,188 @@ fn convert_errors_on_explicit_delim_mismatch_with_data() -> Result<()> {
     }
     Ok(())
 }
+
+// =============================================================================
+// Layer 3 — diskgraph_config.json persistence at the index root
+// =============================================================================
+
+#[test]
+fn ingest_persists_diskgraph_config_with_semantic_type() -> Result<()> {
+    use arrow_array::Int64Array;
+
+    let dir = tempdir()?;
+    let data_dir = dir.path().join("data");
+    let index_dir = dir.path().join("index");
+    fs::create_dir_all(&data_dir)?;
+
+    // Minimal parquet: one int64 PK, one delimited multicat string column.
+    let item_ids = Int64Array::from(vec![0_i64, 1, 2]);
+    let tags = ArrowStringArray::from(vec!["a,b", "c", "a,c"]);
+    let schema = Schema::new(vec![
+        Field::new("item_id", DataType::Int64, false),
+        Field::new("tags", DataType::Utf8, false),
+    ]);
+    let batch = RecordBatch::try_new(
+        Arc::new(schema),
+        vec![Arc::new(item_ids) as ArrayRef, Arc::new(tags) as ArrayRef],
+    )?;
+    write_parquet(&data_dir.join("items.parquet"), &batch);
+
+    let config = serde_json::json!({
+        "dataset_name": "persist_config_test",
+        "num_shards": 1,
+        "tables": [{
+            "name": "items",
+            "columns": [
+                {"name": "item_id", "ingested_dtype": "int64"},
+                {
+                    "name": "tags",
+                    "ingested_dtype": "string",
+                    "semantic_type": "multicategorical",
+                    "multicategorical_delimiter": ","
+                }
+            ],
+            "primary_key": "item_id",
+            "data_version": "v1",
+            "source": {"type": "parquet", "paths": [data_dir.join("items.parquet").to_str().unwrap()]}
+        }]
+    });
+    let config_path = data_dir.join("config.json");
+    fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+
+    ingest_with_stats(
+        &config_path,
+        index_dir.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions {
+            parallel: false,
+            col_stats: true,
+            cat_count_strategy: CategoryCountStrategy::Hybrid,
+            ..IngestOptions::default()
+        },
+    )?;
+
+    // 1. File is on disk at the expected path.
+    let persisted = index_dir.join("diskgraph_config.json");
+    assert!(
+        persisted.is_file(),
+        "diskgraph_config.json should be written to index root, but is missing at {}",
+        persisted.display(),
+    );
+
+    // 2. Contents are parseable JSON with the per-column semantic_type wired
+    //    through. We don't pin the exact GraphConfig shape — just the field
+    //    that downstream consumers (TT-gen resolver) care about.
+    let bytes = fs::read(&persisted)?;
+    let v: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let columns = v["tables"][0]["columns"]
+        .as_array()
+        .expect("tables[0].columns is an array");
+    let tags_col = columns
+        .iter()
+        .find(|c| c["name"].as_str() == Some("tags"))
+        .expect("tags column entry present");
+    assert_eq!(
+        tags_col["semantic_type"].as_str(),
+        Some("multicategorical"),
+        "persisted tags column must carry semantic_type=multicategorical; got {tags_col}",
+    );
+
+    // 3. Roundtrip: GraphIndexReader::open must load the persisted config
+    //    and expose the semantic_type via column_semantic_type(). This is
+    //    the read path TT-gen's resolver relies on.
+    use diskgraph_index::graph::GraphIndexReader;
+    let metadata_path = index_dir.join("index_metadata.json");
+    let reader = GraphIndexReader::open(&metadata_path, &index_dir)?;
+    assert_eq!(
+        reader.column_semantic_type("items", "tags"),
+        Some("multicategorical"),
+        "GraphIndexReader.column_semantic_type must round-trip the persisted stype",
+    );
+    assert_eq!(
+        reader.column_semantic_type("items", "nonexistent"),
+        None,
+        "missing column must return None, not a default stype",
+    );
+
+    Ok(())
+}
+
+#[test]
+fn ingest_rejects_multicategorical_string_without_delimiter() -> Result<()> {
+    use arrow_array::Int64Array;
+
+    let dir = tempdir()?;
+    let data_dir = dir.path().join("data");
+    let index_dir = dir.path().join("index");
+    fs::create_dir_all(&data_dir)?;
+
+    // Single-token-per-row content. The user declares stype=multicategorical
+    // on a scalar string column without a delimiter — degenerate shape that
+    // is equivalent to stype=categorical. graph_config::validate must reject.
+    let item_ids = Int64Array::from(vec![0_i64, 1, 2]);
+    let tags = ArrowStringArray::from(vec!["kids", "audio", "kids"]);
+    let schema = Schema::new(vec![
+        Field::new("item_id", DataType::Int64, false),
+        Field::new("tags", DataType::Utf8, false),
+    ]);
+    let batch = RecordBatch::try_new(
+        Arc::new(schema),
+        vec![Arc::new(item_ids) as ArrayRef, Arc::new(tags) as ArrayRef],
+    )?;
+    write_parquet(&data_dir.join("items.parquet"), &batch);
+
+    let config = serde_json::json!({
+        "dataset_name": "multicat_no_delim_reject",
+        "num_shards": 1,
+        "tables": [{
+            "name": "items",
+            "columns": [
+                {"name": "item_id", "ingested_dtype": "int64"},
+                {
+                    "name": "tags",
+                    "ingested_dtype": "string",
+                    "semantic_type": "multicategorical"
+                    // NOTE: no multicategorical_delimiter — this is the
+                    // degenerate combo that must be rejected.
+                }
+            ],
+            "primary_key": "item_id",
+            "data_version": "v1",
+            "source": {"type": "parquet", "paths": [data_dir.join("items.parquet").to_str().unwrap()]}
+        }]
+    });
+    let config_path = data_dir.join("config.json");
+    fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+
+    let result = ingest_with_stats(
+        &config_path,
+        index_dir.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions {
+            parallel: false,
+            col_stats: true,
+            cat_count_strategy: CategoryCountStrategy::Hybrid,
+            ..IngestOptions::default()
+        },
+    );
+
+    let err = result.expect_err(
+        "ingest must reject (multicat, string, no-delim) as a degenerate shape",
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("stype=multicategorical")
+            && msg.contains("list-shaped")
+            && msg.contains("categorical"),
+        "error message must explain the contract and suggest categorical; got: {msg}",
+    );
+    // No on-disk artifacts should have been written when validation fails.
+    assert!(
+        !index_dir.join("diskgraph_config.json").exists(),
+        "rejected config must not produce a persisted diskgraph_config.json",
+    );
+
+    Ok(())
+}
+

@@ -554,7 +554,12 @@ impl DiskGraphTTBuilder {
     }
 
     /// Direct column lookup (no traversal).
-    fn column(&mut self, alias: String, table: String, column: String) {
+    fn column(
+        &mut self,
+        alias: String,
+        table: String,
+        column: String,
+    ) {
         self.current_ops.push(tt::Op::Column {
             alias,
             table,

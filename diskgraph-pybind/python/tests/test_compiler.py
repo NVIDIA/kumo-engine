@@ -834,3 +834,14 @@ def test_second_timestamps_unchanged():
     )
     plan = json.loads(plan_json)
     assert plan["temporal"]["timestamps"] == [1609459200, 1609545600]
+
+
+# ─── Multicategorical pass-through tests removed ──────────────────────────────
+#
+# The compiler no longer propagates `column_metadata` / `target_semantic_type`
+# into plan JSON; the Rust resolver reads kumo stype from the persisted
+# `diskgraph_config.json` at the index root instead. Coverage for the
+# end-to-end multicat dispatch lives in `ttgen_integration.rs` (which exercises
+# the on-disk-config path via fixtures built through real ingest).
+
+

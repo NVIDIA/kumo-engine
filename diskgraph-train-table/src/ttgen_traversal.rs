@@ -6,7 +6,7 @@
 use diskgraph_core::tt_builder::Value;
 use diskgraph_index::graph::TableReader;
 use diskgraph_index::layout::RelationLayout;
-use diskgraph_rowpack::{RowPackDecodeScratch, ValueRef};
+use diskgraph_rowpack::{IngestedType, RowPackDecodeScratch, ValueRef};
 use std::sync::Arc;
 
 use crate::ttgen_resolve::ResolvedEdge;
@@ -252,6 +252,191 @@ pub fn read_column_i64(
         Value::Float(f) => Some(f as i64),
         _ => None,
     })
+}
+
+// ─── Multicat dispatch (kumo#28400) ─────────────────────────────────────────
+//
+// For source columns declared `stype=multicategorical`, every TT-gen read site
+// must observe per-token (not per-row-value). Post-#28478 + post-validator
+// (graph_config::validate) the executor sees only two multicat-relevant
+// shapes; the legacy delimited-string shape is flipped to `StringArray` at
+// ingest, and the no-delim scalar shape is rejected at config validation as
+// degenerate (use `stype=categorical` for single-token-per-row columns):
+//   `IngestedType::StringArray`  → list-aware decode, iterate `&[&str]`.
+//   `IngestedType::Int64Array`   → list-aware decode, iterate `&[i64]`.
+//   `IngestedType::Float*Array`  → not supported as multicat (precision drift,
+//                                   NaN/inf semantics); the resolver rejects
+//                                   these plans before reaching here.
+//
+// For non-multicat sources, the legacy whole-cell `read_column_value` path is
+// preserved verbatim. Each closure returns `bool` ("keep going"); the helper
+// stops dispatch on the first `false` to support per-site early-exit (e.g.
+// `LIST_DISTINCT` limit).
+
+/// One observation passed to the per-row closure by [`dispatch_multicat_source`].
+pub enum MulticatToken<'a> {
+    /// Per-token observation for a multicat source: borrowed string slice.
+    Str(&'a str),
+    /// Per-token observation for a multicat source: integer element.
+    Int(i64),
+    /// Whole-cell legacy observation (non-multicat source, or multicat
+    /// declared on a scalar non-string column where per-token semantics
+    /// don't apply).
+    Legacy(Value),
+}
+
+/// Outcome of [`dispatch_multicat_source`]. Distinguishes "source NULL"
+/// (caller should treat as no value observed) from "source present, observe
+/// invoked some number of times (possibly zero)" (caller may emit a result,
+/// even an empty list, depending on its semantics).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MulticatDispatchOutcome {
+    /// Source row was NULL or had no node data; closure was not invoked.
+    /// Direct-column callers (Route A) treat this as "skip this row" rather
+    /// than emitting an empty target list. Aggregate callers ignore the
+    /// distinction (NULL row contributes nothing, traversal continues).
+    SourceNull,
+    /// Source row was present and the closure was invoked zero or more
+    /// times. The outer traversal should continue (no early-exit signaled).
+    Continue,
+    /// Source row was present and the closure returned `false` to signal
+    /// early-exit (e.g., LIST_DISTINCT limit reached). The outer traversal
+    /// should stop.
+    Stop,
+}
+
+impl MulticatDispatchOutcome {
+    /// Returns true when the closure was passed a present source — i.e.,
+    /// observation was attempted (even if the list contained zero tokens).
+    /// Equivalent to `!matches!(self, SourceNull)`.
+    pub fn observed(self) -> bool {
+        !matches!(self, MulticatDispatchOutcome::SourceNull)
+    }
+
+    /// Returns true when the outer traversal should keep going. Both
+    /// `Continue` and `SourceNull` signal "no early-exit"; only `Stop`
+    /// signals "break".
+    pub fn keep_going(self) -> bool {
+        !matches!(self, MulticatDispatchOutcome::Stop)
+    }
+}
+
+/// Read a source column for one row, dispatching on
+/// `(target_semantic_type, IngestedType)`. Calls `observe` once per token
+/// (multicat native-list sources) or once per row (legacy / non-multicat
+/// sources). Multicat sources are guaranteed to be native-list shaped on
+/// disk: ingest's `normalize_multicat_pseudo_list` flips delimited scalars
+/// to `StringArray` and `GraphConfig::validate` rejects no-delim scalar
+/// multicat as a misdeclaration. The closure returns `false` to signal
+/// early-exit (limit reached); the caller receives that as `Stop` and can
+/// stop the outer traversal.
+///
+/// Post-#28478: ingest's `GraphConfig::normalize_multicat_pseudo_list` flips
+/// `(stype=Multicategorical, dtype=String, delim=Some)` columns to
+/// `IngestedType::StringArray` at convert time. The executor never sees a
+/// multicat-with-delimiter scalar source. The `(Multicategorical, String)`
+/// arm here covers only the no-delim single-token-per-row case (one cell =
+/// one token). No `delim` parameter — ingest consumed it.
+///
+/// Float-list multicat sources are rejected at resolve time; if the helper
+/// ever sees one, it falls through silently rather than emitting wrong data.
+pub fn dispatch_multicat_source<F>(
+    table: &Arc<TableReader>,
+    node_id: u64,
+    col_idx: usize,
+    is_multicat: bool,
+    mut observe: F,
+) -> MulticatDispatchOutcome
+where
+    F: FnMut(MulticatToken<'_>) -> bool,
+{
+    use MulticatDispatchOutcome::*;
+    let Ok(view) = table.edges_for_node(node_id) else {
+        return SourceNull;
+    };
+    let Some(decoder) = table.node_data_decoder() else {
+        return SourceNull;
+    };
+    let Ok(Some(raw)) = view.node_data() else {
+        return SourceNull;
+    };
+
+    let logical_type = decoder.context().columns[col_idx].logical_type;
+
+    if !is_multicat {
+        // Legacy path — whole-cell observe.
+        let mut scratch = RowPackDecodeScratch::default();
+        let Ok(value_ref) = decoder.decode_column_value(raw, col_idx, &mut scratch) else {
+            return SourceNull;
+        };
+        if matches!(value_ref, ValueRef::Null) {
+            return SourceNull;
+        }
+        return if observe(MulticatToken::Legacy(value_ref_to_value(&value_ref))) {
+            Continue
+        } else {
+            Stop
+        };
+    }
+
+    match logical_type {
+        IngestedType::StringArray => {
+            let mut scratch = RowPackDecodeScratch::default();
+            // `decode_column_value` errors out for StringArray (cannot return
+            // borrowed `&[&str]` safely from a function returning a value);
+            // use the closure-form decoder to keep the borrows scoped.
+            let result = decoder.with_string_array_column(raw, col_idx, &mut scratch, |toks| {
+                let mut keep = true;
+                for &tok in toks {
+                    if !observe(MulticatToken::Str(tok)) {
+                        keep = false;
+                        break;
+                    }
+                }
+                keep
+            });
+            match result {
+                Ok(Some(keep)) => if keep { Continue } else { Stop },
+                Ok(None) => SourceNull,
+                Err(_) => SourceNull,
+            }
+        }
+        IngestedType::Int64Array => {
+            let mut scratch = RowPackDecodeScratch::default();
+            let Ok(value_ref) = decoder.decode_column_value(raw, col_idx, &mut scratch) else {
+                return SourceNull;
+            };
+            if let ValueRef::Int64Array(ints) = value_ref {
+                for &n in ints {
+                    if !observe(MulticatToken::Int(n)) {
+                        return Stop;
+                    }
+                }
+                Continue
+            } else if matches!(value_ref, ValueRef::Null) {
+                SourceNull
+            } else {
+                // Type mismatch on a multicat-declared column — defensive
+                // fallback. The resolver gate should have rejected this.
+                SourceNull
+            }
+        }
+        IngestedType::Float32Array
+        | IngestedType::Float64Array
+        | IngestedType::Float16Array => {
+            // Resolve-time gate should have rejected this; defensive fallback.
+            SourceNull
+        }
+        _ => {
+            // Unreachable in practice: graph_config::validate rejects any
+            // non-list ingested_dtype paired with stype=multicategorical, so
+            // this branch can only fire if a malformed plan + legacy index
+            // slip past. Treat as NULL so the caller skips the row instead
+            // of falling back to legacy whole-cell observe (which produced
+            // the silent zero-token bug pre-PR230).
+            SourceNull
+        }
+    }
 }
 
 /// Convert a rowpack ValueRef to our Value type.

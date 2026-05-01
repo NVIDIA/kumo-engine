@@ -134,12 +134,24 @@ pub struct ResolvedAggregate<U: UnitSystem> {
     pub target_temporal_create_col_idx: Option<usize>,
     pub target_temporal_end_col_idx: Option<usize>,
     pub link_split_col_idx: Option<usize>,
+    /// Source-column semantic type. Used at the per-edge consume callback to
+    /// dispatch on `multicategorical` for per-token observe; all other values
+    /// take the legacy whole-cell path.
+    ///
+    /// Post-#28478: ingest's `normalize_multicat_pseudo_list` flips delimited
+    /// multicat scalars to `IngestedType::StringArray` at convert time. The
+    /// executor never sees a multicat-with-delimiter scalar source; no
+    /// delimiter field is plumbed through resolution.
+    pub target_semantic_type: Option<String>,
 }
 
 pub struct ResolvedColumn {
     pub alias_idx: usize,
     pub table: Arc<TableReader>,
     pub col_idx: usize,
+    /// See `ResolvedAggregate::target_semantic_type`. Drives dispatch at the
+    /// `ResolvedOp::Column` direct-target read site (Route A).
+    pub target_semantic_type: Option<String>,
 }
 
 pub struct ResolvedSplitProjection {
@@ -831,6 +843,95 @@ fn resolve_op<U: UnitSystem>(
                 _ => None,
             };
 
+            // Resolve the source-column stype from the persisted graph config
+            // (`{index_root}/diskgraph_config.json`, populated at ingest time).
+            // This replaces the per-query `column_metadata` plumbing on the
+            // kumo→diskgraph compile boundary — stype is a one-time fact
+            // declared at ingest, not a per-query parameter.
+            let resolved_stype = target_col_idx.and_then(|col_idx| {
+                let col_name = &dst_table
+                    .node_data_decoder()?
+                    .context()
+                    .columns[col_idx]
+                    .name;
+                reader
+                    .column_semantic_type(dst_table.node_type(), col_name)
+                    .map(String::from)
+            });
+
+            // Reject (Multicategorical, Float*Array) at plan resolution: float
+            // -keyed labels are not a real workload (precision drift, NaN,
+            // signed zero, infinities). Rejection is a single-point gate
+            // shared by every read site (kumo#28400 §4.2 Step 1.6).
+            //
+            // Inverse gate: a native-list source column read without a
+            // multicat declaration on disk would silently produce
+            // `Value::Int(0)` via `read_column_value`'s unhandled-array
+            // short-circuit. Reject loudly so a missing semantic_type on the
+            // ingested column fails plan compilation instead of corrupting
+            // downstream stats and TT output.
+            if let Some(col_idx) = target_col_idx {
+                let dst_col = &dst_table
+                    .node_data_decoder()
+                    .ok_or_else(|| TTGenError::SchemaError(
+                        "destination table missing node-data decoder".to_string()
+                    ))?
+                    .context()
+                    .columns[col_idx];
+                let is_multicat = resolved_stype.as_deref()
+                    == Some("multicategorical");
+                match dst_col.logical_type {
+                    IngestedType::Float16Array
+                    | IngestedType::Float32Array
+                    | IngestedType::Float64Array
+                        if is_multicat => {
+                        return Err(TTGenError::InvalidPlan(format!(
+                            "multicategorical source column '{}' has unsupported \
+                             float-list ingested type {:?}; use intlist or stringlist",
+                            dst_col.name, dst_col.logical_type
+                        )));
+                    }
+                    IngestedType::StringArray | IngestedType::Int64Array
+                        if !is_multicat =>
+                    {
+                        return Err(TTGenError::InvalidPlan(format!(
+                            "native-list source column '{}.{}' (ingested type {:?}) \
+                             has no multicategorical semantic_type in the \
+                             persisted diskgraph_config.json; got {:?}. \
+                             Re-ingest with stype=multicategorical declared on \
+                             the column, or change the column declaration.",
+                            dst_table.node_type(),
+                            dst_col.name,
+                            dst_col.logical_type,
+                            resolved_stype
+                        )));
+                    }
+                    // List-shape WITH multicat declaration: the supported path.
+                    // Falls through to the OK case below; listed explicitly so
+                    // the scalar-multicat catch-all does not swallow it.
+                    IngestedType::StringArray | IngestedType::Int64Array => {}
+                    _ if is_multicat => {
+                        // Defensive net for legacy indexes built before
+                        // graph_config::validate rejected scalar-multicat. A
+                        // scalar dtype paired with multicat is degenerate: a
+                        // single-value-per-row column is `categorical`, not
+                        // multicategorical. Fail loudly rather than silently
+                        // observe whole-cell.
+                        return Err(TTGenError::InvalidPlan(format!(
+                            "multicategorical source column '{}.{}' has scalar \
+                             ingested type {:?}; multicategorical requires a \
+                             native list shape (string_array / int64_array). \
+                             Re-ingest with stype=categorical for single-value \
+                             columns, or with a list-typed source dtype.",
+                            dst_table.node_type(),
+                            dst_col.name,
+                            dst_col.logical_type,
+                        )));
+                    }
+                    _ => {}
+                }
+            }
+
             Ok(ResolvedOp::Aggregate(ResolvedAggregate {
                 alias_idx,
                 path: resolved_path,
@@ -843,6 +944,7 @@ fn resolve_op<U: UnitSystem>(
                 target_temporal_create_col_idx,
                 target_temporal_end_col_idx,
                 link_split_col_idx,
+                target_semantic_type: resolved_stype,
             }))
         }
         Op::HasEdges {
@@ -900,17 +1002,88 @@ fn resolve_op<U: UnitSystem>(
                 row_filter: resolved_filter,
             }))
         }
-        Op::Column { alias, table, column } => {
+        Op::Column {
+            alias,
+            table,
+            column,
+        } => {
             let alias_idx = alias_to_idx[alias];
             let table_reader = reader
                 .table(table)
                 .ok_or_else(|| TTGenError::SchemaError(format!("table '{}' not found", table)))?;
             let ctx = table_reader.node_data_decoder().map(|d| d.context().clone());
             let col_idx = find_col_idx_in_context(&ctx, column)?;
+
+            // Resolve stype from the persisted graph config. Same source as
+            // the Aggregate arm — see comment there for rationale.
+            let resolved_stype = reader
+                .column_semantic_type(table, column)
+                .map(String::from);
+
+            // Mirror of the Aggregate-arm reject gates: Route A direct-target
+            // reads share the same Float*Array reject and the inverse
+            // native-list-without-multicat reject (kumo#28400 §4.2 Step 1.6
+            // + codex review follow-up).
+            {
+                let col_meta = &table_reader
+                    .node_data_decoder()
+                    .ok_or_else(|| TTGenError::SchemaError(
+                        "table missing node-data decoder".to_string()
+                    ))?
+                    .context()
+                    .columns[col_idx];
+                let is_multicat = resolved_stype.as_deref()
+                    == Some("multicategorical");
+                match col_meta.logical_type {
+                    IngestedType::Float16Array
+                    | IngestedType::Float32Array
+                    | IngestedType::Float64Array
+                        if is_multicat => {
+                        return Err(TTGenError::InvalidPlan(format!(
+                            "multicategorical source column '{}' has unsupported \
+                             float-list ingested type {:?}; use intlist or stringlist",
+                            col_meta.name, col_meta.logical_type
+                        )));
+                    }
+                    IngestedType::StringArray | IngestedType::Int64Array
+                        if !is_multicat =>
+                    {
+                        return Err(TTGenError::InvalidPlan(format!(
+                            "native-list source column '{}.{}' (ingested type {:?}) \
+                             has no multicategorical semantic_type in the \
+                             persisted diskgraph_config.json; got {:?}. \
+                             Re-ingest with stype=multicategorical declared on \
+                             the column, or change the column declaration.",
+                            table, col_meta.name, col_meta.logical_type, resolved_stype
+                        )));
+                    }
+                    // List-shape WITH multicat declaration: the supported path.
+                    // Falls through to the OK case below; listed explicitly so
+                    // the scalar-multicat catch-all does not swallow it.
+                    IngestedType::StringArray | IngestedType::Int64Array => {}
+                    _ if is_multicat => {
+                        // Defensive net for legacy indexes built before
+                        // graph_config::validate rejected scalar-multicat. See
+                        // the matching gate in the Aggregate arm above for
+                        // rationale.
+                        return Err(TTGenError::InvalidPlan(format!(
+                            "multicategorical source column '{}.{}' has scalar \
+                             ingested type {:?}; multicategorical requires a \
+                             native list shape (string_array / int64_array). \
+                             Re-ingest with stype=categorical for single-value \
+                             columns, or with a list-typed source dtype.",
+                            table, col_meta.name, col_meta.logical_type,
+                        )));
+                    }
+                    _ => {}
+                }
+            }
+
             Ok(ResolvedOp::Column(ResolvedColumn {
                 alias_idx,
                 table: table_reader,
                 col_idx,
+                target_semantic_type: resolved_stype,
             }))
         }
         Op::Compare { alias, lhs, op, rhs } => {

@@ -343,6 +343,11 @@ impl<'a> crate::builder::ProgressSink for ShardProgressAdapter<'a> {
 pub struct GraphIndexReader {
     metadata: DatasetMetadata,
     tables: HashMap<String, Arc<TableReader>>,
+    /// Per-column semantic types loaded from `diskgraph_config.json` at index
+    /// root. Empty when the file is absent (legacy indexes pre-#28400
+    /// follow-up). Used by TT-gen resolver to dispatch per-token observation
+    /// for multicategorical sources without per-query plan-JSON plumbing.
+    column_semantic_types: HashMap<(String, String), String>,
 }
 
 impl GraphIndexReader {
@@ -419,8 +424,17 @@ impl GraphIndexReader {
             )?;
             tables.insert(node_type.name.clone(), Arc::new(table));
         }
-        tracing::info!(tables = tables.len(), "GraphIndexReader open completed");
-        Ok(Self { metadata, tables })
+        let column_semantic_types = load_column_semantic_types(root);
+        tracing::info!(
+            tables = tables.len(),
+            stype_columns = column_semantic_types.len(),
+            "GraphIndexReader open completed"
+        );
+        Ok(Self {
+            metadata,
+            tables,
+            column_semantic_types,
+        })
     }
 
     pub fn metadata(&self) -> &DatasetMetadata {
@@ -436,6 +450,61 @@ impl GraphIndexReader {
         tables.sort_by(|a, b| a.node_type().cmp(b.node_type()));
         tables
     }
+
+    /// Look up the kumo `stype` for a column from the persisted graph config.
+    /// Returns `None` when the index has no `diskgraph_config.json` (legacy)
+    /// or the column has no declared `semantic_type`.
+    pub fn column_semantic_type(&self, table: &str, column: &str) -> Option<&str> {
+        self.column_semantic_types
+            .get(&(table.to_string(), column.to_string()))
+            .map(String::as_str)
+    }
+}
+
+/// Best-effort load of `{root}/diskgraph_config.json`. Returns an empty map
+/// when the file is missing or malformed; the resolver treats absence as
+/// "stype unknown" and falls back to the legacy whole-cell observe path.
+fn load_column_semantic_types(root: &Path) -> HashMap<(String, String), String> {
+    let path = root.join("diskgraph_config.json");
+    let bytes = match fs::read(&path) {
+        Ok(b) => b,
+        Err(_) => return HashMap::new(),
+    };
+    let value: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::warn!(
+                "diskgraph_config.json present but unparseable: {err}; \
+                 multicat dispatch will fall back to whole-cell"
+            );
+            return HashMap::new();
+        }
+    };
+    let mut out = HashMap::new();
+    let Some(tables) = value.get("tables").and_then(|t| t.as_array()) else {
+        return out;
+    };
+    for table in tables {
+        let Some(table_name) = table.get("name").and_then(|n| n.as_str()) else {
+            continue;
+        };
+        let Some(columns) = table.get("columns").and_then(|c| c.as_array()) else {
+            continue;
+        };
+        for col in columns {
+            let Some(col_name) = col.get("name").and_then(|n| n.as_str()) else {
+                continue;
+            };
+            let Some(stype) = col.get("semantic_type").and_then(|s| s.as_str()) else {
+                continue;
+            };
+            out.insert(
+                (table_name.to_string(), col_name.to_string()),
+                stype.to_string(),
+            );
+        }
+    }
+    out
 }
 
 pub struct TableReader {

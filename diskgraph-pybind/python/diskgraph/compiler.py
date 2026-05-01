@@ -1,4 +1,4 @@
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from kumoapi.pquery.validated_predictive_query import ValidatedPredictiveQuery
 from kumoapi.pquery.AST import (
     Aggregation,

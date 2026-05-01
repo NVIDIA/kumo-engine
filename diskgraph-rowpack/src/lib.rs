@@ -4273,6 +4273,98 @@ impl RowPackDecoder {
         Ok(JsonValue::Object(map))
     }
 
+    /// Decode a `StringArray`-encoded column for one row and invoke `f` with a
+    /// borrowed `&[&str]` view over the decoded tokens.
+    ///
+    /// Why this exists: `decode_column_value` cannot return
+    /// `ValueRef::StringArray(&[&str])` because the `&str` borrows would
+    /// outlive the function. Callers that need per-token access must reach
+    /// for an in-call closure form so the borrows stay scoped to one
+    /// invocation. Tokens land in `scratch.strings` (`Vec<String>`), and the
+    /// closure receives a freshly-built `Vec<&str>` view over them.
+    ///
+    /// Returns:
+    ///   - `Ok(Some(R))` when the column was decoded and `f` was called.
+    ///   - `Ok(None)` when the column tag was Null.
+    ///   - `Err(...)` for malformed rowpack bytes or a non-StringArray
+    ///     encoding at this column index.
+    pub fn with_string_array_column<R>(
+        &self,
+        row: &[u8],
+        col_idx: usize,
+        scratch: &mut RowPackDecodeScratch,
+        f: impl FnOnce(&[&str]) -> R,
+    ) -> Result<Option<R>> {
+        let mut reader = BitReader::new(row);
+        let col_count = self.ctx.columns.len();
+        if col_idx >= col_count {
+            return Err(anyhow!("rowpack column index out of range"));
+        }
+        let mut tags = Vec::with_capacity(col_count);
+        for _ in 0..col_count {
+            tags.push(reader.read_bits(2)?);
+        }
+        reader.align_to_byte();
+        let mut bools = Vec::new();
+        for (idx, col) in self.ctx.columns.iter().enumerate() {
+            if matches!(col.encoding, ColumnEncoding::Bool) && tags[idx] != 0 {
+                bools.push(reader.read_bits(1)?);
+            }
+        }
+        reader.align_to_byte();
+        let mut data = &row[row.len() - reader.remaining_bytes()..];
+        for (idx, col) in self.ctx.columns.iter().enumerate() {
+            let tag = tags[idx];
+            if tag > 2 {
+                return Err(anyhow!("rowpack invalid tag {}", tag));
+            }
+            if tag == 0 {
+                if idx == col_idx {
+                    return Ok(None);
+                }
+                continue;
+            }
+            if matches!(col.encoding, ColumnEncoding::Bool) {
+                if idx == col_idx {
+                    return Err(anyhow!(
+                        "with_string_array_column called on Bool column"
+                    ));
+                }
+                continue;
+            }
+            if idx == col_idx {
+                let ColumnEncoding::StringArray { encoding } = &col.encoding else {
+                    return Err(anyhow!(
+                        "with_string_array_column called on non-StringArray column"
+                    ));
+                };
+                let len = read_varint(&mut data)? as usize;
+                if len > MAX_ARRAY_LEN {
+                    return Err(anyhow!("rowpack string array length overflow"));
+                }
+                scratch.strings.clear();
+                let dict = self.dict_values[idx].as_ref();
+                for _ in 0..len {
+                    if data.is_empty() {
+                        return Err(anyhow!("rowpack string array token tag truncated"));
+                    }
+                    let token_tag = data[0];
+                    data = &data[1..];
+                    let token = if token_tag == 2 {
+                        decode_string_fallback(&mut data)?
+                    } else {
+                        decode_string(&mut data, encoding, dict)?
+                    };
+                    scratch.strings.push(token);
+                }
+                let view: Vec<&str> = scratch.strings.iter().map(|s| s.as_str()).collect();
+                return Ok(Some(f(&view)));
+            }
+            decode_value_skip(col, tag, &mut data, self.dict_values[idx].as_ref())?;
+        }
+        Err(anyhow!("rowpack column index out of range"))
+    }
+
     pub fn decode_column_value<'a>(
         &self,
         row: &'a [u8],

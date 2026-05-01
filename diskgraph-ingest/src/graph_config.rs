@@ -1,10 +1,44 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use diskgraph_core::metadata::EdgeStorageFormat;
 use diskgraph_rowpack::RowPackConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use crate::coercion::{coercion_kind, validate_fk_pk, CoercionKind, CoercionMode, CoercionParams};
+
+/// Filename for the graph config persisted to the index root at the end of
+/// ingest. Carries per-column `semantic_type` so downstream consumers (TT-gen,
+/// BP) can dispatch on stype without per-query plan JSON plumbing.
+pub const DISKGRAPH_CONFIG_FILENAME: &str = "diskgraph_config.json";
+
+/// Read a `GraphConfig` from `{index_root}/diskgraph_config.json`. Returns the
+/// resolved post-ingest config (i.e., with `semantic_type` populated on every
+/// column).
+pub fn read_persisted_config(index_root: &Path) -> Result<GraphConfig> {
+    let path = index_root.join(DISKGRAPH_CONFIG_FILENAME);
+    let bytes = std::fs::read(&path)
+        .with_context(|| format!("read {}", path.display()))?;
+    let config: GraphConfig = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse {}", path.display()))?;
+    Ok(config)
+}
+
+/// Build a `(table, column) → SemanticType` lookup from a resolved config.
+/// Columns without an explicit `semantic_type` are skipped.
+pub fn column_semantic_types(
+    config: &GraphConfig,
+) -> HashMap<(String, String), SemanticType> {
+    let mut out = HashMap::new();
+    for table in &config.tables {
+        for col in &table.columns {
+            if let Some(stype) = col.semantic_type {
+                out.insert((table.name.clone(), col.name.clone()), stype);
+            }
+        }
+    }
+    out
+}
 
 fn source_dtype_is_decimal(dtype: Option<&str>) -> bool {
     let Some(dtype) = dtype else {
@@ -516,16 +550,32 @@ impl GraphConfig {
                 if col.semantic_type == Some(SemanticType::Multicategorical)
                     && !matches!(
                         col.ingested_dtype,
-                        IngestedType::String
-                            | IngestedType::StringArray
+                        IngestedType::StringArray
                             | IngestedType::Int64Array
                             | IngestedType::Float16Array
                             | IngestedType::Float32Array
                             | IngestedType::Float64Array
                     )
                 {
+                    // Multicat requires a list-shaped storage on disk. Scalar
+                    // string columns with a declared delimiter are flipped to
+                    // StringArray by `normalize_multicat_pseudo_list` before
+                    // validation runs, so anything still scalar at this point
+                    // is a misdeclaration. A single-value-per-row column —
+                    // whether int or string — is `categorical` semantics, not
+                    // multicategorical.
+                    let hint = if col.ingested_dtype == IngestedType::String {
+                        "set multicategorical_delimiter, switch to a native \
+                         list dtype (string_array / int64_array), or use \
+                         stype=categorical for single-token columns"
+                    } else {
+                        "use stype=categorical for single-value columns, or \
+                         a native list dtype for multi-token columns"
+                    };
                     errors.push(format!(
-                        "table {} column {} multicategorical supports only string, string_array, int64_array, float16_array, float32_array, or float64_array; got {:?}",
+                        "table {} column {} stype=multicategorical requires a \
+                         list-shaped ingested_dtype (string_array / int64_array \
+                         / floatN_array); got {:?}. {hint}.",
                         table.name, col.name, col.ingested_dtype
                     ));
                 }

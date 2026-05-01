@@ -2,7 +2,7 @@
 //!
 //! Full pipeline: write Parquet → ingest → execute → verify output rows.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Once};
@@ -6681,4 +6681,1613 @@ fn integ_temporal_orphan_filter_all_valid_at_later_time() {
     assert!(target_set.contains("10"));
     assert!(target_set.contains("20"));
     assert!(!target_set.contains("30"), "product 30 still deleted");
+}
+
+// ─── Multicategorical source-column tests (kumo#28400) ───────────────────────
+//
+// Read-site fix: TT-gen executor must observe per-token (not per-row-value)
+// when the source column is `stype=multicategorical`. Post-#28478 the
+// executor sees two native-list shapes (the delimited-string shape is
+// flipped to StringArray at ingest):
+//   1. List<Utf8>  / IngestedType::StringArray
+//   2. List<Int64> / IngestedType::Int64Array
+//
+// Logical fixture content (identical across both shapes):
+//
+//   user 0 has 2 orders in window:
+//     ts=100  tags=[a, b]
+//     ts=200  tags=[b, c]
+//     → expected per-token frequencies: a=1, b=2, c=1
+//   user 1 has 2 orders in window:
+//     ts=300  tags=[a]
+//     ts=400  tags=[d, e]
+//     → expected per-token frequencies: a=1, d=1, e=1
+//
+// `intlist` shape uses the mapping a=1, b=2, c=3, d=4, e=5 so token sets across
+// shapes are equivalent under that bijection. The cross-shape equivalence
+// test asserts the same (entity, decoded-token, frequency) set.
+
+const MULTICAT_TOKEN_INT_MAP: &[(&str, i64)] =
+    &[("a", 1), ("b", 2), ("c", 3), ("d", 4), ("e", 5)];
+
+fn token_to_int(tok: &str) -> i64 {
+    MULTICAT_TOKEN_INT_MAP
+        .iter()
+        .find(|(s, _)| *s == tok)
+        .map(|(_, n)| *n)
+        .expect("unknown token in MULTICAT_TOKEN_INT_MAP")
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MulticatShape {
+    StringList,
+    IntList,
+}
+
+impl MulticatShape {
+    fn col_dtype(self) -> DataType {
+        match self {
+            MulticatShape::StringList => {
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)))
+            }
+            MulticatShape::IntList => {
+                DataType::List(Arc::new(Field::new("item", DataType::Int64, true)))
+            }
+        }
+    }
+
+    fn ingested_dtype(self) -> IngestedType {
+        match self {
+            MulticatShape::StringList => IngestedType::StringArray,
+            MulticatShape::IntList => IngestedType::Int64Array,
+        }
+    }
+
+    fn delimiter(self) -> Option<String> {
+        // Post-#28478: ingest consumes the delimiter; the executor never sees
+        // a (multicat, String, delim) source shape. All multicat sources reach
+        // the executor as native lists; no delimiter to plumb.
+        let _ = self;
+        None
+    }
+}
+
+/// Build a multicat-source fixture graph. `tags_rows[i]` is the per-row token
+/// list, encoded according to `shape`. The orders table FK-references users.
+///
+/// Returns the index path.
+fn build_multicat_graph(
+    root: &Path,
+    shape: MulticatShape,
+    tags_rows: &[Vec<&str>],
+    user_id_per_order: &[i64],
+    ts_per_order: &[i64],
+    user_ids: &[i64],
+) -> PathBuf {
+    assert_eq!(tags_rows.len(), user_id_per_order.len());
+    assert_eq!(tags_rows.len(), ts_per_order.len());
+
+    let data_dir = root.join("data");
+    let index_dir = root.join("index");
+    fs::create_dir_all(&data_dir).unwrap();
+
+    // ── Users table ──
+    let mut users_id_b = Int64Builder::new();
+    for uid in user_ids {
+        users_id_b.append_value(*uid);
+    }
+    let users_schema = Schema::new(vec![Field::new("user_id", DataType::Int64, false)]);
+    let users_batch = RecordBatch::try_new(
+        Arc::new(users_schema),
+        vec![Arc::new(users_id_b.finish())],
+    )
+    .unwrap();
+    write_parquet(&data_dir.join("users.parquet"), &users_batch);
+
+    // ── Orders table ──
+    let mut order_id_b = Int64Builder::new();
+    let mut order_user_id_b = Int64Builder::new();
+    let mut order_ts_b = Int64Builder::new();
+    for (i, (uid, ts)) in user_id_per_order
+        .iter()
+        .zip(ts_per_order.iter())
+        .enumerate()
+    {
+        order_id_b.append_value(i as i64);
+        order_user_id_b.append_value(*uid);
+        order_ts_b.append_value(*ts);
+    }
+
+    let tags_arr: Arc<dyn Array> = match shape {
+        MulticatShape::StringList => {
+            let mut b = ListBuilder::new(StringBuilder::new());
+            for row in tags_rows {
+                for tok in row {
+                    b.values().append_value(*tok);
+                }
+                b.append(true);
+            }
+            Arc::new(b.finish())
+        }
+        MulticatShape::IntList => {
+            let mut b = ListBuilder::new(Int64Builder::new());
+            for row in tags_rows {
+                for tok in row {
+                    b.values().append_value(token_to_int(tok));
+                }
+                b.append(true);
+            }
+            Arc::new(b.finish())
+        }
+    };
+
+    let orders_schema = Schema::new(vec![
+        Field::new("order_id", DataType::Int64, false),
+        Field::new("user_id", DataType::Int64, false),
+        Field::new("ts", DataType::Int64, false),
+        Field::new("tags", shape.col_dtype(), false),
+    ]);
+    let orders_batch = RecordBatch::try_new(
+        Arc::new(orders_schema),
+        vec![
+            Arc::new(order_id_b.finish()),
+            Arc::new(order_user_id_b.finish()),
+            Arc::new(order_ts_b.finish()),
+            tags_arr,
+        ],
+    )
+    .unwrap();
+    write_parquet(&data_dir.join("orders.parquet"), &orders_batch);
+
+    // ── Tags column with multicat semantics ──
+    let tags_col = ColumnSpec {
+        name: "tags".to_string(),
+        source_dtype: None,
+        ingested_dtype: shape.ingested_dtype(),
+        fixed_len: None,
+        timestamp_format: None,
+        timestamp_unit: None,
+        precision: None,
+        scale: None,
+        semantic_type: Some(SemanticType::Multicategorical),
+        multicategorical_delimiter: shape.delimiter(),
+    };
+
+    let config = GraphConfig {
+        dataset_name: "test_multicat".to_string(),
+        tables: vec![
+            TableSpec {
+                name: "users".to_string(),
+                columns: vec![mk_col("user_id", IngestedType::Int64)],
+                primary_key: Some("user_id".to_string()),
+                create_time: None,
+                end_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+                source: DataSource::Parquet {
+                    paths: vec![data_dir
+                        .join("users.parquet")
+                        .to_str()
+                        .unwrap()
+                        .to_string()],
+                },
+                fkeys: vec![],
+                data_version: None,
+                kumo_connector_id: None,
+                kumo_source_table_name: None,
+            },
+            TableSpec {
+                name: "orders".to_string(),
+                columns: vec![
+                    mk_col("order_id", IngestedType::Int64),
+                    mk_col("user_id", IngestedType::Int64),
+                    mk_col("ts", IngestedType::Int64),
+                    tags_col,
+                ],
+                primary_key: Some("order_id".to_string()),
+                create_time: None,
+                end_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+                source: DataSource::Parquet {
+                    paths: vec![data_dir
+                        .join("orders.parquet")
+                        .to_str()
+                        .unwrap()
+                        .to_string()],
+                },
+                fkeys: vec![FKeySpec {
+                    src_column: "user_id".to_string(),
+                    dst_table: "users".to_string(),
+                    forward: None,
+                    reverse: Some(DirectionSpec {
+                        time: Some(TimeSpec {
+                            table: "orders".to_string(),
+                            column: "ts".to_string(),
+                            bitwidth: Some(16),
+                            anchor_time: Some(0),
+                            unit: "s".to_string(),
+                        }),
+                        weight: None,
+                    }),
+                }],
+                data_version: None,
+                kumo_connector_id: None,
+                kumo_source_table_name: None,
+            },
+        ],
+        rowpack: None,
+        num_shards: Some(1),
+        edge_format: None,
+        coercion_mode: CoercionMode::Lossless,
+    };
+
+    let config_path = data_dir.join("graph_config.json");
+    fs::write(
+        &config_path,
+        serde_json::to_string_pretty(&config).unwrap(),
+    )
+    .unwrap();
+
+    run_ingest(&config_path, &index_dir);
+    index_dir
+}
+
+/// Per-user expected `(token, frequency)` set for the canonical multicat
+/// fixture. Shape-agnostic (token strings, not int codes).
+type ExpectedTokensPerUser = HashMap<i64, Vec<(&'static str, i64)>>;
+
+/// Canonical multicat fixture used by every (read site × shape) test cell.
+///
+/// Returns `(index_path, expected_tokens_per_user)`.
+fn build_canonical_multicat_graph(
+    root: &Path,
+    shape: MulticatShape,
+) -> (PathBuf, ExpectedTokensPerUser) {
+    let tags_rows: Vec<Vec<&str>> = vec![
+        vec!["a", "b"],      // user 0 ts=100
+        vec!["b", "c"],      // user 0 ts=200
+        vec!["a"],           // user 1 ts=300
+        vec!["d", "e"],      // user 1 ts=400
+    ];
+    let user_id_per_order = vec![0i64, 0, 1, 1];
+    let ts_per_order = vec![100i64, 200, 300, 400];
+    let user_ids = vec![0i64, 1, 2]; // user 2 has no orders
+    let index = build_multicat_graph(
+        root,
+        shape,
+        &tags_rows,
+        &user_id_per_order,
+        &ts_per_order,
+        &user_ids,
+    );
+
+    // Expected per-token frequencies per entity.
+    let mut expected: HashMap<i64, Vec<(&str, i64)>> = HashMap::new();
+    expected.insert(0, vec![("a", 1), ("b", 2), ("c", 1)]);
+    expected.insert(1, vec![("a", 1), ("d", 1), ("e", 1)]);
+    // user 2: no orders → no rows
+    (index, expected)
+}
+
+/// LIST_DISTINCT(orders.tags) op — multicat semantics declared on the op.
+fn list_distinct_tags_op(
+    alias: &str,
+    window: Option<(i64, i64)>,
+) -> Op<Seconds> {
+    Op::Aggregate {
+        alias: alias.to_string(),
+        path: vec![EdgeRef {
+            src_table: "users".to_string(),
+            src_col: "user_id".to_string(),
+            dst_table: "orders".to_string(),
+            dst_col: "user_id".to_string(),
+        }],
+        func: AggFunc::ListDistinct,
+        target_col: Some("tags".to_string()),
+        time_col: None,
+        window,
+        window_unit: Some(TimeUnit::Seconds),
+        row_filter: None,
+        limit: None,
+        target_entity_table: None,
+    }
+}
+
+/// Multicat-graph LP-temporal plan (3 users, 4 orders, ts<5000).
+fn multicat_link_temporal_plan(
+    stages: Vec<Stage<Seconds>>,
+    explode: bool,
+    include_frequency: bool,
+) -> DiskGraphTTPlan<Seconds> {
+    DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
+            table: "users".to_string(),
+            column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
+            time_col: None,
+            valid_to_col: None,
+            filter: None,
+        },
+        temporal: Some(TemporalSpec::<Seconds> {
+            timestamps: vec![Abs::from_raw(5000)],
+            forecast_length: 1,
+            lag_timesteps: None,
+        }),
+        prediction_type: PredictionType::Link {
+            explode,
+            include_frequency,
+        },
+        split: None,
+        stages,
+        target_stype: Some("multicategorical".to_string()),
+    }
+}
+
+/// Helper: run the canonical fixture for `shape` against a LIST_DISTINCT plan
+/// and return the per-entity (token, frequency) set actually observed.
+///
+/// Decodes int tokens back to string names via `MULTICAT_TOKEN_INT_MAP`.
+fn run_canonical_listdistinct(shape: MulticatShape) -> HashMap<i64, Vec<(String, i64)>> {
+    init_tracing();
+    let dir = tempfile::tempdir().unwrap();
+    let (index, _expected) = build_canonical_multicat_graph(dir.path(), shape);
+    let plan = multicat_link_temporal_plan(
+        vec![Stage::<Seconds> {
+            ops: vec![list_distinct_tags_op("ld", Some((-5000, 0)))],
+            filter: None,
+        }],
+        true, // explode
+        true, // include_frequency
+    );
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_exploded(receiver);
+    handle.join().unwrap().unwrap();
+
+    let mut by_entity: HashMap<i64, Vec<(String, i64)>> = HashMap::new();
+    for (entity, _ts, target, freq) in rows {
+        // Decode integer-shaped target back to canonical token name.
+        let canonical = match shape {
+            MulticatShape::IntList => MULTICAT_TOKEN_INT_MAP
+                .iter()
+                .find(|(_, n)| n.to_string() == target)
+                .map(|(s, _)| s.to_string())
+                .unwrap_or(target),
+            _ => target,
+        };
+        by_entity.entry(entity).or_default().push((canonical, freq));
+    }
+    for v in by_entity.values_mut() {
+        v.sort();
+    }
+    by_entity
+}
+
+fn assert_canonical_listdistinct(actual: &HashMap<i64, Vec<(String, i64)>>) {
+    let mut expected: HashMap<i64, Vec<(String, i64)>> = HashMap::new();
+    expected.insert(
+        0,
+        vec![
+            ("a".to_string(), 1),
+            ("b".to_string(), 2),
+            ("c".to_string(), 1),
+        ],
+    );
+    expected.insert(
+        1,
+        vec![
+            ("a".to_string(), 1),
+            ("d".to_string(), 1),
+            ("e".to_string(), 1),
+        ],
+    );
+    assert_eq!(
+        actual, &expected,
+        "per-entity token frequencies should be per-token; got: {actual:?}"
+    );
+}
+
+#[test]
+fn integ_listdistinct_multicat_stringlist_explode() {
+    let actual = run_canonical_listdistinct(MulticatShape::StringList);
+    assert_canonical_listdistinct(&actual);
+}
+
+#[test]
+fn integ_listdistinct_multicat_intlist_explode() {
+    let actual = run_canonical_listdistinct(MulticatShape::IntList);
+    assert_canonical_listdistinct(&actual);
+}
+
+#[test]
+fn integ_listdistinct_multicat_consistency_across_source_shapes() {
+    // Post-#28478: only StringArray and Int64Array reach the executor for
+    // multicat sources. The Utf8+delim shape is flipped at ingest by
+    // GraphConfig::normalize_multicat_pseudo_list — its end-to-end behavior
+    // is exercised in diskgraph-ingest's integration tests.
+    let stringlist = run_canonical_listdistinct(MulticatShape::StringList);
+    let intlist = run_canonical_listdistinct(MulticatShape::IntList);
+    assert_eq!(stringlist, intlist, "stringlist vs intlist diverge");
+}
+
+// ─── LAST / FIRST × multicat × 2 shapes (kumo#28400) ─────────────────────────
+//
+// Semantic shift from the legacy whole-cell behavior: for multicat sources
+// the slot stores `Value::List(tokens)` of the chosen row's full token set
+// (most-recent for LAST, earliest for FIRST), not the raw cell value.
+
+/// Aggregate op for FIRST/LAST/COUNT_DISTINCT/etc. on `orders.tags`.
+fn agg_tags_op(
+    alias: &str,
+    func: AggFunc,
+    window: Option<(i64, i64)>,
+) -> Op<Seconds> {
+    Op::Aggregate {
+        alias: alias.to_string(),
+        path: vec![EdgeRef {
+            src_table: "users".to_string(),
+            src_col: "user_id".to_string(),
+            dst_table: "orders".to_string(),
+            dst_col: "user_id".to_string(),
+        }],
+        func,
+        target_col: Some("tags".to_string()),
+        time_col: None,
+        window,
+        window_unit: Some(TimeUnit::Seconds),
+        row_filter: None,
+        limit: None,
+        target_entity_table: None,
+    }
+}
+
+/// Run the canonical fixture for `shape` against an aggregation `func` op,
+/// returning per-entity exploded (token, _freq-ignored) sets observed.
+fn run_canonical_first_or_last(
+    shape: MulticatShape,
+    func: AggFunc,
+) -> HashMap<i64, Vec<String>> {
+    init_tracing();
+    let dir = tempfile::tempdir().unwrap();
+    let (index, _expected) = build_canonical_multicat_graph(dir.path(), shape);
+    let plan = multicat_link_temporal_plan(
+        vec![Stage::<Seconds> {
+            ops: vec![agg_tags_op("agg", func, Some((-5000, 0)))],
+            filter: None,
+        }],
+        true, // explode the row's token list into per-token rows
+        true, // include_frequency: keep 4-col schema for the read helper; freq value is ignored.
+    );
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_exploded(receiver);
+    handle.join().unwrap().unwrap();
+
+    let mut by_entity: HashMap<i64, Vec<String>> = HashMap::new();
+    for (entity, _ts, target, _freq) in rows {
+        let canonical = match shape {
+            MulticatShape::IntList => MULTICAT_TOKEN_INT_MAP
+                .iter()
+                .find(|(_, n)| n.to_string() == target)
+                .map(|(s, _)| s.to_string())
+                .unwrap_or(target),
+            _ => target,
+        };
+        by_entity.entry(entity).or_default().push(canonical);
+    }
+    for v in by_entity.values_mut() {
+        v.sort();
+    }
+    by_entity
+}
+
+fn assert_last_canonical(actual: &HashMap<i64, Vec<String>>) {
+    // Most recent row per user:
+    //   user 0: ts=200 tags=[b, c]
+    //   user 1: ts=400 tags=[d, e]
+    //   user 2: no orders
+    let mut expected: HashMap<i64, Vec<String>> = HashMap::new();
+    expected.insert(0, vec!["b".into(), "c".into()]);
+    expected.insert(1, vec!["d".into(), "e".into()]);
+    assert_eq!(
+        actual, &expected,
+        "LAST(multicat): tokens should be most-recent row's full set; got {actual:?}"
+    );
+}
+
+fn assert_first_canonical(actual: &HashMap<i64, Vec<String>>) {
+    // Earliest row per user:
+    //   user 0: ts=100 tags=[a, b]
+    //   user 1: ts=300 tags=[a]
+    //   user 2: no orders
+    let mut expected: HashMap<i64, Vec<String>> = HashMap::new();
+    expected.insert(0, vec!["a".into(), "b".into()]);
+    expected.insert(1, vec!["a".into()]);
+    assert_eq!(
+        actual, &expected,
+        "FIRST(multicat): tokens should be earliest row's full set; got {actual:?}"
+    );
+}
+
+#[test]
+fn integ_last_multicat_stringlist() {
+    let actual = run_canonical_first_or_last(MulticatShape::StringList, AggFunc::Last);
+    assert_last_canonical(&actual);
+}
+
+#[test]
+fn integ_last_multicat_intlist() {
+    let actual = run_canonical_first_or_last(MulticatShape::IntList, AggFunc::Last);
+    assert_last_canonical(&actual);
+}
+
+#[test]
+fn integ_first_multicat_stringlist() {
+    let actual = run_canonical_first_or_last(MulticatShape::StringList, AggFunc::First);
+    assert_first_canonical(&actual);
+}
+
+#[test]
+fn integ_first_multicat_intlist() {
+    let actual = run_canonical_first_or_last(MulticatShape::IntList, AggFunc::First);
+    assert_first_canonical(&actual);
+}
+
+// ─── COUNT_DISTINCT × multicat × 2 shapes (kumo#28400) ───────────────────────
+//
+// Counts distinct tokens across the window per entity. Output is a single
+// `Value::Int(count)` per entity; node-pred output schema with Int64 TARGET.
+
+/// Multicat-graph node-pred plan, count target.
+fn multicat_node_count_plan(stages: Vec<Stage<Seconds>>) -> DiskGraphTTPlan<Seconds> {
+    DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
+            table: "users".to_string(),
+            column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
+            time_col: None,
+            valid_to_col: None,
+            filter: None,
+        },
+        temporal: Some(TemporalSpec::<Seconds> {
+            timestamps: vec![Abs::from_raw(5000)],
+            forecast_length: 1,
+            lag_timesteps: None,
+        }),
+        prediction_type: PredictionType::Node,
+        split: None,
+        stages,
+        target_stype: Some("numerical".to_string()),
+    }
+}
+
+fn run_canonical_count_distinct(shape: MulticatShape) -> HashMap<i64, i64> {
+    init_tracing();
+    let dir = tempfile::tempdir().unwrap();
+    let (index, _expected) = build_canonical_multicat_graph(dir.path(), shape);
+    let plan = multicat_node_count_plan(vec![Stage::<Seconds> {
+        ops: vec![agg_tags_op("cd", AggFunc::CountDistinct, Some((-5000, 0)))],
+        filter: None,
+    }]);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows(receiver);
+    handle.join().unwrap().unwrap();
+    rows.into_iter().map(|(e, _ts, t)| (e, t as i64)).collect()
+}
+
+fn assert_count_distinct_canonical(actual: &HashMap<i64, i64>) {
+    // user 0: tokens across rows {a,b}+{b,c} → distinct {a,b,c} = 3
+    // user 1: tokens across rows {a}+{d,e}   → distinct {a,d,e} = 3
+    // user 2: no orders → 0 (still emitted as a row)
+    let mut expected: HashMap<i64, i64> = HashMap::new();
+    expected.insert(0, 3);
+    expected.insert(1, 3);
+    expected.insert(2, 0);
+    assert_eq!(
+        actual, &expected,
+        "COUNT_DISTINCT(multicat): expected per-token distinct counts; got {actual:?}"
+    );
+}
+
+#[test]
+fn integ_count_distinct_multicat_stringlist() {
+    let actual = run_canonical_count_distinct(MulticatShape::StringList);
+    assert_count_distinct_canonical(&actual);
+}
+
+#[test]
+fn integ_count_distinct_multicat_intlist() {
+    let actual = run_canonical_count_distinct(MulticatShape::IntList);
+    assert_count_distinct_canonical(&actual);
+}
+
+// ─── Route A: ResolvedOp::Column direct-target × multicat × 2 shapes ─────────
+//
+// Plan shape: `PREDICT <table>.<multicat_col> FOR EACH <table>.<id>`.
+// Resolves to `ResolvedOp::Column` at the read site; the slot stores
+// `Value::List(tokens)` per entity (the row's flat token set).
+
+/// Build a minimal users-only graph carrying a multicat `tags` column.
+/// Used to drive the Route A direct-column read site.
+fn build_multicat_user_only_graph(
+    root: &Path,
+    shape: MulticatShape,
+    user_tags_rows: &[Vec<&str>],
+) -> PathBuf {
+    let data_dir = root.join("data");
+    let index_dir = root.join("index");
+    fs::create_dir_all(&data_dir).unwrap();
+
+    let mut user_id_b = Int64Builder::new();
+    for i in 0..user_tags_rows.len() {
+        user_id_b.append_value(i as i64);
+    }
+
+    let tags_arr: Arc<dyn Array> = match shape {
+        MulticatShape::StringList => {
+            let mut b = ListBuilder::new(StringBuilder::new());
+            for row in user_tags_rows {
+                for tok in row {
+                    b.values().append_value(*tok);
+                }
+                b.append(true);
+            }
+            Arc::new(b.finish())
+        }
+        MulticatShape::IntList => {
+            let mut b = ListBuilder::new(Int64Builder::new());
+            for row in user_tags_rows {
+                for tok in row {
+                    b.values().append_value(token_to_int(tok));
+                }
+                b.append(true);
+            }
+            Arc::new(b.finish())
+        }
+    };
+
+    let users_schema = Schema::new(vec![
+        Field::new("user_id", DataType::Int64, false),
+        Field::new("tags", shape.col_dtype(), false),
+    ]);
+    let users_batch = RecordBatch::try_new(
+        Arc::new(users_schema),
+        vec![Arc::new(user_id_b.finish()), tags_arr],
+    )
+    .unwrap();
+    write_parquet(&data_dir.join("users.parquet"), &users_batch);
+
+    let tags_col = ColumnSpec {
+        name: "tags".to_string(),
+        source_dtype: None,
+        ingested_dtype: shape.ingested_dtype(),
+        fixed_len: None,
+        timestamp_format: None,
+        timestamp_unit: None,
+        precision: None,
+        scale: None,
+        semantic_type: Some(SemanticType::Multicategorical),
+        multicategorical_delimiter: shape.delimiter(),
+    };
+
+    let config = GraphConfig {
+        dataset_name: "test_route_a_multicat".to_string(),
+        tables: vec![TableSpec {
+            name: "users".to_string(),
+            columns: vec![mk_col("user_id", IngestedType::Int64), tags_col],
+            primary_key: Some("user_id".to_string()),
+            create_time: None,
+            end_time: None,
+            weight: None,
+            edge_table: None,
+            rowpack: None,
+            source: DataSource::Parquet {
+                paths: vec![data_dir
+                    .join("users.parquet")
+                    .to_str()
+                    .unwrap()
+                    .to_string()],
+            },
+            fkeys: vec![],
+            data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
+        }],
+        rowpack: None,
+        num_shards: Some(1),
+        edge_format: None,
+        coercion_mode: CoercionMode::Lossless,
+    };
+    let config_path = data_dir.join("graph_config.json");
+    fs::write(
+        &config_path,
+        serde_json::to_string_pretty(&config).unwrap(),
+    )
+    .unwrap();
+    run_ingest(&config_path, &index_dir);
+    index_dir
+}
+
+fn route_a_node_plan(
+    _shape: MulticatShape,
+) -> DiskGraphTTPlan<Seconds> {
+    let stages = vec![Stage::<Seconds> {
+        ops: vec![Op::Column {
+            alias: "t".to_string(),
+            table: "users".to_string(),
+            column: "tags".to_string(),
+        }],
+        filter: None,
+    }];
+    DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
+            table: "users".to_string(),
+            column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
+            time_col: None,
+            valid_to_col: None,
+            filter: None,
+        },
+        temporal: None,
+        prediction_type: PredictionType::Link {
+            explode: true,
+            include_frequency: true,
+        },
+        split: None,
+        stages,
+        target_stype: Some("multicategorical".to_string()),
+    }
+}
+
+fn run_route_a_direct_column(
+    shape: MulticatShape,
+    user_tags_rows: &[Vec<&str>],
+) -> HashMap<i64, Vec<String>> {
+    init_tracing();
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_multicat_user_only_graph(dir.path(), shape, user_tags_rows);
+    let plan = route_a_node_plan(shape);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_exploded(receiver);
+    handle.join().unwrap().unwrap();
+
+    let mut by_entity: HashMap<i64, Vec<String>> = HashMap::new();
+    for (entity, _ts, target, _freq) in rows {
+        let canonical = match shape {
+            MulticatShape::IntList => MULTICAT_TOKEN_INT_MAP
+                .iter()
+                .find(|(_, n)| n.to_string() == target)
+                .map(|(s, _)| s.to_string())
+                .unwrap_or(target),
+            _ => target,
+        };
+        by_entity.entry(entity).or_default().push(canonical);
+    }
+    for v in by_entity.values_mut() {
+        v.sort();
+    }
+    by_entity
+}
+
+fn assert_route_a_canonical(actual: &HashMap<i64, Vec<String>>) {
+    let mut expected: HashMap<i64, Vec<String>> = HashMap::new();
+    expected.insert(0, vec!["a".into(), "b".into(), "c".into()]);
+    expected.insert(1, vec!["d".into(), "e".into()]);
+    expected.insert(2, vec!["a".into()]);
+    assert_eq!(
+        actual, &expected,
+        "Route A direct-column multicat: token list per entity wrong; got {actual:?}"
+    );
+}
+
+const ROUTE_A_USER_TAGS: &[&[&str]] = &[
+    &["a", "b", "c"], // user 0
+    &["d", "e"],      // user 1
+    &["a"],           // user 2
+];
+
+fn route_a_canonical_rows() -> Vec<Vec<&'static str>> {
+    ROUTE_A_USER_TAGS.iter().map(|r| r.to_vec()).collect()
+}
+
+#[test]
+fn integ_direct_multicat_target_stringlist() {
+    let rows = route_a_canonical_rows();
+    let actual = run_route_a_direct_column(MulticatShape::StringList, &rows);
+    assert_route_a_canonical(&actual);
+}
+
+#[test]
+fn integ_direct_multicat_target_intlist() {
+    let rows = route_a_canonical_rows();
+    let actual = run_route_a_direct_column(MulticatShape::IntList, &rows);
+    assert_route_a_canonical(&actual);
+}
+
+#[test]
+fn integ_direct_multicat_target_consistency_across_source_shapes() {
+    let rows = route_a_canonical_rows();
+    let stringlist = run_route_a_direct_column(MulticatShape::StringList, &rows);
+    let intlist = run_route_a_direct_column(MulticatShape::IntList, &rows);
+    assert_eq!(stringlist, intlist, "Route A: stringlist vs intlist diverge");
+}
+
+// ─── NULL-row safety net ─────────────────────────────────────────────────────
+//
+// Direct multicat target reads must skip rows where the source list is NULL,
+// matching `read_column_value_nullable` for non-multicat columns. Emitting an
+// empty `Value::List` for a NULL source corrupts downstream stats (counts a
+// row that has no observed target) and produces a fake empty-label training
+// row. The dispatch closure is not invoked on NULL sources, so the caller
+// must distinguish "no value observed" from "list of zero tokens" before
+// returning a result.
+
+fn build_multicat_user_only_graph_nullable(
+    root: &Path,
+    shape: MulticatShape,
+    user_tags_rows: &[Option<Vec<&str>>],
+) -> PathBuf {
+    let data_dir = root.join("data");
+    let index_dir = root.join("index");
+    fs::create_dir_all(&data_dir).unwrap();
+
+    let mut user_id_b = Int64Builder::new();
+    for i in 0..user_tags_rows.len() {
+        user_id_b.append_value(i as i64);
+    }
+
+    let tags_arr: Arc<dyn Array> = match shape {
+        MulticatShape::StringList => {
+            let mut b = ListBuilder::new(StringBuilder::new());
+            for row in user_tags_rows {
+                match row {
+                    Some(toks) => {
+                        for tok in toks {
+                            b.values().append_value(*tok);
+                        }
+                        b.append(true);
+                    }
+                    None => b.append(false),
+                }
+            }
+            Arc::new(b.finish())
+        }
+        MulticatShape::IntList => {
+            let mut b = ListBuilder::new(Int64Builder::new());
+            for row in user_tags_rows {
+                match row {
+                    Some(toks) => {
+                        for tok in toks {
+                            b.values().append_value(token_to_int(tok));
+                        }
+                        b.append(true);
+                    }
+                    None => b.append(false),
+                }
+            }
+            Arc::new(b.finish())
+        }
+    };
+
+    let users_schema = Schema::new(vec![
+        Field::new("user_id", DataType::Int64, false),
+        Field::new("tags", shape.col_dtype(), true), // nullable
+    ]);
+    let users_batch = RecordBatch::try_new(
+        Arc::new(users_schema),
+        vec![Arc::new(user_id_b.finish()), tags_arr],
+    )
+    .unwrap();
+    write_parquet(&data_dir.join("users.parquet"), &users_batch);
+
+    let tags_col = ColumnSpec {
+        name: "tags".to_string(),
+        source_dtype: None,
+        ingested_dtype: shape.ingested_dtype(),
+        fixed_len: None,
+        timestamp_format: None,
+        timestamp_unit: None,
+        precision: None,
+        scale: None,
+        semantic_type: Some(SemanticType::Multicategorical),
+        multicategorical_delimiter: shape.delimiter(),
+    };
+
+    let config = GraphConfig {
+        dataset_name: "test_route_a_multicat_null".to_string(),
+        tables: vec![TableSpec {
+            name: "users".to_string(),
+            columns: vec![mk_col("user_id", IngestedType::Int64), tags_col],
+            primary_key: Some("user_id".to_string()),
+            create_time: None,
+            end_time: None,
+            weight: None,
+            edge_table: None,
+            rowpack: None,
+            source: DataSource::Parquet {
+                paths: vec![data_dir
+                    .join("users.parquet")
+                    .to_str()
+                    .unwrap()
+                    .to_string()],
+            },
+            fkeys: vec![],
+            data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
+        }],
+        rowpack: None,
+        num_shards: Some(1),
+        edge_format: None,
+        coercion_mode: CoercionMode::Lossless,
+    };
+    let config_path = data_dir.join("graph_config.json");
+    fs::write(
+        &config_path,
+        serde_json::to_string_pretty(&config).unwrap(),
+    )
+    .unwrap();
+    run_ingest(&config_path, &index_dir);
+    index_dir
+}
+
+fn route_a_array_plan(_shape: MulticatShape) -> DiskGraphTTPlan<Seconds> {
+    // Array output (explode=false) so a NULL source emits a *visible* row
+    // with empty target list under the bug, making the regression assertable.
+    // The exploded writer silently drops empty lists which would mask the
+    // regression entirely.
+    let stages = vec![Stage::<Seconds> {
+        ops: vec![Op::Column {
+            alias: "t".to_string(),
+            table: "users".to_string(),
+            column: "tags".to_string(),
+        }],
+        filter: None,
+    }];
+    DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
+            table: "users".to_string(),
+            column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
+            time_col: None,
+            valid_to_col: None,
+            filter: None,
+        },
+        temporal: None,
+        prediction_type: PredictionType::Link {
+            explode: false,
+            include_frequency: true,
+        },
+        split: None,
+        stages,
+        target_stype: Some("multicategorical".to_string()),
+    }
+}
+
+fn run_route_a_direct_column_with_nulls_array(
+    shape: MulticatShape,
+    user_tags_rows: &[Option<Vec<&str>>],
+) -> Vec<(i64, i64, Vec<String>, Vec<i64>)> {
+    init_tracing();
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_multicat_user_only_graph_nullable(dir.path(), shape, user_tags_rows);
+    let plan = route_a_array_plan(shape);
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_array(receiver);
+    handle.join().unwrap().unwrap();
+    rows
+}
+
+fn assert_null_row_skipped(rows: &[(i64, i64, Vec<String>, Vec<i64>)]) {
+    let entities: HashSet<i64> = rows.iter().map(|(e, _, _, _)| *e).collect();
+    assert!(
+        !entities.contains(&1),
+        "user 1 (NULL tags) must be skipped, but rows contain it: {rows:?}",
+    );
+    assert!(
+        entities.contains(&0) && entities.contains(&2),
+        "user 0 and user 2 must be present: {rows:?}",
+    );
+    // Belt-and-suspenders: no row may have an empty target list. An empty
+    // list at this layer is the bug shape — NULL source mis-rendered as
+    // "list of zero tokens".
+    for (entity, _, targets, _) in rows {
+        assert!(
+            !targets.is_empty(),
+            "entity {entity} emitted an empty target list (NULL leaked through as empty list); \
+             rows: {rows:?}",
+        );
+    }
+}
+
+#[test]
+fn integ_direct_multicat_target_skips_null_rows_stringlist() {
+    let user_tags_rows: Vec<Option<Vec<&str>>> = vec![
+        Some(vec!["a", "b"]), // user 0: emit
+        None,                 // user 1: NULL → must be skipped
+        Some(vec!["c"]),      // user 2: emit
+    ];
+    let rows = run_route_a_direct_column_with_nulls_array(
+        MulticatShape::StringList,
+        &user_tags_rows,
+    );
+    assert_null_row_skipped(&rows);
+}
+
+#[test]
+fn integ_direct_multicat_target_skips_null_rows_intlist() {
+    let user_tags_rows: Vec<Option<Vec<&str>>> = vec![
+        Some(vec!["a", "b"]),
+        None,
+        Some(vec!["c"]),
+    ];
+    let rows = run_route_a_direct_column_with_nulls_array(
+        MulticatShape::IntList,
+        &user_tags_rows,
+    );
+    assert_null_row_skipped(&rows);
+}
+
+// ─── Float*Array rejection (kumo#28400 Step 1.6) ─────────────────────────────
+
+fn build_multicat_float_user_graph(root: &Path) -> PathBuf {
+    let data_dir = root.join("data");
+    let index_dir = root.join("index");
+    fs::create_dir_all(&data_dir).unwrap();
+
+    let mut user_id_b = Int64Builder::new();
+    user_id_b.append_value(0);
+    user_id_b.append_value(1);
+
+    let mut tags_b = ListBuilder::new(Float64Builder::new());
+    for vals in [[1.0_f64, 2.0_f64], [3.0_f64, 4.0_f64]] {
+        for v in vals {
+            tags_b.values().append_value(v);
+        }
+        tags_b.append(true);
+    }
+
+    let users_schema = Schema::new(vec![
+        Field::new("user_id", DataType::Int64, false),
+        Field::new(
+            "tags",
+            DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
+            false,
+        ),
+    ]);
+    let users_batch = RecordBatch::try_new(
+        Arc::new(users_schema),
+        vec![Arc::new(user_id_b.finish()), Arc::new(tags_b.finish())],
+    )
+    .unwrap();
+    write_parquet(&data_dir.join("users.parquet"), &users_batch);
+
+    let tags_col = ColumnSpec {
+        name: "tags".to_string(),
+        source_dtype: None,
+        ingested_dtype: IngestedType::Float64Array,
+        fixed_len: None,
+        timestamp_format: None,
+        timestamp_unit: None,
+        precision: None,
+        scale: None,
+        semantic_type: Some(SemanticType::Multicategorical),
+        multicategorical_delimiter: None,
+    };
+    let config = GraphConfig {
+        dataset_name: "test_float_multicat_reject".to_string(),
+        tables: vec![TableSpec {
+            name: "users".to_string(),
+            columns: vec![mk_col("user_id", IngestedType::Int64), tags_col],
+            primary_key: Some("user_id".to_string()),
+            create_time: None,
+            end_time: None,
+            weight: None,
+            edge_table: None,
+            rowpack: None,
+            source: DataSource::Parquet {
+                paths: vec![data_dir
+                    .join("users.parquet")
+                    .to_str()
+                    .unwrap()
+                    .to_string()],
+            },
+            fkeys: vec![],
+            data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
+        }],
+        rowpack: None,
+        num_shards: Some(1),
+        edge_format: None,
+        coercion_mode: CoercionMode::Lossless,
+    };
+    let config_path = data_dir.join("graph_config.json");
+    fs::write(
+        &config_path,
+        serde_json::to_string_pretty(&config).unwrap(),
+    )
+    .unwrap();
+    run_ingest(&config_path, &index_dir);
+    index_dir
+}
+
+#[test]
+fn integ_multicat_float_array_rejected_route_a() {
+    init_tracing();
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_multicat_float_user_graph(dir.path());
+    let plan = DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
+            table: "users".to_string(),
+            column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
+            time_col: None,
+            valid_to_col: None,
+            filter: None,
+        },
+        temporal: None,
+        prediction_type: PredictionType::Node,
+        split: None,
+        stages: vec![Stage::<Seconds> {
+            ops: vec![Op::Column {
+                alias: "t".to_string(),
+                table: "users".to_string(),
+                column: "tags".to_string(),
+            }],
+            filter: None,
+        }],
+        target_stype: Some("multicategorical".to_string()),
+    };
+    let err = diskgraph_train_table::ttgen_executor::execute(&plan, &index)
+        .expect_err("Float64Array multicat should be rejected at resolve time");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("multicategorical") && msg.contains("float"),
+        "expected float-multicat rejection message, got: {msg}"
+    );
+}
+
+// Native-list-without-stype rejection tests removed. The reject gate now
+// fires when `diskgraph_config.json` lacks a multicategorical declaration
+// for a native-list source column. The previous tests forced the rejection
+// by passing `target_semantic_type: None` in plan JSON; that channel is
+// gone. Replacement coverage (build a fixture that mis-declares the
+// column, run the dispatch, expect rejection) is tracked as a follow-up.
+
+// ─── Array-output smoke (kumo#28400 Step 3) ─────────────────────────────────
+//
+// Confirm flipping `list_distinct_target_is_array=True` (Rust plan-level
+// `explode=false`) on the same multicat fixture produces a valid array-shaped
+// output. Light surface assertions only — not a flippability soak.
+
+fn run_canonical_listdistinct_arrayout(
+    shape: MulticatShape,
+    include_frequency: bool,
+) -> Vec<(i64, i64, Vec<String>, Vec<i64>)> {
+    init_tracing();
+    let dir = tempfile::tempdir().unwrap();
+    let (index, _expected) = build_canonical_multicat_graph(dir.path(), shape);
+    let plan = multicat_link_temporal_plan(
+        vec![Stage::<Seconds> {
+            ops: vec![list_distinct_tags_op("ld", Some((-5000, 0)))],
+            filter: None,
+        }],
+        false, // array output (not exploded)
+        include_frequency,
+    );
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let rows = read_output_rows_array(receiver);
+    handle.join().unwrap().unwrap();
+    rows
+}
+
+#[test]
+fn integ_listdistinct_multicat_arrayout_schema() {
+    use arrow_array::{ListArray, TimestampNanosecondArray};
+
+    init_tracing();
+    let dir = tempfile::tempdir().unwrap();
+    let (index, _) = build_canonical_multicat_graph(dir.path(), MulticatShape::StringList);
+    let plan = multicat_link_temporal_plan(
+        vec![Stage::<Seconds> {
+            ops: vec![list_distinct_tags_op("ld", Some((-5000, 0)))],
+            filter: None,
+        }],
+        false, // array output
+        true,  // include_frequency
+    );
+    let (receiver, handle) =
+        diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
+    let batches: Vec<RecordBatch> = receiver.into_iter().collect();
+    handle.join().unwrap().unwrap();
+
+    assert!(!batches.is_empty(), "expected at least one batch");
+    let schema = batches[0].schema();
+    assert_eq!(
+        schema.fields().len(),
+        4,
+        "expected ENTITY, TIMESTAMP, TARGET, FREQUENCY columns"
+    );
+    assert_eq!(
+        schema.field(2).data_type(),
+        &DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+        "TARGET column should be List<Utf8>, not List<List<Utf8>>"
+    );
+    assert_eq!(
+        schema.field(3).data_type(),
+        &DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
+        "FREQUENCY column should be List<Int64>"
+    );
+
+    // Row count == entity count: array mode emits one row per entity, even
+    // empty ones (empty target list). Three users → three rows.
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(total_rows, 3, "expected one row per entity in array mode");
+
+    // Sanity: each batch's downcasts work.
+    for batch in &batches {
+        let _ = batch.column(0).as_any().downcast_ref::<Int64Array>().expect("ENTITY Int64");
+        let _ = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().expect("TIMESTAMP ns");
+        let _ = batch.column(2).as_any().downcast_ref::<ListArray>().expect("TARGET ListArray");
+        let _ = batch.column(3).as_any().downcast_ref::<ListArray>().expect("FREQUENCY ListArray");
+    }
+}
+
+#[test]
+fn integ_listdistinct_multicat_arrayout_set_equivalence() {
+    // Same logical fixture, run under explode=true and explode=false.
+    // Per-entity token sets must match across writer arms.
+    let array_rows = run_canonical_listdistinct_arrayout(MulticatShape::StringList, true);
+    let exploded = run_canonical_listdistinct(MulticatShape::StringList);
+
+    // Drop empty-set entities: array mode emits a row with an empty list,
+    // exploded mode emits no row at all. Compare only entities that have
+    // tokens.
+    let mut array_sets: HashMap<i64, std::collections::HashSet<String>> = HashMap::new();
+    for (entity, _ts, targets, _freqs) in array_rows {
+        if !targets.is_empty() {
+            array_sets.insert(entity, targets.into_iter().collect());
+        }
+    }
+    let mut exploded_sets: HashMap<i64, std::collections::HashSet<String>> = HashMap::new();
+    for (entity, pairs) in exploded {
+        exploded_sets.insert(entity, pairs.into_iter().map(|(t, _)| t).collect());
+    }
+    assert_eq!(
+        array_sets, exploded_sets,
+        "explode=true and explode=false must produce the same per-entity token sets"
+    );
+}
+
+// ─── Stats-summary regression net for multicat targets (kumo#28400) ──────────
+//
+// Catches the locality failure /codex:adversarial-review surfaced: once read
+// sites store `Value::List(tokens)` as the target, `update_exact_stats` must
+// observe each item directly. The pre-fix path stringified the list to the
+// literal `"<list>"`, collapsing every entity's labels into one synthetic
+// category in the kumo-format stats payload. Materialized parquet stayed
+// correct (writers iterate the list element-wise) so the original 18 read-site
+// tests didn't catch it.
+//
+// Scope is multicat-target stats only — not a universal stats regression net.
+// The observation surface checked is `parsed_train_table_col_stats.stats[...]`
+// (the kumo-format payload consumed by the encoder for vocabulary recovery).
+
+/// Run a Node-pred plan end-to-end through `execute_with_summary` and return
+/// the parsed kumo-format col stats (the inner `stats` JSON object).
+fn run_node_pred_collect_stats(
+    plan: &DiskGraphTTPlan<Seconds>,
+    index: &Path,
+) -> serde_json::Value {
+    use diskgraph_train_table::ttgen_executor::execute_with_summary;
+
+    let (receiver, handle) = execute_with_summary(plan, index).unwrap();
+    for _ in receiver {} // drain so the writer can finalize
+    let summary = handle.join().unwrap().unwrap();
+    let payload = summary.stats.expect("stats payload missing");
+    let outer = payload
+        .parsed_train_table_col_stats
+        .expect("parsed_train_table_col_stats missing");
+    outer
+        .get("stats")
+        .cloned()
+        .expect("col stats payload should have a 'stats' object")
+}
+
+/// Pull `MULTI_CATEGORY_COUNTS.value` out as a `HashMap<token, count>`.
+fn extract_multi_category_counts(stats: &serde_json::Value) -> HashMap<String, i64> {
+    let key = "TARGET__kumo.multicategorical__MULTI_CATEGORY_COUNTS__False";
+    let entry = stats
+        .get(key)
+        .unwrap_or_else(|| panic!("expected {key} in col stats; got {stats}"));
+    let cats = entry
+        .get("value")
+        .and_then(serde_json::Value::as_array)
+        .expect("MULTI_CATEGORY_COUNTS value should be an array");
+    cats.iter()
+        .map(|pair| {
+            let arr = pair.as_array().expect("[token, count]");
+            (
+                arr[0].as_str().expect("token string").to_string(),
+                arr[1].as_i64().expect("count int"),
+            )
+        })
+        .collect()
+}
+
+/// Pull `NUM_UNIQUE_MULTI.value` (HLL approx token count) as i64.
+fn extract_num_unique_multi(stats: &serde_json::Value) -> i64 {
+    let key = "TARGET__kumo.multicategorical__NUM_UNIQUE_MULTI__True";
+    stats
+        .get(key)
+        .and_then(|e| e.get("value"))
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or_else(|| panic!("expected {key} in col stats; got {stats}"))
+}
+
+/// Walk every key/value in the stats payload; fail if the literal "<list>"
+/// placeholder ever appears. General guard against future readers that copy
+/// the same Value-to-string-collapse antipattern.
+fn assert_stats_no_list_placeholder(stats: &serde_json::Value) {
+    fn walk(v: &serde_json::Value, path: &str) {
+        match v {
+            serde_json::Value::Object(map) => {
+                for (k, child) in map {
+                    assert_ne!(
+                        k, "<list>",
+                        "found '<list>' placeholder as a key under {path}"
+                    );
+                    walk(child, &format!("{path}.{k}"));
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (i, child) in items.iter().enumerate() {
+                    walk(child, &format!("{path}[{i}]"));
+                }
+            }
+            serde_json::Value::String(s) => {
+                assert_ne!(
+                    s, "<list>",
+                    "found '<list>' placeholder as a string at {path}"
+                );
+            }
+            _ => {}
+        }
+    }
+    walk(stats, "stats");
+}
+
+/// Build the Node-pred plan that drives Route A direct-column-target on the
+/// users-only multicat fixture.
+fn route_a_node_plan_for_stats(_shape: MulticatShape) -> DiskGraphTTPlan<Seconds> {
+    DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
+            table: "users".to_string(),
+            column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
+            time_col: None,
+            valid_to_col: None,
+            filter: None,
+        },
+        temporal: None,
+        prediction_type: PredictionType::Node,
+        split: None,
+        stages: vec![Stage::<Seconds> {
+            ops: vec![Op::Column {
+                alias: "t".to_string(),
+                table: "users".to_string(),
+                column: "tags".to_string(),
+            }],
+            filter: None,
+        }],
+        target_stype: Some("multicategorical".to_string()),
+    }
+}
+
+/// Build the Node-pred plan that drives an aggregator (FIRST/LAST/LIST_DISTINCT)
+/// on the canonical orders-multicat fixture.
+fn agg_node_plan_for_stats(func: AggFunc) -> DiskGraphTTPlan<Seconds> {
+    DiskGraphTTPlan::<Seconds> {
+        entity: EntitySpec::<Seconds> {
+            table: "users".to_string(),
+            column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
+            time_col: None,
+            valid_to_col: None,
+            filter: None,
+        },
+        temporal: Some(TemporalSpec::<Seconds> {
+            timestamps: vec![Abs::from_raw(5000)],
+            forecast_length: 1,
+            lag_timesteps: None,
+        }),
+        prediction_type: PredictionType::Node,
+        split: None,
+        stages: vec![Stage::<Seconds> {
+            ops: vec![agg_tags_op("agg", func, Some((-5000, 0)))],
+            filter: None,
+        }],
+        target_stype: Some("multicategorical".to_string()),
+    }
+}
+
+fn run_route_a_stats(shape: MulticatShape) -> serde_json::Value {
+    init_tracing();
+    let dir = tempfile::tempdir().unwrap();
+    let user_tags_rows = route_a_canonical_rows();
+    let index = build_multicat_user_only_graph(dir.path(), shape, &user_tags_rows);
+    let plan = route_a_node_plan_for_stats(shape);
+    run_node_pred_collect_stats(&plan, &index)
+}
+
+fn run_agg_stats(func: AggFunc, shape: MulticatShape) -> serde_json::Value {
+    init_tracing();
+    let dir = tempfile::tempdir().unwrap();
+    let (index, _) = build_canonical_multicat_graph(dir.path(), shape);
+    let plan = agg_node_plan_for_stats(func);
+    run_node_pred_collect_stats(&plan, &index)
+}
+
+// Route A direct-target × 3 source shapes
+// Aggregate tokens across ROUTE_A_USER_TAGS = [[a,b,c], [d,e], [a]]:
+//   a×2, b×1, c×1, d×1, e×1
+fn assert_route_a_canonical_stats(stats: &serde_json::Value) {
+    assert_stats_no_list_placeholder(stats);
+    let observed = extract_multi_category_counts(stats);
+    let mut expected: HashMap<String, i64> = HashMap::new();
+    expected.insert("a".into(), 2);
+    expected.insert("b".into(), 1);
+    expected.insert("c".into(), 1);
+    expected.insert("d".into(), 1);
+    expected.insert("e".into(), 1);
+    assert_eq!(
+        observed, expected,
+        "Route A multicat stats wrong; got {observed:?}"
+    );
+    // HLL is approximate but the cardinality is small here.
+    assert_eq!(extract_num_unique_multi(stats), 5);
+}
+
+#[test]
+fn integ_multicat_stats_route_a_stringlist() {
+    assert_route_a_canonical_stats(&run_route_a_stats(MulticatShape::StringList));
+}
+
+#[test]
+fn integ_multicat_stats_route_a_intlist() {
+    // Intlist tokens are integers (1..=5) per MULTICAT_TOKEN_INT_MAP. The stats
+    // payload sees the stringified form; assert the count map matches the
+    // letter-mapped expectations under the bijection.
+    let stats = run_route_a_stats(MulticatShape::IntList);
+    assert_stats_no_list_placeholder(&stats);
+    let observed = extract_multi_category_counts(&stats);
+    let mut expected: HashMap<String, i64> = HashMap::new();
+    for (tok_letter, count) in [("a", 2), ("b", 1), ("c", 1), ("d", 1), ("e", 1)] {
+        expected.insert(token_to_int(tok_letter).to_string(), count);
+    }
+    assert_eq!(
+        observed, expected,
+        "Route A multicat intlist stats wrong; got {observed:?}"
+    );
+    assert_eq!(extract_num_unique_multi(&stats), 5);
+}
+
+// FIRST × Node-pred. Per-user FIRST tokens (canonical fixture):
+//   user 0: ts=100 tags=[a, b]
+//   user 1: ts=300 tags=[a]
+//   user 2: no orders → no row
+// Aggregate: a×2, b×1.
+#[test]
+fn integ_multicat_stats_first_node_pred() {
+    // Source-shape axis is irrelevant here: stats observe per-token
+    // regardless of whether the source is StringArray, Int64Array, or
+    // (post-#28478) the legacy Utf8+delim that ingest now flips to
+    // StringArray. Use StringList as the canonical fixture.
+    let stats = run_agg_stats(AggFunc::First, MulticatShape::StringList);
+    assert_stats_no_list_placeholder(&stats);
+    let observed = extract_multi_category_counts(&stats);
+    let mut expected: HashMap<String, i64> = HashMap::new();
+    expected.insert("a".into(), 2);
+    expected.insert("b".into(), 1);
+    assert_eq!(observed, expected, "FIRST stats wrong; got {observed:?}");
+}
+
+// LAST × Node-pred. Per-user LAST tokens:
+//   user 0: ts=200 tags=[b, c]
+//   user 1: ts=400 tags=[d, e]
+//   user 2: no orders → no row
+// Aggregate: b×1, c×1, d×1, e×1.
+#[test]
+fn integ_multicat_stats_last_node_pred() {
+    let stats = run_agg_stats(AggFunc::Last, MulticatShape::StringList);
+    assert_stats_no_list_placeholder(&stats);
+    let observed = extract_multi_category_counts(&stats);
+    let mut expected: HashMap<String, i64> = HashMap::new();
+    expected.insert("b".into(), 1);
+    expected.insert("c".into(), 1);
+    expected.insert("d".into(), 1);
+    expected.insert("e".into(), 1);
+    assert_eq!(observed, expected, "LAST stats wrong; got {observed:?}");
+}
+
+// LIST_DISTINCT × Node-pred. Per-user distinct token sets across all rows:
+//   user 0: rows [a,b]+[b,c] → {a, b, c}
+//   user 1: rows [a]+[d,e]   → {a, d, e}
+//   user 2: no orders → no row
+// Aggregate stats observe one token per (entity, distinct token):
+//   a×2, b×1, c×1, d×1, e×1.
+#[test]
+fn integ_multicat_stats_listdistinct_node_pred() {
+    let stats = run_agg_stats(AggFunc::ListDistinct, MulticatShape::StringList);
+    assert_stats_no_list_placeholder(&stats);
+    let observed = extract_multi_category_counts(&stats);
+    let mut expected: HashMap<String, i64> = HashMap::new();
+    expected.insert("a".into(), 2);
+    expected.insert("b".into(), 1);
+    expected.insert("c".into(), 1);
+    expected.insert("d".into(), 1);
+    expected.insert("e".into(), 1);
+    assert_eq!(
+        observed, expected,
+        "LIST_DISTINCT node-pred stats wrong; got {observed:?}"
+    );
+    assert_eq!(extract_num_unique_multi(&stats), 5);
+}
+
+// LIST_DISTINCT × link-pred × array-output writer arm. Same canonical token
+// distribution as `integ_multicat_stats_listdistinct_node_pred`, but the
+// writer is `PredictionType::Link { explode: false }`. Pre-fix, this arm
+// only observed `update_exact_stats` for `targets[0]` and skipped per-token
+// observation for `targets[1..]`, so `MULTI_CATEGORY_COUNTS` undercounted
+// every token after the first. Closes the gap surfaced by the codex review
+// follow-up on PR 230.
+//
+// Per-user distinct token sets (from the canonical fixture):
+//   user 0: rows [a,b]+[b,c] → distinct {a, b, c}
+//   user 1: rows [a]+[d,e]   → distinct {a, d, e}
+//   user 2: no orders → no row
+// Per-token frequency across array-output rows: a×2, b×1, c×1, d×1, e×1.
+#[test]
+fn integ_multicat_stats_listdistinct_arrayout_link_pred() {
+    init_tracing();
+    let dir = tempfile::tempdir().unwrap();
+    let (index, _expected) =
+        build_canonical_multicat_graph(dir.path(), MulticatShape::StringList);
+    let plan = multicat_link_temporal_plan(
+        vec![Stage::<Seconds> {
+            ops: vec![list_distinct_tags_op("ld", Some((-5000, 0)))],
+            filter: None,
+        }],
+        false, // array output (not exploded)
+        true,  // include_frequency
+    );
+    let stats = run_node_pred_collect_stats(&plan, &index);
+    assert_stats_no_list_placeholder(&stats);
+    let observed = extract_multi_category_counts(&stats);
+    let mut expected: HashMap<String, i64> = HashMap::new();
+    expected.insert("a".into(), 2);
+    expected.insert("b".into(), 1);
+    expected.insert("c".into(), 1);
+    expected.insert("d".into(), 1);
+    expected.insert("e".into(), 1);
+    assert_eq!(
+        observed, expected,
+        "LIST_DISTINCT array-output stats wrong; got {observed:?}"
+    );
+    assert_eq!(extract_num_unique_multi(&stats), 5);
 }

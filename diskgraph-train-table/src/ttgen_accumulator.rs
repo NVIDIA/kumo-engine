@@ -84,6 +84,26 @@ pub fn hash_value(v: &Value) -> u64 {
     hasher.finish()
 }
 
+/// Hash a borrowed string slice without first wrapping it in a
+/// `Value::Str(String)`. Must agree with `hash_value(&Value::Str(s.into()))`
+/// so multicat-aware seen-maps stay coherent with the legacy hash path.
+#[inline]
+pub fn hash_str(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Hash an `i64` token. Must agree with `hash_value(&Value::Int(n))`.
+#[inline]
+pub fn hash_i64(n: i64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    n.hash(&mut hasher);
+    hasher.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

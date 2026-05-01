@@ -5590,6 +5590,15 @@ impl IngestContext {
         }
         let json = serde_json::to_vec_pretty(&metadata)?;
         self.target.write_bytes("index_metadata.json", json)?;
+
+        // Persist the resolved graph config so downstream consumers (TT-gen,
+        // BP) can recover per-column semantic_type without re-supplying it
+        // via plan JSON each query (kumo#28400 follow-up). `self.source` has
+        // semantic_type populated for every column by the context-build
+        // stage (see populate_table_contexts at lib.rs:1998).
+        let config_json = serde_json::to_vec_pretty(&self.source)?;
+        self.target
+            .write_bytes(graph_config::DISKGRAPH_CONFIG_FILENAME, config_json)?;
         Ok(metadata)
     }
 
