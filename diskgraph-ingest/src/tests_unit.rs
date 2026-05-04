@@ -135,7 +135,7 @@ fn test_bitwriter_packing() -> anyhow::Result<()> {
     let path = tmp.path().to_path_buf();
 
     let file = std::fs::File::create(&path)?;
-    let sink = OutputSink::Local(file);
+    let sink = OutputSink::Local { file, tee: None };
     let writer = BufWriter::new(sink);
     let mut bw = BitWriter::new(writer);
 

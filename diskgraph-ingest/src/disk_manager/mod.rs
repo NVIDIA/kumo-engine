@@ -133,13 +133,16 @@ impl DiskManager {
 /// Available bytes on the filesystem containing `path` (via statvfs).
 pub fn available_space(path: &Path) -> std::io::Result<u64> {
     let stat = statvfs(path)?;
-    Ok(stat.f_bavail.saturating_mul(stat.f_frsize))
+    // statvfs field widths are platform-dependent (u32 on aarch64-apple-darwin,
+    // u64 on linux); widen via u64 multiply so the function's return type is
+    // honored uniformly across targets.
+    Ok((stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64))
 }
 
 /// Total bytes on the filesystem containing `path` (via statvfs).
 pub fn total_space(path: &Path) -> std::io::Result<u64> {
     let stat = statvfs(path)?;
-    Ok(stat.f_blocks.saturating_mul(stat.f_frsize))
+    Ok((stat.f_blocks as u64).saturating_mul(stat.f_frsize as u64))
 }
 
 fn statvfs(path: &Path) -> std::io::Result<libc::statvfs> {

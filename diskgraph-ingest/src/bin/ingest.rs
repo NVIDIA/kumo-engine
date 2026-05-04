@@ -152,7 +152,7 @@ fn main() -> Result<()> {
         let config_url = ensure_config_url(&source_str);
         let metadata_bytes = download_cloud_config_bytes(&config_url)?;
         let source: GraphConfig = serde_json::from_slice(&metadata_bytes)?;
-        ingest_with_stats_from_source(source, None, &args.output, dest, options)?
+        ingest_with_stats_from_source(source, None, &args.output, dest, options, None, None)?
     } else {
         ingest_with_stats(&source_path, &args.output, dest, options)?
     };

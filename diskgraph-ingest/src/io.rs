@@ -1,4 +1,62 @@
+use crate::consts::TEMP_DIR_NAME;
 use crate::graph_config::GraphConfig;
+use crate::snapshot_mirror::{ManifestAccumulator, SnapshotMirror};
+
+/// True when a snapshot-relative path is under the per-ingest temp tree
+/// (`_tmp/...`). These are intermediate files that ingest deletes via
+/// `cleanup_temp` before returning, so they must NOT appear in
+/// `_MANIFEST.json` (would cause `verify_snapshot_integrity` to flag them
+/// as missing post-cleanup) AND must NOT be uploaded to the dataplane
+/// mirror (wasted bytes for files we're about to delete locally).
+///
+/// The check is rel-path based — the per-shard parallel write paths
+/// already construct rel paths like `_tmp/nodes/<table>/shard-XX/...`.
+fn is_temp_rel_path(rel: &str) -> bool {
+    rel == TEMP_DIR_NAME
+        || rel.starts_with(&format!("{}/", TEMP_DIR_NAME))
+}
+
+/// Recursive directory walker used by
+/// [`OutputTarget::reconcile_unrecorded_files`]. For every regular file
+/// under `dir`, computes its rel-path relative to `root`, skips temp
+/// files and anything already in `known`, and emits the (rel_path,
+/// absolute_path, size) tuple. Bytes are NOT read here — the mirror
+/// submit streams them from disk directly so memory stays bounded.
+fn walk_local_files(
+    root: &Path,
+    dir: &Path,
+    known: &std::collections::HashSet<String>,
+    out: &mut Vec<(String, PathBuf, u64)>,
+) -> Result<()> {
+    for entry in fs::read_dir(dir)
+        .with_context(|| format!("read_dir {}", dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            walk_local_files(root, &path, known, out)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(root)
+            .with_context(|| format!("strip_prefix {}", path.display()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        if is_temp_rel_path(&rel) || known.contains(&rel) {
+            continue;
+        }
+        let size = entry
+            .metadata()
+            .with_context(|| format!("stat {}", path.display()))?
+            .len();
+        out.push((rel, path, size));
+    }
+    Ok(())
+}
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use diskgraph_fs::{
@@ -76,6 +134,123 @@ pub fn build_input_transfer(source: &GraphConfig) -> Result<Option<CloudTransfer
 pub fn build_transfer_for_cloud_path(path: &str) -> Result<CloudTransfer> {
     let store = build_store_for_cloud_path(path)?;
     Ok(CloudTransfer::new(store, CloudTransferConfig::from_env()))
+}
+
+/// Build an [`ObjectStore`] for any path — cloud (`s3://`, `gs://`, `az://`)
+/// or local filesystem. The returned store is rooted at the path itself for
+/// local destinations and at the bucket/container for cloud destinations;
+/// in both cases [`object_path_for_path`] returns the appropriate dest
+/// [`ObjectPath`] to compose with file basenames at submit time.
+///
+/// Used by the dataplane snapshot mirror, which is uniform across cloud and
+/// local backends so the same code path covers production (S3) and
+/// singlehost / dev / CI (local EBS or tmpfs).
+///
+/// **Supported destinations:**
+/// - `s3://bucket/key` — AWS S3
+/// - `gs://bucket/key` — Google Cloud Storage
+/// - `az://account/container/key` — Azure Data Lake Storage Gen2
+/// - any path without a `://` scheme — local filesystem (treated as
+///   absolute or cwd-relative)
+///
+/// **Explicitly NOT supported (rejected at this boundary):**
+/// - `dbfs://...` / `dbfs:/...` — Databricks File System. The
+///   `object_store` crate has no DBFS backend; we'd need either a custom
+///   `ObjectStore` impl over the DBFS REST API or for the caller to
+///   resolve `dbfs://` to the underlying storage URL before reaching
+///   Rust. Out of scope for this PR.
+/// - `/Volumes/...` / Unity Catalog volume references — same situation;
+///   no `object_store` adapter exists.
+/// - `@db.schema.stage/...` / Snowflake internal stages — accessed via
+///   SQL `PUT`/`GET`, not a REST/object-store API. Out of scope.
+/// - any other scheme (`file://`, `hdfs://`, etc.) — rejected loudly so
+///   typos don't silently land in the local-fs branch.
+pub fn build_object_store_for_path(path: &str) -> Result<Arc<dyn ObjectStore>> {
+    if is_cloud_path(path) {
+        return build_store_for_cloud_path(path);
+    }
+    if let Some(reason) = unsupported_path_reason(path) {
+        return Err(anyhow!(
+            "unsupported dataplane path {path:?}: {reason}. Supported: \
+             s3://, gs://, az://, or a local filesystem path."
+        ));
+    }
+    // Local filesystem branch: the store is rooted at `path`, so submit
+    // ObjectPaths are relative to `path`. Ensure the dir exists first —
+    // `LocalFileSystem::new_with_prefix` requires it; cloud buckets are
+    // pre-existing so this branch is the only one that needs to create.
+    fs::create_dir_all(path).with_context(|| format!("create local prefix {path}"))?;
+    let store = object_store::local::LocalFileSystem::new_with_prefix(path)
+        .with_context(|| format!("build LocalFileSystem at {path}"))?;
+    Ok(Arc::new(store))
+}
+
+/// Identify dataplane paths that look like a deliberate scheme we don't
+/// support, so they fail loudly instead of slipping into the local-fs
+/// branch (which would `create_dir_all("dbfs:")` — silently create a
+/// literal `dbfs:` directory in the cwd and write the snapshot there).
+///
+/// Returns `Some(reason)` for known-unsupported shapes; `None` for
+/// anything that looks like a legitimate local path. The check is
+/// conservative — if the caller has a path that begins with a custom
+/// scheme not enumerated here, we still reject it via the
+/// generic-`://` arm rather than silently treating it as local.
+fn unsupported_path_reason(path: &str) -> Option<&'static str> {
+    let lower = path.to_ascii_lowercase();
+    if lower.starts_with("dbfs://") || lower.starts_with("dbfs:/") {
+        return Some(
+            "DBFS / Unity Catalog volumes are not supported by the Rust \
+             dataplane mirror; resolve to the underlying S3/ADLS URL on \
+             the Python side or skip the mirror for Databricks deployments",
+        );
+    }
+    if lower.starts_with("snowflake://") || path.starts_with('@') {
+        return Some(
+            "Snowflake internal stages are not supported by the Rust \
+             dataplane mirror (no `object_store` impl over PUT/GET SQL); \
+             out of scope for this PR",
+        );
+    }
+    if lower.starts_with("file://") {
+        return Some(
+            "use a bare local filesystem path instead of `file://...`",
+        );
+    }
+    if lower.starts_with("hdfs://") {
+        return Some("HDFS is not a supported dataplane backend");
+    }
+    // Generic catch-all: any path with a scheme separator that isn't
+    // one of the supported cloud schemes is rejected. Path absolutism
+    // on Unix means `/foo/bar` doesn't trigger this; relative paths
+    // also don't.
+    if let Some((scheme, _)) = path.split_once("://") {
+        if !scheme.is_empty() && !is_cloud_scheme(scheme) {
+            return Some(
+                "unrecognized URL scheme (only s3 / gs / az and local \
+                 filesystem paths are supported)",
+            );
+        }
+    }
+    None
+}
+
+fn is_cloud_scheme(scheme: &str) -> bool {
+    matches!(
+        scheme.to_ascii_lowercase().as_str(),
+        "s3" | "gs" | "az"
+    )
+}
+
+/// Companion to [`build_object_store_for_path`]. Returns the dest
+/// [`ObjectPath`] (i.e., the path prefix to compose with per-file basenames
+/// when submitting uploads/downloads) for the given path. For local paths,
+/// the dest is `""` because the [`ObjectStore`] itself is rooted at the
+/// local dir; for cloud paths, the dest is the path-within-bucket/container.
+pub fn object_path_for_path(path: &str) -> Result<ObjectPath> {
+    if is_cloud_path(path) {
+        return object_path_from_cloud_url(path);
+    }
+    Ok(ObjectPath::from(""))
 }
 
 pub fn build_store_for_cloud_path(path: &str) -> Result<Arc<dyn ObjectStore>> {
@@ -238,7 +413,7 @@ pub fn expand_cloud_paths_in_config(config: &mut GraphConfig) -> Result<()> {
 
 pub fn require_local_output(target: &OutputTarget) -> Result<&Path> {
     match target {
-        OutputTarget::Local { root } => Ok(root.as_path()),
+        OutputTarget::Local { root, .. } => Ok(root.as_path()),
         _ => Err(anyhow!("sharded ingest requires a local output path")),
     }
 }
@@ -247,6 +422,17 @@ pub fn require_local_output(target: &OutputTarget) -> Result<&Path> {
 pub enum OutputTarget {
     Local {
         root: PathBuf,
+        /// Optional secondary write channel. When set, every output file
+        /// ingest writes through this target is also `submit_upload`'d to
+        /// the dataplane via [`SnapshotMirror`]. End-of-ingest finalize
+        /// (`snapshot_mirror::finalize_snapshot`) drains pending uploads
+        /// and orders ``_MANIFEST.json`` then ``_SUCCESS`` last.
+        mirror: Option<Arc<SnapshotMirror>>,
+        /// Manifest accumulator. Always populated (used both with and
+        /// without a mirror): every output file goes here so
+        /// ``_MANIFEST.json`` records the file list + sizes for
+        /// post-ingest integrity verification.
+        manifest: Arc<ManifestAccumulator>,
     },
     S3 {
         prefix: String,
@@ -273,10 +459,32 @@ pub enum OutputTarget {
 
 impl OutputTarget {
     pub fn parse(output: &str, dest: Dest) -> Result<Self> {
+        Self::parse_with_dataplane(output, dest, None)
+    }
+
+    /// Parse the output path, optionally attaching a dataplane mirror to
+    /// the local target. The mirror is only meaningful for local targets
+    /// (the ingest write loop only operates on
+    /// [`OutputTarget::Local`]); cloud targets ignore `dataplane_dir`.
+    pub fn parse_with_dataplane(
+        output: &str,
+        dest: Dest,
+        dataplane_dir: Option<&str>,
+    ) -> Result<Self> {
         match dest {
-            Dest::Local => Ok(OutputTarget::Local {
-                root: PathBuf::from(output),
-            }),
+            Dest::Local => {
+                let mirror = match dataplane_dir {
+                    Some(dir) => Some(Arc::new(SnapshotMirror::new(dir).with_context(
+                        || format!("attach dataplane mirror at {dir}"),
+                    )?)),
+                    None => None,
+                };
+                Ok(OutputTarget::Local {
+                    root: PathBuf::from(output),
+                    mirror,
+                    manifest: Arc::new(ManifestAccumulator::new()),
+                })
+            }
             Dest::S3 => {
                 let (bucket, prefix) = parse_s3_url(output)?;
                 let s3 = build_s3_client(S3Config {
@@ -337,7 +545,7 @@ impl OutputTarget {
     }
 
     pub fn prepare(&self) -> Result<()> {
-        if let OutputTarget::Local { root } = self {
+        if let OutputTarget::Local { root, .. } = self {
             fs::create_dir_all(root)?;
         }
         Ok(())
@@ -345,7 +553,7 @@ impl OutputTarget {
 
     pub fn join(&self, name: &str) -> PathBuf {
         match self {
-            OutputTarget::Local { root } => root.join(name),
+            OutputTarget::Local { root, .. } => root.join(name),
             OutputTarget::S3 { prefix, .. }
             | OutputTarget::Gcs { prefix, .. }
             | OutputTarget::Adls { prefix, .. } => {
@@ -358,14 +566,111 @@ impl OutputTarget {
         }
     }
 
+    /// Borrow the manifest accumulator on a local target. Cloud targets
+    /// don't carry one (the dataplane mirror only attaches to local
+    /// ingest output, which is the only `OutputTarget` variant the
+    /// ingest write loop accepts in production).
+    pub fn manifest(&self) -> Option<&Arc<ManifestAccumulator>> {
+        match self {
+            OutputTarget::Local { manifest, .. } => Some(manifest),
+            _ => None,
+        }
+    }
+
+    /// Borrow the dataplane mirror handle, if attached.
+    pub fn mirror(&self) -> Option<&Arc<SnapshotMirror>> {
+        match self {
+            OutputTarget::Local { mirror, .. } => mirror.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Walk the local output root and pull any not-yet-recorded files
+    /// into the manifest accumulator AND submit them to the dataplane
+    /// mirror.
+    ///
+    /// This exists because the index builder
+    /// (`diskgraph-index::builder::ShardJob::run`) writes per-shard
+    /// `offsets.bin`, `edges.bin`, and `build_stats.json` directly via
+    /// `File::create` — it lives in a sibling crate that has no
+    /// dependency on `OutputTarget`, so it cannot route through
+    /// [`Self::write_bytes`] / [`Self::sink`]. Without this sweep, those
+    /// files exist locally after `build_index` but are invisible to
+    /// `_MANIFEST.json` and never submitted to the mirror, breaking the
+    /// L1 ⇒ L2 invariant: a successful ingest produces a snapshot that
+    /// passes `verify_snapshot_integrity` (manifest doesn't list the
+    /// files), is openable from L1 (files are on local disk), but is
+    /// NOT openable from L2 after restore (mirror is missing the
+    /// runtime-required shard files). This is the exact failure
+    /// singlehost hit on AMI stop/start: NVMe wiped, restore from L2
+    /// pulled an incomplete tree, gen_tt errored opening the first
+    /// shard.
+    ///
+    /// Call once, after `build_index` and `finalize_metadata`, before
+    /// `snapshot_mirror::finalize_snapshot`. Mirror submissions are
+    /// drained inside `finalize_snapshot::wait_all_pending` before the
+    /// `_MANIFEST.json`/`_SUCCESS` writes, preserving `_SUCCESS`-last
+    /// atomicity on both backends.
+    ///
+    /// Files under `_tmp/` (deleted by `cleanup_temp`) are skipped so
+    /// they cannot enter the manifest. No-op for non-`Local` targets.
+    pub fn reconcile_unrecorded_files(&self) -> Result<()> {
+        let OutputTarget::Local {
+            root,
+            mirror,
+            manifest,
+        } = self
+        else {
+            return Ok(());
+        };
+        let known = manifest.known_paths();
+        let mut to_submit: Vec<(String, PathBuf, u64)> = Vec::new();
+        // Walk recursively. We collect (rel_path, local_path, size)
+        // tuples first then mutate, so a partial walk failure doesn't
+        // leave the manifest half-updated. Sizes come from the file's
+        // metadata — we don't need to read the bytes here; the mirror
+        // submit streams from disk.
+        walk_local_files(root, root, &known, &mut to_submit)?;
+        for (rel, local_path, size) in to_submit {
+            manifest.record(&rel, size);
+            if let Some(m) = mirror {
+                m.submit_from_path(&rel, &local_path).with_context(|| {
+                    format!("dataplane mirror submit (reconciled) {rel}")
+                })?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn write_bytes(&self, name: &str, bytes: Vec<u8>) -> Result<()> {
         match self {
-            OutputTarget::Local { root } => {
+            OutputTarget::Local {
+                root,
+                mirror,
+                manifest,
+            } => {
                 let path = root.join(name);
                 if let Some(parent) = path.parent() {
                     fs::create_dir_all(parent)?;
                 }
-                fs::write(&path, bytes).with_context(|| format!("write {}", path.display()))?;
+                let len = bytes.len() as u64;
+                // Local-first: durable on SSD before we offer any signal
+                // (mirror submit, manifest record) that the file is present.
+                fs::write(&path, &bytes).with_context(|| format!("write {}", path.display()))?;
+                // ``_tmp/*`` files are deleted by ``cleanup_temp`` before
+                // ingest returns, so they must not enter the manifest or
+                // the dataplane mirror — otherwise verify_snapshot_integrity
+                // (run post-ingest) would flag them as missing locally.
+                if !is_temp_rel_path(name) {
+                    manifest.record(name, len);
+                    if let Some(m) = mirror {
+                        // Move the (already-written) Vec into the upload
+                        // queue. CloudTransfer owns the buffer for the
+                        // duration of the upload — no re-read from disk.
+                        m.submit(name, bytes)
+                            .with_context(|| format!("dataplane mirror submit {}", name))?;
+                    }
+                }
             }
             OutputTarget::S3 {
                 store, rt, prefix, ..
@@ -390,9 +695,45 @@ impl OutputTarget {
 
     pub fn sink(&self, path: &Path) -> Result<OutputSink> {
         match self {
-            OutputTarget::Local { .. } => {
+            OutputTarget::Local {
+                root,
+                mirror,
+                manifest,
+            } => {
                 let file = fs::File::create(path)?;
-                Ok(OutputSink::Local(file))
+                // For tee'd sinks we need the per-snapshot relative path so
+                // the upload destination + manifest entry compose correctly.
+                // Callers historically pass an absolute (root-prefixed)
+                // path; recover the rel by stripping `root`.
+                let rel_path = path.strip_prefix(root).map(|p| {
+                    p.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/")
+                });
+                let tee = match rel_path {
+                    // ``_tmp/*`` sinks bypass tee entirely — those files are
+                    // deleted by ``cleanup_temp`` before ingest returns, so
+                    // including them in the manifest or mirroring them to
+                    // the dataplane would either fail verification (post-
+                    // cleanup) or waste upload bandwidth.
+                    Ok(rel) if is_temp_rel_path(&rel) => None,
+                    Ok(rel) => Some(LocalSinkTee {
+                        rel_path: rel,
+                        // The local file IS the upload source: after
+                        // `OutputSink::finish` flushes, `finalize`
+                        // hands this path to
+                        // `SnapshotMirror::submit_from_path` which
+                        // reads chunks on demand. No in-memory
+                        // duplication of the written bytes.
+                        local_path: path.to_path_buf(),
+                        bytes_written: 0,
+                        mirror: mirror.clone(),
+                        manifest: Arc::clone(manifest),
+                    }),
+                    // Sink path outside `root` — should not happen for the
+                    // `target.join()` -> `target.sink()` pattern callers
+                    // use, but stay safe and skip tee instead of panicking.
+                    Err(_) => None,
+                };
+                Ok(OutputSink::Local { file, tee })
             }
             OutputTarget::S3 {
                 store,
@@ -429,14 +770,73 @@ impl OutputTarget {
 }
 
 pub enum OutputSink {
-    Local(fs::File),
+    /// Local-filesystem sink, with optional `tee` channel that records a
+    /// manifest entry on `finish` and (when a dataplane mirror is
+    /// configured) submits the file's contents for upload after the local
+    /// flush completes.
+    Local {
+        file: fs::File,
+        tee: Option<LocalSinkTee>,
+    },
     Multipart(MultipartSink),
+}
+
+/// Per-sink tee state. See [`OutputTarget::sink`] for construction.
+///
+/// Does not buffer written bytes. The local file IS the buffer: after
+/// [`OutputSink::finish`] flushes it, [`Self::finalize`] hands the
+/// just-flushed file path to [`SnapshotMirror::submit_from_path`],
+/// which streams chunks from disk to the upload backend bounded by
+/// `part_size × inflight_parts` rather than file size. `bytes_written`
+/// is tracked because the manifest needs the size — we record it from
+/// the running counter rather than re-stating the file (the running
+/// counter is already exact and avoids a syscall).
+pub struct LocalSinkTee {
+    rel_path: String,
+    /// Absolute path to the local file. The mirror submit reads from
+    /// here after the file is flushed.
+    local_path: PathBuf,
+    bytes_written: u64,
+    mirror: Option<Arc<SnapshotMirror>>,
+    manifest: Arc<ManifestAccumulator>,
+}
+
+impl LocalSinkTee {
+    fn record_write(&mut self, data: &[u8]) {
+        self.bytes_written += data.len() as u64;
+    }
+
+    /// Called after the local file has been flushed: records the manifest
+    /// entry and (if mirror) hands the file off for streaming upload.
+    /// Submit failures bubble up so ingest fails the activity rather than
+    /// silently producing a half-mirrored snapshot.
+    fn finalize(self) -> Result<()> {
+        let LocalSinkTee {
+            rel_path,
+            local_path,
+            bytes_written,
+            mirror,
+            manifest,
+        } = self;
+        manifest.record(&rel_path, bytes_written);
+        if let Some(m) = mirror {
+            m.submit_from_path(&rel_path, &local_path)
+                .with_context(|| format!("dataplane mirror submit {}", rel_path))?;
+        }
+        Ok(())
+    }
 }
 
 impl OutputSink {
     pub fn finish(self) -> io::Result<()> {
         match self {
-            OutputSink::Local(mut file) => file.flush(),
+            OutputSink::Local { mut file, tee } => {
+                file.flush()?;
+                if let Some(tee) = tee {
+                    tee.finalize().map_err(io::Error::other)?;
+                }
+                Ok(())
+            }
             OutputSink::Multipart(sink) => sink.finish(),
         }
     }
@@ -445,14 +845,22 @@ impl OutputSink {
 impl Write for OutputSink {
     fn write(&mut self, data: &[u8]) -> io::Result<usize> {
         match self {
-            OutputSink::Local(file) => file.write(data),
+            OutputSink::Local { file, tee } => {
+                let n = file.write(data)?;
+                if let Some(tee) = tee {
+                    // Tee tracks exactly the bytes accepted by the file —
+                    // partial-write semantics propagate to the buffer.
+                    tee.record_write(&data[..n]);
+                }
+                Ok(n)
+            }
             OutputSink::Multipart(sink) => sink.write(data),
         }
     }
 
     fn flush(&mut self) -> io::Result<()> {
         match self {
-            OutputSink::Local(file) => file.flush(),
+            OutputSink::Local { file, .. } => file.flush(),
             OutputSink::Multipart(sink) => sink.flush(),
         }
     }
@@ -539,4 +947,376 @@ impl Drop for MultipartSink {
 
 fn to_io_err(err: object_store::Error) -> io::Error {
     io::Error::other(err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use diskgraph_fs::CloudTransfer;
+
+    /// Locked-down dataplane scheme matrix: anything that isn't `s3://`,
+    /// `gs://`, `az://`, or a bare local path must be rejected at the
+    /// boundary with a message that names the scheme. Pre-this-check,
+    /// `dbfs://...` would silently fall through to the local-fs branch
+    /// and `create_dir_all("dbfs:")` — silently writing the snapshot to
+    /// a literal `dbfs:` directory in the cwd. Any future regression
+    /// along that fault line trips this test immediately.
+    ///
+    /// Note: `/Volumes/...` (Databricks Unity Catalog volumes) is a
+    /// legitimate POSIX absolute path shape and we cannot reliably
+    /// disambiguate it from a real local mount without runtime context.
+    /// Treated as local on purpose; documented in
+    /// `build_object_store_accepts_legitimate_local_paths`.
+    #[test]
+    fn build_object_store_rejects_unsupported_schemes() {
+        let cases: &[(&str, &str)] = &[
+            ("dbfs://path/to/snapshot", "DBFS"),
+            ("dbfs:/path/to/snapshot", "DBFS"),
+            ("DBFS://uppercase", "DBFS"),
+            ("snowflake://stage/prefix", "Snowflake"),
+            ("@db.schema.stage/path", "Snowflake"),
+            ("file:///abs/path", "file://"),
+            ("hdfs://nn:8020/path", "HDFS"),
+            ("ftp://server/path", "URL scheme"),
+        ];
+        for (path, expected_substr) in cases {
+            let err = build_object_store_for_path(path)
+                .expect_err(&format!("expected rejection for {path}"));
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains(expected_substr),
+                "rejection message for {path:?} should mention {expected_substr:?}; got: {msg}",
+            );
+        }
+    }
+
+    /// Companion to the rejection test: paths that DO look like
+    /// legitimate local filesystem destinations must continue to work,
+    /// including ones that incidentally have suspicious names. Uses
+    /// `tempdir` so we don't pollute cwd.
+    #[test]
+    fn build_object_store_accepts_legitimate_local_paths() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        // Plain absolute path
+        let abs = tmp.path().join("plain");
+        let _ = build_object_store_for_path(abs.to_str().unwrap())?;
+        // Path with a `:` that ISN'T a scheme separator (no `://`)
+        let weird = tmp.path().join("name_with:colon");
+        let _ = build_object_store_for_path(weird.to_str().unwrap())?;
+        // POSIX `/Volumes/...` is technically also a UC Volume path on
+        // Databricks but we can't disambiguate from a real local mount;
+        // treated as local on purpose. Document via test.
+        let volumes_like = tmp.path().join("Volumes/catalog/schema/vol");
+        let _ = build_object_store_for_path(volumes_like.to_str().unwrap())?;
+        Ok(())
+    }
+
+    /// Round-trip an upload + download against a local-filesystem
+    /// [`ObjectStore`]. Same `CloudTransfer` API path as the cloud
+    /// branch, exercising that the dataplane mirror works uniformly
+    /// across backends — singlehost / dev / CI runs against this path.
+    #[test]
+    fn local_object_store_round_trip() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let prefix = tmp.path().to_str().expect("tmp path utf8");
+        let store = build_object_store_for_path(prefix)?;
+        let dest_dir = object_path_for_path(prefix)?;
+        assert_eq!(dest_dir.as_ref(), "", "local dest_dir should be empty");
+
+        let transfer = CloudTransfer::new(store, CloudTransferConfig::from_env());
+        let rel = ObjectPath::from("nested/file.bin");
+        let payload: &[u8] = b"hello dataplane mirror";
+        let mut buf = transfer.acquire_buffer();
+        buf.write_all(payload)?;
+        transfer.submit_upload(rel.clone(), buf.into_inner())?.wait()?;
+
+        // Verify on-disk side: file landed at <prefix>/<rel>.
+        let on_disk = tmp.path().join("nested").join("file.bin");
+        assert_eq!(std::fs::read(&on_disk)?, payload);
+
+        // And round-trips back through submit_download.
+        let pooled = transfer.submit_download(rel)?.wait()?;
+        assert_eq!(pooled.as_slice(), payload);
+        Ok(())
+    }
+
+    #[test]
+    fn local_object_store_creates_missing_prefix() -> Result<()> {
+        // The store builder is responsible for `mkdir -p` on the prefix —
+        // singlehost ingest may target a fresh dataplane dir on first run.
+        let tmp = tempfile::tempdir()?;
+        let nested = tmp.path().join("level-a").join("level-b");
+        let prefix = nested.to_str().expect("tmp path utf8");
+        assert!(!nested.exists(), "precondition: nested dir absent");
+        let _store = build_object_store_for_path(prefix)?;
+        assert!(nested.is_dir(), "builder must create the prefix dir");
+        Ok(())
+    }
+
+    /// End-to-end integration of the dataplane mirror through
+    /// [`OutputTarget`]: every output `write_bytes` and every tee'd
+    /// sink produces both a local file and an upload, end-of-ingest
+    /// finalize writes `_MANIFEST.json` + `_SUCCESS` last on both
+    /// sides, and `verify_snapshot_integrity` passes against the
+    /// resulting local snapshot.
+    #[test]
+    fn output_target_mirror_round_trip() -> Result<()> {
+        use crate::snapshot_mirror::{finalize_snapshot, verify_snapshot_integrity, MANIFEST_FILENAME};
+        use crate::success_marker::SUCCESS_MARKER_FILENAME;
+        use std::io::Write as _;
+
+        let local_root = tempfile::tempdir()?;
+        let dataplane_root = tempfile::tempdir()?;
+        let target = std::sync::Arc::new(OutputTarget::parse_with_dataplane(
+            local_root.path().to_str().unwrap(),
+            Dest::Local,
+            Some(dataplane_root.path().to_str().unwrap()),
+        )?);
+
+        // Simulate the two write paths ingest uses: small JSON via
+        // write_bytes, large streaming via sink.
+        target.write_bytes("ingest_stats.json", b"{\"stat\":1}".to_vec())?;
+        target.write_bytes(
+            "kumo_col_stats/col_stats_full/customers.json",
+            b"{\"col\":\"...\"}".to_vec(),
+        )?;
+        let sink_rel = "binary_index.bin";
+        let sink_path = target.join(sink_rel);
+        if let Some(parent) = sink_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut sink = target.sink(&sink_path)?;
+        sink.write_all(&[7u8; 1024])?;
+        sink.write_all(&[8u8; 256])?;
+        sink.finish()?;
+
+        // Finalize: drain pending uploads, write manifest + marker.
+        let manifest = target.manifest().expect("local target carries manifest");
+        let mirror = target.mirror();
+        let result = finalize_snapshot(
+            local_root.path(),
+            mirror.map(|m| m.as_ref()),
+            manifest,
+            "{\"ok\":true}",
+        )?;
+
+        // Manifest sees all three writes (sink contributes one entry of
+        // size 1024+256).
+        assert_eq!(result.manifest.files.len(), 3);
+        let by_path: std::collections::HashMap<_, _> = result
+            .manifest
+            .files
+            .iter()
+            .map(|e| (e.rel_path.clone(), e.size_bytes))
+            .collect();
+        assert_eq!(by_path.get("ingest_stats.json").copied(), Some(10));
+        assert_eq!(by_path.get(sink_rel).copied(), Some(1280));
+
+        // Dataplane mirror has every file, manifest, and marker.
+        for rel in [
+            "ingest_stats.json",
+            "kumo_col_stats/col_stats_full/customers.json",
+            sink_rel,
+            MANIFEST_FILENAME,
+            SUCCESS_MARKER_FILENAME,
+        ] {
+            let dp = dataplane_root.path().join(rel);
+            assert!(dp.exists(), "{} missing on dataplane", rel);
+        }
+
+        // Local snapshot passes integrity verification.
+        verify_snapshot_integrity(local_root.path())
+            .map_err(|e| anyhow::anyhow!("verify failed: {e}"))?;
+        Ok(())
+    }
+
+    #[test]
+    fn temp_path_filter_recognizes_temp_tree() {
+        // `_tmp` itself and anything under it.
+        assert!(is_temp_rel_path("_tmp"));
+        assert!(is_temp_rel_path("_tmp/foo.bin"));
+        assert!(is_temp_rel_path("_tmp/nodes/users/shard-00000/pkey.bin"));
+        // Look-alikes must NOT be filtered.
+        assert!(!is_temp_rel_path("_tmpfile.json"));
+        assert!(!is_temp_rel_path("not_tmp/foo"));
+        assert!(!is_temp_rel_path("nodes/_tmp_in_name.bin"));
+        assert!(!is_temp_rel_path(""));
+        assert!(!is_temp_rel_path("ingest_stats.json"));
+    }
+
+    /// Mirror integration regression: `_tmp/*` writes flow through
+    /// `OutputTarget` (because `target.write_bytes` and `target.sink` are
+    /// the only chokepoints) but must not be recorded in the manifest or
+    /// uploaded — the temp tree is cleaned up by `cleanup_temp` before
+    /// ingest returns. Locks the filter on both code paths.
+    #[test]
+    fn output_target_skips_temp_paths_from_manifest_and_mirror() -> Result<()> {
+        use std::io::Write as _;
+
+        let local_root = tempfile::tempdir()?;
+        let dataplane_root = tempfile::tempdir()?;
+        let target = std::sync::Arc::new(OutputTarget::parse_with_dataplane(
+            local_root.path().to_str().unwrap(),
+            Dest::Local,
+            Some(dataplane_root.path().to_str().unwrap()),
+        )?);
+
+        // write_bytes path: temp + non-temp.
+        target.write_bytes("_tmp/scratch.json", b"abc".to_vec())?;
+        target.write_bytes("col_stats.json", b"{}".to_vec())?;
+        // sink path: temp + non-temp.
+        for rel in ["_tmp/nodes/users/pkey.bin", "nodes/users/real.bin"] {
+            let path = target.join(rel);
+            if let Some(p) = path.parent() {
+                fs::create_dir_all(p)?;
+            }
+            let mut sink = target.sink(&path)?;
+            sink.write_all(&[7u8; 64])?;
+            sink.finish()?;
+        }
+
+        // Manifest captured non-temp only.
+        let manifest_paths: std::collections::BTreeSet<String> = target
+            .manifest()
+            .unwrap()
+            .take()
+            .into_iter()
+            .map(|e| e.rel_path)
+            .collect();
+        assert!(manifest_paths.contains("col_stats.json"));
+        assert!(manifest_paths.contains("nodes/users/real.bin"));
+        assert!(!manifest_paths.iter().any(|p| p.starts_with("_tmp")));
+
+        // Mirror has the non-temp uploads waiting; submit a sentinel and
+        // drain them all to confirm no temp upload is in flight.
+        if let Some(m) = target.mirror() {
+            m.wait_all_pending()?;
+        }
+        // Files on dataplane: only non-temp.
+        assert!(dataplane_root.path().join("col_stats.json").exists());
+        assert!(dataplane_root.path().join("nodes/users/real.bin").exists());
+        assert!(!dataplane_root.path().join("_tmp").exists());
+        assert!(!dataplane_root
+            .path()
+            .join("_tmp/nodes/users/pkey.bin")
+            .exists());
+
+        // Local always has every write — temp or not — because temp files
+        // are real ingest intermediates that get cleaned up later.
+        assert!(local_root.path().join("_tmp/scratch.json").exists());
+        assert!(local_root
+            .path()
+            .join("_tmp/nodes/users/pkey.bin")
+            .exists());
+        assert!(local_root.path().join("col_stats.json").exists());
+        assert!(local_root.path().join("nodes/users/real.bin").exists());
+        Ok(())
+    }
+
+    /// Without a mirror, `OutputTarget` still records the manifest so
+    /// `verify_snapshot_integrity` can run on local-only ingests.
+    #[test]
+    fn output_target_local_only_finalize_passes_verify() -> Result<()> {
+        use crate::snapshot_mirror::{finalize_snapshot, verify_snapshot_integrity};
+
+        let local_root = tempfile::tempdir()?;
+        let target = std::sync::Arc::new(OutputTarget::parse(
+            local_root.path().to_str().unwrap(),
+            Dest::Local,
+        )?);
+        target.write_bytes("a.json", b"hello".to_vec())?;
+        let manifest = target.manifest().unwrap();
+        finalize_snapshot(local_root.path(), None, manifest, "{}")?;
+        verify_snapshot_integrity(local_root.path())
+            .map_err(|e| anyhow::anyhow!("verify failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Regression: deeply-nested sink paths (the shape ingest uses for
+    /// every per-shard output, e.g.
+    /// `nodes/<table>/pk_hash-NNNNN.bin`) must produce a complete local
+    /// file AND a manifest entry — not just the dataplane upload. This
+    /// is the post-condition Block E hit when the local snapshot was
+    /// missing 31 `nodes/*` files after a "successful" atomic-marker
+    /// ingest. Asserts both the local bytes are durable AND
+    /// `verify_snapshot_integrity` accepts the local root.
+    #[test]
+    fn output_target_nested_sink_lands_locally_with_mirror() -> Result<()> {
+        use crate::snapshot_mirror::{finalize_snapshot, verify_snapshot_integrity};
+        use std::io::Write as _;
+
+        let local_root = tempfile::tempdir()?;
+        let dataplane_root = tempfile::tempdir()?;
+        let target = std::sync::Arc::new(OutputTarget::parse_with_dataplane(
+            local_root.path().to_str().unwrap(),
+            Dest::Local,
+            Some(dataplane_root.path().to_str().unwrap()),
+        )?);
+
+        // Mirrors the shape `write_pk_hash_and_data` produces.
+        let nested_rels = [
+            "nodes/customers/pk_hash-00000.bin",
+            "nodes/customers/pk_hash-00000.meta.json",
+            "nodes/customers/pk_data-00000.bin",
+            "nodes/customers/node_data.ctx",
+            "nodes/orders/pk_hash-00001.bin",
+        ];
+        let payload: Vec<u8> = (0u8..=200).cycle().take(2048).collect();
+        for rel in &nested_rels {
+            let path = target.join(rel);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            // Every code path a real ingest uses goes through `target.sink`
+            // (via BufWriter) for the binary files and `target.write_bytes`
+            // for the small JSON ones. Cover both shapes here.
+            if rel.ends_with(".meta.json") {
+                target.write_bytes(rel, payload.clone())?;
+            } else {
+                let mut sink = target.sink(&path)?;
+                sink.write_all(&payload)?;
+                sink.finish()?;
+            }
+        }
+
+        // Finalize, then verify.
+        let manifest = target.manifest().expect("local target carries manifest");
+        let mirror = target.mirror();
+        finalize_snapshot(
+            local_root.path(),
+            mirror.map(|m| m.as_ref()),
+            manifest,
+            "{\"ok\":true}",
+        )?;
+
+        // Every nested file must be present LOCALLY (the bug: they were
+        // only on the dataplane) AND have the expected size.
+        for rel in &nested_rels {
+            let local = local_root.path().join(rel);
+            let dp = dataplane_root.path().join(rel);
+            let local_meta = fs::metadata(&local)
+                .with_context(|| format!("local file missing: {}", local.display()))?;
+            let dp_meta = fs::metadata(&dp)
+                .with_context(|| format!("dataplane file missing: {}", dp.display()))?;
+            assert_eq!(
+                local_meta.len(),
+                payload.len() as u64,
+                "local file size wrong for {rel}"
+            );
+            assert_eq!(
+                dp_meta.len(),
+                payload.len() as u64,
+                "dataplane file size wrong for {rel}"
+            );
+        }
+
+        // The end-to-end integrity invariant: caller can verify the
+        // local root immediately, with no extra copy from the dataplane.
+        verify_snapshot_integrity(local_root.path())
+            .map_err(|e| anyhow::anyhow!("verify against local root failed: {e}"))?;
+        // Same invariant holds on the dataplane side independently.
+        verify_snapshot_integrity(dataplane_root.path())
+            .map_err(|e| anyhow::anyhow!("verify against dataplane failed: {e}"))?;
+        Ok(())
+    }
 }

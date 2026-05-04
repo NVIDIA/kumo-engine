@@ -16,6 +16,7 @@ from ._c import (
     DiskgraphDataError,
     DiskgraphConfigError,
     DiskgraphSystemError,
+    DiskgraphCorruptionError,
     DiskManager,
     estimate_ingest_size,
     read_col_stats,
@@ -24,6 +25,7 @@ from ._c import (
     read_success_marker,
     write_success_marker,
     touch_success_marker,
+    verify_snapshot_integrity,
 )
 
 # Lazy imports for modules that have external dependencies (kumoapi)
@@ -80,6 +82,7 @@ __all__ = [
     "DiskgraphDataError",
     "DiskgraphConfigError",
     "DiskgraphSystemError",
+    "DiskgraphCorruptionError",
     "DiskManager",
     "estimate_ingest_size",
     "read_col_stats",
@@ -88,6 +91,7 @@ __all__ = [
     "read_success_marker",
     "write_success_marker",
     "touch_success_marker",
+    "verify_snapshot_integrity",
     "DiskGraphPlanCompiler",
     "SplitSpec",
     "DiskgraphConfigConverter",

@@ -16,6 +16,12 @@ use pyo3::types::{PyDict, PyList, PyString, PyTuple};
 create_exception!(diskgraph, DiskgraphDataError, PyException);
 create_exception!(diskgraph, DiskgraphConfigError, PyException);
 create_exception!(diskgraph, DiskgraphSystemError, PyException);
+// Distinct from the Data/Config/System siblings: corruption is unexpected
+// and warrants alerting + falling through to a fresh ingest at the
+// caller's level. Raised by ``verify_snapshot_integrity`` after a
+// dataplane→local copy when the local snapshot does not match its
+// ``_MANIFEST.json``.
+create_exception!(diskgraph, DiskgraphCorruptionError, PyException);
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -909,20 +915,38 @@ pub fn convert_kumo_config(
 }
 
 #[pyfunction]
-#[pyo3(signature = (config_json, output_dir, col_stats=true, cat_count_strategy="hybrid"))]
-#[tracing::instrument(level = "info", skip(py, config_json), fields(output_dir = %output_dir))]
+#[pyo3(signature = (
+    config_json,
+    output_dir,
+    col_stats=true,
+    cat_count_strategy="hybrid",
+    output_dataplane_dir=None,
+    success_marker_content=None,
+))]
+#[tracing::instrument(
+    level = "info",
+    skip(py, config_json, success_marker_content),
+    fields(
+        output_dir = %output_dir,
+        dataplane = output_dataplane_dir.unwrap_or("(none)"),
+    )
+)]
 pub fn ingest(
     py: Python<'_>,
     config_json: &str,
     output_dir: &str,
     col_stats: bool,
     cat_count_strategy: &str,
+    output_dataplane_dir: Option<&str>,
+    success_marker_content: Option<&str>,
 ) -> PyResult<String> {
     let start_time = std::time::Instant::now();
     info!(
         output_dir = %output_dir,
         col_stats,
         cat_count_strategy = %cat_count_strategy,
+        dataplane = %output_dataplane_dir.unwrap_or("(none)"),
+        marker = success_marker_content.is_some(),
         "Pybind ingest started"
     );
     let source: diskgraph_ingest::GraphConfig = serde_json::from_str(config_json)
@@ -951,6 +975,8 @@ pub fn ingest(
     };
 
     let output_dir = output_dir.to_string();
+    let output_dataplane_dir = output_dataplane_dir.map(|s| s.to_string());
+    let success_marker_content = success_marker_content.map(|s| s.to_string());
 
     // Release the GIL during ingest — this is a long-running CPU/IO operation
     // and holding the GIL would block heartbeats and other activities in the
@@ -962,6 +988,8 @@ pub fn ingest(
             &output_dir,
             diskgraph_ingest::Dest::Local,
             options,
+            output_dataplane_dir.as_deref(),
+            success_marker_content.as_deref(),
         )
     });
 
@@ -1064,6 +1092,33 @@ fn estimate_ingest_size(_py: Python<'_>, config_json: &str) -> PyResult<u64> {
     Ok(total)
 }
 
+/// Verify a local snapshot directory matches its ``_MANIFEST.json``.
+///
+/// Called by the Python ``DiskgraphService`` after a dataplane→local
+/// copy completes (and as a defense-in-depth check on the SSD-cached
+/// path) to catch lifecycle-mid-deletion races, partial copy failures,
+/// and other corruption classes that would otherwise produce a silently
+/// broken snapshot.
+///
+/// Raises [`DiskgraphCorruptionError`] (a distinct exception class so
+/// callers can branch on it for alerting + fallback to fresh ingest)
+/// when:
+///   - ``_SUCCESS`` is missing,
+///   - ``_MANIFEST.json`` is missing or unparseable,
+///   - the manifest's schema version is unsupported,
+///   - any manifest-listed file is missing locally, or
+///   - any manifest-listed file's size does not match the manifest.
+///
+/// Returns ``None`` on success — no payload, since the caller already
+/// has the path it just verified.
+#[pyfunction]
+#[tracing::instrument(level = "debug", skip(py))]
+fn verify_snapshot_integrity(py: Python<'_>, output_dir: &str) -> PyResult<()> {
+    let output_dir = std::path::PathBuf::from(output_dir);
+    py.detach(|| diskgraph_ingest::snapshot_mirror::verify_snapshot_integrity(&output_dir))
+        .map_err(|e| DiskgraphCorruptionError::new_err(e.to_string()))
+}
+
 #[pymodule]
 #[pyo3(name = "_c")]
 fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -1072,6 +1127,10 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("DiskgraphDataError", m.py().get_type::<DiskgraphDataError>())?;
     m.add("DiskgraphConfigError", m.py().get_type::<DiskgraphConfigError>())?;
     m.add("DiskgraphSystemError", m.py().get_type::<DiskgraphSystemError>())?;
+    m.add(
+        "DiskgraphCorruptionError",
+        m.py().get_type::<DiskgraphCorruptionError>(),
+    )?;
     m.add_function(wrap_pyfunction!(export_tt_artifacts, m)?)?;
     m.add_function(wrap_pyfunction!(convert_kumo_config, m)?)?;
     m.add_function(wrap_pyfunction!(ingest, m)?)?;
@@ -1084,6 +1143,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(success_marker::read_success_marker, m)?)?;
     m.add_function(wrap_pyfunction!(success_marker::write_success_marker, m)?)?;
     m.add_function(wrap_pyfunction!(success_marker::touch_success_marker, m)?)?;
+    m.add_function(wrap_pyfunction!(verify_snapshot_integrity, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_export::read_col_stats, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_export::read_edge_stats, m)?)?;
     m.add_class::<SamplerEngine>()?;

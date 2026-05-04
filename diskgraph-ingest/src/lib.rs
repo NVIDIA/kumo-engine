@@ -14,6 +14,7 @@ pub mod index_metadata;
 mod mapping;
 pub mod progress;
 pub mod scratch;
+pub mod snapshot_mirror;
 pub mod stats;
 pub mod stats_publish;
 pub mod success_marker;
@@ -137,17 +138,60 @@ pub fn ingest_with_stats(
     let base_dir = graph_config_path
         .parent()
         .ok_or_else(|| anyhow!("missing parent for {}", graph_config_path.display()))?;
-    ingest_with_stats_from_source(source, Some(base_dir), output, dest, options)
+    ingest_with_stats_from_source(source, Some(base_dir), output, dest, options, None, None)
 }
 
+/// Run ingest end-to-end.
+///
+/// `output_dataplane_dir` (optional) is the fully-resolved dataplane
+/// destination — cloud (`s3://…`) or local (e.g., `/mnt/ebs/…`). When
+/// set, every output file is streamed to the dataplane during ingest
+/// via [`SnapshotMirror`], `_MANIFEST.json` is written + uploaded once
+/// every other file is durable, then `_SUCCESS` is written + uploaded
+/// strictly last. The path layout is owned by the caller (the kumo
+/// Python `DiskgraphService._dataplane_path`); Rust treats it as
+/// opaque.
+///
+/// `success_marker_content` (optional) is the JSON payload Python's
+/// `success_marker.write_diskgraph_success_marker` builds (the
+/// `DiskgraphIngestResult` shape). When set, ingest writes it as the
+/// final step both locally (atomic via tmp+rename) and on the
+/// dataplane (if mirroring). When `None`, ingest skips the marker
+/// write — preserving the legacy behavior where the caller writes the
+/// marker out-of-band via `success_marker::write_success_marker` after
+/// ingest returns.
 pub fn ingest_with_stats_from_source(
     mut source: GraphConfig,
     base_dir: Option<&Path>,
     output: &str,
     dest: Dest,
     options: IngestOptions,
+    output_dataplane_dir: Option<&str>,
+    success_marker_content: Option<&str>,
 ) -> Result<(DatasetMetadata, IngestStats)> {
     let wall_start = std::time::Instant::now();
+    // Reject the markerless-mirror config at the API boundary.
+    // `output_dataplane_dir.is_some() + success_marker_content.is_none()`
+    // would produce a dataplane copy with data files but no
+    // `_MANIFEST.json` and no `_SUCCESS` (those are written by
+    // `finalize_snapshot`, which only runs when the marker payload is
+    // supplied). The result is unverifiable by `verify_snapshot_integrity`
+    // and unrestorable by the kumo-side restore path that keys off
+    // `_SUCCESS`. There is no production caller for this shape — both
+    // pybind kwargs are independent only for legacy compatibility.
+    // Failing loud at the API boundary turns "silently produces a
+    // useless dataplane copy" into "ingest aborts with a clear
+    // message" before any S3 bytes are written.
+    if output_dataplane_dir.is_some() && success_marker_content.is_none() {
+        return Err(anyhow!(
+            "output_dataplane_dir set without success_marker_content: \
+             this would write data files to the dataplane but skip \
+             `_MANIFEST.json` and `_SUCCESS`, producing a copy that \
+             cannot be verified or restored. Either supply \
+             `success_marker_content` (atomic-marker mode) or drop \
+             `output_dataplane_dir` (legacy local-only ingest)."
+        ));
+    }
     tracing::debug!(
         dataset_name = %source.dataset_name,
         tables = source.tables.len(),
@@ -191,12 +235,16 @@ pub fn ingest_with_stats_from_source(
     // FK columns keep their original ingested_dtype for rowpack storage.
     // FkEdgeTarget (built in IngestContext::new) handles edge key extraction.
 
-    let target = std::sync::Arc::new(OutputTarget::parse(output, dest)?);
+    let target = std::sync::Arc::new(OutputTarget::parse_with_dataplane(
+        output,
+        dest,
+        output_dataplane_dir,
+    )?);
     if !matches!(&*target, OutputTarget::Local { .. }) {
         return Err(anyhow!("index build requires local output"));
     }
     target.prepare()?;
-    if let OutputTarget::Local { root } = &*target {
+    if let OutputTarget::Local { root, .. } = &*target {
         // Log disk space before ingest as a pre-flight warning
         log_disk_space(root);
 
@@ -207,12 +255,16 @@ pub fn ingest_with_stats_from_source(
     }
 
     // CleanupGuard: if ingest fails or panics, remove partial output
-    let cleanup_guard = if let OutputTarget::Local { root } = &*target {
+    let cleanup_guard = if let OutputTarget::Local { root, .. } = &*target {
         Some(CleanupGuard::new(root.clone()))
     } else {
         None
     };
 
+    // Keep a clone of the target Arc so the post-ingest finalize step
+    // can reach the manifest/mirror after `ctx` has consumed its own
+    // clone. Cloning an `Arc` is cheap (refcount bump).
+    let target_for_finalize = std::sync::Arc::clone(&target);
     let mut ctx = IngestContext::new(source, target, options, output)?;
     let profile_dir = ctx.profile_dir.clone();
     if let Some(profile_dir) = &profile_dir {
@@ -298,7 +350,7 @@ pub fn ingest_with_stats_from_source(
     ctx.set_peak_stage(Some(5));
     let finalize_start = std::time::Instant::now();
     let index_metadata = ctx.finalize_metadata(index_metadata)?;
-    if let OutputTarget::Local { root } = &*ctx.target {
+    if let OutputTarget::Local { root, .. } = &*ctx.target {
         let nodes_root = root.join(TEMP_DIR_NAME).join("nodes");
         if nodes_root.exists() {
             ctx.temp_node_data_bytes = sum_dir_bytes(&nodes_root).unwrap_or(0);
@@ -320,7 +372,7 @@ pub fn ingest_with_stats_from_source(
     let wall_time = wall_start.elapsed();
     let bytes_read = sum_input_bytes(&ctx.source);
     let bytes_written = match &*ctx.target {
-        OutputTarget::Local { root } => sum_dir_bytes(root).unwrap_or(0),
+        OutputTarget::Local { root, .. } => sum_dir_bytes(root).unwrap_or(0),
         _ => 0,
     };
     let perf = PerfStats {
@@ -415,7 +467,53 @@ pub fn ingest_with_stats_from_source(
         "Ingest run finished"
     );
 
-    // Ingest succeeded — disarm the cleanup guard so output is kept
+    // Ingest succeeded — drain pending dataplane uploads (if any) and
+    // write the manifest + success markers. This must happen BEFORE the
+    // cleanup guard is disarmed so any failure here triggers cleanup of
+    // the partial output (no half-finalized snapshot lingers locally).
+    //
+    // The "wipe L1 on L2 upload failure" behavior is INTENTIONAL. The
+    // diskgraph pool's storage model requires the invariant ``L1 ⇒ L2``:
+    // an L1-only state would force every downstream consumer (eviction,
+    // restore, pool-state model) to track per-snapshot "L2 status" as an
+    // extra axis, fragmenting the storage layer. CloudTransfer's per-file
+    // retry absorbs transient blips; sustained S3 unavailability failing
+    // the whole ingest is correct — the pool cannot function without
+    // dataplane backup regardless. See ``snapshot_mirror::finalize_snapshot``
+    // for the full rationale.
+    if let Some(content) = success_marker_content {
+        // Pull in any files that were written outside `OutputTarget`
+        // (the per-shard `offsets.bin` / `edges.bin` / `build_stats.json`
+        // emitted by `diskgraph-index::builder`). Without this the
+        // manifest is missing those entries and the dataplane mirror
+        // never receives them, so a successful ingest produces a
+        // snapshot that's openable on L1 but un-openable on L2 after
+        // restore — the failure mode singlehost hit on AMI stop/start.
+        // Mirror submissions queued here are drained by
+        // `finalize_snapshot::wait_all_pending` below before the
+        // manifest + `_SUCCESS` writes, preserving `_SUCCESS`-last
+        // atomicity on both backends.
+        target_for_finalize
+            .reconcile_unrecorded_files()
+            .context("reconcile post-build files into manifest + mirror")?;
+        let root = require_local_output(&target_for_finalize)?.to_path_buf();
+        let manifest = target_for_finalize
+            .manifest()
+            .ok_or_else(|| anyhow!("local output target missing manifest accumulator"))?;
+        let mirror = target_for_finalize.mirror();
+        crate::snapshot_mirror::finalize_snapshot(
+            &root,
+            mirror.map(|m| m.as_ref()),
+            manifest,
+            content,
+        )
+        .context("finalize_snapshot at end of ingest")?;
+    }
+    // No `else if mirror without marker` branch: the markerless-mirror
+    // combo is rejected at the API boundary above, so the only way to
+    // reach here without a marker is also without a mirror — nothing
+    // to drain.
+
     if let Some(guard) = cleanup_guard {
         guard.disarm();
     }
@@ -2260,14 +2358,21 @@ impl IngestContext {
                 }
             }
             let mut root_map = serde_json::Map::new();
-            let kumo_stats_dir = root
-                .join(col_stats_export::COL_STATS_DIR)
-                .join(col_stats_export::COL_STATS_FULL);
-            let kumo_stats_min_dir = root
-                .join(col_stats_export::COL_STATS_DIR)
-                .join(col_stats_export::COL_STATS_MIN);
-            std::fs::create_dir_all(&kumo_stats_dir)?;
-            std::fs::create_dir_all(&kumo_stats_min_dir)?;
+            // All col-stats writes go through `self.target.write_bytes` so the
+            // dataplane mirror picks them up (each call records a manifest
+            // entry and submits the upload). The rel paths are forward-slash
+            // composed under ``kumo_col_stats/col_stats_{full,min}/`` to
+            // match the layout consumers expect.
+            let kumo_stats_full_rel = format!(
+                "{}/{}",
+                col_stats_export::COL_STATS_DIR,
+                col_stats_export::COL_STATS_FULL,
+            );
+            let kumo_stats_min_rel = format!(
+                "{}/{}",
+                col_stats_export::COL_STATS_DIR,
+                col_stats_export::COL_STATS_MIN,
+            );
             for table in &tables {
                 if let Some(mut stats) = table_col_stats.remove(&table.name) {
                     let col_names: Vec<String> =
@@ -2286,25 +2391,27 @@ impl IngestContext {
                     // Write per-table kumo-format stats (replaces Python bridge)
                     if let Some(dv) = &table.data_version {
                         let kumo_map = stats.to_kumo_json(&col_names, &ingested_types, tc, tss, dv);
-                        let kumo_json = serde_json::to_string(&kumo_map)?;
-                        std::fs::write(
-                            kumo_stats_dir.join(format!("{}.json", table.name)),
-                            &kumo_json,
+                        let kumo_json = serde_json::to_vec(&kumo_map)?;
+                        self.target.write_bytes(
+                            &format!("{}/{}.json", kumo_stats_full_rel, table.name),
+                            kumo_json,
                         )?;
                         let min_map = crate::col_stats::minify_kumo_stats(&kumo_map, 20);
-                        let min_json = serde_json::to_string(&min_map)?;
-                        std::fs::write(
-                            kumo_stats_min_dir.join(format!("{}.json", table.name)),
-                            &min_json,
+                        let min_json = serde_json::to_vec(&min_map)?;
+                        self.target.write_bytes(
+                            &format!("{}/{}.json", kumo_stats_min_rel, table.name),
+                            min_json,
                         )?;
                     }
                 }
             }
-            let json_str = serde_json::to_string_pretty(&serde_json::Value::Object(root_map))?;
-            let col_stats_path = root.join("col_stats.json");
-            std::fs::write(&col_stats_path, json_str)?;
-            eprintln!("wrote col_stats.json to {}", col_stats_path.display());
-            eprintln!("wrote kumo_col_stats to {}", kumo_stats_dir.display());
+            let json_bytes =
+                serde_json::to_vec_pretty(&serde_json::Value::Object(root_map))?;
+            self.target.write_bytes("col_stats.json", json_bytes)?;
+            eprintln!(
+                "wrote col_stats.json (and kumo_col_stats/) under {}",
+                root.display()
+            );
         }
         drop(node_senders);
         drop(edge_senders);
@@ -5337,7 +5444,7 @@ impl IngestContext {
     }
 
     fn cleanup_temp(&self) -> Result<()> {
-        if let OutputTarget::Local { root } = &*self.target {
+        if let OutputTarget::Local { root, .. } = &*self.target {
             let temp_root = root.join(TEMP_DIR_NAME);
             if temp_root.exists() {
                 // Synchronous parallel delete: collect top-level subdirs and
@@ -5378,7 +5485,7 @@ impl IngestContext {
     }
 
     fn cleanup_edge_stage(&self, dir: &str) -> Result<()> {
-        if let OutputTarget::Local { root } = &*self.target {
+        if let OutputTarget::Local { root, .. } = &*self.target {
             let stage_root = root.join(TEMP_DIR_NAME).join(dir);
             if stage_root.exists() {
                 std::fs::remove_dir_all(&stage_root)
@@ -5389,7 +5496,7 @@ impl IngestContext {
     }
 
     fn record_edge_stage_bytes(&mut self, dir: &str) -> Result<u64> {
-        if let OutputTarget::Local { root } = &*self.target {
+        if let OutputTarget::Local { root, .. } = &*self.target {
             let stage_root = root.join(TEMP_DIR_NAME).join(dir);
             if stage_root.exists() {
                 let bytes = sum_dir_bytes(&stage_root).unwrap_or(0);

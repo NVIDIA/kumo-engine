@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::fmt;
 use std::io::{self, Cursor, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -573,6 +574,58 @@ impl CloudTransfer {
         self.submit_upload(path, buffer)?.wait()
     }
 
+    /// Upload a local file via multipart, reading parts on demand from
+    /// disk so peak memory is bounded by `part_size × inflight_parts`
+    /// rather than by the file size.
+    ///
+    /// Functionally equivalent to `submit_upload(path, fs::read(src)?)`,
+    /// but never holds the full file in memory: each part is read into
+    /// a fresh `Vec<u8>` of `part_size` bytes via `pread` (positioned
+    /// read, concurrent-safe across part tasks), submitted as a
+    /// `put_part` payload, and dropped as the part completes. Retries
+    /// re-read from disk — on transient upload failure we don't keep
+    /// the file's bytes resident.
+    ///
+    /// Use this for any callers that have already produced the file on
+    /// local disk (`OutputSink::Local` post-flush, the post-build
+    /// reconciliation sweep, etc.). For files constructed in memory
+    /// and not yet on disk, prefer [`Self::submit_upload`] — paying for
+    /// a write+re-read cycle just to hand the bytes back to the upload
+    /// queue is silly.
+    pub fn submit_upload_from_path(
+        &self,
+        path: ObjectPath,
+        src_path: PathBuf,
+    ) -> Result<CloudTransferTicket> {
+        let path_str = path.to_string();
+        let (tx, rx) = oneshot::channel();
+        let job = UploadFromPathJob {
+            path,
+            src_path,
+            attempt: 0,
+            response: tx,
+        };
+        self.inner.stats.queued_jobs.fetch_add(1, Ordering::Relaxed);
+        if let Err(err) = self
+            .inner
+            .sender
+            .blocking_send(TransferJob::UploadFromPath(job))
+        {
+            // No buffer to release back to the pool — the job carries
+            // a path, not bytes. Just account for the dropped queue
+            // slot and surface the error.
+            let _ = err;
+            self.inner.stats.queued_jobs.fetch_sub(1, Ordering::Relaxed);
+            warn!(path = %path_str, "Upload-from-path queue rejected: transfer stopped");
+            return Err(anyhow!("cloud transfer stopped"));
+        }
+        info!(path = %path_str, "Upload-from-path job queued");
+        Ok(CloudTransferTicket {
+            result: None,
+            receiver: Some(rx),
+        })
+    }
+
     pub fn submit_download(&self, path: ObjectPath) -> Result<CloudTransferDownloadTicket> {
         let path_str = path.to_string();
         let (tx, rx) = oneshot::channel();
@@ -652,6 +705,7 @@ impl CloudTransfer {
 
 enum TransferJob {
     Upload(UploadJob),
+    UploadFromPath(UploadFromPathJob),
     Download(DownloadJob),
 }
 
@@ -659,7 +713,9 @@ impl TransferJob {
     fn into_upload(self) -> UploadJob {
         match self {
             TransferJob::Upload(job) => job,
-            TransferJob::Download(_) => panic!("unexpected download job"),
+            TransferJob::UploadFromPath(_) | TransferJob::Download(_) => {
+                panic!("unexpected non-in-memory-upload job")
+            }
         }
     }
 }
@@ -667,6 +723,16 @@ impl TransferJob {
 struct UploadJob {
     path: ObjectPath,
     buffer: Vec<u8>,
+    attempt: usize,
+    response: oneshot::Sender<Result<()>>,
+}
+
+/// Variant of [`UploadJob`] that streams bytes from a local file
+/// instead of holding them in memory. Each part is read on demand from
+/// `src_path`; retries re-read.
+struct UploadFromPathJob {
+    path: ObjectPath,
+    src_path: PathBuf,
     attempt: usize,
     response: oneshot::Sender<Result<()>>,
 }
@@ -680,6 +746,10 @@ struct DownloadJob {
 enum TransferResult {
     Upload {
         job: UploadJob,
+        result: Result<(), anyhow::Error>,
+    },
+    UploadFromPath {
+        job: UploadFromPathJob,
         result: Result<(), anyhow::Error>,
     },
     Download {
@@ -804,6 +874,27 @@ async fn upload_loop(
                             }
                         }
                     },
+                    TransferResult::UploadFromPath { mut job, result } => match result {
+                        Ok(()) => {
+                            info!(path = %job.path, attempt = job.attempt, src = %job.src_path.display(), "Upload (from path) completed");
+                            let _ = job.response.send(Ok(()));
+                        }
+                        Err(err) => {
+                            if let Ok(mut guard) = stats.last_error.lock() {
+                                *guard = Some(err.to_string());
+                            }
+                            stats.parts_errors.fetch_add(1, Ordering::Relaxed);
+                            job.attempt += 1;
+                            if job.attempt > config.max_file_retries {
+                                error!(path = %job.path, attempt = job.attempt, src = %job.src_path.display(), error = %err, "Upload (from path) failed after retries");
+                                let _ = job.response.send(Err(err));
+                            } else {
+                                warn!(path = %job.path, attempt = job.attempt, src = %job.src_path.display(), error = %err, "Upload (from path) failed; re-queueing retry");
+                                stats.queued_jobs.fetch_add(1, Ordering::Relaxed);
+                                retry_queue.push_back(TransferJob::UploadFromPath(job));
+                            }
+                        }
+                    },
                     TransferResult::Download { mut job, result } => match result {
                         Ok(buffer) => {
                             info!(path = %job.path, attempt = job.attempt, bytes = buffer.as_slice().len(), "Download completed");
@@ -867,6 +958,32 @@ async fn handle_transfer_job(
                 job: UploadJob {
                     path,
                     buffer,
+                    attempt,
+                    response,
+                },
+                result,
+            }
+        }
+        TransferJob::UploadFromPath(job) => {
+            let UploadFromPathJob {
+                path,
+                src_path,
+                attempt,
+                response,
+            } = job;
+            let result = upload_file_once_from_path(
+                Arc::clone(&store),
+                Arc::clone(&part_sema),
+                Arc::clone(&stats),
+                part_size,
+                &path,
+                &src_path,
+            )
+            .await;
+            TransferResult::UploadFromPath {
+                job: UploadFromPathJob {
+                    path,
+                    src_path,
                     attempt,
                     response,
                 },
@@ -1066,6 +1183,141 @@ async fn upload_file_once(
         .await
         .map(|_| ())
         .map_err(|err| anyhow!("upload complete failed for {}: {}", path, err))
+}
+
+/// Path-sourced sibling of [`upload_file_once`]. Opens `src_path`,
+/// reads each `part_size`-sized slice on demand inside a blocking task
+/// (positioned `pread` — concurrent-safe), feeds the slice to
+/// `put_part`, drops the buffer when the part task completes. Total
+/// in-flight bytes for this file are bounded by
+/// `part_size × inflight_parts` regardless of file size.
+///
+/// Loop shape mirrors [`upload_file_once`]: the per-part `put_part`
+/// call returns a `'static` future once invoked (object_store captures
+/// the payload + internal multipart state into the returned future),
+/// so the main loop can keep using the `&mut MultipartUpload` to
+/// initiate subsequent parts while previously-spawned ones upload in
+/// parallel. The only difference is where the part bytes come from:
+/// here we `pread` from disk inside `spawn_blocking` instead of
+/// slicing an in-memory `Arc<Vec<u8>>`.
+async fn upload_file_once_from_path(
+    store: Arc<dyn ObjectStore>,
+    part_sema: Arc<Semaphore>,
+    stats: Arc<CloudTransferStatsInner>,
+    part_size: usize,
+    path: &ObjectPath,
+    src_path: &Path,
+) -> Result<()> {
+    // `std::fs::File` so we can use the Unix `pread` API
+    // (`read_exact_at`). Concurrent positioned reads on the same fd
+    // are safe — each `pread` carries its own offset and does not
+    // touch a shared cursor.
+    let file = std::fs::File::open(src_path)
+        .map_err(|err| anyhow!("open {} for upload: {}", src_path.display(), err))?;
+    let file_size = file
+        .metadata()
+        .map_err(|err| anyhow!("stat {} for upload: {}", src_path.display(), err))?
+        .len();
+    let file = Arc::new(file);
+
+    let mut upload = store
+        .put_multipart(path)
+        .await
+        .map_err(|err| anyhow!("upload (from path) failed for {}: {}", path, err))?;
+
+    let mut offset = 0u64;
+    let mut tasks: JoinSet<object_store::Result<()>> = JoinSet::new();
+
+    while offset < file_size {
+        let end = std::cmp::min(offset + part_size as u64, file_size);
+        let part_len = (end - offset) as usize;
+        let part_offset = offset;
+
+        // Read the part bytes BEFORE calling `put_part` — `put_part`
+        // requires the payload up front. `spawn_blocking` keeps the
+        // pread off the runtime; the just-written file's pages are hot
+        // in the page cache so the cost is dominated by memcpy from
+        // the cache. Sequential reads in the loop don't cost
+        // throughput because the bottleneck is network upload, which
+        // happens in parallel via the spawned put_part tasks below.
+        let read_file = Arc::clone(&file);
+        let buf = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<u8>> {
+            use std::os::unix::fs::FileExt;
+            let mut buf = vec![0u8; part_len];
+            read_file.read_exact_at(&mut buf, part_offset)?;
+            Ok(buf)
+        })
+        .await
+        .map_err(|err| {
+            anyhow!(
+                "pread join failed for {} @ {}: {}",
+                src_path.display(),
+                part_offset,
+                err
+            )
+        })?
+        .map_err(|err| {
+            anyhow!(
+                "pread failed for {} @ {}: {}",
+                src_path.display(),
+                part_offset,
+                err
+            )
+        })?;
+
+        let payload: PutPayload = Bytes::from(buf).into();
+        let fut = upload.put_part(payload);
+        let part_sema = Arc::clone(&part_sema);
+        stats.parts_started.fetch_add(1, Ordering::Relaxed);
+        stats.inflight_parts.fetch_add(1, Ordering::Relaxed);
+        tasks.spawn(async move {
+            let _permit =
+                part_sema
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| object_store::Error::Generic {
+                        store: "multipart",
+                        source: Box::new(io::Error::new(
+                            io::ErrorKind::Other,
+                            "upload semaphore closed",
+                        )),
+                    })?;
+            fut.await
+        });
+        offset = end;
+    }
+
+    let mut failed = None;
+    while let Some(joined) = tasks.join_next().await {
+        stats.inflight_parts.fetch_sub(1, Ordering::Relaxed);
+        match joined {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                failed = Some(anyhow!("upload (from path) failed for {}: {}", path, err));
+                stats.parts_errors.fetch_add(1, Ordering::Relaxed);
+                tasks.abort_all();
+                break;
+            }
+            Err(err) => {
+                failed = Some(anyhow!(
+                    "upload (from path) task failed for {}: {}",
+                    path,
+                    err
+                ));
+                stats.parts_errors.fetch_add(1, Ordering::Relaxed);
+                tasks.abort_all();
+                break;
+            }
+        }
+    }
+
+    if let Some(err) = failed {
+        return Err(err);
+    }
+
+    upload.complete().await.map(|_| ()).map_err(|err| {
+        anyhow!("upload (from path) complete failed for {}: {}", path, err)
+    })
 }
 
 fn env_usize(name: &str, default: usize) -> usize {
