@@ -1999,6 +1999,24 @@ fn collect_column_opt_strings(
     let Ok(col_idx) = schema.index_of(col_name) else {
         return Ok(None);
     };
+    // List-typed columns (e.g. `TARGET=List<Utf8>` from the
+    // `link_prediction(explode=False)` writer arm, or `FREQUENCY=List<Int64>`
+    // from `include_frequency=True`) cannot be downcast to a scalar Arrow
+    // array by `array_to_opt_strings`. Per-stage stats over a list-of-tokens
+    // column are not meaningful as a single string-summary anyway, so we
+    // signal "skip this column" by returning `Ok(None)` — the same shape
+    // already used for missing columns. `build_stage_stats_from_columns`
+    // accepts `target_vals=None` and emits the stats payload without a
+    // target distribution. Catches both `DataType::List` and
+    // `DataType::LargeList` so future writers using the large variant don't
+    // re-introduce the failure.
+    let field_dtype = schema.field(col_idx).data_type();
+    if matches!(
+        field_dtype,
+        DataType::List(_) | DataType::LargeList(_) | DataType::FixedSizeList(_, _)
+    ) {
+        return Ok(None);
+    }
     let mut reader = builder.build()?;
     let mut out: Vec<Option<String>> = Vec::new();
     while let Some(batch_res) = reader.next() {
@@ -4331,5 +4349,98 @@ mod tests {
         let (starts, ends) = parse_time_ranges_ns(&cfg, "nanoseconds").unwrap();
         assert_eq!(starts, vec![1_000_000_000i64, 2_000_000_000i64]);
         assert_eq!(ends, vec![2_000_000_000i64, 3_000_000_000i64]);
+    }
+
+    // ── collect_column_opt_strings dtype-coverage tests ─────────────────────
+    //
+    // `build_split_stats_artifact` calls `collect_column_opt_strings` on
+    // ENTITY, TARGET, TIMESTAMP. Writers that emit `List<Utf8>` TARGET (the
+    // `link_prediction(explode=False)` arm) used to produce a TARGET parquet
+    // dtype that this helper could not downcast, returning the typed error
+    // `unsupported column dtype for split stats` and aborting the artifact
+    // build. The dtype-based gate below treats list-typed columns as "skip
+    // this column for stats" (returning `Ok(None)`), the same shape the
+    // helper already uses for missing columns. `build_stage_stats_from_columns`
+    // accepts `target_vals=None` and emits the stats payload without a
+    // target distribution.
+
+    fn write_temp_parquet_with_target_list_utf8(path: &std::path::Path) {
+        use parquet::arrow::ArrowWriter;
+        use parquet::file::properties::WriterProperties;
+        let mut tb = ListBuilder::new(StringBuilder::new());
+        tb.values().append_value("a");
+        tb.values().append_value("b");
+        tb.append(true);
+        tb.values().append_value("c");
+        tb.append(true);
+        let target_arr = Arc::new(tb.finish()) as Arc<dyn Array>;
+        let entity_arr = Arc::new(Int64Array::from(vec![Some(0i64), Some(1)])) as Arc<dyn Array>;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("ENTITY", DataType::Int64, true),
+            Field::new(
+                "TARGET",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+                true,
+            ),
+        ]));
+        let batch = RecordBatch::try_new(schema.clone(), vec![entity_arr, target_arr]).unwrap();
+        let f = std::fs::File::create(path).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, Some(WriterProperties::builder().build()))
+            .unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+    }
+
+    #[test]
+    fn test_collect_column_opt_strings_skips_list_utf8_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tt.parquet");
+        write_temp_parquet_with_target_list_utf8(&path);
+
+        // Scalar ENTITY column collects normally.
+        let entity_vals =
+            collect_column_opt_strings(path.to_str().unwrap(), "ENTITY").unwrap();
+        assert_eq!(
+            entity_vals,
+            Some(vec![Some("0".to_string()), Some("1".to_string())])
+        );
+
+        // List<Utf8> TARGET column returns None (skip), not Err.
+        let target_vals =
+            collect_column_opt_strings(path.to_str().unwrap(), "TARGET").unwrap();
+        assert_eq!(
+            target_vals, None,
+            "List<Utf8> TARGET must signal skip, not collect or error",
+        );
+    }
+
+    #[test]
+    fn test_collect_column_opt_strings_skips_list_int64_frequency() {
+        // Same gate must handle the FREQUENCY shape (`List<Int64>`) emitted
+        // by the `include_frequency=True` writer, in case a future caller
+        // requests stats over that column.
+        use parquet::arrow::ArrowWriter;
+        use parquet::file::properties::WriterProperties;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tt.parquet");
+        let mut fb = ListBuilder::new(Int64Builder::new());
+        fb.values().append_value(1);
+        fb.values().append_value(2);
+        fb.append(true);
+        let freq_arr = Arc::new(fb.finish()) as Arc<dyn Array>;
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "FREQUENCY",
+            DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(schema.clone(), vec![freq_arr]).unwrap();
+        let f = std::fs::File::create(&path).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, Some(WriterProperties::builder().build()))
+            .unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+
+        let vals = collect_column_opt_strings(path.to_str().unwrap(), "FREQUENCY").unwrap();
+        assert_eq!(vals, None, "List<Int64> column must signal skip");
     }
 }
