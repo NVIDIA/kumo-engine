@@ -332,6 +332,12 @@ fn ingest_parquet_with_edges_and_rowpack() -> Result<()> {
             col_stats: false,
             cat_count_strategy: diskgraph_ingest::col_stats::CategoryCountStrategy::None,
             row_subsample: false,
+            resume_from_phase: None,
+            context_threads: None,
+            encode_threads: None,
+            pk_map_threads: None,
+            edges_map_threads: None,
+            index_threads: None,
         },
     )?;
     let index_path = output_root.join("index_metadata.json");
@@ -562,6 +568,12 @@ fn ingest_parquet_multi_file_table_with_two_shards() -> Result<()> {
             col_stats: false,
             cat_count_strategy: diskgraph_ingest::col_stats::CategoryCountStrategy::None,
             row_subsample: false,
+            resume_from_phase: None,
+            context_threads: None,
+            encode_threads: None,
+            pk_map_threads: None,
+            edges_map_threads: None,
+            index_threads: None,
         },
     )?;
     assert_eq!(metadata.node_types.len(), 2);
@@ -683,7 +695,13 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
         col_stats: false,
         cat_count_strategy: diskgraph_ingest::col_stats::CategoryCountStrategy::None,
         row_subsample: false,
-    };
+        resume_from_phase: None,
+        context_threads: None,
+        encode_threads: None,
+        pk_map_threads: None,
+        edges_map_threads: None,
+        index_threads: None,
+};
     let metadata = ingest(
         &source_path,
         output_root.to_str().unwrap(),
@@ -841,6 +859,12 @@ fn ingest_parquet_with_int_pk_lookup() -> Result<()> {
             col_stats: false,
             cat_count_strategy: diskgraph_ingest::col_stats::CategoryCountStrategy::None,
             row_subsample: false,
+            resume_from_phase: None,
+            context_threads: None,
+            encode_threads: None,
+            pk_map_threads: None,
+            edges_map_threads: None,
+            index_threads: None,
         },
     )?;
 
@@ -949,7 +973,13 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
         col_stats: false,
         cat_count_strategy: diskgraph_ingest::col_stats::CategoryCountStrategy::None,
         row_subsample: false,
-    };
+        resume_from_phase: None,
+        context_threads: None,
+        encode_threads: None,
+        pk_map_threads: None,
+        edges_map_threads: None,
+        index_threads: None,
+};
     let metadata = ingest(
         &source_path,
         output_root.to_str().unwrap(),
@@ -1029,7 +1059,13 @@ fn ingest_pk_map_header_has_expected_format() -> Result<()> {
         col_stats: false,
         cat_count_strategy: diskgraph_ingest::col_stats::CategoryCountStrategy::None,
         row_subsample: false,
-    };
+        resume_from_phase: None,
+        context_threads: None,
+        encode_threads: None,
+        pk_map_threads: None,
+        edges_map_threads: None,
+        index_threads: None,
+};
     let _metadata = ingest(
         &source_path,
         output_root.to_str().unwrap(),
@@ -1221,6 +1257,12 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
             col_stats: false,
             cat_count_strategy: diskgraph_ingest::col_stats::CategoryCountStrategy::None,
             row_subsample: false,
+            resume_from_phase: None,
+            context_threads: None,
+            encode_threads: None,
+            pk_map_threads: None,
+            edges_map_threads: None,
+            index_threads: None,
         },
     )?;
     let forward = metadata
@@ -1499,6 +1541,12 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
             col_stats: false,
             cat_count_strategy: diskgraph_ingest::col_stats::CategoryCountStrategy::None,
             row_subsample: false,
+            resume_from_phase: None,
+            context_threads: None,
+            encode_threads: None,
+            pk_map_threads: None,
+            edges_map_threads: None,
+            index_threads: None,
         },
     )?;
     let forward = metadata
@@ -2022,6 +2070,12 @@ fn ingest_weight_expr_with_backticks() -> Result<()> {
             col_stats: false,
             cat_count_strategy: diskgraph_ingest::col_stats::CategoryCountStrategy::None,
             row_subsample: false,
+            resume_from_phase: None,
+            context_threads: None,
+            encode_threads: None,
+            pk_map_threads: None,
+            edges_map_threads: None,
+            index_threads: None,
         },
     )?;
     let forward = metadata
@@ -2118,6 +2172,12 @@ fn ingest_weight_expr_with_log_and_abs() -> Result<()> {
             col_stats: false,
             cat_count_strategy: diskgraph_ingest::col_stats::CategoryCountStrategy::None,
             row_subsample: false,
+            resume_from_phase: None,
+            context_threads: None,
+            encode_threads: None,
+            pk_map_threads: None,
+            edges_map_threads: None,
+            index_threads: None,
         },
     )?;
     let forward = metadata
@@ -3566,6 +3626,12 @@ fn ingest_survives_empty_shards() -> Result<()> {
             col_stats: false,
             cat_count_strategy: diskgraph_ingest::col_stats::CategoryCountStrategy::None,
             row_subsample: false,
+            resume_from_phase: None,
+            context_threads: None,
+            encode_threads: None,
+            pk_map_threads: None,
+            edges_map_threads: None,
+            index_threads: None,
         },
     )?;
 

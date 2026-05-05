@@ -922,6 +922,12 @@ pub fn convert_kumo_config(
     cat_count_strategy="hybrid",
     output_dataplane_dir=None,
     success_marker_content=None,
+    resume_from_phase=None,
+    context_threads=None,
+    encode_threads=None,
+    pk_map_threads=None,
+    edges_map_threads=None,
+    index_threads=None,
 ))]
 #[tracing::instrument(
     level = "info",
@@ -929,6 +935,7 @@ pub fn convert_kumo_config(
     fields(
         output_dir = %output_dir,
         dataplane = output_dataplane_dir.unwrap_or("(none)"),
+        resume_from_phase = ?resume_from_phase,
     )
 )]
 pub fn ingest(
@@ -939,6 +946,12 @@ pub fn ingest(
     cat_count_strategy: &str,
     output_dataplane_dir: Option<&str>,
     success_marker_content: Option<&str>,
+    resume_from_phase: Option<&str>,
+    context_threads: Option<usize>,
+    encode_threads: Option<usize>,
+    pk_map_threads: Option<usize>,
+    edges_map_threads: Option<usize>,
+    index_threads: Option<usize>,
 ) -> PyResult<String> {
     let start_time = std::time::Instant::now();
     info!(
@@ -947,6 +960,7 @@ pub fn ingest(
         cat_count_strategy = %cat_count_strategy,
         dataplane = %output_dataplane_dir.unwrap_or("(none)"),
         marker = success_marker_content.is_some(),
+        resume_from_phase = ?resume_from_phase,
         "Pybind ingest started"
     );
     let source: diskgraph_ingest::GraphConfig = serde_json::from_str(config_json)
@@ -963,6 +977,16 @@ pub fn ingest(
         }
     };
 
+    let resume_phase = resume_from_phase
+        .map(|s| {
+            diskgraph_ingest::IngestPhase::from_name(s).ok_or_else(|| {
+                DiskgraphConfigError::new_err(format!(
+                    "Unknown resume_from_phase: {s} (expected: context, encode, pk_map, edges_map, index)"
+                ))
+            })
+        })
+        .transpose()?;
+
     let options = diskgraph_ingest::IngestOptions {
         profile_dir: None,
         progress: diskgraph_ingest::progress::build_progress(),
@@ -972,6 +996,12 @@ pub fn ingest(
         col_stats,
         cat_count_strategy: strategy,
         row_subsample: false,
+        resume_from_phase: resume_phase,
+        context_threads,
+        encode_threads,
+        pk_map_threads,
+        edges_map_threads,
+        index_threads,
     };
 
     let output_dir = output_dir.to_string();

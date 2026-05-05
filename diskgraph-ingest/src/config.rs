@@ -1,9 +1,59 @@
 use crate::progress::ProgressCallback;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 pub const PEAK_MEM_STAGE_COUNT: usize = 6;
+
+/// Pipeline phases in execution order. Used by `IngestOptions::resume_from_phase`
+/// to pick a starting point for resumed ingests; numeric ordering reflects
+/// execution order so `<`/`>` comparisons answer "is this phase before/after".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IngestPhase {
+    Context = 0,
+    Encode = 1,
+    PkMap = 2,
+    EdgesMap = 3,
+    Index = 4,
+}
+
+pub const ALL_PHASES: [IngestPhase; 5] = [
+    IngestPhase::Context,
+    IngestPhase::Encode,
+    IngestPhase::PkMap,
+    IngestPhase::EdgesMap,
+    IngestPhase::Index,
+];
+
+impl IngestPhase {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Context => "context",
+            Self::Encode => "encode",
+            Self::PkMap => "pk_map",
+            Self::EdgesMap => "edges_map",
+            Self::Index => "index",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<Self> {
+        match s {
+            "context" => Some(Self::Context),
+            "encode" => Some(Self::Encode),
+            "pk_map" => Some(Self::PkMap),
+            "edges_map" => Some(Self::EdgesMap),
+            "index" => Some(Self::Index),
+            _ => None,
+        }
+    }
+
+    /// Phases that must already be complete before this one can run.
+    pub fn predecessors(self) -> impl Iterator<Item = IngestPhase> {
+        ALL_PHASES.iter().copied().take_while(move |p| *p < self)
+    }
+}
 
 pub struct PeakMemStats {
     stage_index: AtomicUsize,
@@ -82,6 +132,19 @@ pub struct IngestOptions {
     pub cat_count_strategy: crate::col_stats::CategoryCountStrategy,
     /// Enable per-row 30% subsampling for category counts (scale ÷0.3).
     pub row_subsample: bool,
+    /// If `Some(P)`, skip phases earlier than P (their completion markers must exist
+    /// in `<output>/_tmp/_phase_complete_<name>`); start running at P. Phase P's
+    /// own outputs are wiped on entry to clear partial state from a prior crash.
+    /// `None` (default) preserves today's behaviour: run all phases unconditionally.
+    pub resume_from_phase: Option<IngestPhase>,
+    /// Per-phase worker pool overrides. When `Some(n)`, that phase's `make_pool`
+    /// uses `n`. `None` falls back to `default_worker_threads()`
+    /// (≈ `available_parallelism × 1.05`).
+    pub context_threads: Option<usize>,
+    pub encode_threads: Option<usize>,
+    pub pk_map_threads: Option<usize>,
+    pub edges_map_threads: Option<usize>,
+    pub index_threads: Option<usize>,
 }
 
 impl Default for IngestOptions {
@@ -95,6 +158,12 @@ impl Default for IngestOptions {
             col_stats: false,
             cat_count_strategy: crate::col_stats::CategoryCountStrategy::None,
             row_subsample: false,
+            resume_from_phase: None,
+            context_threads: None,
+            encode_threads: None,
+            pk_map_threads: None,
+            edges_map_threads: None,
+            index_threads: None,
         }
     }
 }

@@ -22,7 +22,7 @@ pub mod success_marker;
 mod tests_unit;
 pub mod utils;
 
-pub use crate::config::IngestOptions;
+pub use crate::config::{IngestOptions, IngestPhase, ALL_PHASES};
 use crate::config::PeakMemStats;
 use crate::consts::*;
 pub use crate::errors::{
@@ -244,19 +244,49 @@ pub fn ingest_with_stats_from_source(
         return Err(anyhow!("index build requires local output"));
     }
     target.prepare()?;
+    let resume_from_phase = options.resume_from_phase;
     if let OutputTarget::Local { root, .. } = &*target {
         // Log disk space before ingest as a pre-flight warning
         log_disk_space(root);
 
-        if root.exists() {
+        // Fresh ingest semantics: wipe everything on entry. In resume mode the
+        // caller is asserting the on-disk state is intentional state from a
+        // prior partial run and we keep it intact.
+        if resume_from_phase.is_none() && root.exists() {
             fs::remove_dir_all(root)?;
             fs::create_dir_all(root)?;
+        } else if !root.exists() {
+            fs::create_dir_all(root)?;
+        }
+
+        // Validate predecessor markers before doing any work — fail fast if
+        // the caller asked for a resume from phase P but earlier phases did
+        // not complete in a previous attempt.
+        if let Some(rfp) = resume_from_phase {
+            for pred in rfp.predecessors() {
+                if !phase_marker_exists(root, pred.name()) {
+                    return Err(anyhow!(
+                        "resume_from_phase={:?}: predecessor phase '{}' has no completion marker at {} \
+                         — cannot resume from {:?} without prior phases done",
+                        rfp,
+                        pred.name(),
+                        phase_marker_path(root, pred.name()).display(),
+                        rfp,
+                    ));
+                }
+            }
         }
     }
 
-    // CleanupGuard: if ingest fails or panics, remove partial output
-    let cleanup_guard = if let OutputTarget::Local { root, .. } = &*target {
-        Some(CleanupGuard::new(root.clone()))
+    // CleanupGuard: in fresh-ingest mode, if ingest fails or panics, remove
+    // partial output. In resume mode we keep partial state on failure so the
+    // next attempt can resume from where this one died.
+    let cleanup_guard = if resume_from_phase.is_none() {
+        if let OutputTarget::Local { root, .. } = &*target {
+            Some(CleanupGuard::new(root.clone()))
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -270,83 +300,175 @@ pub fn ingest_with_stats_from_source(
     if let Some(profile_dir) = &profile_dir {
         fs::create_dir_all(profile_dir)?;
     }
+    let local_root = match &*ctx.target {
+        OutputTarget::Local { root, .. } => root.clone(),
+        _ => unreachable!("validated above: ingest requires local output"),
+    };
+    let should_run = |p: IngestPhase| -> bool {
+        match resume_from_phase {
+            None => true,
+            Some(rfp) => p >= rfp,
+        }
+    };
+    // Only wipe at phase entry for the resume target — that's the one
+    // that may have partial output from a prior crash. Fresh runs already
+    // wiped the entire output_dir at function entry; phases that succeed
+    // and trigger downstream work don't need their successors wiped.
+    let wipe_on_entry = |p: IngestPhase| -> bool {
+        Some(p) == resume_from_phase
+    };
+
+    // Repopulate in-memory state that skipped predecessor phases would
+    // normally have produced. Order matches phase order so each helper
+    // sees its own predecessors' output.
+    if let Some(rfp) = resume_from_phase {
+        if rfp > IngestPhase::Context {
+            ctx.repopulate_table_contexts_from_source()?;
+        }
+        if rfp > IngestPhase::Encode {
+            ctx.repopulate_node_stats_from_meta()?;
+        }
+        if rfp > IngestPhase::PkMap {
+            ctx.repopulate_pk_hash_paths_from_disk()?;
+        }
+    }
+
+    // Wall-time durations for each phase. Skipped phases stay at zero —
+    // they're consumed by PerfStats below regardless of which phases ran.
+    let mut context_wall = std::time::Duration::ZERO;
+    let mut encode_wall = std::time::Duration::ZERO;
+    let mut pk_map_wall = std::time::Duration::ZERO;
+    let mut edges_map_wall = std::time::Duration::ZERO;
+    let mut index_wall = std::time::Duration::ZERO;
+
     ctx.set_peak_stage(Some(0));
-    let context_start = std::time::Instant::now();
-    if let Some(profile_dir) = &profile_dir {
-        profile_phase(profile_dir, "context", || ctx.build_node_contexts())?;
+    if should_run(IngestPhase::Context) {
+        let context_start = std::time::Instant::now();
+        run_phase_with_marker(&local_root, "context",
+            wipe_on_entry(IngestPhase::Context), profile_dir.as_deref(),
+            || ctx.build_node_contexts())?;
+        context_wall = context_start.elapsed();
+        tracing::info!(
+            stage = "context",
+            elapsed_ms = context_wall.as_millis() as u64,
+            elapsed = %format_duration(context_wall.as_millis() as u64),
+            "context stage complete"
+        );
     } else {
-        ctx.build_node_contexts()?;
+        tracing::info!(stage = "context", "resume: skipped (marker present)");
     }
-    let context_wall = context_start.elapsed();
-    tracing::info!(
-        stage = "context",
-        elapsed_ms = context_wall.as_millis() as u64,
-        elapsed = %format_duration(context_wall.as_millis() as u64),
-        "context stage complete"
-    );
     ctx.set_peak_stage(Some(1));
-    let encode_start = std::time::Instant::now();
-    if let Some(profile_dir) = &profile_dir {
-        profile_phase(profile_dir, "encode", || ctx.build_temp_shards())?;
+    if should_run(IngestPhase::Encode) {
+        let encode_start = std::time::Instant::now();
+        run_phase_with_marker(&local_root, "encode",
+            wipe_on_entry(IngestPhase::Encode), profile_dir.as_deref(),
+            || ctx.build_temp_shards())?;
+        encode_wall = encode_start.elapsed();
+        tracing::info!(
+            stage = "encode",
+            elapsed_ms = encode_wall.as_millis() as u64,
+            elapsed = %format_duration(encode_wall.as_millis() as u64),
+            "encode stage complete"
+        );
     } else {
-        ctx.build_temp_shards()?;
+        tracing::info!(stage = "encode", "resume: skipped (marker present)");
     }
-    let encode_wall = encode_start.elapsed();
-    tracing::info!(
-        stage = "encode",
-        elapsed_ms = encode_wall.as_millis() as u64,
-        elapsed = %format_duration(encode_wall.as_millis() as u64),
-        "encode stage complete"
-    );
     ctx.set_peak_stage(Some(2));
-    let pk_map_start = std::time::Instant::now();
-    if let Some(profile_dir) = &profile_dir {
-        profile_phase(profile_dir, "pk_map", || ctx.build_sharded_pk_maps())?;
+    if should_run(IngestPhase::PkMap) {
+        let pk_map_start = std::time::Instant::now();
+        let rss_before_pk_map = rss_anon_diag_bytes();
+        update_atomic_max(&ctx.pk_map_peak_rss, rss_before_pk_map);
+        // Phase-pristine COW for fkey bitmaps so pk_map cannot leak partial
+        // mutations into encode's outputs across a resume boundary.
+        ctx.pk_map_pre()?;
+        run_phase_with_marker(&local_root, "pk_map",
+            wipe_on_entry(IngestPhase::PkMap), profile_dir.as_deref(),
+            || ctx.build_sharded_pk_maps())?;
+        // Marker is now written; a crash from this line on does not invalidate
+        // pk_map. Drop the pristines + free pkey.bin temp files we no longer
+        // need (saves ~160 GB on DoorDash-shaped data).
+        ctx.pk_map_post()?;
+        let pkey_freed = ctx.cleanup_pkey_temp_files().unwrap_or(0);
+        if pkey_freed > 0 {
+            tracing::info!(
+                pkey_bytes_freed = pkey_freed,
+                pkey_gb_freed = pkey_freed / 1_073_741_824,
+                "post-pk_map cleanup: freed encode pkey temp files"
+            );
+        }
+        pk_map_wall = pk_map_start.elapsed();
+        let estimate_sum = ctx.pk_map_estimate_sum.load(std::sync::atomic::Ordering::Relaxed);
+        let observed_peak = ctx.pk_map_peak_rss.load(std::sync::atomic::Ordering::Relaxed);
+        let rss_after_pk_map = rss_anon_diag_bytes();
+        let ratio_pct = if estimate_sum > 0 {
+            (observed_peak.saturating_sub(rss_before_pk_map) as f64
+                / estimate_sum as f64 * 100.0) as u64
+        } else {
+            0
+        };
+        tracing::info!(
+            stage = "pk_map",
+            elapsed_ms = pk_map_wall.as_millis() as u64,
+            elapsed = %format_duration(pk_map_wall.as_millis() as u64),
+            estimate_sum_bytes = estimate_sum,
+            estimate_sum_gb = estimate_sum / 1_073_741_824,
+            rss_before_bytes = rss_before_pk_map,
+            rss_peak_bytes = observed_peak,
+            rss_peak_gb = observed_peak / 1_073_741_824,
+            rss_after_bytes = rss_after_pk_map,
+            actual_over_estimate_pct = ratio_pct,
+            "pk_map stage complete"
+        );
     } else {
-        ctx.build_sharded_pk_maps()?;
+        tracing::info!(stage = "pk_map", "resume: skipped (marker present)");
     }
-    let pk_map_wall = pk_map_start.elapsed();
-    tracing::info!(
-        stage = "pk_map",
-        elapsed_ms = pk_map_wall.as_millis() as u64,
-        elapsed = %format_duration(pk_map_wall.as_millis() as u64),
-        "pk_map stage complete"
-    );
     let edge_ctx = ctx.edge_build_context()?;
     ctx.set_peak_stage(Some(3));
-    let edges_map_start = std::time::Instant::now();
-    if let Some(profile_dir) = &profile_dir {
-        profile_phase(profile_dir, "edges_map", || {
-            ctx.build_edges_mapped(&edge_ctx)
-        })?;
+    if should_run(IngestPhase::EdgesMap) {
+        let edges_map_start = std::time::Instant::now();
+        run_phase_with_marker(&local_root, "edges_map",
+            wipe_on_entry(IngestPhase::EdgesMap), profile_dir.as_deref(),
+            || ctx.build_edges_mapped(&edge_ctx))?;
+        edges_map_wall = edges_map_start.elapsed();
+        tracing::info!(
+            stage = "edges_map",
+            elapsed_ms = edges_map_wall.as_millis() as u64,
+            elapsed = %format_duration(edges_map_wall.as_millis() as u64),
+            "edges_map stage complete"
+        );
+        // Post-edges_map best-effort cleanup of inputs that no future phase
+        // needs. Marker is already on disk so a crash here doesn't break
+        // resume — `index` doesn't read these dirs, and `cleanup_temp` at
+        // pipeline end will remove `_tmp/` wholesale on full success.
+        let _ = ctx.cleanup_edge_stage("edges_src");
+        let _ = ctx.cleanup_edge_stage("fkeys");
+        let _ = ctx.cleanup_edge_stage("fkeys_dst");
+        let _ = ctx.cleanup_edge_stage("edge_keys");
     } else {
-        ctx.build_edges_mapped(&edge_ctx)?;
+        tracing::info!(stage = "edges_map", "resume: skipped (marker present)");
     }
-    let edges_map_wall = edges_map_start.elapsed();
-    tracing::info!(
-        stage = "edges_map",
-        elapsed_ms = edges_map_wall.as_millis() as u64,
-        elapsed = %format_duration(edges_map_wall.as_millis() as u64),
-        "edges_map stage complete"
-    );
     drop(edge_ctx);
     ctx.set_peak_stage(Some(4));
-    let index_start = std::time::Instant::now();
     let index_metadata = ctx.build_index_metadata()?;
-    if let Some(profile_dir) = &profile_dir {
-        profile_phase(profile_dir, "index", || {
-            ctx.build_index(index_metadata.clone())
-        })?;
+    if should_run(IngestPhase::Index) {
+        let index_start = std::time::Instant::now();
+        let index_metadata_for_phase = index_metadata.clone();
+        run_phase_with_marker(&local_root, "index",
+            wipe_on_entry(IngestPhase::Index), profile_dir.as_deref(),
+            || ctx.build_index(index_metadata_for_phase))?;
+        index_wall = index_start.elapsed();
+        tracing::info!(
+            stage = "index",
+            elapsed_ms = index_wall.as_millis() as u64,
+            elapsed = %format_duration(index_wall.as_millis() as u64),
+            "index stage complete"
+        );
+        // Marker is on disk. edges_map intermediate is no longer needed by any
+        // phase; free it so disk pressure during finalize stays low.
+        let _ = ctx.cleanup_edge_stage("edges_map");
     } else {
-        ctx.build_index(index_metadata.clone())?;
+        tracing::info!(stage = "index", "resume: skipped (marker present)");
     }
-    let index_wall = index_start.elapsed();
-    tracing::info!(
-        stage = "index",
-        elapsed_ms = index_wall.as_millis() as u64,
-        elapsed = %format_duration(index_wall.as_millis() as u64),
-        "index stage complete"
-    );
     ctx.set_peak_stage(Some(5));
     let finalize_start = std::time::Instant::now();
     let index_metadata = ctx.finalize_metadata(index_metadata)?;
@@ -581,6 +703,837 @@ pub fn is_disk_space_error(err: &anyhow::Error) -> bool {
 }
 
 #[cfg(test)]
+mod tests_resume_phase {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn ingest_phase_ordering() {
+        assert!(IngestPhase::Context < IngestPhase::Encode);
+        assert!(IngestPhase::Encode < IngestPhase::PkMap);
+        assert!(IngestPhase::PkMap < IngestPhase::EdgesMap);
+        assert!(IngestPhase::EdgesMap < IngestPhase::Index);
+    }
+
+    #[test]
+    fn ingest_phase_predecessors() {
+        let preds: Vec<_> = IngestPhase::Index.predecessors().collect();
+        assert_eq!(
+            preds,
+            vec![
+                IngestPhase::Context,
+                IngestPhase::Encode,
+                IngestPhase::PkMap,
+                IngestPhase::EdgesMap,
+            ]
+        );
+        let preds: Vec<_> = IngestPhase::PkMap.predecessors().collect();
+        assert_eq!(preds, vec![IngestPhase::Context, IngestPhase::Encode]);
+        let preds: Vec<_> = IngestPhase::Context.predecessors().collect();
+        assert!(preds.is_empty());
+    }
+
+    #[test]
+    fn ingest_phase_name_roundtrip() {
+        for p in ALL_PHASES.iter().copied() {
+            assert_eq!(IngestPhase::from_name(p.name()), Some(p));
+        }
+        assert!(IngestPhase::from_name("nope").is_none());
+    }
+
+    #[test]
+    fn write_and_check_phase_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        assert!(!phase_marker_exists(root, "encode"));
+        write_phase_marker(root, "encode").unwrap();
+        assert!(phase_marker_exists(root, "encode"));
+        // marker lives under _tmp/ so cleanup_temp will sweep it
+        let path = phase_marker_path(root, "encode");
+        assert!(path.starts_with(root.join(TEMP_DIR_NAME)));
+    }
+
+    #[test]
+    fn wipe_phase_outputs_removes_marker_and_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // arrange: marker present + pk_map outputs alongside context's
+        // node_data.ctx and an index shard-NNNNN/ dir that must survive.
+        write_phase_marker(root, "pk_map").unwrap();
+        let table_dir = root.join("nodes/users");
+        fs::create_dir_all(&table_dir).unwrap();
+        fs::write(table_dir.join("pk_hash-00000.bin"), b"stale").unwrap();
+        fs::write(table_dir.join("pk_data-00000.bin"), b"stale").unwrap();
+        fs::write(table_dir.join("pk_hash-00000.meta.json"), b"{}").unwrap();
+        fs::write(table_dir.join("node_data.ctx"), b"keep").unwrap();
+        let shard = table_dir.join("shard-00000");
+        fs::create_dir_all(&shard).unwrap();
+        fs::write(shard.join("offsets.bin"), b"keep").unwrap();
+        // act
+        wipe_phase_outputs(root, "pk_map").unwrap();
+        // assert
+        assert!(!phase_marker_exists(root, "pk_map"));
+        assert!(!table_dir.join("pk_hash-00000.bin").exists());
+        assert!(!table_dir.join("pk_data-00000.bin").exists());
+        assert!(!table_dir.join("pk_hash-00000.meta.json").exists());
+        assert!(table_dir.join("node_data.ctx").exists());
+        assert!(shard.join("offsets.bin").exists());
+    }
+
+    #[test]
+    fn wipe_phase_outputs_index_preserves_pk_map_and_context() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_phase_marker(root, "index").unwrap();
+        let table_dir = root.join("nodes/users");
+        fs::create_dir_all(&table_dir).unwrap();
+        fs::write(table_dir.join("node_data.ctx"), b"keep").unwrap();
+        fs::write(table_dir.join("pk_hash-00000.bin"), b"keep").unwrap();
+        fs::write(table_dir.join("pk_data-00000.bin"), b"keep").unwrap();
+        let shard = table_dir.join("shard-00000");
+        fs::create_dir_all(&shard).unwrap();
+        fs::write(shard.join("offsets.bin"), b"stale").unwrap();
+        fs::write(shard.join("edges.bin"), b"stale").unwrap();
+        fs::write(shard.join("build_stats.json"), b"{}").unwrap();
+        fs::write(shard.join("keep.bin"), b"keep").unwrap();
+        fs::write(root.join("index_metadata.json"), b"{}").unwrap();
+        wipe_phase_outputs(root, "index").unwrap();
+        assert!(!phase_marker_exists(root, "index"));
+        assert!(!root.join("index_metadata.json").exists());
+        assert!(!shard.join("offsets.bin").exists());
+        assert!(!shard.join("edges.bin").exists());
+        assert!(!shard.join("build_stats.json").exists());
+        assert!(shard.join("keep.bin").exists());
+        assert!(table_dir.join("node_data.ctx").exists());
+        assert!(table_dir.join("pk_hash-00000.bin").exists());
+        assert!(table_dir.join("pk_data-00000.bin").exists());
+    }
+
+    #[test]
+    fn wipe_phase_outputs_edges_map_only_touches_tmp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_phase_marker(root, "edges_map").unwrap();
+        let edges = root.join("_tmp/edges_map/rel/shard-00000");
+        fs::create_dir_all(&edges).unwrap();
+        fs::write(edges.join("part-0.bin"), b"stale").unwrap();
+        let table_dir = root.join("nodes/users");
+        fs::create_dir_all(&table_dir).unwrap();
+        fs::write(table_dir.join("node_data.ctx"), b"keep").unwrap();
+        fs::write(table_dir.join("pk_hash-00000.bin"), b"keep").unwrap();
+        wipe_phase_outputs(root, "edges_map").unwrap();
+        assert!(!phase_marker_exists(root, "edges_map"));
+        assert!(!root.join("_tmp/edges_map").exists());
+        assert!(table_dir.join("node_data.ctx").exists());
+        assert!(table_dir.join("pk_hash-00000.bin").exists());
+    }
+
+    #[test]
+    fn run_phase_with_marker_writes_marker_on_success() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let called = std::cell::Cell::new(false);
+        run_phase_with_marker(root, "context", false, None, || {
+            called.set(true);
+            Ok(())
+        })
+        .unwrap();
+        assert!(called.get());
+        assert!(phase_marker_exists(root, "context"));
+    }
+
+    #[test]
+    fn run_phase_with_marker_no_marker_on_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let result =
+            run_phase_with_marker(root, "context", false, None, || Err(anyhow!("synthetic boom")));
+        assert!(result.is_err());
+        assert!(!phase_marker_exists(root, "context"));
+    }
+
+    #[test]
+    fn run_phase_with_marker_wipes_partial_outputs_first() {
+        // Simulate a previous crashed pk_map run that left partial pk_hash
+        // files behind — wipe must clear them before the phase body runs.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let stale = root.join("nodes/orders/pk_hash-00007.bin");
+        fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        fs::write(&stale, b"partial garbage").unwrap();
+        run_phase_with_marker(root, "pk_map", true, None, || {
+            // body sees a clean output area
+            assert!(!stale.exists());
+            Ok(())
+        })
+        .unwrap();
+        assert!(phase_marker_exists(root, "pk_map"));
+    }
+
+    #[test]
+    fn predecessor_check_passes_when_all_markers_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_phase_marker(root, "context").unwrap();
+        write_phase_marker(root, "encode").unwrap();
+        // emulate the same predecessor check that runs in
+        // ingest_with_stats_from_source
+        for pred in IngestPhase::PkMap.predecessors() {
+            assert!(phase_marker_exists(root, pred.name()), "{}", pred.name());
+        }
+    }
+
+    #[test]
+    fn predecessor_check_detects_missing_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_phase_marker(root, "context").unwrap();
+        // encode marker missing — pk_map should not be considered resumable
+        let missing: HashSet<_> = IngestPhase::PkMap
+            .predecessors()
+            .filter(|p| !phase_marker_exists(root, p.name()))
+            .map(|p| p.name())
+            .collect();
+        assert_eq!(missing, ["encode"].iter().copied().collect());
+    }
+}
+
+#[cfg(test)]
+mod tests_repopulate_helpers {
+    //! Tests for `IngestContext::repopulate_*` helpers and the
+    //! `wipe_phase_outputs` rescoping done in commit ac25fd5. These exercise
+    //! the resume-from-phase path where in-memory state must be rebuilt from
+    //! whatever is already on disk.
+    use super::*;
+    use crate::graph_config::{
+        ColumnSpec, DataSource, EdgeTableSpec, ForeignKeySpec, GraphConfig, IngestedType,
+        TableSpec,
+    };
+
+    // -- minimal fixtures --------------------------------------------------
+
+    fn node_table(name: &str, primary_key: Option<&str>) -> TableSpec {
+        TableSpec {
+            name: name.to_string(),
+            columns: vec![ColumnSpec {
+                name: "id".to_string(),
+                ingested_dtype: IngestedType::Int64,
+                source_dtype: None,
+                fixed_len: None,
+                timestamp_format: None,
+                timestamp_unit: None,
+                precision: None,
+                scale: None,
+                semantic_type: None,
+                multicategorical_delimiter: None,
+            }],
+            primary_key: primary_key.map(str::to_string),
+            create_time: None,
+            end_time: None,
+            weight: None,
+            edge_table: None,
+            rowpack: None,
+            source: DataSource::Parquet { paths: vec![] },
+            fkeys: Vec::new(),
+            data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
+        }
+    }
+
+    fn edge_table(name: &str, src_ref: &str, dst_ref: &str) -> TableSpec {
+        TableSpec {
+            name: name.to_string(),
+            columns: vec![
+                ColumnSpec {
+                    name: "src_id".to_string(),
+                    ingested_dtype: IngestedType::Int64,
+                    source_dtype: None,
+                    fixed_len: None,
+                    timestamp_format: None,
+                    timestamp_unit: None,
+                    precision: None,
+                    scale: None,
+                    semantic_type: None,
+                    multicategorical_delimiter: None,
+                },
+                ColumnSpec {
+                    name: "dst_id".to_string(),
+                    ingested_dtype: IngestedType::Int64,
+                    source_dtype: None,
+                    fixed_len: None,
+                    timestamp_format: None,
+                    timestamp_unit: None,
+                    precision: None,
+                    scale: None,
+                    semantic_type: None,
+                    multicategorical_delimiter: None,
+                },
+            ],
+            primary_key: None,
+            create_time: None,
+            end_time: None,
+            weight: None,
+            edge_table: Some(EdgeTableSpec {
+                src_fk: ForeignKeySpec {
+                    edge_column: "src_id".to_string(),
+                    ref_table: src_ref.to_string(),
+                },
+                dst_fk: ForeignKeySpec {
+                    edge_column: "dst_id".to_string(),
+                    ref_table: dst_ref.to_string(),
+                },
+                forward: None,
+                reverse: None,
+            }),
+            rowpack: None,
+            source: DataSource::Parquet { paths: vec![] },
+            fkeys: Vec::new(),
+            data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
+        }
+    }
+
+    fn graph_config(tables: Vec<TableSpec>) -> GraphConfig {
+        GraphConfig {
+            dataset_name: "test_dataset".to_string(),
+            tables,
+            rowpack: None,
+            num_shards: None,
+            edge_format: None,
+            coercion_mode: Default::default(),
+        }
+    }
+
+    /// Build a minimal `IngestContext` directly (bypassing `IngestContext::new`,
+    /// which requires a fully-loaded `IngestOptions` and has unrelated
+    /// validation logic). Only the fields the repopulate helpers read /
+    /// write are populated meaningfully; everything else gets a default.
+    fn make_ctx(
+        source: GraphConfig,
+        target: Arc<OutputTarget>,
+        num_shards: usize,
+    ) -> IngestContext {
+        IngestContext {
+            source,
+            target,
+            profile_dir: None,
+            parallel: false,
+            context_threads: None,
+            encode_threads: None,
+            pk_map_threads: None,
+            edges_map_threads: None,
+            index_threads: None,
+            pk_map_estimate_sum: Arc::new(AtomicU64::new(0)),
+            pk_map_peak_rss: Arc::new(AtomicU64::new(0)),
+            index_mem_budget: None,
+            num_shards,
+            input_transfer: None,
+            table_rows: HashMap::new(),
+            table_contexts: HashMap::new(),
+            shard_rows: HashMap::new(),
+            shard_offsets: HashMap::new(),
+            pk_hash_paths: HashMap::new(),
+            relation_defs: Vec::new(),
+            relationships: Vec::new(),
+            fk_edge_targets: HashMap::new(),
+            edge_counts: HashMap::new(),
+            edge_dst_degree_bits: HashMap::new(),
+            pk_duplicate_counts: HashMap::new(),
+            pk_duplicate_drops: HashMap::new(),
+            pk_null_timestamp_drops: HashMap::new(),
+            edge_null_timestamp_drops: HashMap::new(),
+            pk_duplicate_samples: HashMap::new(),
+            dropped_rows_counts: HashMap::new(),
+            key_parse_failures: 0,
+            key_lookup_failures: 0,
+            key_failure_samples: Vec::new(),
+            key_failures_by_context: HashMap::new(),
+            output: String::new(),
+            trimmed_strings: Arc::new(AtomicU64::new(0)),
+            progress: None,
+            temp_edges_src_bytes: 0,
+            temp_fkeys_bytes: 0,
+            temp_edges_map_bytes: 0,
+            temp_node_data_bytes: 0,
+            peak_mem_stats: None,
+            col_stats: false,
+            cat_count_strategy: crate::col_stats::CategoryCountStrategy::None,
+            row_subsample: false,
+            text_sample_stats: HashMap::new(),
+        }
+    }
+
+    fn local_target(root: &Path) -> Arc<OutputTarget> {
+        Arc::new(OutputTarget::Local {
+            root: root.to_path_buf(),
+            mirror: None,
+            manifest: Arc::new(crate::snapshot_mirror::ManifestAccumulator::new()),
+        })
+    }
+
+    // -- A. repopulate_node_stats_from_meta --------------------------------
+
+    #[test]
+    fn repopulate_node_stats_happy_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = local_target(tmp.path());
+        let tables = vec![
+            node_table("Users", Some("id")),
+            node_table("Items", Some("id")),
+            node_table("Reviews", Some("id")),
+        ];
+        let num_shards = 4;
+        // Per-table per-shard row counts, deterministic and distinct.
+        let counts: HashMap<&str, [u64; 4]> = [
+            ("Users", [10u64, 20, 30, 40]),
+            ("Items", [1, 2, 3, 4]),
+            ("Reviews", [100, 0, 50, 7]),
+        ]
+        .into_iter()
+        .collect();
+        for table in &tables {
+            for (shard, &n) in counts[table.name.as_str()].iter().enumerate().take(num_shards) {
+                write_temp_meta(
+                    &target,
+                    &temp_node_data_meta_path(&table.name, shard),
+                    n,
+                    0,
+                )
+                .unwrap();
+            }
+        }
+        let mut ctx = make_ctx(graph_config(tables.clone()), target, num_shards);
+        ctx.repopulate_node_stats_from_meta().unwrap();
+        for table in &tables {
+            let expected: Vec<u64> = counts[table.name.as_str()].to_vec();
+            assert_eq!(
+                ctx.shard_rows.get(&table.name),
+                Some(&expected),
+                "shard_rows mismatch for {}",
+                table.name
+            );
+            let expected_total: u64 = expected.iter().sum();
+            assert_eq!(
+                ctx.table_rows.get(&table.name),
+                Some(&expected_total),
+                "table_rows mismatch for {}",
+                table.name
+            );
+        }
+    }
+
+    #[test]
+    fn repopulate_node_stats_overwrites_garbage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = local_target(tmp.path());
+        let table = node_table("Users", Some("id"));
+        let num_shards = 2;
+        for shard in 0..num_shards {
+            write_temp_meta(
+                &target,
+                &temp_node_data_meta_path(&table.name, shard),
+                7,
+                0,
+            )
+            .unwrap();
+        }
+        let mut ctx = make_ctx(graph_config(vec![table.clone()]), target, num_shards);
+        // Pre-populate with garbage that doesn't match what's on disk.
+        ctx.shard_rows
+            .insert("Users".to_string(), vec![999, 999, 999, 999]);
+        ctx.table_rows.insert("Users".to_string(), 3996);
+        ctx.repopulate_node_stats_from_meta().unwrap();
+        assert_eq!(
+            ctx.shard_rows.get("Users"),
+            Some(&vec![7u64, 7]),
+            "garbage shard_rows not overwritten"
+        );
+        assert_eq!(
+            ctx.table_rows.get("Users"),
+            Some(&14u64),
+            "garbage table_rows not overwritten"
+        );
+    }
+
+    #[test]
+    fn repopulate_node_stats_missing_file_is_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = local_target(tmp.path());
+        let table = node_table("Users", Some("id"));
+        let num_shards = 3;
+        // Write meta for shards 0 and 2; leave shard 1 absent.
+        write_temp_meta(
+            &target,
+            &temp_node_data_meta_path(&table.name, 0),
+            5,
+            0,
+        )
+        .unwrap();
+        write_temp_meta(
+            &target,
+            &temp_node_data_meta_path(&table.name, 2),
+            11,
+            0,
+        )
+        .unwrap();
+        let mut ctx = make_ctx(graph_config(vec![table]), target, num_shards);
+        ctx.repopulate_node_stats_from_meta()
+            .expect("missing meta should be skipped, not fail");
+        assert_eq!(
+            ctx.shard_rows.get("Users"),
+            Some(&vec![5u64, 0, 11]),
+            "missing-shard slot should be 0"
+        );
+        assert_eq!(ctx.table_rows.get("Users"), Some(&16u64));
+    }
+
+    #[test]
+    fn repopulate_node_stats_skips_edge_tables() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = local_target(tmp.path());
+        let users = node_table("Users", Some("id"));
+        let edges = edge_table("Friendship", "Users", "Users");
+        let num_shards = 1;
+        write_temp_meta(
+            &target,
+            &temp_node_data_meta_path(&users.name, 0),
+            42,
+            0,
+        )
+        .unwrap();
+        // Even if an edge table somehow had a meta on disk, the helper
+        // must not surface it under shard_rows.
+        write_temp_meta(
+            &target,
+            &temp_node_data_meta_path(&edges.name, 0),
+            99,
+            0,
+        )
+        .unwrap();
+        let mut ctx = make_ctx(graph_config(vec![users, edges]), target, num_shards);
+        ctx.repopulate_node_stats_from_meta().unwrap();
+        assert!(ctx.shard_rows.contains_key("Users"));
+        assert!(
+            !ctx.shard_rows.contains_key("Friendship"),
+            "edge table should not appear in shard_rows"
+        );
+        assert!(
+            !ctx.table_rows.contains_key("Friendship"),
+            "edge table should not appear in table_rows"
+        );
+    }
+
+    // -- B. repopulate_pk_hash_paths_from_disk -----------------------------
+
+    fn touch_pk_files(root: &Path, table: &str, num_shards: usize) {
+        for shard in 0..num_shards {
+            let dir = root.join(format!("nodes/{}", table.to_lowercase()));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join(format!("pk_hash-{:05}.bin", shard)), b"h").unwrap();
+            fs::write(dir.join(format!("pk_data-{:05}.bin", shard)), b"d").unwrap();
+        }
+    }
+
+    #[test]
+    fn repopulate_pk_hash_paths_happy_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let target = local_target(root);
+        let tables = vec![
+            node_table("Users", Some("id")),
+            node_table("Items", Some("id")),
+        ];
+        let num_shards = 3;
+        for t in &tables {
+            touch_pk_files(root, &t.name, num_shards);
+        }
+        let mut ctx = make_ctx(graph_config(tables.clone()), target, num_shards);
+        ctx.repopulate_pk_hash_paths_from_disk().unwrap();
+        for t in &tables {
+            let paths = ctx
+                .pk_hash_paths
+                .get(&t.name)
+                .unwrap_or_else(|| panic!("missing pk_hash_paths for {}", t.name));
+            assert_eq!(paths.len(), num_shards, "wrong shard count for {}", t.name);
+            for (shard, p) in paths.iter().enumerate() {
+                let expected_hash = format!(
+                    "nodes/{}/pk_hash-{:05}.bin",
+                    t.name.to_lowercase(),
+                    shard
+                );
+                let expected_data = format!(
+                    "nodes/{}/pk_data-{:05}.bin",
+                    t.name.to_lowercase(),
+                    shard
+                );
+                assert_eq!(p.hash_path, expected_hash, "hash_path mismatch");
+                assert_eq!(p.data_path, expected_data, "data_path mismatch");
+            }
+        }
+    }
+
+    #[test]
+    fn repopulate_pk_hash_paths_missing_file_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let target = local_target(root);
+        let table = node_table("Users", Some("id"));
+        let num_shards = 2;
+        touch_pk_files(root, &table.name, num_shards);
+        // Remove one pk_hash file to simulate a broken / partially-cleaned
+        // pk_map output dir.
+        let missing = root.join("nodes/users/pk_hash-00001.bin");
+        fs::remove_file(&missing).unwrap();
+        let mut ctx = make_ctx(graph_config(vec![table]), target, num_shards);
+        let err = ctx
+            .repopulate_pk_hash_paths_from_disk()
+            .expect_err("expected error for missing pk_hash file");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("pk_hash-00001.bin"),
+            "error message should name the missing file, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn repopulate_pk_hash_paths_skips_edge_and_pkless_tables() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let target = local_target(root);
+        let users = node_table("Users", Some("id"));
+        let pkless = node_table("Logs", None);
+        let edges = edge_table("Friendship", "Users", "Users");
+        let num_shards = 1;
+        touch_pk_files(root, &users.name, num_shards);
+        // Lay down stray files for ineligible tables — the helper must
+        // not try to read them and must not surface them in the map.
+        touch_pk_files(root, &pkless.name, num_shards);
+        touch_pk_files(root, &edges.name, num_shards);
+        let mut ctx = make_ctx(
+            graph_config(vec![users, pkless, edges]),
+            target,
+            num_shards,
+        );
+        ctx.repopulate_pk_hash_paths_from_disk().unwrap();
+        assert!(ctx.pk_hash_paths.contains_key("Users"));
+        assert!(
+            !ctx.pk_hash_paths.contains_key("Logs"),
+            "PK-less table should be excluded"
+        );
+        assert!(
+            !ctx.pk_hash_paths.contains_key("Friendship"),
+            "edge table should be excluded"
+        );
+    }
+
+    #[test]
+    fn repopulate_pk_hash_paths_overwrites_garbage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let target = local_target(root);
+        let table = node_table("Users", Some("id"));
+        let num_shards = 2;
+        touch_pk_files(root, &table.name, num_shards);
+        let mut ctx = make_ctx(graph_config(vec![table]), target, num_shards);
+        ctx.pk_hash_paths.insert(
+            "Users".to_string(),
+            vec![PkHashPaths {
+                hash_path: "GARBAGE".to_string(),
+                data_path: "GARBAGE".to_string(),
+            }],
+        );
+        ctx.repopulate_pk_hash_paths_from_disk().unwrap();
+        let paths = ctx.pk_hash_paths.get("Users").unwrap();
+        assert_eq!(paths.len(), num_shards, "garbage entry not replaced");
+        assert_eq!(paths[0].hash_path, "nodes/users/pk_hash-00000.bin");
+    }
+
+    // -- C. repopulate_table_contexts_from_source --------------------------
+
+    fn write_ctx_files(root: &Path, tables: &[TableSpec]) {
+        for t in tables {
+            if t.edge_table.is_some() {
+                continue;
+            }
+            let dir = root.join(format!("nodes/{}", t.name.to_lowercase()));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("node_data.ctx"), b"ctx").unwrap();
+        }
+    }
+
+    #[test]
+    fn repopulate_table_contexts_happy_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = local_target(tmp.path());
+        let tables = vec![
+            node_table("Users", Some("id")),
+            node_table("Items", None),
+            node_table("Reviews", Some("id")),
+        ];
+        write_ctx_files(tmp.path(), &tables);
+        let mut ctx = make_ctx(graph_config(tables.clone()), target, 1);
+        ctx.repopulate_table_contexts_from_source().unwrap();
+        assert_eq!(ctx.table_contexts.len(), 3);
+        for t in &tables {
+            let expected = format!("nodes/{}/node_data.ctx", t.name.to_lowercase());
+            assert_eq!(
+                ctx.table_contexts.get(&t.name),
+                Some(&expected),
+                "ctx path mismatch for {}",
+                t.name
+            );
+        }
+    }
+
+    #[test]
+    fn repopulate_table_contexts_overwrites_garbage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = local_target(tmp.path());
+        let table = node_table("Users", Some("id"));
+        let tables = vec![table];
+        write_ctx_files(tmp.path(), &tables);
+        let mut ctx = make_ctx(graph_config(tables), target, 1);
+        ctx.table_contexts
+            .insert("Users".to_string(), "GARBAGE/path.ctx".to_string());
+        ctx.repopulate_table_contexts_from_source().unwrap();
+        assert_eq!(
+            ctx.table_contexts.get("Users"),
+            Some(&"nodes/users/node_data.ctx".to_string())
+        );
+    }
+
+    #[test]
+    fn repopulate_table_contexts_skips_edge_tables() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = local_target(tmp.path());
+        let users = node_table("Users", Some("id"));
+        let edges = edge_table("Friendship", "Users", "Users");
+        let tables = vec![users, edges];
+        write_ctx_files(tmp.path(), &tables);
+        let mut ctx = make_ctx(graph_config(tables), target, 1);
+        ctx.repopulate_table_contexts_from_source().unwrap();
+        assert!(ctx.table_contexts.contains_key("Users"));
+        assert!(
+            !ctx.table_contexts.contains_key("Friendship"),
+            "edge table should not get a context entry"
+        );
+    }
+
+    #[test]
+    fn repopulate_table_contexts_errors_on_missing_ctx_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = local_target(tmp.path());
+        let tables = vec![node_table("Users", Some("id"))];
+        let mut ctx = make_ctx(graph_config(tables), target, 1);
+        let err = ctx
+            .repopulate_table_contexts_from_source()
+            .expect_err("should error when ctx file missing");
+        let msg = format!("{err}");
+        assert!(msg.contains("Users"), "error must name the table: {msg}");
+        assert!(msg.contains("node_data.ctx"), "error must name the path: {msg}");
+    }
+
+    // -- D. wipe_phase_outputs rescoping coverage --------------------------
+    //
+    // The existing `wipe_phase_outputs_*` tests in `tests_resume_phase` cover
+    // the broad happy path. These tests pin down a few invariants that the
+    // rescoping in ac25fd5 was specifically meant to enforce.
+
+    #[test]
+    fn wipe_pk_map_preserves_ctx_and_shard_dirs() {
+        // Defensive check: even if a node_data.bin somehow ended up under a
+        // shard-NNNNN/ subdir of nodes/<t>/ (it normally lives in _tmp), the
+        // pk_map wipe must not touch it because it doesn't have one of the
+        // pk_hash- / pk_data- prefixes.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let table_dir = root.join("nodes/users");
+        fs::create_dir_all(&table_dir).unwrap();
+        fs::write(table_dir.join("node_data.ctx"), b"keep").unwrap();
+        fs::write(table_dir.join("pk_hash-00000.bin"), b"stale").unwrap();
+        let shard = table_dir.join("shard-00000");
+        fs::create_dir_all(&shard).unwrap();
+        fs::write(shard.join("node_data.bin"), b"keep").unwrap();
+        wipe_phase_outputs(root, "pk_map").unwrap();
+        assert!(
+            table_dir.join("node_data.ctx").exists(),
+            "node_data.ctx must survive pk_map wipe"
+        );
+        assert!(
+            shard.join("node_data.bin").exists(),
+            "shard-NNNNN/* must survive pk_map wipe"
+        );
+        assert!(
+            !table_dir.join("pk_hash-00000.bin").exists(),
+            "pk_hash file should be removed"
+        );
+    }
+
+    #[test]
+    fn wipe_index_preserves_pk_map_and_ctx_outputs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let table_dir = root.join("nodes/users");
+        fs::create_dir_all(&table_dir).unwrap();
+        fs::write(table_dir.join("node_data.ctx"), b"keep").unwrap();
+        fs::write(table_dir.join("pk_hash-00000.bin"), b"keep").unwrap();
+        fs::write(table_dir.join("pk_data-00000.bin"), b"keep").unwrap();
+        let shard0 = table_dir.join("shard-00000");
+        let shard1 = table_dir.join("shard-00001");
+        fs::create_dir_all(&shard0).unwrap();
+        fs::create_dir_all(&shard1).unwrap();
+        fs::write(shard0.join("offsets.bin"), b"stale").unwrap();
+        fs::write(shard0.join("edges.bin"), b"stale").unwrap();
+        fs::write(shard0.join("build_stats.json"), b"{}").unwrap();
+        fs::write(shard1.join("offsets.bin"), b"stale").unwrap();
+        fs::write(root.join("index_metadata.json"), b"{}").unwrap();
+        wipe_phase_outputs(root, "index").unwrap();
+        // index outputs must be gone
+        assert!(!root.join("index_metadata.json").exists());
+        assert!(!shard0.join("offsets.bin").exists());
+        assert!(!shard0.join("edges.bin").exists());
+        assert!(!shard0.join("build_stats.json").exists());
+        assert!(!shard1.join("offsets.bin").exists());
+        // pk_map + context outputs must survive
+        assert!(table_dir.join("node_data.ctx").exists());
+        assert!(table_dir.join("pk_hash-00000.bin").exists());
+        assert!(table_dir.join("pk_data-00000.bin").exists());
+    }
+
+    #[test]
+    fn wipe_edges_map_only_touches_tmp_edges_map() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let edges_part = root.join("_tmp/edges_map/r/shard-00000/part-00000.bin");
+        fs::create_dir_all(edges_part.parent().unwrap()).unwrap();
+        fs::write(&edges_part, b"stale").unwrap();
+        let table_dir = root.join("nodes/users");
+        fs::create_dir_all(&table_dir).unwrap();
+        fs::write(table_dir.join("pk_hash-00000.bin"), b"keep").unwrap();
+        // Sibling _tmp dirs that belong to other phases must survive — only
+        // _tmp/edges_map should be touched.
+        let sibling = root.join("_tmp/fkeys/u/shard-00000");
+        fs::create_dir_all(&sibling).unwrap();
+        fs::write(sibling.join("rows.bin"), b"keep").unwrap();
+        wipe_phase_outputs(root, "edges_map").unwrap();
+        assert!(
+            !root.join("_tmp/edges_map").exists(),
+            "_tmp/edges_map should be removed"
+        );
+        assert!(
+            table_dir.join("pk_hash-00000.bin").exists(),
+            "pk_hash-* must survive edges_map wipe"
+        );
+        assert!(
+            sibling.join("rows.bin").exists(),
+            "other _tmp/* dirs must survive edges_map wipe"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests_disk_space {
     use super::*;
 
@@ -701,6 +1654,19 @@ struct IngestContext {
     target: std::sync::Arc<OutputTarget>,
     profile_dir: Option<PathBuf>,
     parallel: bool,
+    /// Per-phase thread-count overrides. `None` falls back to
+    /// `default_worker_threads()`.
+    context_threads: Option<usize>,
+    encode_threads: Option<usize>,
+    pk_map_threads: Option<usize>,
+    edges_map_threads: Option<usize>,
+    index_threads: Option<usize>,
+    /// Sum of per-shard `estimate_pk_map_bytes` requests across the pk_map
+    /// phase. Compared against observed peak RSS at end of the phase to
+    /// validate that the budget estimate matches reality.
+    pk_map_estimate_sum: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// High-water mark of RssAnon observed at task milestones during pk_map.
+    pk_map_peak_rss: std::sync::Arc<std::sync::atomic::AtomicU64>,
     index_mem_budget: Option<std::sync::Arc<MemoryBudget>>,
     num_shards: usize,
     input_transfer: Option<CloudTransfer>,
@@ -1507,12 +2473,20 @@ fn build_sort_key_batchers_for_edge_table(
 }
 
 impl IngestContext {
-    fn make_pool<S: Default + Send + 'static>(&self) -> TaskPool<S> {
-        TaskPool::new(if self.parallel {
-            default_worker_threads()
-        } else {
-            1
-        })
+    fn make_pool<S: Default + Send + 'static>(&self, phase: IngestPhase) -> TaskPool<S> {
+        if !self.parallel {
+            return TaskPool::new(1);
+        }
+        let n = match phase {
+            IngestPhase::Context => self.context_threads,
+            IngestPhase::Encode => self.encode_threads,
+            IngestPhase::PkMap => self.pk_map_threads,
+            IngestPhase::EdgesMap => self.edges_map_threads,
+            IngestPhase::Index => self.index_threads,
+        }
+        .unwrap_or_else(default_worker_threads);
+        let n = n.max(1);
+        TaskPool::new(n)
     }
 
     fn emit_progress(&self, event: ProgressEvent) {
@@ -1735,6 +2709,13 @@ impl IngestContext {
             target,
             profile_dir: options.profile_dir,
             parallel: options.parallel,
+            context_threads: options.context_threads,
+            encode_threads: options.encode_threads,
+            pk_map_threads: options.pk_map_threads,
+            edges_map_threads: options.edges_map_threads,
+            index_threads: options.index_threads,
+            pk_map_estimate_sum: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            pk_map_peak_rss: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             index_mem_budget,
             num_shards,
             input_transfer,
@@ -2080,7 +3061,7 @@ impl IngestContext {
         }
         drop(tx);
         let task_count = tasks.len();
-        let pool = self.make_pool::<()>();
+        let pool = self.make_pool::<()>(IngestPhase::Context);
         run_tasks(tasks, &pool)?;
         for _ in 0..task_count {
             let result = rx
@@ -2302,7 +3283,7 @@ impl IngestContext {
         }
         drop(tx);
         let task_count = tasks.len();
-        let pool = self.make_pool::<()>();
+        let pool = self.make_pool::<()>(IngestPhase::Encode);
         run_tasks(tasks, &pool)?;
         // Per-table col stats accumulator (Option C: merge on receive side)
         let mut table_col_stats: HashMap<String, crate::col_stats::FileColStats> = HashMap::new();
@@ -2422,6 +3403,137 @@ impl IngestContext {
         self.write_consolidated_meta(&node_stats, &edge_stats, &dest_key_stats)?;
         self.refresh_shard_rows_from_stats(&node_stats);
         self.table_rows = table_rows;
+        Ok(())
+    }
+
+    /// Re-derive `shard_rows` and `table_rows` from encode's on-disk
+    /// `_tmp/nodes/<t>/shard-N/node_data.meta` files. Used when an ingest
+    /// invocation skips the encode phase (resume_from_phase > encode) — encode
+    /// would normally have populated these via `refresh_shard_rows_from_stats`,
+    /// but the in-memory state is fresh on a resumed invocation. Both
+    /// `edge_build_context` and `build_index_metadata` read `shard_rows`, so
+    /// later phases would otherwise see empty maps and fail with
+    /// "missing pk hash paths for X" or wrong shard offsets.
+    fn repopulate_node_stats_from_meta(&mut self) -> Result<()> {
+        let root = match &*self.target {
+            OutputTarget::Local { root, .. } => root.clone(),
+            _ => return Ok(()),
+        };
+        self.shard_rows.clear();
+        self.table_rows.clear();
+        for table in &self.source.tables {
+            if table.edge_table.is_some() {
+                continue;
+            }
+            let mut shard_rows = vec![0u64; self.num_shards];
+            let mut total = 0u64;
+            for (shard, slot) in shard_rows.iter_mut().enumerate() {
+                let meta_path = root.join(temp_node_data_meta_path(&table.name, shard));
+                if !meta_path.exists() {
+                    continue;
+                }
+                let meta = read_temp_meta(&meta_path)?;
+                *slot = meta.row_count;
+                total = total.saturating_add(meta.row_count);
+            }
+            self.shard_rows.insert(table.name.clone(), shard_rows);
+            self.table_rows.insert(table.name.clone(), total);
+        }
+        tracing::info!(
+            tables = self.shard_rows.len(),
+            "repopulated shard_rows + table_rows from encode meta files"
+        );
+        Ok(())
+    }
+
+    /// Re-derive `pk_hash_paths` from pk_map's deterministic on-disk layout.
+    /// Used on resume when pk_map was skipped; edges_map reads `pk_hash_paths`
+    /// to build the PkHashStore and would otherwise see an empty map.
+    fn repopulate_pk_hash_paths_from_disk(&mut self) -> Result<()> {
+        let root = match &*self.target {
+            OutputTarget::Local { root, .. } => root.clone(),
+            _ => return Ok(()),
+        };
+        self.pk_hash_paths.clear();
+        for table in &self.source.tables {
+            if table.edge_table.is_some() || table.primary_key.is_none() {
+                continue;
+            }
+            let mut paths = Vec::with_capacity(self.num_shards);
+            for shard in 0..self.num_shards {
+                let hash_path = format!(
+                    "nodes/{}/pk_hash-{:05}.bin",
+                    table.name.to_lowercase(),
+                    shard
+                );
+                let data_path = format!(
+                    "nodes/{}/pk_data-{:05}.bin",
+                    table.name.to_lowercase(),
+                    shard
+                );
+                let abs_hash = root.join(&hash_path);
+                let abs_data = root.join(&data_path);
+                if !abs_hash.exists() {
+                    return Err(anyhow!(
+                        "repopulate_pk_hash_paths_from_disk: missing pk hash file {} \
+                         for table {} shard {} — pk_map marker present but output is gone",
+                        abs_hash.display(),
+                        table.name,
+                        shard
+                    ));
+                }
+                if !abs_data.exists() {
+                    return Err(anyhow!(
+                        "repopulate_pk_hash_paths_from_disk: missing pk data file {} \
+                         for table {} shard {} — pk_map marker present but output is gone",
+                        abs_data.display(),
+                        table.name,
+                        shard
+                    ));
+                }
+                paths.push(PkHashPaths {
+                    hash_path,
+                    data_path,
+                });
+            }
+            self.pk_hash_paths.insert(table.name.clone(), paths);
+        }
+        tracing::info!(
+            tables = self.pk_hash_paths.len(),
+            "repopulated pk_hash_paths from on-disk pk_map outputs"
+        );
+        Ok(())
+    }
+
+    /// Re-derive `table_contexts` from the deterministic context-phase layout.
+    /// Used on resume when context was skipped; `build_index_metadata` reads
+    /// this map to point each table's index entry at its `node_data.ctx`.
+    fn repopulate_table_contexts_from_source(&mut self) -> Result<()> {
+        let root = match &*self.target {
+            OutputTarget::Local { root, .. } => root.clone(),
+            _ => return Ok(()),
+        };
+        self.table_contexts.clear();
+        for table in &self.source.tables {
+            if table.edge_table.is_some() {
+                continue;
+            }
+            let ctx_path = format!("nodes/{}/node_data.ctx", table.name.to_lowercase());
+            let abs = root.join(&ctx_path);
+            if !abs.exists() {
+                return Err(anyhow!(
+                    "repopulate_table_contexts_from_source: missing {} for table {} \
+                     (context predecessor marker should have prevented this)",
+                    abs.display(),
+                    table.name,
+                ));
+            }
+            self.table_contexts.insert(table.name.clone(), ctx_path);
+        }
+        tracing::info!(
+            tables = self.table_contexts.len(),
+            "repopulated table_contexts from source schema"
+        );
         Ok(())
     }
 
@@ -3599,6 +4711,8 @@ impl IngestContext {
                 let relationships = relationships.clone();
                 let source = source.clone();
                 let fk_edge_targets = fk_edge_targets.clone();
+                let estimate_sum = std::sync::Arc::clone(&self.pk_map_estimate_sum);
+                let peak_rss = std::sync::Arc::clone(&self.pk_map_peak_rss);
                 tasks.push(WorkItem {
                     bucket: None,
                     run: Box::new(move |scratch: &mut PkMapScratch| {
@@ -3679,6 +4793,12 @@ impl IngestContext {
                             0
                         };
                         let estimate = estimate_pk_map_bytes(union_rows, key_type, avg_var_bytes);
+                        // Track this task's estimate so we can compare the
+                        // sum-of-estimates vs the actual peak RSS at end of pk_map.
+                        estimate_sum.fetch_add(estimate, std::sync::atomic::Ordering::Relaxed);
+                        // Sample current RSS at task entry — gives a cheap
+                        // proxy for the high-water mark across the phase.
+                        update_atomic_max(&peak_rss, rss_anon_diag_bytes());
                         let _budget_guard = if let Some(budget) = pk_map_budget.as_ref() {
                             let budget_total = budget.snapshot().total;
                             if budget_total == 0 || estimate == 0 {
@@ -3836,8 +4956,21 @@ impl IngestContext {
                                     let mut ptrhash =
                                         std::mem::replace(&mut pkmap.ptrhash, PtrHashScratch::new());
                                     pkmap.clear_others_for(KeyType::VarBytes);
+                                    let pre_clear_cap = pkmap.seen_bytes.capacity();
                                     pkmap.seen_bytes.clear();
                                     reserve_map(&mut pkmap.seen_bytes, reserve_rows_usize);
+                                    tracing::info!(
+                                        target: "diskgraph::pk_map_diag",
+                                        table = %table_name, shard, phase = "task_start",
+                                        seen_len = 0u64,
+                                        seen_cap = pkmap.seen_bytes.capacity() as u64,
+                                        prev_seen_cap = pre_clear_cap as u64,
+                                        reserve_rows = reserve_rows_usize as u64,
+                                        union_rows = union_rows,
+                                        avg_var_bytes = avg_var_bytes,
+                                        rss_anon = rss_anon_diag_bytes(),
+                                        "pk_map: starting VarBytes shard task"
+                                    );
                                     duplicate_samples_local.clear();
                                     {
                                         let seen = &mut pkmap.seen_bytes;
@@ -3898,9 +5031,20 @@ impl IngestContext {
                                             row_id += 1;
                                             Ok(())
                                         })?;
-                                        for (path, _meta_path, target_type) in
-                                            fkey_inputs.iter().chain(edge_inputs.iter())
+                                        tracing::info!(
+                                            target: "diskgraph::pk_map_diag",
+                                            table = %table_name, shard, phase = "after_pk_ingest",
+                                            seen_len = seen.len() as u64,
+                                            seen_cap = seen.capacity() as u64,
+                                            row_id,
+                                            rss_anon = rss_anon_diag_bytes(),
+                                            "pk_map: PK rows ingested"
+                                        );
+                                        for (idx, (path, _meta_path, target_type)) in
+                                            fkey_inputs.iter().chain(edge_inputs.iter()).enumerate()
                                         {
+                                            let len_before = seen.len();
+                                            let cap_before = seen.capacity();
                                             read_temp_rows(path, |row| {
                                                 let mut data = row;
                                                 let key = read_key_from_buf_for_type(&mut data, target_type)?;
@@ -3909,10 +5053,30 @@ impl IngestContext {
                                                 }
                                                 Ok(())
                                             })?;
+                                            tracing::info!(
+                                                target: "diskgraph::pk_map_diag",
+                                                table = %table_name, shard, phase = "after_fk_file",
+                                                fk_index = idx,
+                                                fk_path = %path.display(),
+                                                seen_len_before = len_before as u64,
+                                                seen_len_after = seen.len() as u64,
+                                                seen_cap_before = cap_before as u64,
+                                                seen_cap_after = seen.capacity() as u64,
+                                                rss_anon = rss_anon_diag_bytes(),
+                                                "pk_map: FK file merged"
+                                            );
                                         }
                                     }
                                     let params = ptr_hash::PtrHashParams::default();
                                     let seen = std::mem::take(&mut pkmap.seen_bytes);
+                                    tracing::info!(
+                                        target: "diskgraph::pk_map_diag",
+                                        table = %table_name, shard, phase = "before_mphf",
+                                        seen_len = seen.len() as u64,
+                                        seen_cap = seen.capacity() as u64,
+                                        rss_anon = rss_anon_diag_bytes(),
+                                        "pk_map: building MPHF"
+                                    );
                                     let mphf =
                                         DefaultPtrHash::<PkPtrHash, Vec<u8>>::try_new_from_source_with_scratch(
                                             &seen,
@@ -3920,6 +5084,14 @@ impl IngestContext {
                                             &mut ptrhash,
                                         )
                                         .ok_or_else(|| anyhow!("ptrhash construction failed"))?;
+                                    tracing::info!(
+                                        target: "diskgraph::pk_map_diag",
+                                        table = %table_name, shard, phase = "after_mphf",
+                                        seen_len = seen.len() as u64,
+                                        mphf_slots = mphf.max_index() as u64,
+                                        rss_anon = rss_anon_diag_bytes(),
+                                        "pk_map: MPHF built"
+                                    );
                                     let entries = {
                                         let slots = mphf.max_index();
                                         let mut entries = std::mem::take(&mut pkmap.entries);
@@ -3951,6 +5123,12 @@ impl IngestContext {
                                         &mphf,
                                         entries,
                                     )?;
+                                    tracing::info!(
+                                        target: "diskgraph::pk_map_diag",
+                                        table = %table_name, shard, phase = "task_done",
+                                        rss_anon = rss_anon_diag_bytes(),
+                                        "pk_map: VarBytes shard task complete"
+                                    );
                                     Ok::<_, anyhow::Error>((hash_rel, data_rel))
                                 }
                             }
@@ -4384,7 +5562,7 @@ impl IngestContext {
                 });
             }
         }
-        let pool = self.make_pool::<PkMapScratch>();
+        let pool = self.make_pool::<PkMapScratch>(IngestPhase::PkMap);
         let run_result = run_tasks(std::mem::take(&mut tasks), &pool);
         run_result?;
         for table in &self.source.tables {
@@ -4615,7 +5793,7 @@ impl IngestContext {
             });
         }
         drop(tx);
-        let pool = self.make_pool::<()>();
+        let pool = self.make_pool::<()>(IngestPhase::EdgesMap);
         run_tasks(tasks, &pool)?;
         let mut tables: HashMap<String, Vec<Option<PkHashShard>>> = HashMap::new();
         for (table_name, shard_count) in table_shard_counts {
@@ -4690,7 +5868,7 @@ impl IngestContext {
             });
         }
         drop(tx);
-        let pool = self.make_pool::<()>();
+        let pool = self.make_pool::<()>(IngestPhase::EdgesMap);
         run_tasks(tasks, &pool)?;
         let mut lookups = HashMap::with_capacity(self.relation_defs.len());
         for _ in 0..self.relation_defs.len() {
@@ -4711,7 +5889,7 @@ impl IngestContext {
         let root = &edge_ctx.root;
         self.edge_counts.clear();
 
-        let pool = self.make_pool::<EdgeMapScratch>();
+        let pool = self.make_pool::<EdgeMapScratch>(IngestPhase::EdgesMap);
         {
             #[derive(Default)]
             struct EdgeMapResult {
@@ -5399,10 +6577,10 @@ impl IngestContext {
             self.temp_edges_map_bytes = self
                 .temp_edges_map_bytes
                 .saturating_add(self.record_edge_stage_bytes("edges_map")?);
-            self.cleanup_edge_stage("edges_src")?;
-            self.cleanup_edge_stage("fkeys")?;
-            self.cleanup_edge_stage("fkeys_dst")?;
-            self.cleanup_edge_stage("edge_keys")?;
+            // Post-edges_map cleanup of inputs (edges_src/fkeys/fkeys_dst/edge_keys)
+            // is now driven by `ingest_with_stats_from_source` after the edges_map
+            // marker is written, so a crash mid-cleanup cannot leave the pipeline
+            // in a state that breaks resume.
             Ok(())
         }
     }
@@ -5506,6 +6684,142 @@ impl IngestContext {
         Ok(0)
     }
 
+    /// Walk `_tmp/fkeys/**/bitmap.bin` and apply `f` to each path found.
+    /// Helper for the pk_map pristine-COW pre/post hooks.
+    fn for_each_fkey_bitmap<F>(&self, mut f: F) -> Result<()>
+    where
+        F: FnMut(&Path) -> Result<()>,
+    {
+        let root = match &*self.target {
+            OutputTarget::Local { root, .. } => root.clone(),
+            _ => return Ok(()),
+        };
+        let fkeys_root = root.join(TEMP_DIR_NAME).join("fkeys");
+        if !fkeys_root.exists() {
+            return Ok(());
+        }
+        // _tmp/fkeys/<src_table>/<rel>/shard-NNNNN/bitmap.bin
+        for src_entry in fs::read_dir(&fkeys_root)? {
+            let src = src_entry?.path();
+            if !src.is_dir() { continue; }
+            for rel_entry in fs::read_dir(&src)? {
+                let rel = rel_entry?.path();
+                if !rel.is_dir() { continue; }
+                for shard_entry in fs::read_dir(&rel)? {
+                    let shard = shard_entry?.path();
+                    if !shard.is_dir() { continue; }
+                    let bitmap = shard.join("bitmap.bin");
+                    if bitmap.is_file() {
+                        f(&bitmap)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Pre-pk_map hook: phase-pristine COW for fkey bitmaps.
+    ///
+    /// pk_map mutates `_tmp/fkeys/.../bitmap.bin` in place during the phase
+    /// (clearing bits for null timestamps and duplicate PKs). Those bitmap
+    /// files are encode's outputs; pk_map mutating them violates the phase
+    /// atomicity invariant ("a phase writes only to its own outputs").
+    ///
+    /// Fix: at pk_map start, snapshot each `bitmap.bin` to `bitmap.bin.pristine`
+    /// (or restore the canonical from a pristine that already exists, which
+    /// signals we're resuming after a previous pk_map crash). pk_map_post
+    /// deletes the pristine on success so it cannot poison a future re-encode.
+    fn pk_map_pre(&self) -> Result<()> {
+        if !matches!(&*self.target, OutputTarget::Local { .. }) {
+            return Ok(());
+        }
+        let mut snapshot_count = 0u64;
+        let mut restore_count = 0u64;
+        self.for_each_fkey_bitmap(|bitmap| {
+            let pristine = bitmap.with_extension("bin.pristine");
+            if !pristine.exists() {
+                fs::copy(bitmap, &pristine).with_context(|| {
+                    format!("pk_map_pre: snapshot {}", bitmap.display())
+                })?;
+                snapshot_count += 1;
+            } else {
+                fs::copy(&pristine, bitmap).with_context(|| {
+                    format!("pk_map_pre: restore {}", bitmap.display())
+                })?;
+                restore_count += 1;
+            }
+            Ok(())
+        })?;
+        tracing::info!(
+            stage = "pk_map",
+            snapshot_count, restore_count,
+            "pk_map_pre: bitmap pristine COW prepared"
+        );
+        Ok(())
+    }
+
+    /// Post-pk_map hook: drop pristines now that bitmap.bin is the canonical
+    /// post-pk_map state. This must run only after the pk_map marker is
+    /// written so a crash here does not leave the pipeline in a state where
+    /// a future resume of pk_map cannot restore.
+    fn pk_map_post(&self) -> Result<()> {
+        if !matches!(&*self.target, OutputTarget::Local { .. }) {
+            return Ok(());
+        }
+        let mut removed = 0u64;
+        self.for_each_fkey_bitmap(|bitmap| {
+            let pristine = bitmap.with_extension("bin.pristine");
+            if pristine.exists() {
+                fs::remove_file(&pristine).with_context(|| {
+                    format!("pk_map_post: remove {}", pristine.display())
+                })?;
+                removed += 1;
+            }
+            Ok(())
+        })?;
+        tracing::info!(
+            stage = "pk_map",
+            removed_pristines = removed,
+            "pk_map_post: dropped bitmap pristines"
+        );
+        Ok(())
+    }
+
+    /// Post-pk_map cleanup: free encode's `pkey.bin`/`pkey.meta` files.
+    /// pk_map is the only consumer of those files; once pk_map's marker is
+    /// written, holding them through the rest of the pipeline costs ~160 GB
+    /// for DoorDash-shaped data and gains nothing.
+    /// `node_data.bin` stays — `build_index_metadata` reads it.
+    fn cleanup_pkey_temp_files(&self) -> Result<u64> {
+        let root = match &*self.target {
+            OutputTarget::Local { root, .. } => root.clone(),
+            _ => return Ok(0),
+        };
+        let nodes_root = root.join(TEMP_DIR_NAME).join("nodes");
+        if !nodes_root.exists() {
+            return Ok(0);
+        }
+        let mut removed_bytes = 0u64;
+        for table_entry in fs::read_dir(&nodes_root)? {
+            let table_dir = table_entry?.path();
+            if !table_dir.is_dir() { continue; }
+            for shard_entry in fs::read_dir(&table_dir)? {
+                let shard_dir = shard_entry?.path();
+                if !shard_dir.is_dir() { continue; }
+                for name in &["pkey.bin", "pkey.meta"] {
+                    let p = shard_dir.join(name);
+                    if p.is_file() {
+                        if let Ok(meta) = p.metadata() {
+                            removed_bytes = removed_bytes.saturating_add(meta.len());
+                        }
+                        let _ = fs::remove_file(&p);
+                    }
+                }
+            }
+        }
+        Ok(removed_bytes)
+    }
+
     fn build_index(&mut self, metadata: DatasetMetadata) -> Result<()> {
         let root = require_local_output(&self.target)?.to_path_buf();
         let builder = GraphIndexBuilder::from_metadata(
@@ -5545,7 +6859,7 @@ impl IngestContext {
                 }),
             });
         }
-        let pool = self.make_pool::<()>();
+        let pool = self.make_pool::<()>(IngestPhase::Index);
         run_tasks(tasks, &pool)?;
         Ok(())
     }
@@ -6070,6 +7384,245 @@ fn profile_phase<T>(dir: &Path, name: &str, f: impl FnOnce() -> Result<T>) -> Re
     let bytes = profile.encode_to_vec();
     file.write_all(&bytes).context("write pprof profile")?;
     result
+}
+
+/// Path of the marker file that proves a phase ran to completion.
+/// Lives under `_tmp/` so the existing `cleanup_temp()` removes markers on
+/// pipeline success without any extra logic.
+fn phase_marker_path(root: &Path, name: &str) -> PathBuf {
+    root.join(TEMP_DIR_NAME)
+        .join(format!("_phase_complete_{name}"))
+}
+
+fn phase_marker_exists(root: &Path, name: &str) -> bool {
+    phase_marker_path(root, name).exists()
+}
+
+/// Write the phase marker atomically: tmp file + rename + best-effort dir fsync.
+fn write_phase_marker(root: &Path, name: &str) -> Result<()> {
+    let final_path = phase_marker_path(root, name);
+    if let Some(parent) = final_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp_path = final_path.with_extension("inprogress");
+    fs::write(&tmp_path, b"")
+        .with_context(|| format!("write phase marker tmp: {}", tmp_path.display()))?;
+    fs::rename(&tmp_path, &final_path)
+        .with_context(|| format!("rename phase marker: {}", final_path.display()))?;
+    if let Some(parent) = final_path.parent() {
+        let _ = fs::File::open(parent).and_then(|f| f.sync_all());
+    }
+    Ok(())
+}
+
+/// Wipe the outputs (and stale marker) of a single phase before re-running it.
+/// Called only when about to *re-run* a phase that may have partial state from
+/// a prior crash — i.e. on the resume-target phase. Fresh ingests rely on the
+/// top-level output_dir wipe and never call this.
+///
+/// `encode` is special-cased: it shares `_tmp/nodes/` with `context` (context
+/// writes `.ctx` files there). Encode's wipe must preserve `.ctx` files but
+/// remove all other files inside `_tmp/nodes/` (encode's `.bin`/`.meta`).
+fn wipe_phase_outputs(root: &Path, phase: &str) -> Result<()> {
+    // Remove stale marker if present (we are re-running this phase).
+    let _ = fs::remove_file(phase_marker_path(root, phase));
+
+    match phase {
+        // Context has no exclusive outputs — its `.ctx` files live in
+        // `_tmp/nodes/<table>/shard-N/` which is shared with encode.
+        // If we ever resume "from context" we're effectively running
+        // from scratch; the top-level wipe (which fired because
+        // resume_from_phase == Context implies nothing valid on disk
+        // yet) is sufficient.
+        "context" => Ok(()),
+
+        // Encode shares `_tmp/nodes/` with context. Wipe all of encode's
+        // siblings wholesale; in `_tmp/nodes/`, remove everything except
+        // `*.ctx` (which belongs to context).
+        "encode" => {
+            for d in [
+                "_tmp/fkeys",
+                "_tmp/fkeys_dst",
+                "_tmp/edge_keys",
+                "_tmp/edges_src",
+                "_tmp/sort_keys",
+            ] {
+                let p = root.join(d);
+                if p.exists() {
+                    fs::remove_dir_all(&p)
+                        .with_context(|| format!("wipe encode output: {}", p.display()))?;
+                }
+            }
+            let nodes_root = root.join(TEMP_DIR_NAME).join("nodes");
+            if nodes_root.exists() {
+                wipe_dir_keep_ext(&nodes_root, "ctx")?;
+            }
+            Ok(())
+        }
+
+        // pk_map writes pk_hash-NNNNN.bin / pk_data-NNNNN.bin /
+        // pk_hash-NNNNN.meta.json into nodes/<table>/. Preserve siblings
+        // (node_data.ctx from context, shard-NNNNN/ from index).
+        "pk_map" => {
+            let nodes = root.join("nodes");
+            if nodes.is_dir() {
+                for entry in fs::read_dir(&nodes)
+                    .with_context(|| format!("read_dir {}", nodes.display()))?
+                {
+                    let entry = entry?;
+                    let table_dir = entry.path();
+                    if !entry.file_type()?.is_dir() {
+                        continue;
+                    }
+                    wipe_files_with_prefixes(
+                        &table_dir,
+                        &["pk_hash-", "pk_data-"],
+                    )?;
+                }
+            }
+            Ok(())
+        }
+
+        "edges_map" => {
+            let p = root.join("_tmp/edges_map");
+            if p.exists() {
+                fs::remove_dir_all(&p)
+                    .with_context(|| format!("wipe edges_map output: {}", p.display()))?;
+            }
+            Ok(())
+        }
+
+        // index writes index_metadata.json at the root and
+        // offsets.bin / edges.bin / build_stats.json into each
+        // nodes/<table>/shard-NNNNN/. Preserve everything else.
+        "index" => {
+            let meta = root.join("index_metadata.json");
+            if meta.exists() {
+                fs::remove_file(&meta)
+                    .with_context(|| format!("remove {}", meta.display()))?;
+            }
+            let nodes = root.join("nodes");
+            if nodes.is_dir() {
+                for table_entry in fs::read_dir(&nodes)
+                    .with_context(|| format!("read_dir {}", nodes.display()))?
+                {
+                    let table_entry = table_entry?;
+                    if !table_entry.file_type()?.is_dir() {
+                        continue;
+                    }
+                    let table_dir = table_entry.path();
+                    for shard_entry in fs::read_dir(&table_dir)
+                        .with_context(|| format!("read_dir {}", table_dir.display()))?
+                    {
+                        let shard_entry = shard_entry?;
+                        let shard_dir = shard_entry.path();
+                        if !shard_entry.file_type()?.is_dir() {
+                            continue;
+                        }
+                        let name = match shard_dir.file_name().and_then(|n| n.to_str()) {
+                            Some(n) => n.to_owned(),
+                            None => continue,
+                        };
+                        if !name.starts_with("shard-") {
+                            continue;
+                        }
+                        for f in ["offsets.bin", "edges.bin", "build_stats.json"] {
+                            let p = shard_dir.join(f);
+                            if p.exists() {
+                                fs::remove_file(&p)
+                                    .with_context(|| format!("remove {}", p.display()))?;
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        _ => Ok(()),
+    }
+}
+
+/// Remove regular files in `dir` whose names start with any of the given
+/// prefixes. Non-recursive; subdirs and non-matching files are left intact.
+fn wipe_files_with_prefixes(dir: &Path, prefixes: &[&str]) -> Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir)
+        .with_context(|| format!("read_dir {}", dir.display()))?
+    {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        if !ft.is_file() {
+            continue;
+        }
+        let name = match entry.file_name().into_string() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        if prefixes.iter().any(|p| name.starts_with(p)) {
+            let path = entry.path();
+            fs::remove_file(&path)
+                .with_context(|| format!("remove {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Recursively walk `root`, removing every regular file whose extension is
+/// not `keep_ext`. Empty directories are left in place (they're cheap and
+/// the next phase recreates them on demand).
+fn wipe_dir_keep_ext(root: &Path, keep_ext: &str) -> Result<()> {
+    if !root.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(root)
+        .with_context(|| format!("read_dir {}", root.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            wipe_dir_keep_ext(&path, keep_ext)?;
+        } else if ft.is_file() || ft.is_symlink() {
+            let keep = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e == keep_ext)
+                .unwrap_or(false);
+            if !keep {
+                fs::remove_file(&path)
+                    .with_context(|| format!("remove {}", path.display()))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Run a single pipeline phase with marker semantics.
+///
+/// `wipe_on_entry` should be true only when re-running a phase that may
+/// have partial output from a prior crash (i.e. the resume-target phase).
+/// Fresh runs pass false because the top-level output_dir wipe already
+/// produced a clean slate.
+fn run_phase_with_marker(
+    root: &Path,
+    name: &str,
+    wipe_on_entry: bool,
+    profile_dir: Option<&Path>,
+    f: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    if wipe_on_entry {
+        wipe_phase_outputs(root, name)?;
+    }
+    if let Some(dir) = profile_dir {
+        profile_phase(dir, name, f)?;
+    } else {
+        f()?;
+    }
+    write_phase_marker(root, name)?;
+    Ok(())
 }
 
 fn edge_id_width(max_id: u64) -> u8 {
@@ -8426,6 +9979,38 @@ fn total_memory_bytes() -> Option<u64> {
 #[cfg(not(target_os = "linux"))]
 fn total_memory_bytes() -> Option<u64> {
     None
+}
+
+/// CAS-loop atomic max-update. Used by pk_map peak-RSS sampling.
+fn update_atomic_max(target: &std::sync::atomic::AtomicU64, value: u64) {
+    use std::sync::atomic::Ordering;
+    let mut cur = target.load(Ordering::Relaxed);
+    while value > cur {
+        match target.compare_exchange_weak(cur, value, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(prev) => cur = prev,
+        }
+    }
+}
+
+/// Best-effort read of process anonymous-RSS in bytes for diagnostic logs.
+/// Returns 0 if unavailable so call sites can format unconditionally.
+#[cfg(target_os = "linux")]
+fn rss_anon_diag_bytes() -> u64 {
+    let Ok(status) = fs::read_to_string("/proc/self/status") else {
+        return 0;
+    };
+    for line in status.lines() {
+        if let Some(value) = line.strip_prefix("RssAnon:") {
+            return parse_kb_line(value).unwrap_or(0);
+        }
+    }
+    0
+}
+
+#[cfg(not(target_os = "linux"))]
+fn rss_anon_diag_bytes() -> u64 {
+    0
 }
 
 #[cfg(target_os = "linux")]

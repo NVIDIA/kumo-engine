@@ -51,3 +51,12 @@ half = "2.3"
 fast-float = "0.2"
 ptr_hash = { package = "diskgraph-ptrhash", path = "diskgraph-ptrhash", features = ["epserde"] }
 epserde = { version = "0.8", features = ["std", "derive"] }
+
+# Release profile uses panic = "abort" so any allocation failure or
+# explicit panic exits with SIGABRT (rc=134) instead of unwinding and
+# possibly converting to anyhow::Err (rc=1). This makes OOM detection
+# by exit code reliable for the ingest_runner wrapper:
+#   rc 134 / 137 / 139 -> OOM-class (halve threads + resume)
+#   rc 1 / 101         -> non-OOM application error (raise, do not retry)
+[profile.release]
+panic = "abort"

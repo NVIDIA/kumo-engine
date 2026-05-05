@@ -70,6 +70,31 @@ struct Args {
     /// Enable per-row 30% subsampling for category counts (scale ÷0.3).
     #[arg(long, default_value_t = false)]
     row_subsample: bool,
+    /// Resume from this phase. Predecessor phases must already have completion
+    /// markers in `<output>/_tmp/_phase_complete_<name>`. Default: unset
+    /// (fresh ingest, run all phases from scratch).
+    #[arg(long, value_enum, value_name = "PHASE")]
+    resume_from_phase: Option<PhaseArg>,
+    /// Override worker pool size for the context phase
+    /// (default: ~1.05 × available_parallelism).
+    #[arg(long)]
+    context_threads: Option<usize>,
+    /// Override worker pool size for the encode phase
+    /// (default: ~1.05 × available_parallelism).
+    #[arg(long)]
+    encode_threads: Option<usize>,
+    /// Override worker pool size for the pk_map phase
+    /// (default: ~1.05 × available_parallelism).
+    #[arg(long)]
+    pk_map_threads: Option<usize>,
+    /// Override worker pool size for the edges_map phase
+    /// (default: ~1.05 × available_parallelism).
+    #[arg(long)]
+    edges_map_threads: Option<usize>,
+    /// Override worker pool size for the index phase
+    /// (default: ~1.05 × available_parallelism).
+    #[arg(long)]
+    index_threads: Option<usize>,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -77,6 +102,27 @@ enum CatCountStrategyArg {
     None,
     Hybrid,
     Graduation,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum PhaseArg {
+    Context,
+    Encode,
+    PkMap,
+    EdgesMap,
+    Index,
+}
+
+impl From<PhaseArg> for diskgraph_ingest::IngestPhase {
+    fn from(p: PhaseArg) -> Self {
+        match p {
+            PhaseArg::Context => Self::Context,
+            PhaseArg::Encode => Self::Encode,
+            PhaseArg::PkMap => Self::PkMap,
+            PhaseArg::EdgesMap => Self::EdgesMap,
+            PhaseArg::Index => Self::Index,
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -141,6 +187,12 @@ fn main() -> Result<()> {
             }
         },
         row_subsample: args.row_subsample,
+        resume_from_phase: args.resume_from_phase.map(Into::into),
+        context_threads: args.context_threads,
+        encode_threads: args.encode_threads,
+        pk_map_threads: args.pk_map_threads,
+        edges_map_threads: args.edges_map_threads,
+        index_threads: args.index_threads,
     };
     let dest = match args.dest {
         DestArg::Local => Dest::Local,
@@ -691,7 +743,11 @@ mod mem_watchdog {
     use std::os::unix::ffi::OsStrExt;
 
     const MEM_WATCHDOG_INTERVAL: Duration = Duration::from_millis(500);
-    const MEM_WATCHDOG_THRESHOLD: f64 = 0.80;
+    // Absolute threshold (bytes) when set via env var DISKGRAPH_MEM_KILL_BYTES;
+    // otherwise fall back to fraction of total RAM. Default fraction lowered
+    // from 0.80 → 0.70 so the watchdog fires before OOM on a no-swap host.
+    const MEM_WATCHDOG_THRESHOLD: f64 = 0.70;
+    const REPEAT_DUMP_INTERVAL: Duration = Duration::from_secs(10);
 
     pub struct MemWatchdog {
         stop: Arc<AtomicBool>,
@@ -730,18 +786,54 @@ mod mem_watchdog {
                 return;
             }
         };
-        let threshold_bytes = (total_bytes as f64 * MEM_WATCHDOG_THRESHOLD) as u64;
-        let dumped = AtomicBool::new(false);
+        // Absolute kill threshold can be set via DISKGRAPH_MEM_KILL_BYTES (e.g.
+        // 350GiB → 375809638400). Falls back to MEM_WATCHDOG_THRESHOLD * total.
+        let kill_bytes: u64 = std::env::var("DISKGRAPH_MEM_KILL_BYTES")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or_else(|| (total_bytes as f64 * MEM_WATCHDOG_THRESHOLD) as u64);
+        // Optional dump-only threshold (lower than kill). Defaults to 0.85 *
+        // kill_bytes so we get an early heap snapshot before exiting.
+        let dump_bytes: u64 = std::env::var("DISKGRAPH_MEM_DUMP_BYTES")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or((kill_bytes as f64 * 0.85) as u64);
+        tracing::info!(
+            kill_bytes,
+            dump_bytes,
+            total_bytes,
+            "mem_watchdog: armed (DISKGRAPH_MEM_KILL_BYTES / DISKGRAPH_MEM_DUMP_BYTES override env)"
+        );
+        let mut last_dump = std::time::Instant::now()
+            .checked_sub(REPEAT_DUMP_INTERVAL)
+            .unwrap_or_else(std::time::Instant::now);
         while !stop.load(Ordering::Relaxed) {
             if let Some(rss_anon) = rss_anon_bytes() {
-                if rss_anon >= threshold_bytes
-                    && dumped
-                        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                        .is_ok()
+                if rss_anon >= kill_bytes {
+                    tracing::error!(
+                        rss_anon,
+                        kill_bytes,
+                        "mem_watchdog: RSS-anon exceeded kill threshold; dumping heap and exiting"
+                    );
+                    if let Err(err) = dump_heap_profile(&dump_dir) {
+                        tracing::warn!("final heap profile dump failed: {err}");
+                    }
+                    // Flush tracing buffers before exiting.
+                    std::thread::sleep(Duration::from_millis(100));
+                    std::process::exit(137);
+                }
+                if rss_anon >= dump_bytes
+                    && last_dump.elapsed() >= REPEAT_DUMP_INTERVAL
                 {
+                    tracing::warn!(
+                        rss_anon,
+                        dump_bytes,
+                        "mem_watchdog: above dump threshold; capturing heap snapshot"
+                    );
                     if let Err(err) = dump_heap_profile(&dump_dir) {
                         tracing::warn!("heap profile dump failed: {err}");
                     }
+                    last_dump = std::time::Instant::now();
                 }
             }
             thread::sleep(MEM_WATCHDOG_INTERVAL);

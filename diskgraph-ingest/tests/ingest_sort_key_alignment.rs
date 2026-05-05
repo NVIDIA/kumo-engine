@@ -273,6 +273,12 @@ fn sort_key_alignment_multi_file_edge_table() -> Result<()> {
             col_stats: false,
             cat_count_strategy: diskgraph_ingest::col_stats::CategoryCountStrategy::None,
             row_subsample: false,
+            resume_from_phase: None,
+            context_threads: None,
+            encode_threads: None,
+            pk_map_threads: None,
+            edges_map_threads: None,
+            index_threads: None,
         },
     )?;
 
@@ -836,6 +842,12 @@ fn sort_key_alignment_node_table_fk() -> Result<()> {
             col_stats: false,
             cat_count_strategy: diskgraph_ingest::col_stats::CategoryCountStrategy::None,
             row_subsample: false,
+            resume_from_phase: None,
+            context_threads: None,
+            encode_threads: None,
+            pk_map_threads: None,
+            edges_map_threads: None,
+            index_threads: None,
         },
     )?;
 

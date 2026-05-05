@@ -223,8 +223,15 @@ impl MemoryBudget {
             });
         }
         if bytes > self.total {
-            return Err(
-                IndexBuildError::NotImplemented("memory budget too small for shard").into(),
+            // Single-task estimate exceeds the entire budget. With the
+            // workspace `panic = "abort"` profile this aborts the process
+            // (rc=134 / SIGABRT), which the ingest_runner wrapper classifies
+            // as OOM and responds to by halving --num-threads on retry.
+            // Returning anyhow::Err would collide with rc=1 schema/data
+            // failures and break that classification.
+            panic!(
+                "memory budget too small for shard: requested {} bytes, budget total {} bytes",
+                bytes, self.total
             );
         }
         let mut available = self.available.lock().unwrap();
