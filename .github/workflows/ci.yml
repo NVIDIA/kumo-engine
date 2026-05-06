@@ -7,7 +7,7 @@ on:
 
 jobs:
   clippy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04-large
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -18,25 +18,46 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04-large
     env:
-      # Reduce linker memory pressure on CI runners with limited RAM.
-      RUSTFLAGS: "-C target-feature=+aes,+sse2 -C link-arg=-Wl,--no-keep-memory"
+      # `lld` (LLVM linker, Apache 2.0 + LLVM exception) uses a
+      # fraction of GNU ld's peak RAM on this workspace's link-heavy
+      # crates (AWS SDK, arrow, parquet) — at default cargo
+      # parallelism (`nproc` = 4) GNU ld peaks ~16 GB and gets
+      # OOM-killed; lld peaks well under that. Stripping full DWARF
+      # (line-tables only) further cuts link memory while still
+      # preserving line numbers in panic backtraces. lld picked
+      # over mold to avoid the AGPL-licensed mold 1.x that Ubuntu
+      # 22.04 ships in apt.
+      RUSTFLAGS: "-C target-feature=+aes,+sse2 -C link-arg=-fuse-ld=lld -C debuginfo=line-tables-only"
     steps:
       - name: Free disk space
+        # Removes ~40 GB of pre-installed toolchains (.NET, Android,
+        # GHC, hostedtoolcache) we don't use. On the standard runner
+        # (14 GB free) this was load-bearing; on the larger runner
+        # (150 GB free) it's defense in depth — cheap (~10 s) and
+        # gives the cargo target dir room to breathe across runs.
         run: |
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
           sudo rm -rf /opt/hostedtoolcache
       - uses: actions/checkout@v4
+      - name: Install lld linker
+        run: sudo apt-get update -qq && sudo apt-get install -y lld
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build and Test
         run: cargo test --workspace
 
   python-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04-large
+    env:
+      # Same lld + stripped-debug strategy as the `test` job — the
+      # `cargo build --release --bin ingest` step below links the
+      # full AWS-SDK / arrow chain and is the heaviest single link
+      # in the pipeline.
+      RUSTFLAGS: "-C target-feature=+aes,+sse2 -C link-arg=-fuse-ld=lld -C debuginfo=line-tables-only"
     steps:
       - name: Free disk space
         run: |
@@ -45,6 +66,8 @@ jobs:
           sudo rm -rf /opt/ghc
           sudo rm -rf /opt/hostedtoolcache
       - uses: actions/checkout@v4
+      - name: Install lld linker
+        run: sudo apt-get update -qq && sudo apt-get install -y lld
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Set up Python 3.10

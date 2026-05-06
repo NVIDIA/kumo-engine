@@ -19,12 +19,34 @@ jobs:
   wheel:
     strategy:
       matrix:
+        # Logical target identifier — embedded in the S3 upload path
+        # (s3://kumo-diskgraph/packages/<os>/...). Kept stable so
+        # consumers (kumo's wheel pin) don't have to change paths when
+        # we move the build to a different physical runner.
         os: [ubuntu-22.04]
         python: ['3.10']
-    runs-on: ${{ matrix.os }}
+    # Physical runner: bigger box (4-core / 16 GB / 150 GB SSD) for
+    # build throughput. ABI parity with `ubuntu-22.04` (same Ubuntu
+    # major version, same glibc), so wheels remain compatible with
+    # consumers expecting an `ubuntu-22.04`-targeted artifact.
+    runs-on: ubuntu-22.04-large
+    env:
+      # See ci.yml for the full rationale: GNU ld peaks ~4 GB per
+      # link job on the AWS-SDK / arrow / parquet chain, and 4
+      # parallel link jobs (default `nproc` parallelism) exhausts
+      # the larger runner's 16 GB. lld (LLVM, Apache 2.0 + LLVM
+      # exception) uses a fraction of that. lld picked over mold to
+      # avoid AGPL.
+      #
+      # `+aes,+sse2` repeated because env RUSTFLAGS overrides the
+      # workspace `.cargo/config.toml` entirely; gxhash needs them.
+      RUSTFLAGS: "-C target-feature=+aes,+sse2 -C link-arg=-fuse-ld=lld"
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install lld linker
+        run: sudo apt-get update -qq && sudo apt-get install -y lld
 
       - name: Set up Python
         uses: actions/setup-python@v5
