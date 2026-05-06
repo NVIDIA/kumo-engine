@@ -12,7 +12,7 @@ use diskgraph_ingest::stats_publish::{
     default_run_id, fetch_perf_baseline, publish_stats, PublishConfig, PublishOutcome,
 };
 use diskgraph_ingest::{
-    build_transfer_for_cloud_path, ingest_with_stats, ingest_with_stats_from_source,
+    build_transfer_for_cloud_path, ingest_with_stats_from_source,
     object_path_from_cloud_url, Dest, GraphConfig, IngestOptions,
 };
 use std::fs;
@@ -95,6 +95,23 @@ struct Args {
     /// (default: ~1.05 × available_parallelism).
     #[arg(long)]
     index_threads: Option<usize>,
+    /// Optional dataplane mirror destination. When set, every output
+    /// file ingest writes locally is also streamed to this URL (s3://,
+    /// gs://, az://, or local path). End-of-ingest finalize writes
+    /// `_MANIFEST.json` and `_SUCCESS` last on both backends, in that
+    /// order. Mirrors the pyo3 `ingest()` kwarg of the same name; left
+    /// unset means local-only ingest.
+    #[arg(long, value_name = "URL")]
+    output_dataplane_dir: Option<String>,
+    /// Required when `output_dataplane_dir` is set. The byte payload
+    /// written to the local + dataplane `_SUCCESS` markers as the
+    /// atomic last-write of the snapshot. Typically a JSON blob the
+    /// caller uses to identify the snapshot. Left unset means no
+    /// success marker is written; callers using the dataplane mirror
+    /// MUST supply this (the library aborts the ingest with a clear
+    /// error otherwise — markerless mirror state is unverifiable).
+    #[arg(long, value_name = "STRING")]
+    success_marker_content: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -200,13 +217,29 @@ fn main() -> Result<()> {
         DestArg::Gcs => Dest::Gcs,
         DestArg::Adls => Dest::Adls,
     };
+    // Both branches funnel through `ingest_with_stats_from_source` so the
+    // optional dataplane / success-marker args are plumbed uniformly.
+    // The local-source branch inlines what the public `ingest_with_stats`
+    // wrapper used to do (read the metadata file + derive base_dir);
+    // we don't call it directly because its signature doesn't take the
+    // dataplane args and changing it would touch every test that uses it.
+    let dataplane = args.output_dataplane_dir.as_deref();
+    let marker = args.success_marker_content.as_deref();
     let (_metadata, stats) = if is_cloud_url(&source_str) {
         let config_url = ensure_config_url(&source_str);
         let metadata_bytes = download_cloud_config_bytes(&config_url)?;
         let source: GraphConfig = serde_json::from_slice(&metadata_bytes)?;
-        ingest_with_stats_from_source(source, None, &args.output, dest, options, None, None)?
+        ingest_with_stats_from_source(
+            source, None, &args.output, dest, options, dataplane, marker,
+        )?
     } else {
-        ingest_with_stats(&source_path, &args.output, dest, options)?
+        let metadata_bytes = fs::read(&source_path)
+            .map_err(|e| anyhow::anyhow!("read {}: {e}", source_path.display()))?;
+        let source: GraphConfig = serde_json::from_slice(&metadata_bytes)?;
+        let base_dir = source_path.parent();
+        ingest_with_stats_from_source(
+            source, base_dir, &args.output, dest, options, dataplane, marker,
+        )?
     };
     drop(peak_tracker);
     let _ = mem_watchdog;
