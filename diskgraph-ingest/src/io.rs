@@ -1,5 +1,6 @@
 use crate::consts::TEMP_DIR_NAME;
-use crate::graph_config::GraphConfig;
+use crate::errors::ConvertError;
+use crate::graph_config::{DataSource, GraphConfig};
 use crate::snapshot_mirror::{ManifestAccumulator, SnapshotMirror};
 
 /// True when a snapshot-relative path is under the per-ingest temp tree
@@ -57,6 +58,7 @@ fn walk_local_files(
     }
     Ok(())
 }
+
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use diskgraph_fs::{
@@ -336,14 +338,16 @@ pub fn is_cloud_path(path: &str) -> bool {
     path.starts_with("s3://") || path.starts_with("gs://") || path.starts_with("az://")
 }
 
-/// Expand a cloud directory prefix to individual `.parquet` file URLs.
+
+/// Expand a cloud directory prefix to individual data file URLs.
 ///
-/// Uses the object_store SDK to list objects under the prefix and returns
-/// sorted full cloud URLs for every `.parquet` file found.
+/// Lists all objects under the prefix and returns sorted full cloud URLs for
+/// every `.parquet` or `.csv` file found.  Returns an error if both types are
+/// present in the same directory.
 ///
 /// The list operation is bounded by a 10-minute timeout so that an
 /// unreachable cloud endpoint cannot hang the ingest process indefinitely.
-pub fn expand_cloud_parquet_paths(dir_url: &str) -> Result<Vec<String>> {
+fn expand_cloud_data_paths(dir_url: &str) -> Result<(DataSource, u64)> {
     let transfer = build_transfer_for_cloud_path(dir_url)?;
     let prefix = object_path_from_cloud_url(dir_url)?;
     let list_timeout = Duration::from_secs(600);
@@ -355,7 +359,7 @@ pub fn expand_cloud_parquet_paths(dir_url: &str) -> Result<Vec<String>> {
             .await
             .map_err(|_| {
                 anyhow!(
-                    "Timed out listing parquet files at {} (exceeded {}s). \
+                    "Timed out listing data files at {} (exceeded {}s). \
                      Check that the cloud path is reachable and credentials \
                      are available.",
                     dir_url,
@@ -371,44 +375,134 @@ pub fn expand_cloud_parquet_paths(dir_url: &str) -> Result<Vec<String>> {
         .and_then(|i| base_url[i + 3..].find('/').map(|j| &base_url[..i + 3 + j]))
         .unwrap_or(base_url);
 
-    let mut files: Vec<String> = objects
-        .iter()
-        .filter(|obj| obj.location.as_ref().ends_with(".parquet"))
-        .map(|obj| format!("{}/{}", bucket_root, obj.location.as_ref()))
-        .collect();
-    files.sort();
-    Ok(files)
+    let mut parquet_files: Vec<String> = Vec::new();
+    let mut csv_files: Vec<String> = Vec::new();
+    let mut total_bytes: u64 = 0;
+    for obj in &objects {
+        let loc = obj.location.as_ref();
+        let full = format!("{}/{}", bucket_root, loc);
+        if loc.ends_with(".parquet") {
+            parquet_files.push(full);
+            total_bytes += obj.size;
+        } else if loc.ends_with(".csv") {
+            csv_files.push(full);
+            total_bytes += obj.size;
+        }
+    }
+    if !parquet_files.is_empty() && !csv_files.is_empty() {
+        return Err(anyhow!(
+            "Cloud path {} contains both .parquet and .csv files; must be one or the other",
+            dir_url
+        ));
+    }
+    if !parquet_files.is_empty() {
+        parquet_files.sort();
+        Ok((DataSource::Parquet { paths: parquet_files }, total_bytes))
+    } else {
+        csv_files.sort();
+        Ok((DataSource::Csv { paths: csv_files }, total_bytes))
+    }
 }
 
-/// Expand cloud directory prefixes in all tables of a GraphConfig to
-/// individual parquet file paths.  Local paths are left unchanged.
-pub fn expand_cloud_paths_in_config(config: &mut GraphConfig) -> Result<()> {
-    for table in &mut config.tables {
-        let dir_paths: Vec<String> = table.get_paths().to_vec();
-        let has_cloud = dir_paths.iter().any(|p| is_cloud_path(p));
-        if !has_cloud {
-            continue;
-        }
-
-        let mut expanded: Vec<String> = Vec::new();
-        for dir_path in &dir_paths {
-            if is_cloud_path(dir_path) {
-                let files = expand_cloud_parquet_paths(dir_path)?;
-                if files.is_empty() {
-                    return Err(anyhow!(
-                        "No parquet files found for table {} in {}",
-                        table.name,
-                        dir_path
-                    ));
-                }
-                expanded.extend(files);
-            } else {
-                expanded.push(dir_path.clone());
-            }
-        }
-        *table.get_paths_mut() = expanded;
+fn expand_local_data_paths(dir_path: &str) -> Result<(DataSource, u64)> {
+    let path = Path::new(dir_path.trim_end_matches('/'));
+    if !path.is_dir() {
+        // Already a concrete file path. Use the slash-trimmed path so that a
+        // trailing slash appended by build_table_paths doesn't end up in the
+        // returned path and break downstream opens.
+        let path_str = path.to_string_lossy().into_owned();
+        let size = fs::metadata(&path_str).map(|m| m.len()).unwrap_or(0);
+        return Ok(if path_str.ends_with(".csv") {
+            (DataSource::Csv { paths: vec![path_str] }, size)
+        } else {
+            (DataSource::Parquet { paths: vec![path_str] }, size)
+        });
     }
-    Ok(())
+    let mut parquet_files: Vec<String> = Vec::new();
+    let mut csv_files: Vec<String> = Vec::new();
+    let mut total_bytes: u64 = 0;
+    for entry in fs::read_dir(path).with_context(|| format!("Failed to read directory {dir_path}"))? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_str = name.to_str().unwrap_or("").to_owned();
+        let file_path = entry.path().to_string_lossy().into_owned();
+        if name_str.ends_with(".parquet") {
+            total_bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
+            parquet_files.push(file_path);
+        } else if name_str.ends_with(".csv") {
+            total_bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
+            csv_files.push(file_path);
+        }
+    }
+    if !parquet_files.is_empty() && !csv_files.is_empty() {
+        return Err(anyhow!(
+            "Directory {} contains both .parquet and .csv files; must be one or the other",
+            dir_path
+        ));
+    }
+    if !parquet_files.is_empty() {
+        parquet_files.sort();
+        Ok((DataSource::Parquet { paths: parquet_files }, total_bytes))
+    } else {
+        csv_files.sort();
+        Ok((DataSource::Csv { paths: csv_files }, total_bytes))
+    }
+}
+
+/// Expand a list of directory paths into a `DataSource` with individual file
+/// paths.  All directories must contain only `.parquet` or only `.csv` files
+/// (not a mix).  Concrete file paths are passed through unchanged.
+///
+/// I/O and transport failures → `ConvertError::SourcePathsSystem`.
+/// Missing-file and mixed-type problems → `ConvertError::SourcePaths`.
+pub(crate) fn expand_source_paths(
+    dir_paths: Vec<String>,
+    table_name: &str,
+) -> Result<(DataSource, u64), ConvertError> {
+    let mut merged: Option<DataSource> = None;
+    let mut total_bytes: u64 = 0;
+    for dir_path in &dir_paths {
+        let (source, bytes) = if is_cloud_path(dir_path) {
+            expand_cloud_data_paths(dir_path)
+        } else {
+            expand_local_data_paths(dir_path)
+        }
+        .map_err(|e| ConvertError::SourcePathsIO {
+            table: table_name.to_string(),
+            message: e.to_string(),
+        })?;
+
+        let is_empty = match &source {
+            DataSource::Parquet { paths } | DataSource::Csv { paths } => paths.is_empty(),
+            _ => true,
+        };
+        if is_empty {
+            return Err(ConvertError::SourcePaths {
+                table: table_name.to_string(),
+                message: format!("no .parquet or .csv files found in {dir_path}"),
+            });
+        }
+        total_bytes += bytes;
+        merged = Some(match (merged, source) {
+            (None, s) => s,
+            (Some(DataSource::Parquet { mut paths }), DataSource::Parquet { paths: new }) => {
+                paths.extend(new);
+                DataSource::Parquet { paths }
+            }
+            (Some(DataSource::Csv { mut paths }), DataSource::Csv { paths: new }) => {
+                paths.extend(new);
+                DataSource::Csv { paths }
+            }
+            _ => {
+                return Err(ConvertError::SourcePaths {
+                    table: table_name.to_string(),
+                    message: "mixed .parquet and .csv inputs across source directories"
+                        .to_string(),
+                })
+            }
+        });
+    }
+    Ok((merged.unwrap_or(DataSource::Parquet { paths: vec![] }), total_bytes))
 }
 
 pub fn require_local_output(target: &OutputTarget) -> Result<&Path> {
@@ -1318,5 +1412,71 @@ mod tests {
         verify_snapshot_integrity(dataplane_root.path())
             .map_err(|e| anyhow::anyhow!("verify against dataplane failed: {e}"))?;
         Ok(())
+    }
+
+    use tempfile::tempdir;
+
+    fn touch(dir: &std::path::Path, name: &str) {
+        fs::write(dir.join(name), b"").unwrap();
+    }
+
+    fn paths_from(source: (DataSource, u64)) -> Vec<String> {
+        match source.0 {
+            DataSource::Parquet { paths } | DataSource::Csv { paths } => paths,
+            _ => vec![],
+        }
+    }
+
+    #[test]
+    fn test_expand_local_parquet_dir() {
+        let dir = tempdir().unwrap();
+        touch(dir.path(), "b.parquet");
+        touch(dir.path(), "a.parquet");
+        touch(dir.path(), "ignore.txt");
+        let result = expand_local_data_paths(dir.path().to_str().unwrap()).unwrap();
+        assert!(matches!(result.0, DataSource::Parquet { .. }));
+        let files = paths_from(result);
+        assert_eq!(files.len(), 2);
+        assert!(files[0].ends_with("a.parquet"));
+        assert!(files[1].ends_with("b.parquet"));
+    }
+
+    #[test]
+    fn test_expand_local_csv_dir() {
+        let dir = tempdir().unwrap();
+        touch(dir.path(), "b.csv");
+        touch(dir.path(), "a.csv");
+        let result = expand_local_data_paths(dir.path().to_str().unwrap()).unwrap();
+        assert!(matches!(result.0, DataSource::Csv { .. }));
+        let files = paths_from(result);
+        assert_eq!(files.len(), 2);
+        assert!(files[0].ends_with("a.csv"));
+        assert!(files[1].ends_with("b.csv"));
+    }
+
+    #[test]
+    fn test_expand_local_mixed_dir_errors() {
+        let dir = tempdir().unwrap();
+        touch(dir.path(), "a.parquet");
+        touch(dir.path(), "b.csv");
+        let err = expand_local_data_paths(dir.path().to_str().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("both .parquet and .csv"));
+    }
+
+    #[test]
+    fn test_expand_local_empty_dir() {
+        let dir = tempdir().unwrap();
+        let result = expand_local_data_paths(dir.path().to_str().unwrap()).unwrap();
+        assert!(paths_from(result).is_empty());
+    }
+
+    #[test]
+    fn test_expand_local_concrete_file_passthrough() {
+        let dir = tempdir().unwrap();
+        touch(dir.path(), "data.parquet");
+        let file_path = dir.path().join("data.parquet").to_string_lossy().into_owned();
+        let result = expand_local_data_paths(&file_path).unwrap();
+        assert!(matches!(result.0, DataSource::Parquet { .. }));
+        assert_eq!(paths_from(result), vec![file_path]);
     }
 }

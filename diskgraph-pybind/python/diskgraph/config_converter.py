@@ -22,18 +22,7 @@ Usage::
 """
 
 import json
-import os
-from typing import Dict, List
-
-
-def _list_parquet_files(dir_path: str) -> List[str]:
-    """List .parquet files in the given directory."""
-    if not os.path.isdir(dir_path):
-        return []
-    return sorted([
-        os.path.join(dir_path, f) for f in os.listdir(dir_path)
-        if f.endswith(".parquet")
-    ])
+from typing import Dict
 
 
 class DiskgraphConfigConverter:
@@ -81,14 +70,15 @@ class DiskgraphConfigConverter:
         """Convert to diskgraph ingest config dict.
 
         The Rust converter handles everything: schema mapping, timestamp
-        format detection, and num_shards estimation.
+        format detection, num_shards estimation, and expanding directory paths
+        (cloud and local) to individual parquet file paths.
 
         Returns:
             Dict ready to be serialized to JSON and passed to the ingest binary.
 
         Raises:
-            RuntimeError: If the Rust conversion fails.
-            ValueError: If no parquet files are found for a table.
+            DiskgraphConfigError: If the Rust conversion fails.
+            DiskgraphDataError: If no parquet files are found for a table.
         """
         from . import convert_kumo_config as _convert_rust
 
@@ -99,7 +89,6 @@ class DiskgraphConfigConverter:
         else:
             dataset_name = raw_name or ""
 
-        # Call the Rust converter (handles timestamps + num_shards internally).
         result_json = _convert_rust(
             json.dumps(self.kumo_config),
             self.data_persist_dir,
@@ -108,37 +97,4 @@ class DiskgraphConfigConverter:
             self.source_paths_base,
             json.dumps(self.source_paths) if self.source_paths else None,
         )
-        config = json.loads(result_json)
-
-        # The Rust converter outputs fpv3 directory paths.  For local paths,
-        # expand them to individual parquet file lists (the ingest binary
-        # needs individual file paths).
-        missing_parquet: List[str] = []
-        for table in config.get("tables", []):
-            source = table.get("source", {})
-            if source.get("type") != "parquet":
-                continue
-            paths = source.get("paths", [])
-            expanded: List[str] = []
-            for path in paths:
-                if path.startswith("s3://") or path.startswith("gs://") or path.startswith("az://"):
-                    # Cloud paths are expanded in Rust by expand_cloud_paths_in_config;
-                    # pass through as-is here.
-                    expanded.append(path)
-                else:
-                    files = _list_parquet_files(path.rstrip("/"))
-                    if files:
-                        expanded.extend(files)
-                    else:
-                        missing_parquet.append(
-                            f"{table['name']} (path={path})"
-                        )
-            source["paths"] = expanded
-
-        if missing_parquet:
-            raise DiskgraphDataError(
-                "No parquet inputs found for diskgraph ingest tables:\n- "
-                + "\n- ".join(missing_parquet)
-            )
-
-        return config
+        return json.loads(result_json)

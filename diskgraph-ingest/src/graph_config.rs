@@ -89,6 +89,9 @@ pub struct TableSpec {
     pub rowpack: Option<RowPackConfig>,
     /// Data source configuration.
     pub source: DataSource,
+    /// Total byte size of all source files, populated during path expansion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_size: Option<u64>,
     /// Foreign key relationships (edges embedded in table).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fkeys: Vec<FKeySpec>,
@@ -1161,6 +1164,7 @@ mod tests {
             source: DataSource::Parquet {
                 paths: vec!["test.parquet".to_string()],
             },
+            source_size: None,
             fkeys: vec![],
             data_version: None,
             kumo_connector_id: None,

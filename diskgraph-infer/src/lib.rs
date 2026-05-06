@@ -313,6 +313,7 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
             source: DataSource::Parquet {
                 paths: table.paths.clone(),
             },
+            source_size: None,
             fkeys: Vec::new(),
             data_version: None,
             kumo_connector_id: None,

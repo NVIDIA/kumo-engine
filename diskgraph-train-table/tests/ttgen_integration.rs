@@ -488,6 +488,7 @@ fn build_graph1(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("users.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![],
                 data_version: None,
                 kumo_connector_id: None,
@@ -510,6 +511,7 @@ fn build_graph1(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("products.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![],
                 data_version: None,
                 kumo_connector_id: None,
@@ -535,6 +537,7 @@ fn build_graph1(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("orders.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![
                     FKeySpec {
                         src_column: "user_id".to_string(),
@@ -1925,6 +1928,7 @@ fn build_graph1_with_create_time(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("users.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![],
                 data_version: None,
                 kumo_connector_id: None,
@@ -1947,6 +1951,7 @@ fn build_graph1_with_create_time(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("products.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![],
                 data_version: None,
                 kumo_connector_id: None,
@@ -1972,6 +1977,7 @@ fn build_graph1_with_create_time(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("orders.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![
                     FKeySpec {
                         src_column: "user_id".to_string(),
@@ -2548,6 +2554,7 @@ fn build_graph_calendar(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("company.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![],
                 data_version: None,
                 kumo_connector_id: None,
@@ -2570,6 +2577,7 @@ fn build_graph_calendar(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("filings.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![
                     FKeySpec {
                         src_column: "cik".to_string(),
@@ -4146,6 +4154,7 @@ fn build_graph2(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("users.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![],
                 data_version: None,
                 kumo_connector_id: None,
@@ -4163,6 +4172,7 @@ fn build_graph2(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("stores.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![],
                 data_version: None,
                 kumo_connector_id: None,
@@ -4187,6 +4197,7 @@ fn build_graph2(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("orders.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![
                     FKeySpec {
                         src_column: "user_id".to_string(),
@@ -4725,6 +4736,7 @@ fn build_graph3(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("users.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![],
                 data_version: None,
                 kumo_connector_id: None,
@@ -4745,6 +4757,7 @@ fn build_graph3(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("products.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![],
                 data_version: None,
                 kumo_connector_id: None,
@@ -4768,6 +4781,7 @@ fn build_graph3(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("trans.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![
                     FKeySpec {
                         src_column: "user_id".to_string(),
@@ -5659,6 +5673,7 @@ fn build_graph_orphan_fk(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("users.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![],
                 data_version: None,
                 kumo_connector_id: None,
@@ -5676,6 +5691,7 @@ fn build_graph_orphan_fk(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("products.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![],
                 data_version: None,
                 kumo_connector_id: None,
@@ -5699,6 +5715,7 @@ fn build_graph_orphan_fk(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("orders.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![
                     FKeySpec {
                         src_column: "user_id".to_string(),
@@ -6038,6 +6055,7 @@ fn build_graph_orphan_fk_all_valid(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("users.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![],
                 data_version: None,
                 kumo_connector_id: None,
@@ -6055,6 +6073,7 @@ fn build_graph_orphan_fk_all_valid(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("products.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![],
                 data_version: None,
                 kumo_connector_id: None,
@@ -6078,6 +6097,7 @@ fn build_graph_orphan_fk_all_valid(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("orders.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![
                     FKeySpec {
                         src_column: "user_id".to_string(),
@@ -6209,6 +6229,7 @@ fn build_graph_orphan_fk_all_orphans(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("users.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![],
                 data_version: None,
                 kumo_connector_id: None,
@@ -6226,6 +6247,7 @@ fn build_graph_orphan_fk_all_orphans(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("products.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![],
                 data_version: None,
                 kumo_connector_id: None,
@@ -6249,6 +6271,7 @@ fn build_graph_orphan_fk_all_orphans(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("orders.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![
                     FKeySpec {
                         src_column: "user_id".to_string(),
@@ -6482,6 +6505,7 @@ fn build_graph_temporal_orphan(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("users.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![],
                 data_version: None,
                 kumo_connector_id: None,
@@ -6503,6 +6527,7 @@ fn build_graph_temporal_orphan(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("products.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![],
                 data_version: None,
                 kumo_connector_id: None,
@@ -6525,6 +6550,7 @@ fn build_graph_temporal_orphan(root: &Path) -> PathBuf {
                 source: DataSource::Parquet {
                     paths: vec![data_dir.join("orders.parquet").to_str().unwrap().to_string()],
                 },
+                source_size: None,
                 fkeys: vec![
                     FKeySpec {
                         src_column: "user_id".to_string(),
@@ -6872,6 +6898,7 @@ fn build_multicat_graph(
                         .unwrap()
                         .to_string()],
                 },
+                source_size: None,
                 fkeys: vec![],
                 data_version: None,
                 kumo_connector_id: None,
@@ -6898,6 +6925,7 @@ fn build_multicat_graph(
                         .unwrap()
                         .to_string()],
                 },
+                source_size: None,
                 fkeys: vec![FKeySpec {
                     src_column: "user_id".to_string(),
                     dst_table: "users".to_string(),
@@ -7394,6 +7422,7 @@ fn build_multicat_user_only_graph(
                     .unwrap()
                     .to_string()],
             },
+            source_size: None,
             fkeys: vec![],
             data_version: None,
             kumo_connector_id: None,
@@ -7619,6 +7648,7 @@ fn build_multicat_user_only_graph_nullable(
                     .unwrap()
                     .to_string()],
             },
+            source_size: None,
             fkeys: vec![],
             data_version: None,
             kumo_connector_id: None,
@@ -7802,6 +7832,7 @@ fn build_multicat_float_user_graph(root: &Path) -> PathBuf {
                     .unwrap()
                     .to_string()],
             },
+            source_size: None,
             fkeys: vec![],
             data_version: None,
             kumo_connector_id: None,

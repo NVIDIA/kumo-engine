@@ -41,6 +41,8 @@ fn base_table(name: &str) -> TableSpec {
         source: DataSource::Parquet {
             paths: vec!["/tmp/table.parquet".into()],
         },
+
+        source_size: None,
         fkeys: Vec::new(),
         data_version: None,
         kumo_connector_id: None,
@@ -139,6 +141,8 @@ fn validate_missing_pk_column() {
             source: DataSource::Parquet {
                 paths: vec!["/tmp/user.parquet".into()],
             },
+
+            source_size: None,
             fkeys: Vec::new(),
             data_version: None,
             kumo_connector_id: None,
@@ -389,6 +393,8 @@ fn validate_edge_fk_missing_column() {
         source: DataSource::Parquet {
             paths: vec!["/tmp/edge.parquet".into()],
         },
+
+        source_size: None,
         fkeys: Vec::new(),
         data_version: None,
         kumo_connector_id: None,
@@ -448,6 +454,8 @@ fn validate_edge_fk_missing_table() {
         source: DataSource::Parquet {
             paths: vec!["/tmp/edge.parquet".into()],
         },
+
+        source_size: None,
         fkeys: Vec::new(),
         data_version: None,
         kumo_connector_id: None,
@@ -508,6 +516,8 @@ fn validate_edge_fk_ref_table_no_pk() {
         source: DataSource::Parquet {
             paths: vec!["/tmp/edge.parquet".into()],
         },
+
+        source_size: None,
         fkeys: Vec::new(),
         data_version: None,
         kumo_connector_id: None,
@@ -569,6 +579,8 @@ fn validate_edge_fk_int_string_ok() {
         source: DataSource::Parquet {
             paths: vec!["/tmp/edge.parquet".into()],
         },
+
+        source_size: None,
         fkeys: Vec::new(),
         data_version: None,
         kumo_connector_id: None,
@@ -628,6 +640,8 @@ fn validate_edge_fk_string_int_ok() {
         source: DataSource::Parquet {
             paths: vec!["/tmp/edge.parquet".into()],
         },
+
+        source_size: None,
         fkeys: Vec::new(),
         data_version: None,
         kumo_connector_id: None,
@@ -695,6 +709,8 @@ fn validate_edge_fk_string_bytes_ok() {
         source: DataSource::Parquet {
             paths: vec!["/tmp/edge.parquet".into()],
         },
+
+        source_size: None,
         fkeys: Vec::new(),
         data_version: None,
         kumo_connector_id: None,
@@ -762,6 +778,8 @@ fn validate_edge_fk_string_bytes_len_mismatch() {
         source: DataSource::Parquet {
             paths: vec!["/tmp/edge.parquet".into()],
         },
+
+        source_size: None,
         fkeys: Vec::new(),
         data_version: None,
         kumo_connector_id: None,
@@ -810,6 +828,8 @@ fn validate_edge_fk_uuid_ok() {
         source: DataSource::Parquet {
             paths: vec!["/tmp/edge.parquet".into()],
         },
+
+        source_size: None,
         fkeys: Vec::new(),
         data_version: None,
         kumo_connector_id: None,
@@ -858,6 +878,8 @@ fn validate_edge_fk_uuid_mismatch() {
         source: DataSource::Parquet {
             paths: vec!["/tmp/edge.parquet".into()],
         },
+
+        source_size: None,
         fkeys: Vec::new(),
         data_version: None,
         kumo_connector_id: None,
@@ -1248,6 +1270,8 @@ mod new_schema_types {
             source: DataSource::Parquet {
                 paths: vec!["s3://bucket/events/".into()],
             },
+
+            source_size: None,
             fkeys: Vec::new(),
             data_version: None,
             kumo_connector_id: None,
@@ -1283,6 +1307,8 @@ mod new_schema_types {
             source: DataSource::Parquet {
                 paths: vec!["s3://bucket/data/".into(), "/local/path/".into()],
             },
+
+            source_size: None,
             fkeys: vec![FKeySpec {
                 src_column: "user_id".into(),
                 dst_table: "users".into(),
@@ -1312,6 +1338,8 @@ mod new_schema_types {
             source: DataSource::Parquet {
                 paths: vec!["/data/subs.parquet".into()],
             },
+
+            source_size: None,
             fkeys: Vec::new(),
             data_version: None,
             kumo_connector_id: None,

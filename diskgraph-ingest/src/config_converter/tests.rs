@@ -2,6 +2,61 @@
 
 use super::*;
 use crate::graph_config::IngestedType;
+use std::sync::OnceLock;
+
+static FIXTURE_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+
+/// Returns the path to the shared test fixture directory.
+/// Contains empty parquet files at all fpv3 paths used across tests.
+fn fixture_dir() -> &'static std::path::Path {
+    FIXTURE_DIR
+        .get_or_init(|| {
+            let dir = tempfile::tempdir().unwrap();
+            // All (data_source, source_name, version) tuples used in tests
+            let entries = [
+                ("postgres", "users", "12345"),
+                ("postgres", "orders", "12345"),
+                ("postgres", "purchases", "12345"),
+                ("postgres", "events", "12345"),
+                ("postgres", "my_table", "12345"),
+                ("postgres", "subscriptions", "12345"),
+                ("postgres", "transactions", "12345"),
+                ("postgres", "empty", "12345"),
+                ("postgres", "items", "12345"),
+                ("postgres", "products", "12345"),
+                ("my_db", "users_table", "v123"),
+                // multi-table graph test uses data_source="db"
+                ("db", "users", "v1"),
+                ("db", "items", "v1"),
+                ("db", "purchases", "v1"),
+            ];
+            for (ds, sn, ver) in &entries {
+                let subdir = dir
+                    .path()
+                    .join("ingest")
+                    .join(format!("fpv3.{}.{}", ds, sn))
+                    .join(ver);
+                std::fs::create_dir_all(&subdir).unwrap();
+                write_empty_parquet(&subdir.join("data.parquet"));
+            }
+            dir
+        })
+        .path()
+}
+
+/// Write a minimal valid parquet file (schema only, 0 rows) to `path`.
+fn write_empty_parquet(path: &std::path::Path) {
+    use arrow_array::RecordBatch;
+    use arrow_schema::{DataType, Field, Schema};
+    use parquet::arrow::ArrowWriter;
+    use std::sync::Arc;
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Utf8, false)]));
+    let batch = RecordBatch::new_empty(schema.clone());
+    let file = std::fs::File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
 
 // =============================================================================
 // Dtype Mapping Tests
@@ -128,7 +183,7 @@ fn make_kumo_config(tables: Vec<KumoTable>) -> KumoGraphConfig {
 
 fn make_convert_options() -> ConvertOptions {
     ConvertOptions {
-        data_persist_dir: "s3://test-bucket/customer/prod/data-persist-dir".to_string(),
+        data_persist_dir: fixture_dir().to_str().unwrap().to_string(),
         dataset_name: "test_dataset".to_string(),
         table_data_versions: None,
         source_paths_base: None,
@@ -353,15 +408,18 @@ fn test_convert_path_building() {
     let result = convert_kumo_to_diskgraph(&kumo_config, &options).unwrap();
 
     let table = &result.tables[0];
-    // Check source instead of paths
+    // Check source — after expansion the path is a local parquet file under the fpv3 dir
     let source = &table.source;
     match source {
         crate::graph_config::DataSource::Parquet { paths } => {
             assert_eq!(paths.len(), 1);
-            assert_eq!(
-                paths[0],
-                "s3://test-bucket/customer/prod/data-persist-dir/ingest/fpv3.my_db.users_table/v123/"
+            assert!(
+                paths[0].contains("fpv3.my_db.users_table"),
+                "path: {}",
+                paths[0]
             );
+            assert!(paths[0].contains("v123"), "path: {}", paths[0]);
+            assert!(paths[0].ends_with(".parquet"), "path: {}", paths[0]);
         }
         _ => panic!("Expected Parquet source"),
     }
@@ -585,7 +643,11 @@ fn test_convert_source_name_defaults_to_table_name() {
     let source = &table.source;
     match source {
         crate::graph_config::DataSource::Parquet { paths } => {
-            assert!(paths[0].contains("fpv3.postgres.my_table/"));
+            assert!(
+                paths[0].contains("fpv3.postgres.my_table"),
+                "path: {}",
+                paths[0]
+            );
         }
         _ => panic!("Expected Parquet source"),
     }
@@ -1033,8 +1095,17 @@ fn test_table_data_versions_overrides_data_version() {
     let mut versions = std::collections::HashMap::new();
     versions.insert("users".to_string(), "new_version_123".to_string());
 
+    let dir = tempfile::tempdir().unwrap();
+    let version_dir = dir
+        .path()
+        .join("ingest")
+        .join("fpv3.postgres.users")
+        .join("new_version_123");
+    std::fs::create_dir_all(&version_dir).unwrap();
+    write_empty_parquet(&version_dir.join("data.parquet"));
+
     let options = ConvertOptions {
-        data_persist_dir: "s3://test-bucket/customer/prod/data-persist-dir".to_string(),
+        data_persist_dir: dir.path().to_str().unwrap().to_string(),
         dataset_name: "test_dataset".to_string(),
         table_data_versions: Some(versions),
         source_paths_base: None,
@@ -1083,7 +1154,8 @@ fn test_table_data_versions_missing_entry_errors() {
     // Provide a map but without the "users" entry.
     let versions = std::collections::HashMap::new();
     let options = ConvertOptions {
-        data_persist_dir: "s3://test-bucket/data".to_string(),
+        // errors before expansion, so data_persist_dir need not exist
+        data_persist_dir: "unused_since_it_errors_before_expansion".to_string(),
         dataset_name: "test".to_string(),
         table_data_versions: Some(versions),
         source_paths_base: None,
@@ -1114,8 +1186,18 @@ fn test_table_data_versions_none_uses_inline() {
     };
 
     let kumo_config = make_kumo_config(vec![kumo_table]);
+
+    let dir = tempfile::tempdir().unwrap();
+    let version_dir = dir
+        .path()
+        .join("ingest")
+        .join("fpv3.postgres.users")
+        .join("inline_v42");
+    std::fs::create_dir_all(&version_dir).unwrap();
+    write_empty_parquet(&version_dir.join("data.parquet"));
+
     let options = ConvertOptions {
-        data_persist_dir: "s3://test-bucket/data".to_string(),
+        data_persist_dir: dir.path().to_str().unwrap().to_string(),
         dataset_name: "test".to_string(),
         table_data_versions: None, // Use inline data_version
         source_paths_base: None,
@@ -1125,7 +1207,7 @@ fn test_table_data_versions_none_uses_inline() {
     let result = convert_kumo_to_diskgraph(&kumo_config, &options).unwrap();
     match &result.tables[0].source {
         crate::graph_config::DataSource::Parquet { paths } => {
-            assert!(paths[0].contains("inline_v42"));
+            assert!(paths[0].contains("inline_v42"), "path: {}", paths[0]);
         }
         _ => panic!("Expected Parquet source"),
     }
@@ -1208,6 +1290,7 @@ fn test_detect_timestamp_formats_from_parquet() {
             source: DataSource::Parquet {
                 paths: vec![parquet_path.to_string_lossy().to_string()],
             },
+            source_size: None,
             fkeys: vec![],
             data_version: None,
             kumo_connector_id: None,
@@ -1297,6 +1380,7 @@ fn test_detect_timestamp_formats_skips_native_timestamp_columns() {
             source: DataSource::Parquet {
                 paths: vec![parquet_path.to_string_lossy().to_string()],
             },
+            source_size: None,
             fkeys: vec![],
             data_version: None,
             kumo_connector_id: None,
@@ -1366,6 +1450,7 @@ fn test_detect_timestamp_formats_integer_yyyymmdd() {
             source: DataSource::Parquet {
                 paths: vec![parquet_path.to_string_lossy().to_string()],
             },
+            source_size: None,
             fkeys: vec![],
             data_version: None,
             kumo_connector_id: None,
@@ -1449,6 +1534,7 @@ fn test_detect_timestamp_formats_multi_value_sampling() {
             source: DataSource::Parquet {
                 paths: vec![parquet_path.to_string_lossy().to_string()],
             },
+            source_size: None,
             fkeys: vec![],
             data_version: None,
             kumo_connector_id: None,
@@ -1552,8 +1638,12 @@ fn test_detect_timestamp_formats_skips_empty_parquet_files() {
             edge_table: None,
             rowpack: None,
             source: DataSource::Parquet {
-                paths: vec![dir.path().to_string_lossy().to_string()],
+                paths: vec![
+                    empty_path.to_string_lossy().to_string(),
+                    data_path.to_string_lossy().to_string(),
+                ],
             },
+            source_size: None,
             fkeys: vec![],
             data_version: None,
             kumo_connector_id: None,

@@ -186,4 +186,10 @@ pub enum ConvertError {
 
     #[error("{0}")]
     InferenceError(String),
+
+    #[error("table '{table}': no source files found: {message}")]
+    SourcePaths { table: String, message: String },
+
+    #[error("table '{table}': source path I/O or transport error: {message}")]
+    SourcePathsIO { table: String, message: String },
 }

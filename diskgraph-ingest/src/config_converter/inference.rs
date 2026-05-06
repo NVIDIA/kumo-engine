@@ -63,12 +63,7 @@ pub fn detect_timestamp_formats(
             continue;
         }
 
-        // Resolve directory prefixes to individual parquet file paths.
-        let parquet_files = resolve_parquet_files(&all_paths[0], input_transfer)?;
-        if parquet_files.is_empty() {
-            continue;
-        }
-
+        let parquet_files = all_paths;
         // Accumulated state across files.
         let mut votes: HashMap<usize, Vec<String>> = HashMap::new();
         let mut sample_counts: HashMap<usize, usize> = HashMap::new();
@@ -491,70 +486,6 @@ pub fn compute_total_bytes(
     Ok(total)
 }
 
-/// Resolve a path (which may be a directory prefix) to all `.parquet` files within it.
-///
-/// - Cloud directory prefixes (ending with `/`): lists objects and collects all `.parquet` files.
-/// - Cloud file paths: returned as a single-element vec if they end with `.parquet`.
-/// - Local directories: walks entries and collects all `.parquet` files, sorted by name.
-/// - Local file paths: returned as a single-element vec if they end with `.parquet`.
-fn resolve_parquet_files(path: &str, transfer: &Option<CloudTransfer>) -> Result<Vec<String>> {
-    if is_cloud_path(path) {
-        if path.ends_with('/') || !path.ends_with(".parquet") {
-            // Directory prefix — list and collect all parquet files.
-            if let Some(transfer) = transfer {
-                let prefix = crate::io::object_path_from_cloud_url(path)?;
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()?;
-                let objects = rt.block_on(transfer.list_objects(&prefix))?;
-                let base_url = path.trim_end_matches('/');
-                let bucket_root = base_url
-                    .find("://")
-                    .and_then(|i| base_url[i + 3..].find('/').map(|j| &base_url[..i + 3 + j]))
-                    .unwrap_or(base_url);
-                let mut files: Vec<String> = objects
-                    .iter()
-                    .filter_map(|obj| {
-                        let loc = obj.location.as_ref().to_string();
-                        if loc.ends_with(".parquet") {
-                            Some(format!("{}/{}", bucket_root, loc))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                files.sort();
-                return Ok(files);
-            }
-            Ok(Vec::new())
-        } else {
-            Ok(vec![path.to_string()])
-        }
-    } else {
-        // Local path
-        let p = std::path::Path::new(path.trim_end_matches('/'));
-        if p.is_dir() {
-            let mut entries: Vec<_> = std::fs::read_dir(p)?
-                .flatten()
-                .filter(|e| {
-                    e.path()
-                        .extension()
-                        .map(|ext| ext == "parquet")
-                        .unwrap_or(false)
-                })
-                .collect();
-            entries.sort_by_key(|e| e.file_name());
-            Ok(entries
-                .iter()
-                .map(|e| e.path().to_string_lossy().to_string())
-                .collect())
-        } else if path.ends_with(".parquet") {
-            Ok(vec![path.to_string()])
-        } else {
-            Ok(Vec::new())
-        }
-    }
-}
 
 /// Sum file sizes in a local directory or single file.
 fn compute_local_dir_bytes(dir_path: &str) -> u64 {
@@ -773,11 +704,7 @@ pub fn detect_multicategorical_delimiters(
         if all_paths.is_empty() {
             continue;
         }
-        let parquet_files = resolve_parquet_files(&all_paths[0], input_transfer)
-            .map_err(|e| ConvertError::InferenceError(format!("{e:#}")))?;
-        if parquet_files.is_empty() {
-            continue;
-        }
+        let parquet_files = all_paths;
 
         // Per-column per-candidate occurrence counts, and total non-null
         // sample rows for that column.
@@ -988,11 +915,7 @@ pub fn validate_explicit_multicat_delimiters(
         if all_paths.is_empty() {
             continue;
         }
-        let parquet_files = resolve_parquet_files(&all_paths[0], input_transfer)
-            .map_err(|e| ConvertError::InferenceError(format!("{e:#}")))?;
-        if parquet_files.is_empty() {
-            continue;
-        }
+        let parquet_files = all_paths;
 
         // Per-column occurrence counts + the first sample row that didn't
         // contain the declared delimiter. The first miss is plenty for the

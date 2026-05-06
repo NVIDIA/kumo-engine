@@ -6,12 +6,13 @@ use anyhow::Result;
 
 use crate::errors::ConvertError;
 use crate::graph_config::{
-    ColumnSpec, DataSource, DirectionSpec, EdgeTableSpec, FKeySpec, ForeignKeySpec, GraphConfig,
+    ColumnSpec, DirectionSpec, EdgeTableSpec, FKeySpec, ForeignKeySpec, GraphConfig,
     IngestedType, SemanticType, TableSpec, TimeSpec,
 };
 
 use super::mapping::{map_kumo_dtype, map_kumo_stype, map_timestamp_unit};
 use super::types::{KumoForeignKey, KumoGraphConfig, KumoTable};
+use crate::io::expand_source_paths;
 
 /// Time column info for a table, used for cross-table sort key lookups.
 struct TableTimeInfo {
@@ -137,14 +138,11 @@ pub fn convert_kumo_to_diskgraph(
             // idempotent. See kumo-ai/kumo#28478.
             cfg.normalize_multicat_pseudo_list();
 
-            match super::inference::compute_total_bytes(cfg, &transfer) {
-                Ok(total_bytes) if total_bytes > 0 => {
-                    cfg.num_shards = Some(super::inference::estimate_num_shards(total_bytes));
-                }
-                Err(e) => {
-                    tracing::warn!("num_shards estimation failed: {e}");
-                }
-                _ => {}
+            let total_bytes: u64 = cfg.tables.iter()
+                .filter_map(|t| t.source_size)
+                .sum();
+            if total_bytes > 0 {
+                cfg.num_shards = Some(super::inference::estimate_num_shards(total_bytes));
             }
             None
         })
@@ -169,8 +167,8 @@ fn convert_table(
     // Resolve data version (used for path building and kumo stats output)
     let data_version = resolve_data_version(kumo_table, options)?;
 
-    // Build the S3 path
-    let paths = build_table_paths(kumo_table, options)?;
+    let dir_paths = build_table_paths(kumo_table, options)?;
+    let (source, source_size) = expand_source_paths(dir_paths, &kumo_table.table_name)?;
 
     // Build columns from all sources (pkey, fkeys, cols, time_col)
     let columns = build_columns(kumo_table)?;
@@ -217,7 +215,8 @@ fn convert_table(
         weight: None,
         edge_table,
         rowpack: None,
-        source: DataSource::Parquet { paths },
+        source,
+        source_size: Some(source_size),
         fkeys,
         data_version: Some(data_version),
         kumo_connector_id: kumo_table.data_source.clone(),
