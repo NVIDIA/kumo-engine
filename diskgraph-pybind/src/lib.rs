@@ -849,6 +849,7 @@ pub fn export_tt_artifacts(py: Python<'_>, config: &ExportConfig) -> PyResult<()
 #[pyo3(signature = (kumo_config_json, data_persist_dir, dataset_name, table_data_versions_json=None, source_paths_base=None, source_paths_json=None))]
 #[tracing::instrument(level = "info", skip_all, fields(dataset_name = %dataset_name, data_persist_dir = %data_persist_dir))]
 pub fn convert_kumo_config(
+    py: Python<'_>,
     kumo_config_json: &str,
     data_persist_dir: &str,
     dataset_name: &str,
@@ -863,54 +864,67 @@ pub fn convert_kumo_config(
         "Pybind convert_kumo_config started"
     );
     let start_time = std::time::Instant::now();
-    use diskgraph_ingest::config_converter::{
-        convert_kumo_to_diskgraph, ConvertOptions, KumoGraphConfig,
-    };
+    let kumo_config_json = kumo_config_json.to_string();
+    let data_persist_dir = data_persist_dir.to_string();
+    let dataset_name = dataset_name.to_string();
+    let table_data_versions_json = table_data_versions_json.map(str::to_string);
+    let source_paths_base = source_paths_base.map(str::to_string);
+    let source_paths_json = source_paths_json.map(str::to_string);
 
-    let kumo_config: KumoGraphConfig = serde_json::from_str(kumo_config_json)
-        .map_err(|e| DiskgraphConfigError::new_err(format!("Invalid kumo config JSON: {e}")))?;
+    let result = py.detach(move || -> PyResult<String> {
+        use diskgraph_ingest::config_converter::{
+            convert_kumo_to_diskgraph, ConvertOptions, KumoGraphConfig,
+        };
 
-    let table_data_versions: Option<HashMap<String, String>> = match table_data_versions_json {
-        Some(json) => Some(serde_json::from_str(json).map_err(|e| {
-            DiskgraphConfigError::new_err(format!("Invalid table_data_versions JSON: {e}"))
-        })?),
-        None => None,
-    };
+        let kumo_config: KumoGraphConfig = serde_json::from_str(&kumo_config_json)
+            .map_err(|e| DiskgraphConfigError::new_err(format!("Invalid kumo config JSON: {e}")))?;
 
-    let source_paths: Option<HashMap<String, String>> = match source_paths_json {
-        Some(json) => Some(
-            serde_json::from_str(json)
-                .map_err(|e| DiskgraphConfigError::new_err(format!("Invalid source_paths JSON: {e}")))?,
-        ),
-        None => None,
-    };
+        let table_data_versions: Option<HashMap<String, String>> =
+            match table_data_versions_json.as_deref() {
+                Some(json) => Some(serde_json::from_str(json).map_err(|e| {
+                    DiskgraphConfigError::new_err(format!(
+                        "Invalid table_data_versions JSON: {e}"
+                    ))
+                })?),
+                None => None,
+            };
 
-    let options = ConvertOptions {
-        data_persist_dir: data_persist_dir.to_string(),
-        dataset_name: dataset_name.to_string(),
-        table_data_versions,
-        source_paths_base: source_paths_base.map(|s| s.to_string()),
-        source_paths,
-    };
+        let source_paths: Option<HashMap<String, String>> =
+            match source_paths_json.as_deref() {
+                Some(json) => Some(serde_json::from_str(json).map_err(|e| {
+                    DiskgraphConfigError::new_err(format!("Invalid source_paths JSON: {e}"))
+                })?),
+                None => None,
+            };
 
-    // convert_kumo_to_diskgraph handles everything: schema, timestamp detection, num_shards.
-    let diskgraph_config = convert_kumo_to_diskgraph(&kumo_config, &options)
-        .map_err(|e| match e {
-            diskgraph_ingest::errors::ConvertError::SourcePathsIO { .. } => {
-                DiskgraphSystemError::new_err(format!("{e}"))
-            }
-            _ => DiskgraphDataError::new_err(format!("Config conversion failed: {e}")),
-        })?;
+        let options = ConvertOptions {
+            data_persist_dir,
+            dataset_name,
+            table_data_versions,
+            source_paths_base,
+            source_paths,
+        };
 
-    serde_json::to_string(&diskgraph_config)
-        .map(|s| {
-            info!(
-                duration_ms = start_time.elapsed().as_millis(),
-                "Pybind convert_kumo_config finished"
-            );
-            s
-        })
-        .map_err(|e| DiskgraphSystemError::new_err(format!("Failed to serialize config: {e}")))
+        // convert_kumo_to_diskgraph handles everything: schema, timestamp detection, num_shards.
+        let diskgraph_config = convert_kumo_to_diskgraph(&kumo_config, &options)
+            .map_err(|e| match e {
+                diskgraph_ingest::errors::ConvertError::SourcePathsIO { .. } => {
+                    DiskgraphSystemError::new_err(format!("{e}"))
+                }
+                _ => DiskgraphDataError::new_err(format!("Config conversion failed: {e}")),
+            })?;
+
+        serde_json::to_string(&diskgraph_config)
+            .map_err(|e| DiskgraphSystemError::new_err(format!("Failed to serialize config: {e}")))
+    });
+
+    result.map(|s| {
+        info!(
+            duration_ms = start_time.elapsed().as_millis(),
+            "Pybind convert_kumo_config finished"
+        );
+        s
+    })
 }
 
 #[pyfunction]
@@ -1104,21 +1118,25 @@ impl DiskManager {
 /// Estimate the total source bytes for an ingest from a graph config JSON.
 /// Sums file sizes for all local table paths. Returns bytes as u64.
 #[pyfunction]
-fn estimate_ingest_size(_py: Python<'_>, config_json: &str) -> PyResult<u64> {
-    let config: diskgraph_ingest::GraphConfig = serde_json::from_str(config_json)
-        .map_err(|e| DiskgraphConfigError::new_err(format!("invalid config JSON: {e}")))?;
-    // Pass None for cloud transfer — source paths should already be local
-    // when called from the Python workflow (resolved by resolve_diskgraph_source_paths)
-    let total = diskgraph_ingest::config_converter::inference::compute_total_bytes(&config, &None)
-        .map_err(|e| {
-            DiskgraphSystemError::new_err(format!("failed to compute source bytes: {e}"))
-        })?;
-    if total == 0 {
-        return Err(DiskgraphDataError::new_err(
-            "computed source size is 0 bytes — no data files found in table paths",
-        ));
-    }
-    Ok(total)
+fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
+    let config_json = config_json.to_string();
+    py.detach(move || -> PyResult<u64> {
+        let config: diskgraph_ingest::GraphConfig = serde_json::from_str(&config_json)
+            .map_err(|e| DiskgraphConfigError::new_err(format!("invalid config JSON: {e}")))?;
+        // Pass None for cloud transfer — source paths should already be local
+        // when called from the Python workflow (resolved by resolve_diskgraph_source_paths)
+        let total =
+            diskgraph_ingest::config_converter::inference::compute_total_bytes(&config, &None)
+                .map_err(|e| {
+                    DiskgraphSystemError::new_err(format!("failed to compute source bytes: {e}"))
+                })?;
+        if total == 0 {
+            return Err(DiskgraphDataError::new_err(
+                "computed source size is 0 bytes — no data files found in table paths",
+            ));
+        }
+        Ok(total)
+    })
 }
 
 /// Verify a local snapshot directory matches its ``_MANIFEST.json``.
