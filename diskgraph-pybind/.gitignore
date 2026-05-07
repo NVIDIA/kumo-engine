@@ -1,5 +1,10 @@
 # Compiled PyO3 Extensions
 python/diskgraph/*.so
 python/diskgraph/*.pyd
+# Standalone ingest binary, staged into the package at wheel-build
+# time by CI (see .github/workflows/{nightly,build}.yml). Ignored so
+# a local `cargo build --bin ingest` + copy doesn't accidentally
+# commit the ~50 MB binary.
+python/diskgraph/bin/
 __pycache__/
 .venv/

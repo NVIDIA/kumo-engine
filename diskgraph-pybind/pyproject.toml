@@ -22,3 +22,13 @@ manifest-path = "Cargo.toml"
 module-name = "diskgraph._c"
 python-source = "python"
 features = ["extension-module"]
+# By default maturin only auto-includes Python source files under
+# `python-source`. The standalone `ingest` binary is staged here at
+# wheel-build time by CI (see .github/workflows/{nightly,build}.yml)
+# and needs an explicit include directive to land in the wheel as
+# `diskgraph/bin/ingest`. The consumer wrapper at kumo-side
+# `kumo/engine/diskgraph/ingest_runner.py::_resolve_ingest_bin` looks
+# for it at exactly that path.
+include = [
+    { path = "python/diskgraph/bin/ingest", format = "wheel" },
+]
