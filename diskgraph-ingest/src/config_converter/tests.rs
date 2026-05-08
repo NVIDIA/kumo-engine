@@ -1233,6 +1233,7 @@ fn test_detect_timestamp_formats_from_parquet() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
         Field::new("created_at", DataType::Utf8, true),
+        Field::new("ended_at", DataType::Utf8, true),
     ]));
 
     let id_array = StringArray::from(vec!["a", "b", "c"]);
@@ -1241,9 +1242,17 @@ fn test_detect_timestamp_formats_from_parquet() {
         Some("2024-02-20T14:45:30"),
         None,
     ]);
+    let end_array = StringArray::from(vec![None::<&str>, None, None]);
 
-    let batch =
-        RecordBatch::try_new(schema.clone(), vec![Arc::new(id_array), Arc::new(ts_array)]).unwrap();
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(id_array),
+            Arc::new(ts_array),
+            Arc::new(end_array),
+        ],
+    )
+    .unwrap();
 
     let file = std::fs::File::create(&parquet_path).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
@@ -1280,10 +1289,22 @@ fn test_detect_timestamp_formats_from_parquet() {
                     semantic_type: None,
                     multicategorical_delimiter: None,
                 },
+                ColumnSpec {
+                    name: "ended_at".to_string(),
+                    source_dtype: None,
+                    ingested_dtype: IngestedType::Timestamp,
+                    fixed_len: None,
+                    timestamp_format: None,
+                    timestamp_unit: None,
+                    precision: None,
+                    scale: None,
+                    semantic_type: None,
+                    multicategorical_delimiter: None,
+                },
             ],
             primary_key: Some("id".to_string()),
             create_time: None,
-            end_time: None,
+            end_time: Some("ended_at".to_string()),
             weight: None,
             edge_table: None,
             rowpack: None,
@@ -1301,6 +1322,13 @@ fn test_detect_timestamp_formats_from_parquet() {
         edge_format: None,
         coercion_mode: Default::default(),
     };
+
+    let mut all_null_create_time_config = config.clone();
+    all_null_create_time_config.tables[0].create_time = Some("ended_at".to_string());
+    all_null_create_time_config.tables[0].end_time = None;
+    let err = detect_timestamp_formats(&mut all_null_create_time_config, &None).unwrap_err();
+    assert!(err.to_string().contains("column is entirely null"));
+    assert!(err.to_string().contains("create_time"));
 
     // Run detection (no cloud transfer needed for local files).
     detect_timestamp_formats(&mut config, &None).unwrap();
@@ -1323,6 +1351,9 @@ fn test_detect_timestamp_formats_from_parquet() {
 
     // The id column should remain unchanged.
     assert_eq!(config.tables[0].columns[0].timestamp_format, None);
+    // An all-null end_time column is valid and remains without an inferred format.
+    assert_eq!(config.tables[0].columns[2].timestamp_format, None);
+    assert_eq!(config.tables[0].columns[2].timestamp_unit, None);
 }
 
 #[test]

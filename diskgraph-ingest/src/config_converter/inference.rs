@@ -278,8 +278,9 @@ pub fn detect_timestamp_formats(
             if votes.contains_key(col_idx) || native_temporal.contains(col_idx) {
                 continue;
             }
-            let is_time_col = table.create_time.as_ref() == Some(col_name)
-                || table.end_time.as_ref() == Some(col_name);
+            let is_create_time_col = table.create_time.as_ref() == Some(col_name);
+            let is_end_time_col = table.end_time.as_ref() == Some(col_name);
+            let is_time_col = is_create_time_col || is_end_time_col;
 
             if let Some(info) = unrecognized_info.get(col_idx) {
                 if is_time_col {
@@ -302,20 +303,22 @@ pub fn detect_timestamp_formats(
                     "could not detect timestamp format: {}", info,
                 );
             } else if sample_counts.get(col_idx).copied().unwrap_or(0) == 0 {
-                if is_time_col {
-                    let role = if table.create_time.as_ref() == Some(col_name) {
-                        "create_time"
-                    } else {
-                        "end_time"
-                    };
+                if is_create_time_col {
                     return Err(anyhow::anyhow!(
-                        "table '{}' column '{}' ({}): column is entirely null across {} file(s). \
+                        "table '{}' column '{}' (create_time): column is entirely null across {} file(s). \
                          A time column must contain parseable timestamp values.",
                         table.name,
                         col_name,
-                        role,
                         parquet_files.len().min(MAX_FILES),
                     ));
+                }
+                if is_end_time_col {
+                    tracing::warn!(
+                        table = %table.name, column = %col_name, role = "end_time",
+                        "column is entirely null across {} file(s); treating null end times as open-ended intervals",
+                        parquet_files.len().min(MAX_FILES),
+                    );
+                    continue;
                 }
                 tracing::warn!(
                     table = %table.name, column = %col_name,
