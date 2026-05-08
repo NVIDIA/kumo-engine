@@ -110,6 +110,21 @@ fn sum_relation_edges(table: &diskgraph_index::graph::TableReader, rel_name: &st
     Ok(total)
 }
 
+fn decoded_int64_values(output_root: &Path, table_name: &str, column: &str) -> Result<Vec<Option<i64>>> {
+    let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), output_root)?;
+    let table = reader.table(table_name).unwrap();
+    let mut values = Vec::new();
+    for node_id in 0..table.node_count() {
+        let view = table.edges_for_node(node_id)?;
+        let row = table
+            .decode_node_data_json(&view)?
+            .ok_or_else(|| anyhow!("missing node data for node {node_id}"))?;
+        values.push(row[column].as_i64());
+    }
+    values.sort_unstable();
+    Ok(values)
+}
+
 fn extract_relation_sort_keys(
     table: &diskgraph_index::graph::TableReader,
     rel_name: &str,
@@ -3184,6 +3199,110 @@ fn ingest_parquet_string_fk_to_int64_pk() -> Result<()> {
     let reverse = sum_relation_edges(&pk_table, "FkNodes_fk_col_to_PkNodes_pk_col_reverse")?;
     assert_eq!(forward, 10, "10 forward edges");
     assert_eq!(reverse, 10, "10 reverse edges");
+
+    Ok(())
+}
+
+#[test]
+fn ingest_parquet_utf8_integral_decimal_as_int64() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    write_parquet(
+        &input_root.join("nodes.parquet"),
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("target", DataType::Utf8, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5, 6, 7])) as ArrayRef,
+            Arc::new(StringArray::from(vec![
+                "1.0", "0.0", "-7.0", "42.000", "1.5", "-2.9", "bad",
+            ])) as ArrayRef,
+        ],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "parquet_utf8_integral_decimal_as_int64",
+        "tables": [
+            {
+                "name": "Nodes",
+                "source": {"type": "parquet", "paths": [input_root.join("nodes.parquet").to_string_lossy()]},
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "target", "ingested_dtype": "int64"}
+                ]
+            }
+        ]
+    });
+    let source_path = dir.path().join("config.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    let (_metadata, stats) = ingest_with_stats(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    )?;
+    assert_eq!(stats.key_parse_failures, 0, "no key parse failures");
+    assert_eq!(
+        decoded_int64_values(&output_root, "Nodes", "target")?,
+        vec![None, None, None, Some(-7), Some(0), Some(1), Some(42)]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn ingest_csv_integral_decimal_as_int64() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    write_csv(
+        &input_root.join("nodes.csv"),
+        &["id", "target"],
+        &[
+            vec!["1".into(), "1.0".into()],
+            vec!["2".into(), "0.0".into()],
+            vec!["3".into(), "-7.0".into()],
+            vec!["4".into(), "42.000".into()],
+            vec!["5".into(), "1.5".into()],
+            vec!["6".into(), "-2.9".into()],
+            vec!["7".into(), "bad".into()],
+        ],
+    )?;
+
+    let source = serde_json::json!({
+        "dataset_name": "csv_integral_decimal_as_int64",
+        "tables": [
+            {
+                "name": "Nodes",
+                "source": {"type": "csv", "paths": [input_root.join("nodes.csv").to_string_lossy()]},
+                "primary_key": "id",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {"name": "target", "ingested_dtype": "int64"}
+                ]
+            }
+        ]
+    });
+    let source_path = dir.path().join("config.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    let (_metadata, stats) = ingest_with_stats(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    )?;
+    assert_eq!(stats.key_parse_failures, 0, "no key parse failures");
+    assert_eq!(
+        decoded_int64_values(&output_root, "Nodes", "target")?,
+        vec![None, None, None, Some(-7), Some(0), Some(1), Some(42)]
+    );
 
     Ok(())
 }

@@ -149,6 +149,38 @@ mod clone_approach_verification {
         assert_eq!(access.get_int64(0).unwrap(), Some(-7i64));
     }
 
+    #[test]
+    fn utf8_integral_decimal_read_as_int64() {
+        let arrays: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![
+            "1.0", "0.0", "-7.0", "42.000",
+        ]))];
+        let mut access = make_access(&arrays);
+
+        access.set_row(0);
+        assert_eq!(access.get_int64(0).unwrap(), Some(1i64));
+        access.set_row(1);
+        assert_eq!(access.get_int64(0).unwrap(), Some(0i64));
+        access.set_row(2);
+        assert_eq!(access.get_int64(0).unwrap(), Some(-7i64));
+        access.set_row(3);
+        assert_eq!(access.get_int64(0).unwrap(), Some(42i64));
+    }
+
+    #[test]
+    fn utf8_non_integral_decimal_rejected_as_int64() {
+        let arrays: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![
+            "1.5", "-2.9", "1.00x",
+        ]))];
+        let mut access = make_access(&arrays);
+
+        access.set_row(0);
+        assert!(access.get_int64(0).is_err());
+        access.set_row(1);
+        assert!(access.get_int64(0).is_err());
+        access.set_row(2);
+        assert!(access.get_int64(0).is_err());
+    }
+
     // === UInt64 Arrow data, FK resolved to Int64 (PK type) ===
     #[test]
     fn uint64_arrow_read_as_int64() {

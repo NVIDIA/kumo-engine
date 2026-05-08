@@ -31,19 +31,39 @@ pub(crate) fn parse_bool(value: &str) -> Option<bool> {
 }
 
 pub(crate) fn parse_i64(value: &str) -> Option<i64> {
-    value.trim().parse::<i64>().ok()
+    let text = value.trim();
+    text.parse::<i64>()
+        .ok()
+        .or_else(|| zero_fraction_decimal_prefix(text)?.parse::<i64>().ok())
 }
 
 pub(crate) fn parse_i32(value: &str) -> Option<i32> {
-    value.trim().parse::<i32>().ok()
+    let text = value.trim();
+    text.parse::<i32>()
+        .ok()
+        .or_else(|| zero_fraction_decimal_prefix(text)?.parse::<i32>().ok())
 }
 
 pub(crate) fn parse_u64(value: &str) -> Option<u64> {
-    value.trim().parse::<u64>().ok()
+    let text = value.trim();
+    text.parse::<u64>()
+        .ok()
+        .or_else(|| zero_fraction_decimal_prefix(text)?.parse::<u64>().ok())
 }
 
 pub(crate) fn parse_u32(value: &str) -> Option<u32> {
-    value.trim().parse::<u32>().ok()
+    let text = value.trim();
+    text.parse::<u32>()
+        .ok()
+        .or_else(|| zero_fraction_decimal_prefix(text)?.parse::<u32>().ok())
+}
+
+fn zero_fraction_decimal_prefix(text: &str) -> Option<&str> {
+    let (whole, fractional) = text.split_once('.')?;
+    if fractional.is_empty() || !fractional.bytes().all(|b| b == b'0') {
+        return None;
+    }
+    Some(whole)
 }
 
 pub(crate) fn parse_f64(value: &str) -> Option<f64> {
@@ -899,5 +919,58 @@ pub(crate) fn timestamp_secs_from_array(array: &ArrayRef, row: usize) -> Result<
                 .ok_or_else(|| anyhow!("timestamp nanosecond cast"))?;
             Ok(div_ceil_i64(arr.value(row), 1_000_000_000))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_i32, parse_i64, parse_u32, parse_u64};
+
+    #[test]
+    fn parses_integral_decimal_signed_ints() {
+        for (value, expected) in [
+            ("1.0", 1),
+            ("0.0", 0),
+            ("-7.0", -7),
+            ("+42.000", 42),
+            ("-2147483648.0", i32::MIN),
+            ("2147483647.0", i32::MAX),
+        ] {
+            assert_eq!(parse_i64(value), Some(i64::from(expected)));
+            assert_eq!(parse_i32(value), Some(expected));
+        }
+    }
+
+    #[test]
+    fn parses_integral_decimal_unsigned_ints() {
+        for (value, expected) in [
+            ("0.0", 0),
+            ("1.0", 1),
+            ("42.000", 42),
+            ("4294967295.0", u32::MAX),
+        ] {
+            assert_eq!(parse_u64(value), Some(u64::from(expected)));
+            assert_eq!(parse_u32(value), Some(expected));
+        }
+        assert_eq!(parse_u64("18446744073709551615.0"), Some(u64::MAX));
+    }
+
+    #[test]
+    fn rejects_non_integral_decimal_ints() {
+        for value in [
+            "1.", "1.5", "-7.9", "1.00x", "1.0.0", "1e0", "NaN", "inf", "abc.0",
+            "+.0", "--1.0",
+        ] {
+            assert_eq!(parse_i64(value), None);
+        }
+        assert_eq!(parse_u64("-1.0"), None);
+    }
+
+    #[test]
+    fn rejects_integral_decimal_overflow() {
+        assert_eq!(parse_i64("9223372036854775808.0"), None);
+        assert_eq!(parse_i32("2147483648.0"), None);
+        assert_eq!(parse_u64("18446744073709551616.0"), None);
+        assert_eq!(parse_u32("4294967296.0"), None);
     }
 }
