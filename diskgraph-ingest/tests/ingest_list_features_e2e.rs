@@ -254,6 +254,72 @@ fn integ_intlist_negative_values() -> Result<()> {
 }
 
 #[test]
+fn integ_string_feature_list_utf8_mismatch_ingests_null() -> Result<()> {
+    let dir = tempdir()?;
+    let data_dir = dir.path().join("data");
+    let index_dir = dir.path().join("index");
+    fs::create_dir_all(&data_dir)?;
+
+    let mut id_b = Int64Builder::new();
+    let mut desc_b = ListBuilder::new(StringBuilder::new());
+
+    id_b.append_value(0);
+    desc_b.values().append_value("unexpected");
+    desc_b.values().append_value("list");
+    desc_b.append(true);
+
+    let schema = Schema::new(vec![
+        Field::new("item_id", DataType::Int64, false),
+        Field::new(
+            "description",
+            DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+            true,
+        ),
+    ]);
+    let batch = RecordBatch::try_new(
+        Arc::new(schema),
+        vec![
+            Arc::new(id_b.finish()) as ArrayRef,
+            Arc::new(desc_b.finish()) as ArrayRef,
+        ],
+    )?;
+    write_parquet(&data_dir.join("items.parquet"), &batch);
+
+    let config = serde_json::json!({
+        "dataset_name": "string_feature_list_mismatch_test",
+        "num_shards": 1,
+        "tables": [{
+            "name": "items",
+            "columns": [
+                {"name": "item_id", "ingested_dtype": "int64"},
+                {"name": "description", "ingested_dtype": "string"}
+            ],
+            "primary_key": "item_id",
+            "source": {"type": "parquet", "paths": [data_dir.join("items.parquet").to_str().unwrap()]}
+        }]
+    });
+    let config_path = data_dir.join("config.json");
+    fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+
+    ingest(
+        &config_path,
+        index_dir.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions {
+            parallel: false,
+            ..Default::default()
+        },
+    )?;
+
+    let json = decode_node_json(&index_dir, "items", 0)?;
+    assert!(
+        json["description"].is_null(),
+        "incompatible string feature should ingest as null: {json}"
+    );
+    Ok(())
+}
+
+#[test]
 fn integ_intlist_variable_length_no_drift() -> Result<()> {
     // Multiple rows with different list lengths. If the byte pointer drifts
     // between rows, subsequent nodes will decode garbage.

@@ -25,6 +25,8 @@ mod tests_casting;
 #[cfg(test)]
 mod tests_int_string_list;
 #[cfg(test)]
+mod tests_invalid_as_null;
+#[cfg(test)]
 mod tests_string_float_array;
 #[cfg(test)]
 mod tests_type_matrix;
@@ -800,19 +802,17 @@ impl RowPackContextBuilder {
                     Some(v) => stats.observe_float32(v),
                 },
                 IngestedType::String => {
-                    if access
-                        .with_string(idx, |v| {
-                            stats.observe_string(v, &self.config);
-                            Ok(())
-                        })?
-                        .is_none()
-                    {
-                        stats.observe_null()
+                    match access.with_string(idx, |v| {
+                        stats.observe_string(v, &self.config);
+                        Ok(())
+                    }) {
+                        Ok(Some(_)) => {}
+                        Ok(None) | Err(_) => stats.observe_null(),
                     }
                 }
-                IngestedType::Bytes => match access.with_bytes(idx, |v| Ok(v.len()))? {
-                    None => stats.observe_null(),
-                    Some(len) => stats.observe_bytes_len(len),
+                IngestedType::Bytes => match access.with_bytes(idx, |v| Ok(v.len())) {
+                    Ok(None) | Err(_) => stats.observe_null(),
+                    Ok(Some(len)) => stats.observe_bytes_len(len),
                 },
                 IngestedType::Uuid => match access.get_uuid(idx).ok().flatten() {
                     None => stats.observe_null(),
@@ -843,51 +843,43 @@ impl RowPackContextBuilder {
                     Some(_) => stats.count = stats.count.saturating_add(1),
                 },
                 IngestedType::Float32Array | IngestedType::Float16Array => {
-                    if access
-                        .with_float32_array(idx, |values| {
-                            stats.observe_array_f32(values);
-                            Ok(())
-                        })?
-                        .is_none()
-                    {
-                        stats.observe_null()
+                    match access.with_float32_array(idx, |values| {
+                        stats.observe_array_f32(values);
+                        Ok(())
+                    }) {
+                        Ok(Some(_)) => {}
+                        Ok(None) | Err(_) => stats.observe_null(),
                     }
                 }
                 IngestedType::Float64Array => {
-                    if access
-                        .with_float64_array(idx, |values| {
-                            stats.observe_array_f64(values);
-                            Ok(())
-                        })?
-                        .is_none()
-                    {
-                        stats.observe_null()
+                    match access.with_float64_array(idx, |values| {
+                        stats.observe_array_f64(values);
+                        Ok(())
+                    }) {
+                        Ok(Some(_)) => {}
+                        Ok(None) | Err(_) => stats.observe_null(),
                     }
                 }
                 IngestedType::Int64Array => {
-                    if access
-                        .with_int64_array(idx, |values| {
-                            for &v in values {
-                                stats.observe_int64(v);
-                            }
-                            Ok(())
-                        })?
-                        .is_none()
-                    {
-                        stats.observe_null()
+                    match access.with_int64_array(idx, |values| {
+                        for &v in values {
+                            stats.observe_int64(v);
+                        }
+                        Ok(())
+                    }) {
+                        Ok(Some(_)) => {}
+                        Ok(None) | Err(_) => stats.observe_null(),
                     }
                 }
                 IngestedType::StringArray => {
-                    if access
-                        .with_string_array(idx, |tokens| {
-                            for &token in tokens {
-                                stats.observe_string(token, &self.config);
-                            }
-                            Ok(())
-                        })?
-                        .is_none()
-                    {
-                        stats.observe_null()
+                    match access.with_string_array(idx, |tokens| {
+                        for &token in tokens {
+                            stats.observe_string(token, &self.config);
+                        }
+                        Ok(())
+                    }) {
+                        Ok(Some(_)) => {}
+                        Ok(None) | Err(_) => stats.observe_null(),
                     }
                 }
             }
@@ -2211,46 +2203,49 @@ impl RowPackEncoder {
                 IngestedType::String =>
                 {
                     #[allow(clippy::manual_unwrap_or_default)]
-                    access
-                        .with_string(idx, |v| {
-                            encode_string(
-                                &mut scratch.data,
-                                v,
-                                col,
-                                self.dict_maps[idx].as_ref(),
-                                self.alphabet_maps[idx].as_ref(),
-                                self.bpe_tries[idx].as_ref(),
-                                Some(&mut scratch.bpe_tokens),
-                                Some(&mut scratch.lz4_buf),
-                            )
-                        })?
-                        .unwrap_or(0u8)
+                    match access.with_string(idx, |v| {
+                        Ok(encode_string(
+                            &mut scratch.data,
+                            v,
+                            col,
+                            self.dict_maps[idx].as_ref(),
+                            self.alphabet_maps[idx].as_ref(),
+                            self.bpe_tries[idx].as_ref(),
+                            Some(&mut scratch.bpe_tokens),
+                            Some(&mut scratch.lz4_buf),
+                        ))
+                    }) {
+                        Ok(Some(Ok(tag))) => tag,
+                        Ok(Some(Err(err))) => return Err(err),
+                        Ok(None) | Err(_) => 0u8,
+                    }
                 }
                 IngestedType::Bytes =>
                 {
                     #[allow(clippy::manual_unwrap_or_default)]
-                    access
-                        .with_bytes(idx, |v| {
-                            if let ColumnEncoding::Bytes { fixed_len } = &col.encoding {
-                                if let Some(len) = fixed_len {
-                                    if *len == v.len() {
-                                        scratch.data.extend_from_slice(v);
-                                        Ok(1u8)
-                                    } else {
-                                        write_varint(v.len() as u64, &mut scratch.data);
-                                        scratch.data.extend_from_slice(v);
-                                        Ok(2u8)
-                                    }
+                    if let ColumnEncoding::Bytes { fixed_len } = &col.encoding {
+                        match access.with_bytes(idx, |v| {
+                            if let Some(len) = fixed_len {
+                                if *len == v.len() {
+                                    scratch.data.extend_from_slice(v);
+                                    Ok(1u8)
                                 } else {
                                     write_varint(v.len() as u64, &mut scratch.data);
                                     scratch.data.extend_from_slice(v);
-                                    Ok(1u8)
+                                    Ok(2u8)
                                 }
                             } else {
-                                Err(anyhow!("rowpack bytes encoding mismatch"))
+                                write_varint(v.len() as u64, &mut scratch.data);
+                                scratch.data.extend_from_slice(v);
+                                Ok(1u8)
                             }
-                        })?
-                        .unwrap_or(0u8)
+                        }) {
+                            Ok(Some(tag)) => tag,
+                            Ok(None) | Err(_) => 0u8,
+                        }
+                    } else {
+                        return Err(anyhow!("rowpack bytes encoding mismatch"));
+                    }
                 }
                 IngestedType::Uuid => match access.get_uuid(idx).ok().flatten() {
                     None => 0u8,
@@ -2350,9 +2345,9 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Float32Array => match access.float_list_view(idx)? {
-                    None => 0u8,
-                    Some(view) => {
+                IngestedType::Float32Array => match access.float_list_view(idx) {
+                    Ok(None) | Err(_) => 0u8,
+                    Ok(Some(view)) => {
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
                             let f16_buf = &mut scratch.f16_buf;
                             encode_float_list_with_tag(
@@ -2367,9 +2362,9 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Float16Array => match access.float_list_view(idx)? {
-                    None => 0u8,
-                    Some(view) => {
+                IngestedType::Float16Array => match access.float_list_view(idx) {
+                    Ok(None) | Err(_) => 0u8,
+                    Ok(Some(view)) => {
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
                             let f16_buf = &mut scratch.f16_buf;
                             encode_float_list_with_tag(
@@ -2384,9 +2379,9 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Float64Array => match access.float_list_view(idx)? {
-                    None => 0u8,
-                    Some(view) => {
+                IngestedType::Float64Array => match access.float_list_view(idx) {
+                    Ok(None) | Err(_) => 0u8,
+                    Ok(Some(view)) => {
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
                             let f16_buf = &mut scratch.f16_buf;
                             encode_float_list_with_tag(
@@ -2401,9 +2396,9 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Int64Array => match access.int64_list_view(idx)? {
-                    None => 0u8,
-                    Some(view) => {
+                IngestedType::Int64Array => match access.int64_list_view(idx) {
+                    Ok(None) | Err(_) => 0u8,
+                    Ok(Some(view)) => {
                         if matches!(col.encoding, ColumnEncoding::Int64Array) {
                             encode_int64_list_view_with_tag(&mut scratch.data, view)?;
                             1u8
@@ -2412,9 +2407,9 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::StringArray => match access.string_list_view(idx)? {
-                    None => 0u8,
-                    Some(view) => {
+                IngestedType::StringArray => match access.string_list_view(idx) {
+                    Ok(None) | Err(_) => 0u8,
+                    Ok(Some(view)) => {
                         if matches!(col.encoding, ColumnEncoding::StringArray { .. }) {
                             encode_string_list_view_with_tag(
                                 &mut scratch.data,
@@ -2655,47 +2650,58 @@ impl RowPackEncoder {
                 IngestedType::String =>
                 {
                     #[allow(clippy::manual_unwrap_or_default)]
-                    access
-                        .with_string(idx, |v| {
-                            observer.observe_string(idx, v);
-                            encode_string(
-                                data,
-                                v,
-                                col,
-                                self.dict_maps[idx].as_ref(),
-                                self.alphabet_maps[idx].as_ref(),
-                                self.bpe_tries[idx].as_ref(),
-                                None,
-                                None,
-                            )
-                        })?
-                        .unwrap_or(0u8)
+                    match access.with_string(idx, |v| {
+                        observer.observe_string(idx, v);
+                        Ok(encode_string(
+                            data,
+                            v,
+                            col,
+                            self.dict_maps[idx].as_ref(),
+                            self.alphabet_maps[idx].as_ref(),
+                            self.bpe_tries[idx].as_ref(),
+                            None,
+                            None,
+                        ))
+                    }) {
+                        Ok(Some(Ok(tag))) => tag,
+                        Ok(Some(Err(err))) => return Err(err),
+                        Ok(None) => 0u8,
+                        Err(_) => {
+                            observer.observe_parse_failure(idx);
+                            0u8
+                        }
+                    }
                 }
                 IngestedType::Bytes =>
                 {
                     #[allow(clippy::manual_unwrap_or_default)]
-                    access
-                        .with_bytes(idx, |v| {
-                            if let ColumnEncoding::Bytes { fixed_len } = &col.encoding {
-                                if let Some(len) = fixed_len {
-                                    if *len == v.len() {
-                                        data.extend_from_slice(v);
-                                        Ok(1u8)
-                                    } else {
-                                        write_varint(v.len() as u64, data);
-                                        data.extend_from_slice(v);
-                                        Ok(2u8)
-                                    }
+                    if let ColumnEncoding::Bytes { fixed_len } = &col.encoding {
+                        match access.with_bytes(idx, |v| {
+                            if let Some(len) = fixed_len {
+                                if *len == v.len() {
+                                    data.extend_from_slice(v);
+                                    Ok(1u8)
                                 } else {
                                     write_varint(v.len() as u64, data);
                                     data.extend_from_slice(v);
-                                    Ok(1u8)
+                                    Ok(2u8)
                                 }
                             } else {
-                                Err(anyhow!("rowpack bytes encoding mismatch"))
+                                write_varint(v.len() as u64, data);
+                                data.extend_from_slice(v);
+                                Ok(1u8)
                             }
-                        })?
-                        .unwrap_or(0u8)
+                        }) {
+                            Ok(Some(tag)) => tag,
+                            Ok(None) => 0u8,
+                            Err(_) => {
+                                observer.observe_parse_failure(idx);
+                                0u8
+                            }
+                        }
+                    } else {
+                        return Err(anyhow!("rowpack bytes encoding mismatch"));
+                    }
                 }
                 IngestedType::Uuid => {
                     let buf = &key_bufs[idx];
@@ -2805,9 +2811,13 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Float32Array => match access.float_list_view(idx)? {
-                    None => 0u8,
-                    Some(view) => {
+                IngestedType::Float32Array => match access.float_list_view(idx) {
+                    Ok(None) => 0u8,
+                    Err(_) => {
+                        observer.observe_parse_failure(idx);
+                        0u8
+                    }
+                    Ok(Some(view)) => {
                         observer.observe_float_list(idx, &view);
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
                             encode_float_list_with_tag(
@@ -2822,9 +2832,13 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Float16Array => match access.float_list_view(idx)? {
-                    None => 0u8,
-                    Some(view) => {
+                IngestedType::Float16Array => match access.float_list_view(idx) {
+                    Ok(None) => 0u8,
+                    Err(_) => {
+                        observer.observe_parse_failure(idx);
+                        0u8
+                    }
+                    Ok(Some(view)) => {
                         observer.observe_float_list(idx, &view);
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
                             encode_float_list_with_tag(
@@ -2839,9 +2853,13 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Float64Array => match access.float_list_view(idx)? {
-                    None => 0u8,
-                    Some(view) => {
+                IngestedType::Float64Array => match access.float_list_view(idx) {
+                    Ok(None) => 0u8,
+                    Err(_) => {
+                        observer.observe_parse_failure(idx);
+                        0u8
+                    }
+                    Ok(Some(view)) => {
                         observer.observe_float_list(idx, &view);
                         if let ColumnEncoding::FloatArray { storage } = &col.encoding {
                             encode_float_list_with_tag(
@@ -2856,9 +2874,13 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Int64Array => match access.int64_list_view(idx)? {
-                    None => 0u8,
-                    Some(view) => {
+                IngestedType::Int64Array => match access.int64_list_view(idx) {
+                    Ok(None) => 0u8,
+                    Err(_) => {
+                        observer.observe_parse_failure(idx);
+                        0u8
+                    }
+                    Ok(Some(view)) => {
                         observer.observe_int64_list(idx, &view);
                         if matches!(col.encoding, ColumnEncoding::Int64Array) {
                             encode_int64_list_view_with_tag(data, view)?;
@@ -2868,9 +2890,13 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::StringArray => match access.string_list_view(idx)? {
-                    None => 0u8,
-                    Some(view) => {
+                IngestedType::StringArray => match access.string_list_view(idx) {
+                    Ok(None) => 0u8,
+                    Err(_) => {
+                        observer.observe_parse_failure(idx);
+                        0u8
+                    }
+                    Ok(Some(view)) => {
                         observer.observe_string_list(idx, &view);
                         if matches!(col.encoding, ColumnEncoding::StringArray { .. }) {
                             encode_string_list_view_with_tag(

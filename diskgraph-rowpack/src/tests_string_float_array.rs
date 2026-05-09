@@ -328,7 +328,7 @@ fn test_roundtrip_string_to_float32_array_null() -> anyhow::Result<()> {
 }
 
 #[test]
-fn test_roundtrip_string_to_float32_array_invalid_is_error() {
+fn test_roundtrip_string_to_float32_array_invalid_is_null() -> anyhow::Result<()> {
     let ctx = RowPackContext {
         version: ROWPACK_VERSION,
         columns: vec![ColumnContext {
@@ -341,7 +341,8 @@ fn test_roundtrip_string_to_float32_array_invalid_is_error() {
         estimated_row_bytes: 0,
     };
 
-    let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+    let encoder = RowPackEncoder::new(ctx.clone())?;
+    let decoder = RowPackDecoder::new(ctx.clone())?;
     let mut scratch = RowPackScratch::new(&ctx);
 
     let array: ArrayRef = Arc::new(StringArray::from(vec![Some("not a float array")]));
@@ -352,11 +353,13 @@ fn test_roundtrip_string_to_float32_array_invalid_is_error() {
     access.set_row(0);
 
     let mut encoded = Vec::new();
-    let result = encoder.encode_row_from_access(&mut access, &mut encoded, &mut scratch);
+    encoder.encode_row_from_access(&mut access, &mut encoded, &mut scratch)?;
+    let json = decoder.decode_json(&encoded)?;
     assert!(
-        result.is_err(),
-        "encoding invalid string as float array should be a hard error"
+        json["embedding"].is_null(),
+        "invalid string as float array should encode as null"
     );
+    Ok(())
 }
 
 #[test]
