@@ -289,14 +289,13 @@ pub fn detect_timestamp_formats(
                     } else {
                         "end_time"
                     };
-                    return Err(anyhow::anyhow!(
-                        "table '{}' column '{}' ({}): could not detect timestamp format. \
-                         {}. Set timestamp_format explicitly in the config.",
-                        table.name,
-                        col_name,
-                        role,
+                    tracing::warn!(
+                        table = %table.name, column = %col_name, role = role,
+                        "could not detect timestamp format: {}. Rows with unparseable \
+                         time values will be treated as invalid during ingest.",
                         info,
-                    ));
+                    );
+                    continue;
                 }
                 tracing::warn!(
                     table = %table.name, column = %col_name,

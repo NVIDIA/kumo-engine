@@ -1357,6 +1357,98 @@ fn test_detect_timestamp_formats_from_parquet() {
 }
 
 #[test]
+fn test_detect_timestamp_formats_allows_unrecognized_create_time_strings() {
+    use crate::config_converter::detect_timestamp_formats;
+    use crate::graph_config::{ColumnSpec, DataSource, GraphConfig, IngestedType, TableSpec};
+    use arrow_array::{RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+    use parquet::arrow::ArrowWriter;
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let parquet_path = dir.path().join("unrecognized_time.parquet");
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("acct_open_date", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            Arc::new(StringArray::from(vec![
+                Some("Sep-02"),
+                Some("Apr-14"),
+                Some("Jul-03"),
+            ])),
+        ],
+    )
+    .unwrap();
+
+    let file = std::fs::File::create(&parquet_path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let mut config = GraphConfig {
+        dataset_name: "test".to_string(),
+        tables: vec![TableSpec {
+            name: "accounts".to_string(),
+            columns: vec![
+                ColumnSpec {
+                    name: "id".to_string(),
+                    source_dtype: None,
+                    ingested_dtype: IngestedType::String,
+                    fixed_len: None,
+                    timestamp_format: None,
+                    timestamp_unit: None,
+                    precision: None,
+                    scale: None,
+                    semantic_type: None,
+                    multicategorical_delimiter: None,
+                },
+                ColumnSpec {
+                    name: "acct_open_date".to_string(),
+                    source_dtype: None,
+                    ingested_dtype: IngestedType::Date,
+                    fixed_len: None,
+                    timestamp_format: None,
+                    timestamp_unit: None,
+                    precision: None,
+                    scale: None,
+                    semantic_type: None,
+                    multicategorical_delimiter: None,
+                },
+            ],
+            primary_key: Some("id".to_string()),
+            create_time: Some("acct_open_date".to_string()),
+            end_time: None,
+            weight: None,
+            edge_table: None,
+            rowpack: None,
+            source: DataSource::Parquet {
+                paths: vec![parquet_path.to_string_lossy().to_string()],
+            },
+            source_size: None,
+            fkeys: vec![],
+            data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
+        }],
+        rowpack: None,
+        num_shards: None,
+        edge_format: None,
+        coercion_mode: Default::default(),
+    };
+
+    detect_timestamp_formats(&mut config, &None).unwrap();
+
+    let col = &config.tables[0].columns[1];
+    assert_eq!(col.timestamp_format, None);
+    assert_eq!(col.timestamp_unit, None);
+}
+
+#[test]
 fn test_detect_timestamp_formats_skips_native_timestamp_columns() {
     use crate::config_converter::detect_timestamp_formats;
     use crate::graph_config::{ColumnSpec, DataSource, GraphConfig, IngestedType, TableSpec};

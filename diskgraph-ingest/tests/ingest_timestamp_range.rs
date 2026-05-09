@@ -65,6 +65,19 @@ fn test_string_timestamp_parse_failure_drops_rows() -> Result<()> {
         ],
     )?;
 
+    let accounts_path = input_root.join("accounts.parquet");
+    write_parquet(
+        &accounts_path,
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("acct_open_date", DataType::Utf8, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![1i64, 2, 3])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["Sep-02", "Apr-14", "Jul-03"])) as ArrayRef,
+        ],
+    )?;
+
     let config = serde_json::json!({
         "dataset_name": "string_ts_test",
         "tables": [
@@ -88,6 +101,20 @@ fn test_string_timestamp_parse_failure_drops_rows() -> Result<()> {
                     "dst_table": "Hub",
                     "forward": {"time": {"table": "Events", "column": "ts", "unit": "s"}}
                 }]
+            },
+            {
+                "name": "Accounts",
+                "source": {"type": "parquet", "paths": [accounts_path.to_string_lossy()]},
+                "primary_key": "id",
+                "create_time": "acct_open_date",
+                "columns": [
+                    {"name": "id", "ingested_dtype": "int64"},
+                    {
+                        "name": "acct_open_date",
+                        "source_dtype": "Utf8",
+                        "ingested_dtype": "date"
+                    }
+                ]
             }
         ]
     });
@@ -108,6 +135,12 @@ fn test_string_timestamp_parse_failure_drops_rows() -> Result<()> {
 
     let events_dropped = *stats.dropped_rows_counts.get("Events").unwrap_or(&0);
     assert_eq!(events_dropped, 2, "Should drop 2 rows with unparseable timestamps, got {events_dropped}");
+
+    let accounts_dropped = *stats.dropped_rows_counts.get("Accounts").unwrap_or(&0);
+    assert_eq!(
+        accounts_dropped, 3,
+        "Should drop all rows with unparseable date create_time, got {accounts_dropped}"
+    );
 
     let edge_count = stats.edge_counts.iter()
         .find(|(k, _)| k.contains("Events") && k.contains("Hub") && !k.contains("reverse"))
