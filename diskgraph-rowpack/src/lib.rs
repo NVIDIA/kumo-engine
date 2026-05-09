@@ -769,35 +769,35 @@ impl RowPackContextBuilder {
                 .get_mut(idx)
                 .ok_or_else(|| anyhow!("rowpack sample column mismatch"))?;
             match logical {
-                IngestedType::Bool => match access.get_bool(idx).ok().flatten() {
+                IngestedType::Bool => match access_or_null(access.get_bool(idx)) {
                     None => stats.observe_null(),
                     Some(_) => stats.observe_bool(),
                 },
-                IngestedType::Int64 => match access.get_int64(idx).ok().flatten() {
+                IngestedType::Int64 => match access_or_null(access.get_int64(idx)) {
                     None => stats.observe_null(),
                     Some(v) => stats.observe_int64(v),
                 },
                 IngestedType::Int16 | IngestedType::Int8 | IngestedType::Int32 => {
-                    match access.get_int32(idx).ok().flatten() {
+                    match access_or_null(access.get_int32(idx)) {
                         None => stats.observe_null(),
                         Some(v) => stats.observe_int32(v),
                     }
                 }
-                IngestedType::UInt64 => match access.get_uint64(idx).ok().flatten() {
+                IngestedType::UInt64 => match access_or_null(access.get_uint64(idx)) {
                     None => stats.observe_null(),
                     Some(v) => stats.observe_uint64(v),
                 },
                 IngestedType::UInt16 | IngestedType::UInt8 | IngestedType::UInt32 => {
-                    match access.get_uint32(idx).ok().flatten() {
+                    match access_or_null(access.get_uint32(idx)) {
                         None => stats.observe_null(),
                         Some(v) => stats.observe_uint32(v),
                     }
                 }
-                IngestedType::Float64 => match access.get_float64(idx).ok().flatten() {
+                IngestedType::Float64 => match access_or_null(access.get_float64(idx)) {
                     None => stats.observe_null(),
                     Some(v) => stats.observe_float64(v),
                 },
-                IngestedType::Float32 => match access.get_float32(idx).ok().flatten() {
+                IngestedType::Float32 => match access_or_null(access.get_float32(idx)) {
                     None => stats.observe_null(),
                     Some(v) => stats.observe_float32(v),
                 },
@@ -814,31 +814,31 @@ impl RowPackContextBuilder {
                     Ok(None) | Err(_) => stats.observe_null(),
                     Ok(Some(len)) => stats.observe_bytes_len(len),
                 },
-                IngestedType::Uuid => match access.get_uuid(idx).ok().flatten() {
+                IngestedType::Uuid => match access_or_null(access.get_uuid(idx)) {
                     None => stats.observe_null(),
                     Some(_) => stats.observe_uuid(),
                 },
-                IngestedType::Uuid256 => match access.get_uuid256(idx).ok().flatten() {
+                IngestedType::Uuid256 => match access_or_null(access.get_uuid256(idx)) {
                     None => stats.observe_null(),
                     Some(_) => stats.observe_uuid256(),
                 },
-                IngestedType::Ip => match access.get_ip(idx).ok().flatten() {
+                IngestedType::Ip => match access_or_null(access.get_ip(idx)) {
                     None => stats.observe_null(),
                     Some(_) => stats.observe_ip(),
                 },
-                IngestedType::Date => match access.get_date(idx).ok().flatten() {
+                IngestedType::Date => match access_or_null(access.get_date(idx)) {
                     None => stats.observe_null(),
                     Some(_) => stats.count = stats.count.saturating_add(1),
                 },
-                IngestedType::Timestamp => match access.get_timestamp(idx).ok().flatten() {
+                IngestedType::Timestamp => match access_or_null(access.get_timestamp(idx)) {
                     None => stats.observe_null(),
                     Some(secs) => stats.observe_timestamp(secs),
                 },
-                IngestedType::Decimal128 => match access.get_decimal128(idx).ok().flatten() {
+                IngestedType::Decimal128 => match access_or_null(access.get_decimal128(idx)) {
                     None => stats.observe_null(),
                     Some(_) => stats.count = stats.count.saturating_add(1),
                 },
-                IngestedType::Decimal256 => match access.get_decimal256(idx).ok().flatten() {
+                IngestedType::Decimal256 => match access_or_null(access.get_decimal256(idx)) {
                     None => stats.observe_null(),
                     Some(_) => stats.count = stats.count.saturating_add(1),
                 },
@@ -1835,6 +1835,26 @@ impl ColumnValueObserver for NoOpObserver {
     fn observe_parse_failure(&mut self, _col_idx: usize) {}
 }
 
+#[inline(always)]
+fn access_or_null<T>(value: Result<Option<T>>) -> Option<T> {
+    value.unwrap_or_default()
+}
+
+#[inline(always)]
+fn access_or_parse_failure<T, O: ColumnValueObserver>(
+    value: Result<Option<T>>,
+    col_idx: usize,
+    observer: &mut O,
+) -> Option<T> {
+    match value {
+        Ok(value) => value,
+        Err(_) => {
+            observer.observe_parse_failure(col_idx);
+            None
+        }
+    }
+}
+
 pub struct RowPackEncoder {
     ctx: RowPackContext,
     dict_maps: Vec<Option<FastHashMap<Vec<u8>, u32>>>,
@@ -2040,14 +2060,14 @@ impl RowPackEncoder {
         scratch.reset(&self.ctx);
         for (idx, col) in self.ctx.columns.iter().enumerate() {
             let tag = match col.logical_type {
-                IngestedType::Bool => match access.get_bool(idx).ok().flatten() {
+                IngestedType::Bool => match access_or_null(access.get_bool(idx)) {
                     None => 0u8,
                     Some(v) => {
                         scratch.bools.write_bits(if v { 1 } else { 0 }, 1);
                         1u8
                     }
                 },
-                IngestedType::Int64 => match access.get_int64(idx).ok().flatten() {
+                IngestedType::Int64 => match access_or_null(access.get_int64(idx)) {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int {
@@ -2063,7 +2083,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Int16 => match access.get_int32(idx).ok().flatten() {
+                IngestedType::Int16 => match access_or_null(access.get_int32(idx)) {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int {
@@ -2079,7 +2099,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Int8 => match access.get_int32(idx).ok().flatten() {
+                IngestedType::Int8 => match access_or_null(access.get_int32(idx)) {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int {
@@ -2095,7 +2115,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Int32 => match access.get_int32(idx).ok().flatten() {
+                IngestedType::Int32 => match access_or_null(access.get_int32(idx)) {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int {
@@ -2111,7 +2131,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::UInt64 => match access.get_uint64(idx).ok().flatten() {
+                IngestedType::UInt64 => match access_or_null(access.get_uint64(idx)) {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int {
@@ -2127,7 +2147,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::UInt16 => match access.get_uint32(idx).ok().flatten() {
+                IngestedType::UInt16 => match access_or_null(access.get_uint32(idx)) {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int {
@@ -2143,7 +2163,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::UInt8 => match access.get_uint32(idx).ok().flatten() {
+                IngestedType::UInt8 => match access_or_null(access.get_uint32(idx)) {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int {
@@ -2159,7 +2179,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::UInt32 => match access.get_uint32(idx).ok().flatten() {
+                IngestedType::UInt32 => match access_or_null(access.get_uint32(idx)) {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Int {
@@ -2175,7 +2195,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Float64 => match access.get_float64(idx).ok().flatten() {
+                IngestedType::Float64 => match access_or_null(access.get_float64(idx)) {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Float { storage } = &col.encoding {
@@ -2185,7 +2205,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Float32 => match access.get_float32(idx).ok().flatten() {
+                IngestedType::Float32 => match access_or_null(access.get_float32(idx)) {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Float { storage } = &col.encoding {
@@ -2247,7 +2267,7 @@ impl RowPackEncoder {
                         return Err(anyhow!("rowpack bytes encoding mismatch"));
                     }
                 }
-                IngestedType::Uuid => match access.get_uuid(idx).ok().flatten() {
+                IngestedType::Uuid => match access_or_null(access.get_uuid(idx)) {
                     None => 0u8,
                     Some(v) => {
                         if !matches!(col.encoding, ColumnEncoding::Uuid) {
@@ -2257,7 +2277,7 @@ impl RowPackEncoder {
                         1u8
                     }
                 },
-                IngestedType::Uuid256 => match access.get_uuid256(idx).ok().flatten() {
+                IngestedType::Uuid256 => match access_or_null(access.get_uuid256(idx)) {
                     None => 0u8,
                     Some(v) => {
                         if !matches!(col.encoding, ColumnEncoding::Uuid256) {
@@ -2267,7 +2287,7 @@ impl RowPackEncoder {
                         1u8
                     }
                 },
-                IngestedType::Ip => match access.get_ip(idx).ok().flatten() {
+                IngestedType::Ip => match access_or_null(access.get_ip(idx)) {
                     None => 0u8,
                     Some(v) => {
                         if !matches!(col.encoding, ColumnEncoding::Ip) {
@@ -2277,7 +2297,7 @@ impl RowPackEncoder {
                         1u8
                     }
                 },
-                IngestedType::Date => match access.get_date(idx).ok().flatten() {
+                IngestedType::Date => match access_or_null(access.get_date(idx)) {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Date { varint, bits } = &col.encoding {
@@ -2288,14 +2308,14 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Timestamp => match access.get_timestamp(idx).ok().flatten() {
+                IngestedType::Timestamp => match access_or_null(access.get_timestamp(idx)) {
                     None => 0u8,
                     Some(secs) => {
                         write_varint(zigzag_encode(secs), &mut scratch.data);
                         1u8
                     }
                 },
-                IngestedType::Decimal128 => match access.get_decimal128(idx).ok().flatten() {
+                IngestedType::Decimal128 => match access_or_null(access.get_decimal128(idx)) {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Decimal {
@@ -2320,7 +2340,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Decimal256 => match access.get_decimal256(idx).ok().flatten() {
+                IngestedType::Decimal256 => match access_or_null(access.get_decimal256(idx)) {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Decimal {
@@ -2481,7 +2501,7 @@ impl RowPackEncoder {
 
         for (idx, col) in self.ctx.columns.iter().enumerate() {
             let tag = match col.logical_type {
-                IngestedType::Bool => match access.get_bool(idx).ok().flatten() {
+                IngestedType::Bool => match access_or_parse_failure(access.get_bool(idx), idx, observer) {
                     None => 0u8,
                     Some(v) => {
                         observer.observe_i64(idx, i64::from(v));
@@ -2489,7 +2509,7 @@ impl RowPackEncoder {
                         1u8
                     }
                 },
-                IngestedType::Int64 => match access.get_int64(idx).ok().flatten() {
+                IngestedType::Int64 => match access_or_parse_failure(access.get_int64(idx), idx, observer) {
                     None => 0u8,
                     Some(v) => {
                         observer.observe_i64(idx, v);
@@ -2506,7 +2526,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Int16 => match access.get_int32(idx).ok().flatten() {
+                IngestedType::Int16 => match access_or_parse_failure(access.get_int32(idx), idx, observer) {
                     None => 0u8,
                     Some(v) => {
                         observer.observe_i64(idx, v as i64);
@@ -2523,7 +2543,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Int8 => match access.get_int32(idx).ok().flatten() {
+                IngestedType::Int8 => match access_or_parse_failure(access.get_int32(idx), idx, observer) {
                     None => 0u8,
                     Some(v) => {
                         observer.observe_i64(idx, v as i64);
@@ -2540,7 +2560,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Int32 => match access.get_int32(idx).ok().flatten() {
+                IngestedType::Int32 => match access_or_parse_failure(access.get_int32(idx), idx, observer) {
                     None => 0u8,
                     Some(v) => {
                         observer.observe_i64(idx, v as i64);
@@ -2557,7 +2577,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::UInt64 => match access.get_uint64(idx).ok().flatten() {
+                IngestedType::UInt64 => match access_or_parse_failure(access.get_uint64(idx), idx, observer) {
                     None => 0u8,
                     Some(v) => {
                         observer.observe_i64(idx, v as i64);
@@ -2574,7 +2594,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::UInt16 => match access.get_uint32(idx).ok().flatten() {
+                IngestedType::UInt16 => match access_or_parse_failure(access.get_uint32(idx), idx, observer) {
                     None => 0u8,
                     Some(v) => {
                         observer.observe_i64(idx, v as i64);
@@ -2591,7 +2611,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::UInt8 => match access.get_uint32(idx).ok().flatten() {
+                IngestedType::UInt8 => match access_or_parse_failure(access.get_uint32(idx), idx, observer) {
                     None => 0u8,
                     Some(v) => {
                         observer.observe_i64(idx, v as i64);
@@ -2608,7 +2628,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::UInt32 => match access.get_uint32(idx).ok().flatten() {
+                IngestedType::UInt32 => match access_or_parse_failure(access.get_uint32(idx), idx, observer) {
                     None => 0u8,
                     Some(v) => {
                         observer.observe_i64(idx, v as i64);
@@ -2625,7 +2645,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Float64 => match access.get_float64(idx).ok().flatten() {
+                IngestedType::Float64 => match access_or_parse_failure(access.get_float64(idx), idx, observer) {
                     None => 0u8,
                     Some(v) => {
                         observer.observe_f64(idx, v);
@@ -2636,7 +2656,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Float32 => match access.get_float32(idx).ok().flatten() {
+                IngestedType::Float32 => match access_or_parse_failure(access.get_float32(idx), idx, observer) {
                     None => 0u8,
                     Some(v) => {
                         observer.observe_f64(idx, v as f64);
@@ -2709,7 +2729,7 @@ impl RowPackEncoder {
                         data.extend_from_slice(buf);
                         1u8
                     } else {
-                        match access.get_uuid(idx).ok().flatten() {
+                        match access_or_parse_failure(access.get_uuid(idx), idx, observer) {
                             None => 0u8,
                             Some(v) => {
                                 data.extend_from_slice(&v);
@@ -2724,7 +2744,7 @@ impl RowPackEncoder {
                         data.extend_from_slice(buf);
                         1u8
                     } else {
-                        match access.get_uuid256(idx).ok().flatten() {
+                        match access_or_parse_failure(access.get_uuid256(idx), idx, observer) {
                             None => 0u8,
                             Some(v) => {
                                 data.extend_from_slice(&v);
@@ -2739,7 +2759,7 @@ impl RowPackEncoder {
                         data.extend_from_slice(buf);
                         1u8
                     } else {
-                        match access.get_ip(idx).ok().flatten() {
+                        match access_or_parse_failure(access.get_ip(idx), idx, observer) {
                             None => 0u8,
                             Some(v) => {
                                 data.extend_from_slice(&v);
@@ -2748,7 +2768,7 @@ impl RowPackEncoder {
                         }
                     }
                 }
-                IngestedType::Date => match access.get_date(idx).ok().flatten() {
+                IngestedType::Date => match access_or_parse_failure(access.get_date(idx), idx, observer) {
                     None => 0u8,
                     Some(v) => {
                         observer.observe_i64(idx, v as i64);
@@ -2772,7 +2792,7 @@ impl RowPackEncoder {
                         0u8
                     }
                 },
-                IngestedType::Decimal128 => match access.get_decimal128(idx).ok().flatten() {
+                IngestedType::Decimal128 => match access_or_parse_failure(access.get_decimal128(idx), idx, observer) {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Decimal {
@@ -2792,7 +2812,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Decimal256 => match access.get_decimal256(idx).ok().flatten() {
+                IngestedType::Decimal256 => match access_or_parse_failure(access.get_decimal256(idx), idx, observer) {
                     None => 0u8,
                     Some(v) => {
                         if let ColumnEncoding::Decimal {

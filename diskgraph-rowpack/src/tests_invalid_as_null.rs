@@ -74,6 +74,104 @@ fn string_array_ctx() -> RowPackContext {
     )
 }
 
+fn scalar_ctx(logical_type: IngestedType) -> RowPackContext {
+    let encoding = match logical_type {
+        IngestedType::Bool => ColumnEncoding::Bool,
+        IngestedType::Int8 => ColumnEncoding::Int {
+            signed: true,
+            varint: false,
+            bits: 8,
+        },
+        IngestedType::Int16 => ColumnEncoding::Int {
+            signed: true,
+            varint: false,
+            bits: 16,
+        },
+        IngestedType::Int32 => ColumnEncoding::Int {
+            signed: true,
+            varint: false,
+            bits: 32,
+        },
+        IngestedType::Int64 => ColumnEncoding::Int {
+            signed: true,
+            varint: true,
+            bits: 64,
+        },
+        IngestedType::UInt8 => ColumnEncoding::Int {
+            signed: false,
+            varint: false,
+            bits: 8,
+        },
+        IngestedType::UInt16 => ColumnEncoding::Int {
+            signed: false,
+            varint: false,
+            bits: 16,
+        },
+        IngestedType::UInt32 => ColumnEncoding::Int {
+            signed: false,
+            varint: false,
+            bits: 32,
+        },
+        IngestedType::UInt64 => ColumnEncoding::Int {
+            signed: false,
+            varint: true,
+            bits: 64,
+        },
+        IngestedType::Float32 => ColumnEncoding::Float {
+            storage: FloatStorage::F32,
+        },
+        IngestedType::Float64 => ColumnEncoding::Float {
+            storage: FloatStorage::F64,
+        },
+        IngestedType::Uuid => ColumnEncoding::Uuid,
+        IngestedType::Uuid256 => ColumnEncoding::Uuid256,
+        IngestedType::Ip => ColumnEncoding::Ip,
+        IngestedType::Date => ColumnEncoding::Date {
+            varint: true,
+            bits: 32,
+        },
+        IngestedType::Timestamp => ColumnEncoding::Timestamp,
+        IngestedType::Decimal128 => ColumnEncoding::Decimal {
+            precision: 10,
+            scale: 2,
+            bytes: decimal_raw_bytes(10).unwrap(),
+            storage: DecimalStorage::Varint,
+        },
+        IngestedType::Decimal256 => ColumnEncoding::Decimal {
+            precision: 40,
+            scale: 2,
+            bytes: decimal_raw_bytes(40).unwrap(),
+            storage: DecimalStorage::Varint,
+        },
+        _ => unreachable!("not a scalar parse-failure test type"),
+    };
+    one_column_ctx(logical_type, encoding)
+}
+
+fn scalar_col(logical_type: IngestedType) -> RowPackColumn {
+    RowPackColumn {
+        name: "value".to_string(),
+        logical_type,
+        fixed_len: None,
+        precision: if matches!(
+            logical_type,
+            IngestedType::Decimal128 | IngestedType::Decimal256
+        ) {
+            Some(10)
+        } else {
+            None
+        },
+        scale: if matches!(
+            logical_type,
+            IngestedType::Decimal128 | IngestedType::Decimal256
+        ) {
+            Some(2)
+        } else {
+            None
+        },
+    }
+}
+
 fn one_column_ctx(logical_type: IngestedType, encoding: ColumnEncoding) -> RowPackContext {
     RowPackContext {
         version: ROWPACK_VERSION,
@@ -95,13 +193,54 @@ fn list_utf8_array(values: &[&str]) -> ArrayRef {
     Arc::new(builder.finish())
 }
 
-fn encode_invalid_as_null(ctx: RowPackContext, array: ArrayRef) -> anyhow::Result<()> {
-    let encoder = RowPackEncoder::new(ctx.clone())?;
-    let decoder = RowPackDecoder::new(ctx.clone())?;
+fn invalid_string_array() -> ArrayRef {
+    Arc::new(StringArray::from(vec![Some("not-a-value")]))
+}
+
+fn access_for_array(array: ArrayRef) -> (RowAccess<'static>, Vec<ArrayRef>) {
     let arrays = vec![array];
     let mut access = RowAccess::new(vec![RowAccessHints::default()], RowAccessStats::default());
     access.set_cols(&arrays);
     access.set_row(0);
+    (access, arrays)
+}
+
+fn assert_invalid_accessor_errors(
+    access: &mut RowAccess<'_>,
+    logical_type: IngestedType,
+) -> anyhow::Result<()> {
+    let failed = match logical_type {
+        IngestedType::Bool => access.get_bool(0).is_err(),
+        IngestedType::Int8 | IngestedType::Int16 | IngestedType::Int32 => {
+            access.get_int32(0).is_err()
+        }
+        IngestedType::Int64 => access.get_int64(0).is_err(),
+        IngestedType::UInt8 | IngestedType::UInt16 | IngestedType::UInt32 => {
+            access.get_uint32(0).is_err()
+        }
+        IngestedType::UInt64 => access.get_uint64(0).is_err(),
+        IngestedType::Float32 => access.get_float32(0).is_err(),
+        IngestedType::Float64 => access.get_float64(0).is_err(),
+        IngestedType::Uuid => access.get_uuid(0).is_err(),
+        IngestedType::Uuid256 => access.get_uuid256(0).is_err(),
+        IngestedType::Ip => access.get_ip(0).is_err(),
+        IngestedType::Date => access.get_date(0).is_err(),
+        IngestedType::Timestamp => access.get_timestamp(0).is_err(),
+        IngestedType::Decimal128 => access.get_decimal128(0).is_err(),
+        IngestedType::Decimal256 => access.get_decimal256(0).is_err(),
+        _ => unreachable!("not a scalar parse-failure test type"),
+    };
+    assert!(
+        failed,
+        "test setup must trigger an accessor error for {logical_type:?}"
+    );
+    Ok(())
+}
+
+fn encode_invalid_as_null(ctx: RowPackContext, array: ArrayRef) -> anyhow::Result<()> {
+    let encoder = RowPackEncoder::new(ctx.clone())?;
+    let decoder = RowPackDecoder::new(ctx.clone())?;
+    let (mut access, _arrays) = access_for_array(array);
 
     let mut tags = Vec::new();
     let mut bools = Vec::new();
@@ -134,6 +273,198 @@ fn encode_invalid_as_null(ctx: RowPackContext, array: ArrayRef) -> anyhow::Resul
     assert_eq!(observer.nulls, vec![0]);
     Ok(())
 }
+
+fn encode_from_access_invalid_is_null(logical_type: IngestedType) -> anyhow::Result<()> {
+    let ctx = scalar_ctx(logical_type);
+    let encoder = RowPackEncoder::new(ctx.clone())?;
+    let decoder = RowPackDecoder::new(ctx)?;
+    let (mut access, _arrays) = access_for_array(invalid_string_array());
+
+    assert_invalid_accessor_errors(&mut access, logical_type)?;
+
+    let mut encoded = Vec::new();
+    let mut scratch = RowPackScratch::new(encoder.context());
+    encoder.encode_row_from_access(&mut access, &mut encoded, &mut scratch)?;
+
+    let json = decoder.decode_json(&encoded)?;
+    assert!(
+        json["value"].is_null(),
+        "invalid value should encode as null: {json}"
+    );
+    Ok(())
+}
+
+fn observe_context_invalid_is_null(logical_type: IngestedType) -> anyhow::Result<()> {
+    let mut builder =
+        RowPackContextBuilder::new(vec![scalar_col(logical_type)], RowPackConfig::default());
+    let (mut access, _arrays) = access_for_array(invalid_string_array());
+
+    assert_invalid_accessor_errors(&mut access, logical_type)?;
+
+    builder.observe_row_from_access(&mut access)?;
+    let _ = builder.finish()?;
+    Ok(())
+}
+
+macro_rules! scalar_parse_failure_test {
+    ($name:ident, $logical_type:expr) => {
+        #[test]
+        fn $name() -> anyhow::Result<()> {
+            encode_invalid_as_null(scalar_ctx($logical_type), invalid_string_array())
+        }
+    };
+}
+
+scalar_parse_failure_test!(encode_bool_parse_failure_is_recorded, IngestedType::Bool);
+scalar_parse_failure_test!(encode_int8_parse_failure_is_recorded, IngestedType::Int8);
+scalar_parse_failure_test!(encode_int16_parse_failure_is_recorded, IngestedType::Int16);
+scalar_parse_failure_test!(encode_int32_parse_failure_is_recorded, IngestedType::Int32);
+scalar_parse_failure_test!(encode_int64_parse_failure_is_recorded, IngestedType::Int64);
+scalar_parse_failure_test!(encode_uint8_parse_failure_is_recorded, IngestedType::UInt8);
+scalar_parse_failure_test!(
+    encode_uint16_parse_failure_is_recorded,
+    IngestedType::UInt16
+);
+scalar_parse_failure_test!(
+    encode_uint32_parse_failure_is_recorded,
+    IngestedType::UInt32
+);
+scalar_parse_failure_test!(
+    encode_uint64_parse_failure_is_recorded,
+    IngestedType::UInt64
+);
+scalar_parse_failure_test!(
+    encode_float32_parse_failure_is_recorded,
+    IngestedType::Float32
+);
+scalar_parse_failure_test!(
+    encode_float64_parse_failure_is_recorded,
+    IngestedType::Float64
+);
+scalar_parse_failure_test!(encode_uuid_parse_failure_is_recorded, IngestedType::Uuid);
+scalar_parse_failure_test!(
+    encode_uuid256_parse_failure_is_recorded,
+    IngestedType::Uuid256
+);
+scalar_parse_failure_test!(encode_ip_parse_failure_is_recorded, IngestedType::Ip);
+scalar_parse_failure_test!(encode_date_parse_failure_is_recorded, IngestedType::Date);
+scalar_parse_failure_test!(
+    encode_timestamp_parse_failure_is_recorded,
+    IngestedType::Timestamp
+);
+scalar_parse_failure_test!(
+    encode_decimal128_parse_failure_is_recorded,
+    IngestedType::Decimal128
+);
+scalar_parse_failure_test!(
+    encode_decimal256_parse_failure_is_recorded,
+    IngestedType::Decimal256
+);
+
+macro_rules! scalar_direct_context_tests {
+    ($direct_name:ident, $context_name:ident, $logical_type:expr) => {
+        #[test]
+        fn $direct_name() -> anyhow::Result<()> {
+            encode_from_access_invalid_is_null($logical_type)
+        }
+
+        #[test]
+        fn $context_name() -> anyhow::Result<()> {
+            observe_context_invalid_is_null($logical_type)
+        }
+    };
+}
+
+scalar_direct_context_tests!(
+    direct_bool_invalid_is_null,
+    context_bool_invalid_is_null,
+    IngestedType::Bool
+);
+scalar_direct_context_tests!(
+    direct_int8_invalid_is_null,
+    context_int8_invalid_is_null,
+    IngestedType::Int8
+);
+scalar_direct_context_tests!(
+    direct_int16_invalid_is_null,
+    context_int16_invalid_is_null,
+    IngestedType::Int16
+);
+scalar_direct_context_tests!(
+    direct_int32_invalid_is_null,
+    context_int32_invalid_is_null,
+    IngestedType::Int32
+);
+scalar_direct_context_tests!(
+    direct_int64_invalid_is_null,
+    context_int64_invalid_is_null,
+    IngestedType::Int64
+);
+scalar_direct_context_tests!(
+    direct_uint8_invalid_is_null,
+    context_uint8_invalid_is_null,
+    IngestedType::UInt8
+);
+scalar_direct_context_tests!(
+    direct_uint16_invalid_is_null,
+    context_uint16_invalid_is_null,
+    IngestedType::UInt16
+);
+scalar_direct_context_tests!(
+    direct_uint32_invalid_is_null,
+    context_uint32_invalid_is_null,
+    IngestedType::UInt32
+);
+scalar_direct_context_tests!(
+    direct_uint64_invalid_is_null,
+    context_uint64_invalid_is_null,
+    IngestedType::UInt64
+);
+scalar_direct_context_tests!(
+    direct_float32_invalid_is_null,
+    context_float32_invalid_is_null,
+    IngestedType::Float32
+);
+scalar_direct_context_tests!(
+    direct_float64_invalid_is_null,
+    context_float64_invalid_is_null,
+    IngestedType::Float64
+);
+scalar_direct_context_tests!(
+    direct_uuid_invalid_is_null,
+    context_uuid_invalid_is_null,
+    IngestedType::Uuid
+);
+scalar_direct_context_tests!(
+    direct_uuid256_invalid_is_null,
+    context_uuid256_invalid_is_null,
+    IngestedType::Uuid256
+);
+scalar_direct_context_tests!(
+    direct_ip_invalid_is_null,
+    context_ip_invalid_is_null,
+    IngestedType::Ip
+);
+scalar_direct_context_tests!(
+    direct_date_invalid_is_null,
+    context_date_invalid_is_null,
+    IngestedType::Date
+);
+scalar_direct_context_tests!(
+    direct_timestamp_invalid_is_null,
+    context_timestamp_invalid_is_null,
+    IngestedType::Timestamp
+);
+scalar_direct_context_tests!(
+    direct_decimal128_invalid_is_null,
+    context_decimal128_invalid_is_null,
+    IngestedType::Decimal128
+);
+scalar_direct_context_tests!(
+    direct_decimal256_invalid_is_null,
+    context_decimal256_invalid_is_null,
+    IngestedType::Decimal256
+);
 
 fn observe_invalid_as_null(ctx: RowPackContext, array: ArrayRef) -> anyhow::Result<()> {
     let col = RowPackColumn {
