@@ -3337,7 +3337,7 @@ impl IngestContext {
                 if let Some(stats) = table_col_stats.get(&table.name) {
                     let col_names: Vec<String> =
                         table.columns.iter().map(|c| c.name.clone()).collect();
-                    stats.check_parse_failures(&col_names, &table.name)?;
+                    stats.warn_parse_failures(&col_names, &table.name);
                 }
             }
             let mut root_map = serde_json::Map::new();

@@ -604,6 +604,41 @@ pub enum ColumnStatsCollector {
     Skip,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TimestampParseFailureSummary {
+    total_rows: u64,
+    source_non_null_rows: u64,
+    source_null_rows: u64,
+    parse_failures: u64,
+}
+
+impl TimestampParseFailureSummary {
+    fn new(count: u64, null_count: u64, parse_fail_count: u64) -> Option<Self> {
+        let total_rows = count.saturating_add(null_count);
+        if total_rows == 0 {
+            return None;
+        }
+        Some(Self {
+            total_rows,
+            source_non_null_rows: count.saturating_add(parse_fail_count),
+            source_null_rows: null_count.saturating_sub(parse_fail_count),
+            parse_failures: parse_fail_count,
+        })
+    }
+
+    fn parse_failure_pct_of_non_null(self) -> f64 {
+        if self.source_non_null_rows == 0 {
+            0.0
+        } else {
+            self.parse_failures as f64 / self.source_non_null_rows as f64 * 100.0
+        }
+    }
+
+    fn parse_failure_pct_of_total(self) -> f64 {
+        self.parse_failures as f64 / self.total_rows as f64 * 100.0
+    }
+}
+
 impl FileColStats {
     /// Create a new observer for a file. No category count collection.
     ///
@@ -733,15 +768,14 @@ impl FileColStats {
         }
     }
 
-    /// Check for columns where parse failures or nulls exceed 80% of total rows.
-    /// Returns an error if any timestamp column has a high parse failure rate,
-    /// indicating a likely format mismatch. High null rates are allowed — a
-    /// column that is mostly or entirely null is valid (e.g. DELETED_DATE).
-    pub fn check_parse_failures(
-        &self,
-        column_names: &[String],
-        table_name: &str,
-    ) -> anyhow::Result<()> {
+    /// Warn when timestamp parse failures were observed.
+    ///
+    /// Timestamp parse failures are diagnostics, not fatal errors: create-time
+    /// rows are dropped by ingest, and non-time timestamp features encode as
+    /// null. `parse_fail_count` is a subset of `null_count`, so totals are
+    /// derived from valid + encoded-null rows and do not add parse failures a
+    /// second time.
+    pub fn warn_parse_failures(&self, column_names: &[String], table_name: &str) {
         for (col, name) in self.cols.iter().zip(column_names.iter()) {
             if let ColumnStatsCollector::Timestamp {
                 count,
@@ -751,55 +785,45 @@ impl FileColStats {
                 ..
             } = col
             {
-                let total = count + null_count + parse_fail_count;
-                if total == 0 {
+                let Some(summary) =
+                    TimestampParseFailureSummary::new(*count, *null_count, *parse_fail_count)
+                else {
                     continue;
-                }
-                if *parse_fail_count > 0 {
-                    let fail_frac = *parse_fail_count as f64 / total as f64;
+                };
+                if summary.parse_failures > 0 {
+                    let samples = if parse_fail_samples.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " [{}]",
+                            parse_fail_samples
+                                .iter()
+                                .map(|s| format!("'{}'", s))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                        )
+                    };
                     tracing::warn!(
                         table = table_name,
                         column = name.as_str(),
-                        parse_failures = *parse_fail_count,
-                        total_rows = total,
-                        pct = format_args!("{:.1}%", fail_frac * 100.0),
-                        "timestamp parse failures detected",
+                        parse_failures = summary.parse_failures,
+                        source_non_null_rows = summary.source_non_null_rows,
+                        source_null_rows = summary.source_null_rows,
+                        total_rows = summary.total_rows,
+                        pct_of_non_null = format_args!(
+                            "{:.1}%",
+                            summary.parse_failure_pct_of_non_null()
+                        ),
+                        pct_of_total = format_args!(
+                            "{:.1}%",
+                            summary.parse_failure_pct_of_total()
+                        ),
+                        samples = samples.as_str(),
+                        "timestamp parse failures detected; invalid timestamp values were treated as null or dropped according to time-column semantics",
                     );
-                    // Only error on high parse failure rate — nulls are valid data.
-                    let non_null = total - *null_count;
-                    if non_null > 0 && *parse_fail_count as f64 / non_null as f64 > 0.5 {
-                        let samples_hint = if parse_fail_samples.is_empty() {
-                            String::new()
-                        } else {
-                            format!(
-                                " Sample values that failed: [{}].",
-                                parse_fail_samples
-                                    .iter()
-                                    .map(|s| format!("'{}'", s))
-                                    .collect::<Vec<_>>()
-                                    .join(", "),
-                            )
-                        };
-                        return Err(anyhow::anyhow!(
-                            "table '{}' column '{}': {:.1}% of non-null rows failed to parse \
-                             ({} parse failures out of {} non-null, {} null out of {} total).{} \
-                             This likely indicates a timestamp format mismatch. \
-                             Set timestamp_format explicitly in the config if the column \
-                             uses a non-standard format.",
-                            table_name,
-                            name,
-                            *parse_fail_count as f64 / non_null as f64 * 100.0,
-                            parse_fail_count,
-                            non_null,
-                            null_count,
-                            total,
-                            samples_hint,
-                        ));
-                    }
                 }
             }
         }
-        Ok(())
     }
 
     /// Serialize accumulated stats to a JSON object keyed by column name.
@@ -1251,7 +1275,7 @@ impl ColumnStatsCollector {
                 hll,
                 ..
             } => {
-                let total = *count + *null_count + *parse_fail_count;
+                let total = (*count).saturating_add(*null_count);
                 Some(json!({
                     "semantic_type": "timestamp",
                     "count": total,
@@ -1681,7 +1705,7 @@ impl FileColStats {
                     hll,
                     ..
                 } => {
-                    let total = *c + *null_count + *parse_fail_count;
+                    let total = (*c).saturating_add(*null_count);
                     map.insert(
                         kumo_key(name, sk, "COUNT", false),
                         kumo_entry(json!(total), false, dv, total),
@@ -2919,6 +2943,23 @@ mod tests {
     }
 
     #[test]
+    fn timestamp_parse_failure_summary_does_not_double_count_failed_rows() {
+        let summary = TimestampParseFailureSummary::new(0, 3, 3).unwrap();
+        assert_eq!(summary.total_rows, 3);
+        assert_eq!(summary.source_non_null_rows, 3);
+        assert_eq!(summary.source_null_rows, 0);
+        assert_eq!(summary.parse_failure_pct_of_non_null(), 100.0);
+        assert_eq!(summary.parse_failure_pct_of_total(), 100.0);
+
+        let mixed = TimestampParseFailureSummary::new(2, 3, 1).unwrap();
+        assert_eq!(mixed.total_rows, 5);
+        assert_eq!(mixed.source_non_null_rows, 3);
+        assert_eq!(mixed.source_null_rows, 2);
+        assert!((mixed.parse_failure_pct_of_non_null() - 33.333333).abs() < 0.000001);
+        assert_eq!(mixed.parse_failure_pct_of_total(), 20.0);
+    }
+
+    #[test]
     fn test_to_kumo_json_skip_column() {
         let stypes = vec![Some(SemanticType::Unsupported)];
         let mut stats = FileColStats::new(&make_test_cols(&stypes));
@@ -2999,11 +3040,12 @@ mod tests {
         stats.observe_string(3, "hello world");
         stats.observe_string(3, "foo bar baz");
         stats.observe_null(3);
-        // Timestamp: 2 values, 1 null, 1 parse fail → count=4
+        // Timestamp: 2 values, 1 source null, 1 parse fail encoded as null → count=4
         stats.observe_timestamp(4, 1537401600);
         stats.observe_timestamp(4, 1700000000);
         stats.observe_null(4);
         stats.observe_parse_failure(4);
+        stats.observe_null(4);
         // Sequence: 2 nulls only → count=2
         stats.observe_null(5);
         stats.observe_null(5);
@@ -3391,7 +3433,7 @@ mod tests {
         }
 
         // ---- Timestamp: created_at ----
-        // 2 observations + 1 null + 1 parse_fail = count 4
+        // 2 observations + 1 source null + 1 parse failure encoded as null = count 4
         e(
             &map,
             "created_at__kumo.timestamp__COUNT__False",
@@ -3403,7 +3445,7 @@ mod tests {
         e(
             &map,
             "created_at__kumo.timestamp__NUM_NA__False",
-            json!(1),
+            json!(2),
             false,
             "v42",
             4,
@@ -3411,7 +3453,7 @@ mod tests {
         e(
             &map,
             "created_at__kumo.timestamp__NA_FRACTION__False",
-            json!(0.25),
+            json!(0.5),
             false,
             "v42",
             4,

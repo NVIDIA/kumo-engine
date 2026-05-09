@@ -126,7 +126,11 @@ fn test_string_timestamp_parse_failure_drops_rows() -> Result<()> {
         &config_path,
         output_root.to_str().unwrap(),
         Dest::Local,
-        IngestOptions::default(),
+        IngestOptions {
+            col_stats: true,
+            cat_count_strategy: diskgraph_ingest::col_stats::CategoryCountStrategy::None,
+            ..IngestOptions::default()
+        },
     )?;
 
     println!("dropped_rows_counts: {:?}", stats.dropped_rows_counts);
