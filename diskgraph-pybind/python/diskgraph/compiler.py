@@ -205,6 +205,13 @@ class DiskGraphPlanCompiler:
                 manual_train_values=split_spec.manual_train_values,
                 manual_val_values=split_spec.manual_val_values,
                 manual_test_values=split_spec.manual_test_values,
+                offset_unit=split_spec.offset_unit or "days",
+                unit=split_spec.unit or "days",
+                timeframe=split_spec.timeframe,
+                anchor_start_offset=(
+                    0 if split_spec.anchor_start_offset is None
+                    else split_spec.anchor_start_offset
+                ),
             )
 
         # 4. What-If (Assuming) — only for training, not prediction.

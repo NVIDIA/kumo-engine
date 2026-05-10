@@ -153,6 +153,57 @@ def test_compiler_accepts_date_offset_split_without_ratio():
     assert plan["split"]["ratio"] is None
 
 
+def test_compiler_preserves_date_offset_window_semantics_and_normalizes_units():
+    query = _make_temporal_query()
+
+    compiler = DiskGraphPlanCompiler()
+    plan_json = compiler.compile(
+        query=query,
+        timestamps=[1609459200000000],
+        forecast_length=1,
+        lag_timesteps=30,
+        task_type="temporal_link_prediction", target_stype="categorical",
+        input_timestamp_unit=TimeUnit.Microseconds,
+        split=SplitSpec(
+            kind="DateOffsetSplit",
+            offsets=[-6, 0],
+            offset_unit="h",
+            unit="h",
+            timeframe=2,
+            anchor_start_offset=2,
+        ),
+    )
+
+    split = json.loads(plan_json)["split"]
+    assert split["timeframe"] == 2
+    assert split["unit"] == "hours"
+    assert split["offset_unit"] == "hours"
+    assert split["anchor_start_offset"] == 2
+
+
+def test_compiler_rejects_date_offset_calendar_units():
+    query = _make_temporal_query()
+
+    compiler = DiskGraphPlanCompiler()
+    with pytest.raises(DiskgraphConfigError, match="DateOffsetSplit.*months"):
+        compiler.compile(
+            query=query,
+            timestamps=[1609459200000000],
+            forecast_length=1,
+            lag_timesteps=30,
+            task_type="temporal_link_prediction", target_stype="categorical",
+            input_timestamp_unit=TimeUnit.Microseconds,
+            split=SplitSpec(
+                kind="DateOffsetSplit",
+                offsets=[-6, 0],
+                offset_unit="days",
+                unit="months",
+                timeframe=2,
+                anchor_start_offset=2,
+            ),
+        )
+
+
 def test_compiler_accepts_backtesting_split_without_ratio():
     query = _make_temporal_query()
 
@@ -843,5 +894,3 @@ def test_second_timestamps_unchanged():
 # `diskgraph_config.json` at the index root instead. Coverage for the
 # end-to-end multicat dispatch lives in `ttgen_integration.rs` (which exercises
 # the on-disk-config path via fixtures built through real ingest).
-
-

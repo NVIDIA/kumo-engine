@@ -424,7 +424,10 @@ impl DiskGraphTTBuilder {
         manual_val_values=None,
         manual_test_values=None,
         offset_unit="days",
-        range_unit="seconds"
+        range_unit="seconds",
+        unit="days",
+        timeframe=None,
+        anchor_start_offset=0
     ))]
     #[allow(clippy::too_many_arguments)]
     fn split_ratio(
@@ -443,6 +446,9 @@ impl DiskGraphTTBuilder {
         manual_test_values: Option<Vec<String>>,
         offset_unit: &str,
         range_unit: &str,
+        unit: &str,
+        timeframe: Option<i64>,
+        anchor_start_offset: i64,
     ) -> PyResult<()> {
         if let Some(ratio_vals) = ratio.as_ref() {
             if ratio_vals.len() < 2 || ratio_vals.len() > 3 {
@@ -457,7 +463,13 @@ impl DiskGraphTTBuilder {
             }
         }
         let off_unit = parse_time_unit(offset_unit)?;
+        let split_unit = parse_time_unit(unit)?;
         let rng_unit = parse_time_unit(range_unit)?;
+        let is_date_offset_split = kind.as_deref() == Some("DateOffsetSplit");
+        if is_date_offset_split {
+            reject_calendar_date_offset_unit("offset_unit", off_unit)?;
+            reject_calendar_date_offset_unit("unit", split_unit)?;
+        }
         self.split = Some(tt::SplitSpec {
             ratio,
             kind,
@@ -468,6 +480,14 @@ impl DiskGraphTTBuilder {
                     .map(|o| dur_from_unit::<Seconds>(o, off_unit))
                     .collect()
             }),
+            offset_unit: is_date_offset_split.then(|| time_unit_name(off_unit).to_string()),
+            unit: is_date_offset_split.then(|| time_unit_name(split_unit).to_string()),
+            timeframe: if is_date_offset_split { timeframe } else { None },
+            anchor_start_offset: if is_date_offset_split {
+                Some(anchor_start_offset)
+            } else {
+                None
+            },
             ranges: ranges.map(|v| {
                 v.into_iter()
                     .map(|(lo, hi)| {
@@ -748,6 +768,31 @@ fn parse_time_unit(unit: &str) -> PyResult<tt::TimeUnit> {
             "unknown time unit: {unit}"
         ))),
     }
+}
+
+fn time_unit_name(unit: tt::TimeUnit) -> &'static str {
+    match unit {
+        tt::TimeUnit::Nanoseconds => "nanoseconds",
+        tt::TimeUnit::Microseconds => "microseconds",
+        tt::TimeUnit::Milliseconds => "milliseconds",
+        tt::TimeUnit::Seconds => "seconds",
+        tt::TimeUnit::Minutes => "minutes",
+        tt::TimeUnit::Hours => "hours",
+        tt::TimeUnit::Days => "days",
+        tt::TimeUnit::Weeks => "weeks",
+        tt::TimeUnit::Months => "months",
+        tt::TimeUnit::Years => "years",
+    }
+}
+
+fn reject_calendar_date_offset_unit(field: &str, unit: tt::TimeUnit) -> PyResult<()> {
+    if matches!(unit, tt::TimeUnit::Months | tt::TimeUnit::Years) {
+        return Err(crate::DiskgraphConfigError::new_err(format!(
+            "DateOffsetSplit {field}={} is not supported for DiskGraph summary derivation",
+            time_unit_name(unit)
+        )));
+    }
+    Ok(())
 }
 
 fn extract_value(value: &Bound<'_, PyAny>) -> PyResult<tt::Value> {

@@ -12,7 +12,7 @@ use arrow_array::RecordBatch;
 use arrow_schema::DataType;
 use crossbeam_channel::{bounded, Receiver, Sender};
 use diskgraph_core::accumulators::{HyperLogLog, LocalColumnCounts, SharedColumnCounts, TDigestEstimator, WelfordAccumulator, for_each_split_ascii_byte};
-use diskgraph_core::time::{Abs, Dur, UnitSystem, add_calendar_months};
+use diskgraph_core::time::{Abs, Dur, UnitSystem, add_calendar_months, dur_from_unit, TimeUnit};
 use diskgraph_core::tt_builder::*;
 use diskgraph_index::graph::GraphIndexReader;
 use rayon::prelude::*;
@@ -21,7 +21,7 @@ use crate::ttgen_accumulator::{hash_i64, hash_str, hash_value, Accumulator};
 use crate::ttgen_filter::{compare_values, eval_row_filter, eval_stage_filter};
 use crate::ttgen_output::{ChannelBatchWriter, ExtraColumnOutput, ExtraValueRef, OutputMode};
 use crate::ttgen_resolve::*;
-use crate::ttgen_stats::{ChunkStats, StatsMerger, TTExecutionSummary};
+use crate::ttgen_stats::{ChunkStats, DateOffsetSplitSemantics, StatsMerger, TTExecutionSummary};
 use crate::ttgen_traversal::{*, MulticatToken};
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -102,6 +102,29 @@ pub fn execute_with_summary<U: UnitSystem>(
         .split
         .as_ref()
         .and_then(|s| s.offsets.clone());
+    let date_offset_semantics = if let Some(s) = plan
+        .split
+        .as_ref()
+        .filter(|s| s.kind.as_deref() == Some("DateOffsetSplit"))
+    {
+        let unit_name = s.unit.as_deref().unwrap_or("days");
+        let unit = TimeUnit::from_name(unit_name).ok_or_else(|| {
+            TTGenError::InvalidPlan(format!(
+                "DateOffsetSplit unit '{unit_name}' is not supported"
+            ))
+        })?;
+        if matches!(unit, TimeUnit::Months | TimeUnit::Years) {
+            return Err(TTGenError::InvalidPlan(format!(
+                "DateOffsetSplit unit={unit_name} is not supported for summary derivation"
+            )));
+        }
+        Some(DateOffsetSplitSemantics {
+            timeframe: s.timeframe.map(|v| dur_from_unit::<U>(v, unit)),
+            anchor_start_offset: dur_from_unit::<U>(s.anchor_start_offset.unwrap_or(0), unit),
+        })
+    } else {
+        None
+    };
     let split_ranges: Option<Vec<(Abs<U>, Abs<U>)>> = plan
         .split
         .as_ref()
@@ -186,7 +209,7 @@ pub fn execute_with_summary<U: UnitSystem>(
         tracing::info!(total_rows, "TT-gen execution finished");
         Ok(TTExecutionSummary {
             rows_written: total_rows,
-            stats: Some(stats.finalize(
+            stats: Some(stats.finalize_with_split_semantics(
                 total_rows,
                 is_link_prediction,
                 has_frequency_col,
@@ -195,6 +218,7 @@ pub fn execute_with_summary<U: UnitSystem>(
                 split_kind.as_deref(),
                 split_is_temporal,
                 split_offsets.as_deref(),
+                date_offset_semantics,
                 split_ranges.as_deref(),
                 split_backtesting_timestamp,
                 split_column.as_deref(),

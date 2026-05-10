@@ -247,6 +247,12 @@ pub(crate) struct StatsMerger<U: UnitSystem> {
     pub(crate) target_is_bool_dtype: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DateOffsetSplitSemantics<U: UnitSystem> {
+    pub(crate) timeframe: Option<Dur<U>>,
+    pub(crate) anchor_start_offset: Dur<U>,
+}
+
 impl<U: UnitSystem> Default for StatsMerger<U> {
     fn default() -> Self {
         Self {
@@ -354,8 +360,52 @@ impl<U: UnitSystem> StatsMerger<U> {
         self.target_is_bool_dtype |= chunk.target_is_bool_dtype;
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn finalize(
+        self,
+        num_total_rows: u64,
+        is_link_prediction: bool,
+        has_frequency_col: bool,
+        has_include_bit_col: bool,
+        split_ratio: Option<&[f64]>,
+        split_kind: Option<&str>,
+        split_is_temporal: bool,
+        split_offsets: Option<&[Dur<U>]>,
+        split_ranges: Option<&[(Abs<U>, Abs<U>)]>,
+        split_backtesting_timestamp: Option<Abs<U>>,
+        split_column: Option<&str>,
+        manual_train_values: Option<&[String]>,
+        manual_val_values: Option<&[String]>,
+        manual_test_values: Option<&[String]>,
+        target_category_counts: Option<HashMap<String, u64>>,
+        target_stype: &str,
+        entity_category_counts: Option<HashMap<String, u64>>,
+    ) -> TrainTableStatsPayload {
+        self.finalize_with_split_semantics(
+            num_total_rows,
+            is_link_prediction,
+            has_frequency_col,
+            has_include_bit_col,
+            split_ratio,
+            split_kind,
+            split_is_temporal,
+            split_offsets,
+            None,
+            split_ranges,
+            split_backtesting_timestamp,
+            split_column,
+            manual_train_values,
+            manual_val_values,
+            manual_test_values,
+            target_category_counts,
+            target_stype,
+            entity_category_counts,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn finalize_with_split_semantics(
         mut self,
         num_total_rows: u64,
         is_link_prediction: bool,
@@ -365,6 +415,7 @@ impl<U: UnitSystem> StatsMerger<U> {
         split_kind: Option<&str>,
         split_is_temporal: bool,
         split_offsets: Option<&[Dur<U>]>,
+        date_offset_semantics: Option<DateOffsetSplitSemantics<U>>,
         split_ranges: Option<&[(Abs<U>, Abs<U>)]>,
         split_backtesting_timestamp: Option<Abs<U>>,
         split_column: Option<&str>,
@@ -431,6 +482,7 @@ impl<U: UnitSystem> StatsMerger<U> {
             split_kind,
             split_is_temporal,
             split_offsets,
+            date_offset_semantics,
             split_ranges,
             split_backtesting_timestamp,
             split_column,
@@ -1149,6 +1201,7 @@ fn derive_split_mask_counts<U: UnitSystem>(
     split_kind: Option<&str>,
     split_is_temporal: bool,
     split_offsets: Option<&[Dur<U>]>,
+    date_offset_semantics: Option<DateOffsetSplitSemantics<U>>,
     split_ranges: Option<&[(Abs<U>, Abs<U>)]>,
     split_backtesting_timestamp: Option<Abs<U>>,
     split_column: Option<&str>,
@@ -1186,8 +1239,11 @@ fn derive_split_mask_counts<U: UnitSystem>(
             }
         }
         (Some("DateOffsetSplit"), true) => {
-            let stage_map =
-                derive_date_offset_timestamp_stage_assignments(split_offsets, typed_timestamp_counts);
+            let stage_map = derive_date_offset_timestamp_stage_assignments_with_semantics(
+                split_offsets,
+                date_offset_semantics,
+                typed_timestamp_counts,
+            );
             let counts = stage_map
                 .as_ref()
                 .map(|assignments| mask_counts_from_timestamp_assignments(assignments, typed_timestamp_counts));
@@ -1490,8 +1546,9 @@ fn derive_approx_date_offset_timestamp_stage_assignments<U: UnitSystem>(
     Some(assignments)
 }
 
-fn derive_date_offset_timestamp_stage_assignments<U: UnitSystem>(
+fn derive_date_offset_timestamp_stage_assignments_with_semantics<U: UnitSystem>(
     split_offsets: Option<&[Dur<U>]>,
+    semantics: Option<DateOffsetSplitSemantics<U>>,
     timestamp_counts: &HashMap<Abs<U>, u64>,
 ) -> Option<Vec<TimestampSplitAssignmentV3<U>>> {
     let offsets = split_offsets?;
@@ -1509,7 +1566,8 @@ fn derive_date_offset_timestamp_stage_assignments<U: UnitSystem>(
         // Abs<U> + Dur<U> = Abs<U> — no manual scaling needed.
         boundaries.push(max_ts + *off);
     }
-    boundaries.push(max_ts);
+    let shift = date_offset_shift(offsets, semantics);
+    boundaries.push(max_ts + shift);
 
     if boundaries.len() < 3 {
         return None;
@@ -1520,12 +1578,7 @@ fn derive_date_offset_timestamp_stage_assignments<U: UnitSystem>(
         for i in 0..(boundaries.len() - 1) {
             let start = boundaries[i];
             let end = boundaries[i + 1];
-            let in_bucket = if i == 0 {
-                ts > start && ts <= end
-            } else {
-                ts >= start && ts <= end
-            };
-            if in_bucket {
+            if ts >= start && ts + shift <= end {
                 assignments.push(TimestampSplitAssignmentV3 {
                     timestamp: ts,
                     stage: stage_name(i),
@@ -1535,6 +1588,27 @@ fn derive_date_offset_timestamp_stage_assignments<U: UnitSystem>(
         }
     }
     Some(assignments)
+}
+
+fn date_offset_shift<U: UnitSystem>(
+    offsets: &[Dur<U>],
+    semantics: Option<DateOffsetSplitSemantics<U>>,
+) -> Dur<U> {
+    let timeframe = semantics
+        .and_then(|s| s.timeframe)
+        .unwrap_or_else(|| infer_date_offset_timeframe(offsets));
+    let anchor_start_offset = semantics
+        .map(|s| s.anchor_start_offset)
+        .unwrap_or_else(Dur::zero);
+    timeframe + anchor_start_offset
+}
+
+fn infer_date_offset_timeframe<U: UnitSystem>(offsets: &[Dur<U>]) -> Dur<U> {
+    if offsets.len() == 2 {
+        offsets[1] - offsets[0]
+    } else {
+        -offsets[0]
+    }
 }
 
 fn derive_time_range_timestamp_stage_assignments<U: UnitSystem>(
@@ -1756,6 +1830,61 @@ mod tests {
         assert_eq!(counts.train, 9_000);
         assert_eq!(counts.val, 4_500);
         assert_eq!(counts.test, 4_500);
+    }
+
+    #[test]
+    fn test_date_offset_stage_assignments_respect_shifted_window_end() {
+        let mut merger: StatsMerger<Seconds> = StatsMerger::default();
+        let mut chunk: ChunkStats<Seconds> = ChunkStats::default();
+        for ts in 0..20 {
+            chunk.timestamps.insert(Abs::from_raw(ts));
+            chunk.timestamp_counts.insert(Abs::from_raw(ts), 1);
+        }
+        chunk.num_train_rows = 20;
+        merger.merge(chunk);
+
+        let out = merger.finalize_with_split_semantics(
+            20,
+            false,
+            false,
+            false,
+            None,
+            Some("DateOffsetSplit"),
+            true,
+            Some(&[Dur::from_secs(-6), Dur::from_secs(0)]),
+            Some(DateOffsetSplitSemantics {
+                timeframe: Some(Dur::from_secs(2)),
+                anchor_start_offset: Dur::from_secs(2),
+            }),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "numerical",
+            None,
+        );
+        let assignments = out
+            .split_payload
+            .as_ref()
+            .and_then(|p| p.artifacts_v3.as_ref())
+            .and_then(|a| a.timestamp_stage_assignments.as_ref())
+            .expect("date-offset assignments should be derived");
+        let stages: Vec<(i64, String)> = assignments
+            .iter()
+            .map(|a| (a.timestamp, a.stage.clone()))
+            .collect();
+
+        assert_eq!(
+            stages,
+            (0..=9)
+                .map(|ts| (ts, "train".to_string()))
+                .chain((13..=15).map(|ts| (ts, "val".to_string())))
+                .chain(std::iter::once((19, "test".to_string())))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

@@ -60,6 +60,14 @@ pub struct SplitSpec<U: UnitSystem> {
     pub rnd_seed: Option<u64>,
     pub is_temporal: Option<bool>,
     pub offsets: Option<Vec<Dur<U>>>,
+    #[serde(default)]
+    pub offset_unit: Option<String>,
+    #[serde(default)]
+    pub unit: Option<String>,
+    #[serde(default)]
+    pub timeframe: Option<i64>,
+    #[serde(default)]
+    pub anchor_start_offset: Option<i64>,
     pub ranges: Option<Vec<(Abs<U>, Abs<U>)>>,
     pub backtesting_timestamp: Option<Abs<U>>,
     pub split_column: Option<String>,
@@ -394,6 +402,10 @@ mod tests {
                 rnd_seed: None,
                 is_temporal: Some(true),
                 offsets: Some(vec![Dur::from_days(-7), Dur::from_days(-3)]),
+                offset_unit: None,
+                unit: None,
+                timeframe: None,
+                anchor_start_offset: None,
                 ranges: None,
                 backtesting_timestamp: None,
                 split_column: None,
