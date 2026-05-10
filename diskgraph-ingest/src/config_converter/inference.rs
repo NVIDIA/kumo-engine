@@ -488,7 +488,6 @@ pub fn compute_total_bytes(
     Ok(total)
 }
 
-
 /// Sum file sizes in a local directory or single file.
 fn compute_local_dir_bytes(dir_path: &str) -> u64 {
     let dir_path = dir_path.trim_end_matches('/');
@@ -639,12 +638,13 @@ use arrow_array::Array;
 /// earlier candidates, only uses the list for enumeration.
 const MULTICAT_DELIMITER_CANDIDATES: &[&str] = &[",", "|", ";", "\t"];
 
-/// Majority threshold for a candidate to win outright (fraction of non-null
-/// sample rows containing the delimiter).
-const MULTICAT_WIN_FRACTION: f64 = 0.50;
-/// Ambiguity threshold — a candidate at or above this fraction that is not
-/// the winner triggers `MulticategoricalDelimiterAmbiguous`.
-const MULTICAT_AMBIGUOUS_FRACTION: f64 = 0.20;
+/// Minimum sample support for auto-detecting a delimiter. Below this floor,
+/// punctuation is treated as noise and the column stays single-token-per-row.
+const MULTICAT_DETECT_MIN_FRACTION: f64 = 0.01;
+/// Suspicion threshold for explicitly-declared delimiters. Explicit configs
+/// are accepted if the delimiter appears at least once, but hit rates below
+/// this threshold get a warning.
+const MULTICAT_EXPLICIT_SUSPICIOUS_FRACTION: f64 = 0.20;
 /// Max number of non-null sample rows to pull per column.
 const MULTICAT_MAX_SAMPLES: usize = 1_000;
 /// Max number of files to inspect while looking for multicat delimiter samples.
@@ -667,14 +667,13 @@ fn multicat_string_value(array: &dyn Array, row: usize) -> Option<&str> {
 /// `String + Multicategorical` column that didn't come with an explicit
 /// value on the upstream Kumo config.
 ///
-/// Decision rule (§4.2 Step 0 of the multicat design doc):
-/// - A candidate `wins` if it appears in ≥50% of sampled rows AND no other
-///   candidate appears in ≥20% of sampled rows → bake that delimiter in.
-/// - No candidate reaches 20% → `delimiter = None` (legitimate
+/// Decision rule:
+/// - Pick the delimiter candidate that appears in the most sampled rows, as
+///   long as it appears in at least ceil(1% of sampled non-null rows).
+/// - No candidate reaches the floor → `delimiter = None` (legitimate
 ///   single-token-per-row multicat).
-/// - 2+ candidates ≥20% OR a single candidate in `[20%, 50%)` with no
-///   other candidates → `MulticategoricalDelimiterAmbiguous` so users see
-///   the problem before ingest starts.
+///
+/// Ties are resolved by `MULTICAT_DELIMITER_CANDIDATES` order.
 ///
 /// All-null columns fall through with a warning (nothing to detect against);
 /// ingest will treat the column as single-token-per-row.
@@ -852,13 +851,6 @@ pub fn detect_multicategorical_delimiters(
                 MulticatDelimiterDecision::Winner(sep) => {
                     table.columns[*col_idx].multicategorical_delimiter = Some(sep.to_string());
                 }
-                MulticatDelimiterDecision::Ambiguous(candidates_with_counts) => {
-                    return Err(ConvertError::MulticategoricalDelimiterAmbiguous {
-                        table: table.name.clone(),
-                        column: col_name.clone(),
-                        candidates: candidates_with_counts,
-                    });
-                }
             }
         }
     }
@@ -896,9 +888,7 @@ pub fn validate_explicit_multicat_delimiters(
                     c.ingested_dtype,
                     IngestedType::String | IngestedType::StringArray | IngestedType::Int64Array,
                 );
-                if scalar_string_source
-                    && c.semantic_type == Some(SemanticType::Multicategorical)
-                {
+                if scalar_string_source && c.semantic_type == Some(SemanticType::Multicategorical) {
                     c.multicategorical_delimiter
                         .as_deref()
                         .map(|d| (i, c.name.clone(), d.to_string()))
@@ -950,8 +940,8 @@ pub fn validate_explicit_multicat_delimiters(
                         .map(|(_, name, _)| $schema.index_of(name).ok())
                         .collect();
                     for batch in $reader {
-                        let batch = batch
-                            .map_err(|e| ConvertError::InferenceError(format!("{e:#}")))?;
+                        let batch =
+                            batch.map_err(|e| ConvertError::InferenceError(format!("{e:#}")))?;
                         for (cand_idx, info) in col_info.iter().enumerate() {
                             let Some(arr_idx) = info else { continue };
                             let (col_key, _, declared) = &candidates[cand_idx];
@@ -966,8 +956,7 @@ pub fn validate_explicit_multicat_delimiters(
                                 if array.is_null(row) {
                                     continue;
                                 }
-                                let Some(text) = multicat_string_value(array.as_ref(), row)
-                                else {
+                                let Some(text) = multicat_string_value(array.as_ref(), row) else {
                                     continue;
                                 };
                                 if text.is_empty() {
@@ -989,13 +978,16 @@ pub fn validate_explicit_multicat_delimiters(
 
             if let Some(pooled) = pooled {
                 let bytes = pooled.bytes();
-                let builder = match parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(bytes) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        tracing::warn!("Skipping {}: failed to read parquet: {e}", path);
-                        continue;
-                    }
-                };
+                let builder =
+                    match parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+                        bytes,
+                    ) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::warn!("Skipping {}: failed to read parquet: {e}", path);
+                            continue;
+                        }
+                    };
                 let schema = builder.schema().clone();
                 let reader = builder
                     .with_batch_size(1024)
@@ -1010,13 +1002,16 @@ pub fn validate_explicit_multicat_delimiters(
                         continue;
                     }
                 };
-                let builder = match parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        tracing::warn!("Skipping {}: failed to read parquet: {e}", path);
-                        continue;
-                    }
-                };
+                let builder =
+                    match parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+                        file,
+                    ) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::warn!("Skipping {}: failed to read parquet: {e}", path);
+                            continue;
+                        }
+                    };
                 let schema = builder.schema().clone();
                 let reader = builder
                     .with_batch_size(1024)
@@ -1025,9 +1020,9 @@ pub fn validate_explicit_multicat_delimiters(
                 scan_reader!(reader, schema);
             }
 
-            let all_done = candidates.iter().all(|(col_idx, _, _)| {
-                *totals.get(col_idx).unwrap_or(&0) >= MULTICAT_MAX_SAMPLES
-            });
+            let all_done = candidates
+                .iter()
+                .all(|(col_idx, _, _)| *totals.get(col_idx).unwrap_or(&0) >= MULTICAT_MAX_SAMPLES);
             if all_done {
                 break;
             }
@@ -1047,11 +1042,9 @@ pub fn validate_explicit_multicat_delimiters(
                 continue;
             }
             // The hit threshold for explicit-delim validation is intentionally
-            // looser than the auto-detect winner threshold
-            // (`MULTICAT_WIN_FRACTION = 50%`). Auto-detect picks among
-            // candidates and needs a clear majority; here the user has already
-            // committed to a specific delimiter, so the only failure mode we
-            // need to catch is total mismatch (typo, wrong column). A column
+            // loose. The user has already committed to a specific delimiter,
+            // so the only failure mode we need to catch is total mismatch
+            // (typo, wrong column). A column
             // where most rows have a single tag and only a few rows are
             // multi-token is valid: each single-token row tokenizes correctly
             // as a one-element list under GE-parity drop-empty. Reject only
@@ -1074,7 +1067,7 @@ pub fn validate_explicit_multicat_delimiters(
                 });
             }
             let suspicious_floor =
-                (MULTICAT_AMBIGUOUS_FRACTION * total as f64).ceil() as usize;
+                (MULTICAT_EXPLICIT_SUSPICIOUS_FRACTION * total as f64).ceil() as usize;
             if hit < suspicious_floor {
                 tracing::warn!(
                     table = %table.name, column = %col_name,
@@ -1095,7 +1088,6 @@ pub fn validate_explicit_multicat_delimiters(
 enum MulticatDelimiterDecision {
     NoDelimiter,
     Winner(&'static str),
-    Ambiguous(Vec<(String, usize)>),
 }
 
 /// Pure decision function — exposed for unit testing so we can cover the
@@ -1107,51 +1099,24 @@ fn decide_multicat_delimiter(
     if total == 0 {
         return MulticatDelimiterDecision::NoDelimiter;
     }
-    let win_cutoff = (MULTICAT_WIN_FRACTION * total as f64).ceil() as usize;
-    let ambig_cutoff = (MULTICAT_AMBIGUOUS_FRACTION * total as f64).ceil() as usize;
+    let min_count = (MULTICAT_DETECT_MIN_FRACTION * total as f64).ceil() as usize;
 
-    let mut winner: Option<&'static str> = None;
-    let mut above_ambig: Vec<(&'static str, usize)> = Vec::new();
+    let mut best: Option<(&'static str, usize)> = None;
     for cand in MULTICAT_DELIMITER_CANDIDATES {
         let count = hits.get(cand).copied().unwrap_or(0);
-        if count >= ambig_cutoff {
-            above_ambig.push((cand, count));
+        if count == 0 {
+            continue;
         }
-        if count >= win_cutoff {
-            // Pick the first qualifier; ties are resolved by the
-            // "no other candidate ≥ ambig_cutoff" invariant below.
-            if winner.is_none() {
-                winner = Some(cand);
-            }
+        match best {
+            Some((_, best_count)) if best_count >= count => {}
+            _ => best = Some((cand, count)),
         }
     }
-    match winner {
-        Some(w) => {
-            let others_above_ambig = above_ambig.iter().any(|(c, _)| *c != w);
-            if others_above_ambig {
-                let counts: Vec<(String, usize)> = above_ambig
-                    .into_iter()
-                    .map(|(c, n)| (c.to_string(), n))
-                    .collect();
-                MulticatDelimiterDecision::Ambiguous(counts)
-            } else {
-                MulticatDelimiterDecision::Winner(w)
-            }
-        }
-        None => {
-            if above_ambig.is_empty() {
-                // No candidate reached even the ambiguity floor — treat as
-                // single-token-per-row.
-                MulticatDelimiterDecision::NoDelimiter
-            } else {
-                // At least one candidate between 20% and 50% — unstable.
-                let counts: Vec<(String, usize)> = above_ambig
-                    .into_iter()
-                    .map(|(c, n)| (c.to_string(), n))
-                    .collect();
-                MulticatDelimiterDecision::Ambiguous(counts)
-            }
-        }
+
+    match best {
+        Some((winner, count)) if count >= min_count => MulticatDelimiterDecision::Winner(winner),
+        None => MulticatDelimiterDecision::NoDelimiter,
+        _ => MulticatDelimiterDecision::NoDelimiter,
     }
 }
 
@@ -1413,56 +1378,86 @@ mod tests {
 
     #[test]
     fn multicat_decide_pipe_wins_against_noise() {
-        // 60% pipe, 10% comma (noise below 20% floor).
-        let h = hits(&[("|", 60), (",", 10)]);
-        match decide_multicat_delimiter(100, &h) {
+        // 60% pipe, 0.9% comma: the most common observed delimiter wins.
+        let h = hits(&[("|", 600), (",", 9)]);
+        match decide_multicat_delimiter(1000, &h) {
             MulticatDelimiterDecision::Winner("|") => {}
             other => panic!("expected Winner(\"|\"), got {:?}", other),
         }
     }
 
     #[test]
-    fn multicat_decide_ambiguous_two_candidates_above_20pct() {
-        // Comma in 50% of rows AND pipe in 30% — winner candidate exists
-        // but is ambiguous because pipe is above the 20% floor.
+    fn multicat_decide_picks_most_common_candidate() {
+        // Comma in 50% of rows and pipe in 30%: comma wins because it is
+        // most common.
         let h = hits(&[(",", 50), ("|", 30)]);
         match decide_multicat_delimiter(100, &h) {
-            MulticatDelimiterDecision::Ambiguous(counts) => {
-                // Both candidates surface in the error payload.
-                let has_comma = counts.iter().any(|(c, _)| c == ",");
-                let has_pipe = counts.iter().any(|(c, _)| c == "|");
-                assert!(has_comma && has_pipe);
-            }
-            other => panic!("expected Ambiguous, got {:?}", other),
+            MulticatDelimiterDecision::Winner(",") => {}
+            other => panic!("expected Winner(\",\"), got {:?}", other),
         }
     }
 
     #[test]
-    fn multicat_decide_ambiguous_single_candidate_below_50pct() {
-        // Only one candidate, but it's in the [20%, 50%) band — not a stable
-        // enough signal to commit to a delimiter; surface as ambiguous so
-        // the user adjudicates.
+    fn multicat_decide_single_sparse_candidate_below_50pct_wins() {
+        // Sparse multicategorical columns are valid: if exactly one delimiter
+        // is observed, it should win even if most rows are single-token.
         let h = hits(&[(",", 30)]);
         match decide_multicat_delimiter(100, &h) {
-            MulticatDelimiterDecision::Ambiguous(_) => {}
-            other => panic!("expected Ambiguous, got {:?}", other),
+            MulticatDelimiterDecision::Winner(",") => {}
+            other => panic!("expected Winner(\",\"), got {:?}", other),
         }
     }
 
     #[test]
-    fn multicat_decide_no_candidate_above_20pct_is_no_delimiter() {
-        // Every candidate below floor → treat as single-token-per-row.
-        let h = hits(&[(",", 5), ("|", 10), (";", 2)]);
+    fn multicat_decide_single_observed_candidate_wins() {
+        // A delimiter at the 1% floor wins if it is the most common candidate.
+        let h = hits(&[(",", 10)]);
+        match decide_multicat_delimiter(1000, &h) {
+            MulticatDelimiterDecision::Winner(",") => {}
+            other => panic!("expected Winner(\",\"), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn multicat_decide_observed_candidate_below_one_percent_is_no_delimiter() {
+        let h = hits(&[(",", 9)]);
         assert!(matches!(
-            decide_multicat_delimiter(100, &h),
+            decide_multicat_delimiter(1000, &h),
+            MulticatDelimiterDecision::NoDelimiter
+        ));
+    }
+
+    #[test]
+    fn multicat_decide_competing_candidates_pick_highest_count() {
+        let h = hits(&[(",", 10), ("|", 11)]);
+        match decide_multicat_delimiter(1000, &h) {
+            MulticatDelimiterDecision::Winner("|") => {}
+            other => panic!("expected Winner(\"|\"), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn multicat_decide_tie_uses_candidate_order() {
+        let h = hits(&[(",", 10), ("|", 10)]);
+        match decide_multicat_delimiter(1000, &h) {
+            MulticatDelimiterDecision::Winner(",") => {}
+            other => panic!("expected Winner(\",\"), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn multicat_decide_no_observed_candidate_is_no_delimiter() {
+        let h = hits(&[]);
+        assert!(matches!(
+            decide_multicat_delimiter(1000, &h),
             MulticatDelimiterDecision::NoDelimiter
         ));
     }
 
     #[test]
     fn multicat_decide_thresholds_scale_with_total() {
-        // At very small sample counts, the ceil() in cutoffs matters. 3 rows,
-        // 2 with comma (66%, above 50%), 0 others → winner.
+        // At very small sample counts, the ceil() in the 1% floor matters.
+        // 3 rows, 2 with comma, 0 others → winner.
         let h = hits(&[(",", 2)]);
         match decide_multicat_delimiter(3, &h) {
             MulticatDelimiterDecision::Winner(",") => {}

@@ -156,17 +156,6 @@ pub enum ConvertError {
     },
 
     #[error(
-        "table '{table}' column '{column}': multicategorical string column has ambiguous delimiter. \
-         Candidates and sample-row occurrence counts: {candidates:?}. \
-         Either clean the source data or set `multicategorical_delimiter` explicitly on the column."
-    )]
-    MulticategoricalDelimiterAmbiguous {
-        table: String,
-        column: String,
-        candidates: Vec<(String, usize)>,
-    },
-
-    #[error(
         "table '{table}' column '{column}': declared multicategorical_delimiter \
          {declared:?} does not match the source data — only {hits} of {total} \
          sampled non-empty rows contain it (need at least {required}). \

@@ -13,8 +13,7 @@
 //!    Kumo-side config declaring `stype=multicategorical` without an explicit
 //!    delimiter. Call `convert_kumo_to_diskgraph`. Assert the resulting
 //!    `ColumnSpec.multicategorical_delimiter` is set correctly for the clean
-//!    case, and that an ambiguous fixture raises the typed
-//!    `ConvertError::MulticategoricalDelimiterAmbiguous`.
+//!    case and for sparse mixed-candidate data.
 
 use anyhow::Result;
 use arrow_array::builder::{Float64Builder, Int64Builder, ListBuilder, StringBuilder};
@@ -573,6 +572,45 @@ fn convert_multicat_string_detects_comma() -> Result<()> {
 }
 
 #[test]
+fn convert_multicat_string_detects_sparse_comma() -> Result<()> {
+    let dir = tempdir()?;
+    let data_dir = dir.path().join("data");
+    fs::create_dir_all(&data_dir)?;
+    // Sparse multicategorical data: most rows have one token, but comma is
+    // still the only observed delimiter.
+    let mut rows: Vec<&str> = Vec::new();
+    rows.extend(std::iter::repeat_n("solo", 990));
+    rows.extend(std::iter::repeat_n("kids,outdoor", 10));
+    write_tags_parquet(&data_dir.join("items.parquet"), &rows);
+
+    let kumo_json = build_kumo_config(&data_dir, None);
+    let kumo: KumoGraphConfig = serde_json::from_value(kumo_json)?;
+    let options = ConvertOptions {
+        data_persist_dir: data_dir.to_string_lossy().to_string(),
+        dataset_name: "mc_detect_sparse_comma".to_string(),
+        table_data_versions: None,
+        source_paths_base: None,
+        source_paths: Some({
+            let mut m = std::collections::HashMap::new();
+            m.insert("items".to_string(), data_dir.to_string_lossy().to_string());
+            m
+        }),
+    };
+    let cfg = convert_kumo_to_diskgraph(&kumo, &options)?;
+    let col = cfg.tables[0]
+        .columns
+        .iter()
+        .find(|c| c.name == "tags")
+        .expect("tags col");
+    assert_eq!(col.multicategorical_delimiter.as_deref(), Some(","));
+    assert_eq!(
+        col.ingested_dtype,
+        diskgraph_ingest::graph_config::IngestedType::StringArray,
+    );
+    Ok(())
+}
+
+#[test]
 fn convert_multicat_string_detects_pipe() -> Result<()> {
     let dir = tempdir()?;
     let data_dir = dir.path().join("data");
@@ -668,22 +706,22 @@ fn convert_multicat_string_detects_large_utf8() -> Result<()> {
 }
 
 #[test]
-fn convert_multicat_string_ambiguous_errors() -> Result<()> {
+fn convert_multicat_string_picks_most_common_delimiter() -> Result<()> {
     let dir = tempdir()?;
     let data_dir = dir.path().join("data");
     fs::create_dir_all(&data_dir)?;
-    // 50% rows contain comma, 50% contain pipe. Both ≥ 20%, neither ≥ 50%
-    // alone — should trip the "ambiguous" rule.
+    // Auto-detection picks the delimiter that appears in the most sampled
+    // rows. It does not fail the conversion for competing candidates.
     let mut rows: Vec<&str> = Vec::new();
-    rows.extend(std::iter::repeat_n("a,b,c", 50));
-    rows.extend(std::iter::repeat_n("x|y|z", 50));
+    rows.extend(std::iter::repeat_n("a,b,c", 40));
+    rows.extend(std::iter::repeat_n("x|y|z", 60));
     write_tags_parquet(&data_dir.join("items.parquet"), &rows);
 
     let kumo_json = build_kumo_config(&data_dir, None);
     let kumo: KumoGraphConfig = serde_json::from_value(kumo_json)?;
     let options = ConvertOptions {
         data_persist_dir: data_dir.to_string_lossy().to_string(),
-        dataset_name: "mc_detect_ambiguous".to_string(),
+        dataset_name: "mc_detect_most_common".to_string(),
         table_data_versions: None,
         source_paths_base: None,
         source_paths: Some({
@@ -692,25 +730,13 @@ fn convert_multicat_string_ambiguous_errors() -> Result<()> {
             m
         }),
     };
-    let err = convert_kumo_to_diskgraph(&kumo, &options).unwrap_err();
-    match err {
-        ConvertError::MulticategoricalDelimiterAmbiguous {
-            column, candidates, ..
-        } => {
-            assert_eq!(column, "tags");
-            let has_comma = candidates.iter().any(|(c, _)| c == ",");
-            let has_pipe = candidates.iter().any(|(c, _)| c == "|");
-            assert!(
-                has_comma && has_pipe,
-                "expected both candidates in error payload; got {:?}",
-                candidates
-            );
-        }
-        other => panic!(
-            "expected MulticategoricalDelimiterAmbiguous, got {:?}",
-            other
-        ),
-    }
+    let cfg = convert_kumo_to_diskgraph(&kumo, &options)?;
+    let col = cfg.tables[0]
+        .columns
+        .iter()
+        .find(|c| c.name == "tags")
+        .expect("tags col");
+    assert_eq!(col.multicategorical_delimiter.as_deref(), Some("|"));
     Ok(())
 }
 
@@ -1343,9 +1369,8 @@ fn ingest_rejects_multicategorical_string_without_delimiter() -> Result<()> {
         },
     );
 
-    let err = result.expect_err(
-        "ingest must reject (multicat, string, no-delim) as a degenerate shape",
-    );
+    let err =
+        result.expect_err("ingest must reject (multicat, string, no-delim) as a degenerate shape");
     let msg = err.to_string();
     assert!(
         msg.contains("stype=multicategorical")
@@ -1361,4 +1386,3 @@ fn ingest_rejects_multicategorical_string_without_delimiter() -> Result<()> {
 
     Ok(())
 }
-

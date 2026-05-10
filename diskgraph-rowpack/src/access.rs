@@ -339,13 +339,29 @@ pub fn parse_string_as_int64_array(s: &str) -> Result<Vec<i64>> {
 /// (`kumo/data/data_processing_backend/pyspark_processing_backend.py:267`).
 /// Examples: `""` → `[]`, `"a,"` → `["a"]`, `"a,,b"` → `["a","b"]`,
 /// `",a,"` → `["a"]`.
+#[inline]
+fn trim_ascii_token(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    let mut start = 0;
+    let mut end = bytes.len();
+    while start < end && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while end > start && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    &s[start..end]
+}
+
 pub fn split_multicat_string(s: &str, delim: &str) -> Vec<String> {
     if s.is_empty() {
         return Vec::new();
     }
     s.split(delim)
-        .filter(|tok| !tok.is_empty())
-        .map(|tok| tok.to_string())
+        .filter_map(|tok| {
+            let tok = trim_ascii_token(tok);
+            (!tok.is_empty()).then(|| tok.to_string())
+        })
         .collect()
 }
 
@@ -370,7 +386,10 @@ fn build_multicat_list_array(arr: &dyn Array, delim: &str) -> Result<ArrayRef> {
             }
             let cell = s.value(row);
             if !cell.is_empty() {
-                for tok in cell.split(delim).filter(|t| !t.is_empty()) {
+                for tok in cell.split(delim).filter_map(|t| {
+                    let tok = trim_ascii_token(t);
+                    (!tok.is_empty()).then_some(tok)
+                }) {
                     builder.values().append_value(tok);
                 }
             }
@@ -386,7 +405,10 @@ fn build_multicat_list_array(arr: &dyn Array, delim: &str) -> Result<ArrayRef> {
             }
             let cell = s.value(row);
             if !cell.is_empty() {
-                for tok in cell.split(delim).filter(|t| !t.is_empty()) {
+                for tok in cell.split(delim).filter_map(|t| {
+                    let tok = trim_ascii_token(t);
+                    (!tok.is_empty()).then_some(tok)
+                }) {
                     builder.values().append_value(tok);
                 }
             }
@@ -412,7 +434,10 @@ pub fn split_multicat_string_as_int64(
         return Ok(Vec::new());
     }
     s.split(delim)
-        .filter(|tok| !tok.is_empty())
+        .filter_map(|tok| {
+            let tok = trim_ascii_token(tok);
+            (!tok.is_empty()).then_some(tok)
+        })
         .map(|tok| {
             tok.parse::<i64>().map_err(|_| {
                 anyhow!(
@@ -2773,12 +2798,9 @@ impl<'p> RowAccess<'p> {
         if let Some(str_arr) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
             let raw = str_arr.value(self.row);
             let parsed = match multicat_delim.as_deref() {
-                Some(delim) => split_multicat_string_as_int64(
-                    raw,
-                    delim,
-                    col_name.as_deref(),
-                    row,
-                )?,
+                Some(delim) => {
+                    split_multicat_string_as_int64(raw, delim, col_name.as_deref(), row)?
+                }
                 None => parse_string_as_int64_array(raw).map_err(|e| {
                     anyhow!(
                         "ingest type mismatch: column={} row={} declared=Int64Array \
@@ -2786,7 +2808,10 @@ impl<'p> RowAccess<'p> {
                          JSON-style int list ({}). If the source uses a custom delimiter, \
                          declare `multicategorical_delimiter` on the column and \
                          `semantic_type=multicategorical`.",
-                        col_label, row, raw, e,
+                        col_label,
+                        row,
+                        raw,
+                        e,
                     )
                 })?,
             };
@@ -2803,18 +2828,18 @@ impl<'p> RowAccess<'p> {
         {
             let raw = str_arr.value(self.row);
             let parsed = match multicat_delim.as_deref() {
-                Some(delim) => split_multicat_string_as_int64(
-                    raw,
-                    delim,
-                    col_name.as_deref(),
-                    row,
-                )?,
+                Some(delim) => {
+                    split_multicat_string_as_int64(raw, delim, col_name.as_deref(), row)?
+                }
                 None => parse_string_as_int64_array(raw).map_err(|e| {
                     anyhow!(
                         "ingest type mismatch: column={} row={} declared=Int64Array \
                          but parquet scalar string {:?} could not be parsed as a \
                          JSON-style int list ({})",
-                        col_label, row, raw, e,
+                        col_label,
+                        row,
+                        raw,
+                        e,
                     )
                 })?,
             };
@@ -3132,5 +3157,65 @@ impl<'p> RowAccess<'p> {
                 Ok(Some(f(&refs)?))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_array::StringArray;
+
+    #[test]
+    fn split_multicat_string_trims_whitespace_around_delimiter() {
+        let tokens = split_multicat_string(" United States, Canada ,  India ", ",");
+        assert_eq!(tokens, vec!["United States", "Canada", "India"]);
+    }
+
+    #[test]
+    fn split_multicat_string_drops_whitespace_only_tokens_after_trim() {
+        let tokens = split_multicat_string("a, , b,   ,c", ",");
+        assert_eq!(tokens, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn split_multicat_string_as_int64_trims_whitespace_around_delimiter() {
+        let values = split_multicat_string_as_int64(" 1, 2 ,  3 ", ",", Some("ids"), 7)
+            .expect("whitespace around delimiter should be ignored");
+        assert_eq!(values, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn string_list_view_cached_multicat_tokens_are_trimmed() -> Result<()> {
+        let mut row = RowAccess::new(
+            vec![RowAccessHints {
+                multicategorical_delimiter: Some(",".to_string()),
+                column_name: Some("tags".to_string()),
+                ..RowAccessHints::default()
+            }],
+            RowAccessStats::default(),
+        );
+        let cols: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![
+            Some(" United States, Canada ,  India "),
+            Some("a, , b,   ,c"),
+        ]))];
+        row.set_cols(&cols);
+
+        row.set_row(0);
+        let values: Vec<String> = row
+            .with_string_array(0, |tokens| {
+                Ok(tokens.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+            })?
+            .expect("row 0 is non-null");
+        assert_eq!(values, vec!["United States", "Canada", "India"]);
+
+        row.set_row(1);
+        let values: Vec<String> = row
+            .with_string_array(0, |tokens| {
+                Ok(tokens.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+            })?
+            .expect("row 1 is non-null");
+        assert_eq!(values, vec!["a", "b", "c"]);
+
+        Ok(())
     }
 }
