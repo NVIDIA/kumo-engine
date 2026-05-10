@@ -247,6 +247,32 @@ def test_time_range_split_with_seconds_unit(tmp_path):
     assert assignments.tolist() == [255, 0, 0, 0, 0, 0, 0, 1, 1, 2]
 
 
+def test_temporal_split_uses_configured_time_col(tmp_path):
+    p = tmp_path / 'tt.parquet'
+    _write_tt(
+        p,
+        {
+            'arange': [0, 1, 2, 3],
+            'PSEUDO_TIMESTAMP': [
+                '2020-01-01',
+                '2020-01-02',
+                '2020-01-03',
+                '2020-01-04',
+            ],
+        },
+    )
+
+    assignments, meta = M.compute_dense_split_assignments(
+        train_table_path=str(p),
+        split_config=SplitSpec(kind='TemporalSplit', ratio=[0.5, 0.25, 0.25]),
+        time_col='PSEUDO_TIMESTAMP',
+    )
+
+    assert meta['authoritative'] is True
+    assert meta['family'] == 'TemporalSplit'
+    assert assignments.tolist() == [0, 0, 1, 2]
+
+
 def test_time_range_split_timestamp_unit_in_split_spec():
     """SplitSpec includes timestamp_unit in to_assignment_config()."""
     spec = SplitSpec(

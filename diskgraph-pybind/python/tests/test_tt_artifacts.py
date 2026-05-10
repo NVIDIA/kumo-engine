@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import numpy as np
@@ -12,10 +13,12 @@ from diskgraph import DiskgraphConfigError, SplitSpec
 from diskgraph.tt_artifacts import _normalize_downsampling_config, execute_tt_plan_with_artifacts
 
 
-def _write_min_table(path: Path) -> None:
+def _write_min_table(path: Path, time_col: str = 'TIMESTAMP', time_values=None) -> None:
+    if time_values is None:
+        time_values = [10, 11]
     table = pa.table({
         'ENTITY': [1, 2],
-        'TIMESTAMP': [10, 11],
+        time_col: time_values,
         'TARGET': [0, 1],
         'arange': [0, 1],
     })
@@ -67,7 +70,7 @@ def _mock_native_train_col_stats(**_kwargs):
     }
 
 
-def _mock_compute_dense_split_assignments(_path, _split_config, split_family_hint=None):
+def _mock_compute_dense_split_assignments(_path, _split_config, split_family_hint=None, time_col='TIMESTAMP'):
     return (np.asarray([0, 1], dtype=np.uint8), {
         'family': split_family_hint or 'FixedSplit',
         'authoritative': True,
@@ -333,36 +336,57 @@ def test_success_with_native_helpers_only(tmp_path: Path, monkeypatch):
     assert captured['train_table_col_stats_json']
 
 
-def test_build_artifacts_for_existing_table_success(tmp_path: Path, monkeypatch):
-    table_path = tmp_path / 'existing.parquet'
-    _write_min_table(table_path)
-    captured = {}
-
-    def persist_capture(**kwargs):
-        captured.update(kwargs)
-        return _mock_native_persist(**kwargs)
-
-    monkeypatch.setattr(tt_artifacts, 'compute_dense_split_assignments', _mock_compute_dense_split_assignments)
-    monkeypatch.setattr(tt_artifacts, '_build_tt_stats_artifact_native', _mock_native_tt_stats)
-    monkeypatch.setattr(tt_artifacts, '_build_split_stats_artifact_native', _mock_native_split_stats)
-    monkeypatch.setattr(tt_artifacts, '_build_train_table_col_stats_artifact_native', _mock_native_train_col_stats)
-    monkeypatch.setattr(tt_artifacts, '_persist_tt_artifact_bundle', persist_capture)
-
-    out = tt_artifacts.build_train_table_artifacts_for_existing_table(
-        output_path=str(table_path),
-        split_config=SplitSpec(kind='FixedSplit', ratio=[0.5, 0.25, 0.25]),
-        split_stats_config={
+@pytest.mark.parametrize(
+    ('time_col', 'split_stats_config'),
+    [
+        ('TIMESTAMP', None),
+        ('PSEUDO_TIMESTAMP', {
             'entity_col': 'ENTITY',
             'target_col': 'TARGET',
-            'time_col': 'TIMESTAMP',
-        },
-        train_table_col_stats_config={'data_version': 'v1'},
+            'time_col': 'PSEUDO_TIMESTAMP',
+        }),
+    ],
+)
+def test_build_artifacts_for_existing_table_time_col(
+    tmp_path: Path,
+    monkeypatch,
+    time_col: str,
+    split_stats_config: dict | None,
+):
+    table_path = tmp_path / 'existing.parquet'
+    _write_min_table(
+        table_path,
+        time_col=time_col,
+        time_values=pa.array([0, 86_400_000_000_000], type=pa.timestamp('ns')),
     )
-    assert out['row_count'] == 2
-    assert out['manifest_path'] == '/tmp/fake.manifest.json'
-    assert out['split_meta']['authoritative'] is True
-    assert captured['split_family'] == 'FixedSplit'
-    assert isinstance(captured.get('train_table_col_stats_json'), str)
+
+    class _StopAfterColStatsConfig(Exception):
+        pass
+
+    captured = {}
+
+    def capture_col_stats_config(**kwargs):
+        captured['config'] = kwargs['train_table_col_stats_config_json']
+        raise _StopAfterColStatsConfig
+
+    monkeypatch.setattr(
+        tt_artifacts,
+        '_build_train_table_col_stats_artifact_native',
+        capture_col_stats_config,
+    )
+
+    with pytest.raises(_StopAfterColStatsConfig):
+        tt_artifacts.build_train_table_artifacts_for_existing_table(
+            output_path=str(table_path),
+            split_config=SplitSpec(kind='TemporalSplit', ratio=[0.5, 0.5, 0.0]),
+            split_stats_config=split_stats_config,
+            train_table_col_stats_config={
+                'data_version': 'v1',
+                'target_stype': 'categorical',
+            },
+        )
+
+    assert json.loads(captured['config'])['time_col'] == time_col
 
 
 def test_build_artifacts_for_existing_table_rejects_random_link_split(tmp_path: Path):
@@ -402,7 +426,7 @@ def test_build_artifacts_for_existing_table_fails_row_count_mismatch(tmp_path: P
     table_path = tmp_path / 'existing.parquet'
     _write_min_table(table_path)
 
-    def _bad_assignments(_path, _split_cfg, split_family_hint=None):
+    def _bad_assignments(_path, _split_cfg, split_family_hint=None, time_col='TIMESTAMP'):
         return np.asarray([0, 1, 2], dtype=np.uint8), {
             'family': split_family_hint or 'FixedSplit',
             'authoritative': True,

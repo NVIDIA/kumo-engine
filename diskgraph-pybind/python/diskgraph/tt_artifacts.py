@@ -358,6 +358,7 @@ def build_train_table_artifacts_for_existing_table(
             reader_path,
             split_config,
             split_family_hint=resolved_family,
+            time_col=split_stats_cfg.time_col,
         )
         row_count = int(assignments.shape[0])
         table_rows = int(pq.read_metadata(reader_path).num_rows)
@@ -396,12 +397,19 @@ def build_train_table_artifacts_for_existing_table(
             label='split stats',
         )
 
+        train_table_col_stats_cfg = (
+            dict(train_table_col_stats_config)
+            if train_table_col_stats_config is not None else None
+        )
+        if train_table_col_stats_cfg is not None:
+            train_table_col_stats_cfg.setdefault('time_col', split_stats_cfg.time_col)
+
         train_col_stats_built = _build_train_table_col_stats_artifact_native(
             output_path=reader_path,
             split_assignments=assignments.tobytes(order='C'),
             train_table_col_stats_config_json=(
-                json.dumps(train_table_col_stats_config, sort_keys=True)
-                if train_table_col_stats_config is not None else None
+                json.dumps(train_table_col_stats_cfg, sort_keys=True)
+                if train_table_col_stats_cfg is not None else None
             ),
         )
         train_col_stats_json = _extract_payload_json_as_sorted_dict_json(

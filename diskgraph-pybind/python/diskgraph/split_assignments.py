@@ -111,11 +111,15 @@ def _to_uint8_array(values: Any) -> np.ndarray:
     return np.asarray(values, dtype=np.uint8)
 
 
-def _assign_for_temporal_split(split_cfg: dict[str, Any], train_table_path: str) -> np.ndarray:
+def _assign_for_temporal_split(
+    split_cfg: dict[str, Any],
+    train_table_path: str,
+    time_col: str,
+) -> np.ndarray:
     _require_rust_split_core()
     ratio = [float(x) for x in split_cfg.get('ratio', [0.8, 0.1, 0.1])]
-    df = _read_parquet_columns(train_table_path, ['arange', 'TIMESTAMP']).sort_values('arange', kind='mergesort')
-    ts = _infer_datetime_series(df['TIMESTAMP'])
+    df = _read_parquet_columns(train_table_path, ['arange', time_col]).sort_values('arange', kind='mergesort')
+    ts = _infer_datetime_series(df[time_col])
     # use ns epoch int for deterministic ordering in Rust core
     ts_ns = ts.astype('int64').to_numpy(dtype=np.int64)
     dense_core = _require_rust_fn(compute_dense_split_assignments_core, 'compute_dense_split_assignments_core')
@@ -215,13 +219,17 @@ def _assign_for_manual_split(split_cfg: dict[str, Any], train_table_path: str) -
     return _to_uint8_array(out)
 
 
-def _assign_for_backtesting_split(split_cfg: dict[str, Any], train_table_path: str) -> np.ndarray:
+def _assign_for_backtesting_split(
+    split_cfg: dict[str, Any],
+    train_table_path: str,
+    time_col: str,
+) -> np.ndarray:
     _require_rust_split_core()
     ts_raw = split_cfg.get('backtesting_timestamp')
     if ts_raw is None:
         raise DiskgraphConfigError('BacktestingSplit requires backtesting_timestamp')
-    df = _read_parquet_columns(train_table_path, ['arange', 'TIMESTAMP']).sort_values('arange', kind='mergesort')
-    time_ser = _infer_datetime_series(df['TIMESTAMP'])
+    df = _read_parquet_columns(train_table_path, ['arange', time_col]).sort_values('arange', kind='mergesort')
+    time_ser = _infer_datetime_series(df[time_col])
     ts_ns = time_ser.astype('int64').to_numpy(dtype=np.int64)
     timestamp_unit = str(split_cfg.get('timestamp_unit', 'seconds'))
     _UNIT_TO_NS = {
@@ -242,14 +250,18 @@ def _assign_for_backtesting_split(split_cfg: dict[str, Any], train_table_path: s
     return _to_uint8_array(out)
 
 
-def _assign_for_time_range_split(split_cfg: dict[str, Any], train_table_path: str) -> np.ndarray:
+def _assign_for_time_range_split(
+    split_cfg: dict[str, Any],
+    train_table_path: str,
+    time_col: str,
+) -> np.ndarray:
     _require_rust_split_core()
     ranges = split_cfg.get('ranges') or []
     if not isinstance(ranges, list) or len(ranges) < 2:
         raise DiskgraphConfigError('TimeRangeSplit requires at least two ranges')
 
-    df = _read_parquet_columns(train_table_path, ['arange', 'TIMESTAMP']).sort_values('arange', kind='mergesort')
-    time_ser = _infer_datetime_series(df['TIMESTAMP'])
+    df = _read_parquet_columns(train_table_path, ['arange', time_col]).sort_values('arange', kind='mergesort')
+    time_ser = _infer_datetime_series(df[time_col])
     ts_ns = time_ser.astype('int64').to_numpy(dtype=np.int64)
 
     timestamp_unit = str(split_cfg.get('timestamp_unit', 'seconds'))
@@ -291,7 +303,11 @@ def _assign_for_time_range_split(split_cfg: dict[str, Any], train_table_path: st
     return _to_uint8_array(out)
 
 
-def _assign_for_date_offset_split(split_cfg: dict[str, Any], train_table_path: str) -> np.ndarray:
+def _assign_for_date_offset_split(
+    split_cfg: dict[str, Any],
+    train_table_path: str,
+    time_col: str,
+) -> np.ndarray:
     _require_rust_split_core()
     offsets_raw = split_cfg.get('offsets')
     if not isinstance(offsets_raw, list) or len(offsets_raw) < 1:
@@ -304,8 +320,8 @@ def _assign_for_date_offset_split(split_cfg: dict[str, Any], train_table_path: s
     timeframe_i = int(timeframe) if timeframe is not None else None
     anchor_start_offset = int(split_cfg.get('anchor_start_offset', 0) or 0)
 
-    df = _read_parquet_columns(train_table_path, ['arange', 'TIMESTAMP']).sort_values('arange', kind='mergesort')
-    time_ser = _infer_datetime_series(df['TIMESTAMP'])
+    df = _read_parquet_columns(train_table_path, ['arange', time_col]).sort_values('arange', kind='mergesort')
+    time_ser = _infer_datetime_series(df[time_col])
     ts_ns = time_ser.astype('int64').to_numpy(dtype=np.int64)
 
     date_offset_assign = _require_rust_fn(assign_date_offset_split, 'assign_date_offset_split')
@@ -320,14 +336,18 @@ def _assign_for_date_offset_split(split_cfg: dict[str, Any], train_table_path: s
     return _to_uint8_array(out)
 
 
-def _assign_for_approx_date_offset_split(split_cfg: dict[str, Any], train_table_path: str) -> np.ndarray:
+def _assign_for_approx_date_offset_split(
+    split_cfg: dict[str, Any],
+    train_table_path: str,
+    time_col: str,
+) -> np.ndarray:
     _require_rust_split_core()
     ratio = [float(x) for x in split_cfg.get('ratio', [0.8, 0.1, 0.1])]
     if len(ratio) < 2 or len(ratio) > 3:
         raise DiskgraphConfigError('ApproxDateOffsetSplit requires 2 or 3 ratios')
 
-    df = _read_parquet_columns(train_table_path, ['arange', 'TIMESTAMP']).sort_values('arange', kind='mergesort')
-    ts = _infer_datetime_series(df['TIMESTAMP']).astype('int64').to_numpy(dtype=np.int64)
+    df = _read_parquet_columns(train_table_path, ['arange', time_col]).sort_values('arange', kind='mergesort')
+    ts = _infer_datetime_series(df[time_col]).astype('int64').to_numpy(dtype=np.int64)
     approx_assign = _require_rust_fn(assign_approx_date_offset_split, 'assign_approx_date_offset_split')
     out = approx_assign(
         timestamps_ns=ts.tolist(),
@@ -355,6 +375,7 @@ def compute_dense_split_assignments(
     train_table_path: str,
     split_config: 'SplitSpec',
     split_family_hint: Optional[str] = None,
+    time_col: str = 'TIMESTAMP',
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Compute dense row-stage split assignment vector aligned with TT arange order.
 
@@ -364,6 +385,7 @@ def compute_dense_split_assignments(
             Must have ``to_assignment_config()`` method and ``kind`` attribute.
         split_family_hint: Optional override for the split family. Must match
             split_config.kind if both are set.
+        time_col: Physical train-table timestamp column for temporal split families.
 
     Returns assignments uint8 vector and metadata dict.
     """
@@ -393,15 +415,15 @@ def compute_dense_split_assignments(
     elif family == 'FixedSplit':
         assignments = _assign_for_fixed_split(split_cfg, train_table_path)
     elif family == 'TemporalSplit':
-        assignments = _assign_for_temporal_split(split_cfg, train_table_path)
+        assignments = _assign_for_temporal_split(split_cfg, train_table_path, time_col)
     elif family == 'DateOffsetSplit':
-        assignments = _assign_for_date_offset_split(split_cfg, train_table_path)
+        assignments = _assign_for_date_offset_split(split_cfg, train_table_path, time_col)
     elif family == 'ApproxDateOffsetSplit':
-        assignments = _assign_for_approx_date_offset_split(split_cfg, train_table_path)
+        assignments = _assign_for_approx_date_offset_split(split_cfg, train_table_path, time_col)
     elif family == 'TimeRangeSplit':
-        assignments = _assign_for_time_range_split(split_cfg, train_table_path)
+        assignments = _assign_for_time_range_split(split_cfg, train_table_path, time_col)
     elif family == 'BacktestingSplit':
-        assignments = _assign_for_backtesting_split(split_cfg, train_table_path)
+        assignments = _assign_for_backtesting_split(split_cfg, train_table_path, time_col)
     elif family == 'ColumnSplit':
         assignments = _assign_for_column_split(split_cfg, train_table_path)
     elif family == 'ManualSplit':

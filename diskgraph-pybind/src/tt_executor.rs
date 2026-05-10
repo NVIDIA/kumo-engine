@@ -2318,8 +2318,8 @@ fn extract_string_values(batch: &RecordBatch, col_name: &str) -> anyhow::Result<
     ))
 }
 
-fn extend_timestamps_ns_from_batch(batch: &RecordBatch, out: &mut Vec<i64>) {
-    if let Ok(idx) = batch.schema().index_of("TIMESTAMP") {
+fn extend_timestamps_ns_from_batch(batch: &RecordBatch, time_col_name: &str, out: &mut Vec<i64>) {
+    if let Ok(idx) = batch.schema().index_of(time_col_name) {
         if let Some(ts_arr) = batch
             .column(idx)
             .as_any()
@@ -2366,6 +2366,11 @@ pub fn execute_tt_plan_materialize_with_split(
     let overall_start = std::time::Instant::now();
     let plan: DiskGraphTTPlan<Seconds> = serde_json::from_str(plan_json)
         .map_err(|e| crate::DiskgraphConfigError::new_err(format!("invalid plan JSON: {e}")))?;
+    let output_time_col_name = plan
+        .entity
+        .output_time_col_name
+        .clone()
+        .unwrap_or_else(|| "TIMESTAMP".to_string());
 
     let split_cfg: Option<Value> = match split_config_json {
         Some(s) if !s.is_empty() => Some(serde_json::from_str(s).map_err(|e| {
@@ -2612,7 +2617,7 @@ pub fn execute_tt_plan_materialize_with_split(
             let mut entity_values: Vec<String> = Vec::new();
             let mut target_values: Vec<String> = Vec::new();
             for batch in &final_batches {
-                extend_timestamps_ns_from_batch(batch, &mut timestamps_ns);
+                extend_timestamps_ns_from_batch(batch, &output_time_col_name, &mut timestamps_ns);
                 extend_include_mask_from_batch(batch, &mut include_mask);
                 if family == "ColumnSplit" {
                     let col_name = split_column_name
@@ -2809,7 +2814,11 @@ pub fn execute_tt_plan_materialize_with_split(
                         timestamps_ns.clear();
                         include_mask = None;
                         for batch in &final_batches {
-                            extend_timestamps_ns_from_batch(batch, &mut timestamps_ns);
+                            extend_timestamps_ns_from_batch(
+                                batch,
+                                &output_time_col_name,
+                                &mut timestamps_ns,
+                            );
                             extend_include_mask_from_batch(batch, &mut include_mask);
                         }
 
@@ -2835,7 +2844,11 @@ pub fn execute_tt_plan_materialize_with_split(
                             timestamps_ns.clear();
                             include_mask = None;
                             for batch in &final_batches {
-                                extend_timestamps_ns_from_batch(batch, &mut timestamps_ns);
+                                extend_timestamps_ns_from_batch(
+                                    batch,
+                                    &output_time_col_name,
+                                    &mut timestamps_ns,
+                                );
                                 extend_include_mask_from_batch(batch, &mut include_mask);
                             }
 
@@ -2919,6 +2932,7 @@ pub fn execute_tt_plan_materialize_with_split(
                         split_bytes_ref,
                         "v1",
                         target_stype,
+                        &output_time_col_name,
                     )?;
                     info!(
                         rows = rows_written,
@@ -3208,6 +3222,7 @@ fn compute_train_table_col_stats_payload(
     split_assignments: &[u8],
     data_version: &str,
     target_stype: &str,
+    time_col_name: &str,
 ) -> anyhow::Result<Value> {
     use diskgraph_core::accumulators::{
         for_each_split_ascii_byte, HyperLogLog, TDigestEstimator, WelfordAccumulator,
@@ -3240,8 +3255,8 @@ fn compute_train_table_col_stats_payload(
         .index_of("ENTITY")
         .map_err(|_| anyhow::anyhow!("missing ENTITY column"))?;
     let timestamp_idx = schema
-        .index_of("TIMESTAMP")
-        .map_err(|_| anyhow::anyhow!("missing TIMESTAMP column"))?;
+        .index_of(time_col_name)
+        .map_err(|_| anyhow::anyhow!("missing {time_col_name} column"))?;
     let frequency_idx = schema.index_of("__kumo_internal_frequency_column__").ok();
     let include_bit_idx = schema.index_of("ENTITY_INCLUDE_BIT").ok();
 
@@ -3390,6 +3405,22 @@ fn compute_train_table_col_stats_payload(
                     }
                     if let Some(ref mut h) = timestamp_hll {
                         h.observe_i64(a.value(row));
+                    }
+                }
+            } else if let Some(a) = timestamp_col
+                .as_any()
+                .downcast_ref::<TimestampNanosecondArray>()
+            {
+                if !a.is_null(row) {
+                    let ts = a.value(row);
+                    if let Some(ref mut w) = timestamp_welford {
+                        w.observe(ts as f64);
+                    }
+                    if let Some(ref mut t) = timestamp_tdigest {
+                        t.observe(ts as f64);
+                    }
+                    if let Some(ref mut h) = timestamp_hll {
+                        h.observe_i64(ts);
                     }
                 }
             } else if let Some(a) = timestamp_col.as_any().downcast_ref::<Float64Array>() {
@@ -3625,6 +3656,11 @@ pub fn build_train_table_col_stats_artifact(
             )
         })?
         .to_string();
+    let time_col_name = cfg_value
+        .get("time_col")
+        .and_then(|v| v.as_str())
+        .unwrap_or("TIMESTAMP")
+        .to_string();
 
     let payload = py
         .detach(|| -> anyhow::Result<Value> {
@@ -3633,6 +3669,7 @@ pub fn build_train_table_col_stats_artifact(
                 &assignments,
                 &data_version,
                 &target_stype,
+                &time_col_name,
             )
         })
         .map_err(|e| {
@@ -4191,6 +4228,95 @@ mod tests {
         .unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("split-column list length mismatch with TARGET"));
+    }
+
+    #[test]
+    fn test_extend_timestamps_uses_configured_time_col() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "PSEUDO_TIMESTAMP",
+            DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, None),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(TimestampNanosecondArray::from(vec![
+                Some(100),
+                None,
+                Some(300),
+            ]))],
+        )
+        .unwrap();
+
+        let mut timestamps = Vec::new();
+        extend_timestamps_ns_from_batch(&batch, "PSEUDO_TIMESTAMP", &mut timestamps);
+
+        assert_eq!(timestamps, vec![100, 0, 300]);
+    }
+
+    #[test]
+    fn test_col_stats_payload_uses_configured_time_col() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tt.parquet");
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("ENTITY", DataType::Int64, true),
+            Field::new(
+                "PSEUDO_TIMESTAMP",
+                DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new("TARGET", DataType::Int64, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![Some(1), Some(2)])),
+                Arc::new(TimestampNanosecondArray::from(vec![Some(10), Some(11)])),
+                Arc::new(Int64Array::from(vec![Some(0), Some(1)])),
+            ],
+        )
+        .unwrap();
+        let f = std::fs::File::create(&path).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, Some(WriterProperties::builder().build()))
+            .unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+
+        let payload = compute_train_table_col_stats_payload(
+            path.to_str().unwrap(),
+            &[0, 1],
+            "v1",
+            "categorical",
+            "PSEUDO_TIMESTAMP",
+        )
+        .unwrap();
+
+        assert_eq!(
+            payload.get("kind").and_then(|v| v.as_str()),
+            Some("tt_train_table_col_stats")
+        );
+        let stats = payload.get("stats").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            stats
+                .get("TIMESTAMP__kumo.numerical__COUNT__False")
+                .and_then(|v| v.get("value"))
+                .and_then(|v| v.as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            stats
+                .get("TIMESTAMP__kumo.numerical__MIN__False")
+                .and_then(|v| v.get("value"))
+                .and_then(|v| v.as_f64()),
+            Some(10.0)
+        );
+        assert!(compute_train_table_col_stats_payload(
+            path.to_str().unwrap(),
+            &[0, 1],
+            "v1",
+            "categorical",
+            "TIMESTAMP",
+        )
+        .is_err());
     }
 
     #[test]
