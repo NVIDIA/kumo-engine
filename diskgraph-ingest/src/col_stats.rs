@@ -3601,10 +3601,8 @@ mod tests {
     // =========================================================================
     // Multicategorical collector tests
     //
-    // These exercise the §6.1 spec from the design doc at
-    // `knowledge/execution-notes/28187/design_doc.md`. They bypass the
-    // `config_converter` layer by constructing `FileColStats` directly via
-    // `make_test_cols_with_types` with explicit `IngestedType` +
+    // These bypass the `config_converter` layer by constructing `FileColStats`
+    // directly via `make_test_cols_with_types` with explicit `IngestedType` +
     // `multicategorical_delimiter`, so they test the collector's observation
     // and emit logic in isolation.
     //
