@@ -14,6 +14,7 @@ use crossbeam_channel::Receiver;
 use diskgraph_core::time::{Seconds, Abs, Dur};
 use diskgraph_core::tt_builder::*;
 use diskgraph_ingest::coercion::CoercionMode;
+use diskgraph_train_table::ttgen_resolve::{AUTOREGRESSION_OUTPUT_ALIAS, YOY_OUTPUT_ALIAS};
 use diskgraph_ingest::config::IngestOptions;
 use diskgraph_ingest::graph_config::*;
 use diskgraph_ingest::io::Dest;
@@ -125,7 +126,7 @@ fn read_output_rows_forecasting(receiver: Receiver<RecordBatch>) -> Vec<Forecast
         let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
 
         let ar_col = batch.column(2).as_any().downcast_ref::<arrow_array::ListArray>().unwrap();
-        let yoy_col = if batch.num_columns() > 3 && batch.schema().field(3).name() == "YOY_COL" {
+        let yoy_col = if batch.num_columns() > 3 && batch.schema().field(3).name() == YOY_OUTPUT_ALIAS {
             Some(batch.column(3).as_any().downcast_ref::<arrow_array::ListArray>().unwrap())
         } else {
             None
@@ -5550,12 +5551,12 @@ fn integ_bp_forecasting_multiple_lags() {
         stages: vec![Stage::<Seconds> {
             ops: vec![
                 Op::Autoregression {
-                    alias: "AUTOREGRESSION_COL".to_string(),
+                    alias: AUTOREGRESSION_OUTPUT_ALIAS.to_string(),
                     target_op: Box::new(agg_orders_price("inner", AggFunc::Sum, Some((0, 200)))),
                     lag_offsets: vec![Dur::from_raw(0), Dur::from_raw(-1000)], // evaluate at ts=3000, ts=2000
                 },
                 Op::Autoregression {
-                    alias: "YOY_COL".to_string(),
+                    alias: YOY_OUTPUT_ALIAS.to_string(),
                     target_op: Box::new(agg_orders_price("inner", AggFunc::Sum, Some((0, 200)))),
                     lag_offsets: vec![Dur::from_raw(-2000)], // evaluate at ts=1000
                 },

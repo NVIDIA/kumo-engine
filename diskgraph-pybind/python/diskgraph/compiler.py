@@ -33,6 +33,15 @@ LINK_PRED_TASKS = {
     "link_prediction",
 }
 
+# Canonical output column names for the autoregression ops emitted by
+# forecasting plans. These are the contract between DG and kumo-pred —
+# kumo-pred expects to find these exact column names in the BP/TT parquet
+# output. The canonical strings are defined kumo-side in
+# ``kumo/utils/autoregression.py``; if either side renames, the
+# integration tests on both sides fail together.
+AUTOREGRESSION_OUTPUT_ALIAS = "autoregression_labels"
+YOY_OUTPUT_ALIAS = "year_over_year_labels"
+
 
 def _map_op(op: str) -> str:
     if op == '=':
@@ -237,9 +246,9 @@ class DiskGraphPlanCompiler:
 
                 # We can append multiple autoregression ops if both are requested
                 if lag_offsets_secs:
-                    self.builder.autoregression("AUTOREGRESSION_COL", target_op_json, lag_offsets_secs)
+                    self.builder.autoregression(AUTOREGRESSION_OUTPUT_ALIAS, target_op_json, lag_offsets_secs)
                 if yoy_offsets_secs:
-                    self.builder.autoregression("YOY_COL", target_op_json, yoy_offsets_secs)
+                    self.builder.autoregression(YOY_OUTPUT_ALIAS, target_op_json, yoy_offsets_secs)
             else:
                 # Node or Link Prediction (non-forecasting)
                 # If it's a Static Node Prediction task,

@@ -14,6 +14,16 @@ use diskgraph_index::graph::{GraphIndexReader, TableReader};
 use diskgraph_index::layout::RelationLayout;
 use diskgraph_rowpack::{IngestedType, RowPackContext};
 
+// Canonical output aliases for the forecasting autoregression ops. These must
+// match the Python-side constants in
+// ``diskgraph-pybind/python/diskgraph/compiler.py`` (AUTOREGRESSION_OUTPUT_ALIAS
+// / YOY_OUTPUT_ALIAS) and the kumo-side canonical names in
+// ``kumo/utils/autoregression.py``. The Python compiler sets the alias in the
+// op JSON; the resolver here looks the alias up to identify the autoregression
+// output columns. Renaming requires updating all three places together.
+pub const AUTOREGRESSION_OUTPUT_ALIAS: &str = "autoregression_labels";
+pub const YOY_OUTPUT_ALIAS: &str = "year_over_year_labels";
+
 // ─── Resolved plan types ─────────────────────────────────────────────────────
 
 /// A fully resolved plan ready for parallel execution.
@@ -381,17 +391,17 @@ pub fn resolve_plan<U: UnitSystem>(
     let mut yoy_dtype = None;
 
     if matches!(plan.prediction_type, PredictionType::Forecasting) {
-        if let Some(idx) = alias_to_idx.get("AUTOREGRESSION_COL") {
+        if let Some(idx) = alias_to_idx.get(AUTOREGRESSION_OUTPUT_ALIAS) {
             autoregression_alias_idx = Some(*idx);
             autoregression_dtype = Some(infer_op_dtype(plan.stages.iter().flat_map(|s| &s.ops).find(|op| match op {
-                Op::Autoregression { alias, .. } => alias == "AUTOREGRESSION_COL",
+                Op::Autoregression { alias, .. } => alias == AUTOREGRESSION_OUTPUT_ALIAS,
                 _ => false,
             }).unwrap(), &resolved_stages));
         }
-        if let Some(idx) = alias_to_idx.get("YOY_COL") {
+        if let Some(idx) = alias_to_idx.get(YOY_OUTPUT_ALIAS) {
             yoy_alias_idx = Some(*idx);
             yoy_dtype = Some(infer_op_dtype(plan.stages.iter().flat_map(|s| &s.ops).find(|op| match op {
-                Op::Autoregression { alias, .. } => alias == "YOY_COL",
+                Op::Autoregression { alias, .. } => alias == YOY_OUTPUT_ALIAS,
                 _ => false,
             }).unwrap(), &resolved_stages));
         }

@@ -15,6 +15,7 @@ from kumoapi.pquery.AST import (
 )
 from kumoapi.typing import AggregationType, BoolOp, RelOp
 from diskgraph import DiskgraphConfigError, DiskGraphPlanCompiler, SplitSpec, TimeUnit
+from diskgraph.compiler import AUTOREGRESSION_OUTPUT_ALIAS, YOY_OUTPUT_ALIAS
 
 def test_compiler_basic_aggregation():
     # Construct a Mock Validated AST
@@ -778,10 +779,10 @@ def test_compiler_forecasting():
     auto_ops = [op["autoregression"] for op in stage["ops"] if "autoregression" in op]
 
     assert len(auto_ops) == 2
-    assert auto_ops[0]["alias"] == "AUTOREGRESSION_COL"
+    assert auto_ops[0]["alias"] == AUTOREGRESSION_OUTPUT_ALIAS
     assert auto_ops[0]["lag_offsets"] == [-86400, -172800]
 
-    assert auto_ops[1]["alias"] == "YOY_COL"
+    assert auto_ops[1]["alias"] == YOY_OUTPUT_ALIAS
     assert auto_ops[1]["lag_offsets"] == [-31536000]
 
 

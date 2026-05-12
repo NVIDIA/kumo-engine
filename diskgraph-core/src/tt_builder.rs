@@ -130,7 +130,7 @@ pub enum PredictionType {
     },
     /// Emits only (ENTITY, TIMESTAMP) columns. Used for RHS candidate generation.
     PassThrough,
-    /// Forecasting task: emits AUTOREGRESSION_COL and optionally YOY_COL.
+    /// Forecasting task: emits autoregression_labels and optionally year_over_year_labels.
     Forecasting,
 }
 

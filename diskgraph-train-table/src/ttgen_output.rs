@@ -12,6 +12,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::errors::{TTGenError, TTGenResult};
+use crate::ttgen_resolve::{AUTOREGRESSION_OUTPUT_ALIAS, YOY_OUTPUT_ALIAS};
 use arrow_array::builder::{Int64Builder, ListBuilder, StringBuilder};
 use arrow_array::{
     BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
@@ -37,7 +38,7 @@ pub enum OutputMode {
     LinkArray { include_frequency: bool, target_dtype: DataType },
     /// Emits only (ENTITY, TIMESTAMP) columns.
     PassThrough,
-    /// Forecasting: emits (ENTITY, TIMESTAMP, AUTOREGRESSION_COL, [YOY_COL]).
+    /// Forecasting: emits (ENTITY, TIMESTAMP, autoregression_labels, [year_over_year_labels]).
     Forecasting {
         autoregression_dtype: DataType,
         yoy_dtype: Option<DataType>,
@@ -144,13 +145,13 @@ impl<U: UnitSystem> ChannelBatchWriter<U> {
             OutputMode::PassThrough => {}
             OutputMode::Forecasting { autoregression_dtype, yoy_dtype } => {
                 fields.push(Field::new(
-                    "AUTOREGRESSION_COL",
+                    AUTOREGRESSION_OUTPUT_ALIAS,
                     autoregression_dtype.clone(),
                     true,
                 ));
                 if let Some(yoy_dt) = yoy_dtype {
                     fields.push(Field::new(
-                        "YOY_COL",
+                        YOY_OUTPUT_ALIAS,
                         yoy_dt.clone(),
                         true,
                     ));

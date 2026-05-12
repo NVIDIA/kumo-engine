@@ -18,3 +18,4 @@ temp_data
 diskgraph_output
 benchmark/
 temp_doc/
+.venv/
