@@ -11031,6 +11031,9 @@ fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackCo
             IngestedType::Float32Array => RowpackType::Float32Array,
             IngestedType::Float64Array => RowpackType::Float64Array,
             IngestedType::Float16Array => RowpackType::Float16Array,
+            IngestedType::Int8Array => RowpackType::Int8Array,
+            IngestedType::Int16Array => RowpackType::Int16Array,
+            IngestedType::Int32Array => RowpackType::Int32Array,
             IngestedType::Int64Array => RowpackType::Int64Array,
             IngestedType::StringArray => RowpackType::StringArray,
         };

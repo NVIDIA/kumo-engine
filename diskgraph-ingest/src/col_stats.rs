@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::graph_config::{ColumnSpec, IngestedType, SemanticType};
-use diskgraph_rowpack::{ColumnValueObserver, FloatListView, Int64ListView, StringListView};
+use diskgraph_rowpack::{ColumnValueObserver, FloatListView, IntListView, StringListView};
 use serde_json::{json, Value as JsonValue};
 
 // ---------------------------------------------------------------------------
@@ -987,7 +987,10 @@ impl ColumnStatsCollector {
                 let input_kind = match ingested_type {
                     IngestedType::String => Some(MulticatInputKind::SingleStringToken),
                     IngestedType::StringArray => Some(MulticatInputKind::StringArray),
-                    IngestedType::Int64Array => Some(MulticatInputKind::Int64Array),
+                    IngestedType::Int8Array
+                    | IngestedType::Int16Array
+                    | IngestedType::Int32Array
+                    | IngestedType::Int64Array => Some(MulticatInputKind::Int64Array),
                     IngestedType::Float16Array
                     | IngestedType::Float32Array
                     | IngestedType::Float64Array => Some(MulticatInputKind::FloatArray),
@@ -1368,7 +1371,13 @@ fn build_cat_count_json(
     // `list<int64> + multicategorical` column emits numeric keys byte-matching
     // what `tt_executor` produces for train-table multicat stats.
     let is_int = (ingested_type.is_some_and(|t| t.is_integer_like())
-        || matches!(ingested_type, Some(IngestedType::Int64Array)))
+        || matches!(
+            ingested_type,
+            Some(IngestedType::Int8Array)
+                | Some(IngestedType::Int16Array)
+                | Some(IngestedType::Int32Array)
+                | Some(IngestedType::Int64Array)
+        ))
         && !is_bool;
     // Float-emitting classification includes the `Float*Array` shapes for the
     // same reason. The token strings stored in `SharedColumnCounts::strings`
@@ -2308,7 +2317,7 @@ impl ColumnValueObserver for FileColStats {
     }
 
     #[inline]
-    fn observe_int64_list(&mut self, col_idx: usize, view: &Int64ListView) {
+    fn observe_int64_list(&mut self, col_idx: usize, view: &IntListView) {
         if matches!(
             &self.cols[col_idx],
             ColumnStatsCollector::Multicategorical {
@@ -3781,8 +3790,8 @@ mod tests {
 
     #[test]
     fn col_stats_multicat_intarray_tokens_stringified() {
-        let v1 = build_int64_list_view(&[Some(10), Some(20)]);
-        let v2 = build_int64_list_view(&[Some(10), Some(-3)]);
+        let v1 = build_int_list_view(&[Some(10), Some(20)]);
+        let v2 = build_int_list_view(&[Some(10), Some(-3)]);
         let (mut stats, tc) = make_hybrid_stats(&[(
             Some(SemanticType::Multicategorical),
             IngestedType::Int64Array,
@@ -3800,7 +3809,7 @@ mod tests {
 
     #[test]
     fn col_stats_multicat_intarray_null_elements_dropped() {
-        let view = build_native_int64_list_view(&[Some(5), None, Some(7)]);
+        let view = build_native_int_list_view(&[Some(5), None, Some(7)]);
         let (mut stats, tc) = make_hybrid_stats(&[(
             Some(SemanticType::Multicategorical),
             IngestedType::Int64Array,
@@ -3816,7 +3825,7 @@ mod tests {
 
     #[test]
     fn col_stats_multicat_intarray_negative_and_extremes() {
-        let view = build_int64_list_view(&[Some(0), Some(i64::MIN), Some(i64::MAX)]);
+        let view = build_int_list_view(&[Some(0), Some(i64::MIN), Some(i64::MAX)]);
         let (mut stats, tc) = make_hybrid_stats(&[(
             Some(SemanticType::Multicategorical),
             IngestedType::Int64Array,
@@ -4048,18 +4057,18 @@ mod tests {
         }
     }
 
-    fn build_int64_list_view(elems: &[Option<i64>]) -> Int64ListView {
+    fn build_int_list_view(elems: &[Option<i64>]) -> IntListView {
         // Parsed values cannot represent null elements. Use
-        // `build_native_int64_list_view` for Arrow null-bit tests.
+        // `build_native_int_list_view` for Arrow null-bit tests.
         let owned: Vec<i64> = elems
             .iter()
-            .map(|e| e.expect("Parsed Int64ListView cannot represent null elements"))
+            .map(|e| e.expect("Parsed IntListView cannot represent null elements"))
             .collect();
         let end = owned.len();
-        Int64ListView {
+        IntListView {
             start: 0,
             end,
-            values: diskgraph_rowpack::Int64ListValues::Parsed(owned),
+            values: diskgraph_rowpack::IntListValues::Parsed(owned),
         }
     }
 
@@ -4092,13 +4101,13 @@ mod tests {
         }
     }
 
-    fn build_native_int64_list_view(elems: &[Option<i64>]) -> Int64ListView {
+    fn build_native_int_list_view(elems: &[Option<i64>]) -> IntListView {
         let end = elems.len();
         let array = arrow_array::Int64Array::from(elems.to_vec());
-        Int64ListView {
+        IntListView {
             start: 0,
             end,
-            values: diskgraph_rowpack::Int64ListValues::Native(
+            values: diskgraph_rowpack::IntListValues::I64(
                 std::sync::Arc::new(array) as arrow_array::ArrayRef
             ),
         }

@@ -401,24 +401,49 @@ where
                 Err(_) => SourceNull,
             }
         }
-        IngestedType::Int64Array => {
+        IngestedType::Int8Array
+        | IngestedType::Int16Array
+        | IngestedType::Int32Array
+        | IngestedType::Int64Array => {
             let mut scratch = RowPackDecodeScratch::default();
             let Ok(value_ref) = decoder.decode_column_value(raw, col_idx, &mut scratch) else {
                 return SourceNull;
             };
-            if let ValueRef::Int64Array(ints) = value_ref {
+            // Each int-array width decodes to its own ValueRef variant; widen
+            // to i64 for the shared multicat-token consumer.
+            let mut emit = |ints: &[i64]| -> Result<bool, ()> {
                 for &n in ints {
                     if !observe(MulticatToken::Int(n)) {
-                        return Stop;
+                        return Ok(false);
                     }
                 }
-                Continue
-            } else if matches!(value_ref, ValueRef::Null) {
-                SourceNull
-            } else {
-                // Type mismatch on a multicat-declared column — defensive
-                // fallback. The resolver gate should have rejected this.
-                SourceNull
+                Ok(true)
+            };
+            let result = match value_ref {
+                ValueRef::Int64Array(ints) => emit(ints),
+                ValueRef::Int32Array(ints) => {
+                    let widened: Vec<i64> = ints.iter().map(|&v| v as i64).collect();
+                    emit(&widened)
+                }
+                ValueRef::Int16Array(ints) => {
+                    let widened: Vec<i64> = ints.iter().map(|&v| v as i64).collect();
+                    emit(&widened)
+                }
+                ValueRef::Int8Array(ints) => {
+                    let widened: Vec<i64> = ints.iter().map(|&v| v as i64).collect();
+                    emit(&widened)
+                }
+                ValueRef::Null => return SourceNull,
+                _ => {
+                    // Type mismatch on a multicat-declared column — defensive
+                    // fallback. The resolver gate should have rejected this.
+                    return SourceNull;
+                }
+            };
+            match result {
+                Ok(true) => Continue,
+                Ok(false) => Stop,
+                Err(_) => SourceNull,
             }
         }
         IngestedType::Float32Array

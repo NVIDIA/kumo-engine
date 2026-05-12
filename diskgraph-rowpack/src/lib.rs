@@ -35,7 +35,7 @@ mod tests_type_matrix;
 mod tests_unit;
 
 pub use crate::access::{
-    BinaryStringHint, FloatListValues, FloatListView, Int64ListValues, Int64ListView, RowAccess,
+    BinaryStringHint, FloatListValues, FloatListView, IntListValues, IntListView, RowAccess,
     RowAccessHints, StringListValues, StringListView,
 };
 pub use crate::parser::{detect_encoded_int_format, detect_timestamp_format, TIMESTAMP_FORMATS};
@@ -249,6 +249,9 @@ pub enum IngestedType {
     Float16Array,
     Float32Array,
     Float64Array,
+    Int8Array,
+    Int16Array,
+    Int32Array,
     Int64Array,
     StringArray,
 }
@@ -337,6 +340,9 @@ pub enum ColumnEncoding {
     FloatArray {
         storage: FloatStorage,
     },
+    Int8Array,
+    Int16Array,
+    Int32Array,
     Int64Array,
     StringArray {
         encoding: StringEncoding,
@@ -390,6 +396,9 @@ pub enum ValueRef<'a> {
     Decimal256([u8; 32]),
     Float32Array(&'a [f32]),
     Float64Array(&'a [f64]),
+    Int8Array(&'a [i8]),
+    Int16Array(&'a [i16]),
+    Int32Array(&'a [i32]),
     Int64Array(&'a [i64]),
     StringArray(&'a [&'a str]),
 }
@@ -860,7 +869,13 @@ impl RowPackContextBuilder {
                         Ok(None) | Err(_) => stats.observe_null(),
                     }
                 }
-                IngestedType::Int64Array => {
+                IngestedType::Int8Array
+                | IngestedType::Int16Array
+                | IngestedType::Int32Array
+                | IngestedType::Int64Array => {
+                    // `with_int64_array` widens narrower i8/i16/i32 list
+                    // elements to i64, so the stats path is shared across
+                    // every int-array width.
                     match access.with_int64_array(idx, |values| {
                         for &v in values {
                             stats.observe_int64(v);
@@ -1052,6 +1067,21 @@ fn estimate_column_bytes(encoding: &ColumnEncoding, stats: &ColumnStats) -> usiz
                 FloatStorage::F64 => 8,
             };
             varint_bytes_u64(avg_len as u64) + avg_len * elem
+        }
+        ColumnEncoding::Int8Array => {
+            // varint(N) + N * varint(i8 widened). i8 always fits in 1 varint byte.
+            let avg_len = avg_len(stats.array_len_total, stats.array_count);
+            varint_bytes_u64(avg_len as u64) + avg_len
+        }
+        ColumnEncoding::Int16Array => {
+            // varint(N) + N * varint(i16 widened). Most i16 values fit in 1-2 bytes.
+            let avg_len = avg_len(stats.array_len_total, stats.array_count);
+            varint_bytes_u64(avg_len as u64) + avg_len * 2
+        }
+        ColumnEncoding::Int32Array => {
+            // varint(N) + N * varint(i32 widened). Match the i64 assumption.
+            let avg_len = avg_len(stats.array_len_total, stats.array_count);
+            varint_bytes_u64(avg_len as u64) + avg_len * 2
         }
         ColumnEncoding::Int64Array => {
             // varint(N) + N * varint(i64) — assume average 2 bytes per varint
@@ -1335,7 +1365,30 @@ impl ColumnStats {
                     }
                 }
             }
+            ValueRef::Int8Array(values) => {
+                self.array_len_total += values.len();
+                self.array_count += 1;
+                for &v in *values {
+                    self.observe_int64(v as i64);
+                }
+            }
+            ValueRef::Int16Array(values) => {
+                self.array_len_total += values.len();
+                self.array_count += 1;
+                for &v in *values {
+                    self.observe_int64(v as i64);
+                }
+            }
+            ValueRef::Int32Array(values) => {
+                self.array_len_total += values.len();
+                self.array_count += 1;
+                for &v in *values {
+                    self.observe_int64(v as i64);
+                }
+            }
             ValueRef::Int64Array(values) => {
+                self.array_len_total += values.len();
+                self.array_count += 1;
                 for &v in *values {
                     self.observe_int64(v);
                 }
@@ -1594,6 +1647,9 @@ impl ColumnStats {
             IngestedType::Float16Array => Ok(ColumnEncoding::FloatArray {
                 storage: FloatStorage::F16,
             }),
+            IngestedType::Int8Array => Ok(ColumnEncoding::Int8Array),
+            IngestedType::Int16Array => Ok(ColumnEncoding::Int16Array),
+            IngestedType::Int32Array => Ok(ColumnEncoding::Int32Array),
             IngestedType::Int64Array => Ok(ColumnEncoding::Int64Array),
             IngestedType::StringArray => Ok(ColumnEncoding::StringArray {
                 encoding: choose_string_encoding(self, config)?,
@@ -1805,7 +1861,7 @@ pub trait ColumnValueObserver {
     fn observe_string(&mut self, col_idx: usize, value: &str);
     fn observe_timestamp(&mut self, col_idx: usize, secs: i64);
     fn observe_float_list(&mut self, col_idx: usize, view: &FloatListView);
-    fn observe_int64_list(&mut self, col_idx: usize, view: &Int64ListView);
+    fn observe_int64_list(&mut self, col_idx: usize, view: &IntListView);
     fn observe_string_list(&mut self, col_idx: usize, view: &StringListView);
     fn observe_null(&mut self, col_idx: usize);
     fn observe_parse_failure(&mut self, col_idx: usize);
@@ -1826,7 +1882,7 @@ impl ColumnValueObserver for NoOpObserver {
     #[inline(always)]
     fn observe_float_list(&mut self, _col_idx: usize, _view: &FloatListView) {}
     #[inline(always)]
-    fn observe_int64_list(&mut self, _col_idx: usize, _view: &Int64ListView) {}
+    fn observe_int64_list(&mut self, _col_idx: usize, _view: &IntListView) {}
     #[inline(always)]
     fn observe_string_list(&mut self, _col_idx: usize, _view: &StringListView) {}
     #[inline(always)]
@@ -1860,6 +1916,11 @@ pub struct RowPackEncoder {
     dict_maps: Vec<Option<FastHashMap<Vec<u8>, u32>>>,
     alphabet_maps: Vec<Option<AlphabetMap>>,
     bpe_tries: Vec<Option<BpeTrie>>,
+    /// Per-column int-array target bit width, indexed by column position.
+    /// `Some(bits)` for `Int{8,16,32,64}Array` columns; `None` otherwise.
+    /// Precomputed at construction so the row loop doesn't re-match the
+    /// `ColumnEncoding`/`IngestedType` pair on every row.
+    int_array_target_bits: Vec<Option<u8>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1931,7 +1992,17 @@ impl RowPackEncoder {
         let mut dict_maps = Vec::with_capacity(ctx.columns.len());
         let mut alphabet_maps = Vec::with_capacity(ctx.columns.len());
         let mut bpe_tries = Vec::with_capacity(ctx.columns.len());
+        let mut int_array_target_bits = Vec::with_capacity(ctx.columns.len());
         for col in &ctx.columns {
+            int_array_target_bits.push(match col.logical_type {
+                IngestedType::Int8Array
+                | IngestedType::Int16Array
+                | IngestedType::Int32Array
+                | IngestedType::Int64Array => {
+                    Some(int_array_encoding_bits(&col.encoding, col.logical_type)?)
+                }
+                _ => None,
+            });
             match &col.encoding {
                 ColumnEncoding::String {
                     encoding: StringEncoding::Dict { values },
@@ -1989,6 +2060,7 @@ impl RowPackEncoder {
             dict_maps,
             alphabet_maps,
             bpe_tries,
+            int_array_target_bits,
         })
     }
 
@@ -2416,15 +2488,19 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Int64Array => match access.int64_list_view(idx) {
+                IngestedType::Int8Array
+                | IngestedType::Int16Array
+                | IngestedType::Int32Array
+                | IngestedType::Int64Array => match access.int_list_view(idx) {
                     Ok(None) | Err(_) => 0u8,
                     Ok(Some(view)) => {
-                        if matches!(col.encoding, ColumnEncoding::Int64Array) {
-                            encode_int64_list_view_with_tag(&mut scratch.data, view)?;
-                            1u8
-                        } else {
-                            return Err(anyhow!("rowpack int64 array encoding mismatch"));
-                        }
+                        let target_bits = self.int_array_target_bits[idx]
+                            .ok_or_else(|| anyhow!("rowpack int-array bits unset"))?;
+                        let row = access.row();
+                        let col_label = col.name.as_str();
+                        view.require_fits_in_signed(target_bits, col_label, row)?;
+                        encode_int_list_view_with_tag(&mut scratch.data, view)?;
+                        1u8
                     }
                 },
                 IngestedType::StringArray => match access.string_list_view(idx) {
@@ -2894,7 +2970,10 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::Int64Array => match access.int64_list_view(idx) {
+                IngestedType::Int8Array
+                | IngestedType::Int16Array
+                | IngestedType::Int32Array
+                | IngestedType::Int64Array => match access.int_list_view(idx) {
                     Ok(None) => 0u8,
                     Err(_) => {
                         observer.observe_parse_failure(idx);
@@ -2902,12 +2981,13 @@ impl RowPackEncoder {
                     }
                     Ok(Some(view)) => {
                         observer.observe_int64_list(idx, &view);
-                        if matches!(col.encoding, ColumnEncoding::Int64Array) {
-                            encode_int64_list_view_with_tag(data, view)?;
-                            1u8
-                        } else {
-                            return Err(anyhow!("rowpack int64 array encoding mismatch"));
-                        }
+                        let target_bits = self.int_array_target_bits[idx]
+                            .ok_or_else(|| anyhow!("rowpack int-array bits unset"))?;
+                        let row = access.row();
+                        let col_label = col.name.as_str();
+                        view.require_fits_in_signed(target_bits, col_label, row)?;
+                        encode_int_list_view_with_tag(data, view)?;
+                        1u8
                     }
                 },
                 IngestedType::StringArray => match access.string_list_view(idx) {
@@ -3225,6 +3305,18 @@ fn encode_value_with_tag<'a>(
         (ColumnEncoding::FloatArray { storage }, ValueRef::Float64Array(values)) => {
             let tag = encode_float_slice_f64_with_tag(out, col.logical_type, *storage, values)?;
             Ok(tag)
+        }
+        (ColumnEncoding::Int8Array, ValueRef::Int8Array(values)) => {
+            encode_int_slice_with_tag(out, values.iter().map(|&v| v as i64))?;
+            Ok(1)
+        }
+        (ColumnEncoding::Int16Array, ValueRef::Int16Array(values)) => {
+            encode_int_slice_with_tag(out, values.iter().map(|&v| v as i64))?;
+            Ok(1)
+        }
+        (ColumnEncoding::Int32Array, ValueRef::Int32Array(values)) => {
+            encode_int_slice_with_tag(out, values.iter().map(|&v| v as i64))?;
+            Ok(1)
         }
         (ColumnEncoding::Int64Array, ValueRef::Int64Array(values)) => {
             encode_int64_list_with_tag(out, values)?;
@@ -3632,41 +3724,152 @@ fn encode_int64_list_with_tag(out: &mut Vec<u8>, values: &[i64]) -> Result<()> {
     Ok(())
 }
 
-fn encode_int64_list_view_with_tag(out: &mut Vec<u8>, view: Int64ListView) -> Result<()> {
+/// Generic variant that takes an iterator yielding `i64`-widened values.
+/// Used by the narrower `Int{8,16,32}Array` ValueRef encoders, which widen
+/// their element type on the fly. The output bytes are identical to
+/// `encode_int64_list_with_tag` for the same numeric values — the width tag
+/// lives in `ColumnEncoding`, not in the wire format.
+fn encode_int_slice_with_tag<I>(out: &mut Vec<u8>, values: I) -> Result<()>
+where
+    I: ExactSizeIterator<Item = i64>,
+{
+    let len = values.len();
+    out.reserve(varint_bytes_u64(len as u64) + len * 2);
+    write_varint(len as u64, out);
+    for v in values {
+        write_varint(zigzag_encode(v), out);
+    }
+    Ok(())
+}
+
+/// Map an int-array `ColumnEncoding` (paired with the column's `IngestedType`)
+/// to the target signed bit width, used by the encoder's overflow check.
+/// Returns an error if the pair is internally inconsistent (a bug, not user
+/// data, since infer_column_encoding builds these pairs in sync).
+fn int_array_encoding_bits(
+    encoding: &ColumnEncoding,
+    logical: IngestedType,
+) -> Result<u8> {
+    let bits = match encoding {
+        ColumnEncoding::Int8Array => 8,
+        ColumnEncoding::Int16Array => 16,
+        ColumnEncoding::Int32Array => 32,
+        ColumnEncoding::Int64Array => 64,
+        other => {
+            return Err(anyhow!(
+                "rowpack int-array encoding mismatch: logical_type={:?} encoding={:?}",
+                logical,
+                other,
+            ));
+        }
+    };
+    let expected = match logical {
+        IngestedType::Int8Array => 8,
+        IngestedType::Int16Array => 16,
+        IngestedType::Int32Array => 32,
+        IngestedType::Int64Array => 64,
+        other => {
+            return Err(anyhow!(
+                "rowpack int-array encoding mismatch: non-int-array logical type {:?}",
+                other,
+            ));
+        }
+    };
+    if bits != expected {
+        return Err(anyhow!(
+            "rowpack int-array encoding mismatch: logical_type={:?} ({}b) vs encoding={:?} ({}b)",
+            logical,
+            expected,
+            encoding,
+            bits,
+        ));
+    }
+    Ok(bits)
+}
+
+fn encode_int_list_view_with_tag(out: &mut Vec<u8>, view: IntListView) -> Result<()> {
+    // The wire format (varint(N) + zigzag-varint per non-null element) is the
+    // same for every signed width because each element is widened to i64
+    // before zigzag-encoding. Width is carried by the column's
+    // ColumnEncoding tag, not in the bytes.
+    fn encode_native<E, F>(
+        out: &mut Vec<u8>,
+        arr: &E,
+        start: usize,
+        end: usize,
+        get: F,
+    ) -> Result<()>
+    where
+        E: arrow_array::Array,
+        F: Fn(&E, usize) -> i64,
+    {
+        let total = end.saturating_sub(start);
+        if arr.null_count() == 0 {
+            out.reserve(varint_bytes_u64(total as u64) + total * 2);
+            write_varint(total as u64, out);
+            for i in start..end {
+                write_varint(zigzag_encode(get(arr, i)), out);
+            }
+            return Ok(());
+        }
+        // Null elements are dropped: the persisted list length reflects
+        // only non-null positions. A legitimate zero value is preserved;
+        // only the validity bit filters.
+        let mut non_null_count = 0usize;
+        for i in start..end {
+            if !arr.is_null(i) {
+                non_null_count += 1;
+            }
+        }
+        out.reserve(varint_bytes_u64(non_null_count as u64) + non_null_count * 2);
+        write_varint(non_null_count as u64, out);
+        for i in start..end {
+            if !arr.is_null(i) {
+                write_varint(zigzag_encode(get(arr, i)), out);
+            }
+        }
+        Ok(())
+    }
+
     match &view.values {
-        Int64ListValues::Native(values) => {
-            let values_arr = values
+        IntListValues::I8(values) => {
+            let arr = values
+                .as_any()
+                .downcast_ref::<arrow_array::Int8Array>()
+                .ok_or_else(|| anyhow!("int8 list element cast"))?;
+            encode_native(out, arr, view.start, view.end, |a, i| a.value(i) as i64)
+        }
+        IntListValues::I16(values) => {
+            let arr = values
+                .as_any()
+                .downcast_ref::<arrow_array::Int16Array>()
+                .ok_or_else(|| anyhow!("int16 list element cast"))?;
+            encode_native(out, arr, view.start, view.end, |a, i| a.value(i) as i64)
+        }
+        IntListValues::I32(values) => {
+            let arr = values
+                .as_any()
+                .downcast_ref::<arrow_array::Int32Array>()
+                .ok_or_else(|| anyhow!("int32 list element cast"))?;
+            encode_native(out, arr, view.start, view.end, |a, i| a.value(i) as i64)
+        }
+        IntListValues::I64(values) => {
+            let arr = values
                 .as_any()
                 .downcast_ref::<arrow_array::Int64Array>()
                 .ok_or_else(|| anyhow!("int64 list element cast"))?;
-            let len = view.len();
-            if values_arr.null_count() == 0 {
-                out.reserve(varint_bytes_u64(len as u64) + len * 2);
-                write_varint(len as u64, out);
-                for &v in &values_arr.values()[view.start..view.end] {
-                    write_varint(zigzag_encode(v), out);
-                }
+            // Null-free path: borrow the values buffer as `&[i64]` and run the
+            // tight unchecked-iteration encoder. This avoids `arr.value(i)`'s
+            // per-element bounds-check assert that `encode_native` incurs.
+            // The list-element type for `List<Int64>` is the dominant input
+            // shape, so this fast path matters.
+            if arr.null_count() == 0 {
+                encode_int64_list_with_tag(out, &arr.values()[view.start..view.end])
             } else {
-                // Null elements are dropped: the persisted list length reflects
-                // only non-null positions. A legitimate zero value is preserved;
-                // only the validity bit filters.
-                let mut non_null_count = 0usize;
-                for idx in view.start..view.end {
-                    if !values_arr.is_null(idx) {
-                        non_null_count += 1;
-                    }
-                }
-                out.reserve(varint_bytes_u64(non_null_count as u64) + non_null_count * 2);
-                write_varint(non_null_count as u64, out);
-                for idx in view.start..view.end {
-                    if !values_arr.is_null(idx) {
-                        write_varint(zigzag_encode(values_arr.value(idx)), out);
-                    }
-                }
+                encode_native(out, arr, view.start, view.end, |a, i| a.value(i))
             }
-            Ok(())
         }
-        Int64ListValues::Parsed(values) => {
+        IntListValues::Parsed(values) => {
             encode_int64_list_with_tag(out, &values[view.start..view.end])
         }
     }
@@ -4192,6 +4395,9 @@ pub struct RowPackDecodeScratch {
     pub bytes: Vec<u8>,
     pub float32: Vec<f32>,
     pub float64: Vec<f64>,
+    pub int8: Vec<i8>,
+    pub int16: Vec<i16>,
+    pub int32: Vec<i32>,
     pub int64: Vec<i64>,
     /// Decoded string tokens for StringArray columns.
     /// Each token is stored as a `String` and we return `&str` into them.
@@ -4207,6 +4413,9 @@ impl Default for RowPackDecodeScratch {
             bytes: Vec::with_capacity(1024),
             float32: Vec::with_capacity(1024),
             float64: Vec::with_capacity(1024),
+            int8: Vec::with_capacity(64),
+            int16: Vec::with_capacity(64),
+            int32: Vec::with_capacity(64),
             int64: Vec::with_capacity(64),
             strings: Vec::new(),
             tags: Vec::with_capacity(64),
@@ -4718,10 +4927,17 @@ fn decode_value_msgpack(
                 }
             }
         }
-        ColumnEncoding::Int64Array => {
+        ColumnEncoding::Int8Array
+        | ColumnEncoding::Int16Array
+        | ColumnEncoding::Int32Array
+        | ColumnEncoding::Int64Array => {
+            // Wire format is shared across signed widths: width is carried in
+            // the ColumnEncoding tag, not in the per-element bytes. Decoded
+            // values come back as i64 from zigzag-varint and write as
+            // msgpack signed ints regardless of declared width.
             let len = read_varint(data)? as usize;
             if len > MAX_ARRAY_LEN {
-                return Err(anyhow!("rowpack int64 array length overflow"));
+                return Err(anyhow!("rowpack int array length overflow"));
             }
             mp::write_array_len(out, len as u32)?;
             for _ in 0..len {
@@ -4875,10 +5091,13 @@ fn decode_value_json(
             }
             JsonValue::from(values)
         }
-        ColumnEncoding::Int64Array => {
+        ColumnEncoding::Int8Array
+        | ColumnEncoding::Int16Array
+        | ColumnEncoding::Int32Array
+        | ColumnEncoding::Int64Array => {
             let len = read_varint(data)? as usize;
             if len > MAX_ARRAY_LEN {
-                return Err(anyhow!("rowpack int64 array length overflow"));
+                return Err(anyhow!("rowpack int array length overflow"));
             }
             let mut values = Vec::with_capacity(len);
             for _ in 0..len {
@@ -5031,6 +5250,42 @@ fn decode_value_ref<'a>(
                 }
                 _ => Err(anyhow!("rowpack invalid array type")),
             }
+        }
+        ColumnEncoding::Int8Array => {
+            let len = read_varint(data)? as usize;
+            if len > MAX_ARRAY_LEN {
+                return Err(anyhow!("rowpack int8 array length overflow"));
+            }
+            scratch.int8.clear();
+            for _ in 0..len {
+                let v = zigzag_decode(read_varint(data)?);
+                scratch.int8.push(v as i8);
+            }
+            Ok(ValueRef::Int8Array(&scratch.int8))
+        }
+        ColumnEncoding::Int16Array => {
+            let len = read_varint(data)? as usize;
+            if len > MAX_ARRAY_LEN {
+                return Err(anyhow!("rowpack int16 array length overflow"));
+            }
+            scratch.int16.clear();
+            for _ in 0..len {
+                let v = zigzag_decode(read_varint(data)?);
+                scratch.int16.push(v as i16);
+            }
+            Ok(ValueRef::Int16Array(&scratch.int16))
+        }
+        ColumnEncoding::Int32Array => {
+            let len = read_varint(data)? as usize;
+            if len > MAX_ARRAY_LEN {
+                return Err(anyhow!("rowpack int32 array length overflow"));
+            }
+            scratch.int32.clear();
+            for _ in 0..len {
+                let v = zigzag_decode(read_varint(data)?);
+                scratch.int32.push(v as i32);
+            }
+            Ok(ValueRef::Int32Array(&scratch.int32))
         }
         ColumnEncoding::Int64Array => {
             let len = read_varint(data)? as usize;
@@ -5239,10 +5494,13 @@ fn decode_value_skip(
             }
             *data = &data[total..];
         }
-        ColumnEncoding::Int64Array => {
+        ColumnEncoding::Int8Array
+        | ColumnEncoding::Int16Array
+        | ColumnEncoding::Int32Array
+        | ColumnEncoding::Int64Array => {
             let len = read_varint(data)? as usize;
             if len > MAX_ARRAY_LEN {
-                return Err(anyhow!("rowpack int64 array length overflow"));
+                return Err(anyhow!("rowpack int array length overflow"));
             }
             for _ in 0..len {
                 let _ = read_varint(data)?;
@@ -6042,6 +6300,27 @@ pub fn make_arrow_builder(
                 Box::new(ListBuilder::new(values_builder)),
             )
         }
+        IngestedType::Int8Array => {
+            let values_builder = Int8Builder::with_capacity(capacity * 32);
+            (
+                DataType::new_list(DataType::Int8, true),
+                Box::new(ListBuilder::new(values_builder)),
+            )
+        }
+        IngestedType::Int16Array => {
+            let values_builder = Int16Builder::with_capacity(capacity * 32);
+            (
+                DataType::new_list(DataType::Int16, true),
+                Box::new(ListBuilder::new(values_builder)),
+            )
+        }
+        IngestedType::Int32Array => {
+            let values_builder = Int32Builder::with_capacity(capacity * 32);
+            (
+                DataType::new_list(DataType::Int32, true),
+                Box::new(ListBuilder::new(values_builder)),
+            )
+        }
         IngestedType::Int64Array => {
             let values_builder = Int64Builder::with_capacity(capacity * 32);
             (
@@ -6309,6 +6588,57 @@ fn decode_and_append_to_builder(
                 }
                 _ => return Err(anyhow!("rowpack invalid array type")),
             }
+        }
+        ColumnEncoding::Int8Array => {
+            let len = read_varint(data)? as usize;
+            if len > MAX_ARRAY_LEN {
+                return Err(anyhow!("rowpack int8 array length overflow"));
+            }
+            scratch.int8.clear();
+            for _ in 0..len {
+                let v = zigzag_decode(read_varint(data)?);
+                scratch.int8.push(v as i8);
+            }
+            let b = builder
+                .as_any_mut()
+                .downcast_mut::<ListBuilder<Int8Builder>>()
+                .unwrap();
+            b.values().append_slice(&scratch.int8);
+            b.append(true);
+        }
+        ColumnEncoding::Int16Array => {
+            let len = read_varint(data)? as usize;
+            if len > MAX_ARRAY_LEN {
+                return Err(anyhow!("rowpack int16 array length overflow"));
+            }
+            scratch.int16.clear();
+            for _ in 0..len {
+                let v = zigzag_decode(read_varint(data)?);
+                scratch.int16.push(v as i16);
+            }
+            let b = builder
+                .as_any_mut()
+                .downcast_mut::<ListBuilder<Int16Builder>>()
+                .unwrap();
+            b.values().append_slice(&scratch.int16);
+            b.append(true);
+        }
+        ColumnEncoding::Int32Array => {
+            let len = read_varint(data)? as usize;
+            if len > MAX_ARRAY_LEN {
+                return Err(anyhow!("rowpack int32 array length overflow"));
+            }
+            scratch.int32.clear();
+            for _ in 0..len {
+                let v = zigzag_decode(read_varint(data)?);
+                scratch.int32.push(v as i32);
+            }
+            let b = builder
+                .as_any_mut()
+                .downcast_mut::<ListBuilder<Int32Builder>>()
+                .unwrap();
+            b.values().append_slice(&scratch.int32);
+            b.append(true);
         }
         ColumnEncoding::Int64Array => {
             let len = read_varint(data)? as usize;

@@ -33,9 +33,13 @@ pub fn map_kumo_dtype(dtype: &str) -> Result<IngestedType, &str> {
         // Time delta stored as int64 nanoseconds
         "timedelta" => Ok(IngestedType::Int64),
 
-        // Array types
+        // Array types. "intlist" stays mapped to int64_array for backward
+        // compat with existing Kumo configs; the narrower widths are opt-in.
         "floatlist" => Ok(IngestedType::Float32Array),
-        "intlist" => Ok(IngestedType::Int64Array),
+        "intlist" | "int64_list" => Ok(IngestedType::Int64Array),
+        "int32_list" => Ok(IngestedType::Int32Array),
+        "int16_list" => Ok(IngestedType::Int16Array),
+        "int8_list" => Ok(IngestedType::Int8Array),
         "stringlist" => Ok(IngestedType::StringArray),
 
         // Binary

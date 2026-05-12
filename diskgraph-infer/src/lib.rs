@@ -1042,14 +1042,16 @@ pub(crate) fn infer_parquet_schema_from_arrow(
                 DataType::Float16 | DataType::Float32 | DataType::Float64 => {
                     IngestedType::Float16Array
                 }
-                DataType::Int8
-                | DataType::Int16
-                | DataType::Int32
-                | DataType::Int64
-                | DataType::UInt8
-                | DataType::UInt16
-                | DataType::UInt32
-                | DataType::UInt64 => IngestedType::Int64Array,
+                // Pick the smallest signed width that losslessly fits each Arrow
+                // type, matching the scalar inference policy below. UInt32/UInt64
+                // stay on Int64Array (today's behavior — tightening that is
+                // a separate change).
+                DataType::Int8 => IngestedType::Int8Array,
+                DataType::Int16 | DataType::UInt8 => IngestedType::Int16Array,
+                DataType::Int32 | DataType::UInt16 => IngestedType::Int32Array,
+                DataType::Int64 | DataType::UInt32 | DataType::UInt64 => {
+                    IngestedType::Int64Array
+                }
                 DataType::Utf8 | DataType::LargeUtf8 => IngestedType::StringArray,
                 _ => return Err(anyhow!("unsupported list type {}", field.data_type())),
             },

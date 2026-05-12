@@ -17,7 +17,7 @@ impl ColumnValueObserver for ParseFailureObserver {
     fn observe_string(&mut self, _col_idx: usize, _value: &str) {}
     fn observe_timestamp(&mut self, _col_idx: usize, _secs: i64) {}
     fn observe_float_list(&mut self, _col_idx: usize, _view: &FloatListView) {}
-    fn observe_int64_list(&mut self, _col_idx: usize, _view: &Int64ListView) {}
+    fn observe_int64_list(&mut self, _col_idx: usize, _view: &IntListView) {}
     fn observe_string_list(&mut self, _col_idx: usize, _view: &StringListView) {}
     fn observe_null(&mut self, col_idx: usize) {
         self.nulls.push(col_idx);

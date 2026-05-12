@@ -33,10 +33,10 @@ pub struct RowAccessHints {
     pub binary_string_hint: BinaryStringHint,
     /// Delimiter to use when reading a parquet `Utf8` scalar as a list.
     /// When set, scalar-to-list conversion in `string_list_view` /
-    /// `int64_list_view` splits on this byte (with GE-parity drop-empty
+    /// `int_list_view` splits on this byte (with GE-parity drop-empty
     /// semantics) instead of JSON-parsing. Carrying this on the access layer
     /// is what lets a `multicategorical` column declared with a delimiter
-    /// flow into the `IngestedType::StringArray` / `Int64Array` writer path
+    /// flow into the `IngestedType::StringArray` / `Int*Array` writer path
     /// without changing the source parquet shape.
     pub multicategorical_delimiter: Option<String>,
     /// Column name, used only for error messages on parse failure.
@@ -76,19 +76,22 @@ pub struct FloatListView {
     pub values: FloatListValues,
 }
 
-pub enum Int64ListValues {
-    Native(ArrayRef),
+pub enum IntListValues {
+    I8(ArrayRef),
+    I16(ArrayRef),
+    I32(ArrayRef),
+    I64(ArrayRef),
     /// Parsed from a string like "[1, 2, 3]".
     Parsed(Vec<i64>),
 }
 
-pub struct Int64ListView {
+pub struct IntListView {
     pub start: usize,
     pub end: usize,
-    pub values: Int64ListValues,
+    pub values: IntListValues,
 }
 
-impl Int64ListView {
+impl IntListView {
     #[inline]
     pub fn len(&self) -> usize {
         self.end.saturating_sub(self.start)
@@ -101,12 +104,46 @@ impl Int64ListView {
 
     /// Iterate over the non-null elements of this list. Null elements are
     /// dropped; the callback is only invoked for validity-bit=true positions.
+    /// Values from narrower-width Arrow arrays (i8/i16/i32) are widened to i64.
     /// For the `Parsed` variant (which has no per-element null information)
     /// every value is emitted.
     #[inline]
     pub fn for_each_i64(&self, mut f: impl FnMut(i64)) {
         match &self.values {
-            Int64ListValues::Native(arr) => {
+            IntListValues::I8(arr) => {
+                let arr = arr
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int8Array>()
+                    .unwrap();
+                for i in self.start..self.end {
+                    if !arr.is_null(i) {
+                        f(arr.value(i) as i64);
+                    }
+                }
+            }
+            IntListValues::I16(arr) => {
+                let arr = arr
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int16Array>()
+                    .unwrap();
+                for i in self.start..self.end {
+                    if !arr.is_null(i) {
+                        f(arr.value(i) as i64);
+                    }
+                }
+            }
+            IntListValues::I32(arr) => {
+                let arr = arr
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int32Array>()
+                    .unwrap();
+                for i in self.start..self.end {
+                    if !arr.is_null(i) {
+                        f(arr.value(i) as i64);
+                    }
+                }
+            }
+            IntListValues::I64(arr) => {
                 let arr = arr
                     .as_any()
                     .downcast_ref::<arrow_array::Int64Array>()
@@ -117,12 +154,107 @@ impl Int64ListView {
                     }
                 }
             }
-            Int64ListValues::Parsed(vec) => {
+            IntListValues::Parsed(vec) => {
                 for &v in &vec[self.start..self.end] {
                     f(v);
                 }
             }
         }
+    }
+
+    /// Bit-width of the underlying Arrow array's element type, or 64 for
+    /// `Parsed` (logically i64 from the JSON-style parser). Used to validate
+    /// that the source list elements fit in the column's declared narrower
+    /// width before encoding.
+    #[inline]
+    pub fn source_bits(&self) -> u8 {
+        match &self.values {
+            IntListValues::I8(_) => 8,
+            IntListValues::I16(_) => 16,
+            IntListValues::I32(_) => 32,
+            IntListValues::I64(_) | IntListValues::Parsed(_) => 64,
+        }
+    }
+
+    /// Verify that every non-null element in this list fits in the target bit
+    /// width. Returns an error citing the column/row if a value would overflow.
+    /// For narrowing checks the caller supplies `target_bits ∈ {8, 16, 32}`;
+    /// `target_bits == 64` is always accepted (no-op).
+    pub fn require_fits_in_signed(
+        &self,
+        target_bits: u8,
+        col_label: &str,
+        row: usize,
+    ) -> Result<()> {
+        if target_bits >= 64 {
+            return Ok(());
+        }
+        let (min_v, max_v): (i64, i64) = match target_bits {
+            8 => (i8::MIN as i64, i8::MAX as i64),
+            16 => (i16::MIN as i64, i16::MAX as i64),
+            32 => (i32::MIN as i64, i32::MAX as i64),
+            other => {
+                return Err(anyhow!(
+                    "internal: require_fits_in_signed unexpected bits={}",
+                    other
+                ));
+            }
+        };
+        // Narrower or equal Arrow widths always fit in `target_bits` if the
+        // declared type is at least as wide. Reject if source is strictly
+        // wider than target — that's the narrowing case that needs a per-
+        // element bounds check.
+        // We've already short-circuited target_bits >= 64 above. Inside
+        // this body target_bits ∈ {8, 16, 32}. The matrix encodes whether
+        // each source-width × target-width pair needs a per-element bounds
+        // check.
+        let needs_check = match (&self.values, target_bits) {
+            // i8 always fits in any signed target ≥ 8 bits.
+            (IntListValues::I8(_), _) => false,
+            // i16 fits in i16/i32 trivially; narrowing to i8 requires check.
+            (IntListValues::I16(_), 16) | (IntListValues::I16(_), 32) => false,
+            (IntListValues::I16(_), _) => true,
+            // i32 fits in i32 trivially; narrowing to i8/i16 requires check.
+            (IntListValues::I32(_), 32) => false,
+            (IntListValues::I32(_), _) => true,
+            // i64 and Parsed (logically i64) need bounds checks for any
+            // narrower target.
+            (IntListValues::I64(_), _) | (IntListValues::Parsed(_), _) => true,
+        };
+        if needs_check {
+            self.check_overflow(min_v, max_v, col_label, row)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn check_overflow(
+        &self,
+        min_v: i64,
+        max_v: i64,
+        col_label: &str,
+        row: usize,
+    ) -> Result<()> {
+        let mut overflow: Option<i64> = None;
+        self.for_each_i64(|v| {
+            if overflow.is_none() && (v < min_v || v > max_v) {
+                overflow = Some(v);
+            }
+        });
+        if let Some(v) = overflow {
+            return Err(anyhow!(
+                "ingest int-array overflow: column={} row={} value {} does not fit \
+                 in declared signed [{}, {}] range. Cast the source list elements \
+                 to a wider int type upstream, or declare the column with a wider \
+                 dtype.",
+                col_label,
+                row,
+                v,
+                min_v,
+                max_v,
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -2783,7 +2915,7 @@ impl<'p> RowAccess<'p> {
         Ok(Some(FloatListView { start, end, values }))
     }
 
-    pub fn int64_list_view(&mut self, idx: usize) -> Result<Option<Int64ListView>> {
+    pub fn int_list_view(&mut self, idx: usize) -> Result<Option<IntListView>> {
         let array = self.array(idx)?.clone();
         if array.is_null(self.row) {
             return Ok(None);
@@ -2803,7 +2935,7 @@ impl<'p> RowAccess<'p> {
                 }
                 None => parse_string_as_int64_array(raw).map_err(|e| {
                     anyhow!(
-                        "ingest type mismatch: column={} row={} declared=Int64Array \
+                        "ingest type mismatch: column={} row={} declared=Int*Array \
                          but parquet scalar string {:?} could not be parsed as a \
                          JSON-style int list ({}). If the source uses a custom delimiter, \
                          declare `multicategorical_delimiter` on the column and \
@@ -2816,10 +2948,10 @@ impl<'p> RowAccess<'p> {
                 })?,
             };
             let end = parsed.len();
-            return Ok(Some(Int64ListView {
+            return Ok(Some(IntListView {
                 start: 0,
                 end,
-                values: Int64ListValues::Parsed(parsed),
+                values: IntListValues::Parsed(parsed),
             }));
         }
         if let Some(str_arr) = array
@@ -2833,7 +2965,7 @@ impl<'p> RowAccess<'p> {
                 }
                 None => parse_string_as_int64_array(raw).map_err(|e| {
                     anyhow!(
-                        "ingest type mismatch: column={} row={} declared=Int64Array \
+                        "ingest type mismatch: column={} row={} declared=Int*Array \
                          but parquet scalar string {:?} could not be parsed as a \
                          JSON-style int list ({})",
                         col_label,
@@ -2844,10 +2976,10 @@ impl<'p> RowAccess<'p> {
                 })?,
             };
             let end = parsed.len();
-            return Ok(Some(Int64ListView {
+            return Ok(Some(IntListView {
                 start: 0,
                 end,
-                values: Int64ListValues::Parsed(parsed),
+                values: IntListValues::Parsed(parsed),
             }));
         }
         let (start, end, values) = if let Some(list) =
@@ -2868,35 +3000,36 @@ impl<'p> RowAccess<'p> {
             )
         } else {
             return Err(anyhow!(
-                "ingest type mismatch: column={} row={} declared=Int64Array \
+                "ingest type mismatch: column={} row={} declared=Int*Array \
                  but parquet column is neither a list nor a string scalar \
                  (got {:?}). Either change the declared dtype to match the \
-                 source, or convert the source column to List<Int64>.",
+                 source, or convert the source column to List<Int{{8,16,32,64}}>.",
                 col_label,
                 row,
                 array.data_type(),
             ));
         };
-        if values
-            .as_any()
-            .downcast_ref::<arrow_array::Int64Array>()
-            .is_none()
-        {
-            return Err(anyhow!(
-                "ingest type mismatch: column={} row={} declared=Int64Array \
-                 but parquet list element type is {:?} (need Int64). \
-                 If the elements are stringified ints, change the declared \
-                 dtype to StringArray + add a multicategorical_delimiter, or \
-                 cast the source list elements to Int64 upstream.",
-                col_label,
-                row,
-                values.data_type(),
-            ));
-        }
-        Ok(Some(Int64ListView {
+        let values_dt = values.data_type().clone();
+        let inner = match &values_dt {
+            DataType::Int8 => IntListValues::I8(values.clone()),
+            DataType::Int16 => IntListValues::I16(values.clone()),
+            DataType::Int32 => IntListValues::I32(values.clone()),
+            DataType::Int64 => IntListValues::I64(values.clone()),
+            other => {
+                return Err(anyhow!(
+                    "ingest type mismatch: column={} row={} declared=Int*Array \
+                     but parquet list element type is {:?} (need Int8/Int16/Int32/Int64). \
+                     If the elements are stringified ints, change the declared \
+                     dtype to StringArray + add a multicategorical_delimiter, or \
+                     cast the source list elements to a signed int width upstream.",
+                    col_label, row, other,
+                ));
+            }
+        };
+        Ok(Some(IntListView {
             start,
             end,
-            values: Int64ListValues::Native(values.clone()),
+            values: inner,
         }))
     }
 
@@ -3076,7 +3209,9 @@ impl<'p> RowAccess<'p> {
         Ok(Some(f(&vec)?))
     }
 
-    /// Read a `List<Int64>` or `LargeList<Int64>` column for the current row.
+    /// Read a `List<Int{8,16,32,64}>` or `LargeList<...>` column for the current
+    /// row and present its elements as `&[i64]`. Narrower-width source elements
+    /// are widened to i64.
     ///
     /// Returns `None` if the row-level value is null, `Some(f(slice))` otherwise.
     /// Null elements inside the list are dropped from the slice handed to `f`;
@@ -3087,11 +3222,11 @@ impl<'p> RowAccess<'p> {
         idx: usize,
         f: impl FnOnce(&[i64]) -> Result<T>,
     ) -> Result<Option<T>> {
-        let Some(view) = self.int64_list_view(idx)? else {
+        let Some(view) = self.int_list_view(idx)? else {
             return Ok(None);
         };
         match &view.values {
-            Int64ListValues::Native(values) => {
+            IntListValues::I64(values) => {
                 let values_arr = values
                     .as_any()
                     .downcast_ref::<arrow_array::Int64Array>()
@@ -3103,7 +3238,134 @@ impl<'p> RowAccess<'p> {
                 view.for_each_i64(|v| vec.push(v));
                 Ok(Some(f(&vec)?))
             }
-            Int64ListValues::Parsed(values) => Ok(Some(f(&values[view.start..view.end])?)),
+            IntListValues::Parsed(values) => Ok(Some(f(&values[view.start..view.end])?)),
+            IntListValues::I8(_) | IntListValues::I16(_) | IntListValues::I32(_) => {
+                // Widen narrower-width sources to i64. Allocates a Vec<i64>;
+                // unavoidable since the closure expects a `&[i64]` slice.
+                let mut vec = Vec::with_capacity(view.len());
+                view.for_each_i64(|v| vec.push(v));
+                Ok(Some(f(&vec)?))
+            }
+        }
+    }
+
+    /// Read a `List<Int8>` (or narrower-fitting source) column for the current
+    /// row and present its elements as `&[i8]`. Returns an error if the source
+    /// has a wider Arrow element type with values that don't fit in i8.
+    pub fn with_int8_array<T>(
+        &mut self,
+        idx: usize,
+        f: impl FnOnce(&[i8]) -> Result<T>,
+    ) -> Result<Option<T>> {
+        let Some(view) = self.int_list_view(idx)? else {
+            return Ok(None);
+        };
+        let col_name = self.hint(idx)?.column_name.clone();
+        let col_label = col_name.as_deref().unwrap_or("?");
+        let row = self.row;
+        view.require_fits_in_signed(8, col_label, row)?;
+        match &view.values {
+            IntListValues::I8(values) => {
+                let values_arr = values
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int8Array>()
+                    .ok_or_else(|| anyhow!("int8 list element cast"))?;
+                if values_arr.null_count() == 0 {
+                    return Ok(Some(f(&values_arr.values()[view.start..view.end])?));
+                }
+                let mut vec: Vec<i8> = Vec::with_capacity(view.len());
+                for i in view.start..view.end {
+                    if !values_arr.is_null(i) {
+                        vec.push(values_arr.value(i));
+                    }
+                }
+                Ok(Some(f(&vec)?))
+            }
+            // Wider sources got either rejected by require_fits_in_signed or
+            // are bounds-checked-safe to narrow; materialize a Vec<i8>.
+            _ => {
+                let mut vec: Vec<i8> = Vec::with_capacity(view.len());
+                view.for_each_i64(|v| vec.push(v as i8));
+                Ok(Some(f(&vec)?))
+            }
+        }
+    }
+
+    /// Read a `List<Int{8,16}>` (or fits-in-i16 source) column for the current
+    /// row and present its elements as `&[i16]`.
+    pub fn with_int16_array<T>(
+        &mut self,
+        idx: usize,
+        f: impl FnOnce(&[i16]) -> Result<T>,
+    ) -> Result<Option<T>> {
+        let Some(view) = self.int_list_view(idx)? else {
+            return Ok(None);
+        };
+        let col_name = self.hint(idx)?.column_name.clone();
+        let col_label = col_name.as_deref().unwrap_or("?");
+        let row = self.row;
+        view.require_fits_in_signed(16, col_label, row)?;
+        match &view.values {
+            IntListValues::I16(values) => {
+                let values_arr = values
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int16Array>()
+                    .ok_or_else(|| anyhow!("int16 list element cast"))?;
+                if values_arr.null_count() == 0 {
+                    return Ok(Some(f(&values_arr.values()[view.start..view.end])?));
+                }
+                let mut vec: Vec<i16> = Vec::with_capacity(view.len());
+                for i in view.start..view.end {
+                    if !values_arr.is_null(i) {
+                        vec.push(values_arr.value(i));
+                    }
+                }
+                Ok(Some(f(&vec)?))
+            }
+            _ => {
+                let mut vec: Vec<i16> = Vec::with_capacity(view.len());
+                view.for_each_i64(|v| vec.push(v as i16));
+                Ok(Some(f(&vec)?))
+            }
+        }
+    }
+
+    /// Read a `List<Int{8,16,32}>` (or fits-in-i32 source) column for the
+    /// current row and present its elements as `&[i32]`.
+    pub fn with_int32_array<T>(
+        &mut self,
+        idx: usize,
+        f: impl FnOnce(&[i32]) -> Result<T>,
+    ) -> Result<Option<T>> {
+        let Some(view) = self.int_list_view(idx)? else {
+            return Ok(None);
+        };
+        let col_name = self.hint(idx)?.column_name.clone();
+        let col_label = col_name.as_deref().unwrap_or("?");
+        let row = self.row;
+        view.require_fits_in_signed(32, col_label, row)?;
+        match &view.values {
+            IntListValues::I32(values) => {
+                let values_arr = values
+                    .as_any()
+                    .downcast_ref::<arrow_array::Int32Array>()
+                    .ok_or_else(|| anyhow!("int32 list element cast"))?;
+                if values_arr.null_count() == 0 {
+                    return Ok(Some(f(&values_arr.values()[view.start..view.end])?));
+                }
+                let mut vec: Vec<i32> = Vec::with_capacity(view.len());
+                for i in view.start..view.end {
+                    if !values_arr.is_null(i) {
+                        vec.push(values_arr.value(i));
+                    }
+                }
+                Ok(Some(f(&vec)?))
+            }
+            _ => {
+                let mut vec: Vec<i32> = Vec::with_capacity(view.len());
+                view.for_each_i64(|v| vec.push(v as i32));
+                Ok(Some(f(&vec)?))
+            }
         }
     }
 

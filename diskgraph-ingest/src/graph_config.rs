@@ -224,6 +224,9 @@ pub enum IngestedType {
     Float32Array,
     Float64Array,
     Float16Array,
+    Int8Array,
+    Int16Array,
+    Int32Array,
     Int64Array,
     StringArray,
 }

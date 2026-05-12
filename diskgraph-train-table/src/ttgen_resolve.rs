@@ -901,7 +901,11 @@ fn resolve_op<U: UnitSystem>(
                             dst_col.name, dst_col.logical_type
                         )));
                     }
-                    IngestedType::StringArray | IngestedType::Int64Array
+                    IngestedType::StringArray
+                    | IngestedType::Int8Array
+                    | IngestedType::Int16Array
+                    | IngestedType::Int32Array
+                    | IngestedType::Int64Array
                         if !is_multicat =>
                     {
                         return Err(TTGenError::InvalidPlan(format!(
@@ -919,7 +923,11 @@ fn resolve_op<U: UnitSystem>(
                     // List-shape WITH multicat declaration: the supported path.
                     // Falls through to the OK case below; listed explicitly so
                     // the scalar-multicat catch-all does not swallow it.
-                    IngestedType::StringArray | IngestedType::Int64Array => {}
+                    IngestedType::StringArray
+                    | IngestedType::Int8Array
+                    | IngestedType::Int16Array
+                    | IngestedType::Int32Array
+                    | IngestedType::Int64Array => {}
                     _ if is_multicat => {
                         // Defensive net for legacy indexes built before
                         // graph_config::validate rejected scalar-multicat. A
@@ -1055,7 +1063,11 @@ fn resolve_op<U: UnitSystem>(
                             col_meta.name, col_meta.logical_type
                         )));
                     }
-                    IngestedType::StringArray | IngestedType::Int64Array
+                    IngestedType::StringArray
+                    | IngestedType::Int8Array
+                    | IngestedType::Int16Array
+                    | IngestedType::Int32Array
+                    | IngestedType::Int64Array
                         if !is_multicat =>
                     {
                         return Err(TTGenError::InvalidPlan(format!(
@@ -1070,7 +1082,11 @@ fn resolve_op<U: UnitSystem>(
                     // List-shape WITH multicat declaration: the supported path.
                     // Falls through to the OK case below; listed explicitly so
                     // the scalar-multicat catch-all does not swallow it.
-                    IngestedType::StringArray | IngestedType::Int64Array => {}
+                    IngestedType::StringArray
+                    | IngestedType::Int8Array
+                    | IngestedType::Int16Array
+                    | IngestedType::Int32Array
+                    | IngestedType::Int64Array => {}
                     _ if is_multicat => {
                         // Defensive net for legacy indexes built before
                         // graph_config::validate rejected scalar-multicat. See

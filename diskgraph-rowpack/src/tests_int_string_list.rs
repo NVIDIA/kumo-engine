@@ -295,7 +295,7 @@ fn test_int64_array_negative_values() -> anyhow::Result<()> {
 }
 
 #[test]
-fn test_int64_list_view_drops_nulls() -> anyhow::Result<()> {
+fn test_int_list_view_drops_nulls() -> anyhow::Result<()> {
     // Inner null elements are dropped from iteration. Source list
     // [Some(7), None, Some(11)] → iterator yields [7, 11], not [7, 0, 11].
     let array = make_nullable_int64_list_array(vec![Some(vec![Some(7), None, Some(11)])]);
@@ -305,7 +305,7 @@ fn test_int64_list_view_drops_nulls() -> anyhow::Result<()> {
     access.set_cols(&arrays);
     access.set_row(0);
 
-    let view = access.int64_list_view(0)?.expect("expected non-null list");
+    let view = access.int_list_view(0)?.expect("expected non-null list");
     let mut values = Vec::new();
     view.for_each_i64(|v| values.push(v));
     assert_eq!(values, vec![7, 11]);
@@ -1192,5 +1192,323 @@ fn test_string_array_context_builder_handles_inner_nulls() -> anyhow::Result<()>
     let ctx = builder.finish()?;
     assert_eq!(ctx.columns.len(), 1);
     assert!(matches!(ctx.columns[0].encoding, ColumnEncoding::StringArray { .. }));
+    Ok(())
+}
+
+// =============================================================================
+// Int{8,16,32}Array tests — native narrower-width support.
+// =============================================================================
+
+use arrow_array::builder::{Int8Builder, Int16Builder, Int32Builder};
+
+/// Build a RowPackContext with a single int-array column at the given width.
+fn int_array_ctx(logical: IngestedType, encoding: ColumnEncoding) -> RowPackContext {
+    RowPackContext {
+        version: ROWPACK_VERSION,
+        columns: vec![ColumnContext {
+            name: "tags".to_string(),
+            logical_type: logical,
+            encoding,
+        }],
+        estimated_row_bytes: 0,
+    }
+}
+
+fn make_int8_list_array(rows: Vec<Option<Vec<i8>>>) -> ArrayRef {
+    let mut builder = ListBuilder::new(Int8Builder::new());
+    for row in rows {
+        match row {
+            None => builder.append_null(),
+            Some(vals) => {
+                builder.values().append_slice(&vals);
+                builder.append(true);
+            }
+        }
+    }
+    Arc::new(builder.finish())
+}
+
+fn make_int16_list_array(rows: Vec<Option<Vec<i16>>>) -> ArrayRef {
+    let mut builder = ListBuilder::new(Int16Builder::new());
+    for row in rows {
+        match row {
+            None => builder.append_null(),
+            Some(vals) => {
+                builder.values().append_slice(&vals);
+                builder.append(true);
+            }
+        }
+    }
+    Arc::new(builder.finish())
+}
+
+fn make_int32_list_array(rows: Vec<Option<Vec<i32>>>) -> ArrayRef {
+    let mut builder = ListBuilder::new(Int32Builder::new());
+    for row in rows {
+        match row {
+            None => builder.append_null(),
+            Some(vals) => {
+                builder.values().append_slice(&vals);
+                builder.append(true);
+            }
+        }
+    }
+    Arc::new(builder.finish())
+}
+
+#[test]
+fn test_int8_array_roundtrip_extremes() -> anyhow::Result<()> {
+    let ctx = int_array_ctx(IngestedType::Int8Array, ColumnEncoding::Int8Array);
+    let encoder = RowPackEncoder::new(ctx.clone())?;
+    let decoder = RowPackDecoder::new(ctx.clone())?;
+    let mut scratch = RowPackScratch::new(&ctx);
+
+    let array = make_int8_list_array(vec![Some(vec![i8::MIN, -1, 0, 1, i8::MAX])]);
+    let arrays = vec![array];
+    let stats = RowAccessStats::default();
+    let mut access = RowAccess::new(vec![RowAccessHints::default()], stats);
+    access.set_cols(&arrays);
+    access.set_row(0);
+
+    let mut encoded = Vec::new();
+    encoder.encode_row_from_access(&mut access, &mut encoded, &mut scratch)?;
+
+    let json = decoder.decode_json(&encoded)?;
+    let arr = json["tags"].as_array().expect("should decode as array");
+    assert_eq!(arr.len(), 5);
+    assert_eq!(arr[0].as_i64().unwrap(), i8::MIN as i64);
+    assert_eq!(arr[4].as_i64().unwrap(), i8::MAX as i64);
+    Ok(())
+}
+
+#[test]
+fn test_int16_array_roundtrip_extremes() -> anyhow::Result<()> {
+    let ctx = int_array_ctx(IngestedType::Int16Array, ColumnEncoding::Int16Array);
+    let encoder = RowPackEncoder::new(ctx.clone())?;
+    let decoder = RowPackDecoder::new(ctx.clone())?;
+    let mut scratch = RowPackScratch::new(&ctx);
+
+    let array = make_int16_list_array(vec![Some(vec![i16::MIN, -1, 0, 1, i16::MAX])]);
+    let arrays = vec![array];
+    let stats = RowAccessStats::default();
+    let mut access = RowAccess::new(vec![RowAccessHints::default()], stats);
+    access.set_cols(&arrays);
+    access.set_row(0);
+
+    let mut encoded = Vec::new();
+    encoder.encode_row_from_access(&mut access, &mut encoded, &mut scratch)?;
+
+    let json = decoder.decode_json(&encoded)?;
+    let arr = json["tags"].as_array().expect("should decode as array");
+    assert_eq!(arr[0].as_i64().unwrap(), i16::MIN as i64);
+    assert_eq!(arr[4].as_i64().unwrap(), i16::MAX as i64);
+    Ok(())
+}
+
+#[test]
+fn test_int32_array_roundtrip_extremes() -> anyhow::Result<()> {
+    let ctx = int_array_ctx(IngestedType::Int32Array, ColumnEncoding::Int32Array);
+    let encoder = RowPackEncoder::new(ctx.clone())?;
+    let decoder = RowPackDecoder::new(ctx.clone())?;
+    let mut scratch = RowPackScratch::new(&ctx);
+
+    let array = make_int32_list_array(vec![Some(vec![i32::MIN, -1, 0, 1, i32::MAX])]);
+    let arrays = vec![array];
+    let stats = RowAccessStats::default();
+    let mut access = RowAccess::new(vec![RowAccessHints::default()], stats);
+    access.set_cols(&arrays);
+    access.set_row(0);
+
+    let mut encoded = Vec::new();
+    encoder.encode_row_from_access(&mut access, &mut encoded, &mut scratch)?;
+
+    let json = decoder.decode_json(&encoded)?;
+    let arr = json["tags"].as_array().expect("should decode as array");
+    assert_eq!(arr[0].as_i64().unwrap(), i32::MIN as i64);
+    assert_eq!(arr[4].as_i64().unwrap(), i32::MAX as i64);
+    Ok(())
+}
+
+#[test]
+fn test_int64_array_accepts_int32_source_widening() -> anyhow::Result<()> {
+    // Column declared as Int64Array; parquet source is List<Int32>.
+    // Widening is safe — encoder should accept it.
+    let ctx = int_array_ctx(IngestedType::Int64Array, ColumnEncoding::Int64Array);
+    let encoder = RowPackEncoder::new(ctx.clone())?;
+    let decoder = RowPackDecoder::new(ctx.clone())?;
+    let mut scratch = RowPackScratch::new(&ctx);
+
+    let array = make_int32_list_array(vec![Some(vec![10, 20, 30])]);
+    let arrays = vec![array];
+    let stats = RowAccessStats::default();
+    let mut access = RowAccess::new(vec![RowAccessHints::default()], stats);
+    access.set_cols(&arrays);
+    access.set_row(0);
+
+    let mut encoded = Vec::new();
+    encoder.encode_row_from_access(&mut access, &mut encoded, &mut scratch)?;
+
+    let json = decoder.decode_json(&encoded)?;
+    let arr = json["tags"].as_array().expect("should decode as array");
+    assert_eq!(arr.len(), 3);
+    assert_eq!(arr[0].as_i64().unwrap(), 10);
+    assert_eq!(arr[2].as_i64().unwrap(), 30);
+    Ok(())
+}
+
+#[test]
+fn test_int32_array_accepts_int8_source_widening() -> anyhow::Result<()> {
+    // Column declared as Int32Array; parquet source is List<Int8>.
+    let ctx = int_array_ctx(IngestedType::Int32Array, ColumnEncoding::Int32Array);
+    let encoder = RowPackEncoder::new(ctx.clone())?;
+    let decoder = RowPackDecoder::new(ctx.clone())?;
+    let mut scratch = RowPackScratch::new(&ctx);
+
+    let array = make_int8_list_array(vec![Some(vec![-5, 0, 5])]);
+    let arrays = vec![array];
+    let stats = RowAccessStats::default();
+    let mut access = RowAccess::new(vec![RowAccessHints::default()], stats);
+    access.set_cols(&arrays);
+    access.set_row(0);
+
+    let mut encoded = Vec::new();
+    encoder.encode_row_from_access(&mut access, &mut encoded, &mut scratch)?;
+
+    let json = decoder.decode_json(&encoded)?;
+    let arr = json["tags"].as_array().expect("should decode as array");
+    assert_eq!(arr[0].as_i64().unwrap(), -5);
+    assert_eq!(arr[2].as_i64().unwrap(), 5);
+    Ok(())
+}
+
+#[test]
+fn test_int32_array_rejects_int64_overflow() -> anyhow::Result<()> {
+    // Column declared as Int32Array; parquet source is List<Int64> with a
+    // value that doesn't fit in i32. Encoder must reject with a clear error
+    // citing the column.
+    let ctx = int_array_ctx(IngestedType::Int32Array, ColumnEncoding::Int32Array);
+    let encoder = RowPackEncoder::new(ctx.clone())?;
+    let mut scratch = RowPackScratch::new(&ctx);
+
+    let overflow_val: i64 = i32::MAX as i64 + 1;
+    let array = make_int64_list_array(vec![Some(vec![1, overflow_val, 3])]);
+    let arrays = vec![array];
+    let stats = RowAccessStats::default();
+    let mut access = RowAccess::new(
+        vec![RowAccessHints {
+            column_name: Some("tags".to_string()),
+            ..Default::default()
+        }],
+        stats,
+    );
+    access.set_cols(&arrays);
+    access.set_row(0);
+
+    let mut encoded = Vec::new();
+    let err = encoder
+        .encode_row_from_access(&mut access, &mut encoded, &mut scratch)
+        .expect_err("expected overflow rejection");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("int-array overflow") && msg.contains("tags"),
+        "expected overflow + column name in error, got: {}",
+        msg,
+    );
+    Ok(())
+}
+
+#[test]
+fn test_int32_array_accepts_int64_values_within_range() -> anyhow::Result<()> {
+    // Same shape as the overflow test, but values fit in i32 → should succeed.
+    let ctx = int_array_ctx(IngestedType::Int32Array, ColumnEncoding::Int32Array);
+    let encoder = RowPackEncoder::new(ctx.clone())?;
+    let decoder = RowPackDecoder::new(ctx.clone())?;
+    let mut scratch = RowPackScratch::new(&ctx);
+
+    let array = make_int64_list_array(vec![Some(vec![1, 100, i32::MAX as i64])]);
+    let arrays = vec![array];
+    let stats = RowAccessStats::default();
+    let mut access = RowAccess::new(
+        vec![RowAccessHints {
+            column_name: Some("tags".to_string()),
+            ..Default::default()
+        }],
+        stats,
+    );
+    access.set_cols(&arrays);
+    access.set_row(0);
+
+    let mut encoded = Vec::new();
+    encoder.encode_row_from_access(&mut access, &mut encoded, &mut scratch)?;
+    let json = decoder.decode_json(&encoded)?;
+    let arr = json["tags"].as_array().expect("should decode as array");
+    assert_eq!(arr.len(), 3);
+    assert_eq!(arr[2].as_i64().unwrap(), i32::MAX as i64);
+    Ok(())
+}
+
+#[test]
+fn test_int8_array_rejects_i16_overflow() -> anyhow::Result<()> {
+    // Declared Int8Array, source List<Int16> with a value beyond i8 range.
+    let ctx = int_array_ctx(IngestedType::Int8Array, ColumnEncoding::Int8Array);
+    let encoder = RowPackEncoder::new(ctx.clone())?;
+    let mut scratch = RowPackScratch::new(&ctx);
+
+    let array = make_int16_list_array(vec![Some(vec![1, 200, 3])]);
+    let arrays = vec![array];
+    let stats = RowAccessStats::default();
+    let mut access = RowAccess::new(
+        vec![RowAccessHints {
+            column_name: Some("tags".to_string()),
+            ..Default::default()
+        }],
+        stats,
+    );
+    access.set_cols(&arrays);
+    access.set_row(0);
+
+    let mut encoded = Vec::new();
+    let err = encoder
+        .encode_row_from_access(&mut access, &mut encoded, &mut scratch)
+        .expect_err("expected i8 overflow rejection");
+    assert!(
+        err.to_string().contains("int-array overflow"),
+        "expected overflow message, got: {}",
+        err,
+    );
+    Ok(())
+}
+
+#[test]
+fn test_int32_array_arrow_output_schema_uses_int32_child() -> anyhow::Result<()> {
+    use arrow_schema::DataType;
+    let (field, _builder) =
+        crate::make_arrow_builder("tags", IngestedType::Int32Array, 16)?;
+    match field.data_type() {
+        DataType::List(child) => assert_eq!(*child.data_type(), DataType::Int32),
+        other => panic!("expected List<Int32>, got {:?}", other),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_int8_array_arrow_output_schema_uses_int8_child() -> anyhow::Result<()> {
+    use arrow_schema::DataType;
+    let (field, _) = crate::make_arrow_builder("tags", IngestedType::Int8Array, 16)?;
+    match field.data_type() {
+        DataType::List(child) => assert_eq!(*child.data_type(), DataType::Int8),
+        other => panic!("expected List<Int8>, got {:?}", other),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_int16_array_arrow_output_schema_uses_int16_child() -> anyhow::Result<()> {
+    use arrow_schema::DataType;
+    let (field, _) = crate::make_arrow_builder("tags", IngestedType::Int16Array, 16)?;
+    match field.data_type() {
+        DataType::List(child) => assert_eq!(*child.data_type(), DataType::Int16),
+        other => panic!("expected List<Int16>, got {:?}", other),
+    }
     Ok(())
 }

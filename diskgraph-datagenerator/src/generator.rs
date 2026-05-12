@@ -819,6 +819,30 @@ fn generate_column_array(
             }
             Arc::new(builder.finish())
         }
+        ColumnType::Int8Array => {
+            let values = Int8Builder::new();
+            let mut builder = ListBuilder::new(values);
+            for i in 0..len {
+                append_value(&mut builder, column, table, row_start + i as u64, seed)?;
+            }
+            Arc::new(builder.finish())
+        }
+        ColumnType::Int16Array => {
+            let values = Int16Builder::new();
+            let mut builder = ListBuilder::new(values);
+            for i in 0..len {
+                append_value(&mut builder, column, table, row_start + i as u64, seed)?;
+            }
+            Arc::new(builder.finish())
+        }
+        ColumnType::Int32Array => {
+            let values = Int32Builder::new();
+            let mut builder = ListBuilder::new(values);
+            for i in 0..len {
+                append_value(&mut builder, column, table, row_start + i as u64, seed)?;
+            }
+            Arc::new(builder.finish())
+        }
         ColumnType::Int64Array => {
             let values = Int64Builder::new();
             let mut builder = ListBuilder::new(values);
@@ -1086,6 +1110,63 @@ impl ValueAppender for ListBuilder<Float64Builder> {
                 self.append(true);
             }
             Some(_) => bail!("type mismatch for float64 array"),
+            None => {
+                self.append(false);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl ValueAppender for ListBuilder<Int8Builder> {
+    fn append_value(&mut self, value: Option<GeneratedValue>) -> Result<()> {
+        match value {
+            Some(GeneratedValue::ArrayI64(values)) => {
+                let inner = self.values();
+                for value in values {
+                    inner.append_value(value as i8);
+                }
+                self.append(true);
+            }
+            Some(_) => bail!("type mismatch for int8 array"),
+            None => {
+                self.append(false);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl ValueAppender for ListBuilder<Int16Builder> {
+    fn append_value(&mut self, value: Option<GeneratedValue>) -> Result<()> {
+        match value {
+            Some(GeneratedValue::ArrayI64(values)) => {
+                let inner = self.values();
+                for value in values {
+                    inner.append_value(value as i16);
+                }
+                self.append(true);
+            }
+            Some(_) => bail!("type mismatch for int16 array"),
+            None => {
+                self.append(false);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl ValueAppender for ListBuilder<Int32Builder> {
+    fn append_value(&mut self, value: Option<GeneratedValue>) -> Result<()> {
+        match value {
+            Some(GeneratedValue::ArrayI64(values)) => {
+                let inner = self.values();
+                for value in values {
+                    inner.append_value(value as i32);
+                }
+                self.append(true);
+            }
+            Some(_) => bail!("type mismatch for int32 array"),
             None => {
                 self.append(false);
             }
@@ -1412,6 +1493,15 @@ fn column_arrow_type(column: &ColumnConfig) -> Result<DataType> {
         ColumnType::Float64Array => {
             DataType::List(Arc::new(Field::new("item", DataType::Float64, true)))
         }
+        ColumnType::Int8Array => {
+            DataType::List(Arc::new(Field::new("item", DataType::Int8, true)))
+        }
+        ColumnType::Int16Array => {
+            DataType::List(Arc::new(Field::new("item", DataType::Int16, true)))
+        }
+        ColumnType::Int32Array => {
+            DataType::List(Arc::new(Field::new("item", DataType::Int32, true)))
+        }
         ColumnType::Int64Array => {
             DataType::List(Arc::new(Field::new("item", DataType::Int64, true)))
         }
@@ -1673,7 +1763,10 @@ fn parse_constant(dtype: ColumnType, value: serde_json::Value) -> Result<Generat
             }
             GeneratedValue::ArrayF64(values)
         }
-        ColumnType::Int64Array => {
+        ColumnType::Int8Array
+        | ColumnType::Int16Array
+        | ColumnType::Int32Array
+        | ColumnType::Int64Array => {
             let mut values = Vec::new();
             if let Some(array) = value.as_array() {
                 for entry in array {

@@ -75,6 +75,9 @@ pub enum ColumnType {
     Timestamp,
     Float32Array,
     Float64Array,
+    Int8Array,
+    Int16Array,
+    Int32Array,
     Int64Array,
     StringArray,
 }

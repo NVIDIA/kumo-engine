@@ -546,7 +546,7 @@ fn case_d_int64array_on_utf8_scalar_unparseable_errors() {
         access_with_named_hint(Arc::new(StringArray::from(vec![Some("not numbers")])), "vals");
     access.set_cols(&arrays);
     access.set_row(0);
-    let err = match access.int64_list_view(0) {
+    let err = match access.int_list_view(0) {
         Ok(_) => panic!("expected type-mismatch error, got success"),
         Err(e) => e.to_string(),
     };
@@ -556,7 +556,7 @@ fn case_d_int64array_on_utf8_scalar_unparseable_errors() {
         err,
     );
     assert!(
-        err.contains("declared=Int64Array"),
+        err.contains("declared=Int*Array") || err.contains("declared=Int64Array"),
         "expected declared dtype in error, got: {}",
         err,
     );
@@ -603,17 +603,17 @@ fn case_c_int64array_on_utf8_with_delim_happy_path() -> anyhow::Result<()> {
     access.set_cols(&arrays);
 
     access.set_row(0);
-    let view = access.int64_list_view(0)?.expect("non-null row");
+    let view = access.int_list_view(0)?.expect("non-null row");
     // Iterate the parsed view by indexing into the values vec.
-    if let crate::access::Int64ListValues::Parsed(v) = &view.values {
+    if let crate::access::IntListValues::Parsed(v) = &view.values {
         assert_eq!(v.as_slice(), &[1, 2, 3]);
     } else {
         panic!("expected Parsed values");
     }
 
     access.set_row(1);
-    let view = access.int64_list_view(0)?.expect("non-null row");
-    if let crate::access::Int64ListValues::Parsed(v) = &view.values {
+    let view = access.int_list_view(0)?.expect("non-null row");
+    if let crate::access::IntListValues::Parsed(v) = &view.values {
         assert_eq!(v.as_slice(), &[42]);
     } else {
         panic!("expected Parsed values");
@@ -621,8 +621,8 @@ fn case_c_int64array_on_utf8_with_delim_happy_path() -> anyhow::Result<()> {
 
     // Empty row produces empty list under GE drop-empty.
     access.set_row(2);
-    let view = access.int64_list_view(0)?.expect("non-null row");
-    if let crate::access::Int64ListValues::Parsed(v) = &view.values {
+    let view = access.int_list_view(0)?.expect("non-null row");
+    if let crate::access::IntListValues::Parsed(v) = &view.values {
         assert!(v.is_empty(), "empty input row → empty token list");
     }
     Ok(())
@@ -643,7 +643,7 @@ fn case_c_int64array_on_utf8_parse_error_localized() {
     let mut access = RowAccess::new(vec![hints], stats);
     access.set_cols(&arrays);
     access.set_row(0);
-    let err = match access.int64_list_view(0) {
+    let err = match access.int_list_view(0) {
         Ok(_) => panic!("expected parse error, got success"),
         Err(e) => e.to_string(),
     };
@@ -663,7 +663,7 @@ fn case_c_int64array_on_utf8_parse_error_localized() {
         err,
     );
     assert!(
-        err.contains("declared=Int64Array"),
+        err.contains("declared=Int*Array") || err.contains("declared=Int64Array"),
         "expected declared dtype in error, got: {}",
         err,
     );
@@ -682,7 +682,7 @@ fn case_f_int64array_on_list_utf8_errors() {
     let (mut access, arrays) = access_with_named_hint(array, "ids");
     access.set_cols(&arrays);
     access.set_row(0);
-    let err = match access.int64_list_view(0) {
+    let err = match access.int_list_view(0) {
         Ok(_) => panic!("expected type-mismatch error, got success"),
         Err(e) => e.to_string(),
     };

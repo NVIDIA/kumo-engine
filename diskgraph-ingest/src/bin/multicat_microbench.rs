@@ -64,7 +64,7 @@ fn build_batch_listarray(arr: &ArrayRef, delim: &str) -> ArrayRef {
 use diskgraph_ingest::col_stats::FileColStats;
 use diskgraph_ingest::graph_config::{ColumnSpec, IngestedType, SemanticType};
 use diskgraph_rowpack::{
-    ColumnValueObserver, Int64ListValues, Int64ListView, StringListValues, StringListView,
+    ColumnValueObserver, IntListValues, IntListView, StringListValues, StringListView,
 };
 
 const VOCAB_SIZE: usize = 50_000;
@@ -232,10 +232,10 @@ fn main() {
         let mut stats = FileColStats::new(&[spec]);
         run_case("C4 Multicat observe_int64_list", total_tokens, || {
             for r in 0..num_rows {
-                let view = Int64ListView {
+                let view = IntListView {
                     start: r * ROW_FANOUT,
                     end: r * ROW_FANOUT + ROW_FANOUT,
-                    values: Int64ListValues::Native(int_array.clone()),
+                    values: IntListValues::I64(int_array.clone()),
                 };
                 stats.observe_int64_list(0, &view);
             }

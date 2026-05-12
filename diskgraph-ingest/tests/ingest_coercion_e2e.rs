@@ -10,8 +10,9 @@
 use anyhow::{anyhow, Result};
 use arrow_array::{
     ArrayRef, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Decimal256Array,
-    Float32Array as ArrowFloat32Array, Float64Array as ArrowFloat64Array, Int16Array, Int32Array,
-    Int64Array as ArrowInt64Array, Int8Array, StringArray as ArrowStringArray,
+    Float32Array as ArrowFloat32Array, Float64Array as ArrowFloat64Array,
+    Int8Array as ArrowInt8Array, Int16Array as ArrowInt16Array, Int32Array as ArrowInt32Array,
+    Int64Array as ArrowInt64Array, StringArray as ArrowStringArray,
     TimestampSecondArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
@@ -72,6 +73,9 @@ fn dtype_json_str(dtype: &IngestedType) -> &'static str {
         Float32Array => "float32_array",
         Float64Array => "float64_array",
         Float16Array => "float16_array",
+        Int8Array => "int8_array",
+        Int16Array => "int16_array",
+        Int32Array => "int32_array",
         Int64Array => "int64_array",
         StringArray => "string_array",
     }
@@ -89,13 +93,13 @@ fn build_test_array(
     let strings: Vec<std::string::String> = (0..count).map(|i| format!("{}", i + 1)).collect();
 
     let arr: ArrayRef = match dtype {
-        Int8 => Arc::new(Int8Array::from_iter_values(
+        Int8 => Arc::new(ArrowInt8Array::from_iter_values(
             (1..=count as i8).collect::<Vec<_>>(),
         )),
-        Int16 => Arc::new(Int16Array::from_iter_values(
+        Int16 => Arc::new(ArrowInt16Array::from_iter_values(
             (1..=count as i16).collect::<Vec<_>>(),
         )),
-        Int32 => Arc::new(Int32Array::from_iter_values(
+        Int32 => Arc::new(ArrowInt32Array::from_iter_values(
             (1..=count as i32).collect::<Vec<_>>(),
         )),
         Int64 => Arc::new(ArrowInt64Array::from_iter_values(
@@ -177,7 +181,14 @@ fn build_test_array(
                 (1..=count).map(|i| format!("192.168.1.{}", i)).collect();
             Arc::new(ArrowStringArray::from(ips))
         }
-        Float32Array | Float64Array | Float16Array | Int64Array | StringArray => {
+        Float32Array
+        | Float64Array
+        | Float16Array
+        | Int8Array
+        | Int16Array
+        | Int32Array
+        | Int64Array
+        | StringArray => {
             // Array types - can't be keys, return empty for now
             return Err(anyhow!("Array types cannot be used as keys"));
         }
@@ -339,13 +350,13 @@ fn build_matching_pk_fk_arrays(
     let str_values: Vec<std::string::String> = int_values.iter().map(|v| v.to_string()).collect();
 
     let pk_arr: ArrayRef = match pk_type {
-        Int8 => Arc::new(Int8Array::from(
+        Int8 => Arc::new(ArrowInt8Array::from(
             int_values.iter().map(|&v| v as i8).collect::<Vec<_>>(),
         )),
-        Int16 => Arc::new(Int16Array::from(
+        Int16 => Arc::new(ArrowInt16Array::from(
             int_values.iter().map(|&v| v as i16).collect::<Vec<_>>(),
         )),
-        Int32 => Arc::new(Int32Array::from(
+        Int32 => Arc::new(ArrowInt32Array::from(
             int_values.iter().map(|&v| v as i32).collect::<Vec<_>>(),
         )),
         Int64 => Arc::new(ArrowInt64Array::from(int_values.clone())),
@@ -375,13 +386,13 @@ fn build_matching_pk_fk_arrays(
     };
 
     let fk_arr: ArrayRef = match fk_type {
-        Int8 => Arc::new(Int8Array::from(
+        Int8 => Arc::new(ArrowInt8Array::from(
             int_values.iter().map(|&v| v as i8).collect::<Vec<_>>(),
         )),
-        Int16 => Arc::new(Int16Array::from(
+        Int16 => Arc::new(ArrowInt16Array::from(
             int_values.iter().map(|&v| v as i16).collect::<Vec<_>>(),
         )),
-        Int32 => Arc::new(Int32Array::from(
+        Int32 => Arc::new(ArrowInt32Array::from(
             int_values.iter().map(|&v| v as i32).collect::<Vec<_>>(),
         )),
         Int64 => Arc::new(ArrowInt64Array::from(int_values.clone())),
@@ -470,6 +481,9 @@ fn arrow_dtype(dtype: &IngestedType) -> DataType {
         Float32Array => DataType::List(Arc::new(Field::new("item", DataType::Float32, true))),
         Float64Array => DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
         Float16Array => DataType::List(Arc::new(Field::new("item", DataType::Float16, true))),
+        Int8Array => DataType::List(Arc::new(Field::new("item", DataType::Int8, true))),
+        Int16Array => DataType::List(Arc::new(Field::new("item", DataType::Int16, true))),
+        Int32Array => DataType::List(Arc::new(Field::new("item", DataType::Int32, true))),
         Int64Array => DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
         StringArray => DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
     }
@@ -877,7 +891,7 @@ fn test_int32_to_int64_at_limits() -> Result<()> {
         Field::new("fk_col", DataType::Int32, false),
     ]);
     let fk_id: ArrayRef = Arc::new(ArrowInt64Array::from(vec![100i64, 101, 102]));
-    let fk_col: ArrayRef = Arc::new(Int32Array::from(vec![i32::MAX, i32::MIN, 0i32]));
+    let fk_col: ArrayRef = Arc::new(ArrowInt32Array::from(vec![i32::MAX, i32::MIN, 0i32]));
     write_parquet(
         &input_root.join("fk.parquet"),
         fk_schema,
