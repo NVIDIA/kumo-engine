@@ -1,0 +1,110 @@
+name: Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least-privilege GITHUB_TOKEN scope (per CodeQL "workflow does not
+# contain permissions"). Workflow reads repo contents (checkout +
+# taiki-e/install-action) and posts a single sticky PR comment with
+# the coverage summary via `gh pr comment`. No other write paths —
+# does not push commits, edit issues, or publish packages.
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  rust-coverage:
+    runs-on: ubuntu-22.04-large
+    env:
+      # `*-large` runner labels are org-configured custom labels,
+      # not generic GitHub images. The org has `ubuntu-22.04-large`
+      # registered (used by ci.yml / build.yml / python-test); no
+      # `ubuntu-24.04-large` label exists yet, so a job pinned to
+      # that label would queue indefinitely. Bumping to 24.04 is an
+      # org-wide concern (someone has to register the new runner
+      # label first) and is out of scope here.
+      #
+      # Coverage build cannot share Swatinem/rust-cache target dir
+      # with ci.yml — different RUSTFLAGS produce different
+      # artifacts. The `prefix-key: coverage` below isolates the
+      # cache namespace.
+      #
+      # lld + +aes,+sse2 carried over from ci.yml: coverage
+      # instrumentation inflates link memory, so lld stays
+      # load-bearing on the AWS-SDK / arrow / parquet link chain.
+      # gxhash needs +aes,+sse2 explicitly because RUSTFLAGS env
+      # overrides .cargo/config.toml entirely (cargo precedence:
+      # env > config).
+      RUSTFLAGS: "-C target-feature=+aes,+sse2 -C link-arg=-fuse-ld=lld"
+    steps:
+      - name: Free disk space
+        # Mirror of ci.yml: removes ~40 GB of pre-installed
+        # toolchains we do not use. Coverage instrumentation
+        # roughly doubles the size of the cargo target dir versus
+        # a normal `cargo test`, so the extra headroom matters
+        # here even on the large runner.
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache
+      - uses: actions/checkout@v4
+      - name: Install lld linker
+        run: sudo apt-get update -qq && sudo apt-get install -y lld
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: coverage
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Run tests with coverage instrumentation
+        # `--no-report` runs the tests under -Cinstrument-coverage
+        # and leaves the .profraw / merged profdata in place
+        # without producing any output file. The next two steps
+        # (`report --lcov` and `report --summary-only`) consume
+        # the same profile data; without `--no-report` here the
+        # next invocations would re-run the full test suite under
+        # instrumentation.
+        run: cargo llvm-cov --no-report --workspace
+      - name: Generate lcov
+        run: cargo llvm-cov report --lcov --output-path lcov.info
+      - name: Summary
+        # `report --summary-only` prints the per-file table and a
+        # single TOTAL row (regions / functions / lines / branches).
+        # Captured to a file so the same content can feed both the
+        # workflow run summary (visible from the Checks tab) and
+        # the PR comment step below.
+        run: |
+          cargo llvm-cov report --summary-only > coverage-summary.txt
+          {
+            echo '```'
+            cat coverage-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Post coverage comment on PR
+        # Posts/updates a single sticky comment on the PR with the
+        # coverage TOTAL. `--edit-last` rewrites the previous bot
+        # comment so the PR thread does not accumulate one comment
+        # per push. Falls back to creating a fresh comment on the
+        # first run (when there is no previous comment to edit).
+        # Uses GITHUB_TOKEN — no Codecov account / third-party
+        # service required.
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo "## Coverage"
+            echo ""
+            echo '```'
+            cat coverage-summary.txt
+            echo '```'
+            echo ""
+            echo "_From workflow run [#${GITHUB_RUN_NUMBER}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) on ${GITHUB_SHA:0:7}._"
+          } > comment.md
+          gh pr comment "$PR" --body-file comment.md --edit-last \
+            || gh pr comment "$PR" --body-file comment.md
