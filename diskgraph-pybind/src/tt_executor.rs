@@ -54,6 +54,7 @@ use crossbeam_channel::Receiver;
 use diskgraph_core::time::{abs_from_unit, Nanoseconds, Seconds, TimeUnit};
 use diskgraph_core::tt_builder::DiskGraphTTPlan;
 use diskgraph_train_table::errors::TTGenResult;
+use diskgraph_train_table::ttgen_resolve::{AUTOREGRESSION_OUTPUT_ALIAS, YOY_OUTPUT_ALIAS};
 use diskgraph_train_table::ttgen_stats::TTExecutionSummary;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
@@ -67,6 +68,150 @@ use pyo3::Py;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use serde_json::{json, Value};
+
+#[derive(Debug, Clone, Default)]
+struct SequenceFeatureStats {
+    count: u64,
+    null_count: u64,
+    min_len: Option<i64>,
+    max_len: Option<i64>,
+}
+
+impl SequenceFeatureStats {
+    fn observe(&mut self, array: &dyn Array, row: usize) {
+        if array.is_null(row) {
+            self.null_count += 1;
+            return;
+        }
+        if let Some(list) = array.as_any().downcast_ref::<ListArray>() {
+            let len = list.value_length(row) as i64;
+            self.count += 1;
+            self.min_len = Some(self.min_len.map_or(len, |current| current.min(len)));
+            self.max_len = Some(self.max_len.map_or(len, |current| current.max(len)));
+        }
+    }
+}
+
+fn is_numeric_list_dtype(dtype: &DataType) -> bool {
+    let DataType::List(field) = dtype else {
+        return false;
+    };
+    matches!(
+        field.data_type(),
+        DataType::Float16
+            | DataType::Float32
+            | DataType::Float64
+            | DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64
+    )
+}
+
+fn is_sequence_feature_field(field: &Field, time_col_name: &str) -> bool {
+    let name = field.name().as_str();
+    !matches!(
+        name,
+        "ENTITY" | "TARGET" | "__kumo_internal_frequency_column__" | "ENTITY_INCLUDE_BIT"
+    ) && name != time_col_name
+        && name != AUTOREGRESSION_OUTPUT_ALIAS
+        && name != YOY_OUTPUT_ALIAS
+        && is_numeric_list_dtype(field.data_type())
+}
+
+fn sequence_feature_indices_from_schema(schema: &Schema,
+                                        time_col_name: &str)
+                                        -> Vec<(usize, String)> {
+    schema
+        .fields()
+        .iter()
+        .enumerate()
+        .filter(|(_, field)| is_sequence_feature_field(field.as_ref(), time_col_name))
+        .map(|(idx, field)| (idx, field.name().clone()))
+        .collect()
+}
+
+fn new_sequence_feature_stats(
+    sequence_feature_indices: &[(usize, String)]
+) -> HashMap<String, SequenceFeatureStats> {
+    sequence_feature_indices
+        .iter()
+        .map(|(_, name)| (name.clone(), SequenceFeatureStats::default()))
+        .collect()
+}
+
+fn observe_sequence_feature_stats_for_batch(
+    batch: &RecordBatch,
+    sequence_feature_indices: &[(usize, String)],
+    sequence_feature_stats: &mut HashMap<String, SequenceFeatureStats>,
+) {
+    for row in 0..batch.num_rows() {
+        for (idx, name) in sequence_feature_indices {
+            if let Some(stats) = sequence_feature_stats.get_mut(name) {
+                stats.observe(batch.column(*idx).as_ref(), row);
+            }
+        }
+    }
+}
+
+fn add_sequence_feature_stats_to_payload(
+    result: &mut Value,
+    sequence_feature_stats: HashMap<String, SequenceFeatureStats>,
+    data_version: &str,
+) {
+    use diskgraph_core::accumulators::{kumo_entry, kumo_key, kumo_safe_div};
+
+    let Some(stats_map) = result.get_mut("stats").and_then(Value::as_object_mut) else {
+        return;
+    };
+
+    for (name, stats) in sequence_feature_stats {
+        let total = stats.count + stats.null_count;
+        stats_map.insert(
+            kumo_key(&name, "kumo.sequence", "COUNT", false),
+            kumo_entry(json!(total), false, data_version, total),
+        );
+        stats_map.insert(
+            kumo_key(&name, "kumo.sequence", "NUM_NA", false),
+            kumo_entry(json!(stats.null_count), false, data_version, total),
+        );
+        stats_map.insert(
+            kumo_key(&name, "kumo.sequence", "NA_FRACTION", false),
+            kumo_entry(
+                json!(kumo_safe_div(stats.null_count, total)),
+                false,
+                data_version,
+                total,
+            ),
+        );
+        stats_map.insert(
+            kumo_key(&name, "kumo.sequence", "INVALID_FRACTION", false),
+            kumo_entry(json!(0.0), false, data_version, total),
+        );
+        stats_map.insert(
+            kumo_key(&name, "kumo.sequence", "SEQUENCE_MIN_LENGTH", false),
+            kumo_entry(
+                json!(stats.min_len.unwrap_or(0)),
+                false,
+                data_version,
+                total,
+            ),
+        );
+        stats_map.insert(
+            kumo_key(&name, "kumo.sequence", "SEQUENCE_MAX_LENGTH", false),
+            kumo_entry(
+                json!(stats.max_len.unwrap_or(0)),
+                false,
+                data_version,
+                total,
+            ),
+        );
+    }
+}
 
 #[pyclass]
 pub struct TTPlanIterator {
@@ -434,6 +579,10 @@ fn write_batches_with_arange(
     path: &str,
     batches: &[RecordBatch],
     selected_global_indices: Option<&[usize]>,
+    mut sequence_stats_observer: Option<(
+        &[(usize, String)],
+        &mut HashMap<String, SequenceFeatureStats>,
+    )>,
 ) -> anyhow::Result<u64> {
     let file = File::create(path)?;
     let props = WriterProperties::builder()
@@ -466,6 +615,10 @@ fn write_batches_with_arange(
             global_base += batch.num_rows();
             batch.clone()
         };
+
+        if let Some((indices, stats)) = sequence_stats_observer.as_mut() {
+            observe_sequence_feature_stats_for_batch(&to_write, indices, stats);
+        }
 
         let with_idx = append_arange_column(to_write, row_offset)?;
         row_offset += with_idx.num_rows() as i64;
@@ -2898,8 +3051,31 @@ pub fn execute_tt_plan_materialize_with_split(
                 }
             };
 
+            let sequence_feature_indices = final_batches
+                .first()
+                .map(|batch| {
+                    sequence_feature_indices_from_schema(
+                        batch.schema().as_ref(),
+                        &output_time_col_name,
+                    )
+                })
+                .unwrap_or_default();
+            let mut sequence_feature_stats =
+                new_sequence_feature_stats(&sequence_feature_indices);
+            let sequence_stats_observer = if downsampling_applied
+                || sequence_feature_indices.is_empty()
+            {
+                None
+            } else {
+                Some((
+                    sequence_feature_indices.as_slice(),
+                    &mut sequence_feature_stats,
+                ))
+            };
+
             let materialization_start = std::time::Instant::now();
-            let rows_written = write_batches_with_arange(&out, &final_batches, None)?;
+            let rows_written =
+                write_batches_with_arange(&out, &final_batches, None, sequence_stats_observer)?;
             if rows_written as usize != row_offset as usize {
                 return Err(anyhow::anyhow!(
                     "materialized row count mismatch after split processing (written={}, expected={})",
@@ -2913,12 +3089,20 @@ pub fn execute_tt_plan_materialize_with_split(
                 "Final materialization complete"
             );
 
-            // If downsampling actually ran, the inline col stats produced
-            // during the executor pass reflect pre-downsample rows, including
-            // ones that were dropped. Recompute over the final parquet so the
-            // stats artifact matches the rows that survived downsampling.
+            // If downsampling actually ran, inline col stats reflect
+            // pre-downsample rows and require a recompute over final parquet.
+            // Otherwise, inject sequence feature stats collected while
+            // materializing the final in-memory batches.
             let train_table_col_stats_json = if downsampling_applied {
-                let split_bytes_ref = split_assignments.as_deref().unwrap_or(&[]);
+                let fallback_split_assignments;
+                let split_bytes_ref = match split_assignments.as_deref() {
+                    Some(bytes) if bytes.len() == rows_written as usize => bytes,
+                    Some(_) if downsampling_applied => &[],
+                    _ => {
+                        fallback_split_assignments = vec![0u8; rows_written as usize];
+                        fallback_split_assignments.as_slice()
+                    }
+                };
                 if split_bytes_ref.len() == rows_written as usize {
                     let target_stype = plan
                         .target_stype
@@ -2937,7 +3121,7 @@ pub fn execute_tt_plan_materialize_with_split(
                     info!(
                         rows = rows_written,
                         duration_ms = recompute_start.elapsed().as_millis(),
-                        "Recomputed train_table col stats post-downsample"
+                        "Recomputed train_table col stats from final parquet"
                     );
                     Some(serde_json::to_string(&payload)?)
                 } else {
@@ -2945,8 +3129,18 @@ pub fn execute_tt_plan_materialize_with_split(
                     train_table_col_stats_json
                 }
             } else {
-                // Downsampling didn't run, inline stats are correct.
-                train_table_col_stats_json
+                match train_table_col_stats_json {
+                    Some(stats_json) if !sequence_feature_stats.is_empty() => {
+                        let mut payload: serde_json::Value = serde_json::from_str(&stats_json)?;
+                        add_sequence_feature_stats_to_payload(
+                            &mut payload,
+                            sequence_feature_stats,
+                            "v1",
+                        );
+                        Some(serde_json::to_string(&payload)?)
+                    }
+                    other => other,
+                }
             };
 
             let summary_json = patch_summary_for_final_rows(
@@ -3259,6 +3453,8 @@ fn compute_train_table_col_stats_payload(
         .map_err(|_| anyhow::anyhow!("missing {time_col_name} column"))?;
     let frequency_idx = schema.index_of("__kumo_internal_frequency_column__").ok();
     let include_bit_idx = schema.index_of("ENTITY_INCLUDE_BIT").ok();
+    let sequence_feature_indices =
+        sequence_feature_indices_from_schema(schema.as_ref(), time_col_name);
 
     let target_is_categorical = matches!(
         target_stype,
@@ -3314,6 +3510,7 @@ fn compute_train_table_col_stats_payload(
 
     let mut include_true_count: u64 = 0;
     let mut include_false_count: u64 = 0;
+    let mut sequence_feature_stats = new_sequence_feature_stats(&sequence_feature_indices);
 
     let mut num_total_rows: u64 = 0;
     let mut global_row: usize = 0;
@@ -3348,6 +3545,12 @@ fn compute_train_table_col_stats_payload(
                 continue;
             }
             num_total_rows += 1;
+
+            for (idx, name) in &sequence_feature_indices {
+                if let Some(stats) = sequence_feature_stats.get_mut(name) {
+                    stats.observe(batch.column(*idx).as_ref(), row);
+                }
+            }
 
             // --- ENTITY ---
             let entity_str = if let Some(a) = entity_col.as_any().downcast_ref::<StringArray>() {
@@ -3585,7 +3788,7 @@ fn compute_train_table_col_stats_payload(
         entity_tdigest = None;
     }
 
-    let result = build_inline_col_stats(
+    let mut result = build_inline_col_stats(
         &target_welford,
         &mut target_tdigest,
         &target_hll,
@@ -3608,9 +3811,8 @@ fn compute_train_table_col_stats_payload(
         &timestamp_welford,
         &mut timestamp_tdigest,
         &timestamp_hll,
-    );
-
-    Ok(result.unwrap_or_else(|| {
+    )
+    .unwrap_or_else(|| {
         json!({
             "version": 1,
             "kind": "tt_train_table_col_stats",
@@ -3619,7 +3821,11 @@ fn compute_train_table_col_stats_payload(
             "stats": {},
             "provided_fields": ["stats"]
         })
-    }))
+    });
+
+    add_sequence_feature_stats_to_payload(&mut result, sequence_feature_stats, data_version);
+
+    Ok(result)
 }
 
 #[pyfunction]
@@ -4317,6 +4523,197 @@ mod tests {
             "TIMESTAMP",
         )
         .is_err());
+    }
+
+    #[test]
+    fn test_col_stats_payload_includes_sequence_feature_stats() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tt.parquet");
+        let embedding_values = {
+            let mut b = ListBuilder::new(Float64Builder::new());
+            b.values().append_value(1.0);
+            b.values().append_value(2.0);
+            b.append(true);
+            b.values().append_value(3.0);
+            b.values().append_value(4.0);
+            b.values().append_value(5.0);
+            b.append(true);
+            b.values().append_value(6.0);
+            b.append(true);
+            Arc::new(b.finish()) as Arc<dyn Array>
+        };
+        let autoregression_labels = {
+            let mut b = ListBuilder::new(Float64Builder::new());
+            b.values().append_value(0.0);
+            b.append(true);
+            b.values().append_value(1.0);
+            b.values().append_value(0.0);
+            b.append(true);
+            b.values().append_value(1.0);
+            b.append(true);
+            Arc::new(b.finish()) as Arc<dyn Array>
+        };
+        let yoy_labels = {
+            let mut b = ListBuilder::new(Float64Builder::new());
+            b.values().append_value(2.0);
+            b.append(true);
+            b.values().append_value(3.0);
+            b.append(true);
+            b.values().append_value(4.0);
+            b.append(true);
+            Arc::new(b.finish()) as Arc<dyn Array>
+        };
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("ENTITY", DataType::Int64, true),
+            Field::new(
+                "TIMESTAMP",
+                DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new("TARGET", DataType::Int64, true),
+            Field::new(
+                "seed_embedding",
+                DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
+                true,
+            ),
+            Field::new(
+                AUTOREGRESSION_OUTPUT_ALIAS,
+                DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
+                true,
+            ),
+            Field::new(
+                YOY_OUTPUT_ALIAS,
+                DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
+                true,
+            ),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![Some(1), Some(2), Some(3)])),
+                Arc::new(TimestampNanosecondArray::from(vec![
+                    Some(10),
+                    Some(11),
+                    Some(12),
+                ])),
+                Arc::new(Int64Array::from(vec![Some(0), Some(1), Some(0)])),
+                embedding_values,
+                autoregression_labels,
+                yoy_labels,
+            ],
+        )
+        .unwrap();
+        let f = std::fs::File::create(&path).unwrap();
+        let mut w = ArrowWriter::try_new(f, schema, Some(WriterProperties::builder().build()))
+            .unwrap();
+        w.write(&batch).unwrap();
+        w.close().unwrap();
+
+        let payload = compute_train_table_col_stats_payload(
+            path.to_str().unwrap(),
+            &[0, 1, 255],
+            "v1",
+            "categorical",
+            "TIMESTAMP",
+        )
+        .unwrap();
+
+        let stats = payload.get("stats").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(
+            stats
+                .get("seed_embedding__kumo.sequence__COUNT__False")
+                .and_then(|v| v.get("value"))
+                .and_then(|v| v.as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            stats
+                .get("seed_embedding__kumo.sequence__SEQUENCE_MIN_LENGTH__False")
+                .and_then(|v| v.get("value"))
+                .and_then(|v| v.as_i64()),
+            Some(2)
+        );
+        assert_eq!(
+            stats
+                .get("seed_embedding__kumo.sequence__SEQUENCE_MAX_LENGTH__False")
+                .and_then(|v| v.get("value"))
+                .and_then(|v| v.as_i64()),
+            Some(3)
+        );
+        assert!(!stats.contains_key(
+            "autoregression_labels__kumo.sequence__SEQUENCE_MIN_LENGTH__False"
+        ));
+        assert!(!stats.contains_key(
+            "year_over_year_labels__kumo.sequence__SEQUENCE_MIN_LENGTH__False"
+        ));
+    }
+
+    #[test]
+    fn test_materialization_collects_sequence_feature_stats_inline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tt.parquet");
+        let embedding_values = {
+            let mut b = ListBuilder::new(Float64Builder::new());
+            b.values().append_value(1.0);
+            b.append(true);
+            b.values().append_value(2.0);
+            b.values().append_value(3.0);
+            b.append(true);
+            b.values().append_value(4.0);
+            b.values().append_value(5.0);
+            b.values().append_value(6.0);
+            b.append(true);
+            Arc::new(b.finish()) as Arc<dyn Array>
+        };
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("ENTITY", DataType::Int64, true),
+            Field::new(
+                "TIMESTAMP",
+                DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new("TARGET", DataType::Int64, true),
+            Field::new(
+                "seed_embedding",
+                DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
+                true,
+            ),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![Some(1), Some(2), Some(3)])),
+                Arc::new(TimestampNanosecondArray::from(vec![
+                    Some(10),
+                    Some(11),
+                    Some(12),
+                ])),
+                Arc::new(Int64Array::from(vec![Some(0), Some(1), Some(0)])),
+                embedding_values,
+            ],
+        )
+        .unwrap();
+        let sequence_feature_indices =
+            sequence_feature_indices_from_schema(schema.as_ref(), "TIMESTAMP");
+        let mut sequence_feature_stats =
+            new_sequence_feature_stats(&sequence_feature_indices);
+
+        let rows_written = write_batches_with_arange(
+            path.to_str().unwrap(),
+            &[batch],
+            None,
+            Some((
+                sequence_feature_indices.as_slice(),
+                &mut sequence_feature_stats,
+            )),
+        )
+        .unwrap();
+
+        assert_eq!(rows_written, 3);
+        let stats = sequence_feature_stats.get("seed_embedding").unwrap();
+        assert_eq!(stats.count, 3);
+        assert_eq!(stats.min_len, Some(1));
+        assert_eq!(stats.max_len, Some(3));
     }
 
     #[test]
