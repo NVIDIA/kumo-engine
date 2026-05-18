@@ -2318,24 +2318,47 @@ impl ColumnValueObserver for FileColStats {
 
     #[inline]
     fn observe_int64_list(&mut self, col_idx: usize, view: &IntListView) {
-        if matches!(
-            &self.cols[col_idx],
+        match &mut self.cols[col_idx] {
+            // Sequence stype + intlist dtype: mirror observe_float_list's
+            // Sequence arm so int-list embedding columns produce non-sentinel
+            // SEQUENCE_MIN_LENGTH / SEQUENCE_MAX_LENGTH stats. Without this,
+            // Kumo's snapshot validator rejects the table with "Missing
+            // embedding statistics" for any int-list sequence column.
+            ColumnStatsCollector::Sequence {
+                count,
+                min_len,
+                max_len,
+                welford,
+                ..
+            } => {
+                let len = view.len();
+                *count += 1;
+                if len < *min_len {
+                    *min_len = len;
+                }
+                if len > *max_len {
+                    *max_len = len;
+                }
+                view.for_each_i64(|v| welford.observe(v as f64));
+            }
             ColumnStatsCollector::Multicategorical {
                 input_kind: MulticatInputKind::Int64Array,
+                count,
                 ..
-            }
-        ) {
-            if let ColumnStatsCollector::Multicategorical { count, .. } = &mut self.cols[col_idx] {
+            } => {
                 *count += 1;
+                // Fall through to the per-token loop below. Releasing the &mut
+                // borrow on self.cols first.
+                let count_category = self.should_sample_row();
+                view.for_each_i64(|n| {
+                    // Integer tokens are identity-hashed via the same primitive
+                    // categorical/id integer columns use; strings stored in
+                    // `LocalColumnCounts::strings` are `n.to_string()`, matching
+                    // tt_executor's stringified-int emit.
+                    self.observe_multicat_token_i64(col_idx, n, count_category);
+                });
             }
-            let count_category = self.should_sample_row();
-            view.for_each_i64(|n| {
-                // Integer tokens are identity-hashed via the same primitive
-                // categorical/id integer columns use; strings stored in
-                // `LocalColumnCounts::strings` are `n.to_string()`, matching
-                // tt_executor's stringified-int emit.
-                self.observe_multicat_token_i64(col_idx, n, count_category);
-            });
+            _ => {}
         }
     }
 
@@ -3837,6 +3860,41 @@ mod tests {
         assert_eq!(counts.get("0").copied(), Some(1));
         assert_eq!(counts.get("-9223372036854775808").copied(), Some(1));
         assert_eq!(counts.get("9223372036854775807").copied(), Some(1));
+    }
+
+    // Sequence stype + intlist dtype: observe_int64_list must update the
+    // Sequence collector's count/min_len/max_len. Regression for the gap
+    // that surfaced as "Missing embedding statistics. Embedding column
+    // 'array_int_col' is missing sequence length statistics" during
+    // Databricks data-variety ingest.
+    #[test]
+    fn col_stats_sequence_intarray_updates_min_max_length() {
+        let v1 = build_int_list_view(&[Some(1), Some(2), Some(3)]);
+        let v2 = build_int_list_view(&[Some(10), Some(20)]);
+        let v3 = build_int_list_view(&[Some(7), Some(8), Some(9), Some(10)]);
+        let (mut stats, _tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Sequence),
+            IngestedType::Int64Array,
+            None,
+        )]);
+        stats.observe_int64_list(0, &v1);
+        stats.observe_int64_list(0, &v2);
+        stats.observe_int64_list(0, &v3);
+        match &stats.cols[0] {
+            ColumnStatsCollector::Sequence {
+                count,
+                null_count,
+                min_len,
+                max_len,
+                ..
+            } => {
+                assert_eq!(*count, 3);
+                assert_eq!(*null_count, 0);
+                assert_eq!(*min_len, 2);
+                assert_eq!(*max_len, 4);
+            }
+            _ => panic!("expected Sequence collector"),
+        }
     }
 
     // --- FloatArray input kind ---------------------------------------------
