@@ -2222,7 +2222,9 @@ fn build_stage_stats_from_columns(
         if !vals.is_empty() {
             num_targets = Some(vals.iter().collect::<HashSet<_>>().len() as u64);
             if let Some(tt) = task_type {
-                if tt == "binary_classification" || tt == "multiclass_classification" {
+                if tt == "regression" {
+                    target_distribution = build_numerical_target_distribution(&vals);
+                } else if tt == "binary_classification" || tt == "multiclass_classification" {
                     let mut counts = std::collections::BTreeMap::<String, u64>::new();
                     for v in vals {
                         *counts.entry(v).or_insert(0) += 1;
@@ -2288,6 +2290,84 @@ fn build_stage_stats_from_columns(
         "min_date": min_date,
         "max_date": max_date,
         "anchor_date": anchor_date,
+    })
+}
+
+fn build_numerical_target_distribution(targets: &[String]) -> Value {
+    use diskgraph_core::accumulators::{TDigestEstimator, WelfordAccumulator};
+
+    let mut welford = WelfordAccumulator::new();
+    let mut tdigest = TDigestEstimator::new(TDigestEstimator::DEFAULT_DELTA);
+    for target in targets {
+        if let Ok(value) = target.parse::<f64>() {
+            if value.is_finite() {
+                welford.observe(value);
+                tdigest.observe(value);
+            }
+        }
+    }
+    if welford.count == 0 {
+        return Value::Null;
+    }
+
+    let min = welford.min;
+    let max = welford.max;
+    let mean = welford.mean();
+    let (p25, median, p75) = tdigest.quantiles().unwrap_or((min, min, max));
+
+    let num_bins = 50usize;
+    let mut counts = vec![0u64; num_bins];
+    let bin_width = if max > min {
+        (max - min) / num_bins as f64
+    } else {
+        0.0
+    };
+    if bin_width == 0.0 {
+        counts[0] = welford.count;
+    } else {
+        for target in targets {
+            if let Ok(value) = target.parse::<f64>() {
+                if value.is_finite() {
+                    let mut idx = ((value - min) / bin_width).floor() as usize;
+                    if idx >= num_bins {
+                        idx = num_bins - 1;
+                    }
+                    counts[idx] += 1;
+                }
+            }
+        }
+    }
+    let (mode_idx, mode_count) = counts
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.cmp(b.1))
+        .map(|(idx, count)| (idx, *count))
+        .unwrap();
+    let mode = if bin_width == 0.0 {
+        min
+    } else {
+        min + bin_width * (mode_idx as f64 + 0.5)
+    };
+    let bins = (0..=num_bins)
+        .map(|i| Value::from(min + bin_width * i as f64))
+        .collect::<Vec<_>>();
+
+    json!({
+        "target_min": min,
+        "target_percentile_25": p25,
+        "target_mean": mean,
+        "target_median": median,
+        "target_mode": mode,
+        "target_mode_count": mode_count,
+        "target_mode_percentage": mode_count as f64 / welford.count as f64,
+        "target_percentile_75": p75,
+        "target_max": max,
+        "histogram": {
+            "counts": counts,
+            "bins": bins,
+            "num_bins": num_bins,
+            "bin_width": bin_width,
+        },
     })
 }
 
@@ -4201,6 +4281,36 @@ pub fn persist_tt_artifact_bundle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_build_stage_stats_regression_target_distribution() {
+        let assignments = vec![0, 0, 0, 0];
+        let targets = vec![
+            Some("1.0".to_string()),
+            Some("inf".to_string()),
+            Some("2.0".to_string()),
+            Some("3.0".to_string()),
+        ];
+
+        let stats = build_stage_stats_from_columns(
+            &assignments,
+            0,
+            None,
+            Some(&targets),
+            None,
+            Some("regression"),
+        );
+        let dist = stats
+            .get("target_distribution")
+            .and_then(|v| v.as_object())
+            .expect("regression target_distribution should be populated");
+
+        assert_eq!(dist.get("target_min").and_then(|v| v.as_f64()),
+                   Some(1.0));
+        assert_eq!(dist.get("target_max").and_then(|v| v.as_f64()),
+                   Some(3.0));
+        assert!(dist.get("histogram").and_then(|v| v.as_object()).is_some());
+    }
 
     #[test]
     fn test_transform_random_link_split_link_array_basic() {
