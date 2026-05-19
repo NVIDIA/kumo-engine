@@ -18,7 +18,9 @@ use diskgraph_index::graph::GraphIndexReader;
 use rayon::prelude::*;
 
 use crate::ttgen_accumulator::{hash_i64, hash_str, hash_value, Accumulator};
-use crate::ttgen_filter::{compare_values, eval_row_filter, eval_stage_filter};
+use crate::ttgen_filter::{
+    compare_values, eval_row_filter, eval_stage_filter, is_nullish_filter_value,
+};
 use crate::ttgen_output::{ChannelBatchWriter, ExtraColumnOutput, ExtraValueRef, OutputMode};
 use crate::ttgen_resolve::*;
 use crate::ttgen_stats::{ChunkStats, DateOffsetSplitSemantics, StatsMerger, TTExecutionSummary};
@@ -1078,8 +1080,8 @@ fn execute_stages<U: UnitSystem>(
                 ResolvedOp::Compare(cmp) => {
                     let l_opt = &aliases[cmp.lhs_alias_idx];
                     match cmp.op {
-                        CompareOp::IsNull => Some(Value::Bool(l_opt.is_none())),
-                        CompareOp::IsNotNull => Some(Value::Bool(l_opt.is_some())),
+                        CompareOp::IsNull => Some(Value::Bool(is_nullish_filter_value(l_opt))),
+                        CompareOp::IsNotNull => Some(Value::Bool(!is_nullish_filter_value(l_opt))),
                         _ => l_opt
                             .as_ref()
                             .map(|lhs| Value::Bool(compare_values(lhs, &cmp.op, &cmp.rhs))),

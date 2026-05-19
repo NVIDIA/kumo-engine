@@ -11,6 +11,14 @@ use crate::ttgen_resolve::{
 };
 use crate::ttgen_traversal::read_column_value;
 
+pub(crate) fn is_nullish_filter_value(value: &Option<Value>) -> bool {
+    match value {
+        None => true,
+        Some(Value::Float(v)) => v.is_nan(),
+        Some(_) => false,
+    }
+}
+
 // ─── Row filter evaluation (per-destination, during traversal) ───────────────
 
 /// Evaluate a row filter on a destination node during traversal.
@@ -28,8 +36,8 @@ pub fn eval_row_filter(
             let l_opt = resolve_row_lhs(lhs, current_node, current_table);
 
             match op {
-                CompareOp::IsNull => return l_opt.is_none(),
-                CompareOp::IsNotNull => return l_opt.is_some(),
+                CompareOp::IsNull => return is_nullish_filter_value(&l_opt),
+                CompareOp::IsNotNull => return !is_nullish_filter_value(&l_opt),
                 _ => {}
             }
 
@@ -132,8 +140,8 @@ pub fn eval_stage_filter(
             let l_opt = &aliases[*alias_idx];
 
             match op {
-                CompareOp::IsNull => return l_opt.is_none(),
-                CompareOp::IsNotNull => return l_opt.is_some(),
+                CompareOp::IsNull => return is_nullish_filter_value(l_opt),
+                CompareOp::IsNotNull => return !is_nullish_filter_value(l_opt),
                 _ => {}
             }
 
@@ -340,6 +348,14 @@ mod tests {
         assert!(!compare_values(&nan, &CompareOp::Gt, &five));
         assert!(!compare_values(&nan, &CompareOp::Lt, &five));
         assert!(!compare_values(&five, &CompareOp::Gt, &nan));
+    }
+
+    #[test]
+    fn test_nan_is_nullish_for_null_predicates() {
+        assert!(is_nullish_filter_value(&None));
+        assert!(is_nullish_filter_value(&Some(Value::Float(f64::NAN))));
+        assert!(!is_nullish_filter_value(&Some(Value::Float(f64::INFINITY))));
+        assert!(!is_nullish_filter_value(&Some(Value::Float(0.0))));
     }
 
     #[test]
