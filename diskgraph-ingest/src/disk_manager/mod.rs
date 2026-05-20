@@ -267,12 +267,14 @@ mod tests {
     fn test_eviction_under_real_disk_pressure() {
         let dir = tempfile::tempdir().unwrap();
 
-        // Each index is ~1 MB so that freeing them actually reclaims enough
-        // real filesystem blocks to close the deficit we create below.
-        let one_mb = 1_000_000;
-        create_index(dir.path(), "graph-old", "v1", one_mb, 1000);
-        create_index(dir.path(), "graph-mid", "v1", one_mb, 2000);
-        create_index(dir.path(), "graph-new", "v1", one_mb, 3000);
+        // Each index is several MB so that freeing even one index reclaims
+        // enough real filesystem blocks to close the deficit below with margin.
+        // CI runners can consume a few KiB between the pre-eviction statvfs
+        // call and the post-eviction statvfs call.
+        let index_size = 4_000_000;
+        create_index(dir.path(), "graph-old", "v1", index_size, 1000);
+        create_index(dir.path(), "graph-mid", "v1", index_size, 2000);
+        create_index(dir.path(), "graph-new", "v1", index_size, 3000);
 
         // Record the paths before eviction so we can verify deletion.
         let old_path = dir.path().join("graph-old").join("v1");
@@ -284,10 +286,10 @@ mod tests {
 
         // Query real filesystem available space, then request slightly more
         // than what's available so that ensure_space must evict indexes to
-        // close the deficit. We keep the deficit well under the total bytes
-        // we can free (~3 MB of indexes) so the post-eviction check passes.
+        // close the deficit. Keep the deficit well below one evictable index
+        // so the test is not sensitive to filesystem accounting jitter.
         let available = available_space(dir.path()).unwrap();
-        let deficit = 2_000_000u64; // ~2 MB, well under 3 MB of evictable indexes
+        let deficit = 1_000_000u64;
         let needed = available + deficit;
 
         let result = dm

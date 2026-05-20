@@ -627,6 +627,95 @@ def test_compiler_link_prediction_legacy_pseudo_time():
     assert plan["entity"]["output_time_col_name"] == "PSEUDO_TIMESTAMP"
     assert plan["entity"]["default_time_value"] == 100_000_000_000_000
 
+def _make_static_link_prediction_query():
+    target_ast = Aggregation(
+        target=Column(fqn="products.product_id"),
+        aggr=AggregationType.LIST_DISTINCT
+    )
+    target_ast.target = Join(
+        rhs_target=Column(fqn="products.product_id"),
+        lhs_key="users.user_id",
+        rhs_key="orders.user_id"
+    )
+    query = ValidatedPredictiveQuery(
+        entity_ast=Column(fqn="users.user_id"),
+        target_ast=target_ast,
+    )
+    query._query_type = "STATIC"
+    query.task_type = "static_link_prediction"
+    return query
+
+def test_compiler_lp_bp_layout_controls_static_prediction_time_column():
+    compiler = DiskGraphPlanCompiler()
+    plan_json = compiler.compile(
+        query=_make_static_link_prediction_query(),
+        timestamps=[],
+        is_prediction=True,
+        task_type="link_prediction",
+        target_stype="categorical",
+        input_timestamp_unit=TimeUnit.Seconds,
+        list_distinct_target_is_array=False,
+        lp_bp_layout="separate_lhs_rhs",
+        lp_prediction_mode="LHS",
+    )
+    plan = json.loads(plan_json)
+
+    assert plan["prediction_type"] == "pass_through"
+    assert plan["entity"]["output_time_col_name"] == "PSEUDO_TIMESTAMP"
+    assert plan["entity"]["default_time_value"] == 100_000_000_000_000
+
+def test_compiler_lp_bp_layout_can_request_hstack_with_legacy_array_flag():
+    compiler = DiskGraphPlanCompiler()
+    plan_json = compiler.compile(
+        query=_make_static_link_prediction_query(),
+        timestamps=[],
+        is_prediction=True,
+        task_type="link_prediction",
+        target_stype="categorical",
+        input_timestamp_unit=TimeUnit.Seconds,
+        list_distinct_target_is_array=True,
+        lp_bp_layout="hstack",
+        lp_prediction_mode="LHS",
+    )
+    plan = json.loads(plan_json)
+
+    assert plan["prediction_type"] == "pass_through"
+    assert plan["entity"]["output_time_col_name"] == "PSEUDO_TIMESTAMP"
+    assert plan["entity"]["default_time_value"] == 100_000_000_000_000
+
+def test_compiler_training_table_uses_pseudo_timestamp_when_non_array_target_with_separate_lhs_rhs():
+    # lp_bp_layout="separate_lhs_rhs" is a BP-only knob; TT format is governed by
+    # list_distinct_target_is_array. With non-array targets the TT still needs
+    # PSEUDO_TIMESTAMP regardless of BP layout.
+    compiler = DiskGraphPlanCompiler()
+    plan_json = compiler.compile(
+        query=_make_static_link_prediction_query(),
+        timestamps=[],
+        is_prediction=False,
+        task_type="link_prediction",
+        target_stype="categorical",
+        input_timestamp_unit=TimeUnit.Seconds,
+        list_distinct_target_is_array=False,
+        lp_bp_layout="separate_lhs_rhs",
+    )
+    plan = json.loads(plan_json)
+
+    assert plan["entity"]["output_time_col_name"] == "PSEUDO_TIMESTAMP"
+    assert plan["entity"]["default_time_value"] == 100_000_000_000_000
+
+def test_compiler_lp_layout_rejects_invalid_values():
+    compiler = DiskGraphPlanCompiler()
+    with pytest.raises(DiskgraphConfigError, match="lp_bp_layout"):
+        compiler.compile(
+            query=_make_static_link_prediction_query(),
+            timestamps=[],
+            is_prediction=True,
+            task_type="link_prediction",
+            target_stype="categorical",
+            input_timestamp_unit=TimeUnit.Seconds,
+            lp_bp_layout="standalone",
+        )
+
 def test_compiler_link_prediction_rhs_pass_through():
     # Target has a filter: products.category = 'shoes'
     filtered_target = Filter(

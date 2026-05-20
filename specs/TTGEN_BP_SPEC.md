@@ -71,14 +71,24 @@ This section dictates the exact contract and invocation sequence the Python orch
     *   If `STATIC`, drop `TIMESTAMP`.
     *   Inject `arange`.
 
-### Link Prediction (Modern & Legacy Modes)
-Link Prediction supports two modes depending on `predictive_query.list_distinct_target_is_array`.
+### Link Prediction (Separated vs HStack BP Layout)
+Link Prediction BP layout is controlled by `lp_bp_layout`. The legacy
+`predictive_query.list_distinct_target_is_array` flag still maps to the old
+coupled behavior for compatibility:
 
-#### 1. Modern Mode (`allow_array_targets=True`)
+* `list_distinct_target_is_array=True` maps to `lp_bp_layout="separate_lhs_rhs"`.
+* `list_distinct_target_is_array=False` maps to `lp_bp_layout="hstack"`.
+
+This BP layout choice is independent from LP training target shape. Training
+target shape is still controlled by `list_distinct_target_is_array` (true → array
+target, false → exploded rows); choosing a BP layout does not force a particular
+training shape.
+
+#### 1. Separated LHS/RHS Mode (`lp_bp_layout="separate_lhs_rhs"`)
 *   **Compilation**: Call `compiler.compile(..., task_type=task_type.value, is_prediction=True)`.
 *   **Execution**: Single-pass execution. Output targets natively. Drop `TIMESTAMP` if static, and inject `arange`.
 
-#### 2. Legacy HStack Mode (`allow_array_targets=False`)
+#### 2. Legacy HStack Mode (`lp_bp_layout="hstack"`)
 *   **Dual-Pass Architecture**: The orchestrator must perform two explicit compilation and execution passes.
 *   **LHS Compilation (Entities)**:
     *   Call `compiler.compile(query=query, task_type=task_type.value, lp_prediction_mode="LHS", is_prediction=True)`.

@@ -33,6 +33,8 @@ LINK_PRED_TASKS = {
     "link_prediction",
 }
 
+LP_BP_LAYOUTS = {"hstack", "separate_lhs_rhs"}
+
 # Canonical output column names for the autoregression ops emitted by
 # forecasting plans. These are the contract between DG and kumo-pred —
 # kumo-pred expects to find these exact column names in the BP/TT parquet
@@ -47,6 +49,12 @@ def _map_op(op: str) -> str:
     if op == '=':
         return '=='
     return op
+
+def _validate_lp_layout(name: str, value: Optional[str], allowed: set[str]) -> None:
+    if value is None or value in allowed:
+        return
+    choices = ", ".join(sorted(allowed))
+    raise DiskgraphConfigError(f"{name} must be one of: {choices}")
 
 class DiskGraphPlanCompiler:
     """
@@ -79,6 +87,7 @@ class DiskGraphPlanCompiler:
         lp_prediction_mode: Optional[str] = None,
         lp_rhs_entity_table: Optional[str] = None,
         lp_rhs_entity_column: Optional[str] = None,
+        lp_bp_layout: Optional[str] = None,
         lag_offsets_secs: Optional[List[int]] = None,
         yoy_offsets_secs: Optional[List[int]] = None,
         split: Optional[SplitSpec] = None,
@@ -109,6 +118,11 @@ class DiskGraphPlanCompiler:
                 - When is_link_pred and not is_prediction (TT-gen LP): drives the
                   orphan + temporal filter on ListDistinct targets.
             lp_rhs_entity_column: The LP RHS entity PK column (used when lp_prediction_mode == 'RHS').
+            lp_bp_layout: Optional LP-only batch-prediction artifact layout
+                override. "hstack" uses the legacy single-parquet shape.
+                "separate_lhs_rhs" uses separate LHS and RHS candidate outputs.
+                If omitted, derived from list_distinct_target_is_array for
+                compatibility.
             lag_offsets_secs: Optional lag offsets to be used in bp forecasting task.
             yoy_offsets_secs: Optional yoy offsets to be used in bp forecasting task.
             split: Optional canonical SplitSpec. Legacy dict payloads are not supported.
@@ -133,6 +147,14 @@ class DiskGraphPlanCompiler:
         is_link_pred = task_type in LINK_PRED_TASKS
         self._is_link_pred = is_link_pred
         self._lp_rhs_entity_table = lp_rhs_entity_table
+
+        _validate_lp_layout("lp_bp_layout", lp_bp_layout, LP_BP_LAYOUTS)
+        if not is_link_pred and lp_bp_layout is not None:
+            raise DiskgraphConfigError("lp_bp_layout is only valid for link prediction tasks")
+
+        resolved_lp_bp_layout = lp_bp_layout
+        if resolved_lp_bp_layout is None:
+            resolved_lp_bp_layout = "separate_lhs_rhs" if list_distinct_target_is_array else "hstack"
 
         # 3. Entity Spec
         target_for_type = query.get_final_target_aggregation()
@@ -168,7 +190,7 @@ class DiskGraphPlanCompiler:
         output_time_col_name = 'TIMESTAMP'
         default_time_value = 0
         is_static_query = query.query_type.name == "STATIC"
-        if is_static_query and is_link_pred and not list_distinct_target_is_array:
+        if is_static_query and is_link_pred and (not list_distinct_target_is_array or resolved_lp_bp_layout == "hstack"):
             output_time_col_name = 'PSEUDO_TIMESTAMP'
             default_time_value = 100 * (10**12)  # 100 trillion
 
