@@ -83,6 +83,12 @@ pub struct KumoColumn {
     pub stype: Option<String>,
     /// Timestamp unit for epoch-based timestamps (e.g., "s", "ms", "us", "ns").
     pub timestamp_unit: Option<String>,
+    /// Explicit chrono-style format for string-typed timestamps (e.g.
+    /// `"%y%m%d %H:%M:%S"`). Propagates to `ColumnSpec.timestamp_format`
+    /// and causes inference to skip the column, letting customers ingest
+    /// formats outside `diskgraph_rowpack::TIMESTAMP_FORMATS`.
+    #[serde(default)]
+    pub timestamp_format: Option<String>,
     /// For stype="multicategorical" + dtype="string": explicit token separator.
     /// When provided, disables convert-time delimiter detection for this
     /// column. Absent for other column shapes. Accepts `null` as "single
@@ -102,6 +108,10 @@ pub struct KumoTimeCol {
     pub stype: Option<String>,
     /// Timestamp unit.
     pub timestamp_unit: Option<String>,
+    /// Explicit chrono-style format string for string-typed timestamps;
+    /// see `KumoColumn::timestamp_format` for semantics.
+    #[serde(default)]
+    pub timestamp_format: Option<String>,
     /// Whether this is a pseudo time column.
     #[serde(default)]
     pub is_pseudo: bool,

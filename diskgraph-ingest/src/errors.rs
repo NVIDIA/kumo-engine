@@ -181,4 +181,29 @@ pub enum ConvertError {
 
     #[error("table '{table}': source path I/O or transport error: {message}")]
     SourcePathsIO { table: String, message: String },
+
+    #[error(
+        "table '{table}' column '{column}': conflicting `timestamp_format` values \
+         declared in different positions of the table config: {first:?} vs {second:?}. \
+         Production wire format puts the same time column in both `cols[]` and \
+         `time_col` (or `end_time_col`); when both carry a `timestamp_format` the \
+         values must match (one side may be omitted)."
+    )]
+    TimestampFormatConflict {
+        table: String,
+        column: String,
+        first: String,
+        second: String,
+    },
+
+    #[error(
+        "table '{table}' column '{column}': declared `timestamp_format` {format:?} \
+         is not a valid chrono format string. Use a recognized strftime specifier \
+         (e.g. \"%Y-%m-%d %H:%M:%S\", \"%y%m%d %H:%M:%S\", \"%d-%b-%Y\")."
+    )]
+    InvalidTimestampFormat {
+        table: String,
+        column: String,
+        format: String,
+    },
 }

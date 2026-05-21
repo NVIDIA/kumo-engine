@@ -310,6 +310,12 @@ fn build_table_paths(
 
 /// Build ColumnSpec list from all column sources in a Kumo table.
 fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError> {
+    // A column name can appear in `cols`, `time_col`, and `end_time_col`
+    // (pkey / fkeys don't carry `timestamp_format`). If two positions declare
+    // disagreeing non-empty formats, error out rather than letting iteration
+    // order pick a winner.
+    check_timestamp_format_consistency(kumo_table)?;
+
     let mut columns = Vec::new();
     let mut seen_names: HashSet<String> = HashSet::new();
 
@@ -320,12 +326,30 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
                           dtype: Option<&str>,
                           stype: Option<&str>,
                           timestamp_unit: Option<&str>,
+                          timestamp_format: Option<&str>,
                           multicategorical_delimiter: Option<&str>|
      -> Result<(), ConvertError> {
         if seen_names.contains(name) {
             return Ok(());
         }
         seen_names.insert(name.to_string());
+
+        // Treat `Some("")` as "unset". Otherwise inference's `is_none()`
+        // filter skips the column (thinking the user supplied a hint) and
+        // the empty string later fails `compile()` in the rowpack parser.
+        let timestamp_format = normalize_ts_format(timestamp_format);
+
+        // Reject malformed formats here; without this, `"%Q"` etc. would
+        // silently null every row at ingest time.
+        if let Some(fmt) = timestamp_format {
+            if !is_valid_chrono_format(fmt) {
+                return Err(ConvertError::InvalidTimestampFormat {
+                    table: kumo_table.table_name.clone(),
+                    column: name.to_string(),
+                    format: fmt.to_string(),
+                });
+            }
+        }
 
         let ingested_dtype = match dtype {
             Some(dt) => map_kumo_dtype(dt).map_err(|unknown| ConvertError::UnknownDtype {
@@ -379,7 +403,10 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
             source_dtype: dtype.map(|s| s.to_string()),
             ingested_dtype,
             fixed_len: None,
-            timestamp_format: None,
+            // User-declared format wins: `detect_timestamp_formats` skips
+            // columns where this is `Some`, and the rowpack parser uses it
+            // via `RowAccessHints.timestamp_format`.
+            timestamp_format: timestamp_format.map(|s| s.to_string()),
             timestamp_unit: ts_unit,
             precision: None,
             scale: None,
@@ -403,6 +430,7 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
             pkey.stype.as_deref(),
             None,
             None,
+            None,
         )?;
     }
 
@@ -412,6 +440,7 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
             &fkey.name,
             fkey.dtype.as_deref(),
             fkey.stype.as_deref(),
+            None,
             None,
             None,
         )?;
@@ -424,6 +453,7 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
             col.dtype.as_deref(),
             col.stype.as_deref(),
             col.timestamp_unit.as_deref(),
+            col.timestamp_format.as_deref(),
             col.multicategorical_delimiter.as_deref(),
         )?;
     }
@@ -435,6 +465,7 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
             time_col.dtype.as_deref(),
             time_col.stype.as_deref(),
             time_col.timestamp_unit.as_deref(),
+            time_col.timestamp_format.as_deref(),
             None,
         )?;
     }
@@ -446,6 +477,7 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
             end_time_col.dtype.as_deref(),
             end_time_col.stype.as_deref(),
             end_time_col.timestamp_unit.as_deref(),
+            end_time_col.timestamp_format.as_deref(),
             None,
         )?;
     }
@@ -559,6 +591,68 @@ fn strip_namespace(table_name: &str) -> String {
         .next()
         .unwrap_or(table_name)
         .to_string()
+}
+
+/// Reject two positions declaring disagreeing non-empty `timestamp_format`
+/// for the same column. Empty strings and `None` are treated as "unset".
+fn check_timestamp_format_consistency(kumo_table: &KumoTable) -> Result<(), ConvertError> {
+    // First non-empty value per column name is the reference for comparison.
+    let mut first_format: HashMap<String, String> = HashMap::new();
+
+    let mut check = |name: &str, fmt: Option<&str>| -> Result<(), ConvertError> {
+        let Some(fmt) = normalize_ts_format(fmt) else {
+            return Ok(());
+        };
+        if let Some(prev) = first_format.get(name) {
+            if prev != fmt {
+                return Err(ConvertError::TimestampFormatConflict {
+                    table: kumo_table.table_name.clone(),
+                    column: name.to_string(),
+                    first: prev.clone(),
+                    second: fmt.to_string(),
+                });
+            }
+        } else {
+            first_format.insert(name.to_string(), fmt.to_string());
+        }
+        Ok(())
+    };
+
+    // pkey / fkeys don't carry a `timestamp_format` field today, so only
+    // `cols`, `time_col`, and `end_time_col` participate in the check.
+    for col in &kumo_table.cols {
+        check(&col.name, col.timestamp_format.as_deref())?;
+    }
+    if let Some(tc) = &kumo_table.time_col {
+        check(&tc.name, tc.timestamp_format.as_deref())?;
+    }
+    if let Some(etc) = &kumo_table.end_time_col {
+        check(&etc.name, etc.timestamp_format.as_deref())?;
+    }
+    Ok(())
+}
+
+/// Treat `Some("")` as "unset" (returns `None`). Callers can then use
+/// `is_none()` to mean "no user-supplied hint".
+fn normalize_ts_format(fmt: Option<&str>) -> Option<&str> {
+    fmt.filter(|s| !s.is_empty())
+}
+
+/// Reject malformed strftime specifiers (e.g. `"%Q"`) and literal-only
+/// strings with no date/time directive (e.g. Java syntax `"yyyy-MM-dd"`).
+/// `Item::Error` flags the first; absence of any `Numeric`/`Fixed` item
+/// flags the second — otherwise such strings silently null every row.
+pub(super) fn is_valid_chrono_format(format: &str) -> bool {
+    use chrono::format::{Item, StrftimeItems};
+    let mut saw_specifier = false;
+    for item in StrftimeItems::new(format) {
+        match item {
+            Item::Error => return false,
+            Item::Numeric(_, _) | Item::Fixed(_) => saw_specifier = true,
+            _ => {}
+        }
+    }
+    saw_specifier
 }
 
 /// Map kumo timestamp unit to TimeSpec unit string.

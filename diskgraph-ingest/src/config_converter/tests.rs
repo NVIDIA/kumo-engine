@@ -211,12 +211,14 @@ fn test_convert_simple_node_table() {
                 dtype: Some("string".to_string()),
                 stype: None,
                 timestamp_unit: None,
+                timestamp_format: None,
                 multicategorical_delimiter: None,},
             KumoColumn {
                 name: "age".to_string(),
                 dtype: Some("int32".to_string()),
                 stype: None,
                 timestamp_unit: None,
+                timestamp_format: None,
                 multicategorical_delimiter: None,},
         ],
         time_col: None,
@@ -265,6 +267,7 @@ fn test_convert_table_with_fkeys() {
             dtype: Some("float64".to_string()),
             stype: None,
             timestamp_unit: None,
+            timestamp_format: None,
             multicategorical_delimiter: None,}],
         time_col: None,
         end_time_col: None,
@@ -316,6 +319,7 @@ fn test_convert_edge_table() {
             dtype: Some("time".to_string()),
             stype: None,
             timestamp_unit: Some("s".to_string()),
+            timestamp_format: None,
             is_pseudo: false,
         }),
         end_time_col: None,
@@ -368,6 +372,7 @@ fn test_convert_not_edge_table_with_extra_columns() {
             dtype: Some("string".to_string()),
             stype: None,
             timestamp_unit: None,
+            timestamp_format: None,
             multicategorical_delimiter: None,}],
         time_col: None,
         end_time_col: None,
@@ -480,6 +485,7 @@ fn test_convert_time_col_to_create_time() {
             dtype: Some("time".to_string()),
             stype: None,
             timestamp_unit: Some("ms".to_string()),
+            timestamp_format: None,
             is_pseudo: false,
         }),
         end_time_col: None,
@@ -519,6 +525,7 @@ fn test_convert_missing_data_source_error() {
             dtype: Some("int64".to_string()),
             stype: None,
             timestamp_unit: None,
+            timestamp_format: None,
             multicategorical_delimiter: None,}],
         time_col: None,
         end_time_col: None,
@@ -545,6 +552,7 @@ fn test_convert_missing_data_version_error() {
             dtype: Some("int64".to_string()),
             stype: None,
             timestamp_unit: None,
+            timestamp_format: None,
             multicategorical_delimiter: None,}],
         time_col: None,
         end_time_col: None,
@@ -593,12 +601,14 @@ fn test_convert_edge_table_with_weight_column() {
             dtype: Some("float64".to_string()),
             stype: None,
             timestamp_unit: None,
+            timestamp_format: None,
             multicategorical_delimiter: None,}],
         time_col: Some(KumoTimeCol {
             name: "purchase_time".to_string(),
             dtype: Some("time".to_string()),
             stype: None,
             timestamp_unit: Some("s".to_string()),
+            timestamp_format: None,
             is_pseudo: false,
         }),
         end_time_col: None,
@@ -673,6 +683,7 @@ fn test_convert_end_time_col() {
             dtype: Some("time".to_string()),
             stype: None,
             timestamp_unit: Some("s".to_string()),
+            timestamp_format: None,
             is_pseudo: false,
         }),
         end_time_col: Some(KumoTimeCol {
@@ -680,6 +691,7 @@ fn test_convert_end_time_col() {
             dtype: Some("time".to_string()),
             stype: None,
             timestamp_unit: Some("s".to_string()),
+            timestamp_format: None,
             is_pseudo: false,
         }),
     };
@@ -720,12 +732,14 @@ fn test_convert_column_deduplication() {
                 dtype: Some("int64".to_string()),
                 stype: None,
                 timestamp_unit: None,
+                timestamp_format: None,
                 multicategorical_delimiter: None,},
             KumoColumn {
                 name: "name".to_string(),
                 dtype: Some("string".to_string()),
                 stype: None,
                 timestamp_unit: None,
+                timestamp_format: None,
                 multicategorical_delimiter: None,},
         ],
         time_col: None,
@@ -873,6 +887,7 @@ fn test_convert_multi_table_graph() {
             dtype: Some("string".to_string()),
             stype: None,
             timestamp_unit: None,
+            timestamp_format: None,
             multicategorical_delimiter: None,}],
         time_col: None,
         end_time_col: None,
@@ -895,6 +910,7 @@ fn test_convert_multi_table_graph() {
             dtype: Some("float64".to_string()),
             stype: None,
             timestamp_unit: None,
+            timestamp_format: None,
             multicategorical_delimiter: None,}],
         time_col: None,
         end_time_col: None,
@@ -930,6 +946,7 @@ fn test_convert_multi_table_graph() {
             dtype: Some("time".to_string()),
             stype: None,
             timestamp_unit: Some("ms".to_string()),
+            timestamp_format: None,
             is_pseudo: false,
         }),
         end_time_col: None,
@@ -1794,6 +1811,389 @@ fn test_detect_timestamp_formats_skips_empty_parquet_files() {
     );
 }
 
+// =============================================================================
+// timestamp_format plumbing / normalization / validation tests
+// =============================================================================
+
+/// Build an `events` table preloaded with the standard pkey + supplied
+/// `cols` / `time_col`. Used by the timestamp_format tests to keep each
+/// case focused on the field under test.
+fn events_table_with(cols: Vec<KumoColumn>, time_col: Option<KumoTimeCol>) -> KumoTable {
+    KumoTable {
+        table_name: "events".to_string(),
+        data_source: Some("postgres".to_string()),
+        source_name: Some("events".to_string()),
+        data_version: Some("12345".to_string()),
+        pkey: Some(KumoPrimaryKey {
+            name: "event_id".to_string(),
+            dtype: Some("int64".to_string()),
+            stype: None,
+            drop_duplicates: false,
+        }),
+        fkeys: vec![],
+        cols,
+        time_col,
+        end_time_col: None,
+    }
+}
+
+/// Build a `KumoColumn` with `dtype=string`/`stype=timestamp` and the given
+/// timestamp_format. Use `None` for "no hint".
+fn ts_kumo_col(name: &str, format: Option<&str>) -> KumoColumn {
+    KumoColumn {
+        name: name.to_string(),
+        dtype: Some("string".to_string()),
+        stype: Some("timestamp".to_string()),
+        timestamp_unit: None,
+        timestamp_format: format.map(|s| s.to_string()),
+        multicategorical_delimiter: None,
+    }
+}
+
+/// Build a `KumoTimeCol` matching `ts_kumo_col`'s shape.
+fn ts_kumo_time_col(name: &str, format: Option<&str>) -> KumoTimeCol {
+    KumoTimeCol {
+        name: name.to_string(),
+        dtype: Some("string".to_string()),
+        stype: None,
+        timestamp_unit: None,
+        timestamp_format: format.map(|s| s.to_string()),
+        is_pseudo: false,
+    }
+}
+
+/// Convert a single-table config and return the named column from the
+/// resulting `TableSpec`.
+fn convert_and_find_col<'a>(
+    result: &'a crate::graph_config::GraphConfig,
+    col_name: &str,
+) -> &'a crate::graph_config::ColumnSpec {
+    result.tables[0]
+        .columns
+        .iter()
+        .find(|c| c.name == col_name)
+        .unwrap_or_else(|| panic!("{col_name} column should exist"))
+}
+
+#[test]
+fn test_convert_propagates_timestamp_format_through_all_positions() {
+    // Drives all three propagation paths in a single table-driven sweep:
+    // - `cols[]` entry with an explicit hint (`%y%m%d %H:%M:%S` is not in
+    //   `diskgraph_rowpack::TIMESTAMP_FORMATS`, so only the explicit-hint
+    //   path can produce it).
+    // - `time_col` entry with an explicit hint (the most common kumo target
+    //   for `metadata.TS_FORMAT`).
+    // - Absent hint stays `None` (no silent default; lets inference /
+    //   rowpack fallback take over). Fixture parquet is empty so inference
+    //   detects nothing either.
+    type Case = (
+        &'static str,
+        Vec<KumoColumn>,
+        Option<KumoTimeCol>,
+        &'static str,
+        Option<&'static str>,
+    );
+    let cases: &[Case] = &[
+        (
+            "cols[] propagation",
+            vec![ts_kumo_col("issued", Some("%y%m%d %H:%M:%S"))],
+            None,
+            "issued",
+            Some("%y%m%d %H:%M:%S"),
+        ),
+        (
+            "time_col propagation",
+            vec![],
+            Some(ts_kumo_time_col("ts", Some("%d-%b-%Y"))),
+            "ts",
+            Some("%d-%b-%Y"),
+        ),
+        (
+            "absent hint stays None",
+            vec![ts_kumo_col("issued", None)],
+            None,
+            "issued",
+            None,
+        ),
+    ];
+
+    for (label, cols, time_col, col_name, expected) in cases {
+        let kumo_config = make_kumo_config(vec![events_table_with(cols.clone(), time_col.clone())]);
+        let result = convert_kumo_to_diskgraph(&kumo_config, &make_convert_options())
+            .unwrap_or_else(|e| panic!("[{label}] convert failed: {e:?}"));
+        let col = convert_and_find_col(&result, col_name);
+        assert_eq!(
+            col.timestamp_format.as_deref(),
+            *expected,
+            "[{label}] timestamp_format must propagate",
+        );
+    }
+}
+
+#[test]
+fn test_convert_propagates_distinct_formats_per_column_without_crosstalk() {
+    // Two columns with different valid formats — no cross-talk between
+    // their independent normalization/validation passes.
+    let kumo_table = events_table_with(
+        vec![
+            ts_kumo_col("evt_a", Some("%Y-%m-%d")),
+            ts_kumo_col("evt_b", Some("%d-%b-%Y")),
+        ],
+        None,
+    );
+
+    let result =
+        convert_kumo_to_diskgraph(&make_kumo_config(vec![kumo_table]), &make_convert_options())
+            .unwrap();
+    assert_eq!(
+        convert_and_find_col(&result, "evt_a")
+            .timestamp_format
+            .as_deref(),
+        Some("%Y-%m-%d"),
+    );
+    assert_eq!(
+        convert_and_find_col(&result, "evt_b")
+            .timestamp_format
+            .as_deref(),
+        Some("%d-%b-%Y"),
+    );
+}
+
+#[test]
+fn test_deserialize_timestamp_format_from_json() {
+    // Wire-format coverage: `timestamp_format` deserializes from `cols`
+    // and `time_col` entries.
+    let json = r#"{
+        "name": "g",
+        "tables": [
+            {
+                "table_name": "events",
+                "data_source": "db",
+                "data_version": "1",
+                "pkey": null,
+                "fkeys": [],
+                "cols": [
+                    {
+                        "name": "issued",
+                        "dtype": "string",
+                        "stype": "timestamp",
+                        "timestamp_format": "%y%m%d %H:%M:%S"
+                    }
+                ],
+                "time_col": {
+                    "name": "ts",
+                    "dtype": "string",
+                    "stype": null,
+                    "timestamp_format": "%d-%b-%Y"
+                },
+                "end_time_col": null
+            }
+        ]
+    }"#;
+    let config: KumoGraphConfig = serde_json::from_str(json).unwrap();
+    let table = &config.tables[0];
+    assert_eq!(
+        table.cols[0].timestamp_format.as_deref(),
+        Some("%y%m%d %H:%M:%S"),
+    );
+    assert_eq!(
+        table.time_col.as_ref().unwrap().timestamp_format.as_deref(),
+        Some("%d-%b-%Y"),
+    );
+}
+
+#[test]
+fn test_inference_skips_columns_with_explicit_timestamp_format() {
+    // An explicit hint must survive inference even when source data would
+    // auto-detect to a different format.
+    use crate::coercion::CoercionMode;
+    use crate::config_converter::detect_timestamp_formats;
+    use crate::graph_config::{ColumnSpec, DataSource, GraphConfig, IngestedType, TableSpec};
+    use arrow_array::{RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let parquet_path = dir.path().join("data.parquet");
+
+    // ISO strings would auto-detect as `%Y-%m-%d %H:%M:%S`; the hint
+    // declares a different (but valid) format that must win.
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "ts",
+        DataType::Utf8,
+        false,
+    )]));
+    let arr = Arc::new(StringArray::from(vec!["2024-01-02 03:04:05"; 4])) as arrow_array::ArrayRef;
+    let batch = RecordBatch::try_new(schema.clone(), vec![arr]).unwrap();
+    let file = std::fs::File::create(&parquet_path).unwrap();
+    let mut writer = parquet::arrow::ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let mut config = GraphConfig {
+        dataset_name: "ds".to_string(),
+        tables: vec![TableSpec {
+            name: "events".to_string(),
+            columns: vec![ColumnSpec {
+                name: "ts".to_string(),
+                source_dtype: Some("string".to_string()),
+                ingested_dtype: IngestedType::Timestamp,
+                fixed_len: None,
+                timestamp_format: Some("%y%m%d %H:%M:%S".to_string()),
+                timestamp_unit: None,
+                precision: None,
+                scale: None,
+                semantic_type: None,
+                multicategorical_delimiter: None,
+            }],
+            primary_key: None,
+            create_time: None,
+            end_time: None,
+            weight: None,
+            edge_table: None,
+            rowpack: None,
+            source: DataSource::Parquet {
+                paths: vec![parquet_path.to_str().unwrap().to_string()],
+            },
+            source_size: None,
+            fkeys: Vec::new(),
+            data_version: None,
+            kumo_connector_id: None,
+            kumo_source_table_name: None,
+        }],
+        rowpack: None,
+        num_shards: None,
+        edge_format: None,
+        coercion_mode: CoercionMode::default(),
+    };
+
+    detect_timestamp_formats(&mut config, &None).unwrap();
+
+    // The explicit hint must survive untouched.
+    assert_eq!(
+        config.tables[0].columns[0].timestamp_format.as_deref(),
+        Some("%y%m%d %H:%M:%S"),
+        "detect_timestamp_formats must not overwrite an explicit hint",
+    );
+}
+
+#[test]
+fn test_timestamp_format_cross_position_consistency() {
+    // Drives the `cols[] + time_col` interaction matrix for the same
+    // column name. All cases use `ts` referenced from both positions.
+    //
+    // Empty strings normalize to `None` so they participate as "unset".
+    // The success rows also verify that an empty-string `cols[]` hint
+    // doesn't reach `ColumnSpec` (it lands as `None`).
+    //
+    // The conflict case lives in `test_timestamp_format_conflict_errors`
+    // (different assertion shape).
+    // Note: `build_columns` iterates `cols[]` before `time_col`, and dedup
+    // is first-wins on column name. The matrix below reflects that order
+    // (production wire shape stamps the hint on the `cols[]` entry).
+    let real = "%y%m%d %H:%M:%S";
+    type Case = (
+        &'static str,
+        Option<&'static str>,
+        Option<&'static str>,
+        Option<&'static str>,
+    );
+    let cases: &[Case] = &[
+        // (label, cols[] format, time_col format, expected on ColumnSpec)
+        ("one-side-None (cols set)", Some(real), None, Some(real)),
+        ("same value in both positions", Some(real), Some(real), Some(real)),
+        ("empty-string normalizes to None (cols)", Some(""), None, None),
+        ("empty-string paired with value", Some(real), Some(""), Some(real)),
+    ];
+
+    for (label, cols_fmt, time_fmt, expected) in cases {
+        let kumo_table = events_table_with(
+            vec![ts_kumo_col("ts", *cols_fmt)],
+            Some(ts_kumo_time_col("ts", *time_fmt)),
+        );
+        let result = convert_kumo_to_diskgraph(
+            &make_kumo_config(vec![kumo_table]),
+            &make_convert_options(),
+        )
+        .unwrap_or_else(|e| panic!("[{label}] convert failed: {e:?}"));
+        let col = convert_and_find_col(&result, "ts");
+        assert_eq!(
+            col.timestamp_format.as_deref(),
+            *expected,
+            "[{label}] ColumnSpec.timestamp_format mismatch",
+        );
+    }
+}
+
+#[test]
+fn test_timestamp_format_conflict_errors() {
+    // Same column in `cols[]` and `time_col` with disagreeing non-empty
+    // formats must error at convert time, not pick a winner by iteration order.
+    let kumo_table = events_table_with(
+        vec![ts_kumo_col("ts", Some("%y%m%d %H:%M:%S"))],
+        Some(ts_kumo_time_col("ts", Some("%Y-%m-%d %H:%M:%S"))),
+    );
+
+    let result =
+        convert_kumo_to_diskgraph(&make_kumo_config(vec![kumo_table]), &make_convert_options());
+    let err = result.expect_err("conflicting timestamp_format must error");
+    assert!(
+        matches!(err, ConvertError::TimestampFormatConflict { ref column, .. } if column == "ts"),
+        "expected TimestampFormatConflict for `ts`, got: {err:?}",
+    );
+}
+
+#[test]
+fn test_invalid_timestamp_format_errors_at_convert_time() {
+    // Malformed format (`"%Q"`) must error at convert time, not null
+    // every row at ingest.
+    let kumo_table =
+        events_table_with(vec![ts_kumo_col("ts", Some("%Q"))], None);
+
+    let result =
+        convert_kumo_to_diskgraph(&make_kumo_config(vec![kumo_table]), &make_convert_options());
+    let err = result.expect_err("invalid timestamp_format must error");
+    assert!(
+        matches!(
+            err,
+            ConvertError::InvalidTimestampFormat { ref column, ref format, .. }
+                if column == "ts" && format == "%Q"
+        ),
+        "expected InvalidTimestampFormat for `ts` with `%Q`, got: {err:?}",
+    );
+}
+
+#[test]
+fn test_is_valid_chrono_format_specifier_required() {
+    // One representative per distinct accept / reject path of the wrapper.
+    // (Exhaustively testing chrono's own parser is chrono's job.)
+    let cases: &[(&str, bool, &str)] = &[
+        // Accepted — multi-spec format with literal separators.
+        ("%y%m%d %H:%M:%S", true, "multi-specifier format"),
+        // Accepted — specifier embedded in literal text (partial match).
+        ("prefix %Y suffix", true, "specifier surrounded by literals"),
+        // Rejected — Item::Error (unrecognized `%Q`).
+        ("%Q", false, "malformed chrono specifier"),
+        // Rejected — no `%` at all (Java-style or plain text); otherwise
+        // would silently null every row.
+        ("yyyy-MM-dd", false, "no specifier present"),
+        // Rejected — `%%` yields Item::Literal, not Numeric/Fixed.
+        ("%%", false, "escaped percent has no real specifier"),
+        // Rejected — `%t` yields Item::Space, not Numeric/Fixed.
+        ("%t", false, "whitespace escape has no real specifier"),
+        // Rejected — whitespace-only is parsed as Item::Space.
+        ("   ", false, "whitespace-only"),
+    ];
+
+    for (input, expected, why) in cases {
+        assert_eq!(
+            super::convert::is_valid_chrono_format(input),
+            *expected,
+            "is_valid_chrono_format({input:?}): expected {expected} ({why})",
+        );
+    }
+}
+
 #[test]
 fn test_convert_string_sequence_errors() {
     // dtype="string" + stype="sequence" should error — the data is likely
@@ -1815,6 +2215,7 @@ fn test_convert_string_sequence_errors() {
             dtype: Some("string".to_string()),
             stype: Some("sequence".to_string()),
             timestamp_unit: None,
+            timestamp_format: None,
             multicategorical_delimiter: None,}],
         time_col: None,
         end_time_col: None,
