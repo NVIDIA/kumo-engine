@@ -155,7 +155,7 @@ Direct encoding of grammar terminals:
 ```rust
 enum Value { Int(i64), Float(f64), Str(String), Bool(bool) }
 enum AggFunc { Count, Sum, Avg, Min, Max, CountDistinct, ListDistinct }
-enum CompareOp { Eq, Neq, Gt, Gte, Lt, Lte }
+enum CompareOp { Eq, Neq, Gt, Gte, Lt, Lte, IsNull, IsNotNull, StartsWith, EndsWith, Contains, NotContains }
 enum TimeUnit { Seconds, Minutes, Hours, Days, Weeks, Months, Years }
 ```
 

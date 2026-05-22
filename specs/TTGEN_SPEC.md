@@ -147,7 +147,7 @@ EdgeRef {
 
 ### CompareOp
 
-`Eq`, `Neq`, `Gt`, `Gte`, `Lt`, `Lte`, `IsNull`, `IsNotNull`
+`Eq`, `Neq`, `Gt`, `Gte`, `Lt`, `Lte`, `IsNull`, `IsNotNull`, `StartsWith`, `EndsWith`, `Contains`, `NotContains`
 
 ### Value
 
@@ -168,8 +168,11 @@ Runtime values used in filters and as computation results:
 **Comparison rules**:
 - Same numeric types: standard comparison
 - Int vs Float: Int promoted to f64
-- Str vs Str: lexicographic
+- Str vs Str: lexicographic for relational operators
+- Str vs Str with `StartsWith`, `EndsWith`, `Contains`, or `NotContains`: string predicate comparison
 - Bool vs Bool: false < true
+- List vs scalar with `Contains` or `NotContains`: membership test using exact `Value` equality;
+  `NotContains` is true only when no list element equals the RHS value
 - List vs Int/Float: list length compared against the number
 - List vs List: compared by length
 - Mismatched types (e.g., Int vs Str): always false

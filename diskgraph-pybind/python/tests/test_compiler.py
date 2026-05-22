@@ -13,7 +13,7 @@ from kumoapi.pquery.AST import (
     LogicalOperation,
     DateOffsetRange,
 )
-from kumoapi.typing import AggregationType, BoolOp, RelOp
+from kumoapi.typing import AggregationType, BoolOp, RelOp, StrOp
 from diskgraph import DiskgraphConfigError, DiskGraphPlanCompiler, SplitSpec, TimeUnit
 from diskgraph.compiler import AUTOREGRESSION_OUTPUT_ALIAS, YOY_OUTPUT_ALIAS
 
@@ -317,6 +317,49 @@ def test_compiler_with_row_filter():
     assert row_filter["lhs"]["column"] == "status"
     assert row_filter["op"] == "eq"
     assert row_filter["rhs"]["constant"]["str"] == "paid"
+
+
+def test_compiler_with_starts_with_row_filter():
+    target_ast = Aggregation(
+        target=Filter(
+            target=Column(fqn="transactions.account_type"),
+            condition=Condition(
+                target=Column(fqn="transactions.account_type"),
+                op=StrOp.STARTS_WITH,
+                value=Constant.from_value("investment"),
+            ),
+        ),
+        aggr=AggregationType.LIST_DISTINCT,
+    )
+    target_ast.target.target = Join(
+        rhs_target=Column(fqn="transactions.account_type"),
+        lhs_key="users.user_id",
+        rhs_key="transactions.user_id",
+    )
+
+    query = ValidatedPredictiveQuery(
+        entity_ast=Column(fqn="users.user_id"),
+        target_ast=target_ast,
+    )
+    query._query_type = "STATIC"
+
+    compiler = DiskGraphPlanCompiler()
+    plan_json = compiler.compile(
+        query=query,
+        timestamps=[],
+        forecast_length=1,
+        lag_timesteps=None,
+        task_type="multilabel_classification",
+        target_stype="categorical",
+        input_timestamp_unit=TimeUnit.Seconds,
+    )
+    plan = json.loads(plan_json)
+
+    row_filter = plan["stages"][0]["ops"][0]["aggregate"]["row_filter"]["compare"]
+    assert row_filter["lhs"]["column"] == "account_type"
+    assert row_filter["op"] == "starts_with"
+    assert row_filter["rhs"]["constant"]["str"] == "investment"
+
 
 def test_compiler_stage_filter():
     # PREDICT SUM(transactions.amount) FOR users.user_id WHERE COUNT(transactions.transaction_id) > 5

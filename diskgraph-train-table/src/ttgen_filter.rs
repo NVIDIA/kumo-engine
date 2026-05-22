@@ -197,16 +197,42 @@ pub fn compare_values(lhs: &Value, op: &CompareOp, rhs: &Value) -> bool {
         (Value::Float(a), Value::Float(b)) => compare_f64(*a, *b, op),
         (Value::Int(a), Value::Float(b)) => compare_f64(*a as f64, *b, op),
         (Value::Float(a), Value::Int(b)) => compare_f64(*a, *b as f64, op),
-        (Value::Str(a), Value::Str(b)) => compare_ord(a, b, op),
+        (Value::Str(a), Value::Str(b)) => compare_str(a, b, op),
         (Value::Bool(a), Value::Bool(b)) => compare_ord(a, b, op),
-        // List vs numeric: compare list length
-        (Value::List(v), Value::Int(b)) => compare_ord(&(v.len() as i64), b, op),
+        (Value::List(v), b) => compare_list(v, b, op),
         (Value::Int(a), Value::List(v)) => compare_ord(a, &(v.len() as i64), op),
-        (Value::List(v), Value::Float(b)) => compare_f64(v.len() as f64, *b, op),
         (Value::Float(a), Value::List(v)) => compare_f64(*a, v.len() as f64, op),
-        (Value::List(a), Value::List(b)) => compare_ord(&a.len(), &b.len(), op),
         // Type mismatch — always false
         _ => false,
+    }
+}
+
+fn compare_list(values: &[Value], rhs: &Value, op: &CompareOp) -> bool {
+    match op {
+        CompareOp::Contains => values.iter().any(|value| value == rhs),
+        CompareOp::NotContains => values.iter().all(|value| value != rhs),
+        _ => match rhs {
+            Value::Int(b) => compare_ord(&(values.len() as i64), b, op),
+            Value::Float(b) => compare_f64(values.len() as f64, *b, op),
+            Value::List(b) => compare_ord(&values.len(), &b.len(), op),
+            _ => false,
+        },
+    }
+}
+
+fn compare_str(a: &str, b: &str, op: &CompareOp) -> bool {
+    match op {
+        CompareOp::Eq => a == b,
+        CompareOp::Neq => a != b,
+        CompareOp::Gt => a > b,
+        CompareOp::Gte => a >= b,
+        CompareOp::Lt => a < b,
+        CompareOp::Lte => a <= b,
+        CompareOp::StartsWith => a.starts_with(b),
+        CompareOp::EndsWith => a.ends_with(b),
+        CompareOp::Contains => a.contains(b),
+        CompareOp::NotContains => !a.contains(b),
+        CompareOp::IsNull | CompareOp::IsNotNull => unreachable!("null checks handled in eval_filter"),
     }
 }
 
@@ -218,6 +244,10 @@ fn compare_ord<T: Ord>(a: &T, b: &T, op: &CompareOp) -> bool {
         CompareOp::Gte => a >= b,
         CompareOp::Lt => a < b,
         CompareOp::Lte => a <= b,
+        CompareOp::StartsWith
+        | CompareOp::EndsWith
+        | CompareOp::Contains
+        | CompareOp::NotContains => false,
         CompareOp::IsNull | CompareOp::IsNotNull => unreachable!("null checks handled in eval_filter"),
     }
 }
@@ -230,6 +260,10 @@ fn compare_f64(a: f64, b: f64, op: &CompareOp) -> bool {
         CompareOp::Gte => a >= b,
         CompareOp::Lt => a < b,
         CompareOp::Lte => a <= b,
+        CompareOp::StartsWith
+        | CompareOp::EndsWith
+        | CompareOp::Contains
+        | CompareOp::NotContains => false,
         CompareOp::IsNull | CompareOp::IsNotNull => unreachable!("null checks handled in eval_filter"),
     }
 }
@@ -400,6 +434,31 @@ mod tests {
     }
 
     #[test]
+    fn test_compare_list_contains_membership() {
+        let list = Value::List(vec![
+            Value::Int(1),
+            Value::Str("open".into()),
+            Value::Bool(true),
+        ]);
+        assert!(compare_values(
+            &list,
+            &CompareOp::Contains,
+            &Value::Str("open".into())
+        ));
+        assert!(compare_values(&list, &CompareOp::Contains, &Value::Int(1)));
+        assert!(compare_values(
+            &list,
+            &CompareOp::NotContains,
+            &Value::Str("closed".into())
+        ));
+        assert!(!compare_values(
+            &list,
+            &CompareOp::NotContains,
+            &Value::Bool(true)
+        ));
+    }
+
+    #[test]
     fn test_compare_empty_list() {
         let empty = Value::List(vec![]);
         assert!(compare_values(&empty, &CompareOp::Eq, &Value::Int(0)));
@@ -422,6 +481,55 @@ mod tests {
     #[test]
     fn test_compare_str_vs_float_mismatch() {
         assert!(!compare_values(&Value::Str("5.0".into()), &CompareOp::Eq, &Value::Float(5.0)));
+    }
+
+    #[test]
+    fn test_compare_string_predicates() {
+        let value = Value::Str("investment_account".into());
+        assert!(compare_values(
+            &value,
+            &CompareOp::StartsWith,
+            &Value::Str("investment".into())
+        ));
+        assert!(!compare_values(
+            &value,
+            &CompareOp::StartsWith,
+            &Value::Str("checking".into())
+        ));
+        assert!(compare_values(
+            &value,
+            &CompareOp::EndsWith,
+            &Value::Str("account".into())
+        ));
+        assert!(compare_values(
+            &value,
+            &CompareOp::Contains,
+            &Value::Str("ment_acc".into())
+        ));
+        assert!(compare_values(
+            &value,
+            &CompareOp::NotContains,
+            &Value::Str("credit".into())
+        ));
+        assert!(!compare_values(
+            &value,
+            &CompareOp::NotContains,
+            &Value::Str("account".into())
+        ));
+    }
+
+    #[test]
+    fn test_string_predicates_require_strings() {
+        assert!(!compare_values(
+            &Value::Int(5),
+            &CompareOp::StartsWith,
+            &Value::Str("5".into())
+        ));
+        assert!(!compare_values(
+            &Value::Str("5".into()),
+            &CompareOp::Contains,
+            &Value::Int(5)
+        ));
     }
 
     // ─── All CompareOp variants ──────────────────────────────────────────

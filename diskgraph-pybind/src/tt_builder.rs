@@ -720,7 +720,12 @@ impl DiskGraphTTBuilder {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn parse_compare_op(op: &str) -> PyResult<tt::CompareOp> {
-    match op {
+    let normalized = op
+        .trim()
+        .to_ascii_lowercase()
+        .replace([' ', '-'], "_");
+
+    match normalized.as_str() {
         "==" | "eq" => Ok(tt::CompareOp::Eq),
         "!=" | "neq" => Ok(tt::CompareOp::Neq),
         ">" | "gt" => Ok(tt::CompareOp::Gt),
@@ -729,6 +734,10 @@ fn parse_compare_op(op: &str) -> PyResult<tt::CompareOp> {
         "<=" | "lte" => Ok(tt::CompareOp::Lte),
         "isnull" | "is_null" => Ok(tt::CompareOp::IsNull),
         "isnotnull" | "is_not_null" => Ok(tt::CompareOp::IsNotNull),
+        "startswith" | "starts_with" => Ok(tt::CompareOp::StartsWith),
+        "endswith" | "ends_with" => Ok(tt::CompareOp::EndsWith),
+        "contains" => Ok(tt::CompareOp::Contains),
+        "notcontains" | "not_contains" => Ok(tt::CompareOp::NotContains),
         _ => Err(crate::DiskgraphConfigError::new_err(format!(
             "unknown compare op: {op}"
         ))),

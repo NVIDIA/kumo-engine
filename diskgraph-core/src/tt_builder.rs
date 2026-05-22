@@ -268,6 +268,10 @@ pub enum CompareOp {
     Lte,
     IsNull,
     IsNotNull,
+    StartsWith,
+    EndsWith,
+    Contains,
+    NotContains,
 }
 
 /// Dynamically-typed scalar for filter comparisons.
