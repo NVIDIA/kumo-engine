@@ -119,9 +119,13 @@ fn read_output_rows_pass_through(receiver: Receiver<RecordBatch>) -> (Vec<(i64, 
 type ForecastingRow = (i64, i64, Vec<f64>, Option<Vec<f64>>);
 
 /// Read output rows for Forecasting tasks. Returns lists as Vec<f64>.
-fn read_output_rows_forecasting(receiver: Receiver<RecordBatch>) -> Vec<ForecastingRow> {
+fn read_output_rows_forecasting(
+    receiver: Receiver<RecordBatch>,
+) -> (Vec<ForecastingRow>, arrow_schema::SchemaRef) {
     let mut rows = Vec::new();
+    let mut last_schema = None;
     for batch in receiver {
+        last_schema = Some(batch.schema());
         let entities = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
         let timestamps = batch.column(1).as_any().downcast_ref::<TimestampNanosecondArray>().unwrap();
 
@@ -149,7 +153,7 @@ fn read_output_rows_forecasting(receiver: Receiver<RecordBatch>) -> Vec<Forecast
         }
     }
     rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-    rows
+    (rows, last_schema.unwrap())
 }
 
 /// Read output rows including the ENTITY_INCLUDE_BIT column.
@@ -5569,8 +5573,31 @@ fn integ_bp_forecasting_multiple_lags() {
 
     let (receiver, handle) =
         diskgraph_train_table::ttgen_executor::execute(&plan, &index).unwrap();
-    let rows = read_output_rows_forecasting(receiver);
+    let (rows, schema) = read_output_rows_forecasting(receiver);
     handle.join().unwrap().unwrap();
+
+    let field_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+    assert_eq!(
+        field_names,
+        vec![
+            "ENTITY",
+            "TIMESTAMP",
+            AUTOREGRESSION_OUTPUT_ALIAS,
+            YOY_OUTPUT_ALIAS,
+            "ENTITY_INCLUDE_BIT",
+        ]
+    );
+    assert!(matches!(
+        schema.field(1).data_type(),
+        DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, None)
+    ));
+    assert!(
+        !schema
+            .fields()
+            .iter()
+            .any(|f| f.name() == "__kumo__time_bucket_ID__"),
+        "forecasting output must expose real TIMESTAMP values, not bucket ids"
+    );
 
     let map: HashMap<i64, _> = rows.into_iter().map(|r| (r.0, r)).collect();
 
