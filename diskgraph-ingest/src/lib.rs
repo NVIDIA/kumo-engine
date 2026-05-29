@@ -11,6 +11,7 @@ pub mod errors;
 pub mod graph_config;
 pub mod io;
 pub mod index_metadata;
+pub mod parquet_col_stats;
 mod mapping;
 pub mod progress;
 pub mod scratch;

@@ -11,7 +11,7 @@ mod types;
 pub use crate::errors::ConvertError;
 pub use convert::{convert_kumo_to_diskgraph, ConvertOptions};
 pub use inference::detect_timestamp_formats;
-pub use mapping::{map_kumo_dtype, map_timestamp_unit};
+pub use mapping::{map_kumo_dtype, map_kumo_stype, map_timestamp_unit};
 pub use types::*;
 
 #[cfg(test)]
