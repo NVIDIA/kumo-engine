@@ -1592,12 +1592,18 @@ impl FileColStats {
                         kumo_key(name, sk, "CATEGORY_COUNTS", false),
                         kumo_entry(values, false, dv, total),
                     );
-                    let num_unique = hll.estimate() as u64;
-                    let num_unique = if num_unique > total {
-                        total
-                    } else {
-                        num_unique
-                    };
+                    // Prefer the exact distinct count from the
+                    // memory-bounded category map when it is complete; fall
+                    // back to the HLL estimate only when the map aborted
+                    // (cardinality exceeded MAX_CATEGORIES). A present Hybrid
+                    // map is exhaustive, so it overrides HLL rather than
+                    // max()-ing with it. Non-category columns (e.g. Text)
+                    // have no map → always HLL, behavior unchanged.
+                    let num_unique = match &cat_counts[col_idx] {
+                        Some(cc) => cc.len() as u64,
+                        None => hll.estimate() as u64,
+                    }
+                    .min(total);
                     map.insert(
                         kumo_key(name, sk, "NUM_UNIQUE", false),
                         kumo_entry(json!(num_unique), false, dv, total),
@@ -1634,12 +1640,18 @@ impl FileColStats {
                         kumo_key(name, sk, "CATEGORY_COUNTS", false),
                         kumo_entry(values, false, dv, total),
                     );
-                    let num_unique = hll.estimate() as u64;
-                    let num_unique = if num_unique > total {
-                        total
-                    } else {
-                        num_unique
-                    };
+                    // Prefer the exact distinct count from the
+                    // memory-bounded category map when it is complete; fall
+                    // back to the HLL estimate only when the map aborted
+                    // (cardinality exceeded MAX_CATEGORIES). A present Hybrid
+                    // map is exhaustive, so it overrides HLL rather than
+                    // max()-ing with it. Non-category columns (e.g. Text)
+                    // have no map → always HLL, behavior unchanged.
+                    let num_unique = match &cat_counts[col_idx] {
+                        Some(cc) => cc.len() as u64,
+                        None => hll.estimate() as u64,
+                    }
+                    .min(total);
                     map.insert(
                         kumo_key(name, sk, "NUM_UNIQUE", false),
                         kumo_entry(json!(num_unique), false, dv, total),
@@ -1690,12 +1702,18 @@ impl FileColStats {
                             kumo_entry(json!(tss.glove_overlap), true, dv, total),
                         );
                     }
-                    let num_unique = hll.estimate() as u64;
-                    let num_unique = if num_unique > total {
-                        total
-                    } else {
-                        num_unique
-                    };
+                    // Prefer the exact distinct count from the
+                    // memory-bounded category map when it is complete; fall
+                    // back to the HLL estimate only when the map aborted
+                    // (cardinality exceeded MAX_CATEGORIES). A present Hybrid
+                    // map is exhaustive, so it overrides HLL rather than
+                    // max()-ing with it. Non-category columns (e.g. Text)
+                    // have no map → always HLL, behavior unchanged.
+                    let num_unique = match &cat_counts[col_idx] {
+                        Some(cc) => cc.len() as u64,
+                        None => hll.estimate() as u64,
+                    }
+                    .min(total);
                     map.insert(
                         kumo_key(name, sk, "NUM_UNIQUE", false),
                         kumo_entry(json!(num_unique), false, dv, total),

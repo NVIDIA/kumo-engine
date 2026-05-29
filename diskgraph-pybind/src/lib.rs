@@ -153,6 +153,7 @@ use diskgraph_engine::output::OutputHandler;
 use diskgraph_engine::state::{SamplingState, StatePool};
 
 mod artifact_helpers;
+mod bp_col_stats;
 mod col_stats_export;
 mod index_metadata;
 mod split_assignments;
@@ -1141,41 +1142,46 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
 
 /// Compute Kumo-format column statistics over one or more parquet files.
 ///
-/// Wraps :func:`diskgraph_ingest::parquet_col_stats::compute_parquet_col_stats`
-/// for use by kumo's batch-prediction stats path: after a BP run writes its
-/// output parquet, kumo invokes this to produce the same
-/// ``kumo_col_stats_v1`` JSON that ingest emits, so downstream readers
-/// (UI, encoder inference, ``PredStats.parse``) light up without further
-/// changes on the consumer side.
+/// Wraps :func:`bp_col_stats::compute_parquet_col_stats` for kumo's
+/// batch-prediction stats path: after a BP run writes its output parquet,
+/// kumo invokes this to produce the same ``kumo_col_stats_v1`` JSON that
+/// ingest emits, so downstream readers (UI, encoder inference,
+/// ``PredStats.parse``) light up without further changes on the consumer
+/// side.
+///
+/// Row groups are processed in parallel (rayon); category counts use the
+/// memory-bounded Hybrid strategy. The parquet is read once — the full and
+/// min variants are both derived from that single pass.
 ///
 /// Args:
 ///     parquet_paths: list of parquet file paths (single file or all parts
 ///         of a part-*.parquet directory).
 ///     kumo_column_specs_json: JSON-encoded list of ``{"name", "stype",
-///         "dtype"}`` records — raw Kumo Stype/Dtype value strings, in
-///         the same order as the parquet schema. Stype/Dtype are
-///         translated to diskgraph's ``SemanticType`` /``IngestedType``
-///         using the same ``map_kumo_stype`` / ``map_kumo_dtype``
-///         functions that ``convert_kumo_config`` uses during ingest —
-///         single source of truth for the mapping.
+///         "dtype"}`` records — raw Kumo Stype/Dtype value strings, in the
+///         same order as the parquet schema. Translated to diskgraph's
+///         ``SemanticType`` / ``IngestedType`` via the same
+///         ``map_kumo_stype`` / ``map_kumo_dtype`` functions
+///         ``convert_kumo_config`` uses during ingest — single source of
+///         truth for the mapping.
 ///     data_version: version string stamped into every emitted entry.
-///     variant: ``"full"`` (default) or ``"min"`` (truncates CATEGORY_COUNTS).
 ///
-/// Returns the serialized ``kumo_col_stats_v1`` JSON map as a string,
-/// suitable for direct ``fsutil.write_text(table_dir.col_stats, ...)``.
+/// Returns ``(full_json, min_json)`` — the full ``kumo_col_stats_v1`` map and
+/// its min (truncated-CATEGORY_COUNTS) variant, each as a JSON string,
+/// suitable for direct ``fsutil.write_text(table_dir.col_stats, ...)`` /
+/// ``min_col_stats``.
 #[pyfunction]
-#[pyo3(signature = (parquet_paths, kumo_column_specs_json, data_version, variant = "full"))]
+#[pyo3(signature = (parquet_paths, kumo_column_specs_json, data_version))]
 #[tracing::instrument(level = "debug", skip(py, kumo_column_specs_json))]
 fn compute_col_stats_for_parquet(
     py: Python<'_>,
     parquet_paths: Vec<String>,
     kumo_column_specs_json: &str,
     data_version: &str,
-    variant: &str,
-) -> PyResult<String> {
+) -> PyResult<(String, String)> {
     use diskgraph_ingest::config_converter::{map_kumo_dtype, map_kumo_stype};
     use diskgraph_ingest::graph_config::ColumnSpec;
-    use diskgraph_ingest::parquet_col_stats::{compute_parquet_col_stats, Variant};
+
+    use crate::bp_col_stats::compute_parquet_col_stats;
 
     #[derive(serde::Deserialize)]
     struct KumoColumnSpec {
@@ -1211,30 +1217,17 @@ fn compute_col_stats_for_parquet(
             })
         })
         .collect::<PyResult<Vec<_>>>()?;
-    let variant = match variant {
-        "min" => Variant::Min,
-        "full" => Variant::Full,
-        other => {
-            return Err(DiskgraphConfigError::new_err(format!(
-                "variant must be 'full' or 'min', got '{other}'"
-            )))
-        }
-    };
     let data_version = data_version.to_string();
     let paths_owned = parquet_paths;
 
-    let payload = py
-        .detach(|| -> anyhow::Result<serde_json::Map<String, serde_json::Value>> {
-            let paths: Vec<&std::path::Path> =
-                paths_owned.iter().map(std::path::Path::new).collect();
-            compute_parquet_col_stats(&paths, &columns, &data_version, variant)
-        })
-        .map_err(|e| {
-            DiskgraphSystemError::new_err(format!("compute_col_stats_for_parquet failed: {e:#}"))
-        })?;
-
-    serde_json::to_string(&payload)
-        .map_err(|e| DiskgraphSystemError::new_err(format!("serialization failed: {e}")))
+    py.detach(|| -> anyhow::Result<(String, String)> {
+        let paths: Vec<&std::path::Path> =
+            paths_owned.iter().map(std::path::Path::new).collect();
+        compute_parquet_col_stats(&paths, &columns, &data_version)
+    })
+    .map_err(|e| {
+        DiskgraphSystemError::new_err(format!("compute_col_stats_for_parquet failed: {e:#}"))
+    })
 }
 
 /// Verify a local snapshot directory matches its ``_MANIFEST.json``.

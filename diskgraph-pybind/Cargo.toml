@@ -21,6 +21,7 @@ parquet = { version = "57.2.0", features = ["arrow"] }
 diskgraph-engine = { path = "../diskgraph-engine" }
 diskgraph-core = { path = "../diskgraph-core" }
 diskgraph-ingest = { path = "../diskgraph-ingest" }
+diskgraph-rowpack = { path = "../diskgraph-rowpack" }
 diskgraph-train-table = { path = "../diskgraph-train-table" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
