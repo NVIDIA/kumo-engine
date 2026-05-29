@@ -26,6 +26,7 @@ from ._c import (
     write_success_marker,
     touch_success_marker,
     verify_snapshot_integrity,
+    compute_col_stats_for_parquet,
 )
 
 # Lazy imports for modules that have external dependencies (kumoapi)
@@ -92,6 +93,7 @@ __all__ = [
     "write_success_marker",
     "touch_success_marker",
     "verify_snapshot_integrity",
+    "compute_col_stats_for_parquet",
     "DiskGraphPlanCompiler",
     "SplitSpec",
     "DiskgraphConfigConverter",
