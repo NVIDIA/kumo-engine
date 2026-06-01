@@ -22,21 +22,25 @@
 //!     (destructive), so we serialize once to the full map, then derive the
 //!     min variant via `minify_kumo_stats` — no second read, no double-drain.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
 use arrow_array::{
-    Array, BooleanArray, Float64Array, Int64Array, StringArray, TimestampNanosecondArray,
+    Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
+    TimestampNanosecondArray,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rayon::prelude::*;
-use serde_json::{Map as JsonMap, Value as JsonValue};
+use serde_json::{json, Map as JsonMap, Value as JsonValue};
 
-use diskgraph_core::accumulators::CategoryCountStrategy;
+use diskgraph_core::accumulators::{
+    kumo_entry, kumo_key, CategoryCountStrategy, WelfordAccumulator,
+};
 use diskgraph_ingest::col_stats::{minify_kumo_stats, FileColStats, TableCategoryCounts};
-use diskgraph_ingest::graph_config::{ColumnSpec, IngestedType};
+use diskgraph_ingest::graph_config::{ColumnSpec, IngestedType, SemanticType};
 use diskgraph_rowpack::ColumnValueObserver;
 
 /// CATEGORY_COUNTS truncation limit for the "min" variant (matches ingest).
@@ -130,15 +134,75 @@ fn drive_from_arrow_column<O: ColumnValueObserver>(
     }
 }
 
-/// Process a single row group of one parquet file into its own `FileColStats`,
-/// flushing category counts into the shared `Arc<TableCategoryCounts>`.
+/// Per-class accumulators over SCORE, keyed by the CLASS string value.
+/// Backs `SUMMARY_STATS_BY_CLASS` (the post-cutover replacement for Spark's
+/// group-by). Merge is exact and associative, so each row-group worker keeps a
+/// thread-local map that's merged at the end — no shared map, no lock
+/// contention on the handful of hot classes a multiclass job has.
+type ByClassStats = HashMap<String, WelfordAccumulator>;
+
+/// Locate the `(SCORE, CLASS)` column indices, if both are present and SCORE is
+/// numerical. Only multiclass / multilabel / ranking / link-pred BP output
+/// carries both (per `get_bp_columns_by_task_type`) — exactly when the kumo
+/// side requests `ColStatsSet.BP_MULTICLASS_CLASSIFICATION`. Returns `None`
+/// otherwise (regression/binary), so no by-class stat is produced.
+fn find_score_class(columns: &[ColumnSpec]) -> Option<(usize, usize)> {
+    let score = columns
+        .iter()
+        .position(|c| c.name == "SCORE" && c.semantic_type == Some(SemanticType::Numerical))?;
+    let class = columns.iter().position(|c| c.name == "CLASS")?;
+    Some((score, class))
+}
+
+/// Group SCORE (numerical) by CLASS (string) for one record batch, feeding each
+/// finite SCORE into the per-class Welford accumulator. `class` only selects the
+/// bucket; SCORE is the value being summarized — the one genuinely cross-column
+/// stat. Rows with a null SCORE or null CLASS are skipped (valid-only
+/// semantics); `Welford::observe` already drops non-finite scores.
+fn accumulate_by_class(
+    batch: &RecordBatch,
+    score_idx: usize,
+    class_idx: usize,
+    out: &mut ByClassStats,
+) {
+    let scores = batch
+        .column(score_idx)
+        .as_any()
+        .downcast_ref::<Float64Array>();
+    let classes = batch
+        .column(class_idx)
+        .as_any()
+        .downcast_ref::<StringArray>();
+    // SCORE not Float64 or CLASS not plain Utf8 (e.g. dictionary-encoded):
+    // skip, same arrow-type constraint as the CATEGORY_COUNTS path. BP output
+    // writes plain Float64 / Utf8 so this holds in practice.
+    let (scores, classes) = match (scores, classes) {
+        (Some(s), Some(c)) => (s, c),
+        _ => return,
+    };
+    let n = scores.len().min(classes.len());
+    for i in 0..n {
+        if scores.is_null(i) || classes.is_null(i) {
+            continue;
+        }
+        out.entry(classes.value(i).to_string())
+            .or_default()
+            .observe(scores.value(i));
+    }
+}
+
+/// Process a single row group of one parquet file into its own `FileColStats`
+/// (flushing category counts into the shared `Arc<TableCategoryCounts>`) plus a
+/// thread-local by-class map when `score_class` is set.
 fn stats_for_row_group(
     path: &Path,
     row_group: usize,
     columns: &[ColumnSpec],
     table_cat: &Arc<TableCategoryCounts>,
-) -> Result<FileColStats> {
+    score_class: Option<(usize, usize)>,
+) -> Result<(FileColStats, ByClassStats)> {
     let mut fcs = FileColStats::new_with_categories(columns, Arc::clone(table_cat));
+    let mut by_class = ByClassStats::new();
     let file = File::open(path)?;
     let reader = ParquetRecordBatchReaderBuilder::try_new(file)?
         .with_row_groups(vec![row_group])
@@ -148,11 +212,14 @@ fn stats_for_row_group(
         for (i, col) in columns.iter().enumerate() {
             drive_from_arrow_column(i, batch.column(i).as_ref(), &col.ingested_dtype, &mut fcs);
         }
+        if let Some((si, ci)) = score_class {
+            accumulate_by_class(&batch, si, ci, &mut by_class);
+        }
     }
     // Push this worker's local category counts into the shared (concurrent)
     // state — the same pattern ingest uses from its parallel file workers.
     fcs.flush_categories();
-    Ok(fcs)
+    Ok((fcs, by_class))
 }
 
 /// Compute Kumo-format column statistics over one or more parquet files,
@@ -190,34 +257,89 @@ pub fn compute_parquet_col_stats(
         }
     }
 
-    let mut acc = if work.is_empty() {
+    // SCORE-by-CLASS detection (multiclass/multilabel/ranking/link-pred only).
+    let score_class = find_score_class(columns);
+
+    let (mut acc, by_class) = if work.is_empty() {
         // Empty / no-row-group input: still emit a zero-row stats payload.
         let mut fcs = FileColStats::new_with_categories(columns, Arc::clone(&table_cat));
         fcs.flush_categories();
-        fcs
+        (fcs, ByClassStats::new())
     } else {
-        // Parallelize across row groups; each yields a FileColStats whose
-        // category counts are already flushed to the shared `table_cat`.
-        let partials: Vec<FileColStats> = work
+        // Parallelize across row groups; each yields a FileColStats (whose
+        // category counts are already flushed to the shared `table_cat`) plus a
+        // thread-local by-class map.
+        let partials: Vec<(FileColStats, ByClassStats)> = work
             .par_iter()
-            .map(|&(pi, rg)| stats_for_row_group(parquet_paths[pi], rg, columns, &table_cat))
+            .map(|&(pi, rg)| {
+                stats_for_row_group(parquet_paths[pi], rg, columns, &table_cat, score_class)
+            })
             .collect::<Result<Vec<_>>>()?;
 
         // Merge the per-worker scalar accumulators (welford / hll / tdigest /
-        // counts). Category counts already live in the shared `table_cat`.
+        // counts) and the by-class maps. Category counts already live in the
+        // shared `table_cat`.
         let mut iter = partials.into_iter();
-        let mut acc = iter.next().expect("work is non-empty");
-        for mut p in iter {
+        let (mut acc, mut by_class) = iter.next().expect("work is non-empty");
+        for (mut p, pbc) in iter {
             acc.merge(&mut p);
+            for (cls, w) in pbc {
+                by_class.entry(cls).or_default().merge(&w);
+            }
         }
-        acc
+        (acc, by_class)
     };
 
     // Single serialization: drains the shared category counts (destructive),
     // so we build the full map once and derive min from it in-memory.
-    let full = acc.to_kumo_json(&names, &types, Some(&table_cat), None, data_version);
+    let mut full = acc.to_kumo_json(&names, &types, Some(&table_cat), None, data_version);
+    // Derive `min` from `full` BEFORE injecting the by-class stat: it's a
+    // UI/BP stat, not an encoder stat, so it belongs in full col_stats only.
     let min = minify_kumo_stats(&full, MIN_COL_STATS_CATEGORY_LIMIT);
+    inject_summary_stats_by_class(&mut full, columns, score_class, &by_class, data_version);
     Ok((to_json_string(&full)?, to_json_string(&min)?))
+}
+
+/// Inject `SUMMARY_STATS_BY_CLASS` for the SCORE column into the full stats map:
+/// `{class: {min, max, mean}}`. This is the cross-column stat (SCORE grouped by
+/// CLASS) that `FileColStats`/`to_kumo_json` can't produce on their own (they're
+/// strictly per-column), so it's assembled here from the merged by-class map.
+/// No-op when there's no SCORE/CLASS pair or no observed values.
+fn inject_summary_stats_by_class(
+    full: &mut JsonMap<String, JsonValue>,
+    columns: &[ColumnSpec],
+    score_class: Option<(usize, usize)>,
+    by_class: &ByClassStats,
+    data_version: &str,
+) {
+    let Some((score_idx, _class_idx)) = score_class else {
+        return;
+    };
+    let mut total: u64 = 0;
+    let mut classes = JsonMap::new();
+    for (cls, w) in by_class {
+        if w.count == 0 {
+            continue;
+        }
+        total += w.count;
+        classes.insert(
+            cls.clone(),
+            json!({"min": w.min, "max": w.max, "mean": w.mean()}),
+        );
+    }
+    if classes.is_empty() {
+        return;
+    }
+    let score_name = &columns[score_idx].name;
+    full.insert(
+        kumo_key(
+            score_name,
+            "kumo.numerical",
+            "SUMMARY_STATS_BY_CLASS",
+            false,
+        ),
+        kumo_entry(JsonValue::Object(classes), false, data_version, total),
+    );
 }
 
 fn to_json_string(map: &JsonMap<String, JsonValue>) -> Result<String> {
@@ -286,8 +408,7 @@ mod tests {
         ]);
         let entity: Vec<String> = (0..n).map(|i| format!("u{i}")).collect();
         let score: Vec<Option<f64>> = (0..n).map(|i| Some(i as f64 / 1000.0)).collect();
-        let class: Vec<Option<&str>> =
-            (0..n).map(|i| Some(["A", "B", "C"][i % 3])).collect();
+        let class: Vec<Option<&str>> = (0..n).map(|i| Some(["A", "B", "C"][i % 3])).collect();
         write_parquet(
             &path,
             schema,
@@ -305,22 +426,31 @@ mod tests {
             col("SCORE", IngestedType::Float64, SemanticType::Numerical),
             col("CLASS", IngestedType::String, SemanticType::Categorical),
         ];
-        let (full, min) =
-            compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let (full, min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
 
         // COUNT == n across columns (merge across row groups correct).
         assert_eq!(val(&full, "entity__kumo.ID__COUNT__False"), n as u64);
         assert_eq!(val(&full, "SCORE__kumo.numerical__COUNT__False"), n as u64);
-        assert_eq!(val(&full, "CLASS__kumo.categorical__COUNT__False"), n as u64);
+        assert_eq!(
+            val(&full, "CLASS__kumo.categorical__COUNT__False"),
+            n as u64
+        );
 
         // SCORE min/max exact across the whole file.
-        let mn = val(&full, "SCORE__kumo.numerical__MIN__False").as_f64().unwrap();
-        let mx = val(&full, "SCORE__kumo.numerical__MAX__False").as_f64().unwrap();
+        let mn = val(&full, "SCORE__kumo.numerical__MIN__False")
+            .as_f64()
+            .unwrap();
+        let mx = val(&full, "SCORE__kumo.numerical__MAX__False")
+            .as_f64()
+            .unwrap();
         assert!((mn - 0.0).abs() < 1e-9, "min={mn}");
         assert!((mx - 0.999).abs() < 1e-9, "max={mx}");
 
         // CLASS num_unique == 3 EXACT (Hybrid map complete, overrides HLL).
-        assert_eq!(val(&full, "CLASS__kumo.categorical__NUM_UNIQUE__False"), 3u64);
+        assert_eq!(
+            val(&full, "CLASS__kumo.categorical__NUM_UNIQUE__False"),
+            3u64
+        );
 
         // entity num_unique == n EXACT (1000 distinct, well under the 1M cap).
         assert_eq!(val(&full, "entity__kumo.ID__NUM_UNIQUE__False"), n as u64);
@@ -329,9 +459,84 @@ mod tests {
         let mfull: JsonMap<String, JsonValue> = serde_json::from_str(&full).unwrap();
         assert!(mfull.contains_key("CLASS__kumo.categorical__CATEGORY_COUNTS__False"));
 
+        // SUMMARY_STATS_BY_CLASS: SCORE grouped by CLASS, merged correctly
+        // across the ~8 row groups. Class A = {i : i%3==0}, score=i/1000.
+        let bc = val(
+            &full,
+            "SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False",
+        );
+        assert!((bc["A"]["min"].as_f64().unwrap() - 0.0).abs() < 1e-9);
+        assert!((bc["A"]["max"].as_f64().unwrap() - 0.999).abs() < 1e-9);
+        assert!((bc["A"]["mean"].as_f64().unwrap() - 0.4995).abs() < 1e-6);
+        // Three classes, no more.
+        assert_eq!(bc.as_object().unwrap().len(), 3);
+
         // min variant parses and keeps the scalar COUNT.
         let mmin: JsonMap<String, JsonValue> = serde_json::from_str(&min).unwrap();
-        assert_eq!(mmin["CLASS__kumo.categorical__COUNT__False"]["value"], 1000u64);
+        assert_eq!(
+            mmin["CLASS__kumo.categorical__COUNT__False"]["value"],
+            1000u64
+        );
+        // by-class is a UI/BP stat — full only, never in the minified variant.
+        assert!(!mmin.contains_key("SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False"));
+    }
+
+    /// Exact per-class min/max/mean for a hand-checked tiny input.
+    #[test]
+    fn summary_stats_by_class_exact() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("predictions.parquet");
+        let schema = Schema::new(vec![
+            Field::new("SCORE", DataType::Float64, true),
+            Field::new("CLASS", DataType::Utf8, true),
+        ]);
+        write_parquet(
+            &path,
+            schema,
+            vec![
+                StdArc::new(Float64Array::from(vec![Some(1.0), Some(3.0), Some(5.0)])) as ArrayRef,
+                StdArc::new(StringArray::from(vec![Some("A"), Some("A"), Some("B")])) as ArrayRef,
+            ],
+            1024,
+        );
+        let columns = vec![
+            col("SCORE", IngestedType::Float64, SemanticType::Numerical),
+            col("CLASS", IngestedType::String, SemanticType::Categorical),
+        ];
+        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let bc = val(
+            &full,
+            "SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False",
+        );
+        // A: [1,3] -> min 1, max 3, mean 2 ; B: [5] -> min/max/mean 5.
+        assert!((bc["A"]["min"].as_f64().unwrap() - 1.0).abs() < 1e-9);
+        assert!((bc["A"]["max"].as_f64().unwrap() - 3.0).abs() < 1e-9);
+        assert!((bc["A"]["mean"].as_f64().unwrap() - 2.0).abs() < 1e-9);
+        assert!((bc["B"]["min"].as_f64().unwrap() - 5.0).abs() < 1e-9);
+        assert!((bc["B"]["max"].as_f64().unwrap() - 5.0).abs() < 1e-9);
+        assert!((bc["B"]["mean"].as_f64().unwrap() - 5.0).abs() < 1e-9);
+    }
+
+    /// No CLASS column (e.g. regression/binary BP) → no by-class stat emitted.
+    #[test]
+    fn no_summary_stats_by_class_without_class_column() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("predictions.parquet");
+        let schema = Schema::new(vec![Field::new("TARGET_PRED", DataType::Float64, true)]);
+        write_parquet(
+            &path,
+            schema,
+            vec![StdArc::new(Float64Array::from(vec![Some(1.0), Some(2.0)])) as ArrayRef],
+            1024,
+        );
+        let columns = vec![col(
+            "TARGET_PRED",
+            IngestedType::Float64,
+            SemanticType::Numerical,
+        )];
+        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        let mfull: JsonMap<String, JsonValue> = serde_json::from_str(&full).unwrap();
+        assert!(!mfull.keys().any(|k| k.contains("SUMMARY_STATS_BY_CLASS")));
     }
 
     /// Multiple part files merge correctly.
@@ -357,7 +562,9 @@ mod tests {
         let (full, _min) =
             compute_parquet_col_stats(&[p1.as_path(), p2.as_path()], &columns, "v1").unwrap();
         assert_eq!(val(&full, "v__kumo.numerical__COUNT__False"), 6u64);
-        let mx = val(&full, "v__kumo.numerical__MAX__False").as_f64().unwrap();
+        let mx = val(&full, "v__kumo.numerical__MAX__False")
+            .as_f64()
+            .unwrap();
         assert!((mx - 6.0).abs() < 1e-9);
     }
 }
