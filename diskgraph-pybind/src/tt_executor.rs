@@ -2222,7 +2222,15 @@ fn build_stage_stats_from_columns(
         if !vals.is_empty() {
             num_targets = Some(vals.iter().collect::<HashSet<_>>().len() as u64);
             if let Some(tt) = task_type {
-                if tt == "regression" {
+                // Forecasting carries a scalar numerical `TARGET` column (the
+                // value being forecast) alongside the autoregression /
+                // year-over-year label lists, so its per-stage target
+                // distribution is the same numerical summary as regression.
+                // Kumo's `_assert_native_split_stats_contract` requires a
+                // non-null `target_distribution` for every non-link-pred task,
+                // forecasting included; without this branch forecasting split
+                // stats came back null and tripped that contract.
+                if tt == "regression" || tt == "forecasting" {
                     target_distribution = build_numerical_target_distribution(&vals);
                 } else if tt == "binary_classification" || tt == "multiclass_classification" {
                     let mut counts = std::collections::BTreeMap::<String, u64>::new();
@@ -4304,6 +4312,40 @@ mod tests {
             .get("target_distribution")
             .and_then(|v| v.as_object())
             .expect("regression target_distribution should be populated");
+
+        assert_eq!(dist.get("target_min").and_then(|v| v.as_f64()),
+                   Some(1.0));
+        assert_eq!(dist.get("target_max").and_then(|v| v.as_f64()),
+                   Some(3.0));
+        assert!(dist.get("histogram").and_then(|v| v.as_object()).is_some());
+    }
+
+    #[test]
+    fn test_build_stage_stats_forecasting_target_distribution() {
+        // Forecasting carries a scalar numerical TARGET column, so its
+        // per-stage target distribution is the same numerical summary as
+        // regression. Without the "forecasting" branch this came back null and
+        // tripped Kumo's split-stats contract.
+        let assignments = vec![0, 0, 0, 0];
+        let targets = vec![
+            Some("1.0".to_string()),
+            Some("inf".to_string()),
+            Some("2.0".to_string()),
+            Some("3.0".to_string()),
+        ];
+
+        let stats = build_stage_stats_from_columns(
+            &assignments,
+            0,
+            None,
+            Some(&targets),
+            None,
+            Some("forecasting"),
+        );
+        let dist = stats
+            .get("target_distribution")
+            .and_then(|v| v.as_object())
+            .expect("forecasting target_distribution should be populated");
 
         assert_eq!(dist.get("target_min").and_then(|v| v.as_f64()),
                    Some(1.0));
