@@ -14,6 +14,9 @@ set -euo pipefail
 #   -m  Enable jemalloc heap dump watchdog.
 #   -c  Enable per-column statistics collection (--col-stats).
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/rustflags.sh"
+
 ULIMIT_NOFILE="${ULIMIT_NOFILE:-100000}"
 if ! ulimit -n "${ULIMIT_NOFILE}" 2>/dev/null; then
   echo "warning: failed to raise ulimit -n to ${ULIMIT_NOFILE}; current limit may be too low" >&2
@@ -72,7 +75,7 @@ fi
 env_args=()
 if [[ "${DEBUGINFO_ENABLED}" == "true" ]]; then
   env_args+=(CARGO_PROFILE_RELEASE_DEBUG=1)
-  env_args+=(RUSTFLAGS="${RUSTFLAGS:-} -C debuginfo=1 -C force-frame-pointers=yes -C target-cpu=native")
+  env_args+=(RUSTFLAGS="$(diskgraph_release_rustflags -C debuginfo=1 -C force-frame-pointers=yes)")
 fi
 base_env=(PATH="${PATH}" HOME="${HOME}" USER="${USER}")
 
@@ -80,7 +83,7 @@ USE_CARGO_RUN="true"
 if [[ "${MEM_PROFILE_ENABLED}" == "true" ]]; then
   if [[ "${DEBUGINFO_ENABLED}" == "false" ]]; then
     env_args+=(CARGO_PROFILE_RELEASE_DEBUG=1)
-    env_args+=(RUSTFLAGS="${RUSTFLAGS:-} -C debuginfo=1 -C force-frame-pointers=yes -C target-cpu=native")
+    env_args+=(RUSTFLAGS="$(diskgraph_release_rustflags -C debuginfo=1 -C force-frame-pointers=yes)")
   fi
   env -i "${base_env[@]}" \
     MALLOC_CONF= _RJEM_MALLOC_CONF= _rjem_MALLOC_CONF= \

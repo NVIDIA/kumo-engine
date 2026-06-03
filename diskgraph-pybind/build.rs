@@ -1,7 +1,15 @@
+mod native_cpu_guard {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../build-support/native_cpu_guard.rs"
+    ));
+}
+
 fn main() {
     pyo3_build_config::use_pyo3_cfgs();
 
     if std::env::var_os("CARGO_FEATURE_EXTENSION_MODULE").is_some() {
+        native_cpu_guard::reject_native_cpu_build("diskgraph Python extension");
         return;
     }
 

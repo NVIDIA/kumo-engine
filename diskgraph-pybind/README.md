@@ -17,12 +17,23 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ## Building
 
-The `gxhash` dependency requires AES CPU intrinsics, so set `RUSTFLAGS` for
-native builds:
+The `gxhash` dependency requires AES CPU intrinsics. The workspace
+`.cargo/config.toml` sets portable x86_64 and aarch64 flags by default. If
+you override `RUSTFLAGS`, keep the target features explicit:
 
 ```bash
-export RUSTFLAGS="-C target-cpu=native"
+# x86_64
+export RUSTFLAGS="-C target-feature=+aes,+sse2"
+
+# aarch64
+export RUSTFLAGS="-C target-feature=+aes,+neon"
 ```
+
+Do not use `-C target-cpu=native` for wheels or Kumo-deployed builds. It can
+embed host-specific instructions such as AVX-512 into the standalone ingest
+binary packaged at `diskgraph/bin/ingest`, causing `SIGILL` on workers with a
+different CPU. For a private same-machine experiment only, set
+`DISKGRAPH_ALLOW_NATIVE_CPU_BUILD=1` to bypass the build guard.
 
 ### Quick build (no venv setup needed)
 
@@ -30,19 +41,19 @@ export RUSTFLAGS="-C target-cpu=native"
 cd diskgraph-pybind
 
 # Build a wheel
-RUSTFLAGS="-C target-cpu=native" uvx maturin build --release
+RUSTFLAGS="-C target-feature=+aes,+sse2" uvx maturin build --release
 
 # Or install into a venv in one step
 uv venv .venv
 source .venv/bin/activate
-RUSTFLAGS="-C target-cpu=native" uvx maturin develop --release
+RUSTFLAGS="-C target-feature=+aes,+sse2" uvx maturin develop --release
 ```
 
 ### Using an existing venv (e.g. kumo repo)
 
 ```bash
 source /path/to/your/venv/bin/activate
-RUSTFLAGS="-C target-cpu=native" uvx maturin develop --release --manifest-path diskgraph-pybind/Cargo.toml
+RUSTFLAGS="-C target-feature=+aes,+sse2" uvx maturin develop --release --manifest-path diskgraph-pybind/Cargo.toml
 ```
 
 ## Usage

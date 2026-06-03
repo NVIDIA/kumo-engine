@@ -3,9 +3,32 @@ from diskgraph._c import DiskgraphConfigError, DiskgraphConfigError, DiskgraphDa
 
 import os
 import json
+import platform
 import subprocess
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+
+def _portable_target_feature_flags():
+    machine = platform.machine().lower()
+    if machine in {"x86_64", "amd64"}:
+        return "-C target-feature=+aes,+sse2"
+    if machine in {"aarch64", "arm64"}:
+        return "-C target-feature=+aes,+neon"
+    return ""
+
+
+def _append_portable_rustflags(env):
+    if env.get("GITHUB_ACTIONS"):
+        return env
+
+    target_feature_flags = _portable_target_feature_flags()
+    if not target_feature_flags:
+        return env
+
+    rustflags = env.get("RUSTFLAGS", "").strip()
+    env["RUSTFLAGS"] = (rustflags + " " + target_feature_flags).strip()
+    return env
 
 
 @pytest.fixture(scope="session")
@@ -169,10 +192,7 @@ def list_features_graph(tmp_path_factory):
         json.dump(config, f)
 
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
-    env = dict(os.environ)
-    if not env.get("GITHUB_ACTIONS"):
-        rustflags = env.get("RUSTFLAGS", "").strip()
-        env["RUSTFLAGS"] = (rustflags + " -C target-cpu=native").strip()
+    env = _append_portable_rustflags(dict(os.environ))
     try:
         subprocess.run(
             ["cargo", "run", "--release", "--bin", "ingest", "--",
@@ -253,10 +273,7 @@ def list_features_graph_with_inner_nulls(tmp_path_factory):
         json.dump(config, f)
 
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
-    env = dict(os.environ)
-    if not env.get("GITHUB_ACTIONS"):
-        rustflags = env.get("RUSTFLAGS", "").strip()
-        env["RUSTFLAGS"] = (rustflags + " -C target-cpu=native").strip()
+    env = _append_portable_rustflags(dict(os.environ))
     try:
         subprocess.run(
             ["cargo", "run", "--release", "--bin", "ingest", "--",

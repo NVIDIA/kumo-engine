@@ -98,6 +98,9 @@ jobs:
           chmod +x diskgraph-pybind/python/diskgraph/bin/ingest
           ls -la diskgraph-pybind/python/diskgraph/bin/
 
+      - name: Verify staged ingest binary loads
+        run: diskgraph-pybind/python/diskgraph/bin/ingest --version
+
       - name: Build wheel
         run: |
           # Patch pyproject.toml with versioned string before build

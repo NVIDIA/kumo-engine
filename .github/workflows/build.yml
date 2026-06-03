@@ -62,6 +62,9 @@ jobs:
           cp target/release/ingest diskgraph-pybind/python/diskgraph/bin/ingest
           chmod +x diskgraph-pybind/python/diskgraph/bin/ingest
 
+      - name: Verify staged ingest binary loads
+        run: diskgraph-pybind/python/diskgraph/bin/ingest --version
+
       - name: Build wheel
         run: |
           maturin build \
