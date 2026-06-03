@@ -2251,6 +2251,46 @@ fn build_stage_stats_from_columns(
                             .collect::<serde_json::Map<String, Value>>();
                         target_distribution = json!({"count": count_json, "percentage": pct_json});
                     }
+                } else if tt == "multilabel_classification" || tt == "multilabel_ranking" {
+                    // Multilabel targets arrive as a pipe-delimited scalar string
+                    // ("a|b|c") that ttgen builds by joining the per-row label
+                    // list, so they reach us here in `vals` (NOT as an Arrow list
+                    // column — if a future writer changes that, they'd be skipped
+                    // by `collect_column_opt_strings` and this would regress to
+                    // null). Split into individual labels and report per-label
+                    // PREVALENCE: percentage = count / (# rows with a target),
+                    // matching the `get_target_distribution` semantics this native
+                    // artifact replaces. Per-label percentages can sum past 100%;
+                    // do NOT use the label-occurrence total as the denominator
+                    // (that would make it multinomial). Kumo's
+                    // `_assert_native_split_stats_contract` requires a non-null
+                    // `target_distribution` for multilabel, same as other tasks.
+                    let mut counts = std::collections::BTreeMap::<String, u64>::new();
+                    for v in &vals {
+                        for label in v.split('|') {
+                            if !label.is_empty() {
+                                *counts.entry(label.to_string()).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                    if !counts.is_empty() {
+                        let denom = vals.len() as f64;
+                        let count_json = counts
+                            .iter()
+                            .map(|(k, v)| (k.clone(), Value::from(*v as f64)))
+                            .collect::<serde_json::Map<String, Value>>();
+                        let pct_json = counts
+                            .iter()
+                            .map(|(k, v)| {
+                                (k.clone(), Value::from((*v as f64) * 100.0 / denom))
+                            })
+                            .collect::<serde_json::Map<String, Value>>();
+                        target_distribution = json!({"count": count_json, "percentage": pct_json});
+                        // Distinct individual labels, not distinct pipe-joined
+                        // strings ("a|b" and "a|c" are two values to the generic
+                        // counter above, which is wrong for multilabel).
+                        num_targets = Some(counts.len() as u64);
+                    }
                 }
             }
         }
@@ -4352,6 +4392,81 @@ mod tests {
         assert_eq!(dist.get("target_max").and_then(|v| v.as_f64()),
                    Some(3.0));
         assert!(dist.get("histogram").and_then(|v| v.as_object()).is_some());
+    }
+
+    #[test]
+    fn test_build_stage_stats_multilabel_target_distribution() {
+        // Multilabel targets are pipe-delimited scalar strings; the per-stage
+        // distribution must split them into individual labels and report
+        // per-row PREVALENCE (count / #rows-with-target), which can sum past
+        // 100%. Row 1 has an empty label set (""), which contributes to the
+        // denominator but to no label. Row 4 (label "c") is in stage 1 and must
+        // be excluded from stage 0's distribution.
+        let assignments = vec![0, 0, 0, 0, 1];
+        let targets = vec![
+            Some("a|b".to_string()),
+            Some("".to_string()),
+            Some("b".to_string()),
+            Some("a".to_string()),
+            Some("c".to_string()),
+        ];
+
+        let stats = build_stage_stats_from_columns(
+            &assignments,
+            0,
+            None,
+            Some(&targets),
+            None,
+            Some("multilabel_classification"),
+        );
+
+        // Distinct individual labels in stage 0 (a, b) — not distinct
+        // pipe-strings ("a|b", "b", "a" would be 3).
+        assert_eq!(stats.get("num_targets").and_then(|v| v.as_u64()), Some(2));
+
+        let dist = stats
+            .get("target_distribution")
+            .and_then(|v| v.as_object())
+            .expect("multilabel target_distribution should be populated");
+        let count = dist.get("count").and_then(|v| v.as_object()).unwrap();
+        let pct = dist.get("percentage").and_then(|v| v.as_object()).unwrap();
+
+        // a in rows 0,3 ; b in rows 0,2 ; denominator = 4 rows in stage 0.
+        assert_eq!(count.get("a").and_then(|v| v.as_f64()), Some(2.0));
+        assert_eq!(count.get("b").and_then(|v| v.as_f64()), Some(2.0));
+        assert_eq!(pct.get("a").and_then(|v| v.as_f64()), Some(50.0));
+        assert_eq!(pct.get("b").and_then(|v| v.as_f64()), Some(50.0));
+        // "c" belongs to stage 1 and the empty label set produced no entry.
+        assert!(count.get("c").is_none());
+        assert!(count.get("").is_none());
+    }
+
+    #[test]
+    fn test_build_stage_stats_multilabel_ranking_target_distribution() {
+        // multilabel_ranking takes the same per-label path as classification.
+        let assignments = vec![0, 0];
+        let targets = vec![Some("x|y".to_string()), Some("x".to_string())];
+
+        let stats = build_stage_stats_from_columns(
+            &assignments,
+            0,
+            None,
+            Some(&targets),
+            None,
+            Some("multilabel_ranking"),
+        );
+
+        let dist = stats
+            .get("target_distribution")
+            .and_then(|v| v.as_object())
+            .expect("multilabel_ranking target_distribution should be populated");
+        let count = dist.get("count").and_then(|v| v.as_object()).unwrap();
+        let pct = dist.get("percentage").and_then(|v| v.as_object()).unwrap();
+        // x in both rows, y in one; denominator = 2.
+        assert_eq!(count.get("x").and_then(|v| v.as_f64()), Some(2.0));
+        assert_eq!(count.get("y").and_then(|v| v.as_f64()), Some(1.0));
+        assert_eq!(pct.get("x").and_then(|v| v.as_f64()), Some(100.0));
+        assert_eq!(pct.get("y").and_then(|v| v.as_f64()), Some(50.0));
     }
 
     #[test]
