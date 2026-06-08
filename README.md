@@ -116,12 +116,11 @@ The repo now has two wheel-related workflows:
 
 - `.github/workflows/build.yml`
   - Runs on push/PR to `main`
-  - Builds the Python wheel from `diskgraph-pybind` using `maturin`
+  - Builds the Python wheel using `scripts/build_python_wheel.sh`
 
 - `.github/workflows/nightly.yml`
-  - Runs daily at `0 6 * * *` UTC and via manual dispatch
+  - Runs on push to `main` when wheel-related files change and via manual dispatch
   - Builds wheels for:
-    - `ubuntu-20.04`, Python `3.10`
     - `ubuntu-22.04`, Python `3.10`
   - Uploads wheels to S3:
     - `s3://kumo-diskgraph/packages/<os>/py<python>/latest/<wheel-file>`
@@ -134,7 +133,23 @@ Required GitHub Actions secrets for nightly upload:
 
 Region used by the workflow: `us-west-2`.
 
-Current Python package version is read from `diskgraph-pybind/pyproject.toml` (`[project].version`).
+Current Python package version is read from root `pyproject.toml`
+(`[project].version`). See `diskgraph-pybind/README.md` for local wheel,
+portable Linux wheel, and development install commands.
+
+The Python package build is also self-contained when installed from Git. The
+PEP 517 backend builds and stages the standalone `ingest` binary before
+delegating to maturin, so consumers can install a pinned source commit
+directly:
+
+```bash
+uv pip install \
+  "diskgraph @ git+ssh://git@github.com/kumo-ai/kumo-diskgraph.git@<sha>"
+```
+
+The base package installs the native extension and bundled standalone ingest
+binary. Use the `kumo` extra only when calling Kumo compiler APIs outside an
+environment that already installs `kumo-api`.
 
 ## Contributing notes
 
@@ -177,4 +192,3 @@ Pybind uses `pyo3-log` integration so Rust logs flow into Python logging. New py
 - [ ] Existing logging/error behavior is preserved unless intentionally changed and called out in PR description.
 
 When in doubt, use PR #140 as the reference baseline.
-

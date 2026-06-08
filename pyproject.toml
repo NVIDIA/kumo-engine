@@ -1,0 +1,30 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "diskgraph_build_backend"
+backend-path = ["diskgraph-pybind"]
+
+[project]
+name = "diskgraph"
+version = "0.1.0"
+requires-python = ">=3.7"
+dependencies = []
+
+[project.optional-dependencies]
+kumo = [
+    "kumo-api @ git+ssh://git@github.com/kumo-ai/kumo-api.git@v0.53.0",
+]
+test = [
+    "pytest",
+    "pyarrow",
+    "kumo-api @ git+ssh://git@github.com/kumo-ai/kumo-api.git@v0.53.0",
+    "kumo-pql @ git+ssh://git@github.com/kumo-ai/kumo-pql.git@4bdab83d790151a749f34a205fdbe848234de44f"
+]
+
+[tool.maturin]
+manifest-path = "diskgraph-pybind/Cargo.toml"
+module-name = "diskgraph._c"
+python-source = "diskgraph-pybind/python"
+features = ["extension-module"]
+include = [
+    { path = "diskgraph-pybind/python/diskgraph/bin/ingest", format = "wheel" },
+]

@@ -8,6 +8,8 @@ on:  # yamllint disable-line rule:truthy
       - '.github/workflows/nightly.yml'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'pyproject.toml'
+      - 'scripts/build_python_wheel.sh'
       - 'diskgraph-*/**'
   workflow_dispatch:
 
@@ -55,16 +57,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install build dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install maturin
-
       - name: Set version
         run: |
-          BASE_VERSION=$(grep -m1 '^version = ' diskgraph-pybind/pyproject.toml | cut -d '"' -f2)
+          BASE_VERSION=$(grep -m1 '^version = ' pyproject.toml | cut -d '"' -f2)
           if [ -z "$BASE_VERSION" ]; then
-            echo "Failed to parse version from diskgraph-pybind/pyproject.toml"
+            echo "Failed to parse version from pyproject.toml"
             exit 1
           fi
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-8)
@@ -75,42 +72,13 @@ jobs:
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
           echo "VERSION_TODAY=${BASE_VERSION}.dev${TODAY}" >> $GITHUB_ENV
 
-      - name: Build standalone ingest binary
-        # Built separately from the pybind extension because maturin
-        # only builds the cdylib extension module (`diskgraph._c`),
-        # not Cargo workspace `[[bin]]` targets. The wrapper at
-        # kumo-side `kumo/engine/diskgraph/ingest_runner.py` spawns
-        # this binary as a subprocess for OOM-recoverable ingest, so
-        # it has to ship in the same wheel.
-        run: cargo build --release --bin ingest
-
-      - name: Stage ingest binary into Python package
-        # Maturin treats `python-source = "python"` (per
-        # `diskgraph-pybind/pyproject.toml`) as the package root and
-        # bundles every file under it into the wheel. Dropping the
-        # binary at `python/diskgraph/bin/ingest` makes the wheel
-        # contain `diskgraph/bin/ingest`, which is exactly where the
-        # consumer wrapper's `_resolve_ingest_bin()` looks (step 2
-        # in its lookup order).
-        run: |
-          mkdir -p diskgraph-pybind/python/diskgraph/bin
-          cp target/release/ingest diskgraph-pybind/python/diskgraph/bin/ingest
-          chmod +x diskgraph-pybind/python/diskgraph/bin/ingest
-          ls -la diskgraph-pybind/python/diskgraph/bin/
-
-      - name: Verify staged ingest binary loads
-        run: diskgraph-pybind/python/diskgraph/bin/ingest --version
-
       - name: Build wheel
         run: |
-          # Patch pyproject.toml with versioned string before build
-          sed -i "s/^version = .*/version = \"${{ env.VERSION }}\"/" diskgraph-pybind/pyproject.toml
-          cat diskgraph-pybind/pyproject.toml | grep version
-
-          maturin build \
-            --manifest-path diskgraph-pybind/Cargo.toml \
-            --release \
-            --interpreter python${{ matrix.python }}
+          scripts/build_python_wheel.sh \
+            --python python${{ matrix.python }} \
+            --version "${{ env.VERSION }}" \
+            --out target/wheels \
+            --zig
 
           WHEEL_PATH=$(find target/wheels -maxdepth 1 -type f -name '*.whl' | head -n 1)
           if [ -z "$WHEEL_PATH" ]; then
@@ -120,20 +88,6 @@ jobs:
 
           echo "WHEEL_PATH=$WHEEL_PATH" >> $GITHUB_ENV
           echo "WHEEL_BASENAME=$(basename "$WHEEL_PATH")" >> $GITHUB_ENV
-
-      - name: Verify ingest binary is in wheel
-        # Defensive check: if maturin's include rules ever change
-        # (e.g. someone adds an explicit `include` directive that
-        # excludes binaries), the wheel ships without the binary
-        # and consumers fail at runtime with FileNotFoundError. Fail
-        # the build here instead.
-        run: |
-          if ! python -m zipfile -l "${{ env.WHEEL_PATH }}" | grep -q 'diskgraph/bin/ingest'; then
-            echo "ERROR: wheel does not contain diskgraph/bin/ingest"
-            python -m zipfile -l "${{ env.WHEEL_PATH }}" | grep -E 'diskgraph/(bin|_c)' || true
-            exit 1
-          fi
-          echo "ingest binary present in wheel"
 
       - name: Upload wheel
         run: |

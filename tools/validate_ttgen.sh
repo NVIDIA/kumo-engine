@@ -25,7 +25,7 @@
 #
 # Prerequisites:
 #   - AWS credentials configured (aws sso login --profile normal-profile)
-#   - diskgraph pybind wheel installed (maturin build --release + pip install)
+#   - diskgraph pybind wheel installed (scripts/build_python_wheel.sh + pip install)
 #   - kumoapi on PYTHONPATH
 
 set -euo pipefail
@@ -196,8 +196,8 @@ if python3 -c "import diskgraph._c" 2>/dev/null; then
     echo "  pybind OK"
 else
     echo "  ERROR: diskgraph pybind not installed."
-    echo "  Run: cd diskgraph-pybind && maturin build --release"
-    echo "  Then: pip3 install --break-system-packages target/wheels/diskgraph-*.whl"
+    echo "  Run: python3 -m pip install ."
+    echo "  See diskgraph-pybind/README.md for wheel build options."
     exit 1
 fi
 

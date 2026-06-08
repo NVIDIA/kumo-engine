@@ -54,9 +54,9 @@ jobs:
     runs-on: ubuntu-22.04-large
     env:
       # Same lld + stripped-debug strategy as the `test` job — the
-      # `cargo build --release --bin ingest` step below links the
-      # full AWS-SDK / arrow chain and is the heaviest single link
-      # in the pipeline.
+      # DiskGraph's PEP 517 backend builds the PyO3 extension and stages the
+      # standalone ingest binary. That link step pulls the full AWS-SDK /
+      # arrow chain and is the heaviest single link in the pipeline.
       RUSTFLAGS: "-C target-feature=+aes,+sse2 -C link-arg=-fuse-ld=lld -C debuginfo=line-tables-only"
     steps:
       - name: Free disk space
@@ -81,17 +81,14 @@ jobs:
           # Pre-install specific versions to fix kumoapi grpcio-tools build isolation issues
           pip install "setuptools<82" grpcio-tools maturin pytest
       - name: Build and Test Python Package
-        working-directory: ./diskgraph-pybind
         env:
-          PYTHONPATH: python
           KUMO_GITHUB_BOT_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
         run: |
           # Rewrite SSH URLs to HTTPS directly in pyproject.toml so pip uses the token
           sed -i "s|git+ssh://git@github.com/|git+https://${KUMO_GITHUB_BOT_TOKEN}@github.com/|g" pyproject.toml
 
-          pip install -v -e ".[test]" --no-build-isolation
+          pip install -v ".[test]" --no-build-isolation
 
-          # Pre-build the ingest binary so the pytest fixture doesn't hang compiling it
-          cd .. && cargo build --release --bin ingest && cd diskgraph-pybind
-
-          pytest -v -s python/tests/
+          TEST_DIR="$(pwd)/diskgraph-pybind/python/tests"
+          cd /tmp
+          pytest -v -s "$TEST_DIR"

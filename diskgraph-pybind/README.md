@@ -32,28 +32,46 @@ export RUSTFLAGS="-C target-feature=+aes,+neon"
 Do not use `-C target-cpu=native` for wheels or Kumo-deployed builds. It can
 embed host-specific instructions such as AVX-512 into the standalone ingest
 binary packaged at `diskgraph/bin/ingest`, causing `SIGILL` on workers with a
-different CPU. For a private same-machine experiment only, set
-`DISKGRAPH_ALLOW_NATIVE_CPU_BUILD=1` to bypass the build guard.
+different CPU. Package builds reject `target-cpu=native`.
 
 ### Quick build (no venv setup needed)
 
 ```bash
-cd diskgraph-pybind
+# From the kumo-diskgraph repository root:
 
-# Build a wheel
-RUSTFLAGS="-C target-feature=+aes,+sse2" uvx maturin build --release
+# Build a wheel through the package backend. This also stages
+# diskgraph/bin/ingest into the wheel.
+python -m pip wheel --no-deps --wheel-dir dist .
 
 # Or install into a venv in one step
 uv venv .venv
 source .venv/bin/activate
-RUSTFLAGS="-C target-feature=+aes,+sse2" uvx maturin develop --release
+uv pip install .
 ```
+
+The base install includes the native extension and bundled standalone
+`diskgraph/bin/ingest` binary. Install `.[kumo]` only when using the
+`DiskGraphPlanCompiler` APIs outside a Kumo environment that already provides
+`kumo-api`.
+
+Portable Linux wheels should be built through the repository wrapper:
+
+```bash
+# From the kumo-diskgraph repository root:
+scripts/build_python_wheel.sh --python python3.10 --out target/wheels --zig
+```
+
+`--zig` builds the Python extension and bundled `diskgraph/bin/ingest` binary
+against manylinux2014 so the resulting Linux wheel is not tied to the build
+host's glibc. The wrapper installs `cargo-zigbuild` when needed; pip build
+isolation installs the Python build requirements from `pyproject.toml`.
 
 ### Using an existing venv (e.g. kumo repo)
 
 ```bash
+# From the kumo-diskgraph repository root:
 source /path/to/your/venv/bin/activate
-RUSTFLAGS="-C target-feature=+aes,+sse2" uvx maturin develop --release --manifest-path diskgraph-pybind/Cargo.toml
+uv pip install .
 ```
 
 ## Usage
@@ -94,12 +112,14 @@ for event in features:
 Python tests:
 
 ```bash
-cd diskgraph-pybind
-./run_tests.sh
+uv pip install ".[test]"
+TEST_DIR="$(pwd)/diskgraph-pybind/python/tests"
+cd /tmp
+pytest -v "$TEST_DIR"
 ```
 
-This builds the module with `uvx maturin develop` and runs pytest. Override the
-Python interpreter with `PYTHON=python3.11 ./run_tests.sh`.
+This installs the package through the same backend used by Git URL installs, so
+the standalone `ingest` binary is bundled before tests run.
 
 Rust unit tests (`diskgraph-pybind` crate):
 
