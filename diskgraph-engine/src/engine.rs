@@ -14,6 +14,8 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, warn};
 
+const DETERMINISTIC_UNIFORM_SEED_V1: u64 = 41;
+
 /// Metadata and reader for a single graph shard.
 pub struct ShardHandle {
     pub reader: Arc<ShardReader>,
@@ -1014,7 +1016,7 @@ impl DiskGraphEngine {
                     }
                 }
             }
-            SamplingMode::Uniform => {
+            SamplingMode::Uniform | SamplingMode::DeterministicUniform => {
                 if k >= edge_count {
                     loop {
                         dst_scratch.resize(128, 0);
@@ -1029,7 +1031,14 @@ impl DiskGraphEngine {
                     }
                 } else {
                     use rand::seq::index::sample;
-                    let indices = if let Some(seed) = self.random_seed {
+                    let random_seed = match fanout_spec.mode {
+                        SamplingMode::DeterministicUniform => {
+                            Some(DETERMINISTIC_UNIFORM_SEED_V1)
+                        }
+                        SamplingMode::Uniform => self.random_seed,
+                        _ => None,
+                    };
+                    let indices = if let Some(seed) = random_seed {
                         use rand::SeedableRng;
                         // Combine the global random_seed with the unique deterministic global_id
                         // to ensure every seed node walks the same deterministic path consistently

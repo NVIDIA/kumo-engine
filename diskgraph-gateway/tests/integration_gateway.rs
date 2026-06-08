@@ -449,6 +449,96 @@ async fn test_fused_sampling_flow() {
     assert_eq!(stats.total_nodes, 7);
 }
 
+async fn sample_item_node_ids(service: &SamplerGateway, req_json: &str) -> Vec<u64> {
+    let response = service
+        .do_get(tonic::Request::new(Ticket {
+            ticket: req_json.as_bytes().to_vec().into(),
+        }))
+        .await
+        .unwrap();
+    let mut stream = response.into_inner();
+    let _ = stream.next().await.unwrap().unwrap();
+    let schema = Arc::new(arrow_schema::Schema::new(vec![
+        arrow_schema::Field::new("row_type", arrow_schema::DataType::Int8, false),
+        arrow_schema::Field::new("id_a", arrow_schema::DataType::UInt64, false),
+        arrow_schema::Field::new("id_b", arrow_schema::DataType::UInt64, false),
+        arrow_schema::Field::new("meta_type", arrow_schema::DataType::UInt64, false),
+    ]));
+    let dict_tracker = HashMap::new();
+    let mut item_node_ids = Vec::new();
+
+    while let Some(msg) = stream.next().await {
+        let msg = msg.unwrap();
+        if msg.data_header.is_empty() {
+            continue;
+        }
+
+        let batch =
+            arrow_flight::utils::flight_data_to_arrow_batch(&msg, schema.clone(), &dict_tracker)
+                .unwrap();
+        if batch.num_rows() == 0 {
+            continue;
+        }
+
+        let row_type = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow_array::Int8Array>()
+            .unwrap();
+        let id_b = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .unwrap();
+        let meta_type = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<arrow_array::UInt64Array>()
+            .unwrap();
+
+        for i in 0..batch.num_rows() {
+            if row_type.value(i) == 1 && meta_type.value(i) == 0 {
+                item_node_ids.push(id_b.value(i));
+            }
+        }
+    }
+
+    item_node_ids
+}
+
+#[tokio::test]
+async fn test_deterministic_uniform_mode_is_stable_over_gateway() {
+    init_tracing();
+    let graph = TestGraph::new();
+    let sampler = Arc::new(graph.sampler);
+    let pool = StatePool::new();
+    let service = SamplerGateway::new(sampler, pool);
+
+    let req_json = r#"{
+        "dataset_id": "00000000-0000-0000-0000-000000000000",
+        "seed_nodes": { "users": [0] },
+        "seed_timestamps": null,
+        "plan": {
+            "layers": [
+                {
+                    "fanouts": { "purchased": { "fanout": 3, "mode": "deterministic_uniform", "absent_key_policy": "uniform_fallback" } },
+                    "default_fanout": null
+                }
+            ]
+        },
+        "flags": {
+            "replace": false, "directed": true, "disjoint": true, "return_edge_id": false, "adaptive": false,
+            "fused_feature_fetching": false
+        }
+    }"#;
+
+    let first = sample_item_node_ids(&service, req_json).await;
+    assert_eq!(first.len(), 3);
+    for _ in 0..5 {
+        assert_eq!(first, sample_item_node_ids(&service, req_json).await);
+    }
+}
+
 #[tokio::test]
 async fn test_feature_fetching_flow() {
     init_tracing();

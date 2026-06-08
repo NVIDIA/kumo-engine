@@ -116,6 +116,8 @@ pub enum AbsentKeyPolicy {
 pub enum SamplingMode {
     /// Random uniform selection.
     Uniform,
+    /// Uniform selection with a deterministic internal seed.
+    DeterministicUniform,
     /// Deterministic selection of the most recent edges.
     TemporalMostRecent,
     /// Probabilistic selection based on edge weight.
@@ -248,5 +250,17 @@ mod tests {
 
         assert_eq!(decoded.seed_nodes["User"], vec![1, 2, 3]);
         assert_eq!(decoded.plan.layers.len(), 1);
+    }
+
+    #[test]
+    fn test_deterministic_uniform_mode_serialization() {
+        let mode = SamplingMode::DeterministicUniform;
+
+        let json = serde_json::to_value(&mode).unwrap();
+        assert_eq!(json, json!("deterministic_uniform"));
+
+        let decoded: SamplingMode =
+            serde_json::from_value(json!("deterministic_uniform")).unwrap();
+        assert!(matches!(decoded, SamplingMode::DeterministicUniform));
     }
 }

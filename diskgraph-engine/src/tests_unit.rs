@@ -210,6 +210,14 @@ impl OutputHandler for MockOutput {
 }
 
 fn make_sampling_request(seed_nodes: Vec<u64>, fanouts: Vec<u32>) -> BatchSamplingRequest {
+    make_sampling_request_with_mode(seed_nodes, fanouts, SamplingMode::Uniform)
+}
+
+fn make_sampling_request_with_mode(
+    seed_nodes: Vec<u64>,
+    fanouts: Vec<u32>,
+    mode: SamplingMode,
+) -> BatchSamplingRequest {
     let layers: Vec<LayerSpec> = fanouts
         .into_iter()
         .map(|fanout| LayerSpec {
@@ -217,7 +225,7 @@ fn make_sampling_request(seed_nodes: Vec<u64>, fanouts: Vec<u32>) -> BatchSampli
                 "Connects".to_string(),
                 FanoutSpec {
                     fanout,
-                    mode: SamplingMode::Uniform,
+                    mode: mode.clone(),
                     absent_key_policy: AbsentKeyPolicy::UniformFallback,
                 },
             )]
@@ -242,6 +250,25 @@ fn make_sampling_request(seed_nodes: Vec<u64>, fanouts: Vec<u32>) -> BatchSampli
             swap_edge_direction: false,
         },
     }
+}
+
+fn sample_user_globals(graph: &TestGraph, req: &BatchSamplingRequest) -> Vec<u64> {
+    let mut state = crate::state::StatePool::new().acquire();
+    let mut output = MockOutput {
+        edges: vec![],
+        feature_batches: vec![],
+        schema: None,
+        fused_batches: vec![],
+    };
+
+    graph.sampler.sample(req, &mut state, &mut output).unwrap();
+
+    state.type_states[&0]
+        .nodes
+        .iter()
+        .skip(1)
+        .map(|n| n.global_id)
+        .collect()
 }
 
 fn local_id_to_hop(local_id: u32, hop_counts: &[u64]) -> Option<usize> {
@@ -506,6 +533,32 @@ fn test_sampling_determinism() {
     let diff_globals: Vec<_> = state.type_states[&0].nodes.iter().skip(1).map(|n| n.global_id).collect();
 
     assert_ne!(first_sampled_globals, diff_globals, "Sampling should produce different results with different seeds");
+}
+
+#[test]
+fn test_deterministic_uniform_mode_is_stable_on_unseeded_engine() {
+    let graph = TestGraph::new();
+    let req = make_sampling_request_with_mode(
+        vec![0],
+        vec![5],
+        SamplingMode::DeterministicUniform,
+    );
+
+    let first_sampled_globals = sample_user_globals(&graph, &req);
+    for _ in 0..5 {
+        assert_eq!(
+            first_sampled_globals,
+            sample_user_globals(&graph, &req),
+            "deterministic_uniform should be stable without an engine seed",
+        );
+    }
+
+    let seeded_graph = TestGraph::new_with_seed(Some(999));
+    assert_eq!(
+        first_sampled_globals,
+        sample_user_globals(&seeded_graph, &req),
+        "deterministic_uniform should use the mode seed, not the engine seed",
+    );
 }
 
 #[test]
