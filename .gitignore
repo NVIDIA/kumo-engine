@@ -4,7 +4,6 @@
 .idea
 .vscode
 .DS_Store
-Cargo.lock
 *profile.svg
 *profile.pb
 heap-*.heap
