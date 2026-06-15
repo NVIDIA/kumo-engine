@@ -1,6 +1,9 @@
 use crate::parser::*;
 use crate::*;
-use arrow_array::{ArrayRef, Float32Array, Float64Array, Int32Array};
+use arrow_array::{
+    ArrayRef, Float32Array, Float64Array, Int32Array, Time32MillisecondArray, Time32SecondArray,
+    Time64MicrosecondArray, Time64NanosecondArray,
+};
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime};
 use num_bigint::BigInt;
 use serde_json::Value as JsonValue;
@@ -1627,6 +1630,41 @@ fn int64_epoch_millis_without_format_hint() {
         .unwrap()
         .unwrap();
     assert_eq!(secs, 1709251200);
+}
+
+#[test]
+fn time64_microsecond_as_timestamp() {
+    // Arrow Time64 is a time-of-day physical type. When Kumo config declares
+    // the column as a timestamp, DiskGraph should coerce it to an epoch-second
+    // offset instead of treating it as an unreadable timestamp and dropping the
+    // row as null.
+    let arr: ArrayRef = Arc::new(Time64MicrosecondArray::from(vec![1_000_000_i64]));
+    let secs = get_timestamp_from_array(arr, None, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(secs, 1);
+}
+
+#[test]
+fn arrow_time_units_as_timestamp() {
+    let cases: Vec<(ArrayRef, i64)> = vec![
+        (Arc::new(Time32SecondArray::from(vec![42_i32])), 42),
+        (Arc::new(Time32MillisecondArray::from(vec![1_500_i32])), 2),
+        (
+            Arc::new(Time64MicrosecondArray::from(vec![1_500_000_i64])),
+            2,
+        ),
+        (
+            Arc::new(Time64NanosecondArray::from(vec![1_500_000_000_i64])),
+            2,
+        ),
+    ];
+    for (arr, expected) in cases {
+        let secs = get_timestamp_from_array(arr, None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(secs, expected);
+    }
 }
 
 #[test]

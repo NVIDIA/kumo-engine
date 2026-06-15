@@ -922,6 +922,44 @@ pub(crate) fn timestamp_secs_from_array(array: &ArrayRef, row: usize) -> Result<
     }
 }
 
+pub(crate) fn time_secs_from_array(array: &ArrayRef, row: usize) -> Result<i64> {
+    match array.data_type() {
+        DataType::Time32(arrow_schema::TimeUnit::Second) => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Time32SecondArray>()
+                .ok_or_else(|| anyhow!("time32 second cast"))?;
+            Ok(i64::from(arr.value(row)))
+        }
+        DataType::Time32(arrow_schema::TimeUnit::Millisecond) => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Time32MillisecondArray>()
+                .ok_or_else(|| anyhow!("time32 millisecond cast"))?;
+            Ok(div_ceil_i64(i64::from(arr.value(row)), 1_000))
+        }
+        DataType::Time64(arrow_schema::TimeUnit::Microsecond) => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Time64MicrosecondArray>()
+                .ok_or_else(|| anyhow!("time64 microsecond cast"))?;
+            Ok(div_ceil_i64(arr.value(row), 1_000_000))
+        }
+        DataType::Time64(arrow_schema::TimeUnit::Nanosecond) => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<arrow_array::Time64NanosecondArray>()
+                .ok_or_else(|| anyhow!("time64 nanosecond cast"))?;
+            Ok(div_ceil_i64(arr.value(row), 1_000_000_000))
+        }
+        DataType::Time32(_) | DataType::Time64(_) => Err(anyhow!(
+            "unsupported Arrow time unit for timestamp conversion: {:?}",
+            array.data_type()
+        )),
+        _ => Err(anyhow!("time type mismatch")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{parse_i32, parse_i64, parse_u32, parse_u64};

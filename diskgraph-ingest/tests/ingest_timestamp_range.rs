@@ -6,7 +6,9 @@
 //! Test 4: Non-time-col timestamp with out-of-range value (should NOT drop row, just null the feature).
 
 use anyhow::Result;
-use arrow_array::{ArrayRef, Date32Array, Int64Array, RecordBatch, StringArray};
+use arrow_array::{
+    ArrayRef, Date32Array, Int64Array, RecordBatch, StringArray, Time64MicrosecondArray,
+};
 use arrow_schema::{DataType, Field, Schema};
 use diskgraph_index::graph::GraphIndexReader;
 use diskgraph_ingest::io::Dest;
@@ -409,6 +411,98 @@ fn test_non_timecol_out_of_range_keeps_row() -> Result<()> {
     // All 3 rows should be present
     let node_count = *stats.node_counts.get("Data").unwrap_or(&0);
     assert_eq!(node_count, 3, "All 3 rows should be present, got {node_count}");
+
+    Ok(())
+}
+
+/// Time64 create_time values are valid Arrow temporal values. They should not
+/// be treated as parse failures and silently drop every row.
+#[test]
+fn test_time64_microsecond_create_time_does_not_drop_rows() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+
+    let hub_path = input_root.join("hub.parquet");
+    write_parquet(
+        &hub_path,
+        Schema::new(vec![Field::new("id", DataType::Int64, false)]),
+        vec![Arc::new(Int64Array::from(vec![1i64, 2, 3])) as ArrayRef],
+    )?;
+
+    let event_path = input_root.join("events.parquet");
+    write_parquet(
+        &event_path,
+        Schema::new(vec![
+            Field::new("hub_id", DataType::Int64, false),
+            Field::new(
+                "ts",
+                DataType::Time64(arrow_schema::TimeUnit::Microsecond),
+                false,
+            ),
+            Field::new("value", DataType::Int64, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from(vec![1i64, 2, 3])) as ArrayRef,
+            Arc::new(Time64MicrosecondArray::from(vec![
+                1_000_000_i64,
+                2_000_000,
+                3_000_000,
+            ])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![10, 20, 30])) as ArrayRef,
+        ],
+    )?;
+
+    let config = serde_json::json!({
+        "dataset_name": "time64_create_time_test",
+        "tables": [
+            {
+                "name": "Hub",
+                "source": {"type": "parquet", "paths": [hub_path.to_string_lossy()]},
+                "primary_key": "id",
+                "columns": [{"name": "id", "ingested_dtype": "int64"}]
+            },
+            {
+                "name": "Events",
+                "source": {"type": "parquet", "paths": [event_path.to_string_lossy()]},
+                "create_time": "ts",
+                "columns": [
+                    {"name": "hub_id", "ingested_dtype": "int64"},
+                    {"name": "ts", "source_dtype": "time", "ingested_dtype": "timestamp"},
+                    {"name": "value", "ingested_dtype": "int64"}
+                ],
+                "fkeys": [{
+                    "src_column": "hub_id",
+                    "dst_table": "Hub",
+                    "forward": {"time": {"table": "Events", "column": "ts", "unit": "s"}}
+                }]
+            }
+        ]
+    });
+
+    let config_path = dir.path().join("config.json");
+    fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
+
+    let (_metadata, stats) = ingest_with_stats(
+        &config_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    )?;
+
+    assert_eq!(
+        *stats.dropped_rows_counts.get("Events").unwrap_or(&0),
+        0,
+        "Time64 create_time values should be accepted, not treated as invalid timestamps",
+    );
+
+    let edge_count = stats
+        .edge_counts
+        .iter()
+        .find(|(k, _)| k.contains("Events") && k.contains("Hub") && !k.contains("reverse"))
+        .map(|(_, v)| *v)
+        .unwrap_or(0);
+    assert_eq!(edge_count, 3, "Should preserve all 3 time64 event edges");
 
     Ok(())
 }

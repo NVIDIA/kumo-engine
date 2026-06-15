@@ -2331,6 +2331,10 @@ impl<'p> RowAccess<'p> {
                 let secs = timestamp_secs_from_array(array, self.row)?;
                 Ok(Some(secs))
             }
+            DataType::Time32(_) | DataType::Time64(_) => {
+                let secs = time_secs_from_array(array, self.row)?;
+                Ok(Some(secs))
+            }
             DataType::Utf8
             | DataType::LargeUtf8
             | DataType::Binary
