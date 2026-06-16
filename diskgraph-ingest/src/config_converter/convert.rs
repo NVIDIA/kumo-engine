@@ -334,10 +334,8 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
         }
         seen_names.insert(name.to_string());
 
-        // Treat `Some("")` as "unset". Otherwise inference's `is_none()`
-        // filter skips the column (thinking the user supplied a hint) and
-        // the empty string later fails `compile()` in the rowpack parser.
-        let timestamp_format = normalize_ts_format(timestamp_format);
+        let (timestamp_unit, timestamp_format) =
+            normalize_timestamp_hints(timestamp_unit, timestamp_format);
 
         // Reject malformed formats here; without this, `"%Q"` etc. would
         // silently null every row at ingest time.
@@ -638,6 +636,23 @@ fn normalize_ts_format(fmt: Option<&str>) -> Option<&str> {
     fmt.filter(|s| !s.is_empty())
 }
 
+/// Kumo historically routes `TimestampUnit` values through
+/// `metadata.TS_FORMAT`, which reaches this converter as `timestamp_format`.
+/// If that value is a known unit shorthand, consume it as a unit hint instead
+/// of validating it as a chrono format string.
+fn normalize_timestamp_hints<'a>(
+    timestamp_unit: Option<&'a str>,
+    timestamp_format: Option<&'a str>,
+) -> (Option<&'a str>, Option<&'a str>) {
+    let timestamp_format = normalize_ts_format(timestamp_format);
+    if let Some(fmt) = timestamp_format {
+        if map_timestamp_unit(fmt).is_some() {
+            return (timestamp_unit.or(Some(fmt)), None);
+        }
+    }
+    (timestamp_unit, timestamp_format)
+}
+
 /// Reject malformed strftime specifiers (e.g. `"%Q"`) and literal-only
 /// strings with no date/time directive (e.g. Java syntax `"yyyy-MM-dd"`).
 /// `Item::Error` flags the first; absence of any `Numeric`/`Fixed` item
@@ -667,4 +682,3 @@ fn map_time_unit_for_spec(unit: &str) -> String {
         _ => "s".to_string(), // Default to seconds
     }
 }
-

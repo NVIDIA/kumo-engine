@@ -2126,6 +2126,50 @@ fn test_timestamp_format_cross_position_consistency() {
 }
 
 #[test]
+fn test_timestamp_format_unit_shorthand_is_treated_as_timestamp_unit() {
+    type Case = (&'static str, Option<&'static str>, Option<&'static str>);
+    let cases: &[Case] = &[
+        // Kumo's production GraphConfig can carry TimestampUnit.SECOND through
+        // both `timestamp_unit` and legacy `metadata.TS_FORMAT` plumbing.
+        (
+            "explicit timestamp_unit plus legacy timestamp_format",
+            Some("s"),
+            Some("s"),
+        ),
+        // Pin the recovery path where only legacy `metadata.TS_FORMAT`
+        // carries the unit shorthand.
+        ("legacy timestamp_format fallback", None, Some("s")),
+    ];
+
+    for (label, timestamp_unit, timestamp_format) in cases {
+        let mut col = ts_kumo_col("ts", *timestamp_format);
+        col.dtype = Some("date".to_string());
+        col.timestamp_unit = timestamp_unit.map(str::to_string);
+
+        let mut time_col = ts_kumo_time_col("ts", None);
+        time_col.dtype = Some("date".to_string());
+        time_col.timestamp_unit = timestamp_unit.map(str::to_string);
+
+        let kumo_table = events_table_with(vec![col], Some(time_col));
+        let result =
+            convert_kumo_to_diskgraph(&make_kumo_config(vec![kumo_table]), &make_convert_options())
+                .unwrap_or_else(|e| panic!("[{label}] convert failed: {e:?}"));
+        let col = convert_and_find_col(&result, "ts");
+
+        assert_eq!(
+            col.timestamp_format.as_deref(),
+            None,
+            "[{label}] shorthand should not survive as timestamp_format",
+        );
+        assert_eq!(
+            col.timestamp_unit,
+            Some(crate::graph_config::TimestampUnit::Seconds),
+            "[{label}] shorthand should map to seconds",
+        );
+    }
+}
+
+#[test]
 fn test_timestamp_format_conflict_errors() {
     // Same column in `cols[]` and `time_col` with disagreeing non-empty
     // formats must error at convert time, not pick a winner by iteration order.
