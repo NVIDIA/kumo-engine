@@ -26,6 +26,14 @@ jobs:
         # consumers (kumo's wheel pin) don't have to change paths when
         # we move the build to a different physical runner.
         os: [ubuntu-22.04]
+        # The native module is built abi3 (limited API, floor py310; see
+        # pyproject.toml [tool.maturin] features pyo3/abi3-py310). One
+        # cp310-abi3 wheel loads on CPython 3.10 .. 3.14+, so we build with
+        # a single interpreter. `python` here only selects which CPython
+        # headers maturin links and the S3 path label below — the artifact
+        # itself is interpreter-independent across 3.10+. The S3 `py3.10`
+        # prefix is kept stable as a consumer-contract path (kumo's wheel
+        # pin reads it); the abi3 wheel there installs on 3.14 unchanged.
         python: ['3.10']
     # Physical runner: bigger box (4-core / 16 GB / 150 GB SSD) for
     # build throughput. ABI parity with `ubuntu-22.04` (same Ubuntu
@@ -85,6 +93,15 @@ jobs:
             echo "No wheel found in target/wheels"
             exit 1
           fi
+
+          # Guard the abi3 contract: the published artifact must be the
+          # stable-ABI wheel that serves 3.10 .. 3.14+. A plain cp310 (or
+          # any cpXY-non-abi3) wheel here would silently break the
+          # "single wheel for all interpreters" promise.
+          case "$(basename "$WHEEL_PATH")" in
+            *-abi3-*) echo "OK: abi3 wheel $(basename "$WHEEL_PATH")" ;;
+            *) echo "ERROR: expected an abi3 wheel, got $(basename "$WHEEL_PATH")"; exit 1 ;;
+          esac
 
           echo "WHEEL_PATH=$WHEEL_PATH" >> $GITHUB_ENV
           echo "WHEEL_BASENAME=$(basename "$WHEEL_PATH")" >> $GITHUB_ENV

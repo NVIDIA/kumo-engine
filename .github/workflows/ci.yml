@@ -89,6 +89,37 @@ jobs:
 
           pip install -v ".[test]" --no-build-isolation
 
+          # Build the wheel once for the abi3 / 3.14 forward-compat check
+          # below (single cp310-abi3 artifact, reused across interpreters).
+          python -m pip wheel --no-deps --wheel-dir /tmp/dg-wheels .
+
           TEST_DIR="$(pwd)/diskgraph-pybind/python/tests"
           cd /tmp
           pytest -v -s "$TEST_DIR"
+
+      # The native module is built abi3 (limited API, floor py310), so the
+      # SAME wheel must load on newer CPython without a rebuild. Prove the
+      # org-wide "switch to Python 3.14" goal by importing the cp310-abi3
+      # wheel under a clean 3.14 interpreter.
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: abi3 forward-compat smoke (import on Python 3.14)
+        run: |
+          WHEEL=$(find /tmp/dg-wheels -maxdepth 1 -name 'diskgraph-*.whl' | sort | tail -n 1)
+          echo "wheel: $WHEEL"
+          case "$(basename "$WHEEL")" in
+            *-abi3-*) echo "OK: wheel is abi3-tagged" ;;
+            *) echo "ERROR: expected an abi3 wheel, got $(basename "$WHEEL")"; exit 1 ;;
+          esac
+          python3.14 -m venv /tmp/dg314
+          /tmp/dg314/bin/python -m pip install --upgrade pip
+          /tmp/dg314/bin/python -m pip install --no-deps "$WHEEL"
+          /tmp/dg314/bin/python - <<'PY'
+          import sys
+          assert sys.version_info[:2] == (3, 14), sys.version
+          import diskgraph._c as c
+          print("imported diskgraph._c on", sys.version.split()[0], "from", c.__file__)
+          assert hasattr(c, "TimeUnit"), "expected TimeUnit symbol on native module"
+          PY
