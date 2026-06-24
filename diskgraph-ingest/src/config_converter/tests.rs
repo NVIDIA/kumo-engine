@@ -1,7 +1,7 @@
 //! Unit tests for kumo_config module.
 
 use super::*;
-use crate::graph_config::IngestedType;
+use crate::graph_config::{IngestedType, SemanticType};
 use std::sync::OnceLock;
 
 static FIXTURE_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
@@ -212,14 +212,16 @@ fn test_convert_simple_node_table() {
                 stype: None,
                 timestamp_unit: None,
                 timestamp_format: None,
-                multicategorical_delimiter: None,},
+                multicategorical_delimiter: None,
+            },
             KumoColumn {
                 name: "age".to_string(),
                 dtype: Some("int32".to_string()),
                 stype: None,
                 timestamp_unit: None,
                 timestamp_format: None,
-                multicategorical_delimiter: None,},
+                multicategorical_delimiter: None,
+            },
         ],
         time_col: None,
         end_time_col: None,
@@ -239,6 +241,82 @@ fn test_convert_simple_node_table() {
     assert_eq!(table.columns.len(), 3); // user_id, name, age
     assert!(table.edge_table.is_none());
     assert!(table.fkeys.is_empty());
+}
+
+#[test]
+fn test_convert_latlong_floatlist_sets_fixed_len_two() {
+    let kumo_table = KumoTable {
+        table_name: "users".to_string(),
+        data_source: Some("postgres".to_string()),
+        source_name: Some("users".to_string()),
+        data_version: Some("12345".to_string()),
+        pkey: Some(KumoPrimaryKey {
+            name: "id".to_string(),
+            dtype: Some("int64".to_string()),
+            stype: None,
+            drop_duplicates: false,
+        }),
+        fkeys: vec![],
+        cols: vec![KumoColumn {
+            name: "location".to_string(),
+            dtype: Some("floatlist".to_string()),
+            stype: Some("latlong".to_string()),
+            timestamp_unit: None,
+            timestamp_format: None,
+            multicategorical_delimiter: None,
+        }],
+        time_col: None,
+        end_time_col: None,
+    };
+
+    let result =
+        convert_kumo_to_diskgraph(&make_kumo_config(vec![kumo_table]), &make_convert_options())
+            .expect("latlong floatlist should convert");
+    let col = result.tables[0]
+        .columns
+        .iter()
+        .find(|col| col.name == "location")
+        .unwrap();
+
+    assert_eq!(col.semantic_type, Some(SemanticType::Latlong));
+    assert_eq!(col.ingested_dtype, IngestedType::Float32Array);
+    assert_eq!(col.fixed_len, Some(2));
+}
+
+#[test]
+fn test_convert_latlong_string_rejected() {
+    let kumo_table = KumoTable {
+        table_name: "users".to_string(),
+        data_source: Some("postgres".to_string()),
+        source_name: Some("users".to_string()),
+        data_version: Some("12345".to_string()),
+        pkey: Some(KumoPrimaryKey {
+            name: "id".to_string(),
+            dtype: Some("int64".to_string()),
+            stype: None,
+            drop_duplicates: false,
+        }),
+        fkeys: vec![],
+        cols: vec![KumoColumn {
+            name: "location".to_string(),
+            dtype: Some("string".to_string()),
+            stype: Some("latlong".to_string()),
+            timestamp_unit: None,
+            timestamp_format: None,
+            multicategorical_delimiter: None,
+        }],
+        time_col: None,
+        end_time_col: None,
+    };
+
+    let err =
+        convert_kumo_to_diskgraph(&make_kumo_config(vec![kumo_table]), &make_convert_options())
+            .expect_err("latlong string should be rejected");
+    assert!(
+        err.to_string()
+            .contains("Use dtype 'floatlist' or 'intlist'"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -268,7 +346,8 @@ fn test_convert_table_with_fkeys() {
             stype: None,
             timestamp_unit: None,
             timestamp_format: None,
-            multicategorical_delimiter: None,}],
+            multicategorical_delimiter: None,
+        }],
         time_col: None,
         end_time_col: None,
     };
@@ -373,7 +452,8 @@ fn test_convert_not_edge_table_with_extra_columns() {
             stype: None,
             timestamp_unit: None,
             timestamp_format: None,
-            multicategorical_delimiter: None,}],
+            multicategorical_delimiter: None,
+        }],
         time_col: None,
         end_time_col: None,
     };
@@ -526,7 +606,8 @@ fn test_convert_missing_data_source_error() {
             stype: None,
             timestamp_unit: None,
             timestamp_format: None,
-            multicategorical_delimiter: None,}],
+            multicategorical_delimiter: None,
+        }],
         time_col: None,
         end_time_col: None,
     };
@@ -553,7 +634,8 @@ fn test_convert_missing_data_version_error() {
             stype: None,
             timestamp_unit: None,
             timestamp_format: None,
-            multicategorical_delimiter: None,}],
+            multicategorical_delimiter: None,
+        }],
         time_col: None,
         end_time_col: None,
     };
@@ -602,7 +684,8 @@ fn test_convert_edge_table_with_weight_column() {
             stype: None,
             timestamp_unit: None,
             timestamp_format: None,
-            multicategorical_delimiter: None,}],
+            multicategorical_delimiter: None,
+        }],
         time_col: Some(KumoTimeCol {
             name: "purchase_time".to_string(),
             dtype: Some("time".to_string()),
@@ -733,14 +816,16 @@ fn test_convert_column_deduplication() {
                 stype: None,
                 timestamp_unit: None,
                 timestamp_format: None,
-                multicategorical_delimiter: None,},
+                multicategorical_delimiter: None,
+            },
             KumoColumn {
                 name: "name".to_string(),
                 dtype: Some("string".to_string()),
                 stype: None,
                 timestamp_unit: None,
                 timestamp_format: None,
-                multicategorical_delimiter: None,},
+                multicategorical_delimiter: None,
+            },
         ],
         time_col: None,
         end_time_col: None,
@@ -888,7 +973,8 @@ fn test_convert_multi_table_graph() {
             stype: None,
             timestamp_unit: None,
             timestamp_format: None,
-            multicategorical_delimiter: None,}],
+            multicategorical_delimiter: None,
+        }],
         time_col: None,
         end_time_col: None,
     };
@@ -911,7 +997,8 @@ fn test_convert_multi_table_graph() {
             stype: None,
             timestamp_unit: None,
             timestamp_format: None,
-            multicategorical_delimiter: None,}],
+            multicategorical_delimiter: None,
+        }],
         time_col: None,
         end_time_col: None,
     };
@@ -1263,11 +1350,7 @@ fn test_detect_timestamp_formats_from_parquet() {
 
     let batch = RecordBatch::try_new(
         schema.clone(),
-        vec![
-            Arc::new(id_array),
-            Arc::new(ts_array),
-            Arc::new(end_array),
-        ],
+        vec![Arc::new(id_array), Arc::new(ts_array), Arc::new(end_array)],
     )
     .unwrap();
 
@@ -2018,11 +2101,7 @@ fn test_inference_skips_columns_with_explicit_timestamp_format() {
 
     // ISO strings would auto-detect as `%Y-%m-%d %H:%M:%S`; the hint
     // declares a different (but valid) format that must win.
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        "ts",
-        DataType::Utf8,
-        false,
-    )]));
+    let schema = Arc::new(Schema::new(vec![Field::new("ts", DataType::Utf8, false)]));
     let arr = Arc::new(StringArray::from(vec!["2024-01-02 03:04:05"; 4])) as arrow_array::ArrayRef;
     let batch = RecordBatch::try_new(schema.clone(), vec![arr]).unwrap();
     let file = std::fs::File::create(&parquet_path).unwrap();
@@ -2101,9 +2180,24 @@ fn test_timestamp_format_cross_position_consistency() {
     let cases: &[Case] = &[
         // (label, cols[] format, time_col format, expected on ColumnSpec)
         ("one-side-None (cols set)", Some(real), None, Some(real)),
-        ("same value in both positions", Some(real), Some(real), Some(real)),
-        ("empty-string normalizes to None (cols)", Some(""), None, None),
-        ("empty-string paired with value", Some(real), Some(""), Some(real)),
+        (
+            "same value in both positions",
+            Some(real),
+            Some(real),
+            Some(real),
+        ),
+        (
+            "empty-string normalizes to None (cols)",
+            Some(""),
+            None,
+            None,
+        ),
+        (
+            "empty-string paired with value",
+            Some(real),
+            Some(""),
+            Some(real),
+        ),
     ];
 
     for (label, cols_fmt, time_fmt, expected) in cases {
@@ -2111,11 +2205,9 @@ fn test_timestamp_format_cross_position_consistency() {
             vec![ts_kumo_col("ts", *cols_fmt)],
             Some(ts_kumo_time_col("ts", *time_fmt)),
         );
-        let result = convert_kumo_to_diskgraph(
-            &make_kumo_config(vec![kumo_table]),
-            &make_convert_options(),
-        )
-        .unwrap_or_else(|e| panic!("[{label}] convert failed: {e:?}"));
+        let result =
+            convert_kumo_to_diskgraph(&make_kumo_config(vec![kumo_table]), &make_convert_options())
+                .unwrap_or_else(|e| panic!("[{label}] convert failed: {e:?}"));
         let col = convert_and_find_col(&result, "ts");
         assert_eq!(
             col.timestamp_format.as_deref(),
@@ -2191,8 +2283,7 @@ fn test_timestamp_format_conflict_errors() {
 fn test_invalid_timestamp_format_errors_at_convert_time() {
     // Malformed format (`"%Q"`) must error at convert time, not null
     // every row at ingest.
-    let kumo_table =
-        events_table_with(vec![ts_kumo_col("ts", Some("%Q"))], None);
+    let kumo_table = events_table_with(vec![ts_kumo_col("ts", Some("%Q"))], None);
 
     let result =
         convert_kumo_to_diskgraph(&make_kumo_config(vec![kumo_table]), &make_convert_options());
@@ -2260,7 +2351,8 @@ fn test_convert_string_sequence_errors() {
             stype: Some("sequence".to_string()),
             timestamp_unit: None,
             timestamp_format: None,
-            multicategorical_delimiter: None,}],
+            multicategorical_delimiter: None,
+        }],
         time_col: None,
         end_time_col: None,
     };

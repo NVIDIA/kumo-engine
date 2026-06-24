@@ -1518,10 +1518,20 @@ fn format_rowpack_encoding(encoding: &ColumnEncoding) -> String {
         ColumnEncoding::FloatArray { storage } => {
             format!("float_array({})", format_float_storage(*storage))
         }
+        ColumnEncoding::FixedFloatArray { storage, len } => {
+            format!(
+                "fixed_float_array({}, len={})",
+                format_float_storage(*storage),
+                len
+            )
+        }
         ColumnEncoding::Int8Array => "int8_array".to_string(),
         ColumnEncoding::Int16Array => "int16_array".to_string(),
         ColumnEncoding::Int32Array => "int32_array".to_string(),
         ColumnEncoding::Int64Array => "int64_array".to_string(),
+        ColumnEncoding::FixedIntArray { len } => {
+            format!("fixed_int_array(len={})", len)
+        }
         ColumnEncoding::StringArray { encoding } => {
             format!("string_array({})", format_string_encoding(encoding))
         }

@@ -6,8 +6,8 @@ use anyhow::Result;
 
 use crate::errors::ConvertError;
 use crate::graph_config::{
-    ColumnSpec, DirectionSpec, EdgeTableSpec, FKeySpec, ForeignKeySpec, GraphConfig,
-    IngestedType, SemanticType, TableSpec, TimeSpec,
+    ColumnSpec, DirectionSpec, EdgeTableSpec, FKeySpec, ForeignKeySpec, GraphConfig, IngestedType,
+    SemanticType, TableSpec, TimeSpec,
 };
 
 use super::mapping::{map_kumo_dtype, map_kumo_stype, map_timestamp_unit};
@@ -118,8 +118,7 @@ pub fn convert_kumo_to_diskgraph(
             // irreversible without re-ingest. Surface mismatches loudly with
             // column + sample-row context. The check piggybacks on the same
             // bounded sampling budget the auto-detect path uses.
-            if let Err(e) =
-                super::inference::validate_explicit_multicat_delimiters(cfg, &transfer)
+            if let Err(e) = super::inference::validate_explicit_multicat_delimiters(cfg, &transfer)
             {
                 return Some(e);
             }
@@ -138,9 +137,7 @@ pub fn convert_kumo_to_diskgraph(
             // idempotent. See kumo-ai/kumo#28478.
             cfg.normalize_multicat_pseudo_list();
 
-            let total_bytes: u64 = cfg.tables.iter()
-                .filter_map(|t| t.source_size)
-                .sum();
+            let total_bytes: u64 = cfg.tables.iter().filter_map(|t| t.source_size).sum();
             if total_bytes > 0 {
                 cfg.num_shards = Some(super::inference::estimate_num_shards(total_bytes));
             }
@@ -155,6 +152,7 @@ pub fn convert_kumo_to_diskgraph(
         return Err(e);
     }
 
+    config.normalize_multicat_pseudo_list();
     Ok(config)
 }
 
@@ -396,11 +394,31 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
             }
         }
 
+        if semantic_type == Some(SemanticType::Latlong) {
+            let ok = matches!(
+                ingested_dtype,
+                IngestedType::Float16Array
+                    | IngestedType::Float32Array
+                    | IngestedType::Float64Array
+                    | IngestedType::Int8Array
+                    | IngestedType::Int16Array
+                    | IngestedType::Int32Array
+                    | IngestedType::Int64Array
+            );
+            if !ok {
+                return Err(ConvertError::LatlongOnUnsupportedInput {
+                    table: kumo_table.table_name.clone(),
+                    column: name.to_string(),
+                    dtype: ingested_dtype.clone(),
+                });
+            }
+        }
+
         columns.push(ColumnSpec {
             name: name.to_string(),
             source_dtype: dtype.map(|s| s.to_string()),
             ingested_dtype,
-            fixed_len: None,
+            fixed_len: (semantic_type == Some(SemanticType::Latlong)).then_some(2),
             // User-declared format wins: `detect_timestamp_formats` skips
             // columns where this is `Some`, and the rowpack parser uses it
             // via `RowAccessHints.timestamp_format`.

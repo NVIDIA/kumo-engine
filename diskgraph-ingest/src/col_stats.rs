@@ -187,9 +187,9 @@ pub fn compute_text_sample_stats(values: &[&str]) -> TextSampleStats {
 // ---------------------------------------------------------------------------
 
 pub use diskgraph_core::accumulators::{
+    build_multicat_emit_stats, compute_min_occ, isqrt, kumo_entry, kumo_key, kumo_safe_div,
     CategoryCountStrategy, CountStorage, IdentityBuildHasher, IdentityHasher, LocalColumnCounts,
-    MulticatInputKind, SharedColumnCounts, build_multicat_emit_stats, compute_min_occ,
-    isqrt, kumo_entry, kumo_key, kumo_safe_div, MAX_CATEGORIES,
+    MulticatInputKind, SharedColumnCounts, MAX_CATEGORIES,
 };
 
 // ---------------------------------------------------------------------------
@@ -571,6 +571,14 @@ pub enum ColumnStatsCollector {
     Sequence {
         count: u64,
         null_count: u64,
+        min_len: usize,
+        max_len: usize,
+        welford: WelfordAccumulator,
+    },
+    Latlong {
+        count: u64,
+        null_count: u64,
+        invalid_count: u64,
         min_len: usize,
         max_len: usize,
         welford: WelfordAccumulator,
@@ -979,6 +987,14 @@ impl ColumnStatsCollector {
                 max_len: 0,
                 welford: WelfordAccumulator::new(),
             },
+            Some(SemanticType::Latlong) => ColumnStatsCollector::Latlong {
+                count: 0,
+                null_count: 0,
+                invalid_count: 0,
+                min_len: usize::MAX,
+                max_len: 0,
+                welford: WelfordAccumulator::new(),
+            },
             Some(SemanticType::ImageUrl) => ColumnStatsCollector::ImageUrl {
                 count: 0,
                 null_count: 0,
@@ -1160,6 +1176,35 @@ impl ColumnStatsCollector {
                 welford.merge(w2);
             }
             (
+                ColumnStatsCollector::Latlong {
+                    count,
+                    null_count,
+                    invalid_count,
+                    min_len,
+                    max_len,
+                    welford,
+                },
+                ColumnStatsCollector::Latlong {
+                    count: c2,
+                    null_count: nc2,
+                    invalid_count: ic2,
+                    min_len: ml2,
+                    max_len: xl2,
+                    welford: w2,
+                },
+            ) => {
+                *count += *c2;
+                *null_count += *nc2;
+                *invalid_count += *ic2;
+                if *ml2 < *min_len {
+                    *min_len = *ml2;
+                }
+                if *xl2 > *max_len {
+                    *max_len = *xl2;
+                }
+                welford.merge(w2);
+            }
+            (
                 ColumnStatsCollector::ImageUrl { count, null_count },
                 ColumnStatsCollector::ImageUrl {
                     count: c2,
@@ -1304,6 +1349,23 @@ impl ColumnStatsCollector {
                 "sequence_mean": welford.mean(),
                 "sequence_std": welford.std_dev(),
             })),
+            ColumnStatsCollector::Latlong {
+                count,
+                null_count,
+                invalid_count,
+                min_len,
+                max_len,
+                welford,
+            } => Some(json!({
+                "semantic_type": "latlong",
+                "count": *count + *null_count,
+                "null_count": *null_count,
+                "invalid_count": *invalid_count,
+                "min_len": *min_len,
+                "max_len": *max_len,
+                "sequence_mean": welford.mean(),
+                "sequence_std": welford.std_dev(),
+            })),
             ColumnStatsCollector::ImageUrl { count, null_count } => Some(json!({
                 "semantic_type": "image_url",
                 "count": *count + *null_count,
@@ -1349,6 +1411,7 @@ fn kumo_stype_key(col: &ColumnStatsCollector) -> &'static str {
         ColumnStatsCollector::Text { .. } => "kumo.text",
         ColumnStatsCollector::Timestamp { .. } => "kumo.timestamp",
         ColumnStatsCollector::Sequence { .. } => "kumo.sequence",
+        ColumnStatsCollector::Latlong { .. } => "kumo.latlong",
         ColumnStatsCollector::ImageUrl { .. } => "kumo.image",
         ColumnStatsCollector::Multicategorical { .. } => "kumo.multicategorical",
         ColumnStatsCollector::Skip => "",
@@ -1500,7 +1563,12 @@ impl FileColStats {
                     );
                     map.insert(
                         kumo_key(name, sk, "INVALID_FRACTION", false),
-                        kumo_entry(json!(kumo_safe_div(*invalid_count, count)), false, dv, count),
+                        kumo_entry(
+                            json!(kumo_safe_div(*invalid_count, count)),
+                            false,
+                            dv,
+                            count,
+                        ),
                     );
                     // Numerical-specific
                     map.insert(
@@ -1801,6 +1869,45 @@ impl FileColStats {
                         kumo_entry(json!(*max_len), false, dv, total),
                     );
                 }
+                ColumnStatsCollector::Latlong {
+                    count: c,
+                    null_count,
+                    invalid_count,
+                    min_len,
+                    max_len,
+                    ..
+                } => {
+                    let total = *c + *null_count;
+                    map.insert(
+                        kumo_key(name, sk, "COUNT", false),
+                        kumo_entry(json!(total), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NUM_NA", false),
+                        kumo_entry(json!(*null_count), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NA_FRACTION", false),
+                        kumo_entry(json!(kumo_safe_div(*null_count, total)), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "INVALID_FRACTION", false),
+                        kumo_entry(
+                            json!(kumo_safe_div(*invalid_count, total)),
+                            false,
+                            dv,
+                            total,
+                        ),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "SEQUENCE_MIN_LENGTH", false),
+                        kumo_entry(json!(*min_len), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "SEQUENCE_MAX_LENGTH", false),
+                        kumo_entry(json!(*max_len), false, dv, total),
+                    );
+                }
                 ColumnStatsCollector::ImageUrl { count, null_count } => {
                     let total = *count + *null_count;
                     map.insert(
@@ -1833,9 +1940,7 @@ impl FileColStats {
                         .as_ref()
                         .map(|cc| cc.iter().map(|(k, v)| (k.clone(), *v)).collect())
                         .unwrap_or_default();
-                    sorted_cats.sort_by(|a, b| {
-                        b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0))
-                    });
+                    sorted_cats.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
                     let pairs = build_multicat_emit_stats(
                         name,
                         sk,
@@ -2308,6 +2413,28 @@ impl ColumnValueObserver for FileColStats {
                 }
                 view.for_each_f64(|v| welford.observe(v));
             }
+            ColumnStatsCollector::Latlong {
+                count,
+                invalid_count,
+                min_len,
+                max_len,
+                welford,
+                ..
+            } => {
+                let len = view.len();
+                if len != 2 || view.has_nulls() {
+                    *invalid_count += 1;
+                    return;
+                }
+                *count += 1;
+                if len < *min_len {
+                    *min_len = len;
+                }
+                if len > *max_len {
+                    *max_len = len;
+                }
+                view.for_each_f64(|v| welford.observe(v));
+            }
             ColumnStatsCollector::Multicategorical {
                 input_kind: MulticatInputKind::FloatArray,
                 count,
@@ -2350,6 +2477,28 @@ impl ColumnValueObserver for FileColStats {
                 ..
             } => {
                 let len = view.len();
+                *count += 1;
+                if len < *min_len {
+                    *min_len = len;
+                }
+                if len > *max_len {
+                    *max_len = len;
+                }
+                view.for_each_i64(|v| welford.observe(v as f64));
+            }
+            ColumnStatsCollector::Latlong {
+                count,
+                invalid_count,
+                min_len,
+                max_len,
+                welford,
+                ..
+            } => {
+                let len = view.len();
+                if len != 2 || view.has_nulls() {
+                    *invalid_count += 1;
+                    return;
+                }
                 *count += 1;
                 if len < *min_len {
                     *min_len = len;
@@ -2411,6 +2560,7 @@ impl ColumnValueObserver for FileColStats {
             ColumnStatsCollector::Text { null_count, .. } => *null_count += 1,
             ColumnStatsCollector::Timestamp { null_count, .. } => *null_count += 1,
             ColumnStatsCollector::Sequence { null_count, .. } => *null_count += 1,
+            ColumnStatsCollector::Latlong { null_count, .. } => *null_count += 1,
             ColumnStatsCollector::ImageUrl { null_count, .. } => *null_count += 1,
             ColumnStatsCollector::Multicategorical { null_count, .. } => *null_count += 1,
             ColumnStatsCollector::Skip => {}
@@ -2419,11 +2569,12 @@ impl ColumnValueObserver for FileColStats {
 
     #[inline]
     fn observe_parse_failure(&mut self, col_idx: usize) {
-        if let ColumnStatsCollector::Timestamp {
-            parse_fail_count, ..
-        } = &mut self.cols[col_idx]
-        {
-            *parse_fail_count += 1;
+        match &mut self.cols[col_idx] {
+            ColumnStatsCollector::Timestamp {
+                parse_fail_count, ..
+            } => *parse_fail_count += 1,
+            ColumnStatsCollector::Latlong { invalid_count, .. } => *invalid_count += 1,
+            _ => {}
         }
     }
 }
@@ -3890,11 +4041,8 @@ mod tests {
         let v1 = build_int_list_view(&[Some(1), Some(2), Some(3)]);
         let v2 = build_int_list_view(&[Some(10), Some(20)]);
         let v3 = build_int_list_view(&[Some(7), Some(8), Some(9), Some(10)]);
-        let (mut stats, _tc) = make_hybrid_stats(&[(
-            Some(SemanticType::Sequence),
-            IngestedType::Int64Array,
-            None,
-        )]);
+        let (mut stats, _tc) =
+            make_hybrid_stats(&[(Some(SemanticType::Sequence), IngestedType::Int64Array, None)]);
         stats.observe_int64_list(0, &v1);
         stats.observe_int64_list(0, &v2);
         stats.observe_int64_list(0, &v3);
@@ -3913,6 +4061,82 @@ mod tests {
             }
             _ => panic!("expected Sequence collector"),
         }
+    }
+
+    #[test]
+    fn col_stats_latlong_rejects_non_length_two_and_inner_nulls() {
+        let valid = build_float64_list_view(&[Some(37.7749), Some(-122.4194)]);
+        let wrong_len = build_float64_list_view(&[Some(37.7749), Some(-122.4194), Some(1.0)]);
+        let inner_null = build_native_float64_list_view(&[Some(37.7749), None]);
+        let (mut stats, _tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Latlong),
+            IngestedType::Float64Array,
+            None,
+        )]);
+
+        stats.observe_float_list(0, &valid);
+        stats.observe_float_list(0, &wrong_len);
+        stats.observe_float_list(0, &inner_null);
+
+        match &stats.cols[0] {
+            ColumnStatsCollector::Latlong {
+                count,
+                null_count,
+                invalid_count,
+                min_len,
+                max_len,
+                ..
+            } => {
+                assert_eq!(*count, 1);
+                assert_eq!(*null_count, 0);
+                assert_eq!(*invalid_count, 2);
+                assert_eq!(*min_len, 2);
+                assert_eq!(*max_len, 2);
+            }
+            _ => panic!("expected Latlong collector"),
+        }
+    }
+
+    #[test]
+    fn col_stats_latlong_emits_length_two_for_kumo_json() {
+        let valid = build_int_list_view(&[Some(37), Some(-122)]);
+        let (mut stats, _tc) =
+            make_hybrid_stats(&[(Some(SemanticType::Latlong), IngestedType::Int64Array, None)]);
+        stats.observe_int64_list(0, &valid);
+        stats.observe_parse_failure(0);
+        stats.observe_null(0);
+        stats.observe_parse_failure(0);
+        stats.observe_null(0);
+
+        let col_names = vec!["location".to_string()];
+        let ingested_types = vec![IngestedType::Int64Array];
+        let map = stats.to_kumo_json(&col_names, &ingested_types, None, None, "v1");
+
+        let count = map
+            .get("location__kumo.latlong__COUNT__False")
+            .expect("count key present");
+        assert_eq!(count["value"], json!(3));
+
+        let num_na = map
+            .get("location__kumo.latlong__NUM_NA__False")
+            .expect("num-na key present");
+        assert_eq!(num_na["value"], json!(2));
+
+        let min_len = map
+            .get("location__kumo.latlong__SEQUENCE_MIN_LENGTH__False")
+            .expect("min length key present");
+        assert_eq!(min_len["value"], json!(2));
+
+        let max_len = map
+            .get("location__kumo.latlong__SEQUENCE_MAX_LENGTH__False")
+            .expect("max length key present");
+        assert_eq!(max_len["value"], json!(2));
+
+        let invalid = map
+            .get("location__kumo.latlong__INVALID_FRACTION__False")
+            .expect("invalid-fraction key present");
+        let invalid_fraction = invalid["value"].as_f64().unwrap();
+        assert!((invalid_fraction - (2.0 / 3.0)).abs() < 1e-12);
     }
 
     // --- FloatArray input kind ---------------------------------------------

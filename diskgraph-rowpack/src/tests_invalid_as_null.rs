@@ -1,6 +1,6 @@
 use super::*;
 use arrow_array::{
-    builder::{ListBuilder, StringBuilder},
+    builder::{Float32Builder, Int64Builder, ListBuilder, StringBuilder},
     ArrayRef, Int64Array, StringArray,
 };
 use std::sync::Arc;
@@ -52,6 +52,16 @@ fn float32_array_ctx() -> RowPackContext {
     )
 }
 
+fn fixed_float32_array_ctx() -> RowPackContext {
+    one_column_ctx(
+        IngestedType::Float32Array,
+        ColumnEncoding::FixedFloatArray {
+            storage: FloatStorage::F32,
+            len: 2,
+        },
+    )
+}
+
 fn float64_array_ctx() -> RowPackContext {
     one_column_ctx(
         IngestedType::Float64Array,
@@ -63,6 +73,13 @@ fn float64_array_ctx() -> RowPackContext {
 
 fn int64_array_ctx() -> RowPackContext {
     one_column_ctx(IngestedType::Int64Array, ColumnEncoding::Int64Array)
+}
+
+fn fixed_int64_array_ctx() -> RowPackContext {
+    one_column_ctx(
+        IngestedType::Int64Array,
+        ColumnEncoding::FixedIntArray { len: 2 },
+    )
 }
 
 fn string_array_ctx() -> RowPackContext {
@@ -193,6 +210,38 @@ fn list_utf8_array(values: &[&str]) -> ArrayRef {
     Arc::new(builder.finish())
 }
 
+fn float32_list_array(rows: Vec<Option<Vec<Option<f32>>>>) -> ArrayRef {
+    let mut builder = ListBuilder::new(Float32Builder::new());
+    for row in rows {
+        match row {
+            None => builder.append_null(),
+            Some(values) => {
+                for value in values {
+                    builder.values().append_option(value);
+                }
+                builder.append(true);
+            }
+        }
+    }
+    Arc::new(builder.finish())
+}
+
+fn int64_list_array(rows: Vec<Option<Vec<Option<i64>>>>) -> ArrayRef {
+    let mut builder = ListBuilder::new(Int64Builder::new());
+    for row in rows {
+        match row {
+            None => builder.append_null(),
+            Some(values) => {
+                for value in values {
+                    builder.values().append_option(value);
+                }
+                builder.append(true);
+            }
+        }
+    }
+    Arc::new(builder.finish())
+}
+
 fn invalid_string_array() -> ArrayRef {
     Arc::new(StringArray::from(vec![Some("not-a-value")]))
 }
@@ -304,6 +353,88 @@ fn observe_context_invalid_is_null(logical_type: IngestedType) -> anyhow::Result
     builder.observe_row_from_access(&mut access)?;
     let _ = builder.finish()?;
     Ok(())
+}
+
+fn encode_fixed_array_from_access(ctx: RowPackContext, array: ArrayRef) -> anyhow::Result<Vec<u8>> {
+    let encoder = RowPackEncoder::new(ctx.clone())?;
+    let (mut access, _arrays) = access_for_array(array);
+    let mut encoded = Vec::new();
+    let mut scratch = RowPackScratch::new(&ctx);
+    encoder.encode_row_from_access(&mut access, &mut encoded, &mut scratch)?;
+    Ok(encoded)
+}
+
+#[test]
+fn fixed_float32_array_omits_length_prefix_and_roundtrips() -> anyhow::Result<()> {
+    let array = float32_list_array(vec![Some(vec![Some(1.25), Some(-2.5)])]);
+    let fixed_ctx = fixed_float32_array_ctx();
+    let variable_ctx = float32_array_ctx();
+
+    let fixed_encoded = encode_fixed_array_from_access(fixed_ctx.clone(), array.clone())?;
+    let variable_encoded = encode_fixed_array_from_access(variable_ctx, array)?;
+
+    assert_eq!(fixed_encoded.len(), 1 + 2 * std::mem::size_of::<f32>());
+    assert_eq!(variable_encoded.len(), fixed_encoded.len() + 1);
+
+    let decoder = RowPackDecoder::new(fixed_ctx)?;
+    let json = decoder.decode_json(&fixed_encoded)?;
+    let values = json["value"].as_array().expect("fixed float array");
+    assert_eq!(values.len(), 2);
+    assert!((values[0].as_f64().unwrap() - 1.25).abs() < 1e-6);
+    assert!((values[1].as_f64().unwrap() + 2.5).abs() < 1e-6);
+    Ok(())
+}
+
+#[test]
+fn fixed_int64_array_omits_length_prefix_and_roundtrips() -> anyhow::Result<()> {
+    let array = int64_list_array(vec![Some(vec![Some(7), Some(-8)])]);
+    let fixed_ctx = fixed_int64_array_ctx();
+    let variable_ctx = int64_array_ctx();
+
+    let fixed_encoded = encode_fixed_array_from_access(fixed_ctx.clone(), array.clone())?;
+    let variable_encoded = encode_fixed_array_from_access(variable_ctx, array)?;
+
+    assert_eq!(variable_encoded.len(), fixed_encoded.len() + 1);
+
+    let decoder = RowPackDecoder::new(fixed_ctx)?;
+    let json = decoder.decode_json(&fixed_encoded)?;
+    let values = json["value"].as_array().expect("fixed int array");
+    assert_eq!(values.len(), 2);
+    assert_eq!(values[0].as_i64().unwrap(), 7);
+    assert_eq!(values[1].as_i64().unwrap(), -8);
+    Ok(())
+}
+
+#[test]
+fn fixed_float32_array_wrong_length_is_null() -> anyhow::Result<()> {
+    encode_invalid_as_null(
+        fixed_float32_array_ctx(),
+        float32_list_array(vec![Some(vec![Some(1.0)])]),
+    )
+}
+
+#[test]
+fn fixed_float32_array_inner_null_is_null() -> anyhow::Result<()> {
+    encode_invalid_as_null(
+        fixed_float32_array_ctx(),
+        float32_list_array(vec![Some(vec![Some(1.0), None])]),
+    )
+}
+
+#[test]
+fn fixed_int64_array_wrong_length_is_null() -> anyhow::Result<()> {
+    encode_invalid_as_null(
+        fixed_int64_array_ctx(),
+        int64_list_array(vec![Some(vec![Some(1)])]),
+    )
+}
+
+#[test]
+fn fixed_int64_array_inner_null_is_null() -> anyhow::Result<()> {
+    encode_invalid_as_null(
+        fixed_int64_array_ctx(),
+        int64_list_array(vec![Some(vec![Some(1), None])]),
+    )
 }
 
 macro_rules! scalar_parse_failure_test {

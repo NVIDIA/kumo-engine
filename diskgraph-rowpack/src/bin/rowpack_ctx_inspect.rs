@@ -96,6 +96,13 @@ fn print_encoding(encoding: &ColumnEncoding) -> Result<()> {
                 format_float_storage(*storage)
             );
         }
+        ColumnEncoding::FixedFloatArray { storage, len } => {
+            println!(
+                "  Encoding: fixed_float_array ({}, len={})",
+                format_float_storage(*storage),
+                len
+            );
+        }
         ColumnEncoding::Int8Array => {
             println!("  Encoding: int8_array (varint)");
         }
@@ -107,6 +114,9 @@ fn print_encoding(encoding: &ColumnEncoding) -> Result<()> {
         }
         ColumnEncoding::Int64Array => {
             println!("  Encoding: int64_array (varint)");
+        }
+        ColumnEncoding::FixedIntArray { len } => {
+            println!("  Encoding: fixed_int_array (varint, len={})", len);
         }
         ColumnEncoding::StringArray { encoding } => {
             print!("  Encoding: string_array ");

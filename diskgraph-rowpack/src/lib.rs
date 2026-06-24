@@ -347,6 +347,13 @@ pub enum ColumnEncoding {
     StringArray {
         encoding: StringEncoding,
     },
+    FixedFloatArray {
+        storage: FloatStorage,
+        len: usize,
+    },
+    FixedIntArray {
+        len: usize,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1068,6 +1075,15 @@ fn estimate_column_bytes(encoding: &ColumnEncoding, stats: &ColumnStats) -> usiz
             };
             varint_bytes_u64(avg_len as u64) + avg_len * elem
         }
+        ColumnEncoding::FixedFloatArray { storage, len } => {
+            let elem = match storage {
+                FloatStorage::F16 => 2,
+                FloatStorage::F32 => 4,
+                FloatStorage::F64 => 8,
+            };
+            len * elem
+        }
+        ColumnEncoding::FixedIntArray { len } => len * 2,
         ColumnEncoding::Int8Array => {
             // varint(N) + N * varint(i8 widened). i8 always fits in 1 varint byte.
             let avg_len = avg_len(stats.array_len_total, stats.array_count);
@@ -1638,19 +1654,49 @@ impl ColumnStats {
             IngestedType::Decimal128 | IngestedType::Decimal256 => {
                 Err(anyhow!("rowpack decimal encoding missing"))
             }
-            IngestedType::Float32Array => Ok(ColumnEncoding::FloatArray {
-                storage: choose_float_storage(false),
+            IngestedType::Float32Array => Ok(match fixed_len {
+                Some(len) => ColumnEncoding::FixedFloatArray {
+                    storage: choose_float_storage(false),
+                    len,
+                },
+                None => ColumnEncoding::FloatArray {
+                    storage: choose_float_storage(false),
+                },
             }),
-            IngestedType::Float64Array => Ok(ColumnEncoding::FloatArray {
-                storage: choose_float_storage(true),
+            IngestedType::Float64Array => Ok(match fixed_len {
+                Some(len) => ColumnEncoding::FixedFloatArray {
+                    storage: choose_float_storage(true),
+                    len,
+                },
+                None => ColumnEncoding::FloatArray {
+                    storage: choose_float_storage(true),
+                },
             }),
-            IngestedType::Float16Array => Ok(ColumnEncoding::FloatArray {
-                storage: FloatStorage::F16,
+            IngestedType::Float16Array => Ok(match fixed_len {
+                Some(len) => ColumnEncoding::FixedFloatArray {
+                    storage: FloatStorage::F16,
+                    len,
+                },
+                None => ColumnEncoding::FloatArray {
+                    storage: FloatStorage::F16,
+                },
             }),
-            IngestedType::Int8Array => Ok(ColumnEncoding::Int8Array),
-            IngestedType::Int16Array => Ok(ColumnEncoding::Int16Array),
-            IngestedType::Int32Array => Ok(ColumnEncoding::Int32Array),
-            IngestedType::Int64Array => Ok(ColumnEncoding::Int64Array),
+            IngestedType::Int8Array => Ok(match fixed_len {
+                Some(len) => ColumnEncoding::FixedIntArray { len },
+                None => ColumnEncoding::Int8Array,
+            }),
+            IngestedType::Int16Array => Ok(match fixed_len {
+                Some(len) => ColumnEncoding::FixedIntArray { len },
+                None => ColumnEncoding::Int16Array,
+            }),
+            IngestedType::Int32Array => Ok(match fixed_len {
+                Some(len) => ColumnEncoding::FixedIntArray { len },
+                None => ColumnEncoding::Int32Array,
+            }),
+            IngestedType::Int64Array => Ok(match fixed_len {
+                Some(len) => ColumnEncoding::FixedIntArray { len },
+                None => ColumnEncoding::Int64Array,
+            }),
             IngestedType::StringArray => Ok(ColumnEncoding::StringArray {
                 encoding: choose_string_encoding(self, config)?,
             }),
@@ -1679,7 +1725,10 @@ fn choose_float_storage(is_f64: bool) -> FloatStorage {
 
 fn choose_string_encoding(stats: &ColumnStats, config: &RowPackConfig) -> Result<StringEncoding> {
     let total = stats.string_total.max(1) as f32;
-    let avg_len = stats.string_bytes.checked_div(stats.string_total).unwrap_or(0);
+    let avg_len = stats
+        .string_bytes
+        .checked_div(stats.string_total)
+        .unwrap_or(0);
     let bpe_allowed = avg_len >= config.bpe_min_avg_len() && avg_len < config.string_long_min_len();
     if stats.alphabet_ok && stats.alphabet_len > 1 {
         let coverage_ratio = stats.alphabet_hits as f32 / total;
@@ -2292,8 +2341,7 @@ impl RowPackEncoder {
                         }
                     }
                 },
-                IngestedType::String =>
-                {
+                IngestedType::String => {
                     #[allow(clippy::manual_unwrap_or_default)]
                     match access.with_string(idx, |v| {
                         Ok(encode_string(
@@ -2440,15 +2488,20 @@ impl RowPackEncoder {
                 IngestedType::Float32Array => match access.float_list_view(idx) {
                     Ok(None) | Err(_) => 0u8,
                     Ok(Some(view)) => {
-                        if let ColumnEncoding::FloatArray { storage } = &col.encoding {
-                            let f16_buf = &mut scratch.f16_buf;
-                            encode_float_list_with_tag(
-                                &mut scratch.data,
-                                col.logical_type,
-                                *storage,
-                                view,
-                                f16_buf,
-                            )?
+                        if let Some((storage, fixed_len)) = float_array_encoding(&col.encoding) {
+                            if !fixed_float_list_is_valid(&view, fixed_len) {
+                                0u8
+                            } else {
+                                let f16_buf = &mut scratch.f16_buf;
+                                encode_float_list_with_tag(
+                                    &mut scratch.data,
+                                    col.logical_type,
+                                    storage,
+                                    fixed_len,
+                                    view,
+                                    f16_buf,
+                                )?
+                            }
                         } else {
                             return Err(anyhow!("rowpack float32 array encoding mismatch"));
                         }
@@ -2457,15 +2510,20 @@ impl RowPackEncoder {
                 IngestedType::Float16Array => match access.float_list_view(idx) {
                     Ok(None) | Err(_) => 0u8,
                     Ok(Some(view)) => {
-                        if let ColumnEncoding::FloatArray { storage } = &col.encoding {
-                            let f16_buf = &mut scratch.f16_buf;
-                            encode_float_list_with_tag(
-                                &mut scratch.data,
-                                col.logical_type,
-                                *storage,
-                                view,
-                                f16_buf,
-                            )?
+                        if let Some((storage, fixed_len)) = float_array_encoding(&col.encoding) {
+                            if !fixed_float_list_is_valid(&view, fixed_len) {
+                                0u8
+                            } else {
+                                let f16_buf = &mut scratch.f16_buf;
+                                encode_float_list_with_tag(
+                                    &mut scratch.data,
+                                    col.logical_type,
+                                    storage,
+                                    fixed_len,
+                                    view,
+                                    f16_buf,
+                                )?
+                            }
                         } else {
                             return Err(anyhow!("rowpack float16 array encoding mismatch"));
                         }
@@ -2474,15 +2532,20 @@ impl RowPackEncoder {
                 IngestedType::Float64Array => match access.float_list_view(idx) {
                     Ok(None) | Err(_) => 0u8,
                     Ok(Some(view)) => {
-                        if let ColumnEncoding::FloatArray { storage } = &col.encoding {
-                            let f16_buf = &mut scratch.f16_buf;
-                            encode_float_list_with_tag(
-                                &mut scratch.data,
-                                col.logical_type,
-                                *storage,
-                                view,
-                                f16_buf,
-                            )?
+                        if let Some((storage, fixed_len)) = float_array_encoding(&col.encoding) {
+                            if !fixed_float_list_is_valid(&view, fixed_len) {
+                                0u8
+                            } else {
+                                let f16_buf = &mut scratch.f16_buf;
+                                encode_float_list_with_tag(
+                                    &mut scratch.data,
+                                    col.logical_type,
+                                    storage,
+                                    fixed_len,
+                                    view,
+                                    f16_buf,
+                                )?
+                            }
                         } else {
                             return Err(anyhow!("rowpack float64 array encoding mismatch"));
                         }
@@ -2494,13 +2557,18 @@ impl RowPackEncoder {
                 | IngestedType::Int64Array => match access.int_list_view(idx) {
                     Ok(None) | Err(_) => 0u8,
                     Ok(Some(view)) => {
-                        let target_bits = self.int_array_target_bits[idx]
-                            .ok_or_else(|| anyhow!("rowpack int-array bits unset"))?;
-                        let row = access.row();
-                        let col_label = col.name.as_str();
-                        view.require_fits_in_signed(target_bits, col_label, row)?;
-                        encode_int_list_view_with_tag(&mut scratch.data, view)?;
-                        1u8
+                        let fixed_len = int_array_fixed_len(&col.encoding);
+                        if !fixed_int_list_is_valid(&view, fixed_len) {
+                            0u8
+                        } else {
+                            let target_bits = self.int_array_target_bits[idx]
+                                .ok_or_else(|| anyhow!("rowpack int-array bits unset"))?;
+                            let row = access.row();
+                            let col_label = col.name.as_str();
+                            view.require_fits_in_signed(target_bits, col_label, row)?;
+                            encode_int_list_view_with_tag(&mut scratch.data, view, fixed_len)?;
+                            1u8
+                        }
                     }
                 },
                 IngestedType::StringArray => match access.string_list_view(idx) {
@@ -2577,174 +2645,195 @@ impl RowPackEncoder {
 
         for (idx, col) in self.ctx.columns.iter().enumerate() {
             let tag = match col.logical_type {
-                IngestedType::Bool => match access_or_parse_failure(access.get_bool(idx), idx, observer) {
-                    None => 0u8,
-                    Some(v) => {
-                        observer.observe_i64(idx, i64::from(v));
-                        bool_writer.write_bits(if v { 1 } else { 0 }, 1);
-                        1u8
-                    }
-                },
-                IngestedType::Int64 => match access_or_parse_failure(access.get_int64(idx), idx, observer) {
-                    None => 0u8,
-                    Some(v) => {
-                        observer.observe_i64(idx, v);
-                        if let ColumnEncoding::Int {
-                            signed,
-                            varint,
-                            bits,
-                        } = &col.encoding
-                        {
-                            encode_int(data, *signed, *varint, *bits, v as i128)?;
+                IngestedType::Bool => {
+                    match access_or_parse_failure(access.get_bool(idx), idx, observer) {
+                        None => 0u8,
+                        Some(v) => {
+                            observer.observe_i64(idx, i64::from(v));
+                            bool_writer.write_bits(if v { 1 } else { 0 }, 1);
                             1u8
-                        } else {
-                            return Err(anyhow!("rowpack int64 encoding mismatch"));
                         }
                     }
-                },
-                IngestedType::Int16 => match access_or_parse_failure(access.get_int32(idx), idx, observer) {
-                    None => 0u8,
-                    Some(v) => {
-                        observer.observe_i64(idx, v as i64);
-                        if let ColumnEncoding::Int {
-                            signed,
-                            varint,
-                            bits,
-                        } = &col.encoding
-                        {
-                            encode_int(data, *signed, *varint, *bits, v as i128)?;
-                            1u8
-                        } else {
-                            return Err(anyhow!("rowpack int16 encoding mismatch"));
+                }
+                IngestedType::Int64 => {
+                    match access_or_parse_failure(access.get_int64(idx), idx, observer) {
+                        None => 0u8,
+                        Some(v) => {
+                            observer.observe_i64(idx, v);
+                            if let ColumnEncoding::Int {
+                                signed,
+                                varint,
+                                bits,
+                            } = &col.encoding
+                            {
+                                encode_int(data, *signed, *varint, *bits, v as i128)?;
+                                1u8
+                            } else {
+                                return Err(anyhow!("rowpack int64 encoding mismatch"));
+                            }
                         }
                     }
-                },
-                IngestedType::Int8 => match access_or_parse_failure(access.get_int32(idx), idx, observer) {
-                    None => 0u8,
-                    Some(v) => {
-                        observer.observe_i64(idx, v as i64);
-                        if let ColumnEncoding::Int {
-                            signed,
-                            varint,
-                            bits,
-                        } = &col.encoding
-                        {
-                            encode_int(data, *signed, *varint, *bits, v as i128)?;
-                            1u8
-                        } else {
-                            return Err(anyhow!("rowpack int8 encoding mismatch"));
+                }
+                IngestedType::Int16 => {
+                    match access_or_parse_failure(access.get_int32(idx), idx, observer) {
+                        None => 0u8,
+                        Some(v) => {
+                            observer.observe_i64(idx, v as i64);
+                            if let ColumnEncoding::Int {
+                                signed,
+                                varint,
+                                bits,
+                            } = &col.encoding
+                            {
+                                encode_int(data, *signed, *varint, *bits, v as i128)?;
+                                1u8
+                            } else {
+                                return Err(anyhow!("rowpack int16 encoding mismatch"));
+                            }
                         }
                     }
-                },
-                IngestedType::Int32 => match access_or_parse_failure(access.get_int32(idx), idx, observer) {
-                    None => 0u8,
-                    Some(v) => {
-                        observer.observe_i64(idx, v as i64);
-                        if let ColumnEncoding::Int {
-                            signed,
-                            varint,
-                            bits,
-                        } = &col.encoding
-                        {
-                            encode_int(data, *signed, *varint, *bits, v as i128)?;
-                            1u8
-                        } else {
-                            return Err(anyhow!("rowpack int32 encoding mismatch"));
+                }
+                IngestedType::Int8 => {
+                    match access_or_parse_failure(access.get_int32(idx), idx, observer) {
+                        None => 0u8,
+                        Some(v) => {
+                            observer.observe_i64(idx, v as i64);
+                            if let ColumnEncoding::Int {
+                                signed,
+                                varint,
+                                bits,
+                            } = &col.encoding
+                            {
+                                encode_int(data, *signed, *varint, *bits, v as i128)?;
+                                1u8
+                            } else {
+                                return Err(anyhow!("rowpack int8 encoding mismatch"));
+                            }
                         }
                     }
-                },
-                IngestedType::UInt64 => match access_or_parse_failure(access.get_uint64(idx), idx, observer) {
-                    None => 0u8,
-                    Some(v) => {
-                        observer.observe_i64(idx, v as i64);
-                        if let ColumnEncoding::Int {
-                            signed,
-                            varint,
-                            bits,
-                        } = &col.encoding
-                        {
-                            encode_uint(data, *signed, *varint, *bits, v)?;
-                            1u8
-                        } else {
-                            return Err(anyhow!("rowpack uint64 encoding mismatch"));
+                }
+                IngestedType::Int32 => {
+                    match access_or_parse_failure(access.get_int32(idx), idx, observer) {
+                        None => 0u8,
+                        Some(v) => {
+                            observer.observe_i64(idx, v as i64);
+                            if let ColumnEncoding::Int {
+                                signed,
+                                varint,
+                                bits,
+                            } = &col.encoding
+                            {
+                                encode_int(data, *signed, *varint, *bits, v as i128)?;
+                                1u8
+                            } else {
+                                return Err(anyhow!("rowpack int32 encoding mismatch"));
+                            }
                         }
                     }
-                },
-                IngestedType::UInt16 => match access_or_parse_failure(access.get_uint32(idx), idx, observer) {
-                    None => 0u8,
-                    Some(v) => {
-                        observer.observe_i64(idx, v as i64);
-                        if let ColumnEncoding::Int {
-                            signed,
-                            varint,
-                            bits,
-                        } = &col.encoding
-                        {
-                            encode_uint(data, *signed, *varint, *bits, v as u64)?;
-                            1u8
-                        } else {
-                            return Err(anyhow!("rowpack uint16 encoding mismatch"));
+                }
+                IngestedType::UInt64 => {
+                    match access_or_parse_failure(access.get_uint64(idx), idx, observer) {
+                        None => 0u8,
+                        Some(v) => {
+                            observer.observe_i64(idx, v as i64);
+                            if let ColumnEncoding::Int {
+                                signed,
+                                varint,
+                                bits,
+                            } = &col.encoding
+                            {
+                                encode_uint(data, *signed, *varint, *bits, v)?;
+                                1u8
+                            } else {
+                                return Err(anyhow!("rowpack uint64 encoding mismatch"));
+                            }
                         }
                     }
-                },
-                IngestedType::UInt8 => match access_or_parse_failure(access.get_uint32(idx), idx, observer) {
-                    None => 0u8,
-                    Some(v) => {
-                        observer.observe_i64(idx, v as i64);
-                        if let ColumnEncoding::Int {
-                            signed,
-                            varint,
-                            bits,
-                        } = &col.encoding
-                        {
-                            encode_uint(data, *signed, *varint, *bits, v as u64)?;
-                            1u8
-                        } else {
-                            return Err(anyhow!("rowpack uint8 encoding mismatch"));
+                }
+                IngestedType::UInt16 => {
+                    match access_or_parse_failure(access.get_uint32(idx), idx, observer) {
+                        None => 0u8,
+                        Some(v) => {
+                            observer.observe_i64(idx, v as i64);
+                            if let ColumnEncoding::Int {
+                                signed,
+                                varint,
+                                bits,
+                            } = &col.encoding
+                            {
+                                encode_uint(data, *signed, *varint, *bits, v as u64)?;
+                                1u8
+                            } else {
+                                return Err(anyhow!("rowpack uint16 encoding mismatch"));
+                            }
                         }
                     }
-                },
-                IngestedType::UInt32 => match access_or_parse_failure(access.get_uint32(idx), idx, observer) {
-                    None => 0u8,
-                    Some(v) => {
-                        observer.observe_i64(idx, v as i64);
-                        if let ColumnEncoding::Int {
-                            signed,
-                            varint,
-                            bits,
-                        } = &col.encoding
-                        {
-                            encode_uint(data, *signed, *varint, *bits, v as u64)?;
-                            1u8
-                        } else {
-                            return Err(anyhow!("rowpack uint32 encoding mismatch"));
+                }
+                IngestedType::UInt8 => {
+                    match access_or_parse_failure(access.get_uint32(idx), idx, observer) {
+                        None => 0u8,
+                        Some(v) => {
+                            observer.observe_i64(idx, v as i64);
+                            if let ColumnEncoding::Int {
+                                signed,
+                                varint,
+                                bits,
+                            } = &col.encoding
+                            {
+                                encode_uint(data, *signed, *varint, *bits, v as u64)?;
+                                1u8
+                            } else {
+                                return Err(anyhow!("rowpack uint8 encoding mismatch"));
+                            }
                         }
                     }
-                },
-                IngestedType::Float64 => match access_or_parse_failure(access.get_float64(idx), idx, observer) {
-                    None => 0u8,
-                    Some(v) => {
-                        observer.observe_f64(idx, v);
-                        if let ColumnEncoding::Float { storage } = &col.encoding {
-                            encode_float_with_tag(data, col.logical_type, *storage, v)?
-                        } else {
-                            return Err(anyhow!("rowpack float64 encoding mismatch"));
+                }
+                IngestedType::UInt32 => {
+                    match access_or_parse_failure(access.get_uint32(idx), idx, observer) {
+                        None => 0u8,
+                        Some(v) => {
+                            observer.observe_i64(idx, v as i64);
+                            if let ColumnEncoding::Int {
+                                signed,
+                                varint,
+                                bits,
+                            } = &col.encoding
+                            {
+                                encode_uint(data, *signed, *varint, *bits, v as u64)?;
+                                1u8
+                            } else {
+                                return Err(anyhow!("rowpack uint32 encoding mismatch"));
+                            }
                         }
                     }
-                },
-                IngestedType::Float32 => match access_or_parse_failure(access.get_float32(idx), idx, observer) {
-                    None => 0u8,
-                    Some(v) => {
-                        observer.observe_f64(idx, v as f64);
-                        if let ColumnEncoding::Float { storage } = &col.encoding {
-                            encode_float_with_tag(data, col.logical_type, *storage, v as f64)?
-                        } else {
-                            return Err(anyhow!("rowpack float32 encoding mismatch"));
+                }
+                IngestedType::Float64 => {
+                    match access_or_parse_failure(access.get_float64(idx), idx, observer) {
+                        None => 0u8,
+                        Some(v) => {
+                            observer.observe_f64(idx, v);
+                            if let ColumnEncoding::Float { storage } = &col.encoding {
+                                encode_float_with_tag(data, col.logical_type, *storage, v)?
+                            } else {
+                                return Err(anyhow!("rowpack float64 encoding mismatch"));
+                            }
                         }
                     }
-                },
-                IngestedType::String =>
-                {
+                }
+                IngestedType::Float32 => {
+                    match access_or_parse_failure(access.get_float32(idx), idx, observer) {
+                        None => 0u8,
+                        Some(v) => {
+                            observer.observe_f64(idx, v as f64);
+                            if let ColumnEncoding::Float { storage } = &col.encoding {
+                                encode_float_with_tag(data, col.logical_type, *storage, v as f64)?
+                            } else {
+                                return Err(anyhow!("rowpack float32 encoding mismatch"));
+                            }
+                        }
+                    }
+                }
+                IngestedType::String => {
                     #[allow(clippy::manual_unwrap_or_default)]
                     match access.with_string(idx, |v| {
                         observer.observe_string(idx, v);
@@ -2844,18 +2933,20 @@ impl RowPackEncoder {
                         }
                     }
                 }
-                IngestedType::Date => match access_or_parse_failure(access.get_date(idx), idx, observer) {
-                    None => 0u8,
-                    Some(v) => {
-                        observer.observe_i64(idx, v as i64);
-                        if let ColumnEncoding::Date { varint, bits } = &col.encoding {
-                            encode_int(data, true, *varint, *bits, v as i128)?;
-                            1u8
-                        } else {
-                            return Err(anyhow!("rowpack date encoding mismatch"));
+                IngestedType::Date => {
+                    match access_or_parse_failure(access.get_date(idx), idx, observer) {
+                        None => 0u8,
+                        Some(v) => {
+                            observer.observe_i64(idx, v as i64);
+                            if let ColumnEncoding::Date { varint, bits } = &col.encoding {
+                                encode_int(data, true, *varint, *bits, v as i128)?;
+                                1u8
+                            } else {
+                                return Err(anyhow!("rowpack date encoding mismatch"));
+                            }
                         }
                     }
-                },
+                }
                 IngestedType::Timestamp => match access.get_timestamp(idx) {
                     Ok(None) => 0u8,
                     Ok(Some(secs)) => {
@@ -2868,45 +2959,49 @@ impl RowPackEncoder {
                         0u8
                     }
                 },
-                IngestedType::Decimal128 => match access_or_parse_failure(access.get_decimal128(idx), idx, observer) {
-                    None => 0u8,
-                    Some(v) => {
-                        if let ColumnEncoding::Decimal {
-                            bytes,
-                            scale,
-                            storage,
-                            ..
-                        } = &col.encoding
-                        {
-                            observer.observe_f64(idx, v as f64 / 10_f64.powi(*scale));
-                            if *bytes == 0 || *bytes > 16 {
-                                return Err(anyhow!("rowpack decimal size mismatch"));
+                IngestedType::Decimal128 => {
+                    match access_or_parse_failure(access.get_decimal128(idx), idx, observer) {
+                        None => 0u8,
+                        Some(v) => {
+                            if let ColumnEncoding::Decimal {
+                                bytes,
+                                scale,
+                                storage,
+                                ..
+                            } = &col.encoding
+                            {
+                                observer.observe_f64(idx, v as f64 / 10_f64.powi(*scale));
+                                if *bytes == 0 || *bytes > 16 {
+                                    return Err(anyhow!("rowpack decimal size mismatch"));
+                                }
+                                encode_decimal_i128_with_tag(data, v, *scale, storage, *bytes)?
+                            } else {
+                                return Err(anyhow!("rowpack decimal128 encoding mismatch"));
                             }
-                            encode_decimal_i128_with_tag(data, v, *scale, storage, *bytes)?
-                        } else {
-                            return Err(anyhow!("rowpack decimal128 encoding mismatch"));
                         }
                     }
-                },
-                IngestedType::Decimal256 => match access_or_parse_failure(access.get_decimal256(idx), idx, observer) {
-                    None => 0u8,
-                    Some(v) => {
-                        if let ColumnEncoding::Decimal {
-                            bytes,
-                            scale,
-                            storage,
-                            ..
-                        } = &col.encoding
-                        {
-                            if *bytes == 0 || *bytes > 32 {
-                                return Err(anyhow!("rowpack decimal size mismatch"));
+                }
+                IngestedType::Decimal256 => {
+                    match access_or_parse_failure(access.get_decimal256(idx), idx, observer) {
+                        None => 0u8,
+                        Some(v) => {
+                            if let ColumnEncoding::Decimal {
+                                bytes,
+                                scale,
+                                storage,
+                                ..
+                            } = &col.encoding
+                            {
+                                if *bytes == 0 || *bytes > 32 {
+                                    return Err(anyhow!("rowpack decimal size mismatch"));
+                                }
+                                encode_decimal_i256_with_tag(data, &v, *scale, storage, *bytes)?
+                            } else {
+                                return Err(anyhow!("rowpack decimal256 encoding mismatch"));
                             }
-                            encode_decimal_i256_with_tag(data, &v, *scale, storage, *bytes)?
-                        } else {
-                            return Err(anyhow!("rowpack decimal256 encoding mismatch"));
                         }
                     }
-                },
+                }
                 IngestedType::Float32Array => match access.float_list_view(idx) {
                     Ok(None) => 0u8,
                     Err(_) => {
@@ -2914,15 +3009,21 @@ impl RowPackEncoder {
                         0u8
                     }
                     Ok(Some(view)) => {
-                        observer.observe_float_list(idx, &view);
-                        if let ColumnEncoding::FloatArray { storage } = &col.encoding {
-                            encode_float_list_with_tag(
-                                data,
-                                col.logical_type,
-                                *storage,
-                                view,
-                                f16_buf,
-                            )?
+                        if let Some((storage, fixed_len)) = float_array_encoding(&col.encoding) {
+                            if !fixed_float_list_is_valid(&view, fixed_len) {
+                                observer.observe_parse_failure(idx);
+                                0u8
+                            } else {
+                                observer.observe_float_list(idx, &view);
+                                encode_float_list_with_tag(
+                                    data,
+                                    col.logical_type,
+                                    storage,
+                                    fixed_len,
+                                    view,
+                                    f16_buf,
+                                )?
+                            }
                         } else {
                             return Err(anyhow!("rowpack float32 array encoding mismatch"));
                         }
@@ -2935,15 +3036,21 @@ impl RowPackEncoder {
                         0u8
                     }
                     Ok(Some(view)) => {
-                        observer.observe_float_list(idx, &view);
-                        if let ColumnEncoding::FloatArray { storage } = &col.encoding {
-                            encode_float_list_with_tag(
-                                data,
-                                col.logical_type,
-                                *storage,
-                                view,
-                                f16_buf,
-                            )?
+                        if let Some((storage, fixed_len)) = float_array_encoding(&col.encoding) {
+                            if !fixed_float_list_is_valid(&view, fixed_len) {
+                                observer.observe_parse_failure(idx);
+                                0u8
+                            } else {
+                                observer.observe_float_list(idx, &view);
+                                encode_float_list_with_tag(
+                                    data,
+                                    col.logical_type,
+                                    storage,
+                                    fixed_len,
+                                    view,
+                                    f16_buf,
+                                )?
+                            }
                         } else {
                             return Err(anyhow!("rowpack float16 array encoding mismatch"));
                         }
@@ -2956,15 +3063,21 @@ impl RowPackEncoder {
                         0u8
                     }
                     Ok(Some(view)) => {
-                        observer.observe_float_list(idx, &view);
-                        if let ColumnEncoding::FloatArray { storage } = &col.encoding {
-                            encode_float_list_with_tag(
-                                data,
-                                col.logical_type,
-                                *storage,
-                                view,
-                                f16_buf,
-                            )?
+                        if let Some((storage, fixed_len)) = float_array_encoding(&col.encoding) {
+                            if !fixed_float_list_is_valid(&view, fixed_len) {
+                                observer.observe_parse_failure(idx);
+                                0u8
+                            } else {
+                                observer.observe_float_list(idx, &view);
+                                encode_float_list_with_tag(
+                                    data,
+                                    col.logical_type,
+                                    storage,
+                                    fixed_len,
+                                    view,
+                                    f16_buf,
+                                )?
+                            }
                         } else {
                             return Err(anyhow!("rowpack float64 array encoding mismatch"));
                         }
@@ -2980,14 +3093,20 @@ impl RowPackEncoder {
                         0u8
                     }
                     Ok(Some(view)) => {
-                        observer.observe_int64_list(idx, &view);
-                        let target_bits = self.int_array_target_bits[idx]
-                            .ok_or_else(|| anyhow!("rowpack int-array bits unset"))?;
-                        let row = access.row();
-                        let col_label = col.name.as_str();
-                        view.require_fits_in_signed(target_bits, col_label, row)?;
-                        encode_int_list_view_with_tag(data, view)?;
-                        1u8
+                        let fixed_len = int_array_fixed_len(&col.encoding);
+                        if !fixed_int_list_is_valid(&view, fixed_len) {
+                            observer.observe_parse_failure(idx);
+                            0u8
+                        } else {
+                            observer.observe_int64_list(idx, &view);
+                            let target_bits = self.int_array_target_bits[idx]
+                                .ok_or_else(|| anyhow!("rowpack int-array bits unset"))?;
+                            let row = access.row();
+                            let col_label = col.name.as_str();
+                            view.require_fits_in_signed(target_bits, col_label, row)?;
+                            encode_int_list_view_with_tag(data, view, fixed_len)?;
+                            1u8
+                        }
                     }
                 },
                 IngestedType::StringArray => match access.string_list_view(idx) {
@@ -3299,27 +3418,73 @@ fn encode_value_with_tag<'a>(
             Err(anyhow!("rowpack string encoding mismatch"))
         }
         (ColumnEncoding::FloatArray { storage }, ValueRef::Float32Array(values)) => {
-            let tag = encode_float_slice_f32_with_tag(out, col.logical_type, *storage, values)?;
+            let tag =
+                encode_float_slice_f32_with_tag(out, col.logical_type, *storage, None, values)?;
+            Ok(tag)
+        }
+        (ColumnEncoding::FixedFloatArray { storage, len }, ValueRef::Float32Array(values)) => {
+            let tag = encode_float_slice_f32_with_tag(
+                out,
+                col.logical_type,
+                *storage,
+                Some(*len),
+                values,
+            )?;
             Ok(tag)
         }
         (ColumnEncoding::FloatArray { storage }, ValueRef::Float64Array(values)) => {
-            let tag = encode_float_slice_f64_with_tag(out, col.logical_type, *storage, values)?;
+            let tag =
+                encode_float_slice_f64_with_tag(out, col.logical_type, *storage, None, values)?;
+            Ok(tag)
+        }
+        (ColumnEncoding::FixedFloatArray { storage, len }, ValueRef::Float64Array(values)) => {
+            let tag = encode_float_slice_f64_with_tag(
+                out,
+                col.logical_type,
+                *storage,
+                Some(*len),
+                values,
+            )?;
             Ok(tag)
         }
         (ColumnEncoding::Int8Array, ValueRef::Int8Array(values)) => {
-            encode_int_slice_with_tag(out, values.iter().map(|&v| v as i64))?;
+            encode_int_slice_with_tag(out, values.iter().map(|&v| v as i64), None)?;
+            Ok(1)
+        }
+        (ColumnEncoding::FixedIntArray { len }, ValueRef::Int8Array(values))
+            if col.logical_type == IngestedType::Int8Array =>
+        {
+            encode_int_slice_with_tag(out, values.iter().map(|&v| v as i64), Some(*len))?;
             Ok(1)
         }
         (ColumnEncoding::Int16Array, ValueRef::Int16Array(values)) => {
-            encode_int_slice_with_tag(out, values.iter().map(|&v| v as i64))?;
+            encode_int_slice_with_tag(out, values.iter().map(|&v| v as i64), None)?;
+            Ok(1)
+        }
+        (ColumnEncoding::FixedIntArray { len }, ValueRef::Int16Array(values))
+            if col.logical_type == IngestedType::Int16Array =>
+        {
+            encode_int_slice_with_tag(out, values.iter().map(|&v| v as i64), Some(*len))?;
             Ok(1)
         }
         (ColumnEncoding::Int32Array, ValueRef::Int32Array(values)) => {
-            encode_int_slice_with_tag(out, values.iter().map(|&v| v as i64))?;
+            encode_int_slice_with_tag(out, values.iter().map(|&v| v as i64), None)?;
+            Ok(1)
+        }
+        (ColumnEncoding::FixedIntArray { len }, ValueRef::Int32Array(values))
+            if col.logical_type == IngestedType::Int32Array =>
+        {
+            encode_int_slice_with_tag(out, values.iter().map(|&v| v as i64), Some(*len))?;
             Ok(1)
         }
         (ColumnEncoding::Int64Array, ValueRef::Int64Array(values)) => {
-            encode_int64_list_with_tag(out, values)?;
+            encode_int64_list_with_tag(out, values, None)?;
+            Ok(1)
+        }
+        (ColumnEncoding::FixedIntArray { len }, ValueRef::Int64Array(values))
+            if col.logical_type == IngestedType::Int64Array =>
+        {
+            encode_int64_list_with_tag(out, values, Some(*len))?;
             Ok(1)
         }
         (ColumnEncoding::StringArray { .. }, ValueRef::StringArray(tokens)) => {
@@ -3437,22 +3602,64 @@ fn extend_f64_slice_le(out: &mut Vec<u8>, slice: &[f64]) {
     }
 }
 
+#[inline]
+fn float_array_encoding(encoding: &ColumnEncoding) -> Option<(FloatStorage, Option<usize>)> {
+    match encoding {
+        ColumnEncoding::FloatArray { storage } => Some((*storage, None)),
+        ColumnEncoding::FixedFloatArray { storage, len } => Some((*storage, Some(*len))),
+        _ => None,
+    }
+}
+
+#[inline]
+fn fixed_float_list_is_valid(view: &FloatListView, fixed_len: Option<usize>) -> bool {
+    fixed_len.is_none_or(|len| view.len() == len && !view.has_nulls())
+}
+
+#[inline]
+fn int_array_fixed_len(encoding: &ColumnEncoding) -> Option<usize> {
+    match encoding {
+        ColumnEncoding::FixedIntArray { len } => Some(*len),
+        _ => None,
+    }
+}
+
+#[inline]
+fn fixed_int_list_is_valid(view: &IntListView, fixed_len: Option<usize>) -> bool {
+    fixed_len.is_none_or(|len| view.len() == len && !view.has_nulls())
+}
+
+#[inline]
+fn array_len_prefix_bytes(fixed_len: Option<usize>, len: usize) -> usize {
+    if fixed_len.is_some() {
+        0
+    } else {
+        varint_bytes_u64(len as u64)
+    }
+}
+
 fn encode_float_list_with_tag(
     out: &mut Vec<u8>,
     logical: IngestedType,
     storage: FloatStorage,
+    fixed_len: Option<usize>,
     view: FloatListView,
     f16_buf: &mut Vec<f16>,
 ) -> Result<u8> {
     let _ = logical;
     let len = view.end.saturating_sub(view.start);
+    if !fixed_float_list_is_valid(&view, fixed_len) {
+        return Err(anyhow!("rowpack fixed float array length mismatch"));
+    }
     let bytes_per = match storage {
         FloatStorage::F16 => 2,
         FloatStorage::F32 => 4,
         FloatStorage::F64 => 8,
     };
-    out.reserve(varint_bytes_u64(len as u64) + len * bytes_per);
-    write_varint(len as u64, out);
+    out.reserve(array_len_prefix_bytes(fixed_len, len) + len * bytes_per);
+    if fixed_len.is_none() {
+        write_varint(len as u64, out);
+    }
     match view.values {
         FloatListValues::F16(values) => {
             let values_arr = values
@@ -3653,16 +3860,22 @@ fn encode_float_slice_f32_with_tag(
     out: &mut Vec<u8>,
     logical: IngestedType,
     storage: FloatStorage,
+    fixed_len: Option<usize>,
     values: &[f32],
 ) -> Result<u8> {
     let _ = logical;
+    if fixed_len.is_some_and(|len| values.len() != len) {
+        return Err(anyhow!("rowpack fixed float array length mismatch"));
+    }
     let bytes_per = match storage {
         FloatStorage::F16 => 2,
         FloatStorage::F32 => 4,
         FloatStorage::F64 => 8,
     };
-    out.reserve(varint_bytes_u64(values.len() as u64) + values.len() * bytes_per);
-    write_varint(values.len() as u64, out);
+    out.reserve(array_len_prefix_bytes(fixed_len, values.len()) + values.len() * bytes_per);
+    if fixed_len.is_none() {
+        write_varint(values.len() as u64, out);
+    }
     match storage {
         FloatStorage::F16 => {
             for v in values {
@@ -3685,16 +3898,22 @@ fn encode_float_slice_f64_with_tag(
     out: &mut Vec<u8>,
     logical: IngestedType,
     storage: FloatStorage,
+    fixed_len: Option<usize>,
     values: &[f64],
 ) -> Result<u8> {
     let _ = logical;
+    if fixed_len.is_some_and(|len| values.len() != len) {
+        return Err(anyhow!("rowpack fixed float array length mismatch"));
+    }
     let bytes_per = match storage {
         FloatStorage::F16 => 2,
         FloatStorage::F32 => 4,
         FloatStorage::F64 => 8,
     };
-    out.reserve(varint_bytes_u64(values.len() as u64) + values.len() * bytes_per);
-    write_varint(values.len() as u64, out);
+    out.reserve(array_len_prefix_bytes(fixed_len, values.len()) + values.len() * bytes_per);
+    if fixed_len.is_none() {
+        write_varint(values.len() as u64, out);
+    }
     match storage {
         FloatStorage::F16 => {
             for v in values {
@@ -3715,9 +3934,18 @@ fn encode_float_slice_f64_with_tag(
 
 /// Encode a list of i64 values as: varint(N) + [zigzag_varint(v) × N].
 /// Returns tag 1.
-fn encode_int64_list_with_tag(out: &mut Vec<u8>, values: &[i64]) -> Result<()> {
-    out.reserve(varint_bytes_u64(values.len() as u64) + values.len() * 2);
-    write_varint(values.len() as u64, out);
+fn encode_int64_list_with_tag(
+    out: &mut Vec<u8>,
+    values: &[i64],
+    fixed_len: Option<usize>,
+) -> Result<()> {
+    if fixed_len.is_some_and(|len| values.len() != len) {
+        return Err(anyhow!("rowpack fixed int array length mismatch"));
+    }
+    out.reserve(array_len_prefix_bytes(fixed_len, values.len()) + values.len() * 2);
+    if fixed_len.is_none() {
+        write_varint(values.len() as u64, out);
+    }
     for &v in values {
         write_varint(zigzag_encode(v), out);
     }
@@ -3729,13 +3957,22 @@ fn encode_int64_list_with_tag(out: &mut Vec<u8>, values: &[i64]) -> Result<()> {
 /// their element type on the fly. The output bytes are identical to
 /// `encode_int64_list_with_tag` for the same numeric values — the width tag
 /// lives in `ColumnEncoding`, not in the wire format.
-fn encode_int_slice_with_tag<I>(out: &mut Vec<u8>, values: I) -> Result<()>
+fn encode_int_slice_with_tag<I>(
+    out: &mut Vec<u8>,
+    values: I,
+    fixed_len: Option<usize>,
+) -> Result<()>
 where
     I: ExactSizeIterator<Item = i64>,
 {
     let len = values.len();
-    out.reserve(varint_bytes_u64(len as u64) + len * 2);
-    write_varint(len as u64, out);
+    if fixed_len.is_some_and(|expected| len != expected) {
+        return Err(anyhow!("rowpack fixed int array length mismatch"));
+    }
+    out.reserve(array_len_prefix_bytes(fixed_len, len) + len * 2);
+    if fixed_len.is_none() {
+        write_varint(len as u64, out);
+    }
     for v in values {
         write_varint(zigzag_encode(v), out);
     }
@@ -3746,15 +3983,25 @@ where
 /// to the target signed bit width, used by the encoder's overflow check.
 /// Returns an error if the pair is internally inconsistent (a bug, not user
 /// data, since infer_column_encoding builds these pairs in sync).
-fn int_array_encoding_bits(
-    encoding: &ColumnEncoding,
-    logical: IngestedType,
-) -> Result<u8> {
+fn int_array_encoding_bits(encoding: &ColumnEncoding, logical: IngestedType) -> Result<u8> {
     let bits = match encoding {
         ColumnEncoding::Int8Array => 8,
         ColumnEncoding::Int16Array => 16,
         ColumnEncoding::Int32Array => 32,
         ColumnEncoding::Int64Array => 64,
+        ColumnEncoding::FixedIntArray { .. } => match logical {
+            IngestedType::Int8Array => 8,
+            IngestedType::Int16Array => 16,
+            IngestedType::Int32Array => 32,
+            IngestedType::Int64Array => 64,
+            _ => {
+                return Err(anyhow!(
+                    "rowpack int-array encoding mismatch: logical_type={:?} encoding={:?}",
+                    logical,
+                    encoding,
+                ));
+            }
+        },
         other => {
             return Err(anyhow!(
                 "rowpack int-array encoding mismatch: logical_type={:?} encoding={:?}",
@@ -3787,7 +4034,14 @@ fn int_array_encoding_bits(
     Ok(bits)
 }
 
-fn encode_int_list_view_with_tag(out: &mut Vec<u8>, view: IntListView) -> Result<()> {
+fn encode_int_list_view_with_tag(
+    out: &mut Vec<u8>,
+    view: IntListView,
+    fixed_len: Option<usize>,
+) -> Result<()> {
+    if !fixed_int_list_is_valid(&view, fixed_len) {
+        return Err(anyhow!("rowpack fixed int array length mismatch"));
+    }
     // The wire format (varint(N) + zigzag-varint per non-null element) is the
     // same for every signed width because each element is widened to i64
     // before zigzag-encoding. Width is carried by the column's
@@ -3798,6 +4052,7 @@ fn encode_int_list_view_with_tag(out: &mut Vec<u8>, view: IntListView) -> Result
         start: usize,
         end: usize,
         get: F,
+        fixed_len: Option<usize>,
     ) -> Result<()>
     where
         E: arrow_array::Array,
@@ -3805,8 +4060,10 @@ fn encode_int_list_view_with_tag(out: &mut Vec<u8>, view: IntListView) -> Result
     {
         let total = end.saturating_sub(start);
         if arr.null_count() == 0 {
-            out.reserve(varint_bytes_u64(total as u64) + total * 2);
-            write_varint(total as u64, out);
+            out.reserve(array_len_prefix_bytes(fixed_len, total) + total * 2);
+            if fixed_len.is_none() {
+                write_varint(total as u64, out);
+            }
             for i in start..end {
                 write_varint(zigzag_encode(get(arr, i)), out);
             }
@@ -3821,8 +4078,10 @@ fn encode_int_list_view_with_tag(out: &mut Vec<u8>, view: IntListView) -> Result
                 non_null_count += 1;
             }
         }
-        out.reserve(varint_bytes_u64(non_null_count as u64) + non_null_count * 2);
-        write_varint(non_null_count as u64, out);
+        out.reserve(array_len_prefix_bytes(fixed_len, non_null_count) + non_null_count * 2);
+        if fixed_len.is_none() {
+            write_varint(non_null_count as u64, out);
+        }
         for i in start..end {
             if !arr.is_null(i) {
                 write_varint(zigzag_encode(get(arr, i)), out);
@@ -3837,21 +4096,42 @@ fn encode_int_list_view_with_tag(out: &mut Vec<u8>, view: IntListView) -> Result
                 .as_any()
                 .downcast_ref::<arrow_array::Int8Array>()
                 .ok_or_else(|| anyhow!("int8 list element cast"))?;
-            encode_native(out, arr, view.start, view.end, |a, i| a.value(i) as i64)
+            encode_native(
+                out,
+                arr,
+                view.start,
+                view.end,
+                |a, i| a.value(i) as i64,
+                fixed_len,
+            )
         }
         IntListValues::I16(values) => {
             let arr = values
                 .as_any()
                 .downcast_ref::<arrow_array::Int16Array>()
                 .ok_or_else(|| anyhow!("int16 list element cast"))?;
-            encode_native(out, arr, view.start, view.end, |a, i| a.value(i) as i64)
+            encode_native(
+                out,
+                arr,
+                view.start,
+                view.end,
+                |a, i| a.value(i) as i64,
+                fixed_len,
+            )
         }
         IntListValues::I32(values) => {
             let arr = values
                 .as_any()
                 .downcast_ref::<arrow_array::Int32Array>()
                 .ok_or_else(|| anyhow!("int32 list element cast"))?;
-            encode_native(out, arr, view.start, view.end, |a, i| a.value(i) as i64)
+            encode_native(
+                out,
+                arr,
+                view.start,
+                view.end,
+                |a, i| a.value(i) as i64,
+                fixed_len,
+            )
         }
         IntListValues::I64(values) => {
             let arr = values
@@ -3864,13 +4144,13 @@ fn encode_int_list_view_with_tag(out: &mut Vec<u8>, view: IntListView) -> Result
             // The list-element type for `List<Int64>` is the dominant input
             // shape, so this fast path matters.
             if arr.null_count() == 0 {
-                encode_int64_list_with_tag(out, &arr.values()[view.start..view.end])
+                encode_int64_list_with_tag(out, &arr.values()[view.start..view.end], fixed_len)
             } else {
-                encode_native(out, arr, view.start, view.end, |a, i| a.value(i))
+                encode_native(out, arr, view.start, view.end, |a, i| a.value(i), fixed_len)
             }
         }
         IntListValues::Parsed(values) => {
-            encode_int64_list_with_tag(out, &values[view.start..view.end])
+            encode_int64_list_with_tag(out, &values[view.start..view.end], fixed_len)
         }
     }
 }
@@ -4581,9 +4861,7 @@ impl RowPackDecoder {
             }
             if matches!(col.encoding, ColumnEncoding::Bool) {
                 if idx == col_idx {
-                    return Err(anyhow!(
-                        "with_string_array_column called on Bool column"
-                    ));
+                    return Err(anyhow!("with_string_array_column called on Bool column"));
                 }
                 continue;
             }
@@ -4799,6 +5077,44 @@ impl RowPackDecoder {
     }
 }
 
+#[inline]
+fn float_storage_bytes(storage: FloatStorage) -> usize {
+    match storage {
+        FloatStorage::F16 => 2,
+        FloatStorage::F32 => 4,
+        FloatStorage::F64 => 8,
+    }
+}
+
+fn read_float_array_len(
+    data: &mut &[u8],
+    storage: FloatStorage,
+    fixed_len: Option<usize>,
+    require_u32: bool,
+) -> Result<usize> {
+    let len = match fixed_len {
+        Some(len) => len,
+        None => read_varint(data)? as usize,
+    };
+    let elem_bytes = float_storage_bytes(storage);
+    let max_len = data.len() / elem_bytes;
+    if len > MAX_ARRAY_LEN || len > max_len || (require_u32 && len > u32::MAX as usize) {
+        return Err(anyhow!("rowpack array length overflow"));
+    }
+    Ok(len)
+}
+
+fn read_int_array_len(data: &mut &[u8], fixed_len: Option<usize>, label: &str) -> Result<usize> {
+    let len = match fixed_len {
+        Some(len) => len,
+        None => read_varint(data)? as usize,
+    };
+    if len > MAX_ARRAY_LEN {
+        return Err(anyhow!("rowpack {label} array length overflow"));
+    }
+    Ok(len)
+}
+
 fn decode_value_msgpack(
     out: &mut Vec<u8>,
     col: &ColumnContext,
@@ -4905,17 +5221,10 @@ fn decode_value_msgpack(
             };
             mp::write_str(out, &value)?;
         }
-        ColumnEncoding::FloatArray { storage } => {
-            let len = read_varint(data)? as usize;
-            let elem_bytes = match storage {
-                FloatStorage::F16 => 2,
-                FloatStorage::F32 => 4,
-                FloatStorage::F64 => 8,
-            };
-            let max_len = data.len() / elem_bytes;
-            if len > MAX_ARRAY_LEN || len > max_len || len > u32::MAX as usize {
-                return Err(anyhow!("rowpack array length overflow"));
-            }
+        ColumnEncoding::FloatArray { storage }
+        | ColumnEncoding::FixedFloatArray { storage, .. } => {
+            let fixed_len = float_array_encoding(&col.encoding).and_then(|(_, len)| len);
+            let len = read_float_array_len(data, *storage, fixed_len, true)?;
             mp::write_array_len(out, len as u32)?;
             for _ in 0..len {
                 let v = decode_float(data, *storage)?;
@@ -4930,15 +5239,13 @@ fn decode_value_msgpack(
         ColumnEncoding::Int8Array
         | ColumnEncoding::Int16Array
         | ColumnEncoding::Int32Array
-        | ColumnEncoding::Int64Array => {
+        | ColumnEncoding::Int64Array
+        | ColumnEncoding::FixedIntArray { .. } => {
             // Wire format is shared across signed widths: width is carried in
             // the ColumnEncoding tag, not in the per-element bytes. Decoded
             // values come back as i64 from zigzag-varint and write as
             // msgpack signed ints regardless of declared width.
-            let len = read_varint(data)? as usize;
-            if len > MAX_ARRAY_LEN {
-                return Err(anyhow!("rowpack int array length overflow"));
-            }
+            let len = read_int_array_len(data, int_array_fixed_len(&col.encoding), "int")?;
             mp::write_array_len(out, len as u32)?;
             for _ in 0..len {
                 let v = zigzag_decode(read_varint(data)?);
@@ -5068,17 +5375,10 @@ fn decode_value_json(
             };
             JsonValue::from(value)
         }
-        ColumnEncoding::FloatArray { storage } => {
-            let len = read_varint(data)? as usize;
-            let elem_bytes = match storage {
-                FloatStorage::F16 => 2,
-                FloatStorage::F32 => 4,
-                FloatStorage::F64 => 8,
-            };
-            let max_len = data.len() / elem_bytes;
-            if len > MAX_ARRAY_LEN || len > max_len {
-                return Err(anyhow!("rowpack array length overflow"));
-            }
+        ColumnEncoding::FloatArray { storage }
+        | ColumnEncoding::FixedFloatArray { storage, .. } => {
+            let fixed_len = float_array_encoding(&col.encoding).and_then(|(_, len)| len);
+            let len = read_float_array_len(data, *storage, fixed_len, false)?;
             let mut values = Vec::with_capacity(len);
             for _ in 0..len {
                 let v = decode_float(data, *storage)?;
@@ -5094,11 +5394,9 @@ fn decode_value_json(
         ColumnEncoding::Int8Array
         | ColumnEncoding::Int16Array
         | ColumnEncoding::Int32Array
-        | ColumnEncoding::Int64Array => {
-            let len = read_varint(data)? as usize;
-            if len > MAX_ARRAY_LEN {
-                return Err(anyhow!("rowpack int array length overflow"));
-            }
+        | ColumnEncoding::Int64Array
+        | ColumnEncoding::FixedIntArray { .. } => {
+            let len = read_int_array_len(data, int_array_fixed_len(&col.encoding), "int")?;
             let mut values = Vec::with_capacity(len);
             for _ in 0..len {
                 let v = zigzag_decode(read_varint(data)?);
@@ -5220,17 +5518,10 @@ fn decode_value_ref<'a>(
             }
             Ok(ValueRef::String(&scratch.string))
         }
-        ColumnEncoding::FloatArray { storage } => {
-            let len = read_varint(data)? as usize;
-            let elem_bytes = match storage {
-                FloatStorage::F16 => 2,
-                FloatStorage::F32 => 4,
-                FloatStorage::F64 => 8,
-            };
-            let max_len = data.len() / elem_bytes;
-            if len > MAX_ARRAY_LEN || len > max_len {
-                return Err(anyhow!("rowpack array length overflow"));
-            }
+        ColumnEncoding::FloatArray { storage }
+        | ColumnEncoding::FixedFloatArray { storage, .. } => {
+            let fixed_len = float_array_encoding(&col.encoding).and_then(|(_, len)| len);
+            let len = read_float_array_len(data, *storage, fixed_len, false)?;
             match col.logical_type {
                 IngestedType::Float16Array | IngestedType::Float32Array => {
                     scratch.float32.clear();
@@ -5251,11 +5542,10 @@ fn decode_value_ref<'a>(
                 _ => Err(anyhow!("rowpack invalid array type")),
             }
         }
-        ColumnEncoding::Int8Array => {
-            let len = read_varint(data)? as usize;
-            if len > MAX_ARRAY_LEN {
-                return Err(anyhow!("rowpack int8 array length overflow"));
-            }
+        ColumnEncoding::Int8Array | ColumnEncoding::FixedIntArray { .. }
+            if col.logical_type == IngestedType::Int8Array =>
+        {
+            let len = read_int_array_len(data, int_array_fixed_len(&col.encoding), "int8")?;
             scratch.int8.clear();
             for _ in 0..len {
                 let v = zigzag_decode(read_varint(data)?);
@@ -5263,11 +5553,10 @@ fn decode_value_ref<'a>(
             }
             Ok(ValueRef::Int8Array(&scratch.int8))
         }
-        ColumnEncoding::Int16Array => {
-            let len = read_varint(data)? as usize;
-            if len > MAX_ARRAY_LEN {
-                return Err(anyhow!("rowpack int16 array length overflow"));
-            }
+        ColumnEncoding::Int16Array | ColumnEncoding::FixedIntArray { .. }
+            if col.logical_type == IngestedType::Int16Array =>
+        {
+            let len = read_int_array_len(data, int_array_fixed_len(&col.encoding), "int16")?;
             scratch.int16.clear();
             for _ in 0..len {
                 let v = zigzag_decode(read_varint(data)?);
@@ -5275,11 +5564,10 @@ fn decode_value_ref<'a>(
             }
             Ok(ValueRef::Int16Array(&scratch.int16))
         }
-        ColumnEncoding::Int32Array => {
-            let len = read_varint(data)? as usize;
-            if len > MAX_ARRAY_LEN {
-                return Err(anyhow!("rowpack int32 array length overflow"));
-            }
+        ColumnEncoding::Int32Array | ColumnEncoding::FixedIntArray { .. }
+            if col.logical_type == IngestedType::Int32Array =>
+        {
+            let len = read_int_array_len(data, int_array_fixed_len(&col.encoding), "int32")?;
             scratch.int32.clear();
             for _ in 0..len {
                 let v = zigzag_decode(read_varint(data)?);
@@ -5287,11 +5575,10 @@ fn decode_value_ref<'a>(
             }
             Ok(ValueRef::Int32Array(&scratch.int32))
         }
-        ColumnEncoding::Int64Array => {
-            let len = read_varint(data)? as usize;
-            if len > MAX_ARRAY_LEN {
-                return Err(anyhow!("rowpack int64 array length overflow"));
-            }
+        ColumnEncoding::Int64Array | ColumnEncoding::FixedIntArray { .. }
+            if col.logical_type == IngestedType::Int64Array =>
+        {
+            let len = read_int_array_len(data, int_array_fixed_len(&col.encoding), "int64")?;
             scratch.int64.clear();
             for _ in 0..len {
                 let v = zigzag_decode(read_varint(data)?);
@@ -5299,6 +5586,11 @@ fn decode_value_ref<'a>(
             }
             Ok(ValueRef::Int64Array(&scratch.int64))
         }
+        ColumnEncoding::Int8Array
+        | ColumnEncoding::Int16Array
+        | ColumnEncoding::Int32Array
+        | ColumnEncoding::Int64Array
+        | ColumnEncoding::FixedIntArray { .. } => Err(anyhow!("rowpack invalid array type")),
         ColumnEncoding::StringArray { encoding } => {
             // Decode tokens into scratch.strings, advancing `data` past the payload.
             let len = read_varint(data)? as usize;
@@ -5481,14 +5773,11 @@ fn decode_value_skip(
                 }
             }
         }
-        ColumnEncoding::FloatArray { storage } => {
-            let len = read_varint(data)? as usize;
-            let elem_bytes = match storage {
-                FloatStorage::F16 => 2,
-                FloatStorage::F32 => 4,
-                FloatStorage::F64 => 8,
-            };
-            let total = len.saturating_mul(elem_bytes);
+        ColumnEncoding::FloatArray { storage }
+        | ColumnEncoding::FixedFloatArray { storage, .. } => {
+            let fixed_len = float_array_encoding(&col.encoding).and_then(|(_, len)| len);
+            let len = read_float_array_len(data, *storage, fixed_len, false)?;
+            let total = len.saturating_mul(float_storage_bytes(*storage));
             if data.len() < total {
                 return Err(anyhow!("rowpack array truncated"));
             }
@@ -5497,11 +5786,9 @@ fn decode_value_skip(
         ColumnEncoding::Int8Array
         | ColumnEncoding::Int16Array
         | ColumnEncoding::Int32Array
-        | ColumnEncoding::Int64Array => {
-            let len = read_varint(data)? as usize;
-            if len > MAX_ARRAY_LEN {
-                return Err(anyhow!("rowpack int array length overflow"));
-            }
+        | ColumnEncoding::Int64Array
+        | ColumnEncoding::FixedIntArray { .. } => {
+            let len = read_int_array_len(data, int_array_fixed_len(&col.encoding), "int")?;
             for _ in 0..len {
                 let _ = read_varint(data)?;
             }
@@ -6548,17 +6835,10 @@ fn decode_and_append_to_builder(
                 .unwrap()
                 .append_value(&scratch.string);
         }
-        ColumnEncoding::FloatArray { storage } => {
-            let len = read_varint(data)? as usize;
-            let elem_bytes = match storage {
-                FloatStorage::F16 => 2,
-                FloatStorage::F32 => 4,
-                FloatStorage::F64 => 8,
-            };
-            let max_len = data.len() / elem_bytes;
-            if len > MAX_ARRAY_LEN || len > max_len {
-                return Err(anyhow!("rowpack array length overflow"));
-            }
+        ColumnEncoding::FloatArray { storage }
+        | ColumnEncoding::FixedFloatArray { storage, .. } => {
+            let fixed_len = float_array_encoding(&col.encoding).and_then(|(_, len)| len);
+            let len = read_float_array_len(data, *storage, fixed_len, false)?;
             match col.logical_type {
                 IngestedType::Float16Array | IngestedType::Float32Array => {
                     scratch.float32.clear();
@@ -6589,11 +6869,10 @@ fn decode_and_append_to_builder(
                 _ => return Err(anyhow!("rowpack invalid array type")),
             }
         }
-        ColumnEncoding::Int8Array => {
-            let len = read_varint(data)? as usize;
-            if len > MAX_ARRAY_LEN {
-                return Err(anyhow!("rowpack int8 array length overflow"));
-            }
+        ColumnEncoding::Int8Array | ColumnEncoding::FixedIntArray { .. }
+            if col.logical_type == IngestedType::Int8Array =>
+        {
+            let len = read_int_array_len(data, int_array_fixed_len(&col.encoding), "int8")?;
             scratch.int8.clear();
             for _ in 0..len {
                 let v = zigzag_decode(read_varint(data)?);
@@ -6606,11 +6885,10 @@ fn decode_and_append_to_builder(
             b.values().append_slice(&scratch.int8);
             b.append(true);
         }
-        ColumnEncoding::Int16Array => {
-            let len = read_varint(data)? as usize;
-            if len > MAX_ARRAY_LEN {
-                return Err(anyhow!("rowpack int16 array length overflow"));
-            }
+        ColumnEncoding::Int16Array | ColumnEncoding::FixedIntArray { .. }
+            if col.logical_type == IngestedType::Int16Array =>
+        {
+            let len = read_int_array_len(data, int_array_fixed_len(&col.encoding), "int16")?;
             scratch.int16.clear();
             for _ in 0..len {
                 let v = zigzag_decode(read_varint(data)?);
@@ -6623,11 +6901,10 @@ fn decode_and_append_to_builder(
             b.values().append_slice(&scratch.int16);
             b.append(true);
         }
-        ColumnEncoding::Int32Array => {
-            let len = read_varint(data)? as usize;
-            if len > MAX_ARRAY_LEN {
-                return Err(anyhow!("rowpack int32 array length overflow"));
-            }
+        ColumnEncoding::Int32Array | ColumnEncoding::FixedIntArray { .. }
+            if col.logical_type == IngestedType::Int32Array =>
+        {
+            let len = read_int_array_len(data, int_array_fixed_len(&col.encoding), "int32")?;
             scratch.int32.clear();
             for _ in 0..len {
                 let v = zigzag_decode(read_varint(data)?);
@@ -6640,11 +6917,10 @@ fn decode_and_append_to_builder(
             b.values().append_slice(&scratch.int32);
             b.append(true);
         }
-        ColumnEncoding::Int64Array => {
-            let len = read_varint(data)? as usize;
-            if len > MAX_ARRAY_LEN {
-                return Err(anyhow!("rowpack int64 array length overflow"));
-            }
+        ColumnEncoding::Int64Array | ColumnEncoding::FixedIntArray { .. }
+            if col.logical_type == IngestedType::Int64Array =>
+        {
+            let len = read_int_array_len(data, int_array_fixed_len(&col.encoding), "int64")?;
             scratch.int64.clear();
             for _ in 0..len {
                 let v = zigzag_decode(read_varint(data)?);
@@ -6656,6 +6932,13 @@ fn decode_and_append_to_builder(
                 .unwrap();
             b.values().append_slice(&scratch.int64);
             b.append(true);
+        }
+        ColumnEncoding::Int8Array
+        | ColumnEncoding::Int16Array
+        | ColumnEncoding::Int32Array
+        | ColumnEncoding::Int64Array
+        | ColumnEncoding::FixedIntArray { .. } => {
+            return Err(anyhow!("rowpack invalid array type"))
         }
         ColumnEncoding::StringArray { encoding } => {
             let len = read_varint(data)? as usize;

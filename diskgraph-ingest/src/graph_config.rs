@@ -17,18 +17,15 @@ pub const DISKGRAPH_CONFIG_FILENAME: &str = "diskgraph_config.json";
 /// column).
 pub fn read_persisted_config(index_root: &Path) -> Result<GraphConfig> {
     let path = index_root.join(DISKGRAPH_CONFIG_FILENAME);
-    let bytes = std::fs::read(&path)
-        .with_context(|| format!("read {}", path.display()))?;
-    let config: GraphConfig = serde_json::from_slice(&bytes)
-        .with_context(|| format!("parse {}", path.display()))?;
+    let bytes = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    let config: GraphConfig =
+        serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
     Ok(config)
 }
 
 /// Build a `(table, column) → SemanticType` lookup from a resolved config.
 /// Columns without an explicit `semantic_type` are skipped.
-pub fn column_semantic_types(
-    config: &GraphConfig,
-) -> HashMap<(String, String), SemanticType> {
+pub fn column_semantic_types(config: &GraphConfig) -> HashMap<(String, String), SemanticType> {
     let mut out = HashMap::new();
     for table in &config.tables {
         for col in &table.columns {
@@ -156,6 +153,9 @@ pub enum SemanticType {
     Timestamp,
     /// Ordered lists (embeddings, float arrays).
     Sequence,
+    /// Latitude/longitude coordinate pair. Stored as a fixed length-2 numeric
+    /// list so downstream geo encoders can validate the raw coordinate shape.
+    Latlong,
     /// Concatenation of multiple categories (e.g. comma-separated tags).
     Multicategorical,
     /// Column type not supported for ML encoding.
@@ -427,6 +427,8 @@ fn parse_cloud_source(path: &str) -> Result<Option<CloudSource>> {
 }
 
 impl GraphConfig {
+    /// Normalize columns that need a canonical on-disk shape.
+    ///
     /// Normalize multicategorical "pseudo list" columns to the native list
     /// shape on disk. For any column with `(stype=Multicategorical,
     /// dtype=String, multicategorical_delimiter=Some(_))`, flip
@@ -436,6 +438,9 @@ impl GraphConfig {
     /// using GraphEngine-parity drop-empty semantics. Result: rowpack
     /// persists a native list, downstream readers (TT-gen, infer,
     /// tensor mapper) never re-split.
+    ///
+    /// For `stype=Latlong`, force `fixed_len=2` so rowpack can enforce the
+    /// coordinate pair shape and use the compact fixed-array representation.
     ///
     /// Called automatically by `ingest_with_stats_from_source` and by
     /// `convert_kumo_to_diskgraph`. Idempotent. See kumo-ai/kumo#28478.
@@ -447,6 +452,9 @@ impl GraphConfig {
                     && col.multicategorical_delimiter.is_some()
                 {
                     col.ingested_dtype = IngestedType::StringArray;
+                }
+                if col.semantic_type == Some(SemanticType::Latlong) {
+                    col.fixed_len = Some(2);
                 }
             }
         }
@@ -545,13 +553,44 @@ impl GraphConfig {
                 if col.fixed_len.is_some()
                     && !matches!(
                         col.ingested_dtype,
-                        IngestedType::String | IngestedType::Bytes
+                        IngestedType::String
+                            | IngestedType::Bytes
+                            | IngestedType::Float16Array
+                            | IngestedType::Float32Array
+                            | IngestedType::Float64Array
+                            | IngestedType::Int8Array
+                            | IngestedType::Int16Array
+                            | IngestedType::Int32Array
+                            | IngestedType::Int64Array
                     )
                 {
                     errors.push(format!(
-                        "table {} column {} fixed_len only valid for string/bytes",
+                        "table {} column {} fixed_len only valid for string/bytes/numeric arrays",
                         table.name, col.name
                     ));
+                }
+                if col.semantic_type == Some(SemanticType::Latlong) {
+                    if !matches!(
+                        col.ingested_dtype,
+                        IngestedType::Float16Array
+                            | IngestedType::Float32Array
+                            | IngestedType::Float64Array
+                            | IngestedType::Int8Array
+                            | IngestedType::Int16Array
+                            | IngestedType::Int32Array
+                            | IngestedType::Int64Array
+                    ) {
+                        errors.push(format!(
+                            "table {} column {} latlong requires a numeric array dtype",
+                            table.name, col.name
+                        ));
+                    }
+                    if col.fixed_len != Some(2) {
+                        errors.push(format!(
+                            "table {} column {} latlong requires fixed_len=2",
+                            table.name, col.name
+                        ));
+                    }
                 }
                 if col.semantic_type == Some(SemanticType::Multicategorical)
                     && !matches!(
@@ -1411,11 +1450,7 @@ mod tests {
         );
     }
 
-    fn make_multicat_column(
-        name: &str,
-        dtype: IngestedType,
-        delim: Option<&str>,
-    ) -> ColumnSpec {
+    fn make_multicat_column(name: &str, dtype: IngestedType, delim: Option<&str>) -> ColumnSpec {
         ColumnSpec {
             name: name.to_string(),
             source_dtype: None,
@@ -1449,7 +1484,9 @@ mod tests {
         // Delim is preserved on the spec — it drives the access-layer split
         // at read time even after the dtype flip.
         assert_eq!(
-            cfg.tables[0].columns[0].multicategorical_delimiter.as_deref(),
+            cfg.tables[0].columns[0]
+                .multicategorical_delimiter
+                .as_deref(),
             Some(","),
         );
     }
@@ -1529,5 +1566,74 @@ mod tests {
         let after_second = cfg.tables[0].columns[0].ingested_dtype.clone();
         assert_eq!(after_first, after_second, "pass should be idempotent");
         assert_eq!(after_first, IngestedType::StringArray);
+    }
+
+    fn make_latlong_column(
+        name: &str,
+        dtype: IngestedType,
+        fixed_len: Option<usize>,
+    ) -> ColumnSpec {
+        let mut col = make_column(name, dtype);
+        col.semantic_type = Some(SemanticType::Latlong);
+        col.fixed_len = fixed_len;
+        col
+    }
+
+    #[test]
+    fn normalize_latlong_forces_fixed_len_two() {
+        let col = make_latlong_column("location", IngestedType::Float32Array, None);
+        let mut cfg = GraphConfig {
+            dataset_name: "t".into(),
+            tables: vec![make_table("items", vec![col], None)],
+            rowpack: None,
+            num_shards: None,
+            edge_format: None,
+            coercion_mode: CoercionMode::default(),
+        };
+
+        cfg.normalize_multicat_pseudo_list();
+
+        assert_eq!(cfg.tables[0].columns[0].fixed_len, Some(2));
+        cfg.validate().expect("normalized latlong should validate");
+    }
+
+    #[test]
+    fn validate_latlong_requires_numeric_array() {
+        let col = make_latlong_column("location", IngestedType::String, Some(2));
+        let cfg = GraphConfig {
+            dataset_name: "t".into(),
+            tables: vec![make_table("items", vec![col], None)],
+            rowpack: None,
+            num_shards: None,
+            edge_format: None,
+            coercion_mode: CoercionMode::default(),
+        };
+
+        let err = cfg.validate().expect_err("string latlong should fail");
+        assert!(
+            err.to_string()
+                .contains("table items column location latlong requires a numeric array dtype"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_latlong_requires_fixed_len_two() {
+        let col = make_latlong_column("location", IngestedType::Float32Array, Some(3));
+        let cfg = GraphConfig {
+            dataset_name: "t".into(),
+            tables: vec![make_table("items", vec![col], None)],
+            rowpack: None,
+            num_shards: None,
+            edge_format: None,
+            coercion_mode: CoercionMode::default(),
+        };
+
+        let err = cfg.validate().expect_err("length-3 latlong should fail");
+        assert!(
+            err.to_string()
+                .contains("table items column location latlong requires fixed_len=2"),
+            "unexpected error: {err}"
+        );
     }
 }

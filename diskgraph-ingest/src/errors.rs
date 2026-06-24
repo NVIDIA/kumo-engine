@@ -156,6 +156,16 @@ pub enum ConvertError {
     },
 
     #[error(
+        "table '{table}' column '{column}': latlong columns with dtype '{dtype:?}' \
+         are not supported. Use dtype 'floatlist' or 'intlist'."
+    )]
+    LatlongOnUnsupportedInput {
+        table: String,
+        column: String,
+        dtype: IngestedType,
+    },
+
+    #[error(
         "table '{table}' column '{column}': declared multicategorical_delimiter \
          {declared:?} does not match the source data — only {hits} of {total} \
          sampled non-empty rows contain it (need at least {required}). \

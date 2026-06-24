@@ -62,6 +62,7 @@ pub fn map_kumo_stype(stype: &str) -> Option<SemanticType> {
         "text" => Some(SemanticType::Text),
         "timestamp" => Some(SemanticType::Timestamp),
         "sequence" => Some(SemanticType::Sequence),
+        "latlong" => Some(SemanticType::Latlong),
         "image" => Some(SemanticType::ImageUrl),
         "unsupported" => Some(SemanticType::Unsupported),
         _ => None,

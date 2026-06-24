@@ -102,6 +102,41 @@ impl IntListView {
         self.end <= self.start
     }
 
+    #[inline]
+    pub fn has_nulls(&self) -> bool {
+        match &self.values {
+            IntListValues::I8(arr) => list_range_has_nulls(
+                arr.as_any()
+                    .downcast_ref::<arrow_array::Int8Array>()
+                    .unwrap(),
+                self.start,
+                self.end,
+            ),
+            IntListValues::I16(arr) => list_range_has_nulls(
+                arr.as_any()
+                    .downcast_ref::<arrow_array::Int16Array>()
+                    .unwrap(),
+                self.start,
+                self.end,
+            ),
+            IntListValues::I32(arr) => list_range_has_nulls(
+                arr.as_any()
+                    .downcast_ref::<arrow_array::Int32Array>()
+                    .unwrap(),
+                self.start,
+                self.end,
+            ),
+            IntListValues::I64(arr) => list_range_has_nulls(
+                arr.as_any()
+                    .downcast_ref::<arrow_array::Int64Array>()
+                    .unwrap(),
+                self.start,
+                self.end,
+            ),
+            IntListValues::Parsed(_) => false,
+        }
+    }
+
     /// Iterate over the non-null elements of this list. Null elements are
     /// dropped; the callback is only invoked for validity-bit=true positions.
     /// Values from narrower-width Arrow arrays (i8/i16/i32) are widened to i64.
@@ -228,13 +263,7 @@ impl IntListView {
         }
     }
 
-    fn check_overflow(
-        &self,
-        min_v: i64,
-        max_v: i64,
-        col_label: &str,
-        row: usize,
-    ) -> Result<()> {
+    fn check_overflow(&self, min_v: i64, max_v: i64, col_label: &str, row: usize) -> Result<()> {
         let mut overflow: Option<i64> = None;
         self.for_each_i64(|v| {
             if overflow.is_none() && (v < min_v || v > max_v) {
@@ -334,6 +363,34 @@ impl FloatListView {
         self.end <= self.start
     }
 
+    #[inline]
+    pub fn has_nulls(&self) -> bool {
+        match &self.values {
+            FloatListValues::F16(arr) => list_range_has_nulls(
+                arr.as_any()
+                    .downcast_ref::<arrow_array::Float16Array>()
+                    .unwrap(),
+                self.start,
+                self.end,
+            ),
+            FloatListValues::F32(arr) => list_range_has_nulls(
+                arr.as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .unwrap(),
+                self.start,
+                self.end,
+            ),
+            FloatListValues::F64(arr) => list_range_has_nulls(
+                arr.as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .unwrap(),
+                self.start,
+                self.end,
+            ),
+            FloatListValues::Parsed(_) => false,
+        }
+    }
+
     /// Iterate over all values as f64, calling `f` for each.
     /// Null elements are passed as 0.0 (matching the encoding behaviour).
     #[inline]
@@ -431,6 +488,14 @@ impl FloatListView {
             }
         }
     }
+}
+
+#[inline]
+fn list_range_has_nulls(arr: &dyn Array, start: usize, end: usize) -> bool {
+    if arr.null_count() == 0 {
+        return false;
+    }
+    (start..end).any(|idx| arr.is_null(idx))
 }
 
 /// Parse a JSON-style string like `"[1.0, 2.0, 3.0]"` or `"1.0, 2.0, 3.0"`
@@ -3026,7 +3091,9 @@ impl<'p> RowAccess<'p> {
                      If the elements are stringified ints, change the declared \
                      dtype to StringArray + add a multicategorical_delimiter, or \
                      cast the source list elements to a signed int width upstream.",
-                    col_label, row, other,
+                    col_label,
+                    row,
+                    other,
                 ));
             }
         };
