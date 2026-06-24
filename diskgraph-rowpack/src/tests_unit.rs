@@ -1848,6 +1848,50 @@ fn test_detect_non_iso_formats() {
     assert!(parse_timestamp_text("15/01/2024 10:30:00", Some("%d/%m/%Y %H:%M:%S")).is_some());
 }
 
+#[test]
+fn test_detect_non_iso_hour_minute_no_seconds() {
+    // US date with HH:MM (no seconds), unpadded month/day/hour — the exact shape
+    // of real data like customerltv's `InvoiceDate` (`12/1/2010 8:26`). Without
+    // the `%m/%d/%Y %H:%M` candidate, detection finds nothing and the column
+    // parses to all-null.
+    assert_eq!(
+        detect_timestamp_format("12/1/2010 8:26"),
+        Some("%m/%d/%Y %H:%M")
+    );
+    // And it parses to the expected naive datetime.
+    let ts = parse_timestamp_text("12/1/2010 8:26", Some("%m/%d/%Y %H:%M")).unwrap();
+    let expected = chrono::NaiveDate::from_ymd_opt(2010, 12, 1)
+        .unwrap()
+        .and_hms_opt(8, 26, 0)
+        .unwrap()
+        .and_utc()
+        .timestamp();
+    assert_eq!(ts, expected);
+
+    // A seconds-bearing value still resolves to the more-specific `%H:%M:%S`
+    // format — the new `%H:%M` candidate must not shadow it (chrono's
+    // `parse_from_str` is whole-string/exact, so `%H:%M` rejects a `:SS` value).
+    assert_eq!(
+        detect_timestamp_format("12/1/2010 8:26:30"),
+        Some("%m/%d/%Y %H:%M:%S")
+    );
+
+    // EU (d/m/Y) with HH:MM resolves (month 15 > 12 rules out m/d/Y).
+    assert_eq!(
+        detect_timestamp_format("15/01/2024 10:30"),
+        Some("%d/%m/%Y %H:%M")
+    );
+    // Slash-separated ISO with HH:MM: the fast parser for "%Y-%m-%d %H:%M" is
+    // separator-agnostic, so it matches "%Y-%m-%d %H:%M" first (higher priority).
+    // Acceptable — the parsed timestamp is identical — and the dedicated
+    // "%Y/%m/%d %H:%M" candidate still parses it directly when hinted.
+    assert_eq!(
+        detect_timestamp_format("2024/01/15 10:30"),
+        Some("%Y-%m-%d %H:%M")
+    );
+    assert!(parse_timestamp_text("2024/01/15 10:30", Some("%Y/%m/%d %H:%M")).is_some());
+}
+
 // ---- mixed timezone fallback tests ----
 
 #[test]

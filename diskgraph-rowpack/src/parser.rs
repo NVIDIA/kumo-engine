@@ -378,10 +378,13 @@ pub const TIMESTAMP_FORMATS: &[&str] = &[
     // Non-ISO formats (chrono fallback, lower priority)
     "%m/%d/%Y",
     "%m/%d/%Y %H:%M:%S",
+    "%m/%d/%Y %H:%M",
     "%d/%m/%Y",
     "%d/%m/%Y %H:%M:%S",
+    "%d/%m/%Y %H:%M",
     "%Y/%m/%d",
     "%Y/%m/%d %H:%M:%S",
+    "%Y/%m/%d %H:%M",
 ];
 
 /// Detect the timestamp format of a string value.
