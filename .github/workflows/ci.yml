@@ -38,10 +38,11 @@ jobs:
         # (150 GB free) it's defense in depth — cheap (~10 s) and
         # gives the cargo target dir room to breathe across runs.
         run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache
+          sudo rm -rf /usr/share/dotnet &
+          sudo rm -rf /usr/local/lib/android &
+          sudo rm -rf /opt/ghc &
+          sudo rm -rf /opt/hostedtoolcache &
+          wait
       - uses: actions/checkout@v4
       - name: Install lld linker
         run: sudo apt-get update -qq && sudo apt-get install -y lld
@@ -61,10 +62,11 @@ jobs:
     steps:
       - name: Free disk space
         run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache
+          sudo rm -rf /usr/share/dotnet &
+          sudo rm -rf /usr/local/lib/android &
+          sudo rm -rf /opt/ghc &
+          sudo rm -rf /opt/hostedtoolcache &
+          wait
       - uses: actions/checkout@v4
       - name: Install lld linker
         run: sudo apt-get update -qq && sudo apt-get install -y lld
