@@ -2327,7 +2327,18 @@ impl<'p> RowAccess<'p> {
             | DataType::UInt8
             | DataType::UInt16
             | DataType::UInt32
-            | DataType::UInt64 => {
+            | DataType::UInt64
+            | DataType::Decimal128(_, _)
+            | DataType::Decimal256(_, _) => {
+                // A column declared as a date but physically stored as an
+                // integer epoch can arrive as a parquet decimal (Snowflake
+                // NUMBER, Databricks DECIMAL(p,0), BigQuery NUMERIC all emit
+                // decimal128 for an integer-typed source). Mirror the key
+                // reader's decimal->i64 normalization (`get_int64`) so the
+                // integer epoch decodes through the same `timestamp_unit`
+                // path as the native-int arms. The decimal arm produces the
+                // raw integer only; the unit conversion happens once in
+                // `timestamp_from_int` (no double scale/unit application).
                 let value = match array.data_type() {
                     DataType::Int64 => array
                         .as_any()
@@ -2369,6 +2380,28 @@ impl<'p> RowAccess<'p> {
                         .downcast_ref::<arrow_array::UInt8Array>()
                         .ok_or_else(|| anyhow!("uint8 cast"))?
                         .value(self.row) as i64,
+                    DataType::Decimal128(_, scale) => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<arrow_array::Decimal128Array>()
+                            .ok_or_else(|| anyhow!("decimal128 cast"))?;
+                        let scaled =
+                            apply_decimal_scale_i128(arr.value(self.row), i32::from(*scale));
+                        scaled
+                            .to_i64()
+                            .ok_or_else(|| anyhow!("decimal128 overflow"))?
+                    }
+                    DataType::Decimal256(_, scale) => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<arrow_array::Decimal256Array>()
+                            .ok_or_else(|| anyhow!("decimal256 cast"))?;
+                        let scaled =
+                            apply_decimal_scale_i256(arr.value(self.row), i32::from(*scale));
+                        scaled
+                            .to_i64()
+                            .ok_or_else(|| anyhow!("decimal256 overflow"))?
+                    }
                     _ => return Err(anyhow!("date type mismatch")),
                 };
                 let secs = timestamp_from_int(value, unit);
@@ -2459,7 +2492,18 @@ impl<'p> RowAccess<'p> {
             | DataType::UInt8
             | DataType::UInt16
             | DataType::UInt32
-            | DataType::UInt64 => {
+            | DataType::UInt64
+            | DataType::Decimal128(_, _)
+            | DataType::Decimal256(_, _) => {
+                // A column declared as a timestamp but physically stored as an
+                // integer epoch can arrive as a parquet decimal (Snowflake
+                // NUMBER, Databricks DECIMAL(p,0), BigQuery NUMERIC all emit
+                // decimal128 for an integer-typed source). Mirror the key
+                // reader's decimal->i64 normalization (`get_int64`) so the
+                // integer epoch decodes through the same `timestamp_unit`
+                // path as the native-int arms. The decimal arm produces the
+                // raw integer only; the unit conversion happens once in
+                // `timestamp_from_int` (no double scale/unit application).
                 let value = match array.data_type() {
                     DataType::Int64 => array
                         .as_any()
@@ -2501,6 +2545,28 @@ impl<'p> RowAccess<'p> {
                         .downcast_ref::<arrow_array::UInt8Array>()
                         .ok_or_else(|| anyhow!("uint8 cast"))?
                         .value(self.row) as i64,
+                    DataType::Decimal128(_, scale) => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<arrow_array::Decimal128Array>()
+                            .ok_or_else(|| anyhow!("decimal128 cast"))?;
+                        let scaled =
+                            apply_decimal_scale_i128(arr.value(self.row), i32::from(*scale));
+                        scaled
+                            .to_i64()
+                            .ok_or_else(|| anyhow!("decimal128 overflow"))?
+                    }
+                    DataType::Decimal256(_, scale) => {
+                        let arr = array
+                            .as_any()
+                            .downcast_ref::<arrow_array::Decimal256Array>()
+                            .ok_or_else(|| anyhow!("decimal256 cast"))?;
+                        let scaled =
+                            apply_decimal_scale_i256(arr.value(self.row), i32::from(*scale));
+                        scaled
+                            .to_i64()
+                            .ok_or_else(|| anyhow!("decimal256 overflow"))?
+                    }
                     _ => return Err(anyhow!("timestamp type mismatch")),
                 };
                 // If a format hint is set (e.g., "%Y%m%d"), convert the integer to
@@ -3496,7 +3562,213 @@ impl<'p> RowAccess<'p> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::StringArray;
+    use arrow_array::{Decimal128Array, Decimal256Array, Int64Array, StringArray};
+    use arrow_buffer::i256;
+    use arrow_schema::TimeUnit;
+
+    /// Build a single-column `RowAccess` over `array` with the given hints.
+    fn row_access_for(array: ArrayRef, hint: RowAccessHints) -> RowAccess<'static> {
+        let mut row = RowAccess::new(vec![hint], RowAccessStats::default());
+        // `set_cols` stores a raw pointer to the slice; leak it so the
+        // returned `RowAccess` owns a `'static` view for the test's duration.
+        let cols: &'static [ArrayRef] = Box::leak(Box::new([array]));
+        row.set_cols(cols);
+        row
+    }
+
+    fn ts_hint(unit: TimeUnit) -> RowAccessHints {
+        RowAccessHints {
+            timestamp_unit: Some(unit),
+            ..RowAccessHints::default()
+        }
+    }
+
+    // An epoch stored as `NUMBER(38,0)` (Snowflake) / `DECIMAL(p,0)`
+    // (Databricks) / `NUMERIC` (BigQuery) lands as a parquet decimal with
+    // scale 0. It must decode to exactly the same timestamp as the identical
+    // value stored as int64.
+    #[test]
+    fn get_timestamp_decimal128_epoch_matches_int64() -> Result<()> {
+        // 2022-08-01T09:37:26.171Z in microseconds.
+        let epoch_us: i64 = 1_659_346_646_171_000;
+
+        let mut int_row = row_access_for(
+            Arc::new(Int64Array::from(vec![epoch_us])),
+            ts_hint(TimeUnit::Microsecond),
+        );
+        int_row.set_row(0);
+        let int_ts = int_row.get_timestamp(0)?;
+
+        let mut dec_row = row_access_for(
+            Arc::new(
+                Decimal128Array::from(vec![i128::from(epoch_us)])
+                    .with_precision_and_scale(38, 0)
+                    .unwrap(),
+            ),
+            ts_hint(TimeUnit::Microsecond),
+        );
+        dec_row.set_row(0);
+        let dec_ts = dec_row.get_timestamp(0)?;
+
+        assert_eq!(dec_ts, int_ts);
+        // sanity: us -> s via the shared int path (ceil-division on the
+        // sub-second remainder, matching `timestamp_from_int`).
+        assert_eq!(dec_ts, Some(1_659_346_647));
+        Ok(())
+    }
+
+    #[test]
+    fn get_timestamp_decimal256_epoch_matches_int64() -> Result<()> {
+        let epoch_us: i64 = 1_659_346_646_171_000;
+
+        let mut int_row = row_access_for(
+            Arc::new(Int64Array::from(vec![epoch_us])),
+            ts_hint(TimeUnit::Microsecond),
+        );
+        int_row.set_row(0);
+        let int_ts = int_row.get_timestamp(0)?;
+
+        let mut dec_row = row_access_for(
+            Arc::new(
+                Decimal256Array::from(vec![i256::from(epoch_us)])
+                    .with_precision_and_scale(50, 0)
+                    .unwrap(),
+            ),
+            ts_hint(TimeUnit::Microsecond),
+        );
+        dec_row.set_row(0);
+        let dec_ts = dec_row.get_timestamp(0)?;
+
+        assert_eq!(dec_ts, int_ts);
+        Ok(())
+    }
+
+    // A non-zero scale must be normalized away before the unit conversion:
+    // DECIMAL(p, 3) holding 1_659_346_646_171_000.000 is the same integer
+    // epoch as the scale-0 / int64 value, so the decode must match.
+    #[test]
+    fn get_timestamp_decimal128_nonzero_scale_matches_int64() -> Result<()> {
+        let epoch_us: i64 = 1_659_346_646_171_000;
+
+        let mut int_row = row_access_for(
+            Arc::new(Int64Array::from(vec![epoch_us])),
+            ts_hint(TimeUnit::Microsecond),
+        );
+        int_row.set_row(0);
+        let int_ts = int_row.get_timestamp(0)?;
+
+        // Raw decimal value = epoch * 10^scale so the scaled integer == epoch.
+        let scale = 3;
+        let raw = i128::from(epoch_us) * 1_000;
+        let mut dec_row = row_access_for(
+            Arc::new(
+                Decimal128Array::from(vec![raw])
+                    .with_precision_and_scale(38, scale)
+                    .unwrap(),
+            ),
+            ts_hint(TimeUnit::Microsecond),
+        );
+        dec_row.set_row(0);
+        let dec_ts = dec_row.get_timestamp(0)?;
+
+        assert_eq!(dec_ts, int_ts);
+        Ok(())
+    }
+
+    #[test]
+    fn get_timestamp_decimal_unit_is_single_decode_authority() -> Result<()> {
+        // Same raw integer, different declared units, must follow the int path.
+        let epoch_ms: i64 = 1_659_346_646_171;
+        for unit in [
+            TimeUnit::Second,
+            TimeUnit::Millisecond,
+            TimeUnit::Microsecond,
+        ] {
+            let mut int_row =
+                row_access_for(Arc::new(Int64Array::from(vec![epoch_ms])), ts_hint(unit));
+            int_row.set_row(0);
+            let int_ts = int_row.get_timestamp(0)?;
+
+            let mut dec_row = row_access_for(
+                Arc::new(
+                    Decimal128Array::from(vec![i128::from(epoch_ms)])
+                        .with_precision_and_scale(38, 0)
+                        .unwrap(),
+                ),
+                ts_hint(unit),
+            );
+            dec_row.set_row(0);
+            assert_eq!(dec_row.get_timestamp(0)?, int_ts, "unit {unit:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn get_timestamp_decimal_null_is_none() -> Result<()> {
+        let mut row = row_access_for(
+            Arc::new(
+                Decimal128Array::from(vec![None::<i128>])
+                    .with_precision_and_scale(38, 0)
+                    .unwrap(),
+            ),
+            ts_hint(TimeUnit::Microsecond),
+        );
+        row.set_row(0);
+        assert_eq!(row.get_timestamp(0)?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn get_date_decimal128_epoch_matches_int64() -> Result<()> {
+        let epoch_us: i64 = 1_659_346_646_171_000; // 2022-08-01
+
+        let mut int_row = row_access_for(
+            Arc::new(Int64Array::from(vec![epoch_us])),
+            ts_hint(TimeUnit::Microsecond),
+        );
+        int_row.set_row(0);
+        let int_days = int_row.get_date(0)?;
+
+        let mut dec_row = row_access_for(
+            Arc::new(
+                Decimal128Array::from(vec![i128::from(epoch_us)])
+                    .with_precision_and_scale(38, 0)
+                    .unwrap(),
+            ),
+            ts_hint(TimeUnit::Microsecond),
+        );
+        dec_row.set_row(0);
+        let dec_days = dec_row.get_date(0)?;
+
+        assert_eq!(dec_days, int_days);
+        Ok(())
+    }
+
+    #[test]
+    fn get_date_decimal256_epoch_matches_int64() -> Result<()> {
+        let epoch_us: i64 = 1_659_346_646_171_000;
+
+        let mut int_row = row_access_for(
+            Arc::new(Int64Array::from(vec![epoch_us])),
+            ts_hint(TimeUnit::Microsecond),
+        );
+        int_row.set_row(0);
+        let int_days = int_row.get_date(0)?;
+
+        let mut dec_row = row_access_for(
+            Arc::new(
+                Decimal256Array::from(vec![i256::from(epoch_us)])
+                    .with_precision_and_scale(50, 0)
+                    .unwrap(),
+            ),
+            ts_hint(TimeUnit::Microsecond),
+        );
+        dec_row.set_row(0);
+        let dec_days = dec_row.get_date(0)?;
+
+        assert_eq!(dec_days, int_days);
+        Ok(())
+    }
 
     #[test]
     fn split_multicat_string_trims_whitespace_around_delimiter() {

@@ -505,27 +505,34 @@ fn expected_result(arrow_name: &str, target: IngestedTarget) -> ExpectedResult {
 
         // =====================================================================
         // Decimal128 Arrow type
-        // Can convert to: numerics (via float), string
-        // Cannot convert to: bool, bytes, uuid, uuid256, ip, date, timestamp, decimal256
+        // Can convert to: numerics (via float), string, date, timestamp.
+        // An integer epoch stored as a decimal (Snowflake NUMBER, Databricks
+        // DECIMAL(p,0), BigQuery NUMERIC) decodes through the same int->unit
+        // path as a native int epoch.
+        // Cannot convert to: bool, bytes, uuid, uuid256, ip, decimal256
         // =====================================================================
         (
             "Decimal128",
-            Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | String | Decimal128,
+            Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | String | Date | Timestamp
+            | Decimal128,
         ) => Success,
 
-        ("Decimal128", Bool | Bytes | Uuid | Uuid256 | Ip | Date | Timestamp | Decimal256) => Error,
+        ("Decimal128", Bool | Bytes | Uuid | Uuid256 | Ip | Decimal256) => Error,
 
         // =====================================================================
         // Decimal256 Arrow type
-        // Can convert to: numerics, string, decimal256
-        // Cannot convert to: bool, bytes, uuid, uuid256, ip, date, timestamp, decimal128
+        // Can convert to: numerics, string, date, timestamp, decimal256.
+        // An integer epoch stored as a decimal decodes through the same
+        // int->unit path as a native int epoch.
+        // Cannot convert to: bool, bytes, uuid, uuid256, ip, decimal128
         // =====================================================================
         (
             "Decimal256",
-            Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | String | Decimal256,
+            Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | String | Date | Timestamp
+            | Decimal256,
         ) => Success,
 
-        ("Decimal256", Bool | Bytes | Uuid | Uuid256 | Ip | Date | Timestamp | Decimal128) => Error,
+        ("Decimal256", Bool | Bytes | Uuid | Uuid256 | Ip | Decimal128) => Error,
 
         // =====================================================================
         // List<Float32> Arrow type (for Float32Array/Float16Array)
