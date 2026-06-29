@@ -8374,3 +8374,469 @@ fn integ_multicat_stats_listdistinct_arrayout_link_pred() {
     );
     assert_eq!(extract_num_unique_multi(&stats), 5);
 }
+
+// ─── Multicategorical entity-filter CONTAINS / NOT CONTAINS ──────────────────
+//
+// Row-filter membership over a `string_array` (multicat) column. Before the
+// fix, the LHS read collapsed any array to Int(0) and the (List, Str) compare
+// fell to a type-mismatch `false`, so CONTAINS matched zero rows. The eval now
+// decodes per-token and tests element membership.
+//
+// Canonical fixture (tags per order):
+//   user 0: ts=100 [a, b], ts=200 [b, c]
+//   user 1: ts=300 [a],    ts=400 [d, e]
+//   user 2: no orders
+
+/// COUNT(orders.* WHERE orders.tags <op> token, 0..5000)
+fn count_orders_tags_membership(op: CompareOp, token: &str) -> Op<Seconds> {
+    Op::Aggregate {
+        alias: "cnt".to_string(),
+        path: vec![u2o_edge()],
+        func: AggFunc::Count,
+        target_col: None,
+        time_col: None,
+        window: Some((0, 5000)),
+        window_unit: Some(TimeUnit::Seconds),
+        row_filter: Some(RowFilter::Compare {
+            lhs: RowFilterLhs::Column("tags".to_string()),
+            op,
+            rhs: RowFilterRhs::Constant(Value::Str(token.to_string())),
+        }),
+        limit: None,
+        target_entity_table: None,
+    }
+}
+
+fn run_membership_count(op: CompareOp, token: &str) -> HashMap<i64, Vec<(i64, f64)>> {
+    let dir = tempfile::tempdir().unwrap();
+    let (index, _expected) =
+        build_canonical_multicat_graph(dir.path(), MulticatShape::StringList);
+    let plan = g1_temporal(
+        vec![Stage::<Seconds> {
+            ops: vec![count_orders_tags_membership(op, token)],
+            filter: None,
+        }],
+        vec![0],
+    );
+    execute_and_group(&plan, &index)
+}
+
+#[test]
+fn integ_multicat_contains_matches_member_token() {
+    // CONTAINS "b": both of user 0's orders carry "b"; neither of user 1's do.
+    let groups = run_membership_count(CompareOp::Contains, "b");
+    assert_target_eq(groups[&0][0].1, 2.0, "user0 [a,b] + [b,c] both contain b");
+    assert_target_eq(groups[&1][0].1, 0.0, "user1 [a] + [d,e] contain no b");
+}
+
+#[test]
+fn integ_multicat_contains_single_token_row() {
+    // CONTAINS "a": matches a single-token row ([a]) and one multi-token row
+    // ([a,b]); excludes rows whose token set lacks "a".
+    let groups = run_membership_count(CompareOp::Contains, "a");
+    assert_target_eq(groups[&0][0].1, 1.0, "user0 only [a,b] contains a");
+    assert_target_eq(groups[&1][0].1, 1.0, "user1 only [a] contains a");
+}
+
+#[test]
+fn integ_multicat_contains_absent_token_zero() {
+    // CONTAINS for a token present in no row matches nothing.
+    let groups = run_membership_count(CompareOp::Contains, "zzz");
+    assert_target_eq(groups[&0][0].1, 0.0, "user0 no zzz");
+    assert_target_eq(groups[&1][0].1, 0.0, "user1 no zzz");
+}
+
+#[test]
+fn integ_multicat_not_contains_is_complement() {
+    // NOT CONTAINS "b" is the complement over present (non-null) sources:
+    // user 0's two orders both have "b" (excluded -> 0); user 1's two orders
+    // lack "b" (both included -> 2).
+    let not_contains = run_membership_count(CompareOp::NotContains, "b");
+    assert_target_eq(not_contains[&0][0].1, 0.0, "user0 both rows have b");
+    assert_target_eq(not_contains[&1][0].1, 2.0, "user1 neither row has b");
+
+    // Contains + NotContains partition each user's in-window orders
+    // (user 0: 2 orders; user 1: 2 orders).
+    let contains = run_membership_count(CompareOp::Contains, "b");
+    assert_target_eq(
+        not_contains[&0][0].1 + contains[&0][0].1,
+        2.0,
+        "user0 contains|not_contains partition",
+    );
+    assert_target_eq(
+        not_contains[&1][0].1 + contains[&1][0].1,
+        2.0,
+        "user1 contains|not_contains partition",
+    );
+}
+
+// ─── Scalar-string CONTAINS is substring (not whole-cell equality) ───────────
+//
+// `StrOp.CONTAINS` on a *scalar* string column is a SQL `LIKE '%x%'` substring
+// test (the compiler emits the same `contains` op string for both multicat and
+// scalar columns; the Rust eval discriminates on the persisted semantic_type).
+// A scalar column must keep substring semantics — `compare_str` does
+// `a.contains(b)` — rather than collapsing to `col == 'x'`.
+//
+//   user 0: order status "shipped"
+//   user 1: order status "shipped_late"
+//
+// CONTAINS "shipped" must match BOTH ("shipped_late" contains "shipped").
+fn build_scalar_status_graph(root: &Path) -> PathBuf {
+    let data_dir = root.join("data");
+    let index_dir = root.join("index");
+    fs::create_dir_all(&data_dir).unwrap();
+
+    let mut users_id_b = Int64Builder::new();
+    for uid in [0i64, 1] {
+        users_id_b.append_value(uid);
+    }
+    let users_batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("user_id", DataType::Int64, false)])),
+        vec![Arc::new(users_id_b.finish())],
+    )
+    .unwrap();
+    write_parquet(&data_dir.join("users.parquet"), &users_batch);
+
+    let statuses = ["shipped", "shipped_late"];
+    let uids = [0i64, 1];
+    let tss = [100i64, 200];
+    let mut oid = Int64Builder::new();
+    let mut ouid = Int64Builder::new();
+    let mut ots = Int64Builder::new();
+    let mut ost = StringBuilder::new();
+    for (i, ((u, t), s)) in uids.iter().zip(tss.iter()).zip(statuses.iter()).enumerate() {
+        oid.append_value(i as i64);
+        ouid.append_value(*u);
+        ots.append_value(*t);
+        ost.append_value(*s);
+    }
+    let orders_batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("order_id", DataType::Int64, false),
+            Field::new("user_id", DataType::Int64, false),
+            Field::new("ts", DataType::Int64, false),
+            Field::new("status", DataType::Utf8, false),
+        ])),
+        vec![
+            Arc::new(oid.finish()),
+            Arc::new(ouid.finish()),
+            Arc::new(ots.finish()),
+            Arc::new(ost.finish()),
+        ],
+    )
+    .unwrap();
+    write_parquet(&data_dir.join("orders.parquet"), &orders_batch);
+
+    let status_col = ColumnSpec {
+        name: "status".to_string(),
+        source_dtype: None,
+        ingested_dtype: IngestedType::String,
+        fixed_len: None,
+        timestamp_format: None,
+        timestamp_unit: None,
+        precision: None,
+        scale: None,
+        semantic_type: Some(SemanticType::Categorical),
+        multicategorical_delimiter: None,
+    };
+    let config = GraphConfig {
+        dataset_name: "scalar_contains".to_string(),
+        tables: vec![
+            TableSpec {
+                name: "users".to_string(),
+                columns: vec![mk_col("user_id", IngestedType::Int64)],
+                primary_key: Some("user_id".to_string()),
+                create_time: None,
+                end_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+                source: DataSource::Parquet {
+                    paths: vec![data_dir.join("users.parquet").to_str().unwrap().to_string()],
+                },
+                source_size: None,
+                fkeys: vec![],
+                data_version: None,
+                kumo_connector_id: None,
+                kumo_source_table_name: None,
+            },
+            TableSpec {
+                name: "orders".to_string(),
+                columns: vec![
+                    mk_col("order_id", IngestedType::Int64),
+                    mk_col("user_id", IngestedType::Int64),
+                    mk_col("ts", IngestedType::Int64),
+                    status_col,
+                ],
+                primary_key: Some("order_id".to_string()),
+                create_time: None,
+                end_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+                source: DataSource::Parquet {
+                    paths: vec![data_dir.join("orders.parquet").to_str().unwrap().to_string()],
+                },
+                source_size: None,
+                fkeys: vec![FKeySpec {
+                    src_column: "user_id".to_string(),
+                    dst_table: "users".to_string(),
+                    forward: None,
+                    reverse: Some(DirectionSpec {
+                        time: Some(TimeSpec {
+                            table: "orders".to_string(),
+                            column: "ts".to_string(),
+                            bitwidth: Some(16),
+                            anchor_time: Some(0),
+                            unit: "s".to_string(),
+                        }),
+                        weight: None,
+                    }),
+                }],
+                data_version: None,
+                kumo_connector_id: None,
+                kumo_source_table_name: None,
+            },
+        ],
+        rowpack: None,
+        num_shards: Some(1),
+        edge_format: None,
+        coercion_mode: CoercionMode::Lossless,
+    };
+    let config_path = data_dir.join("graph_config.json");
+    fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+    run_ingest(&config_path, &index_dir);
+    index_dir
+}
+
+fn count_orders_status_op(op: CompareOp, token: &str) -> Op<Seconds> {
+    Op::Aggregate {
+        alias: "cnt".to_string(),
+        path: vec![u2o_edge()],
+        func: AggFunc::Count,
+        target_col: None,
+        time_col: None,
+        window: Some((0, 5000)),
+        window_unit: Some(TimeUnit::Seconds),
+        row_filter: Some(RowFilter::Compare {
+            lhs: RowFilterLhs::Column("status".to_string()),
+            op,
+            rhs: RowFilterRhs::Constant(Value::Str(token.to_string())),
+        }),
+        limit: None,
+        target_entity_table: None,
+    }
+}
+
+#[test]
+fn integ_scalar_string_contains_is_substring() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_scalar_status_graph(dir.path());
+    let run = |op: CompareOp, token: &str| -> HashMap<i64, Vec<(i64, f64)>> {
+        let plan = g1_temporal(
+            vec![Stage::<Seconds> {
+                ops: vec![count_orders_status_op(op, token)],
+                filter: None,
+            }],
+            vec![0],
+        );
+        execute_and_group(&plan, &index)
+    };
+
+    // Substring CONTAINS "shipped": matches both "shipped" and "shipped_late".
+    let c = run(CompareOp::Contains, "shipped");
+    assert_target_eq(c[&0][0].1, 1.0, "user0 'shipped' contains 'shipped'");
+    assert_target_eq(c[&1][0].1, 1.0, "user1 'shipped_late' contains 'shipped'");
+
+    // Substring CONTAINS "late": only "shipped_late".
+    let late = run(CompareOp::Contains, "late");
+    let l0 = late.get(&0).map(|v| v[0].1).unwrap_or(0.0);
+    assert_target_eq(l0, 0.0, "user0 'shipped' has no 'late'");
+    assert_target_eq(late[&1][0].1, 1.0, "user1 'shipped_late' contains 'late'");
+
+    // NOT CONTAINS "late": complement over present rows.
+    let nc = run(CompareOp::NotContains, "late");
+    assert_target_eq(nc[&0][0].1, 1.0, "user0 not_contains 'late'");
+    let nc1 = nc.get(&1).map(|v| v[0].1).unwrap_or(0.0);
+    assert_target_eq(nc1, 0.0, "user1 'shipped_late' has 'late'");
+}
+
+// ─── Multicat NOT CONTAINS tri-state: empty list is present, not NULL ────────
+//
+// An empty multicategorical list is a *present* value with zero tokens (not a
+// NULL source). `NOT CONTAINS x` must therefore PASS for an empty list (it
+// contains no x), while `CONTAINS x` fails. This exercises the
+// `MulticatDispatchOutcome::SourceNull` vs observed-empty distinction.
+//
+//   user 0: ts=100 [a, b]
+//   user 1: ts=300 []        (empty list)
+//   user 2: ts=400 [a]
+fn build_multicat_with_empty_list(root: &Path) -> PathBuf {
+    let data_dir = root.join("data");
+    let index_dir = root.join("index");
+    fs::create_dir_all(&data_dir).unwrap();
+
+    let mut users_id_b = Int64Builder::new();
+    for uid in [0i64, 1, 2] {
+        users_id_b.append_value(uid);
+    }
+    let users_batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("user_id", DataType::Int64, false)])),
+        vec![Arc::new(users_id_b.finish())],
+    )
+    .unwrap();
+    write_parquet(&data_dir.join("users.parquet"), &users_batch);
+
+    let tags_rows: Vec<Vec<&str>> = vec![vec!["a", "b"], vec![], vec!["a"]];
+    let uids = [0i64, 1, 2];
+    let tss = [100i64, 300, 400];
+    let mut oid = Int64Builder::new();
+    let mut ouid = Int64Builder::new();
+    let mut ots = Int64Builder::new();
+    for (i, (u, t)) in uids.iter().zip(tss.iter()).enumerate() {
+        oid.append_value(i as i64);
+        ouid.append_value(*u);
+        ots.append_value(*t);
+    }
+    let mut b = ListBuilder::new(StringBuilder::new());
+    for row in &tags_rows {
+        for tok in row {
+            b.values().append_value(*tok);
+        }
+        b.append(true); // empty row -> non-null empty list
+    }
+    let tags_arr: Arc<dyn Array> = Arc::new(b.finish());
+    let orders_batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("order_id", DataType::Int64, false),
+            Field::new("user_id", DataType::Int64, false),
+            Field::new("ts", DataType::Int64, false),
+            Field::new(
+                "tags",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+                false,
+            ),
+        ])),
+        vec![
+            Arc::new(oid.finish()),
+            Arc::new(ouid.finish()),
+            Arc::new(ots.finish()),
+            tags_arr,
+        ],
+    )
+    .unwrap();
+    write_parquet(&data_dir.join("orders.parquet"), &orders_batch);
+
+    let tags_col = ColumnSpec {
+        name: "tags".to_string(),
+        source_dtype: None,
+        ingested_dtype: IngestedType::StringArray,
+        fixed_len: None,
+        timestamp_format: None,
+        timestamp_unit: None,
+        precision: None,
+        scale: None,
+        semantic_type: Some(SemanticType::Multicategorical),
+        multicategorical_delimiter: None,
+    };
+    let config = GraphConfig {
+        dataset_name: "multicat_empty".to_string(),
+        tables: vec![
+            TableSpec {
+                name: "users".to_string(),
+                columns: vec![mk_col("user_id", IngestedType::Int64)],
+                primary_key: Some("user_id".to_string()),
+                create_time: None,
+                end_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+                source: DataSource::Parquet {
+                    paths: vec![data_dir.join("users.parquet").to_str().unwrap().to_string()],
+                },
+                source_size: None,
+                fkeys: vec![],
+                data_version: None,
+                kumo_connector_id: None,
+                kumo_source_table_name: None,
+            },
+            TableSpec {
+                name: "orders".to_string(),
+                columns: vec![
+                    mk_col("order_id", IngestedType::Int64),
+                    mk_col("user_id", IngestedType::Int64),
+                    mk_col("ts", IngestedType::Int64),
+                    tags_col,
+                ],
+                primary_key: Some("order_id".to_string()),
+                create_time: None,
+                end_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+                source: DataSource::Parquet {
+                    paths: vec![data_dir.join("orders.parquet").to_str().unwrap().to_string()],
+                },
+                source_size: None,
+                fkeys: vec![FKeySpec {
+                    src_column: "user_id".to_string(),
+                    dst_table: "users".to_string(),
+                    forward: None,
+                    reverse: Some(DirectionSpec {
+                        time: Some(TimeSpec {
+                            table: "orders".to_string(),
+                            column: "ts".to_string(),
+                            bitwidth: Some(16),
+                            anchor_time: Some(0),
+                            unit: "s".to_string(),
+                        }),
+                        weight: None,
+                    }),
+                }],
+                data_version: None,
+                kumo_connector_id: None,
+                kumo_source_table_name: None,
+            },
+        ],
+        rowpack: None,
+        num_shards: Some(1),
+        edge_format: None,
+        coercion_mode: CoercionMode::Lossless,
+    };
+    let config_path = data_dir.join("graph_config.json");
+    fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+    run_ingest(&config_path, &index_dir);
+    index_dir
+}
+
+#[test]
+fn integ_multicat_not_contains_empty_list_tristate() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_multicat_with_empty_list(dir.path());
+    let run = |op: CompareOp, token: &str| -> HashMap<i64, Vec<(i64, f64)>> {
+        let plan = g1_temporal(
+            vec![Stage::<Seconds> {
+                ops: vec![count_orders_tags_membership(op, token)],
+                filter: None,
+            }],
+            vec![0],
+        );
+        execute_and_group(&plan, &index)
+    };
+
+    // CONTAINS "a": user0 [a,b] yes, user1 [] no, user2 [a] yes.
+    let c = run(CompareOp::Contains, "a");
+    assert_target_eq(c[&0][0].1, 1.0, "user0 contains a");
+    let c1 = c.get(&1).map(|v| v[0].1).unwrap_or(0.0);
+    assert_target_eq(c1, 0.0, "user1 empty list contains no a");
+    assert_target_eq(c[&2][0].1, 1.0, "user2 contains a");
+
+    // NOT CONTAINS "a": empty list is PRESENT with no match -> PASSES.
+    let nc = run(CompareOp::NotContains, "a");
+    let nc0 = nc.get(&0).map(|v| v[0].1).unwrap_or(0.0);
+    assert_target_eq(nc0, 0.0, "user0 [a,b] has a -> excluded");
+    assert_target_eq(nc[&1][0].1, 1.0, "user1 [] empty present -> not_contains passes");
+    let nc2 = nc.get(&2).map(|v| v[0].1).unwrap_or(0.0);
+    assert_target_eq(nc2, 0.0, "user2 [a] has a -> excluded");
+}

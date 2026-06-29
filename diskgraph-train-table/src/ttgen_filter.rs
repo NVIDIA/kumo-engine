@@ -9,7 +9,9 @@ use crate::ttgen_resolve::{
     ResolvedRowFilter, ResolvedRowFilterLhs, ResolvedRowFilterRhs,
     ResolvedStageFilter, ResolvedStageFilterRhs, ResolvedEdge,
 };
-use crate::ttgen_traversal::read_column_value;
+use crate::ttgen_traversal::{
+    dispatch_multicat_source, read_column_value, MulticatDispatchOutcome, MulticatToken,
+};
 
 pub(crate) fn is_nullish_filter_value(value: &Option<Value>) -> bool {
     match value {
@@ -33,6 +35,18 @@ pub fn eval_row_filter(
 ) -> bool {
     match filter {
         ResolvedRowFilter::Compare { lhs, op, rhs } => {
+            // Membership (CONTAINS / NOT CONTAINS) is element-wise over a
+            // multicategorical (native-list) column. It cannot go through the
+            // scalar LHS read (`value_ref_to_value` collapses arrays to Int(0))
+            // nor scalar `compare_values`; route it to per-token decode.
+            if matches!(op, CompareOp::Contains | CompareOp::NotContains) {
+                let r = match resolve_row_rhs(rhs, current_node, current_table, entity_cols) {
+                    Some(v) => v,
+                    None => return false,
+                };
+                return eval_row_membership(lhs, op, &r, current_node, current_table);
+            }
+
             let l_opt = resolve_row_lhs(lhs, current_node, current_table);
 
             match op {
@@ -67,13 +81,110 @@ fn resolve_row_lhs(
     current_table: &Arc<TableReader>,
 ) -> Option<Value> {
     match lhs {
-        ResolvedRowFilterLhs::Column(col_idx) => {
+        ResolvedRowFilterLhs::Column { col_idx, .. } => {
             read_column_value(current_table, current_node, *col_idx)
         }
         ResolvedRowFilterLhs::Remote { path, col_idx } => {
             resolve_remote_value(path, current_node, *col_idx)
         }
     }
+}
+
+/// Evaluate `CONTAINS` / `NOT CONTAINS` on the current row's LHS column.
+///
+/// `Contains`  → true iff the source column has a token equal to `rhs`.
+/// `NotContains` → true iff the source is non-null and has *no* matching token
+///                  (SQL tri-state: a NULL source yields NULL, i.e. fails).
+///
+/// Only a multicategorical (native-list) LHS column reaches the per-token
+/// path. A scalar (non-multicat) LHS with a membership op degrades to a single
+/// whole-cell equality test, so `genres = 'Comedy'` written as a CONTAINS still
+/// behaves sanely rather than silently matching nothing.
+fn eval_row_membership(
+    lhs: &ResolvedRowFilterLhs,
+    op: &CompareOp,
+    rhs: &Value,
+    current_node: u64,
+    current_table: &Arc<TableReader>,
+) -> bool {
+    let (col_idx, is_multicat) = match lhs {
+        ResolvedRowFilterLhs::Column {
+            col_idx,
+            semantic_type,
+        } => (
+            *col_idx,
+            semantic_type.as_deref() == Some("multicategorical"),
+        ),
+        // Remote (sub-traversal) membership is not produced by the compiler.
+        // A scalar `Contains`/`NotContains` here is a `LIKE '%x%'` substring
+        // test, so route the whole-cell value through `compare_values` (which
+        // does `a.contains(b)` for strings) rather than equality.
+        ResolvedRowFilterLhs::Remote { path, col_idx } => {
+            let value = match resolve_remote_value(path, current_node, *col_idx) {
+                Some(v) => v,
+                // NULL source: SQL tri-state — both Contains and NotContains
+                // evaluate to NULL, i.e. fail the filter.
+                None => return false,
+            };
+            return compare_values(&value, op, rhs);
+        }
+    };
+
+    // Scalar (non-multicat) LHS: `Contains`/`NotContains` is a `LIKE '%x%'`
+    // substring test on a string column, not per-token membership. Read the
+    // whole cell and delegate to `compare_values` (`compare_str` does the
+    // substring match), matching the behavior of every other scalar op.
+    if !is_multicat {
+        let value = match read_column_value(current_table, current_node, col_idx) {
+            Some(v) => v,
+            // NULL source fails the filter (tri-state) for both ops.
+            None => return false,
+        };
+        return compare_values(&value, op, rhs);
+    }
+
+    let mut any_match = false;
+    let outcome = dispatch_multicat_source(
+        current_table,
+        current_node,
+        col_idx,
+        is_multicat,
+        |tok| {
+            if token_matches(&tok, rhs) {
+                any_match = true;
+                false // early-exit: one match settles Contains
+            } else {
+                true
+            }
+        },
+    );
+
+    match op {
+        CompareOp::Contains => any_match,
+        // NOT CONTAINS: NULL source → filter fails (tri-state); present source
+        // with no matching token → passes.
+        CompareOp::NotContains => {
+            outcome != MulticatDispatchOutcome::SourceNull && !any_match
+        }
+        _ => unreachable!("eval_row_membership only handles Contains/NotContains"),
+    }
+}
+
+/// One decoded multicat token equals the RHS constant.
+fn token_matches(tok: &MulticatToken<'_>, rhs: &Value) -> bool {
+    match (tok, rhs) {
+        (MulticatToken::Str(s), Value::Str(r)) => *s == r.as_str(),
+        (MulticatToken::Int(n), Value::Int(r)) => n == r,
+        (MulticatToken::Int(n), Value::Float(r)) => (*n as f64) == *r,
+        // Legacy whole-cell (non-multicat source decoded as one value).
+        (MulticatToken::Legacy(v), _) => values_equal(v, rhs),
+        _ => false,
+    }
+}
+
+/// Scalar equality used by the membership fallback paths.
+fn values_equal(lhs: &Value, rhs: &Value) -> bool {
+    compare_values(lhs, &CompareOp::Eq, rhs)
 }
 
 fn resolve_row_rhs(

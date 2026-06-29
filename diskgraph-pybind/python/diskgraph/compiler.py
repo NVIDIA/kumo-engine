@@ -1,18 +1,13 @@
 from typing import Any, Dict, List, Optional, Tuple
+
+from kumoapi.pquery.AST import (Aggregation, ASTNode, Column, Condition,
+                                Constant, Filter, Join, LogicalOperation)
 from kumoapi.pquery.validated_predictive_query import ValidatedPredictiveQuery
-from kumoapi.pquery.AST import (
-    Aggregation,
-    ASTNode,
-    Column,
-    Condition,
-    Constant,
-    Filter,
-    Join,
-    LogicalOperation,
-)
 from kumoapi.typing import BoolOp
 
-from ._c import DiskgraphDataError, DiskgraphConfigError, DiskgraphSystemError, DiskGraphTTBuilder, EdgeRef, RowFilter, StageFilter, TimeUnit
+from ._c import (DiskgraphConfigError, DiskgraphDataError,
+                 DiskgraphSystemError, DiskGraphTTBuilder, EdgeRef, RowFilter,
+                 StageFilter, TimeUnit)
 from .split_contract import SplitSpec
 
 VALID_TASK_TYPES = {
@@ -48,6 +43,13 @@ YOY_OUTPUT_ALIAS = "year_over_year_labels"
 def _map_op(op: str) -> str:
     if op == '=':
         return '=='
+    # Multicategorical membership (StrOp.CONTAINS / NOT_CONTAINS, e.g. from a
+    # PQL `LIKE '%Comedy%'` rewrite). The Rust filter eval decodes the
+    # native-list column per-token; scalar ops are untouched.
+    if op == 'CONTAINS':
+        return 'contains'
+    if op == 'NOT CONTAINS':
+        return 'not_contains'
     return op
 
 def _validate_lp_layout(name: str, value: Optional[str], allowed: set[str]) -> None:

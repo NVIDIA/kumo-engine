@@ -226,7 +226,15 @@ pub enum ResolvedRowFilter {
 
 pub enum ResolvedRowFilterLhs {
     /// Column index on the current destination rowpack.
-    Column(usize),
+    Column {
+        col_idx: usize,
+        /// Source-column semantic type from the persisted graph config. Set to
+        /// `Some("multicategorical")` for native-list columns so the filter
+        /// eval can dispatch `Contains`/`NotContains` per-token instead of
+        /// collapsing the array to a scalar. `None` for scalar columns / when
+        /// the index has no `diskgraph_config.json`.
+        semantic_type: Option<String>,
+    },
     /// Sub-traversal path + column index on final destination.
     Remote {
         path: Vec<ResolvedEdge>,
@@ -1217,7 +1225,18 @@ fn resolve_row_filter(
             let resolved_lhs = match lhs {
                 RowFilterLhs::Column(col) => {
                     let idx = find_col_idx_in_context(current_ctx, col)?;
-                    ResolvedRowFilterLhs::Column(idx)
+                    // Carry the column's semantic type so the filter eval can
+                    // dispatch Contains/NotContains per-token for
+                    // multicategorical (native-list) columns. Mirrors how
+                    // ResolvedColumn.target_semantic_type is sourced from the
+                    // persisted diskgraph_config.json.
+                    let semantic_type = reader
+                        .column_semantic_type(current_table.node_type(), col)
+                        .map(String::from);
+                    ResolvedRowFilterLhs::Column {
+                        col_idx: idx,
+                        semantic_type,
+                    }
                 }
                 RowFilterLhs::Remote { path, column } => {
                     let resolved_path = resolve_path(path, reader)?;
