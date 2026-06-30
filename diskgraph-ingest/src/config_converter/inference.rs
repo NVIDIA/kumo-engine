@@ -368,25 +368,10 @@ fn detect_int_timestamp(value: i64) -> Option<TimestampDetection> {
     detect_epoch_unit(value).map(TimestampDetection::Unit)
 }
 
-/// Detect epoch unit from an integer timestamp value based on magnitude.
+/// Detect epoch unit from integer magnitude. Delegates to the shared
+/// `TimestampUnit::from_epoch_magnitude`.
 fn detect_epoch_unit(value: i64) -> Option<TimestampUnit> {
-    let abs = value.unsigned_abs();
-    if abs == 0 {
-        return None;
-    }
-    Some(if abs < 10_000_000_000 {
-        // < 1e10 → seconds (max ~2286)
-        TimestampUnit::Seconds
-    } else if abs < 10_000_000_000_000 {
-        // < 1e13 → milliseconds
-        TimestampUnit::Millis
-    } else if abs < 10_000_000_000_000_000 {
-        // < 1e16 → microseconds
-        TimestampUnit::Micros
-    } else {
-        // >= 1e16 → nanoseconds
-        TimestampUnit::Nanos
-    })
+    TimestampUnit::from_epoch_magnitude(value)
 }
 
 /// Convert a `TimestampDetection` to a string key for majority voting.

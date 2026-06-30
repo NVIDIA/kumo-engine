@@ -52,7 +52,7 @@ use diskgraph_core::accumulators::{
     kumo_entry, kumo_key, CategoryCountStrategy, WelfordAccumulator,
 };
 use diskgraph_ingest::col_stats::{minify_kumo_stats, FileColStats, TableCategoryCounts};
-use diskgraph_ingest::graph_config::{ColumnSpec, IngestedType, SemanticType};
+use diskgraph_ingest::graph_config::{ColumnSpec, IngestedType, SemanticType, TimestampUnit};
 use diskgraph_rowpack::ColumnValueObserver;
 
 /// CATEGORY_COUNTS truncation limit for the "min" variant (matches ingest).
@@ -66,10 +66,10 @@ const MIN_COL_STATS_CATEGORY_LIMIT: usize = 20;
 fn drive_from_arrow_column<O: ColumnValueObserver>(
     col_idx: usize,
     array: &dyn Array,
-    ingested: &IngestedType,
+    col: &ColumnSpec,
     observer: &mut O,
 ) {
-    match ingested {
+    match &col.ingested_dtype {
         IngestedType::Int64
         | IngestedType::Int32
         | IngestedType::Int16
@@ -141,11 +141,23 @@ fn drive_from_arrow_column<O: ColumnValueObserver>(
                     }
                 }
             } else if let Some(a) = array.as_any().downcast_ref::<Int64Array>() {
+                // Int64 epoch carries no Arrow TimeUnit, so scale to seconds
+                // before `observe_timestamp`. Explicit `timestamp_unit` wins,
+                // else infer per value from magnitude. Epoch-int only — no
+                // encoded-date (`YYYYMMDD`) detection.
                 for i in 0..a.len() {
                     if a.is_null(i) {
                         observer.observe_null(col_idx);
                     } else {
-                        observer.observe_timestamp(col_idx, a.value(i));
+                        let raw = a.value(i);
+                        let secs = match col
+                            .timestamp_unit
+                            .or_else(|| TimestampUnit::from_epoch_magnitude(raw))
+                        {
+                            Some(unit) => unit.scale_to_secs(raw),
+                            None => raw,
+                        };
+                        observer.observe_timestamp(col_idx, secs);
                     }
                 }
             }
@@ -247,7 +259,7 @@ fn stats_for_row_group(
     for batch_res in reader {
         let batch = batch_res?;
         for (i, col) in columns.iter().enumerate() {
-            drive_from_arrow_column(i, batch.column(i).as_ref(), &col.ingested_dtype, &mut fcs);
+            drive_from_arrow_column(i, batch.column(i).as_ref(), col, &mut fcs);
         }
         if let Some((si, ci)) = score_class {
             accumulate_by_class(&batch, si, ci, &mut by_class);
@@ -686,5 +698,94 @@ mod tests {
             .as_f64()
             .unwrap();
         assert!((mx - 6.0).abs() < 1e-9);
+    }
+
+    /// Build a ColumnSpec with an explicit `timestamp_unit`.
+    fn ts_col(name: &str, unit: Option<TimestampUnit>) -> ColumnSpec {
+        ColumnSpec {
+            timestamp_unit: unit,
+            ..col(name, IngestedType::Timestamp, SemanticType::Timestamp)
+        }
+    }
+
+    /// Int64 epoch-ms timestamp scales to seconds (inferred and explicit unit).
+    #[test]
+    fn int64_epoch_ms_timestamp_scales_to_correct_year() {
+        let dir = tempdir().unwrap();
+        // Two equal-instant rows so MIN == MAX and the assertion is exact.
+        let raw_ms = vec![1_659_304_801_388_i64, 1_659_304_801_388_i64];
+        let expected = "kumo_timestamp_2022-07-31 22:00:02";
+
+        for (label, unit) in [("inferred", None), ("explicit", Some(TimestampUnit::Millis))] {
+            let path = dir.path().join(format!("preds_{label}.parquet"));
+            let schema = Schema::new(vec![Field::new("ts", DataType::Int64, true)]);
+            write_parquet(
+                &path,
+                schema,
+                vec![StdArc::new(Int64Array::from(raw_ms.clone())) as ArrayRef],
+                64,
+            );
+            let columns = vec![ts_col("ts", unit)];
+            let (full, _min) =
+                compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+            assert_eq!(
+                val(&full, "ts__kumo.timestamp__MIN__False"),
+                expected,
+                "MIN wrong for {label} unit"
+            );
+            assert_eq!(
+                val(&full, "ts__kumo.timestamp__MAX__False"),
+                expected,
+                "MAX wrong for {label} unit"
+            );
+        }
+    }
+
+    /// Int64 epoch-seconds (no explicit unit) is left as-is, not over-scaled.
+    #[test]
+    fn int64_epoch_seconds_timestamp_unaffected() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("preds.parquet");
+        let raw_s = vec![1_659_304_801_i64, 1_659_304_801_i64];
+        let schema = Schema::new(vec![Field::new("ts", DataType::Int64, true)]);
+        write_parquet(
+            &path,
+            schema,
+            vec![StdArc::new(Int64Array::from(raw_s)) as ArrayRef],
+            64,
+        );
+        let columns = vec![ts_col("ts", None)];
+        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        assert_eq!(
+            val(&full, "ts__kumo.timestamp__MIN__False"),
+            "kumo_timestamp_2022-07-31 22:00:01"
+        );
+    }
+
+    /// Arrow Timestamp(ns) stays on the /1e9 path, not the Int64 unit logic.
+    #[test]
+    fn arrow_nanosecond_timestamp_unaffected() {
+        use arrow_array::TimestampNanosecondArray;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("preds.parquet");
+        // 1659304801 s expressed in ns.
+        let raw_ns = vec![1_659_304_801_000_000_000_i64, 1_659_304_801_000_000_000_i64];
+        let schema = Schema::new(vec![Field::new(
+            "ts",
+            DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, None),
+            true,
+        )]);
+        write_parquet(
+            &path,
+            schema,
+            vec![StdArc::new(TimestampNanosecondArray::from(raw_ns)) as ArrayRef],
+            64,
+        );
+        let columns = vec![ts_col("ts", None)];
+        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        assert_eq!(
+            val(&full, "ts__kumo.timestamp__MIN__False"),
+            "kumo_timestamp_2022-07-31 22:00:01"
+        );
     }
 }

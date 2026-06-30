@@ -1156,13 +1156,10 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
 /// Args:
 ///     parquet_paths: list of parquet file paths (single file or all parts
 ///         of a part-*.parquet directory).
-///     kumo_column_specs_json: JSON-encoded list of ``{"name", "stype",
-///         "dtype"}`` records — raw Kumo Stype/Dtype value strings, in the
-///         same order as the parquet schema. Translated to diskgraph's
-///         ``SemanticType`` / ``IngestedType`` via the same
-///         ``map_kumo_stype`` / ``map_kumo_dtype`` functions
-///         ``convert_kumo_config`` uses during ingest — single source of
-///         truth for the mapping.
+///     kumo_column_specs_json: JSON list of ``{"name", "stype", "dtype"}``
+///         records (optional ``"timestamp_unit"``: ``"s"``/``"ms"``/``"us"``/
+///         ``"ns"``), in parquet-schema order. Mapped via the same
+///         ``map_kumo_stype`` / ``map_kumo_dtype`` ingest uses.
 ///     data_version: version string stamped into every emitted entry.
 ///
 /// Returns ``(full_json, min_json)`` — the full ``kumo_col_stats_v1`` map and
@@ -1178,7 +1175,9 @@ fn compute_col_stats_for_parquet(
     kumo_column_specs_json: &str,
     data_version: &str,
 ) -> PyResult<(String, String)> {
-    use diskgraph_ingest::config_converter::{map_kumo_dtype, map_kumo_stype};
+    use diskgraph_ingest::config_converter::{
+        map_kumo_dtype, map_kumo_stype, map_timestamp_unit,
+    };
     use diskgraph_ingest::graph_config::ColumnSpec;
 
     use crate::bp_col_stats::compute_parquet_col_stats;
@@ -1188,6 +1187,12 @@ fn compute_col_stats_for_parquet(
         name: String,
         stype: String,
         dtype: String,
+        // Optional epoch unit for integer-physical timestamp columns ("s" /
+        // "ms" / "us" / "ns"). Usually absent for BP-output specs, in which
+        // case the BP col-stats Int64 path infers the unit from value
+        // magnitude. When supplied it is authoritative and threads through.
+        #[serde(default)]
+        timestamp_unit: Option<String>,
     }
 
     let kumo_cols: Vec<KumoColumnSpec> = serde_json::from_str(kumo_column_specs_json)
@@ -1209,7 +1214,7 @@ fn compute_col_stats_for_parquet(
                 ingested_dtype,
                 fixed_len: None,
                 timestamp_format: None,
-                timestamp_unit: None,
+                timestamp_unit: c.timestamp_unit.as_deref().and_then(map_timestamp_unit),
                 precision: None,
                 scale: None,
                 semantic_type: map_kumo_stype(&c.stype),

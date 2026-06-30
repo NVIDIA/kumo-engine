@@ -250,13 +250,58 @@ impl IngestedType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TimestampUnit {
     Seconds,
     Millis,
     Micros,
     Nanos,
+}
+
+impl TimestampUnit {
+    /// Convert an integer epoch value in this unit to epoch seconds.
+    /// Ceil-rounds so a sub-second value never lands in an earlier second,
+    /// matching rowpack's `timestamp_from_int`.
+    #[inline]
+    pub fn scale_to_secs(self, value: i64) -> i64 {
+        fn div_ceil(value: i64, divisor: i64) -> i64 {
+            let d = value.div_euclid(divisor);
+            let r = value.rem_euclid(divisor);
+            if r > 0 {
+                d + 1
+            } else {
+                d
+            }
+        }
+        match self {
+            TimestampUnit::Seconds => value,
+            TimestampUnit::Millis => div_ceil(value, 1_000),
+            TimestampUnit::Micros => div_ceil(value, 1_000_000),
+            TimestampUnit::Nanos => div_ceil(value, 1_000_000_000),
+        }
+    }
+
+    /// Infer the epoch unit of an integer timestamp from its magnitude
+    /// (covers ~1970 to ~2286): `|v| < 1e10` → seconds, `< 1e13` → millis,
+    /// `< 1e16` → micros, else nanos; `0` → None. Shared fallback when no
+    /// explicit unit is supplied.
+    #[inline]
+    pub fn from_epoch_magnitude(value: i64) -> Option<TimestampUnit> {
+        let abs = value.unsigned_abs();
+        if abs == 0 {
+            return None;
+        }
+        Some(if abs < 10_000_000_000 {
+            TimestampUnit::Seconds
+        } else if abs < 10_000_000_000_000 {
+            TimestampUnit::Millis
+        } else if abs < 10_000_000_000_000_000 {
+            TimestampUnit::Micros
+        } else {
+            TimestampUnit::Nanos
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -1177,6 +1222,51 @@ fn is_int_type(dtype: &IngestedType) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timestamp_unit_scale_to_secs() {
+        assert_eq!(TimestampUnit::Millis.scale_to_secs(1_659_304_801_388), 1_659_304_802);
+        assert_eq!(TimestampUnit::Seconds.scale_to_secs(1_659_304_801), 1_659_304_801);
+        assert_eq!(TimestampUnit::Micros.scale_to_secs(1_659_304_801_000_000), 1_659_304_801);
+        assert_eq!(
+            TimestampUnit::Nanos.scale_to_secs(1_659_304_801_000_000_000),
+            1_659_304_801
+        );
+        // Ceil rounding: sub-second remainder rounds up.
+        assert_eq!(TimestampUnit::Millis.scale_to_secs(1_001), 2);
+        assert_eq!(TimestampUnit::Millis.scale_to_secs(1_000), 1);
+    }
+
+    #[test]
+    fn timestamp_unit_from_epoch_magnitude() {
+        assert_eq!(TimestampUnit::from_epoch_magnitude(0), None);
+        assert_eq!(
+            TimestampUnit::from_epoch_magnitude(1_659_304_801),
+            Some(TimestampUnit::Seconds)
+        );
+        // 13 digits → milliseconds.
+        assert_eq!(
+            TimestampUnit::from_epoch_magnitude(1_659_304_801_388),
+            Some(TimestampUnit::Millis)
+        );
+        assert_eq!(
+            TimestampUnit::from_epoch_magnitude(1_659_304_801_000_000),
+            Some(TimestampUnit::Micros)
+        );
+        assert_eq!(
+            TimestampUnit::from_epoch_magnitude(1_659_304_801_000_000_000),
+            Some(TimestampUnit::Nanos)
+        );
+        // Boundaries.
+        assert_eq!(
+            TimestampUnit::from_epoch_magnitude(9_999_999_999),
+            Some(TimestampUnit::Seconds)
+        );
+        assert_eq!(
+            TimestampUnit::from_epoch_magnitude(10_000_000_000),
+            Some(TimestampUnit::Millis)
+        );
+    }
 
     fn make_column(name: &str, dtype: IngestedType) -> ColumnSpec {
         ColumnSpec {
