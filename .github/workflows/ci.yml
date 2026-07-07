@@ -10,10 +10,11 @@ jobs:
     runs-on: ubuntu-22.04-large
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
+          toolchain: stable
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -46,8 +47,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install lld linker
         run: sudo apt-get update -qq && sudo apt-get install -y lld
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Build and Test
         run: cargo test --workspace
 
@@ -70,8 +73,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install lld linker
         run: sudo apt-get update -qq && sudo apt-get install -y lld
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:

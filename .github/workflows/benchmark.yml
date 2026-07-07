@@ -42,7 +42,9 @@ jobs:
         with:
           python-version: '3.12'
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: stable
 
       - name: Build release
         run: cargo build -p diskgraph-ingest --bin ingest --release

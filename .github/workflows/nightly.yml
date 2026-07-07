@@ -63,7 +63,9 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: stable
 
       - name: Set version
         run: |
