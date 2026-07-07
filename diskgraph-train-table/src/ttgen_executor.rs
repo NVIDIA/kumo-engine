@@ -1926,13 +1926,20 @@ fn write_target<U: UnitSystem, D: SplitDecider<U>>(
                                     } else {
                                         None
                                     };
-                                    // HLL replaces the prior
-                                    // `targets: HashSet<u64>` cardinality
-                                    // tracker. Use the same hash basis
-                                    // (`hash_value`) the HashSet used so the
-                                    // HLL count matches the legacy semantics.
+                                    // Observe additional targets with the SAME
+                                    // stype-aware basis as the first target (via
+                                    // `update_exact_stats` → `observe_target_hll`).
+                                    // Using an unconditional `hash_value` basis here
+                                    // double-registered multicat LP targets whose
+                                    // first-target observation used `hash_bytes`.
                                     if let Some(ref mut h) = processor.stats.target_hll {
-                                        h.observe_i64(hash_value(tgt) as i64);
+                                        observe_target_hll(
+                                            h,
+                                            tgt,
+                                            target_is_numerical,
+                                            target_is_categorical,
+                                            target_stype,
+                                        );
                                     }
                                     if let Some(v) = value_to_i64_opt(tgt) {
                                         processor.stats.target_min =
@@ -1949,10 +1956,12 @@ fn write_target<U: UnitSystem, D: SplitDecider<U>>(
                                 }
                             }
                         } else if !plan.is_prediction {
-                            // HLL replaces the prior
-                            // `entities` / `timestamps` HashSets.
+                            // Observe the entity via the SAME canonical
+                            // type-aware RAW basis used by `update_exact_stats`
+                            // (`observe_entity_hll`). Using `hash_value` here
+                            // double-registered ids also seen on the main path.
                             if let Some(ref mut h) = processor.stats.entity_hll {
-                                h.observe_i64(hash_value(entity_pk) as i64);
+                                observe_entity_hll(h, entity_pk);
                             }
                             if let Some(ref mut h) = processor.stats.timestamp_hll {
                                 h.observe_i64(ts.raw());
@@ -1997,6 +2006,72 @@ fn write_target<U: UnitSystem, D: SplitDecider<U>>(
     Ok(())
 }
 
+/// Observe an entity primary key into the entity HLL using the canonical
+/// type-aware RAW basis (Int→observe_i64, Str→observe_bytes, Float→observe_f64).
+///
+/// Both the main `update_exact_stats` path and the empty-target-row branch must
+/// call this so the same logical entity id lands on the SAME HLL hash basis.
+/// Observing an id via a raw value in one branch and via `hash_value(..)` in
+/// the other made it register twice, over-counting `num_entities`.
+#[inline]
+pub(crate) fn observe_entity_hll(hll: &mut HyperLogLog, entity_pk: &Value) {
+    match entity_pk {
+        Value::Int(i) => hll.observe_i64(*i),
+        Value::Str(s) => hll.observe_bytes(s.as_bytes()),
+        Value::Float(f) => hll.observe_f64(*f),
+        _ => {}
+    }
+}
+
+/// Observe a target value into the target HLL replicating `update_exact_stats`'
+/// per-stype dispatch: numerical→raw (`observe_i64`/`observe_f64`),
+/// multicategorical→per-token `hash_bytes(token_string)`, other
+/// categorical→`observe_i64(hash_value(target))`.
+///
+/// The first target (in `update_exact_stats`) and every additional target (the
+/// `skip(1)` loop) must observe through this SAME stype-aware logic. Previously
+/// the additional-targets loop unconditionally used `hash_value`, so for
+/// multicategorical LP the first target (hashed via `hash_bytes(token)`) and the
+/// additional targets (hashed via `hash_value`) landed on different bases and
+/// the same target registered twice, over-counting `num_targets`.
+#[inline]
+pub(crate) fn observe_target_hll(
+    hll: &mut HyperLogLog,
+    target: &Value,
+    target_is_numerical: bool,
+    target_is_categorical: bool,
+    target_stype: &str,
+) {
+    if target_is_numerical {
+        match target {
+            Value::Int(i) => hll.observe_i64(*i),
+            Value::Float(f) => hll.observe_f64(*f),
+            _ => {}
+        }
+    } else if target_is_categorical {
+        if target_stype == "multicategorical" {
+            match target {
+                Value::List(items) => {
+                    for item in items {
+                        let tok_str = value_to_string(item);
+                        let tok = tok_str.trim();
+                        hll.observe_hash(HyperLogLog::hash_bytes(tok.as_bytes()));
+                    }
+                }
+                _ => {
+                    let target_str = value_to_string(target);
+                    for_each_split_ascii_byte(&target_str, b'|', |tok| {
+                        let tok = tok.trim();
+                        hll.observe_hash(HyperLogLog::hash_bytes(tok.as_bytes()));
+                    });
+                }
+            }
+        } else {
+            hll.observe_i64(hash_value(target) as i64);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn update_exact_stats<U: UnitSystem>(
     stats: &mut ChunkStats<U>,
@@ -2033,14 +2108,10 @@ pub(crate) fn update_exact_stats<U: UnitSystem>(
         stats.entity_max = max_opt_i64(stats.entity_max, v);
     }
 
-    // Observe entity value into HLL for cardinality
+    // Observe entity value into HLL for cardinality (canonical type-aware RAW
+    // basis; shared with the empty-target-row branch via `observe_entity_hll`).
     if let Some(ref mut h) = stats.entity_hll {
-        match entity_pk {
-            Value::Int(i) => h.observe_i64(*i),
-            Value::Str(s) => h.observe_bytes(s.as_bytes()),
-            Value::Float(f) => h.observe_f64(*f),
-            _ => {}
-        }
+        observe_entity_hll(h, entity_pk);
     }
 
     // Observe entity value into local category counts (for CATEGORY_COUNTS stat)
@@ -2102,16 +2173,24 @@ pub(crate) fn update_exact_stats<U: UnitSystem>(
                 stats.target_invalid_count += 1;
             }
         }
-        if let Some(ref mut h) = stats.target_hll {
-            match target {
-                Value::Int(i) => h.observe_i64(*i),
-                Value::Float(f) => h.observe_f64(*f),
-                _ => {}
-            }
-        }
     }
 
-    // Observe target value for categorical stats
+    // Observe target value into the target HLL. Shared with the
+    // additional-targets `skip(1)` loop via `observe_target_hll` so the same
+    // logical target lands on the SAME hash basis regardless of which path
+    // observes it.
+    if let Some(ref mut h) = stats.target_hll {
+        observe_target_hll(
+            h,
+            target,
+            target_is_numerical,
+            target_is_categorical,
+            target_stype,
+        );
+    }
+
+    // Observe target value for categorical CATEGORY_COUNTS stats. HLL is handled
+    // above via `observe_target_hll`; here we only accumulate local counts.
     if target_is_categorical {
         if target_stype == "multicategorical" {
             // Multicat targets arrive as `Value::List(tokens)` from per-token
@@ -2125,9 +2204,6 @@ pub(crate) fn update_exact_stats<U: UnitSystem>(
                         let tok_str = value_to_string(item);
                         let tok = tok_str.trim();
                         let hash = HyperLogLog::hash_bytes(tok.as_bytes());
-                        if let Some(ref mut h) = stats.target_hll {
-                            h.observe_hash(hash);
-                        }
                         if let Some(ref mut local) = local_target_counts {
                             local.observe(hash, tok);
                         }
@@ -2138,9 +2214,6 @@ pub(crate) fn update_exact_stats<U: UnitSystem>(
                     for_each_split_ascii_byte(&target_str, b'|', |tok| {
                         let tok = tok.trim();
                         let hash = HyperLogLog::hash_bytes(tok.as_bytes());
-                        if let Some(ref mut h) = stats.target_hll {
-                            h.observe_hash(hash);
-                        }
                         if let Some(ref mut local) = local_target_counts {
                             local.observe(hash, tok);
                         }
@@ -2152,9 +2225,6 @@ pub(crate) fn update_exact_stats<U: UnitSystem>(
             let target_hash = hash_value(target);
             if let Some(ref mut local) = local_target_counts {
                 local.observe(target_hash, &target_str);
-            }
-            if let Some(ref mut h) = stats.target_hll {
-                h.observe_i64(target_hash as i64);
             }
         }
     }
@@ -2966,6 +3036,95 @@ fn execute_aggregate<U: UnitSystem>(
 mod tests {
     use super::*;
     use diskgraph_core::time::Seconds;
+
+    // ─── HLL hash-basis consistency (LP train-table stat over-count fix) ─────
+
+    /// An entity id observed through BOTH the empty-target-row path and the
+    /// `update_exact_stats` path must land on the SAME HLL register, so a single
+    /// logical id counts once — not twice. Previously the empty-row branch used
+    /// `observe_i64(hash_value(pk))` while the main path used a type-aware RAW
+    /// observation, so the same id double-registered (num_entities over-count).
+    #[test]
+    fn test_entity_hll_hash_basis_consistent_across_paths() {
+        // Int, Str, and Float entity ids, each observed via BOTH paths.
+        let ids = [
+            Value::Int(42),
+            Value::Str("user_7".to_string()),
+            Value::Float(3.5),
+        ];
+        let distinct = ids.len() as f64;
+
+        let mut hll = HyperLogLog::new();
+        for id in &ids {
+            // "main path" observation
+            observe_entity_hll(&mut hll, id);
+            // "empty-target-row path" observation of the SAME id
+            observe_entity_hll(&mut hll, id);
+        }
+
+        let est = hll.estimate();
+        // With a consistent basis the double observation collapses to `distinct`.
+        // (Exact for tiny cardinalities on this HLL impl.)
+        assert!(
+            (est - distinct).abs() < 0.5,
+            "expected ~{distinct} distinct entities, got {est}"
+        );
+
+        // Guard against regression to the old broken basis: `observe_i64(hash_value)`
+        // is a DIFFERENT register than the canonical raw path, so mixing them
+        // would inflate the estimate above `distinct`.
+        let mut mixed = HyperLogLog::new();
+        for id in &ids {
+            observe_entity_hll(&mut mixed, id); // canonical
+            mixed.observe_i64(hash_value(id) as i64); // old broken empty-row basis
+        }
+        assert!(
+            mixed.estimate() > distinct + 0.5,
+            "sanity: mixed bases MUST over-count (proves the two bases differ)"
+        );
+    }
+
+    /// A multicategorical LP target observed through BOTH the first-target path
+    /// and the additional-target `skip(1)` path must land on the SAME HLL
+    /// register. Previously the first target used `hash_bytes(token)` and the
+    /// additional targets used `hash_value`, so the same target double-registered
+    /// (num_targets over-count).
+    #[test]
+    fn test_multicat_target_hll_hash_basis_consistent_across_paths() {
+        // Multicat targets arrive as single-token lists on the per-token path.
+        let targets = [
+            Value::List(vec![Value::Int(101)]),
+            Value::List(vec![Value::Int(202)]),
+            Value::List(vec![Value::Int(303)]),
+        ];
+        let distinct = targets.len() as f64;
+
+        let mut hll = HyperLogLog::new();
+        for t in &targets {
+            // "first-target path"
+            observe_target_hll(&mut hll, t, false, true, "multicategorical");
+            // "additional-target skip(1) path" for the SAME target
+            observe_target_hll(&mut hll, t, false, true, "multicategorical");
+        }
+
+        let est = hll.estimate();
+        assert!(
+            (est - distinct).abs() < 0.5,
+            "expected ~{distinct} distinct targets, got {est}"
+        );
+
+        // Regression guard: the OLD additional-target basis (`hash_value`) differs
+        // from the multicat token basis (`hash_bytes`), so mixing over-counts.
+        let mut mixed = HyperLogLog::new();
+        for t in &targets {
+            observe_target_hll(&mut mixed, t, false, true, "multicategorical"); // canonical
+            mixed.observe_i64(hash_value(t) as i64); // old broken skip(1) basis
+        }
+        assert!(
+            mixed.estimate() > distinct + 0.5,
+            "sanity: mixed bases MUST over-count (proves the two bases differ)"
+        );
+    }
 
     #[test]
     fn test_add_calendar_months_basic() {
