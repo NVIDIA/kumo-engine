@@ -159,6 +159,7 @@ fn statvfs(path: &Path) -> std::io::Result<libc::statvfs> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::fs;
 
     fn create_index(root: &Path, key: &str, ver: &str, data_size: usize, mtime_secs: i64) {
@@ -177,6 +178,7 @@ mod tests {
         fs::write(dir.join("partial.bin"), vec![0u8; data_size]).unwrap();
     }
 
+    #[serial(disk_manager_real_fs)]
     #[test]
     fn test_scan_and_ensure_space_enough() {
         let dir = tempfile::tempdir().unwrap();
@@ -195,6 +197,7 @@ mod tests {
         assert!(result.available_bytes > 0);
     }
 
+    #[serial(disk_manager_real_fs)]
     #[test]
     fn test_scan_finds_valid_and_orphan() {
         let dir = tempfile::tempdir().unwrap();
@@ -209,6 +212,7 @@ mod tests {
         assert!(indexes.iter().find(|i| i.graph_key == "graph-B").unwrap().is_orphan());
     }
 
+    #[serial(disk_manager_real_fs)]
     #[test]
     fn test_eviction_removes_dirs_and_cleans_parent() {
         let dir = tempfile::tempdir().unwrap();
@@ -226,6 +230,7 @@ mod tests {
         assert!(!dir.path().join("graph-A").exists());
     }
 
+    #[serial(disk_manager_real_fs)]
     #[test]
     fn test_eviction_lru_order_real_fs() {
         let dir = tempfile::tempdir().unwrap();
@@ -242,6 +247,7 @@ mod tests {
         assert_eq!(plan[2].graph_key, "graph-B");
     }
 
+    #[serial(disk_manager_real_fs)]
     #[test]
     fn test_ensure_space_rejects_bad_graph_key() {
         let dir = tempfile::tempdir().unwrap();
@@ -254,6 +260,7 @@ mod tests {
         assert!(matches!(err, DiskManagerError::InvalidPath(_)));
     }
 
+    #[serial(disk_manager_real_fs)]
     #[test]
     fn test_disk_usage() {
         let dir = tempfile::tempdir().unwrap();
@@ -263,6 +270,7 @@ mod tests {
         assert!(usage.available_bytes > 0);
     }
 
+    #[serial(disk_manager_real_fs)]
     #[test]
     fn test_eviction_under_real_disk_pressure() {
         let dir = tempfile::tempdir().unwrap();
@@ -333,6 +341,7 @@ mod tests {
         );
     }
 
+    #[serial(disk_manager_real_fs)]
     #[test]
     fn test_ensure_space_insufficient_only_current_target() {
         let dir = tempfile::tempdir().unwrap();
@@ -360,6 +369,7 @@ mod tests {
         );
     }
 
+    #[serial(disk_manager_real_fs)]
     #[test]
     fn test_ensure_space_nonexistent_root() {
         let fake_root = PathBuf::from(format!(
@@ -388,6 +398,7 @@ mod tests {
         );
     }
 
+    #[serial(disk_manager_real_fs)]
     #[test]
     fn test_eviction_keeps_parent_with_siblings() {
         // Tests that evicting one version does NOT remove the parent

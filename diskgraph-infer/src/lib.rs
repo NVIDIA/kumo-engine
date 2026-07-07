@@ -69,6 +69,8 @@ fn convert_inferred_fkeys_to_fkeyspecs(
                         dst_table: fk.dst_table.clone(),
                         forward: None,
                         reverse: None,
+                        external_parent: false,
+                        bidirectional: true,
                     });
                 }
             }
@@ -318,6 +320,7 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
             data_version: None,
             kumo_connector_id: None,
             kumo_source_table_name: None,
+            group_by_timestamp: false,
         })
         .collect();
 

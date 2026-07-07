@@ -51,6 +51,7 @@ pub(crate) fn map_ttgen_err(err: diskgraph_train_table::errors::TTGenError) -> P
         TTGenError::InvalidPlan(msg) => DiskgraphConfigError::new_err(msg),
         TTGenError::SystemError(msg) => DiskgraphSystemError::new_err(msg),
         TTGenError::Io(e) => DiskgraphSystemError::new_err(e.to_string()),
+        TTGenError::Parquet(msg) => DiskgraphSystemError::new_err(msg),
     }
 }
 
@@ -155,9 +156,10 @@ use diskgraph_engine::state::{SamplingState, StatePool};
 mod artifact_helpers;
 mod bp_col_stats;
 mod col_stats_export;
+mod custom_tt_entry;
 mod index_metadata;
-mod split_assignments;
 mod success_marker;
+mod runtime_batch_iterator;
 mod tt_builder;
 mod tt_executor;
 
@@ -942,6 +944,7 @@ pub fn convert_kumo_config(
     pk_map_threads=None,
     edges_map_threads=None,
     index_threads=None,
+    parent_index_path=None,
 ))]
 #[tracing::instrument(
     level = "info",
@@ -966,6 +969,7 @@ pub fn ingest(
     pk_map_threads: Option<usize>,
     edges_map_threads: Option<usize>,
     index_threads: Option<usize>,
+    parent_index_path: Option<&str>,
 ) -> PyResult<String> {
     let start_time = std::time::Instant::now();
     info!(
@@ -1016,6 +1020,8 @@ pub fn ingest(
         pk_map_threads,
         edges_map_threads,
         index_threads,
+        parent_index_path: parent_index_path.map(std::path::PathBuf::from),
+        resolve_columns: Vec::new(),
     };
 
     let output_dir = output_dir.to_string();
@@ -1291,29 +1297,26 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(col_stats_export::read_col_stats, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_export::read_edge_stats, m)?)?;
     m.add_class::<SamplerEngine>()?;
+    runtime_batch_iterator::register(m)?;
     m.add_class::<PySampleIterator>()?;
     m.add_class::<tt_builder::DiskGraphTTBuilder>()?;
     m.add_class::<tt_builder::EdgeRef>()?;
     m.add_class::<tt_builder::RowFilter>()?;
     m.add_class::<tt_builder::StageFilter>()?;
     m.add_function(wrap_pyfunction!(tt_executor::execute_tt_plan, m)?)?;
+    m.add_function(wrap_pyfunction!(tt_executor::execute_tt_gen, m)?)?;
+    m.add_function(wrap_pyfunction!(tt_executor::execute_tt_ingest, m)?)?;
+    m.add_function(wrap_pyfunction!(tt_executor::execute_bp_plan, m)?)?;
+    m.add_function(wrap_pyfunction!(tt_executor::drop_tt, m)?)?;
     m.add_function(wrap_pyfunction!(
-        tt_executor::execute_tt_plan_materialize_with_split,
-        m
-    )?)?;
-    m.add_function(wrap_pyfunction!(tt_executor::build_tt_stats_artifact, m)?)?;
-    m.add_function(wrap_pyfunction!(
-        tt_executor::build_split_stats_artifact,
-        m
-    )?)?;
-    m.add_function(wrap_pyfunction!(
-        tt_executor::build_train_table_col_stats_artifact,
+        tt_executor::ingest_prediction_stage,
         m
     )?)?;
     m.add_function(wrap_pyfunction!(
-        tt_executor::build_train_table_edge_bundle_artifact,
+        tt_executor::read_tt_parquet_batches,
         m
     )?)?;
+    m.add_class::<tt_executor::TTParquetBatchIterator>()?;
     m.add_function(wrap_pyfunction!(
         tt_executor::build_prediction_table_edge_bundle_artifact,
         m
@@ -1323,37 +1326,11 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(
-        tt_executor::persist_tt_artifact_bundle,
-        m
-    )?)?;
-    m.add_class::<tt_executor::TTPlanIterator>()?;
-    m.add_function(wrap_pyfunction!(
-        split_assignments::assign_by_ratio_on_perm,
+        custom_tt_entry::build_train_table_artifacts_for_existing_table,
         m
     )?)?;
     m.add_function(wrap_pyfunction!(
-        split_assignments::compute_dense_split_assignments_core,
-        m
-    )?)?;
-    m.add_function(wrap_pyfunction!(
-        split_assignments::apply_entity_include_mask,
-        m
-    )?)?;
-    m.add_function(wrap_pyfunction!(split_assignments::assign_manual_split, m)?)?;
-    m.add_function(wrap_pyfunction!(
-        split_assignments::assign_backtesting_split,
-        m
-    )?)?;
-    m.add_function(wrap_pyfunction!(
-        split_assignments::assign_approx_date_offset_split,
-        m
-    )?)?;
-    m.add_function(wrap_pyfunction!(
-        split_assignments::assign_date_offset_split,
-        m
-    )?)?;
-    m.add_function(wrap_pyfunction!(
-        split_assignments::assign_time_range_split,
+        custom_tt_entry::build_prediction_table_artifacts_for_existing_table,
         m
     )?)?;
     Ok(())

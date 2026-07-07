@@ -15,7 +15,11 @@ from kumoapi.pquery.AST import (
 )
 from kumoapi.typing import AggregationType, BoolOp, RelOp, StrOp
 from diskgraph import DiskgraphConfigError, DiskGraphPlanCompiler, SplitSpec, TimeUnit
-from diskgraph.compiler import AUTOREGRESSION_OUTPUT_ALIAS, YOY_OUTPUT_ALIAS
+from diskgraph.compiler import (
+    AUTOREGRESSION_OUTPUT_ALIAS,
+    FUTURE_LABELS_OUTPUT_ALIAS,
+    YOY_OUTPUT_ALIAS,
+)
 
 def test_compiler_basic_aggregation():
     # Construct a Mock Validated AST
@@ -617,10 +621,10 @@ def test_compiler_static_node_prediction_is_null():
     plan_json = compiler.compile(query=query, timestamps=[], is_prediction=True, task_type="binary_classification", target_stype="categorical", input_timestamp_unit=TimeUnit.Seconds)
     plan = json.loads(plan_json)
 
-    assert "node" in plan["prediction_type"]
+    # Node BP emits entities only — PassThrough, no target column.
+    assert plan["prediction_type"] == "pass_through"
 
-    # We should have the target traversed to get the alias, and a stage filter applied
-    # Also, we injected a dummy column for the entity_id_target
+    # The static IS-NULL restriction must still be applied as a stage filter.
     assert len(plan["stages"]) >= 1
 
     # Look for the has_edges op and the == False stage filter
@@ -897,7 +901,7 @@ def test_compiler_forecasting():
     plan_json = compiler.compile(
         query=query,
         timestamps=[1700000000000000],
-        is_prediction=True, task_type="binary_classification", target_stype="categorical",
+        is_prediction=True, task_type="forecasting", target_stype="categorical",
         input_timestamp_unit=TimeUnit.Microseconds,
         lag_offsets_secs=[-86400, -172800],
         yoy_offsets_secs=[-31536000]
@@ -918,6 +922,29 @@ def test_compiler_forecasting():
     assert auto_ops[1]["lag_offsets"] == [-31536000]
 
 
+def test_compiler_forecasting_training_future_labels():
+    query = _make_temporal_query()
+
+    compiler = DiskGraphPlanCompiler()
+    plan_json = compiler.compile(
+        query=query,
+        timestamps=[1700000000000000],
+        is_prediction=False,
+        task_type="forecasting",
+        target_stype="numerical",
+        input_timestamp_unit=TimeUnit.Microseconds,
+        lag_offsets_secs=[-86400],
+        future_offsets_secs=[0, 86400, 172800],
+    )
+    plan = json.loads(plan_json)
+    stage = plan["stages"][0]
+
+    future_ops = [op["future_labels"] for op in stage["ops"] if "future_labels" in op]
+    assert len(future_ops) == 1
+    assert future_ops[0]["alias"] == FUTURE_LABELS_OUTPUT_ALIAS
+    assert future_ops[0]["future_offsets"] == [0, 86400, 172800]
+
+
 def test_autoregression_lag_offset_unit_days():
     """Autoregression builder converts lag offsets from declared unit to seconds."""
     query = _make_temporal_query()
@@ -929,7 +956,7 @@ def test_autoregression_lag_offset_unit_days():
         query=query,
         timestamps=[1700000000],
         is_prediction=True,
-        task_type="binary_classification", target_stype="categorical",
+        task_type="forecasting", target_stype="categorical",
         input_timestamp_unit=TimeUnit.Seconds,
         lag_offsets_secs=[-86400, -604800],
     )

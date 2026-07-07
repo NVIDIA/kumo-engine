@@ -112,6 +112,13 @@ struct Args {
     /// error otherwise — markerless mirror state is unverifiable).
     #[arg(long, value_name = "STRING")]
     success_marker_content: Option<String>,
+    /// Path to a parent DG index. Required when the source's
+    /// `diskgraph_config.json` declares any FK with `external_parent: true`
+    /// (e.g. seed-table extensions whose ENTITY1 → parent.entity FK lives
+    /// across an index boundary). Threads through as
+    /// `IngestOptions.parent_index_path`.
+    #[arg(long, value_name = "DIR")]
+    parent_index_path: Option<PathBuf>,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -210,6 +217,8 @@ fn main() -> Result<()> {
         pk_map_threads: args.pk_map_threads,
         edges_map_threads: args.edges_map_threads,
         index_threads: args.index_threads,
+        parent_index_path: args.parent_index_path.clone(),
+        resolve_columns: Vec::new(),
     };
     let dest = match args.dest {
         DestArg::Local => Dest::Local,

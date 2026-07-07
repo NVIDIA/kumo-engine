@@ -47,6 +47,10 @@ class SplitSpec:
     unit: Optional[str] = None
     offset_unit: Optional[str] = None
     anchor_start_offset: Optional[int] = None
+    # kumo DateOffsetSplit boundary-snapping (prod default True). None ⇒ the
+    # Rust side applies the production default.
+    flexible_boundaries: Optional[bool] = None
+    timeframe_step: Optional[int] = None
     # Unit of range/backtesting_timestamp values: "seconds", "milliseconds",
     # "microseconds", or "nanoseconds".  The Rust pybind normalizes to
     # nanoseconds internally for comparison against parquet timestamps.
@@ -86,6 +90,10 @@ class SplitSpec:
             cfg['offset_unit'] = str(self.offset_unit)
         if self.anchor_start_offset is not None:
             cfg['anchor_start_offset'] = int(self.anchor_start_offset)
+        if self.flexible_boundaries is not None:
+            cfg['flexible_boundaries'] = bool(self.flexible_boundaries)
+        if self.timeframe_step is not None:
+            cfg['timeframe_step'] = int(self.timeframe_step)
         if self.is_temporal is not None:
             cfg['is_temporal'] = bool(self.is_temporal)
         cfg['timestamp_unit'] = str(self.timestamp_unit)
@@ -237,6 +245,12 @@ def normalize_split_spec(
     anchor_raw = payload.get('anchor_start_offset')
     anchor_start_offset = int(anchor_raw) if isinstance(anchor_raw, int) else None
 
+    flexible_raw = payload.get('flexible_boundaries')
+    flexible_boundaries = bool(flexible_raw) if isinstance(flexible_raw, bool) else None
+
+    step_raw = payload.get('timeframe_step')
+    timeframe_step = int(step_raw) if isinstance(step_raw, int) else None
+
     is_temporal_raw = payload.get('is_temporal')
     is_temporal = bool(is_temporal_raw) if isinstance(is_temporal_raw, bool) else None
 
@@ -257,4 +271,6 @@ def normalize_split_spec(
         unit=str(payload['unit']) if isinstance(payload.get('unit'), str) else None,
         offset_unit=str(payload['offset_unit']) if isinstance(payload.get('offset_unit'), str) else None,
         anchor_start_offset=anchor_start_offset,
+        flexible_boundaries=flexible_boundaries,
+        timeframe_step=timeframe_step,
     )

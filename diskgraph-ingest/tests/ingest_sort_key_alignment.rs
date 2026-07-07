@@ -279,6 +279,8 @@ fn sort_key_alignment_multi_file_edge_table() -> Result<()> {
             pk_map_threads: None,
             edges_map_threads: None,
             index_threads: None,
+            parent_index_path: None,
+            resolve_columns: Vec::new(),
         },
     )?;
 
@@ -848,6 +850,8 @@ fn sort_key_alignment_node_table_fk() -> Result<()> {
             pk_map_threads: None,
             edges_map_threads: None,
             index_threads: None,
+            parent_index_path: None,
+            resolve_columns: Vec::new(),
         },
     )?;
 

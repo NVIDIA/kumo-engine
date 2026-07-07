@@ -283,6 +283,14 @@ impl PkHashStore {
             .get(shard)
             .ok_or_else(|| anyhow!("missing pk hash shard {}:{}", table, shard))
     }
+
+    /// Shard count for `table`, or `None` if `table` is not loaded. Used by
+    /// the edge phase to route external-parent FK keys with the parent's
+    /// shard count (which can differ from the local ingest's num_shards —
+    /// e.g. a 1-shard seed-table extension against a multi-shard parent).
+    pub fn table_shard_count(&self, table: &str) -> Option<usize> {
+        self.tables.get(table).map(|v| v.len())
+    }
 }
 
 pub fn key_type_tag(key_type: KeyType) -> (u8, u32) {
@@ -362,4 +370,268 @@ fn advise_data(map: &Mmap, advice: PkDataAdvice) {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// External pkmap loader (Phase 1, subtask #2).
+//
+// Loads a parent DG index's pkmap shards for one table into the same
+// `PkHashShard` / `PkHashStore` shape consumed by the edge phase. Used when an
+// FK on a seed table declares `external_parent: true` — the destination table
+// lives in a separate, already-built index and its pkmap must be mmap'd
+// without rebuilding.
+//
+// The loader is intentionally minimal: it does not parallelize across shards
+// (today's caller loads one external table per ingest, and shard count is
+// bounded by the parent's `num_shards`). If multi-table external FKs become
+// common, this can be parallelized using the same `WorkItem` pattern as
+// `build_pk_hash_store_parallel`.
+// ---------------------------------------------------------------------------
+
+/// Map a PK column dtype (as stored in `index_metadata.json` /
+/// `PrimaryKeyMap.dtype`) to a `KeyType`. Mirrors the IngestedType-based
+/// helper used during fresh ingest (`key_type_for_dtype` in lib.rs) but
+/// operates on the lowercase dtype string written by the index publisher.
+pub fn key_type_from_pk_dtype(dtype: &str) -> Result<KeyType> {
+    match dtype {
+        "int8" | "int16" | "int32" | "int64" | "uint8" | "uint16" | "uint32" | "uint64"
+        | "float32" | "float64" | "decimal128" => Ok(KeyType::Int64),
+        "decimal256" => Ok(KeyType::VarBytes),
+        "string" | "bytes" => Ok(KeyType::VarBytes),
+        "uuid" => Ok(KeyType::Uuid),
+        "uuid256" => Ok(KeyType::Uuid256),
+        "ip" => Ok(KeyType::Ip),
+        other => Err(anyhow!(
+            "unsupported PK dtype `{other}` in parent index metadata"
+        )),
+    }
+}
+
+/// Read `{parent_index_path}/index_metadata.json` and extract the PK dtype
+/// for `dst_table`. Returns the parsed `KeyType`.
+///
+/// Fails loudly when the parent index has no metadata file, the table is
+/// missing, or the table has no `primary_key_map`. These are the three
+/// scenarios that would silently break a downstream loader call.
+pub fn key_type_for_external_parent(
+    parent_index_path: &std::path::Path,
+    dst_table: &str,
+) -> Result<KeyType> {
+    use diskgraph_core::metadata::DatasetMetadata;
+
+    let metadata_path = parent_index_path.join("index_metadata.json");
+    let bytes = std::fs::read(&metadata_path).map_err(|e| {
+        anyhow!(
+            "read parent index metadata {}: {e}",
+            metadata_path.display()
+        )
+    })?;
+    let meta: DatasetMetadata = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow!("parse parent index metadata {}: {e}", metadata_path.display()))?;
+    let node = meta
+        .node_types
+        .iter()
+        .find(|n| n.name == dst_table)
+        .ok_or_else(|| {
+            anyhow!(
+                "external FK dst_table `{dst_table}` not found in parent index at {}",
+                parent_index_path.display()
+            )
+        })?;
+    let pk = node.primary_key_map.as_ref().ok_or_else(|| {
+        anyhow!(
+            "external FK dst_table `{dst_table}` has no primary_key_map in parent index"
+        )
+    })?;
+    key_type_from_pk_dtype(&pk.dtype)
+}
+
+/// Discover the `pk_hash-NNNNN.bin` / `pk_data-NNNNN.bin` shard pairs under
+/// `{parent_index_path}/nodes/{dst_table}/` and load each into a
+/// `PkHashShard`. Returns the shards in shard-index order (0, 1, 2, …).
+///
+/// On-disk format: shards are written by `dest_node_pkmap_paths` (see
+/// `build_pk_hash_store_parallel`) with five-digit zero-padded shard indices.
+/// Missing data files or out-of-range shard indices fail loudly so caller
+/// sees a clear "stale/incomplete parent" signal rather than silently
+/// returning fewer shards than expected.
+pub fn load_external_pk_hash_shards(
+    parent_index_path: &std::path::Path,
+    dst_table: &str,
+    key_type: KeyType,
+    data_advice: PkDataAdvice,
+) -> Result<Vec<PkHashShard>> {
+    let table_dir = parent_index_path.join("nodes").join(dst_table);
+    if !table_dir.is_dir() {
+        return Err(anyhow!(
+            "external FK dst_table dir not found: {}",
+            table_dir.display()
+        ));
+    }
+    // Collect (shard_idx, hash_path, data_path) triples by scanning the dir.
+    let mut entries: Vec<(usize, std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+    for entry in std::fs::read_dir(&table_dir)
+        .map_err(|e| anyhow!("read dir {}: {e}", table_dir.display()))?
+    {
+        let entry = entry.map_err(|e| anyhow!("read dir entry {}: {e}", table_dir.display()))?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        let Some(shard_suffix) = name_str
+            .strip_prefix("pk_hash-")
+            .and_then(|s| s.strip_suffix(".bin"))
+        else {
+            continue;
+        };
+        let shard_idx: usize = shard_suffix.parse().map_err(|e| {
+            anyhow!(
+                "unparseable shard index in `{}`: {e}",
+                entry.path().display()
+            )
+        })?;
+        let hash_path = entry.path();
+        let data_path = table_dir.join(format!("pk_data-{:05}.bin", shard_idx));
+        if !data_path.is_file() {
+            return Err(anyhow!(
+                "external FK shard {} has pk_hash but missing pk_data at {}",
+                shard_idx,
+                data_path.display()
+            ));
+        }
+        entries.push((shard_idx, hash_path, data_path));
+    }
+    if entries.is_empty() {
+        return Err(anyhow!(
+            "no pk_hash-*.bin shards found under {}",
+            table_dir.display()
+        ));
+    }
+    entries.sort_by_key(|(idx, _, _)| *idx);
+    // Verify shards are contiguous from 0..N — gaps mean stale/incomplete
+    // parent or a publishing bug, both of which we want loud about.
+    for (expected, (idx, _, _)) in entries.iter().enumerate() {
+        if *idx != expected {
+            return Err(anyhow!(
+                "external FK shards non-contiguous under {}: expected shard {} but found shard {}",
+                table_dir.display(),
+                expected,
+                idx
+            ));
+        }
+    }
+    let mut shards = Vec::with_capacity(entries.len());
+    for (_, hash_path, data_path) in entries {
+        let shard = PkHashShard::load(&hash_path, &data_path, key_type, data_advice)?;
+        shards.push(shard);
+    }
+    Ok(shards)
+}
+
+/// Per-dst-table pkmap + global-id offsets, loaded ONCE before the encode
+/// phase so the node-writing workers can resolve PK reference values to graph
+/// node-ids inline (FK-free LP resolution mode, see
+/// `ttng-lp-fkfree-resolution-design.md` §S3). This is the encode-phase
+/// analogue of the edges_map FK resolve loop (`dst_maps.get(shard).lookup` +
+/// `dst_offsets[shard] + dst_local`), minus the forward-batcher push: it
+/// returns the global node-id instead of materializing an edge.
+///
+/// `PkHashShard::lookup` is `&self`, so a shared `Arc<RefResolver>` can be
+/// read concurrently by every encode worker.
+pub struct RefResolver {
+    /// dst_table -> loaded pkmap shards (shard-index order).
+    shards: std::collections::HashMap<String, Vec<PkHashShard>>,
+    /// dst_table -> per-shard global-id base offset (parent's
+    /// `node_types[].shards[].min_id`), shard-index order.
+    offsets: std::collections::HashMap<String, Vec<u64>>,
+}
+
+impl RefResolver {
+    /// Load the pkmap shards + global-id offsets for every distinct
+    /// `dst_table` referenced by the resolution columns, from the parent
+    /// index at `parent_index_path`.
+    pub fn load(
+        parent_index_path: &std::path::Path,
+        dst_tables: &[String],
+    ) -> Result<Self> {
+        use diskgraph_core::metadata::DatasetMetadata;
+
+        let meta_path = parent_index_path.join("index_metadata.json");
+        let bytes = std::fs::read(&meta_path)
+            .map_err(|e| anyhow!("RefResolver: read parent metadata {}: {e}", meta_path.display()))?;
+        let meta: DatasetMetadata = serde_json::from_slice(&bytes)
+            .map_err(|e| anyhow!("RefResolver: parse parent metadata {}: {e}", meta_path.display()))?;
+
+        let mut shards = std::collections::HashMap::new();
+        let mut offsets = std::collections::HashMap::new();
+        let mut seen = std::collections::HashSet::new();
+        for dst_table in dst_tables {
+            if !seen.insert(dst_table.clone()) {
+                continue;
+            }
+            let key_type = key_type_for_external_parent(parent_index_path, dst_table)?;
+            let loaded = load_external_pk_hash_shards(
+                parent_index_path,
+                dst_table,
+                key_type,
+                PkDataAdvice::Random,
+            )?;
+            let node = meta
+                .node_types
+                .iter()
+                .find(|n| n.name == *dst_table)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "RefResolver: dst_table `{dst_table}` not in parent index metadata at {}",
+                        parent_index_path.display()
+                    )
+                })?;
+            let table_offsets: Vec<u64> = node.shards.iter().map(|s| s.min_id).collect();
+            if table_offsets.len() != loaded.len() {
+                return Err(anyhow!(
+                    "RefResolver: dst_table `{dst_table}` shard offset count {} != pkmap shard count {}",
+                    table_offsets.len(),
+                    loaded.len()
+                ));
+            }
+            shards.insert(dst_table.clone(), loaded);
+            offsets.insert(dst_table.clone(), table_offsets);
+        }
+        Ok(Self { shards, offsets })
+    }
+
+    /// Shard count for `dst_table` (needed to compute the destination shard
+    /// from a key). Returns `None` if the table was not loaded.
+    pub fn shard_count(&self, dst_table: &str) -> Option<usize> {
+        self.shards.get(dst_table).map(|v| v.len())
+    }
+
+    /// Resolve `key` (a parent PK reference value) to the parent's GLOBAL
+    /// node-id, given the destination `shard` (computed by the caller from the
+    /// key + `shard_count`). Returns `None` on a pkmap miss (orphan) — the
+    /// caller decides whether to mask or skip. Mirrors the edges_map math
+    /// `dst_offsets[shard] + dst_local`.
+    pub fn resolve_in_shard(&self, dst_table: &str, shard: usize, key: &Key) -> Option<u64> {
+        let dst_local = self.shards.get(dst_table)?.get(shard)?.lookup(key)?;
+        let base = self
+            .offsets
+            .get(dst_table)?
+            .get(shard)
+            .copied()
+            .unwrap_or(0);
+        Some(base.saturating_add(u64::from(dst_local)))
+    }
+}
+
+/// Build a `PkHashStore` containing a single external table, suitable for
+/// merging into an existing `PkHashStore` or constructing a standalone one
+/// for unit-test inspection.
+pub fn load_external_pk_hash_table(
+    parent_index_path: &std::path::Path,
+    dst_table: &str,
+    data_advice: PkDataAdvice,
+) -> Result<(PkHashStore, KeyType)> {
+    let key_type = key_type_for_external_parent(parent_index_path, dst_table)?;
+    let shards = load_external_pk_hash_shards(parent_index_path, dst_table, key_type, data_advice)?;
+    let mut tables = std::collections::HashMap::new();
+    tables.insert(dst_table.to_string(), shards);
+    Ok((PkHashStore::new(tables), key_type))
 }

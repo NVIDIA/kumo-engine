@@ -26,6 +26,16 @@ pub struct GraphIndexBuilder {
     metadata: DatasetMetadata,
     source: GraphDataSource,
     output_root: PathBuf,
+    /// Coordinated layout fix (write side). When ingesting a sub-index whose
+    /// FKs cross into a parent index (e.g. a seed table whose `external_parent`
+    /// FK points at `parent.users`), the parent's `users` isn't in
+    /// `metadata.node_types`. `compute_relation_layouts` would then fall back
+    /// to `dst_bits=64` for cross-boundary edges. Populating this with the
+    /// parent's `node_types` lets layout computation pick up the real
+    /// `max_id` → 1-2 byte dst encoding for typical fixtures (≈8x edge size
+    /// savings on the hot path). The persisted `index_metadata.json` is
+    /// unaffected — these types live only in the in-memory build scope.
+    external_node_types: Vec<NodeTypeMetadata>,
 }
 
 #[derive(Clone)]
@@ -81,11 +91,23 @@ impl GraphIndexBuilder {
             metadata,
             source,
             output_root: output_root.to_path_buf(),
+            external_node_types: Vec::new(),
         }
     }
 
     pub fn metadata(&self) -> &DatasetMetadata {
         &self.metadata
+    }
+
+    /// Coordinated layout fix (write side): include `types` in the layout
+    /// computation scope so `compute_relation_layouts` finds the real
+    /// `max_id` for any cross-boundary FK dst. Pass parent's
+    /// `metadata.node_types` here when building a sub-index that references
+    /// a parent. The persisted `index_metadata.json` stays clean — these
+    /// types only enter the in-memory layout-computation `node_types` Vec.
+    pub fn with_external_node_types(mut self, types: Vec<NodeTypeMetadata>) -> Self {
+        self.external_node_types = types;
+        self
     }
 
     pub fn build(&self, progress: Option<&dyn GraphProgressSink>) -> Result<GraphBuildOutput> {
@@ -123,7 +145,19 @@ impl GraphIndexBuilder {
         edge_buffer_pool: Option<Arc<EdgeBufferPool>>,
     ) -> Result<Vec<ShardBuildJob>> {
         let mut jobs = Vec::new();
-        let node_types = Arc::new(self.metadata.node_types.clone());
+        // Layout-computation scope: local types + external (parent) types
+        // for cross-boundary FK width lookup. Externals are append-only —
+        // `compute_relation_layouts` uses `find` so name collisions favor
+        // the local type (good — local always wins when both exist).
+        let local_names: std::collections::HashSet<&str> =
+            self.metadata.node_types.iter().map(|n| n.name.as_str()).collect();
+        let mut layout_node_types = self.metadata.node_types.clone();
+        for ext in &self.external_node_types {
+            if !local_names.contains(ext.name.as_str()) {
+                layout_node_types.push(ext.clone());
+            }
+        }
+        let node_types = Arc::new(layout_node_types);
         for node_type in &self.metadata.node_types {
             let relations: Vec<EdgeRelationMetadata> = self
                 .metadata
@@ -348,10 +382,44 @@ pub struct GraphIndexReader {
     /// follow-up). Used by TT-gen resolver to dispatch per-token observation
     /// for multicategorical sources without per-query plan-JSON plumbing.
     column_semantic_types: HashMap<(String, String), String>,
+    /// Unified view of edge relations across parent + every loaded extension.
+    /// Extension relations have their `src_type` rewritten to the namespaced
+    /// `<tt_id>/<src_type>` form so a consumer (e.g. the sampler engine)
+    /// can resolve them via the merged `node_type_to_id` lookup. `dst_type`
+    /// is left bare when the destination is a parent table (the common case
+    /// for seed-table forward FKs).
+    ///
+    /// Populated by `open` to mirror `metadata.edge_relations`, and extended
+    /// by every `merge_extension_into` call. Read via
+    /// `merged_edge_relations()`.
+    merged_edge_relations: Vec<EdgeRelationMetadata>,
+    /// Filesystem root of the TT extension this reader was opened against
+    /// (`<parent_root>/train_tables/<tt_id>/`). Populated only by
+    /// `open_with_tt`; `None` for plain `open()`. Sample-time consumers use
+    /// this to locate sidecar files (`weight.bin`, `split.bin`, etc.) that
+    /// live alongside the sub-index but aren't part of its rowpack catalog.
+    /// One source of truth: the reader knows where its TT lives; callers
+    /// don't have to thread the path through.
+    tt_extension_root: Option<PathBuf>,
 }
 
 impl GraphIndexReader {
     pub fn open(metadata_path: &Path, root: &Path) -> Result<Self> {
+        Self::open_with_external_node_types(metadata_path, root, &[])
+    }
+
+    /// Open an index but augment its `node_types` with the supplied
+    /// external entries when computing edge-relation layouts. Used by
+    /// `merge_extension_into` so the extension's edges (which point at
+    /// the parent's tables) can be sized correctly: without the parent's
+    /// `users` in the layout-computation scope, `compute_relation_layouts`
+    /// would fall back to `dst_bits=64` and the read view would not match
+    /// the on-disk byte width Phase 1 produced.
+    pub(crate) fn open_with_external_node_types(
+        metadata_path: &Path,
+        root: &Path,
+        external_node_types: &[NodeTypeMetadata],
+    ) -> Result<Self> {
         let bytes = fs::read(metadata_path).context("read index_metadata.json")?;
         let metadata: DatasetMetadata =
             serde_json::from_slice(&bytes).context("parse index_metadata.json")?;
@@ -359,8 +427,21 @@ impl GraphIndexReader {
         tracing::info!(
             node_types = metadata.node_types.len(),
             edge_relations = metadata.edge_relations.len(),
+            external_node_types = external_node_types.len(),
             "Loaded index metadata"
         );
+        // Build a unified node_types view for layout computation. The
+        // extension's own node_types take precedence; externals fill in
+        // referenced-but-absent dst types so `bits_for_id` resolves
+        // correctly.
+        let mut layout_node_types: Vec<NodeTypeMetadata> = metadata.node_types.clone();
+        let local_names: std::collections::HashSet<&str> =
+            metadata.node_types.iter().map(|n| n.name.as_str()).collect();
+        for ext in external_node_types {
+            if !local_names.contains(ext.name.as_str()) {
+                layout_node_types.push(ext.clone());
+            }
+        }
         for node_type in &metadata.node_types {
             let (node_data_compression, node_data_decoder) = match &node_type.node_data_compression
             {
@@ -386,9 +467,9 @@ impl GraphIndexReader {
                 .filter(|rel| rel.src_type == node_type.name)
                 .cloned()
                 .collect();
-            let layouts = compute_relation_layouts(&relations, &metadata.node_types)?;
+            let layouts = compute_relation_layouts(&relations, &layout_node_types)?;
             let layouts = Arc::new(layouts);
-            let mut shard_readers = Vec::new();
+            let mut shard_readers: Vec<Arc<ShardReader>> = Vec::new();
             for (shard_idx, _shard_meta) in node_type.shards.iter().enumerate() {
                 let dir = root
                     .join("nodes")
@@ -396,7 +477,7 @@ impl GraphIndexReader {
                     .join(format!("shard-{:05}", shard_idx));
                 let reader =
                     ShardReader::open(&dir, Arc::clone(&layouts), node_type.has_node_data)?;
-                shard_readers.push(reader);
+                shard_readers.push(Arc::new(reader));
             }
             let pk_map = match &node_type.primary_key_map {
                 Some(pk) if pk.mapping_kind == "ptrhash" => {
@@ -425,6 +506,7 @@ impl GraphIndexReader {
             tables.insert(node_type.name.clone(), Arc::new(table));
         }
         let column_semantic_types = load_column_semantic_types(root);
+        let merged_edge_relations = metadata.edge_relations.clone();
         tracing::info!(
             tables = tables.len(),
             stype_columns = column_semantic_types.len(),
@@ -434,7 +516,24 @@ impl GraphIndexReader {
             metadata,
             tables,
             column_semantic_types,
+            merged_edge_relations,
+            // `open` / `open_with_external_node_types` produce a reader over
+            // a single index. `open_with_tt` overwrites this after
+            // `merge_extension_into` so sidecar lookups land in the right
+            // place.
+            tt_extension_root: None,
         })
+    }
+
+    /// Edge relations across parent + every loaded extension. Extension
+    /// relations have `src_type` rewritten to the namespaced
+    /// `<tt_id>/<src_type>` form so the engine's `node_type_to_id` lookup
+    /// resolves them. For the runtime case (one tt at a time) this is just
+    /// parent's edge_relations + the single extension's one or two
+    /// relations, sequentially. No new state for the multi-extension case
+    /// because we don't load multiple at runtime.
+    pub fn merged_edge_relations(&self) -> &[EdgeRelationMetadata] {
+        &self.merged_edge_relations
     }
 
     pub fn metadata(&self) -> &DatasetMetadata {
@@ -451,6 +550,17 @@ impl GraphIndexReader {
         tables
     }
 
+    /// Sorted catalog keys (these are the namespaced names — `<tt_id>/<bare>`
+    /// for extension tables, bare for parent tables). The engine builds its
+    /// `node_type_to_id` map keyed by these names so cross-boundary edge
+    /// relations (which carry namespaced src_type per `merged_edge_relations`)
+    /// resolve correctly.
+    pub fn table_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.tables.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
     /// Look up the kumo `stype` for a column from the persisted graph config.
     /// Returns `None` when the index has no `diskgraph_config.json` (legacy)
     /// or the column has no declared `semantic_type`.
@@ -459,6 +569,185 @@ impl GraphIndexReader {
             .get(&(table.to_string(), column.to_string()))
             .map(String::as_str)
     }
+
+    /// Open the parent DG index together with exactly one seed-table
+    /// extension. A bare `tt_ref` keeps legacy behavior and opens
+    /// `<parent_root>/train_tables/<tt_ref>/`; explicit
+    /// `train_tables/<id>` and `pred_tables/<id>` refs open that subdir.
+    /// This is the runtime API: kumo always opens parent + the one seed
+    /// table being trained or scored against. There is no multi-tt-at-once
+    /// runtime case.
+    ///
+    /// The extension's tables are merged under namespaced keys
+    /// `<id>/<table_name>`; parent tables keep their bare names. The
+    /// extension's edge_relations are merged into `merged_edge_relations`
+    /// with namespaced `src_type` so the sampler engine's name lookup
+    /// resolves them.
+    ///
+    /// Errors loudly when the extension doesn't exist or isn't finalized
+    /// (no `index_metadata.json` under the subdir). Callers should use
+    /// `discover_tts` first if they need to ask "what's available".
+    pub fn open_with_tt(parent_root: &Path, tt_ref: &str) -> Result<Self> {
+        if tt_ref.is_empty() {
+            return Err(anyhow!("empty tt_ref"));
+        }
+        let (subdir_rel, namespace) = if let Some((prefix, id)) = tt_ref.split_once('/') {
+            if id.is_empty() || id.contains('/') {
+                return Err(anyhow!("invalid extension reference `{tt_ref}`"));
+            }
+            match prefix {
+                "train_tables" | "pred_tables" => (tt_ref.to_string(), id.to_string()),
+                _ => return Err(anyhow!("invalid extension reference `{tt_ref}`")),
+            }
+        } else {
+            (format!("train_tables/{tt_ref}"), tt_ref.to_string())
+        };
+        Self::open_with_extension_subdir(parent_root, &subdir_rel, &namespace)
+    }
+
+    /// Generalization of [`open_with_tt`] to an extension at an arbitrary
+    /// relative `subdir` under the parent (e.g. `pred_tables/job1` for the
+    /// batch-prediction path, or `train_tables/<tt_id>` for training). The
+    /// extension's tables are merged under the `<namespace>/<table_name>`
+    /// keys and its cross-boundary edges are decoded against the parent's
+    /// node types — the same recipe `open_with_tt` uses.
+    pub fn open_with_extension_subdir(
+        parent_root: &Path,
+        subdir_rel: &str,
+        namespace: &str,
+    ) -> Result<Self> {
+        let parent_meta_path = parent_root.join("index_metadata.json");
+        let mut reader = Self::open(&parent_meta_path, parent_root)?;
+        let subdir = parent_root.join(subdir_rel);
+        let ext_meta_path = subdir.join("index_metadata.json");
+        if !ext_meta_path.is_file() {
+            return Err(anyhow!(
+                "extension `{namespace}` has no finalized index at {}",
+                subdir.display()
+            ));
+        }
+        merge_extension_into(&mut reader, &subdir, namespace)?;
+        // Remember the extension root so sample-time helpers can locate
+        // sidecars (weight.bin, split.bin, ...) without callers threading
+        // the path through.
+        reader.tt_extension_root = Some(subdir);
+        Ok(reader)
+    }
+
+    /// Filesystem root of the TT extension this reader was opened against,
+    /// when applicable. `None` for plain `open()` readers. Sample-time
+    /// consumers read this to locate sidecar files that live next to
+    /// `index_metadata.json` (e.g. `weight.bin`).
+    pub fn tt_extension_root(&self) -> Option<&Path> {
+        self.tt_extension_root.as_deref()
+    }
+}
+
+/// List the tt_ids of every finalized seed-table extension under
+/// `<parent_root>/train_tables/<tt_id>/`. A subdir is considered finalized
+/// iff it contains an `index_metadata.json`. Mid-ingest or stale subdirs
+/// are excluded so callers can iterate the result without each one needing
+/// to re-check finalization. Returns an empty `Vec` (not an error) when
+/// no extensions exist or the `train_tables/` dir is absent — the empty
+/// state is valid for a freshly built parent index.
+pub fn discover_tts(parent_root: &Path) -> Result<Vec<String>> {
+    let train_tables_dir = parent_root.join("train_tables");
+    if !train_tables_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut ids = Vec::new();
+    for entry in fs::read_dir(&train_tables_dir)
+        .with_context(|| format!("read train_tables dir {}", train_tables_dir.display()))?
+    {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // Finalization gate: skip subdirs without index_metadata.json.
+        // This is the same signal `open_with_tt` checks, kept consistent
+        // so `discover_tts` results are always loadable.
+        if entry.path().join("index_metadata.json").is_file() {
+            ids.push(name);
+        }
+    }
+    ids.sort();
+    Ok(ids)
+}
+
+/// Open the extension at `subdir` and merge its tables into `reader` under
+/// the `<tt_id>/<table_name>` namespace. Parent tables in `reader` are
+/// untouched. The extension is opened with parent's `node_types` supplied
+/// as externals so its edge-layout computation (compute_relation_layouts)
+/// resolves dst types like `users` (which live in the parent, not the
+/// extension's own metadata) and produces the correct dst_bits / entry_bytes.
+/// Open the extension and merge it into the reader.
+///
+/// IMPORTANT (Phase 3 follow-up): this opens the extension via the plain
+/// `Self::open`, NOT `open_with_external_node_types`. Reason: Phase 1's
+/// ingest writes the seed's edges with `dst_max_id=0` (the parent isn't in
+/// `max_ids`) → `compute_relation_layouts` produces dst_bits=64 fallback at
+/// write side, entry_bytes=8. The read side here also uses dst_bits=64
+/// fallback for the same reason. Write and read AGREE at 8-byte entries —
+/// fine for the cross-boundary Phase 2 walk test which masks with
+/// dst_mask=u64::MAX.
+///
+/// The sampler engine (Phase 3) builds a merged-view layout that would
+/// resolve `users` to its real max_id and produce dst_bits=4 / entry_bytes=1
+/// — which is what the on-disk format SHOULD be but isn't, because Phase 1
+/// writes assuming the fallback. Closing the loop end-to-end requires
+/// Phase 1's ingest to know parent's max_id at edge-write time AND Phase 2
+/// to recompute the read layout with the same parent max_id. The two
+/// sides must move together; either alone breaks read/write parity. This
+/// is the Phase 3 sampler enablement work.
+fn merge_extension_into(
+    reader: &mut GraphIndexReader,
+    subdir: &Path,
+    tt_id: &str,
+) -> Result<()> {
+    let ext_meta_path = subdir.join("index_metadata.json");
+    // Coordinated layout fix (read side): the extension's seed→parent edges
+    // were written with `dst_bits = bits_for_id(parent.users.max_id)` at
+    // ingest time. To decode them we MUST re-compute the layout with the
+    // same `node_types` scope — that's the parent's, not the extension's.
+    // Without this scope the extension's open falls back to dst_bits=64
+    // and reads garbage from the (smaller) on-disk packed edges.
+    let parent_node_types = reader.metadata.node_types.clone();
+    let ext = GraphIndexReader::open_with_external_node_types(
+        &ext_meta_path,
+        subdir,
+        &parent_node_types,
+    )
+    .with_context(|| format!("open extension {tt_id} at {}", subdir.display()))?;
+    for (bare_name, table_arc) in ext.tables.iter() {
+        let namespaced = format!("{tt_id}/{bare_name}");
+        if reader.tables.contains_key(&namespaced) {
+            return Err(anyhow!(
+                "extension table `{namespaced}` collides with existing entry — \
+                 indicates a duplicate tt_id load"
+            ));
+        }
+        reader.tables.insert(namespaced, Arc::clone(table_arc));
+    }
+    // Merge column_semantic_types under the namespaced table name as well.
+    for ((table, column), stype) in ext.column_semantic_types.iter() {
+        let namespaced_table = format!("{tt_id}/{table}");
+        reader
+            .column_semantic_types
+            .insert((namespaced_table, column.clone()), stype.clone());
+    }
+    // Merge edge_relations into the unified view, rewriting src_type to use
+    // the namespaced form. dst_type stays bare for FKs pointing at parent
+    // tables (the only case Phase 1 supports — external_parent + forward
+    // only). If a future extension ever introduces FKs whose dst is another
+    // extension table, that namespace rewrite belongs here too.
+    for rel in &ext.metadata.edge_relations {
+        let mut merged_rel = rel.clone();
+        merged_rel.src_type = format!("{tt_id}/{}", rel.src_type);
+        merged_rel.name = format!("{tt_id}/{}", rel.name);
+        reader.merged_edge_relations.push(merged_rel);
+    }
+    Ok(())
 }
 
 /// Best-effort load of `{root}/diskgraph_config.json`. Returns an empty map
@@ -511,7 +800,12 @@ pub struct TableReader {
     node_type: String,
     relations: Vec<EdgeRelationMetadata>,
     layouts: Arc<Vec<RelationLayout>>,
-    shards: Vec<ShardReader>,
+    /// Shards held as `Arc<ShardReader>` so downstream consumers (the
+    /// sampler engine) can share the same mmap'd handles without
+    /// re-opening them. Cheap to clone; the underlying mmap pages are
+    /// shared via the OS page cache regardless, but Arc keeps the file
+    /// descriptors + virtual mappings owned by one place.
+    shards: Vec<Arc<ShardReader>>,
     shard_ranges: Vec<NodeShardMetadata>,
     shard_offsets: Vec<u64>,
     total_nodes: u64,
@@ -529,7 +823,7 @@ impl TableReader {
         node_type: &NodeTypeMetadata,
         relations: Vec<EdgeRelationMetadata>,
         layouts: Arc<Vec<RelationLayout>>,
-        shards: Vec<ShardReader>,
+        shards: Vec<Arc<ShardReader>>,
         node_data_compression: Option<NodeDataCompression>,
         node_data_decoder: Option<diskgraph_rowpack::RowPackDecoder>,
         primary_key_map: Option<PrimaryKeyMap>,
@@ -605,7 +899,23 @@ impl TableReader {
     }
 
     pub fn shard(&self, index: usize) -> Option<&ShardReader> {
-        self.shards.get(index)
+        self.shards.get(index).map(|a| a.as_ref())
+    }
+
+    /// Borrow the shared `Arc<ShardReader>` for `index`. Used by callers
+    /// (notably the sampler engine) that need to retain a handle to the
+    /// shard alongside its `min_id`/`max_id` range without re-opening it.
+    pub fn shard_arc(&self, index: usize) -> Option<Arc<ShardReader>> {
+        self.shards.get(index).cloned()
+    }
+
+    /// Per-shard contiguous id range as `(min_id, max_id)`. The engine
+    /// uses this for `find_shard` binary search; in the reader's view
+    /// these come from the metadata loaded at open time.
+    pub fn shard_id_range(&self, index: usize) -> Option<(u64, u64)> {
+        self.shard_ranges
+            .get(index)
+            .map(|r| (r.min_id, r.max_id))
     }
 
     pub fn edges_for_node(&self, node_id: u64) -> Result<crate::layout::EdgeListView<'_>> {

@@ -6,6 +6,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crate::errors::{TTGenError, TTGenResult};
+use crate::ttgen_output::PRIMARY_TARGET_COL;
 use arrow_schema::{DataType, Field};
 use diskgraph_core::sortkey::SortKeyEncoder;
 use diskgraph_core::time::{Abs, Dur, UnitSystem};
@@ -22,7 +23,10 @@ use diskgraph_rowpack::{IngestedType, RowPackContext};
 // op JSON; the resolver here looks the alias up to identify the autoregression
 // output columns. Renaming requires updating all three places together.
 pub const AUTOREGRESSION_OUTPUT_ALIAS: &str = "autoregression_labels";
+pub const FUTURE_LABELS_OUTPUT_ALIAS: &str = "future_labels";
 pub const YOY_OUTPUT_ALIAS: &str = "year_over_year_labels";
+// Must match the training-only anchor emitted by the Python compiler.
+const FORECASTING_TARGET_ANCHOR_ALIAS: &str = "entity_id_target";
 
 // ─── Resolved plan types ─────────────────────────────────────────────────────
 
@@ -49,25 +53,65 @@ pub struct ResolvedPlan<U: UnitSystem> {
     // Aliases
     pub num_aliases: usize,
     pub alias_to_idx: HashMap<String, usize>,
-    pub target_alias_idx: usize,
+    /// One alias index per TARGETk slot (TARGET1, TARGET2, ...).
+    /// Today's PQ path always emits a single TARGET (Vec length 1); the
+    /// custom-TT path may carry multiple TARGETs sourced from the customer
+    /// parquet.
+    pub target_alias_indices: Vec<usize>,
     pub autoregression_alias_idx: Option<usize>,
+    pub future_labels_alias_idx: Option<usize>,
+    pub future_label_offsets: Option<Vec<Dur<U>>>,
     pub yoy_alias_idx: Option<usize>,
 
     // Entity PK
-    pub entity_pk_col_idx: usize,
-    pub entity_dtype: DataType,
+    /// One rowpack column index per ENTITYk slot (ENTITY1, ENTITY2, ...).
+    /// Today's PQ path always emits a single ENTITY (Vec length 1); the
+    /// custom-TT path may carry multiple ENTITYs.
+    pub entity_pk_col_indices: Vec<usize>,
+    /// Per-slot ENTITY dtype (parallel to `entity_pk_col_indices`).
+    pub entity_dtypes: Vec<DataType>,
+    /// Which TARGETk slot the split decider keys off (default 0).
+    pub split_target_index: Option<usize>,
+    /// Which ENTITYk slot the split decider keys off (default 0).
+    pub split_entity_index: Option<usize>,
 
     // Prediction type
     pub prediction_type: PredictionType,
+    pub is_prediction: bool,
 
-    // Target dtype: Bool for Compare, else inferred from ingested column type
-    pub target_dtype: DataType,
+    // Target dtype: Bool for Compare, else inferred from ingested column type.
+    /// Per-slot TARGET dtype (parallel to `target_alias_indices`).
+    pub target_dtypes: Vec<DataType>,
     pub autoregression_dtype: Option<DataType>,
+    pub future_labels_dtype: Option<DataType>,
     pub yoy_dtype: Option<DataType>,
 
     /// Semantic type of the target column ("numerical", "categorical", etc.).
     pub target_stype: String,
     pub split_projection: Option<ResolvedSplitProjection>,
+    /// Optional source column name for per-row weight collection
+    /// (custom-TT path only). When `Some(col_name)`, the chunk processor
+    /// reads this column from the customer parquet and the executor emits
+    /// `weight.bin` next to `tt.parquet`. When `None`, no per-row weight
+    /// collection happens and no `weight.bin` is emitted.
+    ///
+    /// Today only the chunk processor consumes this field; the PQ path
+    /// has no source column and always passes `None`.
+    pub weight_col: Option<String>,
+
+    /// Custom-TT LP path only: the RHS target entity table whose PK map
+    /// must be consulted to drop orphan TARGET1 values read straight from
+    /// the customer parquet. Resolved from the plan's `fkey_mapping`
+    /// `TARGET1 → dst_table` entry. `None` disables the filter (PQ path,
+    /// or custom plans with no RHS target). Mirrors the PQL ListDistinct
+    /// `ResolvedAggregate::target_pk_table` orphan filter.
+    pub custom_target_pk_table: Option<Arc<TableReader>>,
+    /// Pre-resolved rowpack column indices for the custom target table's
+    /// `(create_time_col, end_time_col)` — used for temporal validity
+    /// filtering of custom-TT LP targets. Both `None` when the target has
+    /// no temporal columns or no `custom_target_pk_table`.
+    pub custom_target_temporal_create_col_idx: Option<usize>,
+    pub custom_target_temporal_end_col_idx: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -95,6 +139,7 @@ pub enum ResolvedOp<U: UnitSystem> {
     Compare(ResolvedCompare),
     LogicalOp(ResolvedLogicalOp),
     Autoregression(ResolvedAutoregression<U>),
+    FutureLabels(ResolvedFutureLabels<U>),
     HasEdges(ResolvedHasEdges<U>),
 }
 
@@ -111,6 +156,12 @@ pub struct ResolvedAutoregression<U: UnitSystem> {
     pub lag_offsets: Vec<Dur<U>>,
 }
 
+pub struct ResolvedFutureLabels<U: UnitSystem> {
+    pub alias_idx: usize,
+    pub target_op: Box<ResolvedOp<U>>,
+    pub future_offsets: Vec<Dur<U>>,
+}
+
 impl<U: UnitSystem> ResolvedOp<U> {
     pub fn alias_idx(&self) -> usize {
         match self {
@@ -120,6 +171,7 @@ impl<U: UnitSystem> ResolvedOp<U> {
             ResolvedOp::Compare(c) => c.alias_idx,
             ResolvedOp::LogicalOp(l) => l.alias_idx,
             ResolvedOp::Autoregression(a) => a.alias_idx,
+            ResolvedOp::FutureLabels(a) => a.alias_idx,
         }
     }
 }
@@ -144,14 +196,10 @@ pub struct ResolvedAggregate<U: UnitSystem> {
     pub target_temporal_create_col_idx: Option<usize>,
     pub target_temporal_end_col_idx: Option<usize>,
     pub link_split_col_idx: Option<usize>,
-    /// Source-column semantic type. Used at the per-edge consume callback to
-    /// dispatch on `multicategorical` for per-token observe; all other values
-    /// take the legacy whole-cell path.
-    ///
-    /// Post-#28478: ingest's `normalize_multicat_pseudo_list` flips delimited
-    /// multicat scalars to `IngestedType::StringArray` at convert time. The
-    /// executor never sees a multicat-with-delimiter scalar source; no
-    /// delimiter field is plumbed through resolution.
+    /// Source-column semantic_type resolved from the persisted graph config
+    /// (`{index_root}/diskgraph_config.json`). `Some("multicategorical")`
+    /// drives per-token dispatch through `dispatch_multicat_source` at the
+    /// LIST_DISTINCT / LAST / FIRST / COUNT_DISTINCT executor read sites.
     pub target_semantic_type: Option<String>,
 }
 
@@ -335,11 +383,12 @@ pub fn resolve_plan<U: UnitSystem>(
                 Op::LogicalOp { alias, .. } => {
                     alias_names.push(alias.clone());
                 }
-                Op::Autoregression { alias, target_op, .. } => {
+                Op::Autoregression { alias, target_op, .. } |
+                Op::FutureLabels { alias, target_op, .. } => {
                     // Extract the inner op's alias first so it gets a valid index
                     let inner_alias = match &**target_op {
                         Op::Aggregate { alias: inner, .. } => inner,
-                        _ => panic!("Autoregression target must be an Aggregate"),
+                        _ => panic!("forecasting sequence target must be an Aggregate"),
                     };
                     alias_names.push(inner_alias.clone());
                     alias_names.push(alias.clone());
@@ -375,26 +424,73 @@ pub fn resolve_plan<U: UnitSystem>(
     validate_link_split_projection_attached(split_request.as_ref(), &resolved_stages)?;
 
     // 7. Determine target alias and dtype
-    let target_alias_idx = if num_aliases > 0 {
-        // The last op's alias is typically the target
+    //
+    // Empty stages list is permitted for:
+    // - `PassThrough` (today's case)
+    // - Custom-TT-complete: Forecasting/Node/Link plans where the
+    //   customer-supplied parquet provides every output column, so the
+    //   executor has no ops to compute. The target alias index is set to
+    //   0 as a safely-ignored dummy in those flows (the custom-TT path
+    //   reads the target value directly from the parquet via
+    //   `populate_aliases_from_record`, not from `aliases`).
+    // Forecasting training plans keep the scalar target aggregate inside the
+    // canonical autoregression op and append an entity-id Column as a compiler
+    // anchor. The inner aggregate, not that trailing Column, owns TARGET1.
+    let has_compiler_forecasting_anchor = matches!(
+        plan.stages
+            .iter()
+            .rev()
+            .flat_map(|stage| stage.ops.iter().rev())
+            .next(),
+        Some(Op::Column { alias, .. }) if alias == FORECASTING_TARGET_ANCHOR_ALIAS
+    );
+    let forecasting_target_op = if matches!(plan.prediction_type, PredictionType::Forecasting)
+        && has_compiler_forecasting_anchor
+    {
+        plan.stages
+            .iter()
+            .flat_map(|stage| &stage.ops)
+            .find_map(|op| match op {
+                Op::Autoregression {
+                    alias, target_op, ..
+                } if alias == AUTOREGRESSION_OUTPUT_ALIAS => Some(target_op.as_ref()),
+                _ => None,
+            })
+    } else {
+        None
+    };
+
+    let target_alias_idx = if let Some(Op::Aggregate { alias, .. }) = forecasting_target_op {
+        *alias_to_idx.get(alias).ok_or_else(|| {
+            TTGenError::SchemaError(format!("forecasting target alias '{}' not found", alias))
+        })?
+    } else if num_aliases > 0 {
+        // All other plan shapes conventionally keep the target as the last op.
         num_aliases - 1
     } else {
-        if matches!(plan.prediction_type, PredictionType::PassThrough) {
-            0 // Dummy value, safely ignored by executor
-        } else {
-            return Err(TTGenError::InvalidPlan("plan has no ops".to_string()));
+        match plan.prediction_type {
+            PredictionType::PassThrough
+            | PredictionType::Forecasting
+            | PredictionType::Node
+            | PredictionType::Link { .. } => 0,
         }
     };
 
-    // Infer target dtype from the last op:
+    // Infer the forecasting target from its selected inner aggregate. Other
+    // plan shapes infer it from the last op:
     // - Compare → Boolean
     // - LP aggregate (ListDistinct) → dtype of the target column (FK column type)
     // - Other aggregates → Float64
-    let target_dtype = infer_target_dtype(plan, &resolved_stages);
+    let target_dtype = forecasting_target_op
+        .map(|op| infer_op_dtype(op, &resolved_stages))
+        .unwrap_or_else(|| infer_target_dtype(plan, &resolved_stages));
 
     // 7.5 Resolve forecasting-specific aliases
     let mut autoregression_alias_idx = None;
     let mut autoregression_dtype = None;
+    let mut future_labels_alias_idx = None;
+    let mut future_labels_dtype = None;
+    let mut future_label_offsets = None;
     let mut yoy_alias_idx = None;
     let mut yoy_dtype = None;
 
@@ -405,6 +501,17 @@ pub fn resolve_plan<U: UnitSystem>(
                 Op::Autoregression { alias, .. } => alias == AUTOREGRESSION_OUTPUT_ALIAS,
                 _ => false,
             }).unwrap(), &resolved_stages));
+        }
+        if let Some(idx) = alias_to_idx.get(FUTURE_LABELS_OUTPUT_ALIAS) {
+            future_labels_alias_idx = Some(*idx);
+            let future_op = plan.stages.iter().flat_map(|s| &s.ops).find(|op| match op {
+                Op::FutureLabels { alias, .. } => alias == FUTURE_LABELS_OUTPUT_ALIAS,
+                _ => false,
+            }).unwrap();
+            future_labels_dtype = Some(infer_op_dtype(future_op, &resolved_stages));
+            if let Op::FutureLabels { future_offsets, .. } = future_op {
+                future_label_offsets = Some(future_offsets.clone());
+            }
         }
         if let Some(idx) = alias_to_idx.get(YOY_OUTPUT_ALIAS) {
             yoy_alias_idx = Some(*idx);
@@ -440,6 +547,37 @@ pub fn resolve_plan<U: UnitSystem>(
         .unwrap_or(0);
     let split_projection = resolve_split_projection(plan, &entity_ctx, split_request.as_ref())?;
 
+    // Custom-TT LP RHS-target orphan filter: resolve the target entity table
+    // from the plan's `fkey_mapping` `TARGET1 → dst_table` entry. Mirrors the
+    // PQL ListDistinct orphan filter (`resolve_op`): require the table to
+    // exist and carry a PK map, then pre-resolve its temporal column indices.
+    // `None` (no fkey_mapping, or no TARGET1 entry) disables the filter.
+    let custom_target_pk_table: Option<Arc<TableReader>> = plan
+        .fkey_mapping
+        .as_ref()
+        .and_then(|m| m.iter().find(|f| f.src_col == PRIMARY_TARGET_COL))
+        .map(|f| {
+            let table = reader.table(&f.dst_table).ok_or_else(|| {
+                TTGenError::SchemaError(format!(
+                    "target_entity_table '{}' not found in index",
+                    f.dst_table
+                ))
+            })?;
+            if table.pk_map().is_none() {
+                return Err(TTGenError::SchemaError(format!(
+                    "target_entity_table '{}' has no primary key map",
+                    f.dst_table
+                )));
+            }
+            Ok(table)
+        })
+        .transpose()?;
+    let (custom_target_temporal_create_col_idx, custom_target_temporal_end_col_idx) =
+        custom_target_pk_table
+            .as_ref()
+            .map(|t| t.temporal_col_indices())
+            .unwrap_or((None, None));
+
     Ok(ResolvedPlan {
         entity_table_spec: plan.entity.clone(),
         entity_table,
@@ -453,20 +591,63 @@ pub fn resolve_plan<U: UnitSystem>(
         stages: resolved_stages,
         num_aliases,
         alias_to_idx,
-        target_alias_idx,
+        // Today every PQ-built plan has exactly one TARGET. The
+        // multi-target case is reachable only through `with_target_alias_indices`
+        // (custom-TT plan compiler emission, future).
+        target_alias_indices: vec![target_alias_idx],
         autoregression_alias_idx,
+        future_labels_alias_idx,
+        future_label_offsets,
         yoy_alias_idx,
-        entity_pk_col_idx,
-        entity_dtype,
+        // Same single-entity default for PQ; multi-entity is populated
+        // by callers that build the resolved plan directly.
+        entity_pk_col_indices: vec![entity_pk_col_idx],
+        entity_dtypes: vec![entity_dtype],
+        split_target_index: None,
+        split_entity_index: None,
         prediction_type: plan.prediction_type.clone(),
-        target_dtype,
+        is_prediction: plan.is_prediction,
+        target_dtypes: vec![target_dtype],
         autoregression_dtype,
+        future_labels_dtype,
         yoy_dtype,
         target_stype: plan.target_stype.clone().ok_or_else(|| {
             TTGenError::InvalidPlan("target_stype is required".to_string())
         })?,
         split_projection,
+        weight_col: plan.weight_col.clone(),
+        custom_target_pk_table,
+        custom_target_temporal_create_col_idx,
+        custom_target_temporal_end_col_idx,
     })
+}
+
+impl<U: UnitSystem> ResolvedPlan<U> {
+    /// Convenience accessor: the primary (slot 0) ENTITY rowpack column index.
+    /// Used by all single-entity call sites (PQ path, custom-TT lookup).
+    #[inline]
+    pub fn primary_entity_pk_col_idx(&self) -> usize {
+        self.entity_pk_col_indices[0]
+    }
+
+    /// Convenience accessor: the primary (slot 0) ENTITY Arrow dtype.
+    #[inline]
+    pub fn primary_entity_dtype(&self) -> &DataType {
+        &self.entity_dtypes[0]
+    }
+
+    /// Convenience accessor: the primary (slot 0) TARGET alias index.
+    /// Used by the PQ executor's per-row write_target.
+    #[inline]
+    pub fn primary_target_alias_idx(&self) -> usize {
+        self.target_alias_indices[0]
+    }
+
+    /// Convenience accessor: the primary (slot 0) TARGET Arrow dtype.
+    #[inline]
+    pub fn primary_target_dtype(&self) -> &DataType {
+        &self.target_dtypes[0]
+    }
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -481,12 +662,25 @@ fn split_projection_request<U: UnitSystem>(
         Some("ManualSplit") => (SplitProjectionKind::ScalarEntity, "ManualSplit"),
         Some("CustomSplit") => (SplitProjectionKind::ScalarEntity, "CustomSplit"),
         Some("CustomLinkSplit") => (SplitProjectionKind::LinkArray, "CustomLinkSplit"),
+        // ColumnSplit needs the entity-column projection so the
+        // executor can populate `TTRowRef::split_column_value` per row.
+        Some("ColumnSplit") => (SplitProjectionKind::ScalarEntity, "ColumnSplit"),
         _ => return Ok(None),
     };
     let split_column = split
         .split_column
         .as_deref()
         .ok_or_else(|| TTGenError::InvalidPlan(format!("{split_kind} requires split_column")))?;
+    // ManualSplit on TIMESTAMP / PSEUDO_TIMESTAMP is a pseudo-column: the
+    // executor handles it internally via `ManualDecider` against the
+    // resolved per-row Abs<U> timestamp, so there is no real entity-table
+    // column to project. Skipping the projection here matches the
+    // executor's `SplitMode::Compute` handling in `determine_split_mode`.
+    if matches!(kind, SplitProjectionKind::ScalarEntity)
+        && matches!(split_column, "TIMESTAMP" | "PSEUDO_TIMESTAMP")
+    {
+        return Ok(None);
+    }
     let (table_name, column_name) = split_column_table_and_column(split_column, &plan.entity.table);
     Ok(Some(SplitProjectionRequest {
         kind,
@@ -525,6 +719,19 @@ fn resolve_split_projection<U: UnitSystem>(
         .as_ref()
         .and_then(|s| s.split_column.as_deref())
         .unwrap_or(&request.source_column);
+
+    // Custom-TT (empty stages): the split column lives in the customer-supplied
+    // parquet, NOT the entity table. The chunk processor reads it by NAME and
+    // emits it as the projection column (later dropped by pass B), so there is
+    // no entity-table column index to resolve. Produce a name-only projection.
+    if plan.stages.is_empty() {
+        return Ok(Some(ResolvedSplitProjection {
+            output_name: request.output_name.clone(),
+            entity_col_idx: None,
+            dtype: DataType::Utf8,
+        }));
+    }
+
     if request.source_table != plan.entity.table {
         return Err(TTGenError::InvalidPlan(format!(
             "{split_kind} split_column must reference entity table '{}' for scalar tt-gen projection, got '{}'",
@@ -594,6 +801,11 @@ fn collect_list_distinct_split_projection_state<U: UnitSystem>(
         }
         ResolvedOp::Autoregression(agg) => collect_list_distinct_split_projection_state(
             &agg.target_op,
+            has_attached_projection,
+            traversed_tables,
+        ),
+        ResolvedOp::FutureLabels(seq) => collect_list_distinct_split_projection_state(
+            &seq.target_op,
             has_attached_projection,
             traversed_tables,
         ),
@@ -863,31 +1075,23 @@ fn resolve_op<U: UnitSystem>(
 
             // Resolve the source-column stype from the persisted graph config
             // (`{index_root}/diskgraph_config.json`, populated at ingest time).
-            // This replaces the per-query `column_metadata` plumbing on the
-            // kumo→diskgraph compile boundary — stype is a one-time fact
-            // declared at ingest, not a per-query parameter.
+            // `Some("multicategorical")` drives per-token dispatch at the
+            // executor read sites (kumo#28400).
             let resolved_stype = target_col_idx.and_then(|col_idx| {
                 let col_name = &dst_table
                     .node_data_decoder()?
                     .context()
                     .columns[col_idx]
-                    .name;
+                    .name
+                    .clone();
                 reader
                     .column_semantic_type(dst_table.node_type(), col_name)
                     .map(String::from)
             });
 
-            // Reject (Multicategorical, Float*Array) at plan resolution: float
-            // -keyed labels are not a real workload (precision drift, NaN,
-            // signed zero, infinities). Rejection is a single-point gate
-            // shared by every read site (kumo#28400 §4.2 Step 1.6).
-            //
-            // Inverse gate: a native-list source column read without a
-            // multicat declaration on disk would silently produce
-            // `Value::Int(0)` via `read_column_value`'s unhandled-array
-            // short-circuit. Reject loudly so a missing semantic_type on the
-            // ingested column fails plan compilation instead of corrupting
-            // downstream stats and TT output.
+            // Reject (Multicategorical, Float*Array) and the inverse
+            // (native-list source without multicat declaration) at plan
+            // resolution. Mirrors main's gate from #230.
             if let Some(col_idx) = target_col_idx {
                 let dst_col = &dst_table
                     .node_data_decoder()
@@ -902,7 +1106,8 @@ fn resolve_op<U: UnitSystem>(
                     IngestedType::Float16Array
                     | IngestedType::Float32Array
                     | IngestedType::Float64Array
-                        if is_multicat => {
+                        if is_multicat =>
+                    {
                         return Err(TTGenError::InvalidPlan(format!(
                             "multicategorical source column '{}' has unsupported \
                              float-list ingested type {:?}; use intlist or stringlist",
@@ -937,12 +1142,6 @@ fn resolve_op<U: UnitSystem>(
                     | IngestedType::Int32Array
                     | IngestedType::Int64Array => {}
                     _ if is_multicat => {
-                        // Defensive net for legacy indexes built before
-                        // graph_config::validate rejected scalar-multicat. A
-                        // scalar dtype paired with multicat is degenerate: a
-                        // single-value-per-row column is `categorical`, not
-                        // multicategorical. Fail loudly rather than silently
-                        // observe whole-cell.
                         return Err(TTGenError::InvalidPlan(format!(
                             "multicategorical source column '{}.{}' has scalar \
                              ingested type {:?}; multicategorical requires a \
@@ -1028,11 +1227,7 @@ fn resolve_op<U: UnitSystem>(
                 row_filter: resolved_filter,
             }))
         }
-        Op::Column {
-            alias,
-            table,
-            column,
-        } => {
+        Op::Column { alias, table, column } => {
             let alias_idx = alias_to_idx[alias];
             let table_reader = reader
                 .table(table)
@@ -1048,8 +1243,7 @@ fn resolve_op<U: UnitSystem>(
 
             // Mirror of the Aggregate-arm reject gates: Route A direct-target
             // reads share the same Float*Array reject and the inverse
-            // native-list-without-multicat reject (kumo#28400 §4.2 Step 1.6
-            // + codex review follow-up).
+            // native-list-without-multicat reject (kumo#28400 §4.2).
             {
                 let col_meta = &table_reader
                     .node_data_decoder()
@@ -1064,7 +1258,8 @@ fn resolve_op<U: UnitSystem>(
                     IngestedType::Float16Array
                     | IngestedType::Float32Array
                     | IngestedType::Float64Array
-                        if is_multicat => {
+                        if is_multicat =>
+                    {
                         return Err(TTGenError::InvalidPlan(format!(
                             "multicategorical source column '{}' has unsupported \
                              float-list ingested type {:?}; use intlist or stringlist",
@@ -1096,10 +1291,6 @@ fn resolve_op<U: UnitSystem>(
                     | IngestedType::Int32Array
                     | IngestedType::Int64Array => {}
                     _ if is_multicat => {
-                        // Defensive net for legacy indexes built before
-                        // graph_config::validate rejected scalar-multicat. See
-                        // the matching gate in the Aggregate arm above for
-                        // rationale.
                         return Err(TTGenError::InvalidPlan(format!(
                             "multicategorical source column '{}.{}' has scalar \
                              ingested type {:?}; multicategorical requires a \
@@ -1165,6 +1356,23 @@ fn resolve_op<U: UnitSystem>(
                 alias_idx,
                 target_op: Box::new(resolved_target),
                 lag_offsets: lag_offsets.clone(),
+            }))
+        }
+        Op::FutureLabels { alias, target_op, future_offsets } => {
+            let alias_idx = alias_to_idx[alias];
+            let resolved_target = resolve_op(
+                target_op,
+                reader,
+                _entity_table,
+                _entity_ctx,
+                alias_to_idx,
+                entity_col_indices,
+                split_request,
+            )?;
+            Ok(ResolvedOp::FutureLabels(ResolvedFutureLabels {
+                alias_idx,
+                target_op: Box::new(resolved_target),
+                future_offsets: future_offsets.clone(),
             }))
         }
     }
@@ -1451,7 +1659,7 @@ fn infer_target_dtype<U: UnitSystem>(plan: &DiskGraphTTPlan<U>, stages: &[Resolv
         .flat_map(|s| s.ops.iter().rev())
         .next();
     match last_plan_op {
-        // ListDistinct + Link prediction: source column dtype (exploded/array rows).
+        // ListDistinct + Link prediction: source column dtype (array rows).
         Some(Op::Aggregate { func: AggFunc::ListDistinct, .. })
             if matches!(plan.prediction_type, PredictionType::Link { .. }) =>
         {
@@ -1480,8 +1688,8 @@ fn infer_op_dtype<U: UnitSystem>(op: &Op<U>, stages: &[ResolvedStage<U>]) -> Dat
             DataType::Int64
         }
         Op::HasEdges { .. } => DataType::Boolean,
-        Op::Autoregression { target_op, .. } => {
-            // Autoregression yields a List of whatever the inner target_op yields
+        Op::Autoregression { target_op, .. } | Op::FutureLabels { target_op, .. } => {
+            // Forecasting sequences yield a List of the inner target dtype.
             let inner_dtype = infer_op_dtype(target_op, stages);
             DataType::List(Arc::new(Field::new("item", inner_dtype, true)))
         },

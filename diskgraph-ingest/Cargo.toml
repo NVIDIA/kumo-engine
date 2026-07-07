@@ -53,6 +53,15 @@ ratatui = "0.26"
 crossterm = "0.27"
 dirs = "5"
 
+[dev-dependencies]
+diskgraph-engine = { path = "../diskgraph-engine" }
+# Used by disk_manager::tests to force serial execution of the
+# real-disk-pressure tests. They measure /tmp's actual free space and
+# race against any other tempdir-writing test running concurrently in
+# the same binary. `#[serial(disk_manager_real_fs)]` puts them all in
+# one group that runs one at a time.
+serial_test = "3"
+
 [features]
 mem-profile = ["jemallocator", "jemalloc-ctl", "jemallocator/profiling"]
 unsafe-vars = []

@@ -440,6 +440,7 @@ fn run_phase_boundary_test(stop_after: IngestPhase) -> Result<()> {
             pk_map_threads: Some(1),
             edges_map_threads: Some(1),
             index_threads: Some(1),
+            parent_index_path: None,
             ..Default::default()
         },
     )?;
@@ -489,6 +490,7 @@ fn run_phase_boundary_test(stop_after: IngestPhase) -> Result<()> {
             pk_map_threads: Some(1),
             edges_map_threads: Some(1),
             index_threads: Some(1),
+            parent_index_path: None,
             ..Default::default()
         },
     )?;
@@ -538,6 +540,7 @@ fn fresh_vs_fresh_is_deterministic() -> Result<()> {
                 pk_map_threads: Some(1),
                 edges_map_threads: Some(1),
                 index_threads: Some(1),
+                parent_index_path: None,
                 ..Default::default()
             },
         )?;
@@ -579,6 +582,7 @@ fn resume_from_context_matches_fresh() -> Result<()> {
             pk_map_threads: Some(1),
             edges_map_threads: Some(1),
             index_threads: Some(1),
+            parent_index_path: None,
             ..Default::default()
         },
     )?;
@@ -594,6 +598,7 @@ fn resume_from_context_matches_fresh() -> Result<()> {
             pk_map_threads: Some(1),
             edges_map_threads: Some(1),
             index_threads: Some(1),
+            parent_index_path: None,
             ..Default::default()
         },
     )?;
@@ -645,6 +650,7 @@ fn resume_wipes_stale_pk_map_outputs() -> Result<()> {
             pk_map_threads: Some(1),
             edges_map_threads: Some(1),
             index_threads: Some(1),
+            parent_index_path: None,
             ..Default::default()
         },
     )?;
@@ -674,6 +680,7 @@ fn resume_wipes_stale_pk_map_outputs() -> Result<()> {
             pk_map_threads: Some(1),
             edges_map_threads: Some(1),
             index_threads: Some(1),
+            parent_index_path: None,
             ..Default::default()
         },
     )?;

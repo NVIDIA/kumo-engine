@@ -1979,6 +1979,28 @@ pub struct RowPackRowLens {
     pub data_bytes: usize,
 }
 
+/// Per-column value override used by the FK-free LP "resolution mode"
+/// (`ttng-lp-fkfree-resolution-design.md` §S3). For the resolved node-id
+/// columns the value is NOT read from the source parquet (it doesn't exist
+/// there) — instead the encode worker resolves the PK reference(s) to graph
+/// node-id(s) and supplies them here. `encode_row_observed` consults the
+/// override at the matching column index and, when present, encodes the
+/// supplied value directly INSTEAD of reading from `access`.
+///
+/// `UInt64` is varint-encoded (not raw bytes), so the scalar override goes
+/// through `encode_uint`; the list override is wrapped as an
+/// `IntListView { Parsed }` and goes through `encode_int_list_view_with_tag`.
+#[derive(Debug, Clone)]
+pub enum ResolveOverride {
+    /// No override for this column — encode from `access` as usual.
+    None,
+    /// A resolved scalar node-id for a `UInt64` column.
+    Scalar(u64),
+    /// Resolved node-ids for an `Int64Array` column (already node-ids; the
+    /// `Parsed` view bypasses any Arrow source array).
+    List(Vec<i64>),
+}
+
 pub struct RowPackScratch {
     tags: BitWriter,
     bools: BitWriter,
@@ -2618,6 +2640,7 @@ impl RowPackEncoder {
             data,
             f16_buf,
             key_bufs,
+            None,
             &mut NoOpObserver,
         )
     }
@@ -2634,9 +2657,20 @@ impl RowPackEncoder {
         data: &mut Vec<u8>,
         f16_buf: &mut Vec<f16>,
         key_bufs: &[Vec<u8>],
+        // FK-free LP resolution overrides, indexed by column. `None` (the
+        // common case) means every column encodes from `access` as usual.
+        // When `Some(slice)`, a non-`None` entry at column `idx` supplies the
+        // resolved node-id(s) directly (see [`ResolveOverride`]).
+        resolve_overrides: Option<&[ResolveOverride]>,
         observer: &mut O,
     ) -> Result<RowPackRowLens> {
         debug_assert_eq!(key_bufs.len(), self.ctx.columns.len());
+        debug_assert!(
+            resolve_overrides
+                .map(|o| o.len() == self.ctx.columns.len())
+                .unwrap_or(true),
+            "resolve_overrides length must match column count"
+        );
         let tag_start = tags.len();
         let bool_start = bools.len();
         let data_start = data.len();
@@ -2732,7 +2766,21 @@ impl RowPackEncoder {
                     }
                 }
                 IngestedType::UInt64 => {
-                    match access_or_parse_failure(access.get_uint64(idx), idx, observer) {
+                    // FK-free LP resolution: if a scalar node-id override is
+                    // present for this column, encode it directly (varint via
+                    // encode_uint, mirroring the normal arm) instead of reading
+                    // the source parquet, which has no such column.
+                    let scalar_override = resolve_overrides
+                        .and_then(|o| o.get(idx))
+                        .and_then(|o| match o {
+                            ResolveOverride::Scalar(v) => Some(*v),
+                            _ => None,
+                        });
+                    let value = match scalar_override {
+                        Some(v) => Some(v),
+                        None => access_or_parse_failure(access.get_uint64(idx), idx, observer),
+                    };
+                    match value {
                         None => 0u8,
                         Some(v) => {
                             observer.observe_i64(idx, v as i64);
@@ -3086,29 +3134,56 @@ impl RowPackEncoder {
                 IngestedType::Int8Array
                 | IngestedType::Int16Array
                 | IngestedType::Int32Array
-                | IngestedType::Int64Array => match access.int_list_view(idx) {
-                    Ok(None) => 0u8,
-                    Err(_) => {
-                        observer.observe_parse_failure(idx);
-                        0u8
-                    }
-                    Ok(Some(view)) => {
-                        let fixed_len = int_array_fixed_len(&col.encoding);
-                        if !fixed_int_list_is_valid(&view, fixed_len) {
-                            observer.observe_parse_failure(idx);
-                            0u8
-                        } else {
-                            observer.observe_int64_list(idx, &view);
-                            let target_bits = self.int_array_target_bits[idx]
-                                .ok_or_else(|| anyhow!("rowpack int-array bits unset"))?;
-                            let row = access.row();
-                            let col_label = col.name.as_str();
-                            view.require_fits_in_signed(target_bits, col_label, row)?;
-                            encode_int_list_view_with_tag(data, view, fixed_len)?;
-                            1u8
+                | IngestedType::Int64Array => {
+                    let fixed_len = int_array_fixed_len(&col.encoding);
+                    // FK-free LP resolution: if a list node-id override is
+                    // present, wrap the resolved ids as a `Parsed` IntListView
+                    // and run the existing list encoder. The column's encoding
+                    // is bits:64 (Int64Array), so require_fits_in_signed(64) is
+                    // a no-op and node-ids are never rejected.
+                    let list_override = resolve_overrides
+                        .and_then(|o| o.get(idx))
+                        .and_then(|o| match o {
+                            ResolveOverride::List(ids) => Some(ids),
+                            _ => None,
+                        });
+                    if let Some(ids) = list_override {
+                        let view = IntListView {
+                            start: 0,
+                            end: ids.len(),
+                            values: IntListValues::Parsed(ids.clone()),
+                        };
+                        observer.observe_int64_list(idx, &view);
+                        let target_bits = self.int_array_target_bits[idx]
+                            .ok_or_else(|| anyhow!("rowpack int-array bits unset"))?;
+                        view.require_fits_in_signed(target_bits, col.name.as_str(), access.row())?;
+                        encode_int_list_view_with_tag(data, view, fixed_len)?;
+                        1u8
+                    } else {
+                        match access.int_list_view(idx) {
+                            Ok(None) => 0u8,
+                            Err(_) => {
+                                observer.observe_parse_failure(idx);
+                                0u8
+                            }
+                            Ok(Some(view)) => {
+                                if !fixed_int_list_is_valid(&view, fixed_len) {
+                                    observer.observe_parse_failure(idx);
+                                    0u8
+                                } else {
+                                    observer.observe_int64_list(idx, &view);
+                                    let target_bits = self.int_array_target_bits[idx]
+                                        .ok_or_else(|| anyhow!("rowpack int-array bits unset"))?;
+                                    let row = access.row();
+                                    let col_label = col.name.as_str();
+                                    view.require_fits_in_signed(target_bits, col_label, row)?;
+                                    encode_int_list_view_with_tag(data, view, fixed_len)?;
+                                    1u8
+                                }
+                            }
                         }
                     }
-                },
+                }
                 IngestedType::StringArray => match access.string_list_view(idx) {
                     Ok(None) => 0u8,
                     Err(_) => {
@@ -5040,22 +5115,33 @@ impl RowPackDecoder {
         use arrow_schema::Schema;
         use std::sync::Arc;
 
-        let mut builders = Vec::with_capacity(col_indices.len());
-        let mut fields = Vec::with_capacity(col_indices.len());
-
         for &col_idx in col_indices {
             if col_idx >= self.ctx.columns.len() {
                 return Err(anyhow!("column index out of bounds"));
             }
-            let col = &self.ctx.columns[col_idx];
-            let (field, builder) = make_arrow_builder(&col.name, col.logical_type, rows.len())?;
-            fields.push(field);
-            builders.push(builder);
         }
 
         let mut requested_mask = vec![false; self.ctx.columns.len()];
         for &idx in col_indices {
             requested_mask[idx] = true;
+        }
+
+        // decode_row_to_builders walks columns in physical context order and
+        // advances one builder for each requested column. Therefore builders
+        // must be in context order, even when callers request an arbitrary
+        // projection order such as [seed, target, timestamp]. We project back
+        // to caller order after decoding.
+        let mut decoded_indices = Vec::with_capacity(col_indices.len());
+        let mut builders = Vec::with_capacity(col_indices.len());
+        let mut fields = Vec::with_capacity(col_indices.len());
+        for (idx, col) in self.ctx.columns.iter().enumerate() {
+            if !requested_mask[idx] {
+                continue;
+            }
+            let (field, builder) = make_arrow_builder(&col.name, col.logical_type, rows.len())?;
+            decoded_indices.push(idx);
+            fields.push(field);
+            builders.push(builder);
         }
 
         let mut scratch = RowPackDecodeScratch::default();
@@ -5072,7 +5158,28 @@ impl RowPackDecoder {
         let arrays: Vec<Arc<dyn arrow_array::Array>> =
             builders.into_iter().map(|mut b| b.finish()).collect();
         let schema = Schema::new(fields);
-        RecordBatch::try_new(Arc::new(schema), arrays)
+        let decoded = RecordBatch::try_new(Arc::new(schema), arrays)
+            .map_err(|e: arrow_schema::ArrowError| anyhow!(e))?;
+
+        if decoded_indices == col_indices {
+            return Ok(decoded);
+        }
+
+        let mut by_context_index = std::collections::HashMap::with_capacity(decoded_indices.len());
+        for (decoded_pos, context_idx) in decoded_indices.into_iter().enumerate() {
+            by_context_index.insert(context_idx, decoded_pos);
+        }
+        let projection: Vec<usize> = col_indices
+            .iter()
+            .map(|idx| {
+                by_context_index
+                    .get(idx)
+                    .copied()
+                    .ok_or_else(|| anyhow!("decoded projection missing column {}", idx))
+            })
+            .collect::<Result<_>>()?;
+        decoded
+            .project(&projection)
             .map_err(|e: arrow_schema::ArrowError| anyhow!(e))
     }
 }

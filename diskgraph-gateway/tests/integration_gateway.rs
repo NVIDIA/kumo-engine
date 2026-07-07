@@ -152,6 +152,12 @@ impl TestGraph {
         Self::write_raw_file(path, "items_shard", OFFSETS_FILENAME, &item_offsets);
 
         // --- Layouts ---
+        // On-disk RelationLayouts carry per-table LOCAL rel_ids
+        // (positions within that table's filtered outgoing-relations list,
+        // per `compute_relation_layouts`). Both `users` and `items` have
+        // exactly one outgoing relation here, so both local ids are 0.
+        // The engine's `local_to_merged_rel` translates these to global
+        // catalog ids at sample time.
         let layout_u = RelationLayout {
             relation_id: 0,
             dst_bits: 33,
@@ -161,7 +167,7 @@ impl TestGraph {
             dest_sort_key_mask: None,
         };
         let layout_i = RelationLayout {
-            relation_id: 1,
+            relation_id: 0,
             dst_bits: 33,
             entry_bytes: 5,
             dst_mask: (1 << 33) - 1,

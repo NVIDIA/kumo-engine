@@ -33,6 +33,11 @@ pub struct IngestStats {
     pub perf: PerfStats,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub num_shards: Option<usize>,
+    /// TT-NG temporal-LP timestamp grouping: per-stage-table `bucket_index.bin`
+    /// plus a bucket list, present only for tables with `group_by_timestamp =
+    /// true`. Empty (and omitted from JSON) otherwise.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub ts_groupings: HashMap<String, crate::ts_grouping::StageGrouping>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

@@ -83,9 +83,16 @@ impl SamplingStats {
 }
 
 /// Unique identifier for a node instance in the traversal.
-/// If disjoint=false, seed_index is always 0.
+///
+/// Disjoint sampling keeps the same global node reached from different seeds as
+/// distinct instances. `seed_index` is the seed's position *within its own seed
+/// type*, so it is NOT unique across types on its own — `seed_type_id` (the root
+/// seed type) is required to disambiguate, e.g. LP lhs#0 from rhs#0. Without it,
+/// a node reachable from both an lhs and an rhs seed at the same index would
+/// wrongly merge into one instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LookupKey {
+    pub seed_type_id: u32,
     pub seed_index: u32,
     pub global_id: u64,
 }
@@ -96,6 +103,10 @@ pub struct NodeRecord {
     pub global_id: u64,
     pub seed_index: u32,
     pub local_id: u32,
+    /// Node-type id of the *root seed* this node descends from. Used to look
+    /// up the seed's timestamp anchor in the correct per-type array. Seeds set
+    /// this to their own type id; children inherit it from their parent.
+    pub seed_type_id: u32,
 }
 
 /// State specific to a single Node Type (table).
@@ -180,8 +191,14 @@ pub struct SamplingState {
 
 const RESET_THRESHOLD: usize = 1 << 18; // ~262k items
 
+impl Default for SamplingState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SamplingState {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             type_states: GxHashMap::default(),
             dst_scratch: Vec::with_capacity(1024),
@@ -292,9 +309,11 @@ mod tests {
                 global_id: 1,
                 seed_index: 0,
                 local_id: 0,
+                seed_type_id: 0,
             });
             ts.index_map.insert(
                 LookupKey {
+                    seed_type_id: 0,
                     seed_index: 0,
                     global_id: 1,
                 },

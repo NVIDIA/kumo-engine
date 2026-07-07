@@ -1,17 +1,17 @@
 """Convenience wrapper for the TT-gen executor.
 
+TT-NG writes artifacts and DG-native stage tables under
+``index_path/train_tables/<tt_id>/`` and returns a summary dict.
+
 Usage::
 
     from diskgraph.executor import generate_training_table
 
-    for batch in generate_training_table(plan_json, index_path):
-        # batch is a pyarrow.RecordBatch
-        ...
+    summary = generate_training_table(plan_json, index_path, tt_id)
+    # summary["tt_parquet_path"], summary["ingested_stage_tables"], ...
 """
 
-from typing import Iterator
-
-import pyarrow as pa
+from typing import Any, Dict
 
 from ._c import execute_tt_plan
 
@@ -19,20 +19,19 @@ from ._c import execute_tt_plan
 def generate_training_table(
     plan_json: str,
     index_path: str,
-) -> Iterator[pa.RecordBatch]:
+    tt_id: str,
+) -> Dict[str, Any]:
     """Execute a TT-gen plan against a DiskGraph index.
-
-    Returns a streaming iterator of ``pyarrow.RecordBatch`` objects.
-    Each batch contains ~64K rows with columns: ENTITY, TIMESTAMP,
-    TARGET, and optionally __kumo_internal_frequency_column__ / ENTITY_INCLUDE_BIT.
 
     Args:
         plan_json: JSON-serialised ``DiskGraphTTPlan`` (from
             ``DiskGraphTTBuilder.build()`` or ``DiskGraphPlanCompiler``).
         index_path: Path to the DiskGraph index directory.
+        tt_id: Stable, filename-safe training-table identifier. Artifacts are
+            written under ``index_path/train_tables/<tt_id>/``.
 
-    Yields:
-        ``pyarrow.RecordBatch`` objects as they are produced by the
-        Rust executor's rayon workers.
+    Returns:
+        A dict containing TT artifact paths, stage parquet counts/paths, and
+        DG-native ``ingested_stage_tables`` refs.
     """
-    return execute_tt_plan(plan_json, index_path)
+    return execute_tt_plan(plan_json, index_path, tt_id)

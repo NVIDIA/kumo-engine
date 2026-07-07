@@ -16,3 +16,6 @@ pub const PK_MAP_MPHF_FACTOR_DEN: u64 = 100;
 pub const PK_MAP_ESTIMATE_PAD_PCT: u64 = 25;
 pub const INVALID_LOCAL_ID: u32 = u32::MAX;
 pub const DEFAULT_INDEX_MEM_BUDGET_FRAC: f64 = 0.7;
+/// Column name whose value seeds TT-NG temporal-LP timestamp grouping. Matches
+/// the reserved `TIMESTAMP` rowpack column ttgen emits for seed stages.
+pub const TIMESTAMP_GROUP_COL: &str = "TIMESTAMP";

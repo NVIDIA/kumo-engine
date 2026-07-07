@@ -101,6 +101,13 @@ pub struct TableSpec {
     /// Kumo source table name (carried from config converter for edge stats output).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kumo_source_table_name: Option<String>,
+    /// TT-NG temporal-LP timestamp grouping: when true, ingest spills each
+    /// node's `TIMESTAMP` value during encode and, after the index is built,
+    /// emits `<table>/bucket_index.bin` (final node-ids grouped contiguously by
+    /// timestamp) plus a per-bucket `{ts,offset,count}` list. Default `false`
+    /// produces byte-identical output to before. See [`crate::ts_grouping`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub group_by_timestamp: bool,
 }
 
 impl TableSpec {
@@ -398,6 +405,11 @@ pub struct DirectionSpec {
 
 /// Foreign key specification defining a 1:N relationship.
 /// Defines an edge from this table to another table's primary key.
+///
+/// `Default` populates legacy values (`external_parent=false`,
+/// `bidirectional=true`) so that callers building an FKeySpec by literal
+/// can use `..Default::default()` to opt out of the new Phase-1 fields
+/// without touching every existing call site.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FKeySpec {
     /// Column on this table that references the destination table.
@@ -410,6 +422,34 @@ pub struct FKeySpec {
     /// Reverse direction config (dst -> src).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reverse: Option<DirectionSpec>,
+    /// True when `dst_table` lives in a parent DG index (not in this config).
+    /// Ingest skips the in-config dst_table check, mmaps the parent's pkmap
+    /// shards for FK resolution. Default false preserves legacy behavior.
+    #[serde(default, skip_serializing_if = "is_default_external_parent")]
+    pub external_parent: bool,
+    /// True when the FK produces both forward and reverse edges (legacy
+    /// behavior). False emits forward edges only — no reverse RelationDef,
+    /// no reverse temp files, no reverse_batcher. Default true preserves
+    /// legacy bidirectional behavior.
+    #[serde(default = "default_bidirectional", skip_serializing_if = "is_default_bidirectional")]
+    pub bidirectional: bool,
+}
+
+fn default_bidirectional() -> bool { true }
+fn is_default_bidirectional(v: &bool) -> bool { *v }
+fn is_default_external_parent(v: &bool) -> bool { !*v }
+
+impl Default for FKeySpec {
+    fn default() -> Self {
+        Self {
+            src_column: String::new(),
+            dst_table: String::new(),
+            forward: None,
+            reverse: None,
+            external_parent: false,
+            bidirectional: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -820,6 +860,46 @@ impl GraphConfig {
         // Validate embedded fkeys on regular tables
         for table in &self.tables {
             for fkey in &table.fkeys {
+                // For external_parent FKs the dst_table lives in a parent DG
+                // index, not in this config — skip the in-config dst_table
+                // existence check. Still verify src_column exists on this
+                // table; FK-PK type compatibility is enforced at ingest open
+                // time when the parent pkmap is loaded.
+                if fkey.external_parent {
+                    if !table.columns.iter().any(|c| c.name == fkey.src_column) {
+                        errors.push(format!(
+                            "table {} fkey column {} not found",
+                            table.name, fkey.src_column
+                        ));
+                    }
+                    // bidirectional=true with external_parent=true would mean
+                    // emit reverse edges whose dst is in *this* config but
+                    // whose src is in the parent index — there's no place to
+                    // materialize those reverse edges without mutating the
+                    // parent, which Phase 1 explicitly does not do. Reject
+                    // the combination at config validation so the failure is
+                    // loud at the API boundary rather than silently producing
+                    // broken / orphaned reverse data.
+                    if fkey.bidirectional {
+                        errors.push(format!(
+                            "table {} fkey {}: external_parent=true requires \
+                             bidirectional=false (cannot emit reverse edges \
+                             whose src lives in the external parent index — \
+                             that would require mutating the parent)",
+                            table.name, fkey.src_column
+                        ));
+                    }
+                    // reverse=Some also doesn't make sense for external FKs.
+                    if fkey.reverse.is_some() {
+                        errors.push(format!(
+                            "table {} fkey {}: external_parent=true requires \
+                             reverse=None (no reverse direction can be \
+                             materialized for an external parent FK)",
+                            table.name, fkey.src_column
+                        ));
+                    }
+                    continue;
+                }
                 let ref_table = match table_map.get(fkey.dst_table.as_str()) {
                     Some(t) => *t,
                     None => {
@@ -1301,6 +1381,7 @@ mod tests {
             data_version: None,
             kumo_connector_id: None,
             kumo_source_table_name: None,
+            group_by_timestamp: false,
         }
     }
 
@@ -1328,6 +1409,8 @@ mod tests {
             dst_table: "customers".to_string(),
             forward: None,
             reverse: None,
+            external_parent: false,
+            bidirectional: true,
         });
 
         let config = GraphConfig {
@@ -1441,6 +1524,8 @@ mod tests {
             dst_table: "customers".to_string(),
             forward: None,
             reverse: None,
+            external_parent: false,
+            bidirectional: true,
         });
 
         let config = GraphConfig {
@@ -1486,6 +1571,8 @@ mod tests {
             dst_table: "customers".to_string(),
             forward: None,
             reverse: None,
+            external_parent: false,
+            bidirectional: true,
         });
 
         let config = GraphConfig {

@@ -119,6 +119,35 @@ fn update_max(target: &AtomicU64, bytes: u64) {
     }
 }
 
+/// Scalar vs list arity of a [`ResolveColumnSpec`] reference column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolveKind {
+    Scalar,
+    List,
+}
+
+/// One FK-free LP resolution column: resolve `src_col`'s PK reference value(s)
+/// against `dst_table`'s pkmap to graph node-id(s) and write them into a NEW
+/// rowpack column `node_id_col`, WITHOUT emitting any FK edge for `src_col`.
+///
+/// The ingest pipeline appends `node_id_col` to the table's column list
+/// (`UInt64` for [`ResolveKind::Scalar`], `Int64Array` for
+/// [`ResolveKind::List`]); the value is filled at node-write time from the
+/// parent pkmap, not read from the source parquet.
+#[derive(Clone, Debug)]
+pub struct ResolveColumnSpec {
+    /// On-disk stage table this resolution applies to (e.g. `train_seeds`).
+    pub table: String,
+    /// Source column in the stage parquet holding the PK reference value(s).
+    pub src_col: String,
+    /// Parent node table whose pkmap resolves the reference values.
+    pub dst_table: String,
+    /// Scalar vs list arity of `src_col`.
+    pub kind: ResolveKind,
+    /// Name of the NEW rowpack column the resolved node-id(s) are written to.
+    pub node_id_col: String,
+}
+
 #[derive(Clone)]
 pub struct IngestOptions {
     pub profile_dir: Option<PathBuf>,
@@ -145,6 +174,18 @@ pub struct IngestOptions {
     pub pk_map_threads: Option<usize>,
     pub edges_map_threads: Option<usize>,
     pub index_threads: Option<usize>,
+    /// Path to a parent DG index whose pkmap shards should be loaded for
+    /// any FK whose source config declares `external_parent: true`. When
+    /// `None` (default), external_parent FKs are not supported and ingest
+    /// errors loudly if the config contains them. Set when ingesting a
+    /// seed-table sub-index whose FKs target an already-built parent
+    /// (see docs/proposals/seed_tables_as_dg_node_tables.md).
+    pub parent_index_path: Option<PathBuf>,
+    /// FK-free LP resolution columns. When non-empty, the listed columns are
+    /// resolved to node-ids at node-write time (using `parent_index_path`'s
+    /// pkmap) and written as rowpack columns with NO FK edge. Empty (default)
+    /// preserves the existing edge-materializing behaviour.
+    pub resolve_columns: Vec<ResolveColumnSpec>,
 }
 
 impl Default for IngestOptions {
@@ -164,6 +205,8 @@ impl Default for IngestOptions {
             pk_map_threads: None,
             edges_map_threads: None,
             index_threads: None,
+            parent_index_path: None,
+            resolve_columns: Vec::new(),
         }
     }
 }

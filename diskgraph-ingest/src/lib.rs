@@ -3,6 +3,7 @@
 pub mod coercion;
 pub mod col_stats;
 pub mod col_stats_export;
+pub mod column_inference;
 pub mod config;
 pub mod config_converter;
 pub mod consts;
@@ -11,18 +12,22 @@ pub mod errors;
 pub mod graph_config;
 pub mod io;
 pub mod index_metadata;
-mod mapping;
+pub mod mapping;
 pub mod progress;
 pub mod scratch;
 pub mod snapshot_mirror;
+pub mod stage_extension;
 pub mod stats;
 pub mod stats_publish;
+pub mod ts_grouping;
 pub mod success_marker;
 #[cfg(test)]
 mod tests_unit;
 pub mod utils;
 
-pub use crate::config::{IngestOptions, IngestPhase, ALL_PHASES};
+pub use crate::config::{
+    IngestOptions, IngestPhase, ResolveColumnSpec, ResolveKind, ALL_PHASES,
+};
 use crate::config::PeakMemStats;
 use crate::consts::*;
 pub use crate::errors::{
@@ -49,6 +54,10 @@ pub use crate::progress::{
 pub use crate::scratch::{
     estimate_pk_map_bytes, estimate_varbytes_avg_len_multi, new_pk_map, reserve_map,
     EdgeMapScratch, PkMapHashMap, PkMapHasher, PkMapScratch,
+};
+pub use crate::column_inference::infer_stage_columns;
+pub use crate::stage_extension::{
+    ingest_stage_extension, ingest_stage_extension_with_resolution, ResolveSpec, StageSpec,
 };
 pub use crate::stats::{IngestReport, IngestStats, KeyFailureCounts, KeyFailureState, PerfStats};
 use anyhow::{anyhow, Context, Result};
@@ -482,6 +491,11 @@ pub fn ingest_with_stats_from_source(
             ctx.temp_edges_map_bytes = sum_dir_bytes(&edges_root).unwrap_or(0);
         }
     }
+    // TT-NG timestamp grouping: merge the per-shard spills into per-stage
+    // `bucket_index.bin` (final node-ids grouped by TIMESTAMP). Runs after
+    // `finalize_metadata` (shard offsets / min-ids known) and BEFORE
+    // `cleanup_temp` (spills live under `_tmp/`). No-op when grouping is off.
+    let ts_groupings = ctx.run_ts_grouping()?;
     ctx.cleanup_temp()?;
     let finalize_wall = finalize_start.elapsed();
     ctx.set_peak_stage(None);
@@ -556,6 +570,7 @@ pub fn ingest_with_stats_from_source(
     let stats = ctx.build_stats(&index_metadata, perf);
     let mut stats = stats;
     stats.num_shards = Some(ctx.num_shards);
+    stats.ts_groupings = ts_groupings;
     let report = IngestReport {
         stats: stats.clone(),
         source: ctx.source.clone(),
@@ -939,6 +954,7 @@ mod tests_repopulate_helpers {
             data_version: None,
             kumo_connector_id: None,
             kumo_source_table_name: None,
+            group_by_timestamp: false,
         }
     }
 
@@ -994,6 +1010,7 @@ mod tests_repopulate_helpers {
             data_version: None,
             kumo_connector_id: None,
             kumo_source_table_name: None,
+            group_by_timestamp: false,
         }
     }
 
@@ -1036,6 +1053,7 @@ mod tests_repopulate_helpers {
             table_contexts: HashMap::new(),
             shard_rows: HashMap::new(),
             shard_offsets: HashMap::new(),
+            group_ts_counts: HashMap::new(),
             pk_hash_paths: HashMap::new(),
             relation_defs: Vec::new(),
             relationships: Vec::new(),
@@ -1064,6 +1082,8 @@ mod tests_repopulate_helpers {
             cat_count_strategy: crate::col_stats::CategoryCountStrategy::None,
             row_subsample: false,
             text_sample_stats: HashMap::new(),
+            parent_index_path: None,
+            resolve_columns: Vec::new(),
         }
     }
 
@@ -1676,6 +1696,10 @@ struct IngestContext {
     table_contexts: HashMap<String, String>,
     shard_rows: HashMap<String, Vec<u64>>,
     shard_offsets: HashMap<String, Vec<u64>>,
+    /// TT-NG timestamp grouping: per-(table,shard) distinct-ts → count, captured
+    /// during encode from the node writer. Empty unless grouping is enabled.
+    /// Consumed by the post-build merge to size buckets without a count pass.
+    group_ts_counts: HashMap<(String, usize), HashMap<i64, u64>>,
     pk_hash_paths: HashMap<String, Vec<PkHashPaths>>,
     relation_defs: Vec<RelationDef>,
     relationships: Vec<RelationshipRuntime>,
@@ -1709,6 +1733,14 @@ struct IngestContext {
     row_subsample: bool,
     /// Text sample stats computed during the context phase (table -> col -> stats).
     text_sample_stats: HashMap<String, HashMap<String, crate::col_stats::TextSampleStats>>,
+    /// Parent DG index whose pkmap shards back any FK whose source config
+    /// declares `external_parent: true`. `None` when no FK is external.
+    parent_index_path: Option<PathBuf>,
+    /// FK-free LP resolution columns (see [`crate::config::ResolveColumnSpec`]).
+    /// When non-empty the encode phase resolves the listed columns' PK
+    /// reference value(s) to graph node-ids and writes them as rowpack columns
+    /// (no FK edge). Empty (default) preserves the edge-materializing path.
+    resolve_columns: Vec<crate::config::ResolveColumnSpec>,
 }
 
 struct EdgeBuildContext {
@@ -1920,6 +1952,14 @@ struct RelationshipRuntime {
     src_table: String,
     src_column: String,
     dst_table: String,
+    /// True when the dst_table lives in a parent DG index (not in this
+    /// config). Drives FK resolution via the externally-loaded pkmap
+    /// shards in `pk_hash_store`.
+    external_parent: bool,
+    /// True when both forward and reverse edges should be emitted. False
+    /// emits forward only — skips reverse RelationDef, reverse_batcher
+    /// pushes, and DestFkeyBatcher pushes for this FK.
+    bidirectional: bool,
 }
 
 // Internal runtime types for encoding specs (moved from graph_config.rs)
@@ -2652,26 +2692,36 @@ impl IngestContext {
                     .and_then(build_relation_sort_key_config);
 
                 let rev_name = format!("{base}_reverse");
+                // Forward relation: paired with reverse only when bidirectional.
                 relation_defs.push(RelationDef {
                     name: base.clone(),
                     src_table: table.name.clone(),
                     dst_table: fkey.dst_table.clone(),
                     sort_key: dst_sort,
-                    reverse_of: Some(rev_name.clone()),
+                    reverse_of: if fkey.bidirectional {
+                        Some(rev_name.clone())
+                    } else {
+                        None
+                    },
                 });
-                relation_defs.push(RelationDef {
-                    name: rev_name,
-                    src_table: fkey.dst_table.clone(),
-                    dst_table: table.name.clone(),
-                    sort_key: src_sort,
-                    reverse_of: Some(base.clone()),
-                });
+                // Reverse relation: skipped entirely when bidirectional=false.
+                if fkey.bidirectional {
+                    relation_defs.push(RelationDef {
+                        name: rev_name.clone(),
+                        src_table: fkey.dst_table.clone(),
+                        dst_table: table.name.clone(),
+                        sort_key: src_sort,
+                        reverse_of: Some(base.clone()),
+                    });
+                }
                 relationships.push(RelationshipRuntime {
                     name_forward: base.clone(),
-                    name_reverse: format!("{base}_reverse"),
+                    name_reverse: rev_name,
                     src_table: table.name.clone(),
                     src_column: fkey.src_column.clone(),
                     dst_table: fkey.dst_table.clone(),
+                    external_parent: fkey.external_parent,
+                    bidirectional: fkey.bidirectional,
                 });
             }
 
@@ -2725,6 +2775,7 @@ impl IngestContext {
             table_contexts: HashMap::new(),
             shard_rows: HashMap::new(),
             shard_offsets: HashMap::new(),
+            group_ts_counts: HashMap::new(),
             pk_hash_paths: HashMap::new(),
             relation_defs,
             relationships,
@@ -2753,6 +2804,8 @@ impl IngestContext {
             cat_count_strategy: options.cat_count_strategy,
             row_subsample: options.row_subsample,
             text_sample_stats: HashMap::new(),
+            parent_index_path: options.parent_index_path,
+            resolve_columns: options.resolve_columns,
         })
     }
 
@@ -2775,6 +2828,7 @@ impl IngestContext {
         let source_rowpack = self.source.rowpack.clone();
         let input_transfer = self.input_transfer.clone();
         let col_stats_enabled = self.col_stats;
+        let resolve_columns_all = self.resolve_columns.clone();
         for table in &tables {
             if table.edge_table.is_some() {
                 continue;
@@ -2786,6 +2840,14 @@ impl IngestContext {
             let tx = tx.clone();
             let rowpack_cfg = source_rowpack.clone();
             let input_transfer = input_transfer.clone();
+            // Synthetic resolution node-id column indices for THIS table (empty
+            // unless resolution mode). Used to inject placeholder arrays for the
+            // columns that are absent from the source parquet.
+            let resolve_node_ids: std::collections::HashSet<usize> = resolve_columns_all
+                .iter()
+                .filter(|r| r.table == table.name)
+                .filter_map(|r| column_index(&table, &r.node_id_col).ok())
+                .collect();
             tasks.push(WorkItem {
                 bucket: None,
                 run: Box::new(move |_scratch| {
@@ -2841,14 +2903,7 @@ impl IngestContext {
                                         builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                                     for batch in reader {
                                         let batch = batch?;
-                                        let mut cols = Vec::with_capacity(table.columns.len());
-                                        for col in &table.columns {
-                                            let idx = batch
-                                                .schema()
-                                                .index_of(&col.name)
-                                                .context("missing column in batch")?;
-                                            cols.push(batch.column(idx).clone());
-                                        }
+                                        let cols = build_access_cols(&batch, &table, &resolve_node_ids)?;
                                         access.set_cols(&cols);
                                         for row in 0..batch.num_rows() {
                                             if sampled >= sample_limit {
@@ -2878,14 +2933,7 @@ impl IngestContext {
                                         builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                                     for batch in reader {
                                         let batch = batch?;
-                                        let mut cols = Vec::with_capacity(table.columns.len());
-                                        for col in &table.columns {
-                                            let idx = batch
-                                                .schema()
-                                                .index_of(&col.name)
-                                                .context("missing column in batch")?;
-                                            cols.push(batch.column(idx).clone());
-                                        }
+                                        let cols = build_access_cols(&batch, &table, &resolve_node_ids)?;
                                         access.set_cols(&cols);
                                         for row in 0..batch.num_rows() {
                                             if sampled >= sample_limit {
@@ -2912,14 +2960,7 @@ impl IngestContext {
                                     let reader = builder.build(cursor)?;
                                     for batch in reader {
                                         let batch = batch?;
-                                        let mut cols = Vec::with_capacity(table.columns.len());
-                                        for col in &table.columns {
-                                            let idx = batch
-                                                .schema()
-                                                .index_of(&col.name)
-                                                .context("missing column in batch")?;
-                                            cols.push(batch.column(idx).clone());
-                                        }
+                                        let cols = build_access_cols(&batch, &table, &resolve_node_ids)?;
                                         access.set_cols(&cols);
                                         for row in 0..batch.num_rows() {
                                             if sampled >= sample_limit {
@@ -2944,14 +2985,7 @@ impl IngestContext {
                                     let reader = builder.build(file)?;
                                     for batch in reader {
                                         let batch = batch?;
-                                        let mut cols = Vec::with_capacity(table.columns.len());
-                                        for col in &table.columns {
-                                            let idx = batch
-                                                .schema()
-                                                .index_of(&col.name)
-                                                .context("missing column in batch")?;
-                                            cols.push(batch.column(idx).clone());
-                                        }
+                                        let cols = build_access_cols(&batch, &table, &resolve_node_ids)?;
                                         access.set_cols(&cols);
                                         for row in 0..batch.num_rows() {
                                             if sampled >= sample_limit {
@@ -3147,6 +3181,30 @@ impl IngestContext {
             HashMap::new()
         };
 
+        // FK-free LP resolution mode: load the parent pkmap(s) ONCE here, before
+        // the parallel encode pass, and share read-only via Arc so each encode
+        // worker can resolve PK reference columns to graph node-ids inline (no
+        // FK edge). `PkHashShard::lookup` is `&self`, so concurrent reads are
+        // safe. Empty `resolve_columns` (the default) → `None`, zero overhead.
+        let resolve_columns = std::sync::Arc::new(self.resolve_columns.clone());
+        let ref_resolver: Option<std::sync::Arc<crate::mapping::RefResolver>> =
+            if resolve_columns.is_empty() {
+                None
+            } else {
+                let parent_root = self.parent_index_path.as_ref().ok_or_else(|| {
+                    anyhow!(
+                        "resolution mode requires IngestOptions.parent_index_path \
+                         (the parent index whose pkmap resolves the reference columns)"
+                    )
+                })?;
+                let dst_tables: Vec<String> =
+                    resolve_columns.iter().map(|r| r.dst_table.clone()).collect();
+                Some(std::sync::Arc::new(crate::mapping::RefResolver::load(
+                    parent_root,
+                    &dst_tables,
+                )?))
+            };
+
         for table in &tables {
             if let Some(cb) = &self.progress {
                 cb(ProgressEvent {
@@ -3170,6 +3228,8 @@ impl IngestContext {
             let relation_defs = std::sync::Arc::clone(&relation_defs);
             let fk_edge_targets = std::sync::Arc::clone(&fk_edge_targets);
             let table_cat = table_cat_counts.get(&table.name).cloned();
+            let resolve_columns = std::sync::Arc::clone(&resolve_columns);
+            let ref_resolver = ref_resolver.clone();
             let file_count = table.get_paths().len();
             for file_idx in 0..file_count {
                 let table = table.clone();
@@ -3188,6 +3248,8 @@ impl IngestContext {
                 let tx = tx.clone();
                 let edge_errors = std::sync::Arc::clone(&edge_errors);
                 let table_cat = table_cat.clone();
+                let resolve_columns = std::sync::Arc::clone(&resolve_columns);
+                let ref_resolver = ref_resolver.clone();
                 tasks.push(WorkItem {
                     bucket: None,
                     run: Box::new(move |_scratch| {
@@ -3244,6 +3306,8 @@ impl IngestContext {
                                 &dest_key_senders,
                                 &dest_key_errors,
                                 &fk_edge_targets,
+                                &resolve_columns,
+                                ref_resolver.as_deref(),
                                 &mut obs,
                             )?;
                             // Flush local category counts to shared state (Approach 3)
@@ -3266,6 +3330,8 @@ impl IngestContext {
                                 &dest_key_senders,
                                 &dest_key_errors,
                                 &fk_edge_targets,
+                                &resolve_columns,
+                                ref_resolver.as_deref(),
                                 &mut diskgraph_rowpack::NoOpObserver,
                             )?;
                             (result, None)
@@ -3554,6 +3620,12 @@ impl IngestContext {
             }
             self.shard_rows.insert(table.name.clone(), shard_rows);
         }
+        // TT-NG timestamp grouping: carry the per-(table,shard) count maps from
+        // the writer into the context so the post-build merge can size buckets.
+        // Empty unless grouping is enabled (no allocation in the common path).
+        if !stats.group_ts_counts.is_empty() {
+            self.group_ts_counts = stats.group_ts_counts.clone();
+        }
     }
 
     fn write_consolidated_meta(
@@ -3715,8 +3787,19 @@ impl IngestContext {
         dest_key_senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<DestKeyWriteMessage>>>,
         dest_key_errors: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
         fk_edge_targets: &HashMap<String, FkEdgeTarget>,
+        resolve_columns: &[crate::config::ResolveColumnSpec],
+        ref_resolver: Option<&crate::mapping::RefResolver>,
         observer: &mut O,
     ) -> Result<TempNodeFileResult> {
+        // FK-free LP resolution mode: build the per-table runtime resolve specs
+        // (only those targeting THIS table). When non-empty, the node-write pass
+        // resolves the source PK reference column(s) to graph node-id(s) and
+        // feeds them into the encoder via the override channel (no FK edge).
+        let resolve_runtime: Vec<ResolveColRuntime> = if resolve_columns.is_empty() {
+            Vec::new()
+        } else {
+            build_resolve_runtime(table, resolve_columns)?
+        };
         let pk_col = table
             .primary_key
             .as_ref()
@@ -3743,7 +3826,14 @@ impl IngestContext {
                 .get(&fk_key)
                 .map(|t| t.target_type.clone())
                 .unwrap_or_else(|| table.columns[idx].ingested_dtype.clone());
-            rel_specs.push((rel_name, idx, rel_pos, rel.src_column.clone(), target_type));
+            rel_specs.push((
+                rel_name,
+                idx,
+                rel_pos,
+                rel.src_column.clone(),
+                target_type,
+                rel.external_parent,
+            ));
         }
         let mut total_rows = 0u64;
         let row_access_hints = build_row_access_hints(table);
@@ -3763,6 +3853,11 @@ impl IngestContext {
         let node_encoder = Some(RowPackEncoder::new(node_context)?);
         let mut key_bufs: Vec<Vec<u8>> = vec![Vec::new(); table.columns.len()];
         let mut f16_buf: Vec<f16> = Vec::new();
+        // FK-free LP resolution-mode scratch + synthetic-column index set.
+        let resolve_node_ids = resolve_node_id_indices(&resolve_runtime);
+        let mut resolve_scratch: Vec<u8> = Vec::new();
+        let mut resolve_shard_buf: Vec<u8> = Vec::new();
+        let num_columns = table.columns.len();
         let mut node_data_dropped = 0u64;
         let has_pkey = pk_col.is_some() && pk_idx.is_some();
         let rel_names = std::sync::Arc::new(rel_names);
@@ -3774,6 +3869,7 @@ impl IngestContext {
             num_shards,
             buffer_limit,
             std::sync::Arc::clone(senders),
+            table.group_by_timestamp,
         );
         let mut dest_fkey_batcher = DestFkeyBatcher::new(
             std::sync::Arc::<str>::from(table.name.clone()),
@@ -3792,6 +3888,15 @@ impl IngestContext {
             Some((idx, spec.ingested_dtype.clone()))
         });
 
+        // TT-NG timestamp grouping: index of the `TIMESTAMP` column whose value
+        // is spilled per node. Only resolved when grouping is enabled for this
+        // table; a missing column is a no-op (no spill / no bucket file).
+        let group_ts_idx = if table.group_by_timestamp {
+            column_index(table, TIMESTAMP_GROUP_COL).ok()
+        } else {
+            None
+        };
+
         let path = table
             .get_paths()
             .get(file_idx)
@@ -3809,7 +3914,7 @@ impl IngestContext {
                 let precomputed = precompute_shards(pk_array, pk_col, num_shards);
 
                 let mut fkeys_pre = Vec::with_capacity(rel_specs.len());
-                for (_, idx, _, _, target_type) in &rel_specs {
+                for (_, idx, _, _, target_type, _) in &rel_specs {
                     let array = access.array(*idx).unwrap();
                     let kind = edge_fast_path_for_array(array, target_type);
                     let should_optimize = match kind {
@@ -3847,6 +3952,26 @@ impl IngestContext {
                         .and_then(|p| p.keys.as_ref())
                         .and_then(|k| k[row].as_ref());
 
+                    // FK-free LP resolution: resolve the source PK reference
+                    // column(s) to graph node-id(s) for this row, producing a
+                    // per-column override vector. Empty when not in resolve mode.
+                    let resolve_overrides = if resolve_runtime.is_empty() {
+                        None
+                    } else {
+                        let resolver = ref_resolver.ok_or_else(|| {
+                            anyhow!("resolution mode: RefResolver not provided to encode worker")
+                        })?;
+                        Some(resolve_overrides_for_row(
+                            &mut access,
+                            table,
+                            &resolve_runtime,
+                            resolver,
+                            num_columns,
+                            &mut resolve_scratch,
+                            &mut resolve_shard_buf,
+                        )?)
+                    };
+
                     Self::write_node_row_from_access(
                         table,
                         pk_idx,
@@ -3868,8 +3993,10 @@ impl IngestContext {
                         key_failures,
                         timestamp_valid,
                         shard_override,
+                        resolve_overrides.as_deref(),
                         observer,
                         create_time_info.as_ref().map(|(idx, _)| *idx),
+                        group_ts_idx,
                     )?;
                 }
             };
@@ -3886,14 +4013,7 @@ impl IngestContext {
                         let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                         for batch in reader {
                             let batch = batch?;
-                            let mut cols = Vec::with_capacity(table.columns.len());
-                            for col in &table.columns {
-                                let idx = batch
-                                    .schema()
-                                    .index_of(&col.name)
-                                    .context("missing column in batch")?;
-                                cols.push(batch.column(idx).clone());
-                            }
+                            let cols = build_access_cols(&batch, table, &resolve_node_ids)?;
                             access.set_cols(&cols);
                             process_node_batch!(batch);
                         }
@@ -3907,14 +4027,7 @@ impl IngestContext {
                         let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                         for batch in reader {
                             let batch = batch?;
-                            let mut cols = Vec::with_capacity(table.columns.len());
-                            for col in &table.columns {
-                                let idx = batch
-                                    .schema()
-                                    .index_of(&col.name)
-                                    .context("missing column in batch")?;
-                                cols.push(batch.column(idx).clone());
-                            }
+                            let cols = build_access_cols(&batch, table, &resolve_node_ids)?;
                             access.set_cols(&cols);
                             process_node_batch!(batch);
                         }
@@ -3927,14 +4040,7 @@ impl IngestContext {
                     let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                     for batch in reader {
                         let batch = batch?;
-                        let mut cols = Vec::with_capacity(table.columns.len());
-                        for col in &table.columns {
-                            let idx = batch
-                                .schema()
-                                .index_of(&col.name)
-                                .context("missing column in batch")?;
-                            cols.push(batch.column(idx).clone());
-                        }
+                        let cols = build_access_cols(&batch, table, &resolve_node_ids)?;
                         access.set_cols(&cols);
                         process_node_batch!(batch);
                     }
@@ -3952,14 +4058,7 @@ impl IngestContext {
                         let reader = builder.build(cursor)?;
                         for batch in reader {
                             let batch = batch?;
-                            let mut cols = Vec::with_capacity(table.columns.len());
-                            for col in &table.columns {
-                                let idx = batch
-                                    .schema()
-                                    .index_of(&col.name)
-                                    .context("missing column in batch")?;
-                                cols.push(batch.column(idx).clone());
-                            }
+                            let cols = build_access_cols(&batch, table, &resolve_node_ids)?;
                             access.set_cols(&cols);
                             process_node_batch!(batch);
                         }
@@ -3973,14 +4072,7 @@ impl IngestContext {
                         let reader = builder.build(file)?;
                         for batch in reader {
                             let batch = batch?;
-                            let mut cols = Vec::with_capacity(table.columns.len());
-                            for col in &table.columns {
-                                let idx = batch
-                                    .schema()
-                                    .index_of(&col.name)
-                                    .context("missing column in batch")?;
-                                cols.push(batch.column(idx).clone());
-                            }
+                            let cols = build_access_cols(&batch, table, &resolve_node_ids)?;
                             access.set_cols(&cols);
                             process_node_batch!(batch);
                         }
@@ -3992,14 +4084,7 @@ impl IngestContext {
                     let reader = builder.build(file)?;
                     for batch in reader {
                         let batch = batch?;
-                        let mut cols = Vec::with_capacity(table.columns.len());
-                        for col in &table.columns {
-                            let idx = batch
-                                .schema()
-                                .index_of(&col.name)
-                                .context("missing column in batch")?;
-                            cols.push(batch.column(idx).clone());
-                        }
+                        let cols = build_access_cols(&batch, table, &resolve_node_ids)?;
                         access.set_cols(&cols);
                         process_node_batch!(batch);
                     }
@@ -4025,11 +4110,14 @@ impl IngestContext {
         })
     }
 
-    #[allow(clippy::too_many_arguments, clippy::ptr_arg)]
+    // rel_specs is `&[(name, rel_id, fkey_idx, fkey_col, key_type, bidirectional)]`
+    // — the per-relation spec table threaded through ingest's per-row
+    // FK-resolution path. Kept as a tuple to avoid allocating per call.
+    #[allow(clippy::too_many_arguments, clippy::ptr_arg, clippy::type_complexity)]
     fn write_node_row_from_access<O: diskgraph_rowpack::ColumnValueObserver>(
         table: &TableSpec,
         pk_idx: Option<usize>,
-        rel_specs: &[(std::sync::Arc<str>, usize, usize, String, IngestedType)],
+        rel_specs: &[(std::sync::Arc<str>, usize, usize, String, IngestedType, bool)],
         fkeys_pre: &[Option<Vec<Option<Key>>>],
         row: usize,
         access: &mut RowAccess<'_>,
@@ -4047,8 +4135,14 @@ impl IngestContext {
         key_failures: &mut KeyFailureState,
         timestamp_valid: bool,
         shard_override: Option<usize>,
+        // FK-free LP resolution overrides for this row (per-column), or `None`
+        // when not in resolution mode. Forwarded to `encode_row_observed`.
+        resolve_overrides: Option<&[diskgraph_rowpack::ResolveOverride]>,
         observer: &mut O,
         create_time_col_idx: Option<usize>,
+        // TT-NG timestamp grouping: index of the `TIMESTAMP` column to spill per
+        // node, or `None` when grouping is disabled for this table.
+        group_ts_idx: Option<usize>,
     ) -> Result<()> {
         for buf in key_bufs.iter_mut() {
             buf.clear();
@@ -4084,7 +4178,7 @@ impl IngestContext {
         } else {
             (*row_id as usize) % num_shards
         };
-        for (i, (_rel_name, rel_idx, _rel_pos, _fk_col_name, target_type)) in
+        for (i, (_rel_name, rel_idx, _rel_pos, _fk_col_name, target_type, _external_parent)) in
             rel_specs.iter().enumerate()
         {
             let col = table
@@ -4123,6 +4217,33 @@ impl IngestContext {
         let encoder = node_encoder
             .as_ref()
             .ok_or_else(|| anyhow!("missing node encoder"))?;
+        // TT-NG timestamp grouping: read this row's TIMESTAMP before the encoder
+        // borrow. Stage seed tables for temporal LP always carry a valid
+        // TIMESTAMP, so a null/undecodable value here is a hard error — silently
+        // bucketing it under ts=0 would create a phantom bucket and corrupt the
+        // grouping. `get_timestamp` is only called on the grouping-enabled path
+        // (`group_ts_idx.is_some()`), so the non-grouping path is unchanged.
+        let group_ts = match group_ts_idx {
+            Some(idx) => Some(
+                access
+                    .get_timestamp(idx)
+                    .with_context(|| {
+                        format!(
+                            "TT-NG ts-grouping: failed to decode TIMESTAMP for table `{}` row {}",
+                            table.name, row
+                        )
+                    })?
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "TT-NG ts-grouping: null TIMESTAMP for table `{}` row {}; \
+                             temporal-LP seed tables must carry a valid TIMESTAMP",
+                            table.name,
+                            row
+                        )
+                    })?,
+            ),
+            None => None,
+        };
         let node_tag_start;
         let node_bool_start;
         let node_data_start;
@@ -4132,7 +4253,14 @@ impl IngestContext {
             node_bool_start = sink.bools.len();
             node_data_start = sink.data.len();
             let lens = encoder.encode_row_observed(
-                access, sink.tags, sink.bools, sink.data, f16_buf, key_bufs, observer,
+                access,
+                sink.tags,
+                sink.bools,
+                sink.data,
+                f16_buf,
+                key_bufs,
+                resolve_overrides,
+                observer,
             )?;
             // Drop row if time_col was encoded as null (tag bits == 0).
             // This catches: Arrow null that slipped past Phase 2, string parse
@@ -4166,6 +4294,13 @@ impl IngestContext {
             } else {
                 batcher.push_node_row(shard, lens)?;
             }
+            // Record the grouping timestamp 1:1 with the node just pushed (both
+            // the normal and oversized-empty paths emit a node). The two
+            // drop-paths above return early and never reach here, keeping the
+            // spill aligned with surviving nodes.
+            if let Some(ts) = group_ts {
+                batcher.push_group_ts(shard, ts)?;
+            }
         }
         if has_pkey {
             let buf = key_bufs
@@ -4176,14 +4311,21 @@ impl IngestContext {
         for sort_key in sort_key_batchers.iter_mut() {
             sort_key.push_row(shard, access)?;
         }
-        for (_rel_name, rel_idx, rel_pos, _fk_col_name, _) in rel_specs {
+        for (_rel_name, rel_idx, rel_pos, _fk_col_name, _, external_parent) in rel_specs {
             if let Some(buf) = key_bufs.get(*rel_idx) {
                 if buf.is_empty() {
                     batcher.push_fkey_empty(shard, *rel_pos)?;
                 } else {
                     batcher.push_fkey(shard, *rel_pos, buf, timestamp_valid)?;
-                    let dst_shard = shard_for_key(buf, num_shards);
-                    dest_fkey_batcher.push(dst_shard, *rel_pos, buf)?;
+                    // dest_fkey_batcher writes per-dst-shard accumulator data
+                    // used to build the reverse (dst→src) sort order. For
+                    // external_parent FKs the dst table lives in the parent
+                    // index and we don't emit a reverse relation here, so
+                    // this work is orphaned — skip it.
+                    if !*external_parent {
+                        let dst_shard = shard_for_key(buf, num_shards);
+                        dest_fkey_batcher.push(dst_shard, *rel_pos, buf)?;
+                    }
                 }
             }
         }
@@ -5686,6 +5828,39 @@ impl IngestContext {
             let max_id = total.saturating_sub(1);
             max_ids.insert(table.clone(), max_id);
         }
+        // Cross-boundary FKs (rel.external_parent: true) have a dst_table
+        // that lives in the parent index, not in this ingest. The edge
+        // phase still computes dst_id = dst_offsets[dst_shard] + dst_local;
+        // without a real entry for the parent table in shard_offsets /
+        // max_ids it falls back to zero offsets, collapsing the global id
+        // to a shard-local id. Read the parent's per-node-type shard
+        // layout once here and merge it in so external dst_ids round-trip
+        // correctly to global ids in seed.edges.bin.
+        if let Some(parent_root) = self.parent_index_path.clone() {
+            let parent_meta_path = parent_root.join("index_metadata.json");
+            let bytes = fs::read(&parent_meta_path).with_context(|| {
+                format!(
+                    "external FK dst offsets: read parent metadata {}",
+                    parent_meta_path.display()
+                )
+            })?;
+            let parent_meta: DatasetMetadata =
+                serde_json::from_slice(&bytes).with_context(|| {
+                    format!(
+                        "external FK dst offsets: parse parent metadata {}",
+                        parent_meta_path.display()
+                    )
+                })?;
+            for nt in &parent_meta.node_types {
+                max_ids.entry(nt.name.clone()).or_insert(nt.max_id);
+                let offsets: Vec<u64> = nt.shards.iter().map(|s| s.min_id).collect();
+                if !offsets.is_empty() {
+                    self.shard_offsets
+                        .entry(nt.name.clone())
+                        .or_insert(offsets);
+                }
+            }
+        }
         let mut edge_tables = HashSet::new();
         for table in &self.source.tables {
             if table.edge_table.is_some() {
@@ -5746,7 +5921,19 @@ impl IngestContext {
                 ));
             }
         }
-        if shard_jobs.is_empty() {
+        // Collect external_parent FKs early so we can decide whether the
+        // store will be wholly empty (in which case we can early-return) or
+        // populated only via external load (skip the parallel loop, run the
+        // merge logic at the bottom).
+        let external_dst_tables: HashSet<String> = self
+            .source
+            .tables
+            .iter()
+            .flat_map(|t| t.fkeys.iter())
+            .filter(|fk| fk.external_parent)
+            .map(|fk| fk.dst_table.clone())
+            .collect();
+        if shard_jobs.is_empty() && external_dst_tables.is_empty() {
             return Ok((PkHashStore::new(HashMap::new()), 0));
         }
         let mut total_bytes = 0u64;
@@ -5831,6 +6018,55 @@ impl IngestContext {
                     .push(shard.ok_or_else(|| anyhow!("missing pk hash shard {}", table_name))?);
             }
             final_tables.insert(table_name, resolved);
+        }
+        // Merge in pkmap shards for any FK marked `external_parent`: they
+        // live in a parent index, not in this config's tables, so the loop
+        // above skipped them. Each external dst_table is loaded once even
+        // if multiple FKs target it; collisions with in-config tables of
+        // the same name fail loudly to surface accidental dst_table reuse.
+        if !external_dst_tables.is_empty() {
+            let parent_root = self.parent_index_path.as_ref().ok_or_else(|| {
+                anyhow!(
+                    "GraphConfig declares {} external_parent FK(s) but \
+                     IngestOptions.parent_index_path is None — set it to \
+                     the path of the parent DG index whose pkmap shards \
+                     back the external dst_table(s)",
+                    external_dst_tables.len()
+                )
+            })?;
+            for dst_table in external_dst_tables {
+                if final_tables.contains_key(&dst_table) {
+                    return Err(anyhow!(
+                        "external_parent dst_table `{dst_table}` collides with \
+                         a table of the same name in this config — rename the \
+                         seed-table's FK target or the in-config table"
+                    ));
+                }
+                let key_type = crate::mapping::key_type_for_external_parent(
+                    parent_root,
+                    &dst_table,
+                )?;
+                let shards = crate::mapping::load_external_pk_hash_shards(
+                    parent_root,
+                    &dst_table,
+                    key_type,
+                    crate::mapping::PkDataAdvice::Random,
+                )?;
+                // Add to the byte counter so the caller's accounting is correct.
+                let shard_dir = parent_root.join("nodes").join(&dst_table);
+                if let Ok(read_dir) = std::fs::read_dir(&shard_dir) {
+                    for entry in read_dir.flatten() {
+                        if let Ok(meta) = entry.metadata() {
+                            let name = entry.file_name();
+                            let name = name.to_string_lossy();
+                            if name.starts_with("pk_hash-") || name.starts_with("pk_data-") {
+                                total_bytes = total_bytes.saturating_add(meta.len());
+                            }
+                        }
+                    }
+                }
+                final_tables.insert(dst_table, shards);
+            }
         }
         Ok((PkHashStore::new(final_tables), total_bytes))
     }
@@ -6037,6 +6273,11 @@ impl IngestContext {
                                 reverse_sort_bits,
                             );
                             let buffer_limit = edge_batch_buffer_limit(num_shards);
+                            // Snapshot per-relationship flags up front so the
+                            // hot per-row loop sees a `bool` local (perfect
+                            // branch prediction) rather than chasing through
+                            // `rel.*` field accesses every iteration.
+                            let bidirectional = rel.bidirectional;
                             let mut forward_batcher = EdgeBatcher::new(
                                 std::sync::Arc::<str>::from(rel.name_forward.clone()),
                                 forward_spec,
@@ -6045,22 +6286,44 @@ impl IngestContext {
                                 std::sync::Arc::clone(&writer_senders),
                                 std::sync::Arc::clone(&buffer_pool),
                             );
-                            let mut reverse_batcher = EdgeBatcher::new(
-                                std::sync::Arc::<str>::from(rel.name_reverse.clone()),
-                                reverse_spec,
-                                num_shards,
-                                buffer_limit,
-                                std::sync::Arc::clone(&writer_senders),
-                                std::sync::Arc::clone(&buffer_pool),
-                            );
+                            // Only construct the reverse batcher when needed —
+                            // saves an Arc clone + buffer allocations per shard
+                            // for the seed-table case (bidirectional=false).
+                            let mut reverse_batcher = if bidirectional {
+                                Some(EdgeBatcher::new(
+                                    std::sync::Arc::<str>::from(rel.name_reverse.clone()),
+                                    reverse_spec,
+                                    num_shards,
+                                    buffer_limit,
+                                    std::sync::Arc::clone(&writer_senders),
+                                    std::sync::Arc::clone(&buffer_pool),
+                                ))
+                            } else {
+                                let _ = reverse_spec; // silence unused warning
+                                None
+                            };
                             let fkey_meta = root.join(temp_fkey_meta_path(
                                 &rel.src_table,
                                 &rel.name_forward,
                                 shard,
                             ));
                             let meta = read_temp_meta(&fkey_meta)?;
-                            let mut dst_maps = Vec::with_capacity(num_shards);
-                            for dst_shard in 0..num_shards {
+                            // For cross-boundary FKs (rel.external_parent: true),
+                            // the dst_table lives in the parent index and its
+                            // pkmap was loaded by `load_external_pk_hash_shards`
+                            // with the parent's shard count. The local ingest's
+                            // num_shards (here `num_shards`) is the SRC-side
+                            // shard count and may differ — e.g. seed tables
+                            // typically use num_shards=1 against a multi-shard
+                            // parent. Use the pkmap's actual shard count for
+                            // routing dst keys and loading dst_maps; otherwise
+                            // the routing collapses to shard 0 and dst_id loses
+                            // the parent shard offset (kumo-diskgraph#279).
+                            let dst_num_shards = pk_hash_store
+                                .table_shard_count(&rel.dst_table)
+                                .unwrap_or(num_shards);
+                            let mut dst_maps = Vec::with_capacity(dst_num_shards);
+                            for dst_shard in 0..dst_num_shards {
                                 dst_maps.push(pk_hash_store.shard(&rel.dst_table, dst_shard)?);
                             }
                             let mut pending = 0u64;
@@ -6068,8 +6331,23 @@ impl IngestContext {
                             let mut forward_count = 0u64;
                             let mut reverse_count = 0u64;
                             let mut pk_duplicate_drops = 0u64;
+                            // dst_degree_bits is a per-task bitvec sized for the dst
+                            // table's max_id; it tracks which dst rows received an FK
+                            // edge so kumo can compute per-rel uniqueness stats. For
+                            // external-parent FKs the dst table lives in the parent
+                            // index — its stats belong to the parent ingest, not this
+                            // sub-ingest, and the kumo-stats path skips external rels
+                            // anyway (the dst table is absent from this source's
+                            // table_map). Allocating a parent-sized bitvec here would
+                            // be wasteful (~125 MB per task for a 1B-row parent) and
+                            // OOM-prone, so empty-alloc when external; the
+                            // `bit_idx / 8 < dst_bits.len()` guard below skips writes.
                             let dst_max = max_ids.get(&rel.dst_table).copied().unwrap_or(0);
-                            let mut dst_bits = vec![0u8; ((dst_max + 8) / 8) as usize];
+                            let mut dst_bits = if rel.external_parent {
+                                Vec::new()
+                            } else {
+                                vec![0u8; ((dst_max + 8) / 8) as usize]
+                            };
                             let fkey_path =
                                 root.join(temp_fkey_path(&rel.src_table, &rel.name_forward, shard));
                             let bitmap_path = root.join(temp_fkey_bitmap_path(
@@ -6135,7 +6413,7 @@ impl IngestContext {
                                         }
                                     };
                                     let dst_shard =
-                                        shard_for_key_from_key(&dst_key, key_buf, num_shards)?;
+                                        shard_for_key_from_key(&dst_key, key_buf, dst_num_shards)?;
                                     let dst_local = match dst_maps
                                         .get(dst_shard)
                                         .and_then(|map| map.lookup(&dst_key))
@@ -6168,11 +6446,15 @@ impl IngestContext {
                                         }
                                         None => 0,
                                     };
-                                    let reverse_sort_key = match &reverse_lookup {
-                                        Some(lookup) => {
-                                            lookup.sort_key(shard, src_local, shard, 0)?
+                                    let reverse_sort_key = if bidirectional {
+                                        match &reverse_lookup {
+                                            Some(lookup) => {
+                                                lookup.sort_key(shard, src_local, shard, 0)?
+                                            }
+                                            None => 0,
                                         }
-                                        None => 0,
+                                    } else {
+                                        0
                                     };
                                     forward_batcher.push(
                                         shard,
@@ -6180,24 +6462,23 @@ impl IngestContext {
                                         dst_id,
                                         forward_sort_key,
                                     )?;
-                                    reverse_batcher.push(
-                                        dst_shard,
-                                        dst_id,
-                                        src_id,
-                                        reverse_sort_key,
-                                    )?;
+                                    if let Some(rb) = reverse_batcher.as_mut() {
+                                        rb.push(dst_shard, dst_id, src_id, reverse_sort_key)?;
+                                        reverse_count = reverse_count.saturating_add(1);
+                                    }
                                     let bit_idx = dst_id as usize;
                                     if bit_idx / 8 < dst_bits.len() {
                                         dst_bits[bit_idx / 8] |= 1u8 << (bit_idx % 8) as u8;
                                     }
                                     forward_count = forward_count.saturating_add(1);
-                                    reverse_count = reverse_count.saturating_add(1);
                                     Ok(())
                                 });
                                 result?;
                             }
                             forward_batcher.flush_all()?;
-                            reverse_batcher.flush_all()?;
+                            if let Some(rb) = reverse_batcher.as_mut() {
+                                rb.flush_all()?;
+                            }
                             if pending > 0 {
                                 if let Some(cb) = &progress {
                                     cb(ProgressEvent {
@@ -6214,9 +6495,11 @@ impl IngestContext {
                             result
                                 .edge_counts
                                 .insert(rel.name_forward.clone(), forward_count);
-                            result
-                                .edge_counts
-                                .insert(rel.name_reverse.clone(), reverse_count);
+                            if bidirectional {
+                                result
+                                    .edge_counts
+                                    .insert(rel.name_reverse.clone(), reverse_count);
+                            }
                             result
                                 .dst_degree_bits
                                 .insert(rel.name_forward.clone(), dst_bits);
@@ -6623,6 +6906,63 @@ impl IngestContext {
         self.shard_offsets = offsets;
     }
 
+    /// TT-NG timestamp grouping merge. For each table with
+    /// `group_by_timestamp = true`, combine its per-shard timestamp spills (in
+    /// node-write order) with the shard `min_id`s into a single
+    /// `<table>/bucket_index.bin` of final node-ids grouped by TIMESTAMP, and
+    /// return the per-table bucket lists. No-op (empty map) when no table opted
+    /// in. Requires local output + already-built `shard_offsets`.
+    fn run_ts_grouping(&self) -> Result<HashMap<String, crate::ts_grouping::StageGrouping>> {
+        let mut out = HashMap::new();
+        if self.group_ts_counts.is_empty() {
+            return Ok(out);
+        }
+        let root = match &*self.target {
+            OutputTarget::Local { root, .. } => root.clone(),
+            _ => return Err(anyhow!("ts grouping requires local output")),
+        };
+        for table in &self.source.tables {
+            if !table.group_by_timestamp {
+                continue;
+            }
+            let offsets = self.shard_offsets.get(&table.name).ok_or_else(|| {
+                anyhow!("ts grouping: missing shard offsets for table {}", table.name)
+            })?;
+            // Build the per-shard spill inputs. A shard with no spill file
+            // (zero nodes routed to it) contributes nothing.
+            let mut shards = Vec::with_capacity(self.num_shards);
+            for shard in 0..self.num_shards {
+                let key = (table.name.clone(), shard);
+                let Some(count_map) = self.group_ts_counts.get(&key) else {
+                    continue;
+                };
+                let spill_path =
+                    root.join(crate::ts_grouping::spill_rel_path(&table.name, shard));
+                if !spill_path.exists() {
+                    continue;
+                }
+                shards.push(crate::ts_grouping::ShardSpill {
+                    min_id: offsets.get(shard).copied().unwrap_or(0),
+                    count_map: count_map.clone(),
+                    spill_path,
+                });
+            }
+            if shards.is_empty() {
+                continue;
+            }
+            let bucket_rel = format!(
+                "{}/{}",
+                table.name,
+                crate::ts_grouping::BUCKET_INDEX_FILENAME
+            );
+            let bucket_abs = root.join(&bucket_rel);
+            let grouping =
+                crate::ts_grouping::merge_stage(&shards, &bucket_abs, bucket_rel)?;
+            out.insert(table.name.clone(), grouping);
+        }
+        Ok(out)
+    }
+
     fn cleanup_temp(&self) -> Result<()> {
         if let OutputTarget::Local { root, .. } = &*self.target {
             let temp_root = root.join(TEMP_DIR_NAME);
@@ -6824,11 +7164,40 @@ impl IngestContext {
 
     fn build_index(&mut self, metadata: DatasetMetadata) -> Result<()> {
         let root = require_local_output(&self.target)?.to_path_buf();
+        // Coordinated layout fix (write side): if this is a sub-index ingest
+        // (parent_index_path was set), thread the parent's node_types into
+        // the builder so cross-boundary FK edges get encoded with the real
+        // parent `max_id` instead of the `dst_bits=64` fallback. Persisted
+        // metadata stays clean — externals only live in the in-memory build
+        // scope. See `GraphIndexBuilder::with_external_node_types`.
+        let external_node_types = self
+            .parent_index_path
+            .as_ref()
+            .map(|p| -> Result<Vec<_>> {
+                let parent_meta_path = p.join("index_metadata.json");
+                let bytes = fs::read(&parent_meta_path).with_context(|| {
+                    format!(
+                        "coordinated layout fix: read parent metadata {}",
+                        parent_meta_path.display()
+                    )
+                })?;
+                let parent_meta: DatasetMetadata =
+                    serde_json::from_slice(&bytes).with_context(|| {
+                        format!(
+                            "coordinated layout fix: parse parent metadata {}",
+                            parent_meta_path.display()
+                        )
+                    })?;
+                Ok(parent_meta.node_types)
+            })
+            .transpose()?
+            .unwrap_or_default();
         let builder = GraphIndexBuilder::from_metadata(
             metadata,
             GraphDataSource::Local { root: root.clone() },
             &root,
-        );
+        )
+        .with_external_node_types(external_node_types);
         let table_totals = self.index_table_totals();
         let mem_budget = self.index_mem_budget.clone();
         let edge_buffer_pool = mem_budget
@@ -7077,6 +7446,8 @@ impl IngestContext {
             },
             perf,
             num_shards: Some(self.num_shards),
+            // Populated by the main ingest flow after `run_ts_grouping`.
+            ts_groupings: HashMap::new(),
         }
     }
 
@@ -8532,6 +8903,9 @@ struct NodeWriteBatch {
     fkey_bits: Vec<Vec<u8>>,
     fkey_rows: Vec<u64>,
     sort_keys: Vec<SortKeyWriteBatch>,
+    // TT-NG timestamp grouping: per-node TIMESTAMP values in node-write order,
+    // 1:1 with `node_data.rows`. `None` when grouping is disabled.
+    group_ts: Option<Vec<i64>>,
 }
 
 struct RowPackSegmentBatch {
@@ -8551,6 +8925,10 @@ struct NodeWriterStats {
     pkey_rows: HashMap<(String, usize), u64>,
     fkey_rows: HashMap<(String, String, usize), u64>,
     node_data_max_len: HashMap<(String, usize), u32>,
+    // TT-NG timestamp grouping: per-(table,shard) distinct-timestamp → count.
+    // O(D) per shard. Empty unless grouping is enabled for the table. Used by
+    // the post-build merge to size buckets without a count pass.
+    group_ts_counts: HashMap<(String, usize), HashMap<i64, u64>>,
 }
 
 impl NodeWriterStats {
@@ -8570,6 +8948,13 @@ impl NodeWriterStats {
         for (key, value) in other.node_data_max_len {
             let entry = self.node_data_max_len.entry(key).or_insert(0);
             *entry = (*entry).max(value);
+        }
+        for (key, counts) in other.group_ts_counts {
+            let entry = self.group_ts_counts.entry(key).or_default();
+            for (ts, c) in counts {
+                let slot = entry.entry(ts).or_insert(0);
+                *slot = slot.saturating_add(c);
+            }
         }
     }
 }
@@ -8710,6 +9095,9 @@ fn node_writer_worker(
         (std::sync::Arc<str>, SortKeyComponentKind, usize),
         SortKeyShardWriter,
     > = HashMap::new();
+    // TT-NG timestamp grouping: per-(table,shard) append-only spill FD. Opened
+    // lazily on the first grouped batch. Empty unless grouping is enabled.
+    let mut group_spills: HashMap<(std::sync::Arc<str>, usize), std::fs::File> = HashMap::new();
     let mut stats = NodeWriterStats::default();
     while let Ok(msg) = rx.recv() {
         match msg {
@@ -8769,6 +9157,43 @@ fn node_writer_worker(
                 let max_key = (batch.table.to_string(), batch.shard);
                 let entry = stats.node_data_max_len.entry(max_key).or_insert(0);
                 *entry = (*entry).max(batch_max_len);
+                // TT-NG timestamp grouping: append this batch's per-node
+                // timestamps (node-write order) to the shard spill, and fold
+                // them into the per-shard count map. The spill's record order IS
+                // the node order, so the k-th record's node-id is min_id + k.
+                if let Some(group_ts) = &batch.group_ts {
+                    debug_assert_eq!(
+                        group_ts.len(),
+                        batch.node_data.rows.len(),
+                        "group_ts must be 1:1 with node rows"
+                    );
+                    let spill = match group_spills.get_mut(&key) {
+                        Some(f) => f,
+                        None => {
+                            let rel = crate::ts_grouping::spill_rel_path(&batch.table, batch.shard);
+                            let path = target.join(&rel);
+                            if let Some(parent) = path.parent() {
+                                std::fs::create_dir_all(parent)?;
+                            }
+                            let f = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(&path)
+                                .with_context(|| {
+                                    format!("open ts-group spill {}", path.display())
+                                })?;
+                            group_spills.entry(key.clone()).or_insert(f)
+                        }
+                    };
+                    crate::ts_grouping::append_spill(spill, group_ts)?;
+                    let counts = stats
+                        .group_ts_counts
+                        .entry((batch.table.to_string(), batch.shard))
+                        .or_default();
+                    for ts in group_ts {
+                        *counts.entry(*ts).or_insert(0) += 1;
+                    }
+                }
                 if let Some(data) = batch.pkey_data {
                     if writer.pkey.is_none() {
                         writer.pkey = Some(open_temp_row_writer(
@@ -8830,6 +9255,9 @@ fn node_writer_worker(
             .map_err(|_| anyhow!("sort key flush failed"))?;
         sink.finish()?;
     }
+    for (_, mut spill) in group_spills {
+        spill.flush()?;
+    }
     Ok(stats)
 }
 
@@ -8841,6 +9269,10 @@ struct NodeShardBuffer {
     fkey_bits: Vec<Vec<u8>>,
     fkey_rows: Vec<u64>,
     bytes: usize,
+    // TT-NG timestamp grouping: when `Some`, holds this shard's per-node
+    // TIMESTAMP value, pushed 1:1 with `push_node_row`/`push_empty_node`, in
+    // node-write order. `None` (default) = grouping disabled, zero overhead.
+    group_ts: Option<Vec<i64>>,
 }
 
 struct NodeBatcher {
@@ -8850,6 +9282,8 @@ struct NodeBatcher {
     buffers: Vec<NodeShardBuffer>,
     buffer_limit: usize,
     senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<NodeWriteMessage>>>,
+    // TT-NG timestamp grouping enabled for this table (see `group_by_timestamp`).
+    group_by_timestamp: bool,
 }
 
 struct NodeRowSink<'a> {
@@ -8866,6 +9300,7 @@ impl NodeBatcher {
         num_shards: usize,
         buffer_limit: usize,
         senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<NodeWriteMessage>>>,
+        group_by_timestamp: bool,
     ) -> Self {
         let table_hash = hash_name(&table);
         let buffers = (0..num_shards)
@@ -8882,6 +9317,11 @@ impl NodeBatcher {
                 fkey_bits: vec![Vec::new(); rel_names.len()],
                 fkey_rows: vec![0; rel_names.len()],
                 bytes: 0,
+                group_ts: if group_by_timestamp {
+                    Some(Vec::new())
+                } else {
+                    None
+                },
             })
             .collect();
         Self {
@@ -8891,7 +9331,26 @@ impl NodeBatcher {
             buffers,
             buffer_limit,
             senders,
+            group_by_timestamp,
         }
+    }
+
+    /// Record a node's TIMESTAMP for grouping. MUST be called exactly once per
+    /// `push_node_row`/`push_empty_node`, in the same order, so the k-th ts in a
+    /// shard buffer pairs with the k-th node written to that shard. No-op when
+    /// grouping is disabled.
+    fn push_group_ts(&mut self, shard: usize, ts: i64) -> Result<()> {
+        if !self.group_by_timestamp {
+            return Ok(());
+        }
+        let buffer = self
+            .buffers
+            .get_mut(shard)
+            .ok_or_else(|| anyhow!("node buffer shard {} out of bounds", shard))?;
+        if let Some(group_ts) = buffer.group_ts.as_mut() {
+            group_ts.push(ts);
+        }
+        Ok(())
     }
 
     fn node_sink(&mut self, shard: usize) -> Result<NodeRowSink<'_>> {
@@ -9050,6 +9509,10 @@ impl NodeBatcher {
             fkey_bits.push(data);
         }
         let fkey_rows = buffer.fkey_rows.clone();
+        // Drain this shard's grouping timestamps (node-write order) into the
+        // batch, leaving an empty Vec to keep accumulating. `None` when
+        // grouping is disabled.
+        let group_ts = buffer.group_ts.as_mut().map(std::mem::take);
         // Drain sort key data for this shard and bundle into the batch.
         let mut sort_keys = Vec::new();
         for sk in sort_key_batchers.iter_mut() {
@@ -9068,6 +9531,7 @@ impl NodeBatcher {
             fkey_bits,
             fkey_rows,
             sort_keys,
+            group_ts,
         };
         buffer.node.rows.clear();
         buffer.pkey_rows = 0;
@@ -10197,6 +10661,284 @@ fn column_index(table: &TableSpec, name: &str) -> Result<usize> {
         .iter()
         .position(|col| col.name == name)
         .ok_or_else(|| anyhow!("missing column {}", name))
+}
+
+// ─── FK-free LP resolution-mode helpers (S3) ────────────────────────────────
+//
+// Per-table runtime spec for one resolution column, built once in
+// `build_temp_node_file` from `IngestContext.resolve_columns`. The encode
+// worker resolves the source column's PK reference value(s) to graph node-ids
+// (via the shared `RefResolver`) and feeds the result into the encoder through
+// a dedicated override channel — NO FK edge / no temp-edge push.
+struct ResolveColRuntime {
+    /// Column index of the NEW node-id column in `table.columns`.
+    node_id_idx: usize,
+    /// Column index of the source PK reference column in `table.columns`.
+    src_idx: usize,
+    /// Parent node table whose pkmap resolves the references.
+    dst_table: String,
+    /// Scalar vs list arity.
+    kind: crate::config::ResolveKind,
+    /// Element/scalar key type used to read the source value (Int64 / VarBytes /
+    /// Uuid / …), derived from the source column's ingested dtype.
+    src_type: IngestedType,
+}
+
+/// Element (scalar) PK type for a list-bearing source column. Mirrors the
+/// list-FK `list_fk_element_type` port; identity for already-scalar types.
+fn resolve_list_element_type(container: &IngestedType) -> Result<IngestedType> {
+    Ok(match container {
+        IngestedType::StringArray => IngestedType::String,
+        IngestedType::Int64Array => IngestedType::Int64,
+        IngestedType::Int32Array => IngestedType::Int32,
+        IngestedType::Int16Array => IngestedType::Int16,
+        IngestedType::Int8Array => IngestedType::Int8,
+        IngestedType::String | IngestedType::Int64 | IngestedType::Int32 => container.clone(),
+        other => return Err(anyhow!("unsupported resolution list element type: {other:?}")),
+    })
+}
+
+/// Encode one list child element at `pos` into `out` using `elem_type`, matching
+/// the scalar `key_from_access_into_buf` byte layout (Int64 → 8 LE bytes;
+/// String → raw bytes). Ported from the list-FK worktree (`encode_list_element_key`).
+fn resolve_encode_list_element_key(
+    child: &dyn arrow_array::Array,
+    pos: usize,
+    elem_type: &IngestedType,
+    out: &mut Vec<u8>,
+) -> KeyParseResult<()> {
+    out.clear();
+    match elem_type {
+        IngestedType::String => {
+            let arr = child
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+                .ok_or(KeyParseError::TypeMismatch)?;
+            out.extend_from_slice(arr.value(pos).as_bytes());
+            Ok(())
+        }
+        IngestedType::Int64 | IngestedType::Int32 | IngestedType::Int16 | IngestedType::Int8 => {
+            let v: i64 = if let Some(a) = child.as_any().downcast_ref::<arrow_array::Int64Array>() {
+                a.value(pos)
+            } else if let Some(a) = child.as_any().downcast_ref::<arrow_array::Int32Array>() {
+                a.value(pos) as i64
+            } else if let Some(a) = child.as_any().downcast_ref::<arrow_array::Int16Array>() {
+                a.value(pos) as i64
+            } else if let Some(a) = child.as_any().downcast_ref::<arrow_array::Int8Array>() {
+                a.value(pos) as i64
+            } else {
+                return Err(KeyParseError::TypeMismatch);
+            };
+            out.extend_from_slice(&(v as u64).to_le_bytes());
+            Ok(())
+        }
+        _ => Err(KeyParseError::TypeMismatch),
+    }
+}
+
+/// Build the per-element `Key`s for a list-bearing source column at the current
+/// row. Null/absent cells and unparseable elements are skipped (mask-don't-fail,
+/// mirroring the scalar path). Ported/adapted from the list-FK
+/// `list_keys_from_access_into_buf`, but yields `Key`s for `RefResolver::lookup`
+/// instead of a framed temp-edge buffer.
+fn resolve_list_keys_from_access(
+    access: &mut RowAccess<'_>,
+    idx: usize,
+    container_type: &IngestedType,
+    scratch: &mut Vec<u8>,
+) -> Result<Vec<Key>> {
+    let elem_type = resolve_list_element_type(container_type)?;
+    let array = access.array(idx)?;
+    let row = access.row();
+    let (child, start, end): (&ArrayRef, usize, usize) =
+        if let Some(list) = array.as_any().downcast_ref::<arrow_array::ListArray>() {
+            if list.is_null(row) {
+                return Ok(Vec::new());
+            }
+            let offs = list.value_offsets();
+            (list.values(), offs[row] as usize, offs[row + 1] as usize)
+        } else if let Some(list) = array.as_any().downcast_ref::<arrow_array::LargeListArray>() {
+            if list.is_null(row) {
+                return Ok(Vec::new());
+            }
+            let offs = list.value_offsets();
+            (list.values(), offs[row] as usize, offs[row + 1] as usize)
+        } else {
+            return Ok(Vec::new());
+        };
+    let mut keys = Vec::with_capacity(end.saturating_sub(start));
+    for pos in start..end {
+        if child.is_null(pos) {
+            continue;
+        }
+        if resolve_encode_list_element_key(child.as_ref(), pos, &elem_type, scratch).is_err() {
+            continue;
+        }
+        let mut data: &[u8] = scratch.as_slice();
+        match read_key_from_buf_for_type(&mut data, &elem_type) {
+            Ok(key) => keys.push(key),
+            Err(_) => continue,
+        }
+    }
+    Ok(keys)
+}
+
+/// Build the per-table runtime resolve specs (column indices + key types) from
+/// the global [`crate::config::ResolveColumnSpec`] list, keeping only those that
+/// target `table`. Errs if a referenced source / node-id column is missing.
+fn build_resolve_runtime(
+    table: &TableSpec,
+    resolve_columns: &[crate::config::ResolveColumnSpec],
+) -> Result<Vec<ResolveColRuntime>> {
+    let mut out = Vec::new();
+    for spec in resolve_columns {
+        if spec.table != table.name {
+            continue;
+        }
+        let src_idx = column_index(table, &spec.src_col).with_context(|| {
+            format!(
+                "resolution mode: source column `{}` not found in table `{}`",
+                spec.src_col, table.name
+            )
+        })?;
+        let node_id_idx = column_index(table, &spec.node_id_col).with_context(|| {
+            format!(
+                "resolution mode: node-id column `{}` not found in table `{}` \
+                 (append it to TableSpec.columns)",
+                spec.node_id_col, table.name
+            )
+        })?;
+        // Validate the target column's logical type matches the arity.
+        let node_col = &table.columns[node_id_idx];
+        match spec.kind {
+            crate::config::ResolveKind::Scalar => {
+                if node_col.ingested_dtype != IngestedType::UInt64 {
+                    return Err(anyhow!(
+                        "resolution scalar column `{}` must be UInt64, got {:?}",
+                        spec.node_id_col,
+                        node_col.ingested_dtype
+                    ));
+                }
+            }
+            crate::config::ResolveKind::List => {
+                if node_col.ingested_dtype != IngestedType::Int64Array {
+                    return Err(anyhow!(
+                        "resolution list column `{}` must be Int64Array, got {:?}",
+                        spec.node_id_col,
+                        node_col.ingested_dtype
+                    ));
+                }
+            }
+        }
+        let src_type = table.columns[src_idx].ingested_dtype.clone();
+        out.push(ResolveColRuntime {
+            node_id_idx,
+            src_idx,
+            dst_table: spec.dst_table.clone(),
+            kind: spec.kind,
+            src_type,
+        });
+    }
+    Ok(out)
+}
+
+/// Indices of all resolution NODE-ID columns for `table` — these are synthetic
+/// (not present in the source parquet) and must be filled with a length-correct
+/// placeholder array when building `RowAccess` columns.
+fn resolve_node_id_indices(runtime: &[ResolveColRuntime]) -> std::collections::HashSet<usize> {
+    runtime.iter().map(|r| r.node_id_idx).collect()
+}
+
+/// Build the per-column `ArrayRef` list for `RowAccess`, fetching real columns
+/// from `batch` by name and substituting a length-correct null placeholder for
+/// synthetic resolution node-id columns (whose values come from the override
+/// channel, not the parquet).
+fn build_access_cols(
+    batch: &arrow_array::RecordBatch,
+    table: &TableSpec,
+    resolve_node_ids: &std::collections::HashSet<usize>,
+) -> Result<Vec<ArrayRef>> {
+    let n = batch.num_rows();
+    let mut cols = Vec::with_capacity(table.columns.len());
+    for (col_idx, col) in table.columns.iter().enumerate() {
+        if resolve_node_ids.contains(&col_idx) {
+            // Synthetic resolution column — not in the parquet. The encoder
+            // reads it from the override channel, so a null placeholder of the
+            // correct length is sufficient (the array is never inspected).
+            cols.push(arrow_array::new_null_array(&DataType::Null, n));
+            continue;
+        }
+        let idx = batch
+            .schema()
+            .index_of(&col.name)
+            .context("missing column in batch")?;
+        cols.push(batch.column(idx).clone());
+    }
+    Ok(cols)
+}
+
+/// Compute the per-row resolution overrides for `row`, resolving the source PK
+/// reference value(s) of each runtime spec to graph node-id(s) via `resolver`.
+/// Returns a per-column override vector (length == `table.columns.len()`) with
+/// `ResolveOverride::None` for every non-resolution column. A pkmap miss
+/// (orphan) for a scalar leaves the column `None` (encoded as null); orphan list
+/// elements are dropped.
+#[allow(clippy::too_many_arguments)]
+fn resolve_overrides_for_row(
+    access: &mut RowAccess<'_>,
+    table: &TableSpec,
+    runtime: &[ResolveColRuntime],
+    resolver: &crate::mapping::RefResolver,
+    num_columns: usize,
+    scratch: &mut Vec<u8>,
+    shard_buf: &mut Vec<u8>,
+) -> Result<Vec<diskgraph_rowpack::ResolveOverride>> {
+    let mut overrides =
+        vec![diskgraph_rowpack::ResolveOverride::None; num_columns];
+    for spec in runtime {
+        let shard_count = resolver.shard_count(&spec.dst_table).ok_or_else(|| {
+            anyhow!(
+                "resolution: pkmap for dst_table `{}` not loaded",
+                spec.dst_table
+            )
+        })?;
+        match spec.kind {
+            crate::config::ResolveKind::Scalar => {
+                let col = &table.columns[spec.src_idx];
+                scratch.clear();
+                if key_from_access_into_buf(access, spec.src_idx, col, &spec.src_type, scratch)
+                    .is_err()
+                {
+                    continue; // null / parse failure → leave column null
+                }
+                let mut data: &[u8] = scratch.as_slice();
+                let key = match read_key_from_buf_for_type(&mut data, &spec.src_type) {
+                    Ok(k) => k,
+                    Err(_) => continue,
+                };
+                let shard = shard_for_key_from_key(&key, shard_buf, shard_count)?;
+                if let Some(node_id) = resolver.resolve_in_shard(&spec.dst_table, shard, &key) {
+                    overrides[spec.node_id_idx] =
+                        diskgraph_rowpack::ResolveOverride::Scalar(node_id);
+                }
+                // orphan miss → leave None (null)
+            }
+            crate::config::ResolveKind::List => {
+                let keys =
+                    resolve_list_keys_from_access(access, spec.src_idx, &spec.src_type, scratch)?;
+                let mut ids: Vec<i64> = Vec::with_capacity(keys.len());
+                for key in &keys {
+                    let shard = shard_for_key_from_key(key, shard_buf, shard_count)?;
+                    if let Some(node_id) = resolver.resolve_in_shard(&spec.dst_table, shard, key) {
+                        ids.push(node_id as i64);
+                    }
+                    // orphan element → drop (mirrors null-element drop)
+                }
+                overrides[spec.node_id_idx] = diskgraph_rowpack::ResolveOverride::List(ids);
+            }
+        }
+    }
+    Ok(overrides)
 }
 
 /// Coerce Uuid/Uuid256/Ip source data to VarBytes (String or Bytes target).

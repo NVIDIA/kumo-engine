@@ -261,6 +261,64 @@ fn roundtrip_basic() {
 }
 
 #[test]
+fn decode_batch_to_arrow_preserves_requested_projection_order() {
+    let ctx = RowPackContext {
+        version: ROWPACK_VERSION,
+        columns: vec![
+            ColumnContext {
+                name: "ENTITY1".to_string(),
+                logical_type: IngestedType::Int64,
+                encoding: ColumnEncoding::Int {
+                    signed: true,
+                    varint: true,
+                    bits: 64,
+                },
+            },
+            ColumnContext {
+                name: "TIMESTAMP".to_string(),
+                logical_type: IngestedType::Timestamp,
+                encoding: ColumnEncoding::Timestamp,
+            },
+            ColumnContext {
+                name: "TARGET1".to_string(),
+                logical_type: IngestedType::Float64,
+                encoding: ColumnEncoding::Float {
+                    storage: FloatStorage::F64,
+                },
+            },
+        ],
+        estimated_row_bytes: 0,
+    };
+    let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+    let row = encode_row(
+        &encoder,
+        &[
+            ValueRef::Int64(7),
+            ValueRef::Timestamp(1_700_000_000),
+            ValueRef::Float64(1.5),
+        ],
+    );
+    let decoder = RowPackDecoder::new(ctx).unwrap();
+
+    let batch = decoder
+        .decode_batch_to_arrow(&[row], &[0, 2, 1])
+        .expect("projection order should not affect builder type alignment");
+
+    assert_eq!(batch.schema().field(0).name(), "ENTITY1");
+    assert_eq!(batch.schema().field(1).name(), "TARGET1");
+    assert_eq!(batch.schema().field(2).name(), "TIMESTAMP");
+    assert_eq!(
+        batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap()
+            .value(0),
+        1.5
+    );
+}
+
+#[test]
 fn timestamp_nanos_roundtrip() {
     let ctx = RowPackContext {
         version: ROWPACK_VERSION,
@@ -276,7 +334,9 @@ fn timestamp_nanos_roundtrip() {
     let encoded = encode_row(&encoder, &row);
     let decoder = RowPackDecoder::new(ctx).unwrap();
     let mut scratch = RowPackDecodeScratch::default();
-    let val = decoder.decode_column_value(&encoded, 0, &mut scratch).unwrap();
+    let val = decoder
+        .decode_column_value(&encoded, 0, &mut scratch)
+        .unwrap();
     assert_eq!(val, ValueRef::Timestamp(1_700_000_000));
 }
 
@@ -1615,9 +1675,7 @@ fn int32_epoch_without_format_hint() {
     // (the original behavior).
     let epoch_secs = 1709251200i32; // 2024-03-01 00:00:00 UTC
     let arr: ArrayRef = Arc::new(Int32Array::from(vec![epoch_secs]));
-    let secs = get_timestamp_from_array(arr, None, None)
-        .unwrap()
-        .unwrap();
+    let secs = get_timestamp_from_array(arr, None, None).unwrap().unwrap();
     assert_eq!(secs, epoch_secs as i64);
 }
 
@@ -1671,13 +1729,9 @@ fn arrow_time_units_as_timestamp() {
 fn int32_yyyymmdd_format_takes_priority_over_unit() {
     // When both format and unit are set, format should win for YYYYMMDD values.
     let arr: ArrayRef = Arc::new(Int32Array::from(vec![20240301]));
-    let secs = get_timestamp_from_array(
-        arr,
-        Some("%Y%m%d"),
-        Some(arrow_schema::TimeUnit::Second),
-    )
-    .unwrap()
-    .unwrap();
+    let secs = get_timestamp_from_array(arr, Some("%Y%m%d"), Some(arrow_schema::TimeUnit::Second))
+        .unwrap()
+        .unwrap();
     let expected = chrono::NaiveDate::from_ymd_opt(2024, 3, 1)
         .unwrap()
         .and_hms_opt(0, 0, 0)
@@ -1816,27 +1870,18 @@ fn test_parse_yyyymmddhhmmss_fast() {
 #[test]
 fn test_detect_non_iso_formats() {
     // US date: month/day/year — chrono fallback since no ISO fast-path matches
-    assert_eq!(
-        detect_timestamp_format("01/15/2024"),
-        Some("%m/%d/%Y")
-    );
+    assert_eq!(detect_timestamp_format("01/15/2024"), Some("%m/%d/%Y"));
     // US date with time
     assert_eq!(
         detect_timestamp_format("01/15/2024 10:30:00"),
         Some("%m/%d/%Y %H:%M:%S")
     );
     // EU date (note: 15 > 12 so only d/m/Y can match)
-    assert_eq!(
-        detect_timestamp_format("15/01/2024"),
-        Some("%d/%m/%Y")
-    );
+    assert_eq!(detect_timestamp_format("15/01/2024"), Some("%d/%m/%Y"));
     // Slash-separated ISO-like: the fast parser for "%Y-%m-%d" is separator-agnostic,
     // so "2024/01/15" matches "%Y-%m-%d" first (higher priority). This is acceptable
     // since the parsed timestamp is identical.
-    assert_eq!(
-        detect_timestamp_format("2024/01/15"),
-        Some("%Y-%m-%d")
-    );
+    assert_eq!(detect_timestamp_format("2024/01/15"), Some("%Y-%m-%d"));
     // Slash-separated ISO with time: same — fast parser is separator-agnostic
     assert_eq!(
         detect_timestamp_format("2024/01/15 10:30:00"),
@@ -1898,16 +1943,14 @@ fn test_detect_non_iso_hour_minute_no_seconds() {
 fn test_parse_timestamp_text_no_tz_format_rejects_tz_value() {
     // Format has no tz, value has tz offset → should NOT silently parse
     // (detection should have picked a tz-aware format if the column has tz values)
-    let result =
-        parse_timestamp_text("2024-01-15 10:30:00+05:30", Some("%Y-%m-%d %H:%M:%S"));
+    let result = parse_timestamp_text("2024-01-15 10:30:00+05:30", Some("%Y-%m-%d %H:%M:%S"));
     assert!(result.is_none());
 }
 
 #[test]
 fn test_parse_timestamp_text_tz_format_no_tz_value() {
     // Format expects tz, but value has none → should still parse (as naive UTC)
-    let result =
-        parse_timestamp_text("2024-01-15 10:30:00", Some("%Y-%m-%d %H:%M:%S%:z"));
+    let result = parse_timestamp_text("2024-01-15 10:30:00", Some("%Y-%m-%d %H:%M:%S%:z"));
     assert!(result.is_some());
     let expected = chrono::NaiveDate::from_ymd_opt(2024, 1, 15)
         .unwrap()

@@ -26,6 +26,7 @@ arrow-schema = "57.2.0"
 parquet = { version = "57.2.0", features = ["arrow"] }
 diskgraph-engine = { path = "../diskgraph-engine" }
 diskgraph-core = { path = "../diskgraph-core" }
+diskgraph-index = { path = "../diskgraph-index" }
 diskgraph-ingest = { path = "../diskgraph-ingest" }
 diskgraph-rowpack = { path = "../diskgraph-rowpack" }
 diskgraph-train-table = { path = "../diskgraph-train-table" }

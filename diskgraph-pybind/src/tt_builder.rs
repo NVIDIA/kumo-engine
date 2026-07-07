@@ -298,10 +298,12 @@ pub struct DiskGraphTTBuilder {
     entity: Option<tt::EntitySpec<Seconds>>,
     temporal: Option<tt::TemporalSpec<Seconds>>,
     prediction_type: tt::PredictionType,
+    is_prediction: bool,
     split: Option<tt::SplitSpec<Seconds>>,
     stages: Vec<tt::Stage<Seconds>>,
     current_ops: Vec<tt::Op<Seconds>>,
     target_stype: Option<String>,
+    fkey_mapping: Option<Vec<tt::TTFKeySpec>>,
 }
 
 #[pymethods]
@@ -312,10 +314,12 @@ impl DiskGraphTTBuilder {
             entity: None,
             temporal: None,
             prediction_type: tt::PredictionType::Node,
+            is_prediction: false,
             split: None,
             stages: Vec::new(),
             current_ops: Vec::new(),
             target_stype: None,
+            fkey_mapping: None,
         }
     }
 
@@ -427,7 +431,9 @@ impl DiskGraphTTBuilder {
         range_unit="seconds",
         unit="days",
         timeframe=None,
-        anchor_start_offset=0
+        anchor_start_offset=0,
+        flexible_boundaries=None,
+        timeframe_step=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn split_ratio(
@@ -449,6 +455,8 @@ impl DiskGraphTTBuilder {
         unit: &str,
         timeframe: Option<i64>,
         anchor_start_offset: i64,
+        flexible_boundaries: Option<bool>,
+        timeframe_step: Option<i64>,
     ) -> PyResult<()> {
         if let Some(ratio_vals) = ratio.as_ref() {
             if ratio_vals.len() < 2 || ratio_vals.len() > 3 {
@@ -467,22 +475,48 @@ impl DiskGraphTTBuilder {
         let rng_unit = parse_time_unit(range_unit)?;
         let is_date_offset_split = kind.as_deref() == Some("DateOffsetSplit");
         if is_date_offset_split {
-            reject_calendar_date_offset_unit("offset_unit", off_unit)?;
             reject_calendar_date_offset_unit("unit", split_unit)?;
         }
+        // When `offset_unit` is "months" or "years", route the int
+        // values through `month_offsets` (calendar arithmetic) rather than
+        // `offsets` (typed Dur<U>). Years are normalized to months at the
+        // boundary so the executor only has to dispatch on one dimension.
+        let (offsets_dur, month_offsets) = match (off_unit, offsets) {
+            (tt::TimeUnit::Months, Some(v)) => (
+                None,
+                Some(v.into_iter().map(|o| o as i32).collect::<Vec<i32>>()),
+            ),
+            (tt::TimeUnit::Years, Some(v)) => (
+                None,
+                Some(
+                    v.into_iter()
+                        .map(|o| (o as i32).saturating_mul(12))
+                        .collect::<Vec<i32>>(),
+                ),
+            ),
+            (_, Some(v)) => (
+                Some(
+                    v.into_iter()
+                        .map(|o| dur_from_unit::<Seconds>(o, off_unit))
+                        .collect::<Vec<_>>(),
+                ),
+                None,
+            ),
+            (_, None) => (None, None),
+        };
         self.split = Some(tt::SplitSpec {
             ratio,
             kind,
             rnd_seed,
             is_temporal,
-            offsets: offsets.map(|v| {
-                v.into_iter()
-                    .map(|o| dur_from_unit::<Seconds>(o, off_unit))
-                    .collect()
-            }),
+            offsets: offsets_dur,
             offset_unit: is_date_offset_split.then(|| time_unit_name(off_unit).to_string()),
             unit: is_date_offset_split.then(|| time_unit_name(split_unit).to_string()),
-            timeframe: if is_date_offset_split { timeframe } else { None },
+            timeframe: if is_date_offset_split {
+                timeframe
+            } else {
+                None
+            },
             anchor_start_offset: if is_date_offset_split {
                 Some(anchor_start_offset)
             } else {
@@ -505,17 +539,25 @@ impl DiskGraphTTBuilder {
             manual_train_values,
             manual_val_values,
             manual_test_values,
+            month_offsets,
+            flexible_boundaries: if is_date_offset_split {
+                flexible_boundaries
+            } else {
+                None
+            },
+            timeframe_step: if is_date_offset_split {
+                timeframe_step
+            } else {
+                None
+            },
         });
         Ok(())
     }
 
-    /// Link prediction.
-    #[pyo3(signature = (explode=false, include_frequency=false))]
-    fn link_prediction(&mut self, explode: bool, include_frequency: bool) {
-        self.prediction_type = tt::PredictionType::Link {
-            explode,
-            include_frequency,
-        };
+    /// Link prediction. FK-free array LP is the only Link output mode.
+    #[pyo3(signature = (include_frequency=false))]
+    fn link_prediction(&mut self, include_frequency: bool) {
+        self.prediction_type = tt::PredictionType::Link { include_frequency };
     }
 
     /// Pass-through prediction (LHS/RHS extraction without target ops).
@@ -528,10 +570,27 @@ impl DiskGraphTTBuilder {
         self.prediction_type = tt::PredictionType::Forecasting;
     }
 
+    /// Set whether this is a prediction job (Batch Prediction) or training job (TT generation).
+    fn set_is_prediction(&mut self, is_prediction: bool) {
+        self.is_prediction = is_prediction;
+    }
+
     /// Set the semantic type of the target column (e.g. "numerical",
     /// "categorical", "boolean", "ID", "multicategorical").
     fn set_target_stype(&mut self, stype: String) {
         self.target_stype = Some(stype);
+    }
+
+    fn set_fkey_mapping(&mut self, mapping: Vec<(String, String)>) {
+        self.fkey_mapping = Some(
+            mapping
+                .into_iter()
+                .map(|(src_col, dst_table)| tt::TTFKeySpec {
+                    src_col,
+                    dst_table,
+                })
+                .collect(),
+        );
     }
 
     /// Add aggregate op. `path`: single `EdgeRef` or list for multi-hop.
@@ -574,12 +633,7 @@ impl DiskGraphTTBuilder {
     }
 
     /// Direct column lookup (no traversal).
-    fn column(
-        &mut self,
-        alias: String,
-        table: String,
-        column: String,
-    ) {
+    fn column(&mut self, alias: String, table: String, column: String) {
         self.current_ops.push(tt::Op::Column {
             alias,
             table,
@@ -643,7 +697,34 @@ impl DiskGraphTTBuilder {
         self.current_ops.push(tt::Op::Autoregression {
             alias,
             target_op: Box::new(target_op),
-            lag_offsets: lag_offsets.into_iter().map(|v| dur_from_unit::<Seconds>(v, unit)).collect(),
+            lag_offsets: lag_offsets
+                .into_iter()
+                .map(|v| dur_from_unit::<Seconds>(v, unit))
+                .collect(),
+        });
+        Ok(())
+    }
+
+    #[pyo3(signature = (alias, target_op_json, future_offsets, future_offset_unit="seconds"))]
+    pub fn future_labels(
+        &mut self,
+        alias: String,
+        target_op_json: String,
+        future_offsets: Vec<i64>,
+        future_offset_unit: &str,
+    ) -> PyResult<()> {
+        let target_op: tt::Op<Seconds> = serde_json::from_str(&target_op_json).map_err(|e| {
+            crate::DiskgraphConfigError::new_err(format!("Invalid target op JSON: {}", e))
+        })?;
+
+        let unit = parse_time_unit(future_offset_unit)?;
+        self.current_ops.push(tt::Op::FutureLabels {
+            alias,
+            target_op: Box::new(target_op),
+            future_offsets: future_offsets
+                .into_iter()
+                .map(|v| dur_from_unit::<Seconds>(v, unit))
+                .collect(),
         });
         Ok(())
     }
@@ -707,9 +788,18 @@ impl DiskGraphTTBuilder {
             entity,
             temporal: self.temporal.take(),
             prediction_type: std::mem::replace(&mut self.prediction_type, tt::PredictionType::Node),
+            is_prediction: self.is_prediction,
             split: self.split.take(),
             stages: std::mem::take(&mut self.stages),
             target_stype: self.target_stype.take(),
+            // weight_col is set on custom-TT plans only, via the new
+            // `build_train_table_artifacts_for_existing_table` entry
+            // point in `custom_tt_entry.rs`. PQ-built plans always emit
+            // None.
+            weight_col: None,
+            fkey_mapping: None,
+            lp_resolution: None,
+            lp_rhs_is_temporal: false,
         };
 
         serde_json::to_string(&plan)
@@ -819,9 +909,7 @@ fn extract_value(value: &Bound<'_, PyAny>) -> PyResult<tt::Value> {
         let epoch_f: f64 = value
             .call_method0("timestamp")
             .map_err(|e| {
-                crate::DiskgraphConfigError::new_err(format!(
-                    "datetime.timestamp() failed: {e}"
-                ))
+                crate::DiskgraphConfigError::new_err(format!("datetime.timestamp() failed: {e}"))
             })?
             .extract::<f64>()
             .map_err(|e| {
@@ -836,9 +924,7 @@ fn extract_value(value: &Bound<'_, PyAny>) -> PyResult<tt::Value> {
         let ordinal: i64 = value
             .call_method0("toordinal")
             .map_err(|e| {
-                crate::DiskgraphConfigError::new_err(format!(
-                    "date.toordinal() failed: {e}"
-                ))
+                crate::DiskgraphConfigError::new_err(format!("date.toordinal() failed: {e}"))
             })?
             .extract::<i64>()
             .map_err(|e| {

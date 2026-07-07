@@ -27,6 +27,22 @@
 //!   alias. RHS is a constant, entity column, remote column, or another alias.
 
 pub use crate::time::TimeUnit;
+
+// ─── Reserved column names ────────────────────────────────────────────────────
+
+/// Primary entity column emitted by ttgen (`ENTITY1`).
+pub const PRIMARY_ENTITY_COL: &str = "ENTITY1";
+/// Temporal anchor column emitted by ttgen (`TIMESTAMP`).
+pub const TIMESTAMP_COL: &str = "TIMESTAMP";
+/// Primary target column emitted by ttgen (`TARGET1`).
+pub const PRIMARY_TARGET_COL: &str = "TARGET1";
+/// Per-row training-weight column. Rides each seed row from gen (when
+/// `weight_col` is set) through pass-B routing into the stage parquet and
+/// is ingested as a numeric rowpack column. The engine reads it into
+/// `task.weight` and MUST skip it in `project_seed_rowpack` so it is never
+/// encoded as a model feature.
+pub const WEIGHT_COL: &str = "WEIGHT";
+
 use crate::time::{Abs, Dur, UnitSystem};
 use serde::{Deserialize, Serialize};
 
@@ -42,6 +58,8 @@ pub struct DiskGraphTTPlan<U: UnitSystem> {
     pub temporal: Option<TemporalSpec<U>>,
     pub prediction_type: PredictionType,
     #[serde(default)]
+    pub is_prediction: bool,
+    #[serde(default)]
     pub split: Option<SplitSpec<U>>,
     pub stages: Vec<Stage<U>>,
     /// Semantic type of the target column (e.g. "numerical", "categorical",
@@ -49,6 +67,41 @@ pub struct DiskGraphTTPlan<U: UnitSystem> {
     /// col-stats accumulators (Welford/TDigest vs category counts).
     #[serde(default)]
     pub target_stype: Option<String>,
+    /// Optional source column (in the customer parquet for custom-TT path)
+    /// to read per-row weights from. When `Some(col_name)`, the executor
+    /// emits `weight.bin` next to `tt.parquet` with one f32 per emitted
+    /// output row (NOT per input row — orphan rows whose entity PK isn't
+    /// in the index are silently skipped, see
+    /// `custom_tt_chunk_processor`). When `None`, no `weight.bin` is
+    /// emitted and the manifest's `weight_sidecar` field is `None`.
+    ///
+    /// This field is set on custom-TT plans before serialization. The PQ
+    /// path leaves it `None` (no source column, no weight emission).
+    #[serde(default)]
+    pub weight_col: Option<String>,
+
+    /// Explicit mapping of columns in the seed table to their destination entity tables.
+    #[serde(default)]
+    pub fkey_mapping: Option<Vec<TTFKeySpec>>,
+
+    /// FK-free LP "resolution mode": instead of materializing `ENTITY1`/`TARGET1`
+    /// as `external_parent` FK edges, the special tt-ingest resolves these PK
+    /// reference columns to graph node-ids ONCE at ingest and writes them as
+    /// rowpack columns (`entity_node_id: u64` scalar, `target_node_ids: list<i64>`
+    /// ragged) with NO FK edge / NO `seed.edges.bin`. When `Some(_)`,
+    /// `execute_tt_ingest` takes the resolution-mode path; when `None`, the
+    /// existing edge-materializing path runs (back-compat, serde default).
+    #[serde(default)]
+    pub lp_resolution: Option<Vec<RefResolveSpec>>,
+
+    /// Data-condition for TT-NG single-timestamp grouping, computed kumo-side:
+    /// `true` iff this is an LP plan whose RHS/target node table has a
+    /// create-time or end-time column. The `bucket_index` (and hence grouping)
+    /// is built only when `lp_resolution.is_some() && lp_rhs_is_temporal`,
+    /// mirroring legacy's `TimestampSampler` RHS check. `#[serde(default)]` →
+    /// old plans (and non-LP plans) deserialize as `false` (flat).
+    #[serde(default)]
+    pub lp_rhs_is_temporal: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,9 +129,66 @@ pub struct SplitSpec<U: UnitSystem> {
     pub manual_train_values: Option<Vec<String>>,
     pub manual_val_values: Option<Vec<String>>,
     pub manual_test_values: Option<Vec<String>>,
+    /// Phase 13: calendar-month offsets for `DateOffsetSplit`. When present,
+    /// these are passed through as `OffsetUnit::Months` (calendar arithmetic).
+    /// Mutually exclusive with `offsets` for the same kind. `Some(vec![-3, -1])`
+    /// means train ends 3 months before max_ts, val ends 1 month before. Year
+    /// offsets should be expressed as months (year * 12) at construction time.
+    #[serde(default)]
+    pub month_offsets: Option<Vec<i32>>,
+    /// `DateOffsetSplit` boundary-snapping (kumo `flexible_boundaries`, prod
+    /// default `True`). When set/absent-true, `derive_cutoffs` snaps each split
+    /// start back to the sampling grid (`max_ts - tf - k*step`) so every split
+    /// holds ≥1 full timeframe. `Some(false)` keeps the rigid raw offsets.
+    #[serde(default)]
+    pub flexible_boundaries: Option<bool>,
+    /// `DateOffsetSplit` sampling step (kumo `timeframe_step`). Grid spacing for
+    /// flexible-boundary snapping; defaults to `timeframe` when absent.
+    #[serde(default)]
+    pub timeframe_step: Option<i64>,
 }
 
 // ─── Entity (FOR EACH) ──────────────────────────────────────────────────────
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct TTFKeySpec {
+    pub src_col: String,
+    pub dst_table: String,
+}
+
+/// Arity of a [`RefResolveSpec`] reference column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefResolveKind {
+    /// A single PK value → one `u64` node-id (e.g. the LHS `ENTITY1` anchor).
+    Scalar,
+    /// A list of PK values → a `list<i64>` of node-ids (e.g. the LP `TARGET1`
+    /// positives).
+    List,
+}
+
+/// One column in the FK-free LP "resolution mode": `src_col` holds PK
+/// value(s) referencing `dst_table`'s primary key; the special tt-ingest
+/// resolves them to graph node-ids via `dst_table`'s pkmap and writes the
+/// result into the rowpack column named `node_id_col`. NO FK edge is emitted
+/// for these columns (the engine reads the column directly), so there is no
+/// `seed.edges.bin` and no message-passing leak.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RefResolveSpec {
+    /// Source column in the stage parquet holding the PK reference value(s)
+    /// (e.g. `ENTITY1`, `TARGET1`).
+    pub src_col: String,
+    /// Parent node table whose pkmap resolves `src_col`'s values to node-ids.
+    pub dst_table: String,
+    /// Scalar vs list arity of `src_col`.
+    pub kind: RefResolveKind,
+    /// Name of the NEW rowpack column the resolved node-id(s) are written to
+    /// (e.g. `entity_node_id`, `target_node_ids`).
+    pub node_id_col: String,
+}
 
 /// Which table/column to iterate over.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,8 +232,6 @@ pub struct TemporalSpec<U: UnitSystem> {
 pub enum PredictionType {
     Node,
     Link {
-        /// When `true`, each list element becomes a separate output row.
-        explode: bool,
         /// When `true`, include a FREQUENCY column counting occurrences of each
         /// distinct value. Set for RANK problems; unset for CLASSIFY.
         include_frequency: bool,
@@ -209,6 +317,12 @@ pub enum Op<U: UnitSystem> {
         target_op: Box<Op<U>>,
         /// Lag offsets applied to the anchor timestamp.
         lag_offsets: Vec<Dur<U>>,
+    },
+    /// Evaluate supervised forecasting labels across horizon offsets.
+    FutureLabels {
+        alias: String,
+        target_op: Box<Op<U>>,
+        future_offsets: Vec<Dur<U>>,
     },
     /// Fast boolean check: Returns true if any edge satisfies the path and filters.
     HasEdges {
@@ -377,6 +491,27 @@ mod tests {
     use super::*;
     use crate::time::Seconds;
 
+    /// Seals the kumo<->DG contract: the EXACT JSON `_apply_lp_resolution_plan`
+    /// emits for `plan['lp_resolution']` must deserialize into the Rust
+    /// `Vec<RefResolveSpec>` (field names + the snake_case Scalar/List enum).
+    #[test]
+    fn lp_resolution_round_trips_kumo_emitted_json() {
+        let json = r#"[
+            {"src_col":"ENTITY1","dst_table":"users","kind":"scalar","node_id_col":"entity_node_id"},
+            {"src_col":"TARGET1","dst_table":"products","kind":"list","node_id_col":"target_node_ids"}
+        ]"#;
+        let specs: Vec<RefResolveSpec> =
+            serde_json::from_str(json).expect("kumo lp_resolution must deserialize into RefResolveSpec");
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].src_col, "ENTITY1");
+        assert_eq!(specs[0].dst_table, "users");
+        assert_eq!(specs[0].kind, RefResolveKind::Scalar);
+        assert_eq!(specs[0].node_id_col, "entity_node_id");
+        assert_eq!(specs[1].src_col, "TARGET1");
+        assert_eq!(specs[1].kind, RefResolveKind::List);
+        assert_eq!(specs[1].node_id_col, "target_node_ids");
+    }
+
     /// Verify that a `DiskGraphTTPlan<Seconds>` serialized as JSON produces
     /// the same bytes as the old non-generic plan (plain i64 values).
     #[test]
@@ -400,6 +535,7 @@ mod tests {
                 lag_timesteps: None,
             }),
             prediction_type: PredictionType::Node,
+            is_prediction: false,
             split: Some(SplitSpec {
                 ratio: Some(vec![0.8, 0.2]),
                 kind: None,
@@ -417,9 +553,16 @@ mod tests {
                 manual_train_values: None,
                 manual_val_values: None,
                 manual_test_values: None,
+                month_offsets: None,
+                flexible_boundaries: None,
+                timeframe_step: None,
             }),
             stages: vec![],
             target_stype: None,
+            weight_col: None,
+            fkey_mapping: None,
+            lp_resolution: None,
+            lp_rhs_is_temporal: false,
         };
 
         let json = serde_json::to_string(&plan).unwrap();
@@ -471,6 +614,28 @@ mod tests {
             assert_eq!(lag_offsets[1].raw(), -172800);
         } else {
             panic!("expected Autoregression");
+        }
+    }
+
+    #[test]
+    fn op_future_labels_serde() {
+        let op = Op::<Seconds>::FutureLabels {
+            alias: "future".into(),
+            target_op: Box::new(Op::Column {
+                alias: "col".into(),
+                table: "T".into(),
+                column: "C".into(),
+            }),
+            future_offsets: vec![Dur::from_secs(0), Dur::from_secs(86400)],
+        };
+
+        let json = serde_json::to_string(&op).unwrap();
+        let back: Op<Seconds> = serde_json::from_str(&json).unwrap();
+        if let Op::FutureLabels { future_offsets, .. } = back {
+            assert_eq!(future_offsets[0].raw(), 0);
+            assert_eq!(future_offsets[1].raw(), 86400);
+        } else {
+            panic!("expected FutureLabels");
         }
     }
 }

@@ -458,6 +458,49 @@ mod tests {
         uncapped_grad.record_new_unique();
         assert!(!uncapped_grad.is_aborted());
     }
+
+    // -- TDigestEstimator tests --
+
+    #[test]
+    fn test_tdigest_quantile_at_arbitrary_q() {
+        // Feed a known distribution (uniform 0..1000) and verify that
+        // `quantile_at` is accurate at off-quartile probes.
+        let mut d = TDigestEstimator::new(TDigestEstimator::DEFAULT_DELTA);
+        for v in 0..1000 {
+            d.observe(v as f64);
+        }
+        // For uniform[0, N], the empirical q-quantile is ≈ q*(N-1).
+        // T-digest is most accurate at the tails (k1 scale function),
+        // so we accept ~0.5% absolute error of the range (== ~5 here).
+        let tol = 5.0;
+        for q in [0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99] {
+            let est = d.quantile_at(q);
+            let truth = q * 999.0;
+            assert!(
+                (est - truth).abs() < tol,
+                "q={q}: got {est}, expected ≈{truth} (tol={tol})"
+            );
+        }
+    }
+
+    #[test]
+    fn test_tdigest_quantile_at_empty_returns_zero() {
+        let mut d = TDigestEstimator::new(TDigestEstimator::DEFAULT_DELTA);
+        assert_eq!(d.quantile_at(0.5), 0.0);
+    }
+
+    #[test]
+    fn test_tdigest_quantile_at_flushes_buffer() {
+        // After a few observations smaller than buf_cap, internal buffer
+        // is non-empty. quantile_at must flush before answering.
+        let mut d = TDigestEstimator::new(TDigestEstimator::DEFAULT_DELTA);
+        for v in [10.0, 20.0, 30.0, 40.0, 50.0] {
+            d.observe(v);
+        }
+        // Without flush these would be buffered. quantile_at flushes.
+        let q50 = d.quantile_at(0.5);
+        assert!((10.0..=50.0).contains(&q50), "median {q50} out of range");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -470,6 +513,7 @@ mod tests {
 /// buffered; when the buffer fills, it is sorted and merged into the centroid
 /// list with compression controlled by the k1 scale function. Gives excellent
 /// accuracy at both tails and median, with O(δ) memory.
+#[derive(Debug, Clone)]
 pub struct TDigestEstimator {
     centroids: Vec<(f64, f64)>, // (mean, weight), sorted by mean
     max_size: usize,            // δ — compression parameter
@@ -585,6 +629,19 @@ impl TDigestEstimator {
             cum += weight;
         }
         self.centroids.last().unwrap().0
+    }
+
+    /// Estimate the value at quantile `q ∈ [0, 1]`.
+    ///
+    /// Takes `&mut self` because it must `flush()` the buffered observations
+    /// into the centroid list before scanning. Callers holding only `&self`
+    /// must clone the digest first (cheap — bounded by `delta` centroids).
+    ///
+    /// Returns `0.0` for an empty digest. For `q` outside `[0, 1]`, behavior
+    /// follows `quantile_inner` (clamps to the empirical extremes).
+    pub fn quantile_at(&mut self, q: f64) -> f64 {
+        self.flush();
+        self.quantile_inner(q)
     }
 
     pub fn quantiles(&mut self) -> Option<(f64, f64, f64)> {

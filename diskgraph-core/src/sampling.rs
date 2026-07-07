@@ -73,6 +73,28 @@ pub struct BatchSamplingRequest {
     pub flags: SamplingFlags,
 }
 
+/// Configuration for engine-side global negative RHS sampling.
+///
+/// For LP training, the engine draws `amount_m` global negative RHS nodes per
+/// positive (lhs, rhs) pair and appends them to `seed_nodes[rhs_node_type]` as
+/// additional sampling seeds, so their neighborhoods get GNN-encoded.
+///
+/// The negative draw's randomness is controlled by `rnd_seed`, *independently*
+/// of the shuffle seed: `None` ⇒ `thread_rng` (training/prod default: fresh
+/// negatives each epoch), `Some(x)` ⇒ deterministic/replay-safe (tests).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NegativeSamplingSpec {
+    /// RHS (target) node type to draw negatives from. Caller passes explicitly.
+    pub rhs_node_type: String,
+    /// Negatives drawn per positive (M). Total negatives = B * amount_m.
+    pub amount_m: usize,
+    /// RNG base for the negative draw. `None` ⇒ `thread_rng` (random, the
+    /// training/prod default); `Some(x)` ⇒ deterministic per-`(row, m)` ChaCha8
+    /// (tests). Decoupled from the iterator's shuffle seed so training can have
+    /// a deterministic shuffle *and* random negatives.
+    pub rnd_seed: Option<u64>,
+}
+
 /// The definition of a sampling traversal, organized by layers (hops).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamplingPlan {

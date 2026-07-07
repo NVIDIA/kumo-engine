@@ -47,6 +47,7 @@ fn base_table(name: &str) -> TableSpec {
         data_version: None,
         kumo_connector_id: None,
         kumo_source_table_name: None,
+        group_by_timestamp: false,
     }
 }
 
@@ -147,6 +148,7 @@ fn validate_missing_pk_column() {
             data_version: None,
             kumo_connector_id: None,
             kumo_source_table_name: None,
+            group_by_timestamp: false,
         }],
         rowpack: None,
         num_shards: None,
@@ -399,6 +401,7 @@ fn validate_edge_fk_missing_column() {
         data_version: None,
         kumo_connector_id: None,
         kumo_source_table_name: None,
+        group_by_timestamp: false,
     });
     assert_err_contains(meta, "edge fk column dst_id not found");
 }
@@ -460,6 +463,7 @@ fn validate_edge_fk_missing_table() {
         data_version: None,
         kumo_connector_id: None,
         kumo_source_table_name: None,
+        group_by_timestamp: false,
     });
     assert_err_contains(meta, "edge table Edge references missing table Missing");
 }
@@ -522,6 +526,7 @@ fn validate_edge_fk_ref_table_no_pk() {
         data_version: None,
         kumo_connector_id: None,
         kumo_source_table_name: None,
+        group_by_timestamp: false,
     });
     assert_err_contains(meta, "references Device which has no primary key");
 }
@@ -585,6 +590,7 @@ fn validate_edge_fk_int_string_ok() {
         data_version: None,
         kumo_connector_id: None,
         kumo_source_table_name: None,
+        group_by_timestamp: false,
     });
     assert!(meta.validate().is_ok());
 }
@@ -646,6 +652,7 @@ fn validate_edge_fk_string_int_ok() {
         data_version: None,
         kumo_connector_id: None,
         kumo_source_table_name: None,
+        group_by_timestamp: false,
     });
     assert!(meta.validate().is_ok());
 }
@@ -715,6 +722,7 @@ fn validate_edge_fk_string_bytes_ok() {
         data_version: None,
         kumo_connector_id: None,
         kumo_source_table_name: None,
+        group_by_timestamp: false,
     });
     assert!(meta.validate().is_ok());
 }
@@ -784,6 +792,7 @@ fn validate_edge_fk_string_bytes_len_mismatch() {
         data_version: None,
         kumo_connector_id: None,
         kumo_source_table_name: None,
+        group_by_timestamp: false,
     });
     assert!(meta.validate().is_ok());
 }
@@ -834,6 +843,7 @@ fn validate_edge_fk_uuid_ok() {
         data_version: None,
         kumo_connector_id: None,
         kumo_source_table_name: None,
+        group_by_timestamp: false,
     });
     assert!(meta.validate().is_ok());
 }
@@ -884,6 +894,7 @@ fn validate_edge_fk_uuid_mismatch() {
         data_version: None,
         kumo_connector_id: None,
         kumo_source_table_name: None,
+        group_by_timestamp: false,
     });
     assert_err_contains(meta, "incompatible types");
 }
@@ -1197,12 +1208,17 @@ mod new_schema_types {
             dst_table: "users".into(),
             forward: None,
             reverse: None,
+            external_parent: false,
+            bidirectional: true,
         };
         let json = serde_json::to_string(&spec).unwrap();
         assert!(json.contains(r#""src_column":"user_id""#));
         assert!(json.contains(r#""dst_table":"users""#));
         assert!(!json.contains(r#""forward""#));
         assert!(!json.contains(r#""reverse""#));
+        // Default external_parent (false) and bidirectional (true) should be skipped.
+        assert!(!json.contains(r#""external_parent""#));
+        assert!(!json.contains(r#""bidirectional""#));
     }
 
     #[test]
@@ -1234,6 +1250,8 @@ mod new_schema_types {
                     dtype: "float16".into(),
                 }),
             }),
+            external_parent: false,
+            bidirectional: true,
         };
         let json = serde_json::to_string(&spec).unwrap();
         assert!(json.contains(r#""forward""#));
@@ -1276,6 +1294,7 @@ mod new_schema_types {
             data_version: None,
             kumo_connector_id: None,
             kumo_source_table_name: None,
+            group_by_timestamp: false,
         };
         let json = serde_json::to_string(&table).unwrap();
         assert!(json.contains(r#""source""#));
@@ -1314,10 +1333,13 @@ mod new_schema_types {
                 dst_table: "users".into(),
                 forward: None,
                 reverse: None,
+                external_parent: false,
+                bidirectional: true,
             }],
             data_version: None,
             kumo_connector_id: None,
             kumo_source_table_name: None,
+            group_by_timestamp: false,
         };
         let json = serde_json::to_string(&table).unwrap();
         assert!(json.contains(r#""fkeys""#));
@@ -1344,6 +1366,7 @@ mod new_schema_types {
             data_version: None,
             kumo_connector_id: None,
             kumo_source_table_name: None,
+            group_by_timestamp: false,
         };
         let json = serde_json::to_string(&table).unwrap();
         assert!(json.contains(r#""create_time":"start_date""#));
@@ -1495,9 +1518,38 @@ mod new_schema_types {
             dst_table: "dst".into(),
             forward: Some(DirectionSpec::default()),
             reverse: None,
+            external_parent: false,
+            bidirectional: true,
         };
         let json = serde_json::to_string(&original).unwrap();
         let parsed: FKeySpec = serde_json::from_str(&json).unwrap();
         assert_eq!(original, parsed);
     }
+}
+
+// TT-NG timestamp grouping gate: the `group_by_timestamp` field must be OMITTED
+// from serialized JSON when false (byte-identical to pre-feature output) and
+// present when true. This pins the "byte-identical when disabled" guarantee.
+#[test]
+fn group_by_timestamp_omitted_when_false() {
+    let table = base_table("t");
+    assert!(!table.group_by_timestamp, "default is false");
+    let json = serde_json::to_string(&table).unwrap();
+    assert!(
+        !json.contains("group_by_timestamp"),
+        "field must be omitted when false; got: {json}"
+    );
+    // Round-trips back to false.
+    let back: TableSpec = serde_json::from_str(&json).unwrap();
+    assert!(!back.group_by_timestamp);
+}
+
+#[test]
+fn group_by_timestamp_present_when_true() {
+    let mut table = base_table("t");
+    table.group_by_timestamp = true;
+    let json = serde_json::to_string(&table).unwrap();
+    assert!(json.contains("\"group_by_timestamp\":true"));
+    let back: TableSpec = serde_json::from_str(&json).unwrap();
+    assert!(back.group_by_timestamp);
 }

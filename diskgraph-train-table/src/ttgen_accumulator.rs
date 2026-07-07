@@ -27,6 +27,26 @@ pub enum Accumulator {
 }
 
 impl Accumulator {
+    /// Create a fresh accumulator for the given function.
+    pub fn new(func: diskgraph_core::tt_builder::AggFunc, limit: Option<u32>) -> Self {
+        use diskgraph_core::tt_builder::AggFunc;
+        match func {
+            AggFunc::Count => Accumulator::Count(0),
+            AggFunc::Sum => Accumulator::Sum(0.0),
+            AggFunc::Avg => Accumulator::Avg(WelfordAccumulator::new()),
+            AggFunc::Min => Accumulator::Min(f64::INFINITY),
+            AggFunc::Max => Accumulator::Max(f64::NEG_INFINITY),
+            AggFunc::CountDistinct => Accumulator::CountDistinct(HashSet::new()),
+            AggFunc::ListDistinct => Accumulator::ListDistinct {
+                set: HashSet::new(),
+                values: Vec::new(),
+                limit,
+            },
+            AggFunc::First => Accumulator::First(None),
+            AggFunc::Last => Accumulator::Last(None),
+        }
+    }
+
     /// Convert the accumulated state into a final output value.
     ///
     /// Returns `None` for accumulators with no observed data (AVG, MIN, MAX,

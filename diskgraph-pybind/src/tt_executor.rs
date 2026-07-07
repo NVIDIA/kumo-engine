@@ -1,1412 +1,1375 @@
-//! PyO3 binding for the TT-gen executor.
+//! PyO3 bindings for the TT-gen executor.
 //!
-//! Exposes [`execute_tt_plan`] as a `#[pyfunction]` that returns a
-//! `TTPlanIterator` yielding `pyarrow.RecordBatch` objects one at a time.
-#![allow(
-    clippy::inconsistent_digit_grouping,
-    clippy::manual_contains,
-    clippy::needless_late_init,
-    clippy::needless_question_mark,
-    clippy::needless_range_loop,
-    clippy::redundant_closure,
-    clippy::too_many_arguments,
-    clippy::type_complexity,
-    clippy::while_let_on_iterator
-)]
+//! Surface area:
+//!
+//! * [`execute_tt_plan`] — run a plan against an index and write
+//!   `tt.parquet`, `split.bin`, and `manifest.json` to the output dir.
+//! * [`read_tt_parquet_batches`] — open a TT parquet and yield
+//!   `pyarrow.RecordBatch` objects. Bridge for `diskgraph_batch_pred.py`
+//!   (kumo) until that path is ported to Rust.
+//! * [`build_prediction_table_edge_bundle_artifact`] — JSON-only artifact
+//!   builder (file metadata + checksums) used by the prediction-table
+//!   workflow in `prediction_artifacts.py`.
+//! * [`persist_prediction_artifact_bundle`] — manifest writer for the
+//!   prediction-table workflow.
+//!
+//! The legacy `execute_tt_plan_materialize_with_split` path and the entire
+//! TT artifact-bundle Python wrapper layer were deleted when this crate
+//! took over TT-gen; their helpers, downsampling decision tree, pre-DS
+//! scratch I/O, and post-DS col-stats recompute have been removed.
+#![allow(clippy::too_many_arguments)]
 
-use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::path::Path;
-use std::sync::Arc;
-use std::thread::JoinHandle;
+
+use arrow::pyarrow::ToPyArrow;
+use arrow_array::RecordBatch;
+use arrow_schema::SchemaRef;
+use diskgraph_core::time::Seconds;
+use diskgraph_core::tt_builder::{DiskGraphTTPlan, RefResolveKind, RefResolveSpec, TTFKeySpec};
+use diskgraph_train_table::ttgen_executor::{execute_tt_pass, StageGenInfo, TTPassOutput};
+use diskgraph_train_table::ttgen_output::{PRIMARY_ENTITY_COL, PRIMARY_TARGET_COL, TIMESTAMP_COL};
+use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
+use parquet::arrow::ProjectionMask;
+use pyo3::prelude::*;
+use pyo3::types::PyDict;
+use pyo3::Py;
+use serde_json::{json, Value};
 use tracing::info;
 
-fn get_current_rss_mb() -> usize {
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(content) = std::fs::read_to_string("/proc/self/statm") {
-            let parts: Vec<&str> = content.split_whitespace().collect();
-            if parts.len() >= 2 {
-                if let Ok(rss_pages) = parts[1].parse::<usize>() {
-                    // Page size is usually 4KB on Linux
-                    return (rss_pages * 4096) / 1024 / 1024;
-                }
-            }
-        }
-    }
-    0
-}
-
-use crate::split_assignments;
-use arrow::compute::take;
-use arrow::pyarrow::ToPyArrow;
-use arrow_array::builder::{
-    BooleanBuilder, Float64Builder, Int64Builder, ListBuilder, StringBuilder,
-    TimestampNanosecondBuilder,
+use crate::artifact_helpers::{
+    artifact_ref, ensure_artifacts_dir, merge_prefixed_checksums, sha256_hex_bytes,
+    sha256_hex_path, write_artifact_file, write_manifest_json,
 };
-use arrow_array::{
-    Array, BooleanArray, Float64Array, Int64Array, ListArray, RecordBatch, StringArray,
-    TimestampNanosecondArray, UInt8Array,
-};
-use arrow_schema::{DataType, Field, Schema};
-use chrono::{DateTime, NaiveDate, TimeZone, Utc};
-use crossbeam_channel::Receiver;
-use diskgraph_core::time::{abs_from_unit, Nanoseconds, Seconds, TimeUnit};
-use diskgraph_core::tt_builder::DiskGraphTTPlan;
-use diskgraph_train_table::errors::TTGenResult;
-use diskgraph_train_table::ttgen_resolve::{AUTOREGRESSION_OUTPUT_ALIAS, YOY_OUTPUT_ALIAS};
-use diskgraph_train_table::ttgen_stats::TTExecutionSummary;
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use parquet::arrow::ArrowWriter;
-use parquet::basic::Compression;
-use parquet::file::properties::WriterProperties;
-use parquet::file::reader::FileReader;
-use pyo3::exceptions::PyStopIteration;
-use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict};
-use pyo3::Py;
-use rand::rngs::StdRng;
-use rand::SeedableRng;
-use serde_json::{json, Value};
 
-#[derive(Debug, Clone, Default)]
-struct SequenceFeatureStats {
-    count: u64,
-    null_count: u64,
-    min_len: Option<i64>,
-    max_len: Option<i64>,
+// ─── cross-job ingest spec ──────────────────────────────────────────────────
+
+/// Schema version stamped into `tt_ingest_spec.json`. Bump when the on-disk
+/// contract changes incompatibly.
+pub(crate) const TT_INGEST_SPEC_SCHEMA_VERSION: &str = "diskgraph.tt_ingest_spec.v1";
+
+/// DG's own cross-job hand-off contract, written by [`execute_tt_gen`] into the
+/// staging dir (sibling of `tt.parquet`) and read back by [`execute_tt_ingest`].
+///
+/// It carries EVERYTHING the ingest/publish phase needs from the in-memory
+/// `plan` that is no longer available in the separate ingest job:
+///
+/// * `fkey_mapping` — the exact `plan.fkey_mapping`, serialized as the real
+///   [`TTFKeySpec`] type (NOT a hand-rolled field list) so that when a later
+///   branch adds e.g. `list_fk: bool #[serde(default)]` to `TTFKeySpec`, it
+///   threads through this spec automatically with no change here.
+/// * `entity_table` — `plan.entity.table`, the fallback `dst_table` for the
+///   primary-entity FK used by `ingest_stage_parquets_into_extension` when
+///   `fkey_mapping` is `None`.
+///
+/// The returned task-dataset dict's column names (`primary_entity`,
+/// `primary_target`, `timestamp`) and stage table names are compile-time
+/// constants (`PRIMARY_ENTITY_COL` etc.), not plan-derived, so they do not
+/// need to be carried in the spec.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct TtIngestSpec {
+    pub schema_version: String,
+    pub tt_id: String,
+    #[serde(default)]
+    pub fkey_mapping: Option<Vec<TTFKeySpec>>,
+    pub entity_table: String,
+    /// FK-free LP "resolution mode" (see `ttng-lp-fkfree-resolution-design.md`
+    /// §S3). When `Some(_)`, `execute_tt_ingest` resolves the listed reference
+    /// columns to graph node-ids and writes them as rowpack columns (no FK
+    /// edge) instead of materializing `external_parent` edges. `None` (serde
+    /// default, back-compat) → the existing edge-materializing ingest.
+    #[serde(default)]
+    pub lp_resolution: Option<Vec<RefResolveSpec>>,
+    /// `plan.split.is_temporal`, carried so the ingest-output manifest is
+    /// self-describing. `#[serde(default)]` → old specs deserialize as `false`.
+    #[serde(default)]
+    pub is_temporal: bool,
+    /// `plan.lp_rhs_is_temporal` (kumo-computed data-condition for grouping):
+    /// `true` iff LP whose RHS/target table has a create-time or end-time
+    /// column. The split ingest path gates `bucket_index` on
+    /// `lp_resolution.is_some() && lp_rhs_is_temporal`. `#[serde(default)]` →
+    /// old specs deserialize as `false` (flat).
+    #[serde(default)]
+    pub lp_rhs_is_temporal: bool,
+    /// Per-stage seed parquets gen produced, with row counts + seed-times.
+    /// `Some` on the split path; `None` on the no-split (prediction) path.
+    /// Set by `execute_tt_gen` from the pass output, not derivable from the plan.
+    #[serde(default)]
+    pub split_stages: Option<Vec<StageGenInfo>>,
 }
 
-impl SequenceFeatureStats {
-    fn observe(&mut self, array: &dyn Array, row: usize) {
-        if array.is_null(row) {
-            self.null_count += 1;
-            return;
-        }
-        if let Some(list) = array.as_any().downcast_ref::<ListArray>() {
-            let len = list.value_length(row) as i64;
-            self.count += 1;
-            self.min_len = Some(self.min_len.map_or(len, |current| current.min(len)));
-            self.max_len = Some(self.max_len.map_or(len, |current| current.max(len)));
-        }
-    }
-}
-
-fn is_numeric_list_dtype(dtype: &DataType) -> bool {
-    let DataType::List(field) = dtype else {
-        return false;
-    };
-    matches!(
-        field.data_type(),
-        DataType::Float16
-            | DataType::Float32
-            | DataType::Float64
-            | DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::Int64
-            | DataType::UInt8
-            | DataType::UInt16
-            | DataType::UInt32
-            | DataType::UInt64
-    )
-}
-
-fn is_sequence_feature_field(field: &Field, time_col_name: &str) -> bool {
-    let name = field.name().as_str();
-    !matches!(
-        name,
-        "ENTITY" | "TARGET" | "__kumo_internal_frequency_column__" | "ENTITY_INCLUDE_BIT"
-    ) && name != time_col_name
-        && name != AUTOREGRESSION_OUTPUT_ALIAS
-        && name != YOY_OUTPUT_ALIAS
-        && is_numeric_list_dtype(field.data_type())
-}
-
-fn sequence_feature_indices_from_schema(schema: &Schema,
-                                        time_col_name: &str)
-                                        -> Vec<(usize, String)> {
-    schema
-        .fields()
-        .iter()
-        .enumerate()
-        .filter(|(_, field)| is_sequence_feature_field(field.as_ref(), time_col_name))
-        .map(|(idx, field)| (idx, field.name().clone()))
-        .collect()
-}
-
-fn new_sequence_feature_stats(
-    sequence_feature_indices: &[(usize, String)]
-) -> HashMap<String, SequenceFeatureStats> {
-    sequence_feature_indices
-        .iter()
-        .map(|(_, name)| (name.clone(), SequenceFeatureStats::default()))
-        .collect()
-}
-
-fn observe_sequence_feature_stats_for_batch(
-    batch: &RecordBatch,
-    sequence_feature_indices: &[(usize, String)],
-    sequence_feature_stats: &mut HashMap<String, SequenceFeatureStats>,
-) {
-    for row in 0..batch.num_rows() {
-        for (idx, name) in sequence_feature_indices {
-            if let Some(stats) = sequence_feature_stats.get_mut(name) {
-                stats.observe(batch.column(*idx).as_ref(), row);
-            }
+impl TtIngestSpec {
+    pub(crate) fn from_plan(tt_id: &str, plan: &DiskGraphTTPlan<Seconds>) -> Self {
+        Self {
+            schema_version: TT_INGEST_SPEC_SCHEMA_VERSION.to_string(),
+            tt_id: tt_id.to_string(),
+            fkey_mapping: plan.fkey_mapping.clone(),
+            entity_table: plan.entity.table.clone(),
+            lp_resolution: plan.lp_resolution.clone(),
+            is_temporal: plan.split.as_ref().and_then(|s| s.is_temporal).unwrap_or(false),
+            lp_rhs_is_temporal: plan.lp_rhs_is_temporal,
+            // Filled by `execute_tt_gen` from the pass output.
+            split_stages: None,
         }
     }
 }
 
-fn add_sequence_feature_stats_to_payload(
-    result: &mut Value,
-    sequence_feature_stats: HashMap<String, SequenceFeatureStats>,
-    data_version: &str,
-) {
-    use diskgraph_core::accumulators::{kumo_entry, kumo_key, kumo_safe_div};
-
-    let Some(stats_map) = result.get_mut("stats").and_then(Value::as_object_mut) else {
-        return;
-    };
-
-    for (name, stats) in sequence_feature_stats {
-        let total = stats.count + stats.null_count;
-        stats_map.insert(
-            kumo_key(&name, "kumo.sequence", "COUNT", false),
-            kumo_entry(json!(total), false, data_version, total),
-        );
-        stats_map.insert(
-            kumo_key(&name, "kumo.sequence", "NUM_NA", false),
-            kumo_entry(json!(stats.null_count), false, data_version, total),
-        );
-        stats_map.insert(
-            kumo_key(&name, "kumo.sequence", "NA_FRACTION", false),
-            kumo_entry(
-                json!(kumo_safe_div(stats.null_count, total)),
-                false,
-                data_version,
-                total,
-            ),
-        );
-        stats_map.insert(
-            kumo_key(&name, "kumo.sequence", "INVALID_FRACTION", false),
-            kumo_entry(json!(0.0), false, data_version, total),
-        );
-        stats_map.insert(
-            kumo_key(&name, "kumo.sequence", "SEQUENCE_MIN_LENGTH", false),
-            kumo_entry(
-                json!(stats.min_len.unwrap_or(0)),
-                false,
-                data_version,
-                total,
-            ),
-        );
-        stats_map.insert(
-            kumo_key(&name, "kumo.sequence", "SEQUENCE_MAX_LENGTH", false),
-            kumo_entry(
-                json!(stats.max_len.unwrap_or(0)),
-                false,
-                data_version,
-                total,
-            ),
-        );
-    }
+/// Derive the FK-free LP RHS (target) node type from a resolution plan: it is
+/// the `dst_table` of the single `List`-kind reference (`TARGET1` → RHS table).
+/// `None` for non-LP plans (no resolution, or only the `Scalar` entity ref).
+pub(crate) fn rhs_node_type_from_resolution(
+    lp_resolution: &Option<Vec<RefResolveSpec>>,
+) -> Option<String> {
+    lp_resolution.as_ref().and_then(|specs| {
+        specs
+            .iter()
+            .find(|s| s.kind == RefResolveKind::List)
+            .map(|s| s.dst_table.clone())
+    })
 }
 
-#[pyclass]
-pub struct TTPlanIterator {
-    receiver: Option<Receiver<RecordBatch>>,
-    handle: Option<JoinHandle<TTGenResult<TTExecutionSummary>>>,
-    summary: Option<TTExecutionSummary>,
-}
+// ─── execute_tt_plan ─────────────────────────────────────────────────────────
 
-impl TTPlanIterator {
-    fn finish_execution(&mut self) -> TTGenResult<()> {
-        if self.summary.is_some() {
-            return Ok(());
-        }
-
-        self.receiver = None;
-        if let Some(handle) = self.handle.take() {
-            match handle.join() {
-                Ok(Ok(summary)) => {
-                    self.summary = Some(summary);
-                    Ok(())
-                }
-                Ok(Err(e)) => Err(e),
-                Err(_) => Err(diskgraph_train_table::errors::TTGenError::SystemError(
-                    "TT-gen executor thread panicked".to_string(),
-                )),
-            }
-        } else {
-            Ok(())
-        }
-    }
-}
-
-impl Drop for TTPlanIterator {
-    fn drop(&mut self) {
-        // Drop the receiver first to unblock any workers stuck on send().
-        self.receiver = None;
-        // Join the handle with GIL released to avoid deadlock with pyo3-log.
-        // The background thread uses tracing::info! which routes through
-        // pyo3-log and needs the GIL. Drop is called with GIL held (Python GC),
-        // so we must release it before joining.
-        if let Some(handle) = self.handle.take() {
-            let _ = pyo3::Python::attach(|py| py.detach(|| handle.join()));
-        }
-    }
-}
-
-#[pymethods]
-impl TTPlanIterator {
-    fn __iter__(slf: PyRef<Self>) -> PyRef<Self> {
-        slf
-    }
-
-    fn __next__(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let receiver = match &self.receiver {
-            Some(r) => r.clone(),
-            None => return Err(PyStopIteration::new_err(())),
-        };
-
-        let result = py.detach(|| receiver.recv());
-
-        match result {
-            Ok(batch) => batch.to_pyarrow(py).map(|b| b.unbind()),
-            Err(_) => {
-                self.receiver = None;
-
-                // Join the background thread with GIL released.
-                // The bg thread uses tracing::info! which routes through
-                // pyo3-log and needs the GIL. If we hold the GIL while
-                // joining, the bg thread can't log and we deadlock.
-                if self.summary.is_none() {
-                    if let Some(handle) = self.handle.take() {
-                        let join_result = py.detach(|| handle.join());
-                        match join_result {
-                            Ok(Ok(summary)) => { self.summary = Some(summary); }
-                            Ok(Err(e)) => {
-                                return Err(crate::map_ttgen_err(e));
-                            }
-                            Err(_) => {
-                                return Err(crate::DiskgraphSystemError::new_err(
-                                    "TT-gen executor thread panicked"));
-                            }
-                        }
-                    }
-                }
-
-                Err(PyStopIteration::new_err(()))
-            }
-        }
-    }
-
-    /// Returns the final execution summary.
-    ///
-    /// If called before stream exhaustion, this forces finalization and blocks
-    /// until all workers complete.
-    fn execution_summary(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        self.finish_execution().map_err(crate::map_ttgen_err)?;
-
-        let out = PyDict::new(py);
-        if let Some(summary) = &self.summary {
-            out.set_item("rows_written", summary.rows_written)?;
-            // Backward-compatible top-level aliases expected by Kumo.
-            out.set_item("output_rows", summary.rows_written)?;
-            if let Some(stats) = &summary.stats {
-                out.set_item("pre_target_drop_rows", stats.num_total_rows)?;
-                let stats_dict = PyDict::new(py);
-                stats_dict.set_item("version", stats.version)?;
-                stats_dict.set_item("num_total_rows", stats.num_total_rows)?;
-                stats_dict.set_item("num_train_rows", stats.num_train_rows)?;
-                stats_dict.set_item("num_entities", stats.num_entities)?;
-                stats_dict.set_item("num_targets", stats.num_targets)?;
-                stats_dict.set_item("num_links", stats.num_links)?;
-
-                let exact_dict = PyDict::new(py);
-                let entity = PyDict::new(py);
-                entity.set_item("count", stats.exact_stats.entity.count)?;
-                entity.set_item("null_count", stats.exact_stats.entity.null_count)?;
-                entity.set_item("num_unique", stats.exact_stats.entity.num_unique)?;
-                entity.set_item("min", stats.exact_stats.entity.min)?;
-                entity.set_item("max", stats.exact_stats.entity.max)?;
-                exact_dict.set_item("entity", entity)?;
-
-                let timestamp = PyDict::new(py);
-                timestamp.set_item("count", stats.exact_stats.timestamp.count)?;
-                timestamp.set_item("null_count", stats.exact_stats.timestamp.null_count)?;
-                timestamp.set_item("num_unique", stats.exact_stats.timestamp.num_unique)?;
-                timestamp.set_item("min", stats.exact_stats.timestamp.min)?;
-                timestamp.set_item("max", stats.exact_stats.timestamp.max)?;
-                exact_dict.set_item("timestamp", timestamp)?;
-
-                let target = PyDict::new(py);
-                target.set_item("count", stats.exact_stats.target.count)?;
-                target.set_item("null_count", stats.exact_stats.target.null_count)?;
-                target.set_item("num_unique", stats.exact_stats.target.num_unique)?;
-                target.set_item("min", stats.exact_stats.target.min)?;
-                target.set_item("max", stats.exact_stats.target.max)?;
-                exact_dict.set_item("target", target)?;
-
-                if let Some(freq) = &stats.exact_stats.frequency {
-                    let frequency = PyDict::new(py);
-                    frequency.set_item("count", freq.count)?;
-                    frequency.set_item("null_count", freq.null_count)?;
-                    frequency.set_item("num_unique", freq.num_unique)?;
-                    frequency.set_item("min", freq.min)?;
-                    frequency.set_item("max", freq.max)?;
-                    exact_dict.set_item("frequency", frequency)?;
-                } else {
-                    exact_dict.set_item("frequency", py.None())?;
-                }
-
-                if let Some(bit) = &stats.exact_stats.entity_include_bit {
-                    let include = PyDict::new(py);
-                    include.set_item("count", bit.count)?;
-                    include.set_item("null_count", bit.null_count)?;
-                    include.set_item("true_count", bit.true_count)?;
-                    include.set_item("false_count", bit.false_count)?;
-                    exact_dict.set_item("entity_include_bit", include)?;
-                } else {
-                    exact_dict.set_item("entity_include_bit", py.None())?;
-                }
-
-                stats_dict.set_item("exact_stats", exact_dict)?;
-
-                if let Some(split) = &stats.split_payload {
-                    let split_dict = PyDict::new(py);
-                    split_dict.set_item("version", split.version)?;
-                    split_dict.set_item("status", split.status.as_str())?;
-                    split_dict
-                        .set_item("supports_native_execution", split.supports_native_execution)?;
-                    split_dict.set_item("split_kind", split.split_kind.as_deref())?;
-                    split_dict.set_item("derivation_method", split.derivation_method.as_deref())?;
-                    split_dict.set_item("num_total_rows", split.num_total_rows)?;
-                    if let Some(art) = &split.artifacts_v3 {
-                        let art_dict = PyDict::new(py);
-                        art_dict.set_item("strategy", art.strategy.as_str())?;
-                        art_dict.set_item("split_kind", art.split_kind.as_deref())?;
-                        art_dict.set_item("ratio", art.ratio.clone())?;
-                        art_dict.set_item("offsets", art.offsets.clone())?;
-                        art_dict.set_item("ranges", art.ranges.clone())?;
-                        art_dict.set_item("backtesting_timestamp", art.backtesting_timestamp)?;
-                        art_dict.set_item("split_column", art.split_column.as_deref())?;
-                        art_dict
-                            .set_item("manual_train_values", art.manual_train_values.clone())?;
-                        art_dict.set_item("manual_val_values", art.manual_val_values.clone())?;
-                        art_dict.set_item("manual_test_values", art.manual_test_values.clone())?;
-                        art_dict.set_item(
-                            "authoritative_supported_family",
-                            art.authoritative_supported_family,
-                        )?;
-                        if let Some(assignments) = &art.timestamp_stage_assignments {
-                            let py_assignments = pyo3::types::PyList::empty(py);
-                            for a in assignments {
-                                let item = PyDict::new(py);
-                                item.set_item("timestamp", a.timestamp)?;
-                                item.set_item("stage", a.stage.as_str())?;
-                                py_assignments.append(item)?;
-                            }
-                            art_dict.set_item("timestamp_stage_assignments", py_assignments)?;
-                        } else {
-                            art_dict.set_item("timestamp_stage_assignments", py.None())?;
-                        }
-                        if let Some(sizes) = &art.index_stage_sizes {
-                            let sizes_dict = PyDict::new(py);
-                            sizes_dict.set_item("train", sizes.train)?;
-                            sizes_dict.set_item("val", sizes.val)?;
-                            sizes_dict.set_item("test", sizes.test)?;
-                            art_dict.set_item("index_stage_sizes", sizes_dict)?;
-                        } else {
-                            art_dict.set_item("index_stage_sizes", py.None())?;
-                        }
-                        split_dict.set_item("artifacts", art_dict.clone())?;
-                        split_dict.set_item("artifacts_v3", art_dict)?;
-                    } else {
-                        split_dict.set_item("artifacts", py.None())?;
-                        split_dict.set_item("artifacts_v3", py.None())?;
-                    }
-                    if let Some(mask_counts) = &split.mask_counts {
-                        let counts = PyDict::new(py);
-                        counts.set_item("train", mask_counts.train)?;
-                        counts.set_item("val", mask_counts.val)?;
-                        counts.set_item("test", mask_counts.test)?;
-                        split_dict.set_item("mask_counts", counts)?;
-                    } else {
-                        split_dict.set_item("mask_counts", py.None())?;
-                    }
-                    stats_dict.set_item("split_payload", split_dict)?;
-                } else {
-                    stats_dict.set_item("split_payload", py.None())?;
-                }
-
-                // Per-timestamp row counts for accurate stats_per_timeframe
-                if !stats.timestamp_counts.is_empty() {
-                    let tc_dict = PyDict::new(py);
-                    for (ts, count) in &stats.timestamp_counts {
-                        tc_dict.set_item(ts.to_string(), *count)?;
-                    }
-                    stats_dict.set_item("timestamp_counts", tc_dict)?;
-                }
-
-                // Inline col stats for encoder inference (computed during execution)
-                if let Some(col_stats) = &stats.parsed_train_table_col_stats {
-                    let col_stats_json = serde_json::to_string(col_stats)
-                        .map_err(|e| crate::DiskgraphSystemError::new_err(e.to_string()))?;
-                    stats_dict.set_item("parsed_train_table_col_stats_json", col_stats_json)?;
-                }
-
-                out.set_item("stats", stats_dict)?;
-            } else {
-                return Err(crate::DiskgraphSystemError::new_err(
-                    "TT-gen summary missing stats payload; cannot produce pre_target_drop_rows",
-                ));
-            }
-        } else {
-            return Err(crate::DiskgraphSystemError::new_err(
-                "TT-gen execution summary is unavailable",
-            ));
-        }
-
-        Ok(out.into())
-    }
-}
-
+/// Run a TT-gen plan against a DiskGraph index. Writes TT artifacts and
+/// ingested stage tables under `index_path/train_tables/<tt_id>/`. Returns the
+/// native DiskGraph TT execute result for Kumo's runtime task-dataset manifest
+/// writer. This new wheel intentionally does not return the old Kumo artifact
+/// bundle shape.
 #[pyfunction]
-#[tracing::instrument(level = "info", skip_all, fields(index_path = %index_path))]
+#[tracing::instrument(
+    level = "info",
+    skip_all,
+    fields(index_path = %index_path, tt_id = %tt_id)
+)]
 pub fn execute_tt_plan(
     py: Python<'_>,
     plan_json: &str,
     index_path: &str,
-) -> PyResult<TTPlanIterator> {
-    info!("Legacy execute_tt_plan started");
+    tt_id: &str,
+) -> PyResult<Py<PyAny>> {
+    validate_tt_id(tt_id)?;
+    info!(
+        "execute_tt_plan started (TT-NG end-state path) tt_id={}",
+        tt_id
+    );
     let plan: DiskGraphTTPlan<Seconds> = serde_json::from_str(plan_json)
         .map_err(|e| crate::DiskgraphConfigError::new_err(format!("invalid plan JSON: {e}")))?;
 
     let idx = index_path.to_owned();
+    let tt_id_owned = tt_id.to_owned();
 
-    let (receiver, handle) = py
-        .detach(|| {
-            diskgraph_train_table::ttgen_executor::execute_with_summary(&plan, Path::new(&idx))
+    let (manifest_stages, tt_extension_path): (Vec<ManifestStage>, String) = py
+        .detach(|| -> diskgraph_train_table::errors::TTGenResult<_> {
+            let index_root = Path::new(&idx);
+            let tt_root = index_root.join("train_tables").join(&tt_id_owned);
+            let staging_root = staging_root_for(index_root, &tt_id_owned);
+            let ingest_root = ingest_root_for(index_root, &tt_id_owned);
+            for tmp in [&staging_root, &ingest_root] {
+                if tmp.exists() {
+                    std::fs::remove_dir_all(tmp)?;
+                }
+            }
+            std::fs::create_dir_all(&staging_root)?;
+
+            // Gen inline (NOT via execute_tt_gen — that's a separate Python
+            // entry point), then drive ingest/publish through the SAME shared
+            // helpers the split execute_tt_ingest uses.
+            let pass_output = execute_tt_pass(&plan, index_root, &staging_root)?;
+            let artifacts = StagedTtArtifacts::from_pass_output(&pass_output)?;
+            let stages = resolve_ingest_stages(
+                &staging_root,
+                &pass_output.tt_parquet_path,
+                DEFAULT_PREDICT_STAGE,
+                pass_output.stage_gen_infos.as_deref(),
+            )?;
+            // Build the per-stage `bucket_index` only when single-timestamp
+            // grouping can actually be used: resolution-mode LP whose RHS/target
+            // table is temporal (kumo-computed `lp_rhs_is_temporal`). This
+            // mirrors the kumo LOAD gate and legacy's `TimestampSampler` RHS
+            // check — an atemporal RHS (e.g. amazon `products`) builds no bucket
+            // index and the LOAD gate stays flat. Byte-identical otherwise.
+            let group_by_timestamp =
+                plan.lp_resolution.is_some() && plan.lp_rhs_is_temporal;
+            let manifest_stages = ingest_resolved_stages(
+                &stages,
+                &tt_id_owned,
+                &ingest_root,
+                index_root,
+                &plan.fkey_mapping,
+                &plan.entity.table,
+                &plan.lp_resolution,
+                &artifacts,
+                &tt_root,
+                group_by_timestamp,
+            )?;
+            let _ = std::fs::remove_dir_all(&staging_root);
+            Ok((manifest_stages, tt_root.to_string_lossy().to_string()))
         })
         .map_err(crate::map_ttgen_err)?;
 
-    Ok(TTPlanIterator {
-        receiver: Some(receiver),
-        handle: Some(handle),
-        summary: None,
+    // Self-describing manifest fields, derived from the plan (the fused path
+    // has the plan in hand; the split ingest path recovers them from the spec).
+    let is_temporal = plan.split.as_ref().and_then(|s| s.is_temporal).unwrap_or(false);
+    let rhs_node_type = rhs_node_type_from_resolution(&plan.lp_resolution);
+    write_tt_manifest_and_build_result(
+        py,
+        index_path,
+        tt_id,
+        &tt_extension_path,
+        &manifest_stages,
+        is_temporal,
+        rhs_node_type.as_deref(),
+    )
+}
+
+/// Staging-dir convention for the split gen/ingest hand-off: a hidden sibling
+/// of the published `<index>/train_tables/<tt_id>/` extension. This is the SAME
+/// dir the fused `execute_tt_plan` uses for its pre-publish artifacts.
+pub(crate) fn staging_root_for(index_path: &Path, tt_id: &str) -> std::path::PathBuf {
+    index_path
+        .join("train_tables")
+        .join(format!(".{}.staging", tt_id))
+}
+
+/// Hidden sibling holding the unpublished ingested extension before the atomic
+/// rename into `<index>/train_tables/<tt_id>/`.
+pub(crate) fn ingest_root_for(index_path: &Path, tt_id: &str) -> std::path::PathBuf {
+    index_path
+        .join("train_tables")
+        .join(format!(".{}.ingested", tt_id))
+}
+
+/// Filename of DG's cross-job ingest spec, written by [`execute_tt_gen`] as a
+/// sibling of `tt.parquet` and read back by [`execute_tt_ingest`].
+pub(crate) const TT_INGEST_SPEC_FILENAME: &str = "tt_ingest_spec.json";
+
+/// One ingest stage: manifest key, seed-table name, parquet part(s), row count,
+/// and seed-time `(min,max)`. The predict path leaves `count`/`seed_time` `None`
+/// (count read back post-publish) with a single part (`tt.parquet`); the split
+/// path may carry several `part-*.parquet` files into one stage table.
+#[derive(Debug, Clone)]
+pub(crate) struct StageSpec {
+    pub key: String,
+    pub table_name: String,
+    pub parquet_paths: Vec<std::path::PathBuf>,
+    pub count: Option<u64>,
+    pub seed_time: Option<[i64; 2]>,
+}
+
+/// Relative part filenames (`<stage_table>/part-NNNNN.parquet`, recorded by
+/// pass-B in `StageGenInfo.parts`) for one gen stage. The single seam treating
+/// a stage as N parts.
+fn stage_part_filenames(info: &StageGenInfo) -> Vec<String> {
+    info.parts.clone()
+}
+
+/// THE single split/predict fork. With per-stage seed parquets
+/// (`stage_gen_infos`), build a [`StageSpec`] per stage from its
+/// `part-*.parquet` files under `<staging_dir>`; otherwise (no-split predict)
+/// emit one `<predict_key>_seeds` stage covering the whole `tt.parquet`.
+pub(crate) fn resolve_ingest_stages(
+    staging_dir: &Path,
+    tt_parquet: &Path,
+    predict_key: &str,
+    stage_gen_infos: Option<&[StageGenInfo]>,
+) -> diskgraph_train_table::errors::TTGenResult<Vec<StageSpec>> {
+    match stage_gen_infos {
+        Some(infos) => Ok(infos
+            .iter()
+            .map(|info| StageSpec {
+                key: info.key.clone(),
+                table_name: info.table_name.clone(),
+                // Resolve every part relative to the staging dir.
+                parquet_paths: stage_part_filenames(info)
+                    .into_iter()
+                    .map(|part| staging_dir.join(part))
+                    .collect(),
+                count: Some(info.row_count),
+                seed_time: info.seed_time,
+            })
+            .collect()),
+        None => Ok(vec![StageSpec {
+            key: predict_key.to_string(),
+            table_name: format!("{predict_key}_seeds"),
+            // No-split (predict) path: the single `tt.parquet` is the one part.
+            parquet_paths: vec![tt_parquet.to_path_buf()],
+            count: None,
+            seed_time: None,
+        }]),
+    }
+}
+
+// ─── execute_tt_gen ──────────────────────────────────────────────────────────
+
+/// Run ONLY the ttgen phase of a TT plan (no demux, no edge ingest, no
+/// publish). Writes `tt.parquet`, `split.bin`, `manifest.json`, and the
+/// kumo-contract stats sidecars into a single staging dir
+/// (`<index>/train_tables/.<tt_id>.staging/`), plus a NEW `tt_ingest_spec.json`
+/// that carries everything the separate `execute_tt_ingest` job will need from
+/// the (then-unavailable) in-memory plan.
+///
+/// Returns a dict describing the gen outputs:
+/// `{schema_version, tt_id, staging_dir, tt_parquet_path, split_bin_path,
+///   ingest_spec_path, row_count}`.
+#[pyfunction]
+#[tracing::instrument(
+    level = "info",
+    skip_all,
+    fields(index_path = %index_path, tt_id = %tt_id)
+)]
+pub fn execute_tt_gen(
+    py: Python<'_>,
+    plan_json: &str,
+    index_path: &str,
+    tt_id: &str,
+) -> PyResult<Py<PyAny>> {
+    validate_tt_id(tt_id)?;
+    info!("execute_tt_gen started (ttgen-only) tt_id={}", tt_id);
+    let plan: DiskGraphTTPlan<Seconds> = serde_json::from_str(plan_json)
+        .map_err(|e| crate::DiskgraphConfigError::new_err(format!("invalid plan JSON: {e}")))?;
+
+    let idx = index_path.to_owned();
+    let tt_id_owned = tt_id.to_owned();
+
+    let (staging_dir, tt_parquet_path, ingest_spec_path, row_count): (
+        String,
+        String,
+        String,
+        u64,
+    ) = py
+        .detach(|| -> diskgraph_train_table::errors::TTGenResult<_> {
+            let index_root = Path::new(&idx);
+            let staging_root = staging_root_for(index_root, &tt_id_owned);
+            if staging_root.exists() {
+                std::fs::remove_dir_all(&staging_root)?;
+            }
+            std::fs::create_dir_all(&staging_root)?;
+
+            let pass_output = execute_tt_pass(&plan, index_root, &staging_root)?;
+
+            // Cross-job contract: serialize the plan fields the ingest phase
+            // consumes plus the per-stage seed parquets gen produced, so the
+            // separate ingest job needs neither the in-memory plan nor a demux.
+            let mut spec = TtIngestSpec::from_plan(&tt_id_owned, &plan);
+            spec.split_stages = pass_output.stage_gen_infos.clone();
+            let spec_path = staging_root.join(TT_INGEST_SPEC_FILENAME);
+            let spec_bytes = serde_json::to_vec_pretty(&spec).map_err(|e| {
+                diskgraph_train_table::errors::TTGenError::SystemError(format!(
+                    "failed to encode tt_ingest_spec.json: {e}"
+                ))
+            })?;
+            std::fs::write(&spec_path, spec_bytes)?;
+
+            Ok((
+                staging_root.to_string_lossy().to_string(),
+                pass_output.tt_parquet_path.to_string_lossy().to_string(),
+                spec_path.to_string_lossy().to_string(),
+                pass_output.rows_written,
+            ))
+        })
+        .map_err(crate::map_ttgen_err)?;
+
+    let dict = PyDict::new(py);
+    dict.set_item("schema_version", "diskgraph.tt_gen_result.v1")?;
+    dict.set_item("tt_id", tt_id)?;
+    dict.set_item("staging_dir", &staging_dir)?;
+    dict.set_item("tt_parquet_path", &tt_parquet_path)?;
+    dict.set_item("ingest_spec_path", &ingest_spec_path)?;
+    dict.set_item("row_count", row_count)?;
+    Ok(dict.into())
+}
+
+// ─── execute_tt_ingest ───────────────────────────────────────────────────────
+
+/// Run ONLY the ingest/publish phase of a TT plan, consuming the artifacts that
+/// a prior [`execute_tt_gen`] job wrote into the staging dir. No plan / fkey
+/// args: the staging dir is `parent_dir(tt_parquet_path)`, and `split.bin` +
+/// `tt_ingest_spec.json` are read as SIBLINGS of the parquet.
+///
+/// Runs `resolve_ingest_stages` → `ingest_resolved_stages` (fkey specs
+/// reconstructed from `tt_ingest_spec.json`; ingest → `copy_stage_artifacts` →
+/// `publish_tt_extension` to `<index>/train_tables/<tt_id>/`) → writes
+/// `diskgraph_manifest.json`.
+///
+/// Returns the SAME dict shape as [`execute_tt_plan`].
+///
+/// `tt_id` names the TARGET extension; predict may pass a target ≠ the bundle's
+/// `spec.tt_id` (per-BP-job fan-out); train/custom passes the same id.
+/// Default single-stage key/table-name used by the no-split (prediction) ingest
+/// path when the caller passes no `predict_stage_name`.
+pub(crate) const DEFAULT_PREDICT_STAGE: &str = "predict";
+
+#[pyfunction]
+#[pyo3(signature = (staging_dir, index_path, tt_id, predict_stage_name = None))]
+#[tracing::instrument(
+    level = "info",
+    skip_all,
+    fields(index_path = %index_path, tt_id = %tt_id)
+)]
+pub fn execute_tt_ingest(
+    py: Python<'_>,
+    // The staging dir produced by `execute_tt_gen` (holds `tt.parquet`,
+    // `tt_ingest_spec.json`, and the per-stage seed parquets). The directory
+    // IS the gen→ingest exchange unit.
+    staging_dir: &str,
+    index_path: &str,
+    tt_id: &str,
+    // Stage name used ONLY on the no-split (prediction) path: the whole
+    // tt.parquet is ingested as a single stage whose manifest key + on-disk
+    // seed-table name derive from this. Ignored on the split path (which always
+    // emits train/val/test). Defaults to "predict".
+    predict_stage_name: Option<String>,
+) -> PyResult<Py<PyAny>> {
+    validate_tt_id(tt_id)?;
+    info!("execute_tt_ingest started (ingest-only) tt_id={}", tt_id);
+
+    let idx = index_path.to_owned();
+    let tt_id_owned = tt_id.to_owned();
+    let staging_dir_owned = staging_dir.to_owned();
+    let predict_stage_key = predict_stage_name.unwrap_or_else(|| DEFAULT_PREDICT_STAGE.to_string());
+
+    let (manifest_stages, tt_extension_path, is_temporal, rhs_node_type): (
+        Vec<ManifestStage>,
+        String,
+        bool,
+        Option<String>,
+    ) = py
+        .detach(|| -> diskgraph_train_table::errors::TTGenResult<_> {
+            let index_root = Path::new(&idx);
+            let staging_dir = Path::new(&staging_dir_owned).to_path_buf();
+            // The well-known `tt.parquet` inside the staging dir.
+            let tt_parquet = staging_dir.join("tt.parquet");
+            let tt_parquet = tt_parquet.as_path();
+
+            // Read DG's cross-job spec (sibling of tt.parquet) to reconstruct
+            // the fkey specs + entity-table fallback the ingest phase needs.
+            let spec_path = staging_dir.join(TT_INGEST_SPEC_FILENAME);
+            let spec_bytes = std::fs::read(&spec_path).map_err(|e| {
+                diskgraph_train_table::errors::TTGenError::InvalidPlan(format!(
+                    "execute_tt_ingest: cannot read {}: {e}",
+                    spec_path.display()
+                ))
+            })?;
+            let spec: TtIngestSpec = serde_json::from_slice(&spec_bytes).map_err(|e| {
+                diskgraph_train_table::errors::TTGenError::InvalidPlan(format!(
+                    "execute_tt_ingest: invalid {}: {e}",
+                    spec_path.display()
+                ))
+            })?;
+
+            let tt_root = index_root.join("train_tables").join(&tt_id_owned);
+            let ingest_root = ingest_root_for(index_root, &tt_id_owned);
+            if ingest_root.exists() {
+                std::fs::remove_dir_all(&ingest_root)?;
+            }
+            let artifacts = StagedTtArtifacts::from_staging_dir(&staging_dir);
+
+            // Both paths feed the SAME ingest: resolution-mode predict seeds are
+            // topologically identical to resolution-mode train seeds.
+            let stages = resolve_ingest_stages(
+                &staging_dir,
+                tt_parquet,
+                &predict_stage_key,
+                spec.split_stages.as_deref(),
+            )?;
+            // Build the per-stage `bucket_index` only when single-timestamp
+            // grouping can actually be used: resolution-mode LP whose RHS/target
+            // table is temporal (kumo-computed `lp_rhs_is_temporal`). This
+            // mirrors the kumo LOAD gate and legacy's `TimestampSampler` RHS
+            // check. Atemporal-RHS / non-LP ingest is byte-identical to before.
+            let group_by_timestamp =
+                spec.lp_resolution.is_some() && spec.lp_rhs_is_temporal;
+            let manifest_stages = ingest_resolved_stages(
+                &stages,
+                &tt_id_owned,
+                &ingest_root,
+                index_root,
+                &spec.fkey_mapping,
+                &spec.entity_table,
+                &spec.lp_resolution,
+                &artifacts,
+                &tt_root,
+                group_by_timestamp,
+            )?;
+            // Self-describing manifest fields, recovered from the gen-time spec.
+            let rhs_node_type = rhs_node_type_from_resolution(&spec.lp_resolution);
+            Ok((
+                manifest_stages,
+                tt_root.to_string_lossy().to_string(),
+                spec.is_temporal,
+                rhs_node_type,
+            ))
+        })
+        .map_err(crate::map_ttgen_err)?;
+
+    write_tt_manifest_and_build_result(
+        py,
+        index_path,
+        tt_id,
+        &tt_extension_path,
+        &manifest_stages,
+        is_temporal,
+        rhs_node_type.as_deref(),
+    )
+}
+
+/// Read back a stage table's node_count from a freshly-ingested extension's
+/// `index_metadata.json`. Used by the no-split path to populate the predict
+/// stage's manifest `row_count` (the split path gets counts from the demux).
+fn stage_node_count(
+    ingest_root: &Path,
+    table_name: &str,
+) -> diskgraph_train_table::errors::TTGenResult<u64> {
+    let metadata_path = ingest_root.join("index_metadata.json");
+    let reader = diskgraph_index::graph::GraphIndexReader::open(&metadata_path, ingest_root)
+        .map_err(|e| {
+            diskgraph_train_table::errors::TTGenError::SystemError(format!(
+                "execute_tt_ingest: cannot open published predict extension metadata {}: {e:#}",
+                metadata_path.display()
+            ))
+        })?;
+    reader
+        .table(table_name)
+        .map(|t| t.node_count())
+        .ok_or_else(|| {
+            diskgraph_train_table::errors::TTGenError::SystemError(format!(
+                "execute_tt_ingest: predict stage `{table_name}` missing from published extension"
+            ))
+        })
+}
+
+/// Enforce the link-prediction VAL/TEST single-timeframe contract for a stage
+/// whose timestamp grouping was built: `num_buckets` is the distinct-timestamp
+/// count, which must be `<= 1` for the `val`/`test` stages (other stage keys are
+/// unconstrained). LP val/test eval assumes one anchor seed time per stage, so a
+/// multi-timeframe val/test would silently mis-evaluate; fail loud instead.
+fn enforce_single_timestamp_eval_stage(
+    stage_key: &str,
+    num_buckets: usize,
+) -> diskgraph_train_table::errors::TTGenResult<()> {
+    if (stage_key == "val" || stage_key == "test") && num_buckets > 1 {
+        return Err(diskgraph_train_table::errors::TTGenError::InvalidPlan(
+            format!(
+                "Link prediction requires exactly one timeframe per {stage_key} \
+                 set, but found {num_buckets}. Adjust the temporal split to \
+                 produce a single timeframe in {stage_key}, or filter the \
+                 prediction time range to a single timestamp."
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Ingest a resolved stage list → copy artifacts → publish, returning the
+/// manifest stages. The ONLY caller-visible difference between the split (3
+/// stage) and predict (1 stage) paths is the `stages` list and `split_bin`
+/// (`Some` copies split.bin into the extension). Predict-stage counts (those
+/// `StageSpec`s with `count = None`) are read back from the freshly-ingested
+/// extension before publish.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ingest_resolved_stages(
+    stages: &[StageSpec],
+    tt_id: &str,
+    ingest_root: &Path,
+    index_root: &Path,
+    fkey_mapping: &Option<Vec<TTFKeySpec>>,
+    entity_table: &str,
+    lp_resolution: &Option<Vec<RefResolveSpec>>,
+    artifacts: &StagedTtArtifacts,
+    tt_root: &Path,
+    // TT-NG temporal-LP timestamp grouping: emit per-stage `bucket_index.bin`.
+    // Set only for the temporal-LP seed stages.
+    group_by_timestamp: bool,
+) -> diskgraph_train_table::errors::TTGenResult<Vec<ManifestStage>> {
+    let ts_groupings = ingest_stage_parquets_into_extension(
+        tt_id,
+        ingest_root,
+        stages,
+        index_root,
+        fkey_mapping,
+        entity_table,
+        lp_resolution,
+        group_by_timestamp,
+    )?;
+    // LP VAL/TEST single-timeframe contract: when ts grouping is built (i.e.
+    // temporal RHS), each val/test stage must collapse to a single timestamp
+    // bucket. Enforced here (was a kumo-side Python guard) since the bucket-list
+    // length is exactly the distinct-ts count, already computed by ingest.
+    for s in stages {
+        if let Some(grouping) = ts_groupings.get(&s.table_name) {
+            enforce_single_timestamp_eval_stage(&s.key, grouping.buckets.len())?;
+        }
+    }
+    copy_stage_artifacts(artifacts, stages, ingest_root)?;
+    // Resolve counts for stages that didn't carry one (predict path), reading
+    // node_count back from the just-ingested extension.
+    let manifest_stages = stages
+        .iter()
+        .map(|s| {
+            let count = match s.count {
+                Some(n) => n,
+                None => stage_node_count(ingest_root, &s.table_name)?,
+            };
+            Ok((
+                s.key.clone(),
+                s.table_name.clone(),
+                count,
+                s.parquet_paths.len(),
+                s.seed_time,
+                ts_groupings.get(&s.table_name).cloned(),
+            ))
+        })
+        .collect::<diskgraph_train_table::errors::TTGenResult<Vec<_>>>()?;
+    publish_tt_extension(ingest_root, tt_root)?;
+    Ok(manifest_stages)
+}
+
+/// One published stage in the manifest `stages` map: `(stage_key, table_name,
+/// row_count, part_count, seed_time, ts_grouping)`. `part_count` is how many
+/// `<table_name>/part-NNNNN.parquet` files `copy_stage_artifacts` published; the
+/// manifest's `parts` list enumerates exactly those. `ts_grouping` is the
+/// per-stage TT-NG timestamp grouping (`bucket_index.bin` + bucket list),
+/// `None` unless temporal-LP grouping was enabled for this stage.
+pub(crate) type ManifestStage = (
+    String,
+    String,
+    u64,
+    usize,
+    Option<[i64; 2]>,
+    Option<diskgraph_ingest::ts_grouping::StageGrouping>,
+);
+
+/// Write `<tt_extension>/diskgraph_manifest.json` and return the Python result
+/// dict. Shared by [`execute_tt_plan`] and [`execute_tt_ingest`] so both emit
+/// byte-identical manifests and dict shapes. `stages` is a variable list of
+/// `(stage_key, table_name, row_count)`.
+pub(crate) fn write_tt_manifest_and_build_result(
+    py: Python<'_>,
+    index_path: &str,
+    tt_id: &str,
+    tt_extension_path: &str,
+    stages: &[ManifestStage],
+    // Self-describing task-level metadata. `rhs_node_type` is the FK-free LP RHS
+    // table (`List`-resolution `dst_table`), `None` for node-prediction.
+    is_temporal: bool,
+    rhs_node_type: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let diskgraph_manifest_path = Path::new(tt_extension_path)
+        .join("diskgraph_manifest.json")
+        .to_string_lossy()
+        .to_string();
+    // Drives `task_dataset.columns.weight`, which kumo reads as `has_weight`.
+    let has_weight = stages_have_weight_column(tt_extension_path, stages);
+    let weight_col_json = if has_weight {
+        Value::String(diskgraph_train_table::ttgen_output::WEIGHT_COL.to_string())
+    } else {
+        Value::Null
+    };
+    // Enumerate the on-disk parts published by `copy_stage_artifacts`.
+    let stage_parts = |table_name: &str, part_count: usize| -> Vec<String> {
+        (0..part_count)
+            .map(|i| stage_part_rel_path(table_name, i))
+            .collect()
+    };
+    let mut stages_json = serde_json::Map::new();
+    for (stage_key, table_name, row_count, part_count, seed_time, ts_grouping) in stages {
+        // TT-NG temporal-LP timestamp grouping: `<table>/bucket_index.bin`
+        // (final node-ids grouped by TIMESTAMP) + the bucket list. Present only
+        // for grouped stages; omitted entirely otherwise.
+        let bucket_index_json = ts_grouping.as_ref().map(|g| {
+            json!({
+                "path": g.bucket_index_rel_path,
+                "buckets": g
+                    .buckets
+                    .iter()
+                    .map(|b| json!({ "ts": b.ts, "offset": b.offset, "count": b.count }))
+                    .collect::<Vec<_>>(),
+            })
+        });
+        let mut entry = json!({
+            "table_name": table_name,
+            "index_path": tt_extension_path,
+            "row_count": row_count,
+            "parts": stage_parts(table_name, *part_count),
+            // Per-stage seed-time (min,max) ns; `null` for the predict stage
+            // and non-temporal plans. Kumo reads this for temporal-LP RHS.
+            "seed_time": seed_time,
+        });
+        if let Some(bi) = bucket_index_json {
+            entry["bucket_index"] = bi;
+        }
+        stages_json.insert(stage_key.to_string(), entry);
+    }
+    let manifest_json = json!({
+        "schema_version": "diskgraph.tt_execute_result.v1",
+        "tt_id": tt_id,
+        "graph_index_path": index_path,
+        "tt_extension_path": tt_extension_path,
+        "diskgraph_manifest_path": diskgraph_manifest_path,
+        "task_dataset": {
+            "schema_version": "diskgraph.task_dataset.v1",
+            "graph_index_path": index_path,
+            "tt_extension_path": tt_extension_path,
+            "is_temporal": is_temporal,
+            "rhs_node_type": rhs_node_type,
+            "stages": Value::Object(stages_json),
+            "columns": {
+                "primary_entity": PRIMARY_ENTITY_COL,
+                "primary_target": PRIMARY_TARGET_COL,
+                "timestamp": TIMESTAMP_COL,
+                "weight": weight_col_json,
+            },
+        },
+    });
+    std::fs::write(
+        &diskgraph_manifest_path,
+        serde_json::to_vec_pretty(&manifest_json).map_err(|e| {
+            crate::DiskgraphSystemError::new_err(format!(
+                "failed to encode diskgraph TT manifest: {e}"
+            ))
+        })?,
+    )
+    .map_err(|e| {
+        crate::DiskgraphSystemError::new_err(format!(
+            "failed to write diskgraph TT manifest {diskgraph_manifest_path}: {e}"
+        ))
+    })?;
+
+    let dict = PyDict::new(py);
+    dict.set_item("schema_version", "diskgraph.tt_execute_result.v1")?;
+    dict.set_item("tt_id", tt_id)?;
+    dict.set_item("graph_index_path", index_path)?;
+    dict.set_item("tt_extension_path", tt_extension_path)?;
+    dict.set_item("diskgraph_manifest_path", &diskgraph_manifest_path)?;
+
+    let task_dataset = PyDict::new(py);
+    task_dataset.set_item("schema_version", "diskgraph.task_dataset.v1")?;
+    task_dataset.set_item("graph_index_path", index_path)?;
+    task_dataset.set_item("tt_extension_path", tt_extension_path)?;
+    task_dataset.set_item("is_temporal", is_temporal)?;
+    task_dataset.set_item("rhs_node_type", rhs_node_type)?;
+
+    let stages_dict = PyDict::new(py);
+    for (stage_key, table_name, row_count, part_count, seed_time, ts_grouping) in stages {
+        let stage_dict = PyDict::new(py);
+        stage_dict.set_item("table_name", table_name)?;
+        stage_dict.set_item("index_path", tt_extension_path)?;
+        stage_dict.set_item("row_count", *row_count)?;
+        stage_dict.set_item("parts", stage_parts(table_name, *part_count))?;
+        stage_dict.set_item("seed_time", seed_time.map(|st| st.to_vec()))?;
+        // TT-NG temporal-LP timestamp grouping: bucket-index path + buckets,
+        // present only for grouped stages.
+        if let Some(g) = ts_grouping {
+            let bi = PyDict::new(py);
+            bi.set_item("path", &g.bucket_index_rel_path)?;
+            let buckets: Vec<(i64, u64, u64)> =
+                g.buckets.iter().map(|b| (b.ts, b.offset, b.count)).collect();
+            bi.set_item("buckets", buckets)?;
+            stage_dict.set_item("bucket_index", bi)?;
+        }
+        stages_dict.set_item(stage_key, stage_dict)?;
+    }
+    task_dataset.set_item("stages", stages_dict)?;
+
+    let columns = PyDict::new(py);
+    columns.set_item("primary_entity", PRIMARY_ENTITY_COL)?;
+    columns.set_item("primary_target", PRIMARY_TARGET_COL)?;
+    columns.set_item("timestamp", TIMESTAMP_COL)?;
+    if has_weight {
+        columns.set_item("weight", diskgraph_train_table::ttgen_output::WEIGHT_COL)?;
+    } else {
+        columns.set_item("weight", py.None())?;
+    }
+    task_dataset.set_item("columns", columns)?;
+    dict.set_item("task_dataset", task_dataset)?;
+    Ok(dict.into())
+}
+
+pub(crate) fn validate_tt_id(tt_id: &str) -> PyResult<()> {
+    if tt_id.is_empty() {
+        return Err(crate::DiskgraphConfigError::new_err(
+            "execute_tt_plan: tt_id is required and must be non-empty",
+        ));
+    }
+    if tt_id == "."
+        || tt_id == ".."
+        || tt_id.contains('/')
+        || tt_id.contains('\\')
+        || tt_id.contains('\0')
+    {
+        return Err(crate::DiskgraphConfigError::new_err(format!(
+            "execute_tt_plan: tt_id must be filename-safe, got {tt_id:?}"
+        )));
+    }
+    Ok(())
+}
+
+#[pyfunction]
+pub fn drop_tt(index_path: &str, tt_id: &str) -> PyResult<()> {
+    validate_tt_id(tt_id)?;
+    let path = Path::new(index_path).join("train_tables").join(tt_id);
+    match std::fs::remove_dir_all(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(crate::DiskgraphSystemError::new_err(format!(
+            "drop_tt failed for {}: {e}",
+            path.display()
+        ))),
+    }
+}
+
+/// Run a batch-prediction TT-gen plan (no split) and write the prediction
+/// table to `output_path`. Runs one `execute_tt_pass` and moves its
+/// `tt.parquet` into place; the compiler emits the BP shape natively (entities
+/// only, no target), so no rewrite is needed. Returns the row count. Writes
+/// locally; the caller stages to remote storage if the destination is remote.
+#[pyfunction]
+#[tracing::instrument(
+    level = "info",
+    skip_all,
+    fields(index_path = %index_path, output_path = %output_path)
+)]
+pub fn execute_bp_plan(
+    py: Python<'_>,
+    plan_json: &str,
+    index_path: &str,
+    output_path: &str,
+) -> PyResult<u64> {
+    let plan: DiskGraphTTPlan<Seconds> = serde_json::from_str(plan_json)
+        .map_err(|e| crate::DiskgraphConfigError::new_err(format!("invalid plan JSON: {e}")))?;
+
+    let idx = index_path.to_owned();
+    let out = output_path.to_owned();
+
+    let rows = py
+        .detach(|| -> diskgraph_train_table::errors::TTGenResult<u64> {
+            let index_root = Path::new(&idx);
+            let output = Path::new(&out);
+            let output_parent = output.parent().ok_or_else(|| {
+                diskgraph_train_table::errors::TTGenError::InvalidPlan(format!(
+                    "execute_bp_plan: output_path has no parent dir: {out}"
+                ))
+            })?;
+            std::fs::create_dir_all(output_parent)?;
+
+            // Stage the pass in a hidden sibling dir, then move just tt.parquet
+            // into place (the rest of the pass output is dropped with the dir).
+            let stem = output
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("prediction");
+            let staging_root = output_parent.join(format!(".{stem}.bp_staging"));
+            if staging_root.exists() {
+                std::fs::remove_dir_all(&staging_root)?;
+            }
+            std::fs::create_dir_all(&staging_root)?;
+
+            let pass_output = execute_tt_pass(&plan, index_root, &staging_root)?;
+            std::fs::rename(&pass_output.tt_parquet_path, output)?;
+            let _ = std::fs::remove_dir_all(&staging_root);
+            Ok(pass_output.rows_written)
+        })
+        .map_err(crate::map_ttgen_err)?;
+
+    Ok(rows)
+}
+
+/// Ingest a single pre-materialized batch-prediction stage parquet (LHS
+/// `predict` or RHS `rhs_predict`) as a DG extension under
+/// `extension_output_root`, resolving `entity_src_col` → `dst_table` against
+/// the parent index at `index_path`.
+///
+/// Returns the emitted row count for the stage. Columns are inferred from the
+/// parquet schema (mirroring the training path's `infer_stage_columns`); a
+/// `Timestamp`-typed column with no embedded unit is assigned
+/// `input_timestamp_unit` (one of "seconds" | "millis" | "micros" | "nanos").
+#[pyfunction]
+#[tracing::instrument(level = "info", skip_all, fields(index_path = %index_path, stage = %stage_table_name))]
+pub fn ingest_prediction_stage(
+    py: Python<'_>,
+    index_path: &str,
+    extension_output_root: &str,
+    stage_table_name: &str,
+    parquet_path: &str,
+    entity_src_col: &str,
+    dst_table: &str,
+    input_timestamp_unit: &str,
+) -> PyResult<u64> {
+    use diskgraph_ingest::graph_config::TimestampUnit;
+    let ts_unit = match input_timestamp_unit.to_ascii_lowercase().as_str() {
+        "seconds" | "second" | "s" => TimestampUnit::Seconds,
+        "millis" | "milliseconds" | "ms" => TimestampUnit::Millis,
+        "micros" | "microseconds" | "us" => TimestampUnit::Micros,
+        "nanos" | "nanoseconds" | "ns" => TimestampUnit::Nanos,
+        other => {
+            return Err(crate::DiskgraphConfigError::new_err(format!(
+                "ingest_prediction_stage: unknown input_timestamp_unit {other:?} \
+                 (expected one of seconds|millis|micros|nanos)"
+            )))
+        }
+    };
+
+    let parquet = Path::new(parquet_path);
+    let mut columns = diskgraph_ingest::infer_stage_columns(parquet)
+        .map_err(|e| crate::DiskgraphDataError::new_err(format!("TT stage column inference: {e:#}")))?;
+    // Backfill a unit on any Timestamp column that lacks one (e.g. when the
+    // source stored the timestamp as a plain integer rather than an arrow
+    // Timestamp type).
+    for col in columns.iter_mut() {
+        if matches!(
+            col.ingested_dtype,
+            diskgraph_ingest::graph_config::IngestedType::Timestamp
+        ) && col.timestamp_unit.is_none()
+        {
+            col.timestamp_unit = Some(ts_unit);
+        }
+    }
+
+    let fkey = diskgraph_ingest::graph_config::FKeySpec {
+        src_column: entity_src_col.to_string(),
+        dst_table: dst_table.to_string(),
+        forward: Some(diskgraph_ingest::graph_config::DirectionSpec::default()),
+        reverse: None,
+        external_parent: true,
+        bidirectional: false,
+    };
+
+    let index_path_owned = index_path.to_owned();
+    let extension_root_owned = extension_output_root.to_owned();
+    let stage_name_owned = stage_table_name.to_owned();
+    let parquet_owned = parquet.to_path_buf();
+
+    let counts = py
+        .detach(|| {
+            diskgraph_ingest::ingest_stage_extension(
+                &format!("pred_{stage_name_owned}"),
+                Path::new(&extension_root_owned),
+                Path::new(&index_path_owned),
+                &[diskgraph_ingest::StageSpec {
+                    stage_table_name: stage_name_owned.clone(),
+                    parquet_paths: vec![parquet_owned],
+                }],
+                columns,
+                vec![fkey],
+                None,
+                true,
+                false,
+            )
+        })
+        .map_err(|e| {
+            crate::DiskgraphSystemError::new_err(format!(
+                "prediction-stage ingest failed: {e:#}"
+            ))
+        })?
+        .counts;
+
+    Ok(counts.into_iter().map(|(_, n)| n).next().unwrap_or(0))
+}
+
+/// Genericized stage-table ingest over a VARIABLE list of stages (split path:
+/// three demuxed `train/val/test_seeds`; predict path: one `predict_seeds`).
+/// Columns are inferred from the first stage's parquet (all stages share one
+/// schema). The 3-stage split case is byte-identical to the prior hardcoded
+/// version (same dataset name, FK/resolution logic, single-shard col-stats).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ingest_stage_parquets_into_extension(
+    tt_id: &str,
+    tt_root: &Path,
+    stages_in: &[StageSpec],
+    graph_index_path: &Path,
+    fkey_mapping: &Option<Vec<TTFKeySpec>>,
+    entity_table: &str,
+    lp_resolution: &Option<Vec<RefResolveSpec>>,
+    // TT-NG temporal-LP timestamp grouping: when true, every stage table emits a
+    // `<table>/bucket_index.bin` (final node-ids grouped by TIMESTAMP) + bucket
+    // list. Set only for the temporal-LP seed stages. Returns the per-stage
+    // groupings (empty when disabled).
+    group_by_timestamp: bool,
+) -> diskgraph_train_table::errors::TTGenResult<
+    std::collections::HashMap<String, diskgraph_ingest::ts_grouping::StageGrouping>,
+> {
+    let first_stage = stages_in.first().ok_or_else(|| {
+        diskgraph_train_table::errors::TTGenError::InvalidPlan(
+            "ingest_stage_parquets_into_extension: no stages supplied".to_string(),
+        )
+    })?;
+    // All stages (and all parts within a stage) share one schema; infer from the
+    // first part of the first stage.
+    let column_source = first_stage.parquet_paths.first().ok_or_else(|| {
+        diskgraph_train_table::errors::TTGenError::InvalidPlan(
+            "ingest_stage_parquets_into_extension: first stage has no parquet parts".to_string(),
+        )
+    })?;
+    let columns = diskgraph_ingest::infer_stage_columns(column_source).map_err(|e| {
+        diskgraph_train_table::errors::TTGenError::SchemaError(format!(
+            "TT stage column inference: {e:#}"
+        ))
+    })?;
+
+    let stages: Vec<diskgraph_ingest::StageSpec> = stages_in
+        .iter()
+        .map(|s| diskgraph_ingest::StageSpec {
+            stage_table_name: s.table_name.clone(),
+            parquet_paths: s.parquet_paths.clone(),
+        })
+        .collect();
+
+    // FK-free LP "resolution mode": resolve the reference columns to graph
+    // node-ids and write them as rowpack columns with NO FK edge. The stage
+    // tables carry no fkeys for the resolved columns, so no `seed.edges.bin`
+    // payload / edge relation is produced for them. See §S3.
+    if let Some(resolution) = lp_resolution {
+        let resolve_specs: Vec<diskgraph_ingest::ResolveSpec> = resolution
+            .iter()
+            .map(|r| diskgraph_ingest::ResolveSpec {
+                src_col: r.src_col.clone(),
+                dst_table: r.dst_table.clone(),
+                kind: match r.kind {
+                    RefResolveKind::Scalar => diskgraph_ingest::ResolveKind::Scalar,
+                    RefResolveKind::List => diskgraph_ingest::ResolveKind::List,
+                },
+                node_id_col: r.node_id_col.clone(),
+            })
+            .collect();
+        return diskgraph_ingest::ingest_stage_extension_with_resolution(
+            &format!("tt_seeds_{tt_id}"),
+            tt_root,
+            graph_index_path,
+            &stages,
+            columns,
+            // No FK edges: the resolved columns become rowpack columns instead.
+            Vec::new(),
+            &resolve_specs,
+            None,
+            true,
+            group_by_timestamp,
+        )
+        .map(|r| r.ts_groupings)
+        .map_err(|e| {
+            diskgraph_train_table::errors::TTGenError::SystemError(format!(
+                "TT resolution-mode stage-table ingest failed: {e:#}"
+            ))
+        });
+    }
+    // Build forward-only external_parent FKs from the seed stage table
+    // to the parent graph. At ingest time, the external pkmap loader resolves
+    // these values to parent row ids, which get written into `seed.edges.bin`.
+    let fkey_specs = if let Some(mappings) = fkey_mapping {
+        mappings
+            .iter()
+            .map(|m| diskgraph_ingest::graph_config::FKeySpec {
+                src_column: m.src_col.clone(),
+                dst_table: m.dst_table.clone(),
+                forward: Some(diskgraph_ingest::graph_config::DirectionSpec::default()),
+                reverse: None,
+                external_parent: true,
+                bidirectional: false,
+            })
+            .collect::<Vec<_>>()
+    } else {
+        vec![diskgraph_ingest::graph_config::FKeySpec {
+            src_column: diskgraph_train_table::ttgen_output::PRIMARY_ENTITY_COL.to_string(),
+            dst_table: entity_table.to_string(),
+            forward: Some(diskgraph_ingest::graph_config::DirectionSpec::default()),
+            reverse: None,
+            external_parent: true,
+            bidirectional: false,
+        }]
+    };
+    // Delegate to the source-agnostic stage-extension primitive. The training
+    // path supplies the three demuxed split parquets as `train/val/test_seeds`
+    // stages. Behavior is identical to the previous inline GraphConfig
+    // assembly (single-shard, col_stats on, parent_index_path set), so
+    // `execute_tt_plan`'s output is unchanged.
+    diskgraph_ingest::ingest_stage_extension(
+        &format!("tt_seeds_{tt_id}"),
+        tt_root,
+        graph_index_path,
+        &stages,
+        columns,
+        fkey_specs,
+        None,
+        true,
+        // Grouping only happens on the FK-free LP resolution path (returned
+        // early above); this FK path is never temporal-LP. Pass `false`
+        // explicitly so a future caller can't silently enable grouping on this
+        // unvalidated path. (The gate also guarantees `group_by_timestamp` is
+        // false here, since it requires `lp_resolution.is_some()`.)
+        false,
+    )
+    .map(|r| r.ts_groupings)
+    .map_err(|e| {
+        diskgraph_train_table::errors::TTGenError::SystemError(format!(
+            "TT stage-table ingest failed: {e:#}"
+        ))
     })
 }
 
-fn append_arange_column(batch: RecordBatch, row_offset: i64) -> anyhow::Result<RecordBatch> {
-    let num_rows = batch.num_rows() as i64;
-    let arange = Int64Array::from_iter_values(row_offset..(row_offset + num_rows));
-
-    // Drop any existing arange column so the caller's fresh arange replaces
-    // it (e.g., when reading from the scratch parquet which already carries
-    // an arange from the consumer-loop write, we need to re-index post-DS).
-    let (fields, columns): (Vec<_>, Vec<_>) = batch
-        .schema()
-        .fields()
-        .iter()
-        .zip(batch.columns().iter())
-        .filter(|(f, _)| f.name() != "arange")
-        .map(|(f, c)| (f.as_ref().clone(), c.clone()))
-        .unzip();
-
-    let mut fields = fields;
-    fields.push(Field::new("arange", DataType::Int64, false));
-    let mut columns = columns;
-    columns.push(Arc::new(arange));
-
-    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-        .map_err(|e| anyhow::anyhow!("failed to append arange column: {e}"))
+pub(crate) fn publish_tt_extension(
+    ingest_root: &Path,
+    tt_root: &Path,
+) -> diskgraph_train_table::errors::TTGenResult<()> {
+    if tt_root.exists() {
+        std::fs::remove_dir_all(tt_root)
+            .map_err(diskgraph_train_table::errors::TTGenError::from)?;
+    }
+    std::fs::rename(ingest_root, tt_root)
+        .map_err(diskgraph_train_table::errors::TTGenError::from)?;
+    Ok(())
 }
 
-/// Distribute `total` items into `buckets` using largest-remainder method.
-/// Guarantees the result sums to exactly `total`.
-#[allow(dead_code)]
-fn largest_remainder_distribute(total: u64, buckets: usize) -> Vec<u64> {
-    if buckets == 0 {
-        return Vec::new();
-    }
-    if total == 0 {
-        return vec![0; buckets];
-    }
-    let ideal: Vec<f64> = (0..buckets)
-        .map(|_| total as f64 / buckets as f64)
-        .collect();
-    let mut sizes: Vec<u64> = ideal.iter().map(|v| v.floor() as u64).collect();
-    let assigned: u64 = sizes.iter().sum();
-    let mut remaining = total.saturating_sub(assigned);
-
-    let mut order: Vec<usize> = (0..buckets).collect();
-    order.sort_by(|&a, &b| {
-        let ra = ideal[a] - sizes[a] as f64;
-        let rb = ideal[b] - sizes[b] as f64;
-        rb.partial_cmp(&ra)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.cmp(&b))
-    });
-
-    let mut k = 0usize;
-    while remaining > 0 {
-        sizes[order[k]] += 1;
-        remaining -= 1;
-        k += 1;
-        if k == order.len() {
-            k = 0;
-        }
-    }
-    sizes
+/// Source paths for the TT artifacts that were written by the gen phase into
+/// the staging dir. Decouples [`copy_stage_artifacts`] from the in-memory
+/// [`TTPassOutput`] so the ingest job (which has no `TTPassOutput`, only the
+/// on-disk staging dir) can drive the copy from sibling files.
+pub(crate) struct StagedTtArtifacts {
+    /// Directory holding `tt.parquet`, `manifest.json`, the per-stage seed
+    /// parquets, and the kumo-contract stats sidecars.
+    pub staging_dir: std::path::PathBuf,
+    pub tt_parquet_path: std::path::PathBuf,
+    pub manifest_path: std::path::PathBuf,
 }
 
-fn take_batch_rows(batch: &RecordBatch, local_indices: &[u64]) -> anyhow::Result<RecordBatch> {
-    if local_indices.is_empty() {
-        return Ok(batch.slice(0, 0));
-    }
-    let idx_arr = Int64Array::from_iter_values(local_indices.iter().map(|v| *v as i64));
-    let mut cols = Vec::with_capacity(batch.num_columns());
-    for c in batch.columns() {
-        cols.push(take(c.as_ref(), &idx_arr, None)?);
-    }
-    RecordBatch::try_new(batch.schema(), cols)
-        .map_err(|e| anyhow::anyhow!("failed to take batch rows: {e}"))
-}
-
-fn write_batches_with_arange(
-    path: &str,
-    batches: &[RecordBatch],
-    selected_global_indices: Option<&[usize]>,
-    mut sequence_stats_observer: Option<(
-        &[(usize, String)],
-        &mut HashMap<String, SequenceFeatureStats>,
-    )>,
-) -> anyhow::Result<u64> {
-    let file = File::create(path)?;
-    let props = WriterProperties::builder()
-        .set_compression(Compression::SNAPPY)
-        .build();
-
-    let mut writer: Option<ArrowWriter<File>> = None;
-    let mut row_offset: i64 = 0;
-    let mut global_base: usize = 0;
-
-    for batch in batches {
-        let to_write = if let Some(selected) = selected_global_indices {
-            let end = global_base + batch.num_rows();
-            let local = selected
-                .iter()
-                .filter_map(|g| {
-                    if *g >= global_base && *g < end {
-                        Some((*g - global_base) as u64)
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>();
-            global_base = end;
-            if local.is_empty() {
-                continue;
-            }
-            take_batch_rows(batch, &local)?
-        } else {
-            global_base += batch.num_rows();
-            batch.clone()
-        };
-
-        if let Some((indices, stats)) = sequence_stats_observer.as_mut() {
-            observe_sequence_feature_stats_for_batch(&to_write, indices, stats);
-        }
-
-        let with_idx = append_arange_column(to_write, row_offset)?;
-        row_offset += with_idx.num_rows() as i64;
-
-        if writer.is_none() {
-            writer = Some(ArrowWriter::try_new(
-                file.try_clone()?,
-                with_idx.schema(),
-                Some(props.clone()),
-            )?);
-        }
-        if let Some(w) = writer.as_mut() {
-            w.write(&with_idx)?;
-        }
+impl StagedTtArtifacts {
+    /// Build from a freshly-run `TTPassOutput` (fused / gen phase). The
+    /// staging dir is `manifest_path`'s parent (where the executor wrote the
+    /// stats sidecars + per-stage seed parquets).
+    pub(crate) fn from_pass_output(
+        pass_output: &TTPassOutput,
+    ) -> diskgraph_train_table::errors::TTGenResult<Self> {
+        let staging_dir = pass_output
+            .manifest_path
+            .parent()
+            .ok_or_else(|| {
+                diskgraph_train_table::errors::TTGenError::InvalidPlan(
+                    "pass_output.manifest_path has no parent dir".to_string(),
+                )
+            })?
+            .to_path_buf();
+        Ok(Self {
+            staging_dir,
+            tt_parquet_path: pass_output.tt_parquet_path.clone(),
+            manifest_path: pass_output.manifest_path.clone(),
+        })
     }
 
-    if row_offset == 0 {
-        return Err(anyhow::anyhow!("zero rows written"));
-    }
-    if let Some(w) = writer.take() {
-        w.close()?;
-    }
-    Ok(row_offset as u64)
-}
-
-#[allow(dead_code)]
-fn materialize_selected_batches(
-    batches: &[RecordBatch],
-    selected_global_indices: Option<&[usize]>,
-) -> anyhow::Result<Vec<RecordBatch>> {
-    if selected_global_indices.is_none() {
-        return Ok(batches.to_vec());
-    }
-
-    let selected = selected_global_indices.unwrap();
-    let mut out = Vec::new();
-    let mut global_base = 0usize;
-    for batch in batches {
-        let end = global_base + batch.num_rows();
-        let local = selected
-            .iter()
-            .filter_map(|g| {
-                if *g >= global_base && *g < end {
-                    Some((*g - global_base) as u64)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-        global_base = end;
-        if local.is_empty() {
-            continue;
-        }
-        out.push(take_batch_rows(batch, &local)?);
-    }
-    Ok(out)
-}
-
-fn row_count_of_batches(batches: &[RecordBatch]) -> usize {
-    batches.iter().map(|b| b.num_rows()).sum()
-}
-
-/// Maximum TT rows allowed without downsampling. Beyond this the
-/// in-memory entity/target string vectors become prohibitively large.
-/// This is a transitional safety valve — once the streaming refactor
-/// (step 2+3) lands, this limit can be raised or removed.
-const MAX_TT_ROWS_WITHOUT_DOWNSAMPLING: u64 = 200_000_000;
-
-// ─── Scratch parquet writer/reader ──────────────────────────────────────
-
-/// Write RecordBatches to a scratch parquet file incrementally.
-/// Each batch becomes one row group for efficient sequential read-back.
-struct ScratchParquetWriter {
-    writer: Option<ArrowWriter<File>>,
-    path: String,
-    props: WriterProperties,
-    rows_written: u64,
-}
-
-impl ScratchParquetWriter {
-    fn new(path: &str) -> Self {
-        let props = WriterProperties::builder()
-            .set_compression(Compression::SNAPPY)
-            .build();
+    /// Build from an on-disk staging dir (ingest phase). All artifacts are
+    /// siblings of `tt.parquet`.
+    fn from_staging_dir(staging_dir: &Path) -> Self {
         Self {
-            writer: None,
-            path: path.to_owned(),
-            props,
-            rows_written: 0,
+            staging_dir: staging_dir.to_path_buf(),
+            tt_parquet_path: staging_dir.join("tt.parquet"),
+            manifest_path: staging_dir.join("manifest.json"),
         }
     }
+}
 
-    /// Write a batch with an arange column appended. Lazily creates the
-    /// writer on the first batch (schema inferred from data, not upfront).
-    fn write_batch(&mut self, batch: &RecordBatch) -> anyhow::Result<()> {
-        let with_arange = append_arange_column(batch.clone(), self.rows_written as i64)?;
-        if self.writer.is_none() {
-            let file = File::create(&self.path)?;
-            self.writer = Some(ArrowWriter::try_new(
-                file,
-                with_arange.schema(),
-                Some(self.props.clone()),
-            )?);
+/// Relative published path of a stage's `part_idx`-th seed parquet:
+/// `<table_name>/part-NNNNN.parquet`. The on-disk layout and the manifest's
+/// per-stage `parts` list MUST stay in lockstep — both go through here.
+fn stage_part_rel_path(table_name: &str, part_idx: usize) -> String {
+    format!("{table_name}/part-{part_idx:05}.parquet")
+}
+
+/// Whether any published stage carries the reserved `WEIGHT` column. Probes
+/// one part per stage (schema is identical across a stage's parts); returns
+/// `false` if no part is readable. Drives the manifest `weight` column.
+fn stages_have_weight_column(tt_extension_path: &str, stages: &[ManifestStage]) -> bool {
+    let root = Path::new(tt_extension_path);
+    for (_stage_key, table_name, _row_count, part_count, _seed_time, _ts_grouping) in stages {
+        for part_idx in 0..*part_count {
+            let part_path = root.join(stage_part_rel_path(table_name, part_idx));
+            let Ok(file) = std::fs::File::open(&part_path) else {
+                continue;
+            };
+            let Ok(builder) = ParquetRecordBatchReaderBuilder::try_new(file) else {
+                continue;
+            };
+            if builder
+                .schema()
+                .fields()
+                .iter()
+                .any(|f| f.name() == diskgraph_train_table::ttgen_output::WEIGHT_COL)
+            {
+                return true;
+            }
+            // Schema is identical across parts of a stage; one probe is enough.
+            break;
         }
-        self.rows_written += batch.num_rows() as u64;
-        self.writer.as_mut().unwrap().write(&with_arange)?;
+    }
+    false
+}
+
+/// Copy the published TT artifacts into the (unpublished) extension: tt.parquet,
+/// manifest, each stage's seed parquet part(s) under `<table_name>/part-*.parquet`,
+/// and the kumo-contract stats sidecars.
+fn copy_stage_artifacts(
+    artifacts: &StagedTtArtifacts,
+    stages: &[StageSpec],
+    tt_root: &Path,
+) -> diskgraph_train_table::errors::TTGenResult<()> {
+    std::fs::copy(&artifacts.tt_parquet_path, tt_root.join("tt.parquet"))?;
+    std::fs::copy(&artifacts.manifest_path, tt_root.join("manifest.json"))?;
+    for stage in stages {
+        let stage_dir = tt_root.join(&stage.table_name);
+        std::fs::create_dir_all(&stage_dir)?;
+        for (part_idx, part) in stage.parquet_paths.iter().enumerate() {
+            std::fs::copy(
+                part,
+                tt_root.join(stage_part_rel_path(&stage.table_name, part_idx)),
+            )?;
+        }
+    }
+    for sidecar in ["stats.json", "split_stats.json", "train_table_col_stats.json"] {
+        let src = artifacts.staging_dir.join(sidecar);
+        if src.exists() {
+            std::fs::copy(&src, tt_root.join(sidecar))?;
+        }
+    }
+    Ok(())
+}
+
+// ─── read_tt_parquet_batches ─────────────────────────────────────────────────
+
+/// Iterator over `RecordBatch`es of a TT parquet file. Yields
+/// `pyarrow.RecordBatch` objects. Created via [`read_tt_parquet_batches`].
+///
+/// The reader is opened lazily on the first `__next__` call so that
+/// constructing the iterator in Python is cheap. The underlying file is
+/// closed when the iterator is exhausted or dropped.
+///
+/// `unsendable` because `parquet::arrow::arrow_reader::ParquetRecordBatchReader`
+/// holds non-`Sync` `Box<dyn ArrayReader>` state. The iterator is owned by
+/// one Python thread for its lifetime — sharing across threads is meaningless
+/// for a single-pass iterator anyway.
+#[pyclass(unsendable)]
+pub struct TTParquetBatchIterator {
+    parquet_path: String,
+    columns: Option<Vec<String>>,
+    reader: Option<ParquetRecordBatchReader>,
+    schema: Option<SchemaRef>,
+}
+
+impl TTParquetBatchIterator {
+    fn ensure_reader(&mut self) -> PyResult<()> {
+        if self.reader.is_some() {
+            return Ok(());
+        }
+        let file = File::open(&self.parquet_path).map_err(|e| {
+            crate::DiskgraphSystemError::new_err(format!(
+                "cannot open {} for read: {e}",
+                self.parquet_path
+            ))
+        })?;
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
+            crate::DiskgraphSystemError::new_err(format!(
+                "cannot read parquet metadata for {}: {e}",
+                self.parquet_path
+            ))
+        })?;
+        let schema = builder.schema().clone();
+        let builder = if let Some(cols) = &self.columns {
+            let parquet_schema = builder.parquet_schema();
+            let mut indices = Vec::with_capacity(cols.len());
+            let arrow_schema = builder.schema();
+            for col in cols {
+                let idx = arrow_schema.index_of(col).map_err(|_| {
+                    crate::DiskgraphDataError::new_err(format!(
+                        "column not found in {}: {col}",
+                        self.parquet_path
+                    ))
+                })?;
+                indices.push(idx);
+            }
+            let mask = ProjectionMask::roots(parquet_schema, indices);
+            builder.with_projection(mask)
+        } else {
+            builder
+        };
+        let reader = builder.build().map_err(|e| {
+            crate::DiskgraphSystemError::new_err(format!(
+                "cannot build parquet reader for {}: {e}",
+                self.parquet_path
+            ))
+        })?;
+        self.reader = Some(reader);
+        self.schema = Some(schema);
         Ok(())
     }
-
-    fn finish(mut self) -> anyhow::Result<u64> {
-        if let Some(w) = self.writer.take() {
-            w.close()?;
-        }
-        Ok(self.rows_written)
-    }
 }
 
-/// Guard that deletes a scratch file on drop unless disarmed.
-/// Ensures cleanup on all error paths (panics, early returns via `?`).
-struct ScratchFileGuard {
-    path: String,
-    disarmed: bool,
-}
-
-impl ScratchFileGuard {
-    fn new(path: &str) -> Self {
-        Self {
-            path: path.to_owned(),
-            disarmed: false,
-        }
+#[pymethods]
+impl TTParquetBatchIterator {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
     }
 
-    /// Disarm the guard (e.g., after rename to pre_downsample artifact).
-    fn disarm(&mut self) {
-        self.disarmed = true;
-    }
-}
-
-impl Drop for ScratchFileGuard {
-    fn drop(&mut self) {
-        if !self.disarmed {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
-}
-
-/// Read batches back from a scratch parquet, optionally filtering rows
-/// by entity membership and/or capping at max_rows.
-///
-/// When `sampled_entities` is Some, only rows whose ENTITY column value
-/// is in the set are kept. When None, all rows pass through.
-/// Reading stops once `max_rows` kept rows have been collected.
-fn read_scratch_filtered(
-    path: &str,
-    sampled_entities: Option<&std::collections::HashSet<String>>,
-    max_rows: usize,
-) -> anyhow::Result<Vec<RecordBatch>> {
-    let file = File::open(path)?;
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
-
-    let mut out = Vec::new();
-    let mut total_kept = 0usize;
-
-    for batch_result in reader {
-        let batch = batch_result?;
-
-        let to_push = if let Some(sampled) = sampled_entities {
-            // Filter rows by entity membership (O(1) HashSet lookup per row)
-            let entities = extract_entity_strings(&batch)?;
-            let mask: BooleanArray = entities
-                .iter()
-                .map(|e| Some(sampled.contains(e)))
-                .collect();
-            arrow::compute::filter_record_batch(&batch, &mask)?
-        } else {
-            batch
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        self.ensure_reader()?;
+        let next = match self.reader.as_mut() {
+            Some(r) => r.next(),
+            None => return Ok(None),
         };
+        match next {
+            None => {
+                self.reader = None;
+                Ok(None)
+            }
+            Some(Ok(batch)) => {
+                let py_obj = batch.to_pyarrow(py)?;
+                Ok(Some(py_obj.into()))
+            }
+            Some(Err(e)) => Err(crate::DiskgraphSystemError::new_err(format!(
+                "parquet read error: {e}"
+            ))),
+        }
+    }
 
-        let rows = to_push.num_rows();
-        if rows > 0 {
-            let remaining = max_rows.saturating_sub(total_kept);
-            if rows <= remaining {
-                total_kept += rows;
-                out.push(to_push);
-            } else {
-                // Truncate final batch to not exceed max_rows
-                out.push(to_push.slice(0, remaining));
-                break;
-            }
-        }
-    }
-    Ok(out)
-}
-
-#[derive(Clone)]
-enum ScalarCell {
-    Int(i64),
-    Float(f64),
-    Str(String),
-    Bool(bool),
-    Ts(i64),
-    Null,
-}
-
-fn scalar_from_array_at(arr: &dyn Array, idx: usize, ctx: &str) -> anyhow::Result<ScalarCell> {
-    if let Some(a) = arr.as_any().downcast_ref::<Int64Array>() {
-        return Ok(if a.is_null(idx) {
-            ScalarCell::Null
-        } else {
-            ScalarCell::Int(a.value(idx))
-        });
-    }
-    if let Some(a) = arr.as_any().downcast_ref::<Float64Array>() {
-        return Ok(if a.is_null(idx) {
-            ScalarCell::Null
-        } else {
-            ScalarCell::Float(a.value(idx))
-        });
-    }
-    if let Some(a) = arr.as_any().downcast_ref::<StringArray>() {
-        return Ok(if a.is_null(idx) {
-            ScalarCell::Null
-        } else {
-            ScalarCell::Str(a.value(idx).to_string())
-        });
-    }
-    if let Some(a) = arr.as_any().downcast_ref::<BooleanArray>() {
-        return Ok(if a.is_null(idx) {
-            ScalarCell::Null
-        } else {
-            ScalarCell::Bool(a.value(idx))
-        });
-    }
-    if let Some(a) = arr.as_any().downcast_ref::<TimestampNanosecondArray>() {
-        return Ok(if a.is_null(idx) {
-            ScalarCell::Null
-        } else {
-            ScalarCell::Ts(a.value(idx))
-        });
-    }
-    Err(anyhow::anyhow!(
-        "RandomLinkSplit unsupported scalar dtype for {ctx}: {:?}",
-        arr.data_type()
-    ))
-}
-
-fn build_scalar_array_from_cells(
-    dtype: &DataType,
-    cells: &[ScalarCell],
-    ctx: &str,
-) -> anyhow::Result<Arc<dyn Array>> {
-    match dtype {
-        DataType::Int64 => {
-            let mut b = Int64Builder::with_capacity(cells.len());
-            for c in cells {
-                match c {
-                    ScalarCell::Int(v) => b.append_value(*v),
-                    ScalarCell::Null => b.append_null(),
-                    _ => {
-                        return Err(anyhow::anyhow!(
-                            "RandomLinkSplit type mismatch for {ctx}: expected Int64"
-                        ))
-                    }
-                }
-            }
-            Ok(Arc::new(b.finish()))
-        }
-        DataType::Float64 => {
-            let mut b = Float64Builder::with_capacity(cells.len());
-            for c in cells {
-                match c {
-                    ScalarCell::Float(v) => b.append_value(*v),
-                    ScalarCell::Null => b.append_null(),
-                    _ => {
-                        return Err(anyhow::anyhow!(
-                            "RandomLinkSplit type mismatch for {ctx}: expected Float64"
-                        ))
-                    }
-                }
-            }
-            Ok(Arc::new(b.finish()))
-        }
-        DataType::Utf8 => {
-            let mut b = StringBuilder::with_capacity(cells.len(), cells.len() * 8);
-            for c in cells {
-                match c {
-                    ScalarCell::Str(v) => b.append_value(v),
-                    ScalarCell::Null => b.append_null(),
-                    _ => {
-                        return Err(anyhow::anyhow!(
-                            "RandomLinkSplit type mismatch for {ctx}: expected Utf8"
-                        ))
-                    }
-                }
-            }
-            Ok(Arc::new(b.finish()))
-        }
-        DataType::Boolean => {
-            let mut b = BooleanBuilder::with_capacity(cells.len());
-            for c in cells {
-                match c {
-                    ScalarCell::Bool(v) => b.append_value(*v),
-                    ScalarCell::Null => b.append_null(),
-                    _ => {
-                        return Err(anyhow::anyhow!(
-                            "RandomLinkSplit type mismatch for {ctx}: expected Boolean"
-                        ))
-                    }
-                }
-            }
-            Ok(Arc::new(b.finish()))
-        }
-        DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, _) => {
-            let mut b = TimestampNanosecondBuilder::with_capacity(cells.len());
-            for c in cells {
-                match c {
-                    ScalarCell::Ts(v) => b.append_value(*v),
-                    ScalarCell::Null => b.append_null(),
-                    _ => {
-                        return Err(anyhow::anyhow!(
-                            "RandomLinkSplit type mismatch for {ctx}: expected Timestamp(ns)"
-                        ))
-                    }
-                }
-            }
-            Ok(Arc::new(b.finish()))
-        }
-        other => Err(anyhow::anyhow!(
-            "RandomLinkSplit unsupported scalar build dtype for {ctx}: {other:?}"
-        )),
+    /// Pyarrow schema of the underlying file (after column projection if
+    /// supplied at construction). Forces opening the file.
+    fn schema(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.ensure_reader()?;
+        let schema = self
+            .schema
+            .as_ref()
+            .ok_or_else(|| crate::DiskgraphSystemError::new_err("schema unavailable"))?
+            .clone();
+        let empty_batch = RecordBatch::new_empty(schema);
+        let py_batch = empty_batch.to_pyarrow(py)?;
+        let py_schema = py_batch.getattr("schema")?;
+        Ok(py_schema.unbind())
     }
 }
 
-fn build_list_array_from_cells(
-    list_dtype: &DataType,
-    rows: &[Vec<ScalarCell>],
-    ctx: &str,
-) -> anyhow::Result<Arc<dyn Array>> {
-    let DataType::List(field) = list_dtype else {
-        return Err(anyhow::anyhow!(
-            "RandomLinkSplit expected List dtype for {ctx}"
-        ));
-    };
-    let item_dtype = field.data_type();
-
-    match item_dtype {
-        DataType::Int64 => {
-            let mut b = ListBuilder::new(Int64Builder::new());
-            for row in rows {
-                for c in row {
-                    match c {
-                        ScalarCell::Int(v) => b.values().append_value(*v),
-                        ScalarCell::Null => b.values().append_null(),
-                        _ => {
-                            return Err(anyhow::anyhow!(
-                                "RandomLinkSplit type mismatch for {ctx}: expected List<Int64>"
-                            ))
-                        }
-                    }
-                }
-                b.append(true);
-            }
-            Ok(Arc::new(b.finish()))
-        }
-        DataType::Float64 => {
-            let mut b = ListBuilder::new(Float64Builder::new());
-            for row in rows {
-                for c in row {
-                    match c {
-                        ScalarCell::Float(v) => b.values().append_value(*v),
-                        ScalarCell::Null => b.values().append_null(),
-                        _ => {
-                            return Err(anyhow::anyhow!(
-                                "RandomLinkSplit type mismatch for {ctx}: expected List<Float64>"
-                            ))
-                        }
-                    }
-                }
-                b.append(true);
-            }
-            Ok(Arc::new(b.finish()))
-        }
-        DataType::Utf8 => {
-            let mut b = ListBuilder::new(StringBuilder::new());
-            for row in rows {
-                for c in row {
-                    match c {
-                        ScalarCell::Str(v) => b.values().append_value(v),
-                        ScalarCell::Null => b.values().append_null(),
-                        _ => {
-                            return Err(anyhow::anyhow!(
-                                "RandomLinkSplit type mismatch for {ctx}: expected List<Utf8>"
-                            ))
-                        }
-                    }
-                }
-                b.append(true);
-            }
-            Ok(Arc::new(b.finish()))
-        }
-        DataType::Boolean => {
-            let mut b = ListBuilder::new(BooleanBuilder::new());
-            for row in rows {
-                for c in row {
-                    match c {
-                        ScalarCell::Bool(v) => b.values().append_value(*v),
-                        ScalarCell::Null => b.values().append_null(),
-                        _ => {
-                            return Err(anyhow::anyhow!(
-                                "RandomLinkSplit type mismatch for {ctx}: expected List<Boolean>"
-                            ))
-                        }
-                    }
-                }
-                b.append(true);
-            }
-            Ok(Arc::new(b.finish()))
-        }
-        DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, _) => {
-            let mut b = ListBuilder::new(TimestampNanosecondBuilder::new());
-            for row in rows {
-                for c in row {
-                    match c {
-                        ScalarCell::Ts(v) => b.values().append_value(*v),
-                        ScalarCell::Null => b.values().append_null(),
-                        _ => {
-                            return Err(anyhow::anyhow!(
-                            "RandomLinkSplit type mismatch for {ctx}: expected List<Timestamp(ns)>"
-                        ))
-                        }
-                    }
-                }
-                b.append(true);
-            }
-            Ok(Arc::new(b.finish()))
-        }
-        other => Err(anyhow::anyhow!(
-            "RandomLinkSplit unsupported target list item dtype for {ctx}: {other:?}"
-        )),
-    }
-}
-
-fn is_link_array_batches(batches: &[RecordBatch]) -> bool {
-    let Some(first) = batches.first() else {
-        return false;
-    };
-    if let Ok(idx) = first.schema().index_of("TARGET") {
-        matches!(first.schema().field(idx).data_type(), DataType::List(_))
-    } else {
-        false
-    }
-}
-
-const STAGE_ID_COL_NAME: &str = "__internal_kumo_split_id_col__";
-
-struct ExplodedLinkData {
-    row_targets: Vec<Vec<ScalarCell>>,
-    row_freqs: Vec<Vec<i64>>,
-    row_scalar_cols: Vec<Vec<ScalarCell>>,
-    exploded_refs: Vec<(usize, usize)>,
-    split_col_values: Vec<String>,
-    schema: arrow_schema::SchemaRef,
-    target_idx: usize,
-    freq_idx: Option<usize>,
-    split_col_idx: Option<usize>,
-}
-
-fn collect_link_array_batches(
-    batches: &[RecordBatch],
-    split_col: Option<&str>,
-    kind_label: &str,
-) -> anyhow::Result<ExplodedLinkData> {
-    let first = batches.first().ok_or_else(|| {
-        anyhow::anyhow!("{kind_label} cannot transform empty LinkArray batches")
-    })?;
-    let schema = first.schema();
-
-    let target_idx = schema
-        .index_of("TARGET")
-        .map_err(|_| anyhow::anyhow!("{kind_label} requires TARGET column"))?;
-    let freq_idx = schema.index_of("__kumo_internal_frequency_column__").ok();
-    if !matches!(schema.field(target_idx).data_type(), DataType::List(_)) {
-        return Err(anyhow::anyhow!(
-            "{kind_label} LinkArray transform requires TARGET as List type"
-        ));
-    }
-
-    let split_col_idx = if let Some(name) = split_col {
-        let idx = schema
-            .index_of(name)
-            .map_err(|_| anyhow::anyhow!("{kind_label} requires split column {name:?}"))?;
-        if !matches!(schema.field(idx).data_type(), DataType::List(_)) {
-            return Err(anyhow::anyhow!(
-                "{kind_label} requires split column {name:?} to be List type"
-            ));
-        }
-        Some(idx)
-    } else {
-        None
-    };
-
-    let mut row_targets: Vec<Vec<ScalarCell>> = Vec::new();
-    let mut row_freqs: Vec<Vec<i64>> = Vec::new();
-    let mut row_scalar_cols: Vec<Vec<ScalarCell>> = vec![Vec::new(); schema.fields().len()];
-    let mut exploded_refs: Vec<(usize, usize)> = Vec::new();
-    let mut split_col_values: Vec<String> = Vec::new();
-
-    for batch in batches {
-        for i in 0..batch.num_rows() {
-            let list = batch
-                .column(target_idx)
-                .as_any()
-                .downcast_ref::<ListArray>()
-                .ok_or_else(|| anyhow::anyhow!("{kind_label} TARGET must be ListArray"))?;
-            let values = list.values();
-            let start = list.value_offsets()[i] as usize;
-            let end = list.value_offsets()[i + 1] as usize;
-
-            let mut targets = Vec::new();
-            for j in start..end {
-                targets.push(scalar_from_array_at(values.as_ref(), j, "TARGET.item")?);
-            }
-
-            let freqs = if let Some(fi) = freq_idx {
-                let flist = batch
-                    .column(fi)
-                    .as_any()
-                    .downcast_ref::<ListArray>()
-                    .ok_or_else(|| anyhow::anyhow!("frequency column must be ListArray"))?;
-                let fvals = flist.values();
-                let farr = fvals
-                    .as_any()
-                    .downcast_ref::<Int64Array>()
-                    .ok_or_else(|| anyhow::anyhow!("frequency list items must be Int64"))?;
-                let fs = flist.value_offsets()[i] as usize;
-                let fe = flist.value_offsets()[i + 1] as usize;
-                let mut fv = Vec::new();
-                for j in fs..fe {
-                    fv.push(if farr.is_null(j) { 1 } else { farr.value(j) });
-                }
-                if fv.len() != targets.len() {
-                    return Err(anyhow::anyhow!(
-                        "frequency/target list length mismatch for {kind_label}"
-                    ));
-                }
-                fv
-            } else {
-                vec![1; targets.len()]
-            };
-
-            if let Some(sci) = split_col_idx {
-                let slist = batch
-                    .column(sci)
-                    .as_any()
-                    .downcast_ref::<ListArray>()
-                    .ok_or_else(|| anyhow::anyhow!("{kind_label} split column must be ListArray"))?;
-                let ss = slist.value_offsets()[i] as usize;
-                let se = slist.value_offsets()[i + 1] as usize;
-                if se - ss != targets.len() {
-                    return Err(anyhow::anyhow!(
-                        "{kind_label} split-column list length mismatch with TARGET at row {i}: split={} target={}",
-                        se - ss,
-                        targets.len(),
-                    ));
-                }
-                let svals = slist.values();
-                for j in ss..se {
-                    let cell = scalar_from_array_at(svals.as_ref(), j, "split_col.item")?;
-                    split_col_values.push(match cell {
-                        ScalarCell::Str(s) => s,
-                        ScalarCell::Int(v) => v.to_string(),
-                        ScalarCell::Float(v) => v.to_string(),
-                        ScalarCell::Bool(v) => v.to_string(),
-                        ScalarCell::Ts(v) => v.to_string(),
-                        ScalarCell::Null => "None".to_string(),
-                    });
-                }
-            }
-
-            let row_idx = row_targets.len();
-            for link_idx in 0..targets.len() {
-                exploded_refs.push((row_idx, link_idx));
-            }
-
-            row_targets.push(targets);
-            row_freqs.push(freqs);
-
-            for col_idx in 0..schema.fields().len() {
-                if col_idx == target_idx
-                    || Some(col_idx) == freq_idx
-                    || Some(col_idx) == split_col_idx
-                {
-                    continue;
-                }
-                let field = schema.field(col_idx);
-                if matches!(field.data_type(), DataType::List(_)) {
-                    return Err(anyhow::anyhow!(
-                        "{kind_label} unsupported passthrough list column: {}",
-                        field.name()
-                    ));
-                }
-                row_scalar_cols[col_idx].push(scalar_from_array_at(
-                    batch.column(col_idx).as_ref(),
-                    i,
-                    field.name(),
-                )?);
-            }
-        }
-    }
-
-    Ok(ExplodedLinkData {
-        row_targets,
-        row_freqs,
-        row_scalar_cols,
-        exploded_refs,
-        split_col_values,
-        schema,
-        target_idx,
-        freq_idx,
-        split_col_idx,
+/// Open `parquet_path` and return an iterator over its `RecordBatch`es.
+///
+/// `columns` optionally projects to a subset of column names (in the
+/// returned order matching the file's column-definition order). Missing
+/// column names raise a `DiskgraphDataError`.
+///
+/// This is the BP / batch-prediction bridge for kumo's
+/// `diskgraph_batch_pred.py` — caller iterates batches without materializing
+/// the whole table.
+#[pyfunction]
+#[pyo3(signature = (parquet_path, columns = None))]
+pub fn read_tt_parquet_batches(
+    parquet_path: &str,
+    columns: Option<Vec<String>>,
+) -> PyResult<TTParquetBatchIterator> {
+    Ok(TTParquetBatchIterator {
+        parquet_path: parquet_path.to_owned(),
+        columns,
+        reader: None,
+        schema: None,
     })
 }
 
-fn regroup_output_schema(
-    input_schema: &arrow_schema::SchemaRef,
-    split_col_idx: Option<usize>,
-) -> arrow_schema::SchemaRef {
-    let mut fields: Vec<Field> = Vec::with_capacity(input_schema.fields().len() + 1);
-    for (col_idx, field) in input_schema.fields().iter().enumerate() {
-        if Some(col_idx) == split_col_idx {
-            continue;
-        }
-        fields.push(field.as_ref().clone());
-    }
-    fields.push(Field::new(STAGE_ID_COL_NAME, DataType::UInt8, false));
-    Arc::new(Schema::new(fields))
-}
-
-fn regroup_link_array_by_stage(
-    data: ExplodedLinkData,
-    link_stages: Vec<u8>,
-    kind_label: &str,
-) -> anyhow::Result<(Vec<RecordBatch>, Vec<u8>)> {
-    let ExplodedLinkData {
-        row_targets,
-        row_freqs,
-        row_scalar_cols,
-        exploded_refs,
-        schema,
-        target_idx,
-        freq_idx,
-        split_col_idx,
-        ..
-    } = data;
-    let out_schema = regroup_output_schema(&schema, split_col_idx);
-
-    if exploded_refs.is_empty() {
-        let empty_cols: Vec<Arc<dyn Array>> = out_schema
-            .fields()
-            .iter()
-            .map(|f| arrow_array::new_empty_array(f.data_type()))
-            .collect();
-        let empty = RecordBatch::try_new(out_schema.clone(), empty_cols)
-            .map_err(|e| anyhow::anyhow!("failed to build empty {kind_label} batch: {e}"))?;
-        return Ok((vec![empty], Vec::new()));
-    }
-    if link_stages.len() != exploded_refs.len() {
-        return Err(anyhow::anyhow!(
-            "{kind_label} stage/link count mismatch: stages={} links={}",
-            link_stages.len(),
-            exploded_refs.len(),
-        ));
-    }
-
-    let mut grouped_targets: Vec<[Vec<ScalarCell>; 3]> = (0..row_targets.len())
-        .map(|_| [Vec::new(), Vec::new(), Vec::new()])
-        .collect();
-    let mut grouped_freqs: Vec<[Vec<i64>; 3]> = (0..row_targets.len())
-        .map(|_| [Vec::new(), Vec::new(), Vec::new()])
-        .collect();
-
-    for (eid, (row_idx, link_idx)) in exploded_refs.iter().enumerate() {
-        let stage = link_stages[eid] as usize;
-        if stage > 2 {
-            continue;
-        }
-        grouped_targets[*row_idx][stage].push(row_targets[*row_idx][*link_idx].clone());
-        grouped_freqs[*row_idx][stage].push(row_freqs[*row_idx][*link_idx]);
-    }
-
-    let mut out_source_row_idxs: Vec<usize> = Vec::new();
-    let mut out_targets: Vec<Vec<ScalarCell>> = Vec::new();
-    let mut out_freqs: Vec<Vec<i64>> = Vec::new();
-    let mut out_assignments: Vec<u8> = Vec::new();
-    for row_idx in 0..row_targets.len() {
-        for stage in 0..3usize {
-            if grouped_targets[row_idx][stage].is_empty() {
-                continue;
-            }
-            out_source_row_idxs.push(row_idx);
-            out_targets.push(grouped_targets[row_idx][stage].clone());
-            out_freqs.push(grouped_freqs[row_idx][stage].clone());
-            out_assignments.push(stage as u8);
-        }
-    }
-
-    let mut columns: Vec<Arc<dyn Array>> = Vec::with_capacity(out_schema.fields().len());
-    for (col_idx, field) in schema.fields().iter().enumerate() {
-        if Some(col_idx) == split_col_idx {
-            continue;
-        }
-        let col = if col_idx == target_idx {
-            build_list_array_from_cells(field.data_type(), &out_targets, "TARGET")?
-        } else if Some(col_idx) == freq_idx {
-            if !matches!(field.data_type(), DataType::List(_)) {
-                return Err(anyhow::anyhow!(
-                    "{kind_label} frequency column must be List type"
-                ));
-            }
-            let mut b = ListBuilder::new(Int64Builder::new());
-            for row in &out_freqs {
-                for f in row {
-                    b.values().append_value(*f);
-                }
-                b.append(true);
-            }
-            Arc::new(b.finish())
-        } else {
-            let cells = out_source_row_idxs
-                .iter()
-                .map(|src| row_scalar_cols[col_idx][*src].clone())
-                .collect::<Vec<_>>();
-            build_scalar_array_from_cells(field.data_type(), &cells, field.name())?
-        };
-        columns.push(col);
-    }
-    columns.push(Arc::new(UInt8Array::from(out_assignments.clone())));
-
-    let out_batch = RecordBatch::try_new(out_schema.clone(), columns)
-        .map_err(|e| anyhow::anyhow!("failed to build {kind_label} transformed batch: {e}"))?;
-    Ok((vec![out_batch], out_assignments))
-}
-
-fn transform_random_link_split_link_array(
-    batches: &[RecordBatch],
-    ratio: Vec<f64>,
-    seed: Option<u64>,
-) -> anyhow::Result<(Vec<RecordBatch>, Vec<u8>)> {
-    let data = collect_link_array_batches(batches, None, "RandomLinkSplit")?;
-    let link_stages = if data.exploded_refs.is_empty() {
-        Vec::new()
-    } else {
-        let mut perm: Vec<usize> = (0..data.exploded_refs.len()).collect();
-        let mut rng = StdRng::seed_from_u64(seed.unwrap_or(0));
-        use rand::seq::SliceRandom;
-        perm.shuffle(&mut rng);
-        split_assignments::assign_by_ratio_on_perm(data.exploded_refs.len(), ratio, perm)
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?
-    };
-    regroup_link_array_by_stage(data, link_stages, "RandomLinkSplit")
-}
-
-fn transform_custom_link_split_link_array(
-    batches: &[RecordBatch],
-    split_col: &str,
-    manual_train_values: Vec<String>,
-    manual_val_values: Vec<String>,
-    manual_test_values: Vec<String>,
-) -> anyhow::Result<(Vec<RecordBatch>, Vec<u8>)> {
-    let data = collect_link_array_batches(batches, Some(split_col), "CustomLinkSplit")?;
-    let link_stages = if data.exploded_refs.is_empty() {
-        Vec::new()
-    } else {
-        split_assignments::assign_manual_split(
-            data.split_col_values.clone(),
-            manual_train_values,
-            manual_val_values,
-            manual_test_values,
-        )
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?
-    };
-    regroup_link_array_by_stage(data, link_stages, "CustomLinkSplit")
-}
-
-use crate::artifact_helpers::{
-    artifact_ref, ensure_artifacts_dir, merge_prefixed_checksums, sha256_hex_bytes, sha256_hex_path,
-    write_artifact_file, write_manifest_json,
-};
+// ─── Prediction artifact bundle helpers ──────────────────────────────────────
+//
+// These build JSON blobs describing per-table (fkey + reverse-edge + mask)
+// artifacts and a manifest for the prediction-table workflow. Used by the
+// Python `prediction_artifacts` module — kept after the legacy TT-gen path was removed because they
+// are NOT part of the deleted materialize-with-split path.
 
 fn build_table_edges_bundle_value(
     output_dir: &Path,
@@ -1527,25 +1490,6 @@ fn build_table_edges_bundle_value(
     Ok(Value::Object(root))
 }
 
-fn build_train_table_edges_bundle_value(
-    output_dir: &Path,
-    train_table_name: &str,
-    mask_present: bool,
-    mask_absent_reason: Option<&str>,
-    edge_attrs_path: Option<&str>,
-) -> anyhow::Result<Value> {
-    build_table_edges_bundle_value(
-        output_dir,
-        train_table_name,
-        mask_present,
-        mask_absent_reason,
-        edge_attrs_path,
-        "tt_train_table_edges",
-        "tt_edge_bundle_v1",
-        "train_table_edges",
-    )
-}
-
 fn build_prediction_table_edges_bundle_value(
     output_dir: &Path,
     prediction_table_name: &str,
@@ -1563,1934 +1507,6 @@ fn build_prediction_table_edges_bundle_value(
         "tt_pred_edge_bundle_v1",
         "prediction_table_edges",
     )
-}
-
-fn split_family_from_config(
-    split_family_hint: Option<&str>,
-    split_cfg: Option<&Value>,
-) -> Option<String> {
-    if let Some(h) = split_family_hint {
-        if !h.is_empty() {
-            return Some(h.to_string());
-        }
-    }
-    if let Some(Value::Object(map)) = split_cfg {
-        if let Some(Value::String(target)) = map.get("_target_") {
-            return target.rsplit('.').next().map(|s| s.to_string());
-        }
-    }
-    None
-}
-
-fn parse_ratio(split_cfg: &Value) -> anyhow::Result<Vec<f64>> {
-    let ratio = split_cfg
-        .get("ratio")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| anyhow::anyhow!("split ratio is required"))?;
-    let out = ratio
-        .iter()
-        .map(|v| {
-            v.as_f64()
-                .ok_or_else(|| anyhow::anyhow!("split ratio must be numeric"))
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    Ok(out)
-}
-
-fn parse_i64_list(split_cfg: &Value, key: &str) -> anyhow::Result<Vec<i64>> {
-    let arr = split_cfg
-        .get(key)
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| anyhow::anyhow!("split {key} is required"))?;
-    arr.iter()
-        .map(|v| {
-            v.as_i64()
-                .or_else(|| v.as_f64().map(|x| x as i64))
-                .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
-                .ok_or_else(|| anyhow::anyhow!("split {key} entries must be numeric"))
-        })
-        .collect::<anyhow::Result<Vec<_>>>()
-}
-
-fn parse_time_ranges_ns(split_cfg: &Value, timestamp_unit: &str) -> anyhow::Result<(Vec<i64>, Vec<i64>)> {
-    let ranges = split_cfg
-        .get("ranges")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| anyhow::anyhow!("split ranges are required"))?;
-    let mut starts = Vec::new();
-    let mut ends = Vec::new();
-    for pair in ranges.iter().take(3) {
-        let p = pair
-            .as_array()
-            .ok_or_else(|| anyhow::anyhow!("split ranges entries must be [start,end]"))?;
-        if p.len() != 2 {
-            return Err(anyhow::anyhow!("split ranges entries must be length-2"));
-        }
-        let raw_start = parse_timestamp_ns_json(&p[0])?;
-        let raw_end = parse_timestamp_ns_json(&p[1])?;
-        let ns_start = to_nanoseconds(raw_start, timestamp_unit)?;
-        let ns_end = to_nanoseconds(raw_end, timestamp_unit)?;
-        starts.push(ns_start);
-        ends.push(ns_end);
-    }
-    Ok((starts, ends))
-}
-
-#[derive(Clone, Debug)]
-enum SortValue {
-    Null,
-    Int(i64),
-    Float(f64),
-    Str(String),
-    Bool(bool),
-    Ts(i64),
-}
-
-impl SortValue {
-    fn rank(&self) -> u8 {
-        match self {
-            SortValue::Int(_) => 0,
-            SortValue::Float(_) => 1,
-            SortValue::Str(_) => 2,
-            SortValue::Bool(_) => 3,
-            SortValue::Ts(_) => 4,
-            SortValue::Null => 5,
-        }
-    }
-}
-
-impl PartialEq for SortValue {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == std::cmp::Ordering::Equal
-    }
-}
-impl Eq for SortValue {}
-
-impl PartialOrd for SortValue {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for SortValue {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let r = self.rank().cmp(&other.rank());
-        if r != std::cmp::Ordering::Equal {
-            return r;
-        }
-        match (self, other) {
-            (SortValue::Null, SortValue::Null) => std::cmp::Ordering::Equal,
-            (SortValue::Int(a), SortValue::Int(b)) => a.cmp(b),
-            (SortValue::Float(a), SortValue::Float(b)) => a.total_cmp(b),
-            (SortValue::Str(a), SortValue::Str(b)) => a.cmp(b),
-            (SortValue::Bool(a), SortValue::Bool(b)) => a.cmp(b),
-            (SortValue::Ts(a), SortValue::Ts(b)) => a.cmp(b),
-            _ => std::cmp::Ordering::Equal,
-        }
-    }
-}
-
-fn value_to_string(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        Value::Number(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Null => "None".to_string(),
-        _ => v.to_string(),
-    }
-}
-
-fn parse_optional_string_list(split_cfg: &Value, key: &str) -> Vec<String> {
-    match split_cfg.get(key) {
-        Some(Value::Array(arr)) => arr.iter().map(value_to_string).collect::<Vec<_>>(),
-        Some(v) => vec![value_to_string(v)],
-        None => Vec::new(),
-    }
-}
-
-fn parse_split_column_name(split_cfg: &Value) -> Option<String> {
-    for key in ["split_output_column", "split_projection"] {
-        if let Some(s) = split_cfg.get(key).and_then(|v| v.as_str()) {
-            if !s.is_empty() {
-                return Some(s.to_string());
-            }
-        }
-    }
-    match split_cfg.get("col") {
-        Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
-        Some(Value::Object(m)) => m
-            .get("name")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()),
-        _ => split_cfg
-            .get("split_column")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string()),
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-struct DownsamplingConfigNative {
-    enabled: bool,
-    max_rows: usize,
-    preserve_pre_downsample_tt: bool,
-    is_link_prediction: bool,
-    list_distinct_target_is_array: bool,
-    uses_arl_labels: bool,
-}
-
-fn parse_downsampling_config(raw: Option<&Value>) -> anyhow::Result<DownsamplingConfigNative> {
-    let mut cfg = DownsamplingConfigNative {
-        enabled: false,
-        max_rows: i32::MAX as usize,
-        preserve_pre_downsample_tt: true,
-        is_link_prediction: false,
-        list_distinct_target_is_array: false,
-        uses_arl_labels: false,
-    };
-
-    let Some(Value::Object(m)) = raw else {
-        return Ok(cfg);
-    };
-
-    cfg.enabled = m.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-    cfg.max_rows = m
-        .get("max_rows")
-        .and_then(|v| v.as_u64())
-        .map(|v| v as usize)
-        .unwrap_or(i32::MAX as usize);
-    cfg.preserve_pre_downsample_tt = m
-        .get("preserve_pre_downsample_tt")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
-    cfg.is_link_prediction = m
-        .get("is_link_prediction")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    cfg.list_distinct_target_is_array = m
-        .get("list_distinct_target_is_array")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    cfg.uses_arl_labels = m
-        .get("uses_arl_labels")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    if cfg.enabled && cfg.max_rows == 0 {
-        return Err(anyhow::anyhow!("downsampling max_rows must be positive"));
-    }
-
-    Ok(cfg)
-}
-
-fn extract_entity_strings(batch: &RecordBatch) -> anyhow::Result<Vec<String>> {
-    extract_string_values(batch, "ENTITY")
-}
-
-#[allow(dead_code)]
-fn downsample_indices_legacy(
-    cfg: &DownsamplingConfigNative,
-    entities: &[String],
-    row_count: usize,
-) -> anyhow::Result<(Vec<usize>, String)> {
-    if row_count <= cfg.max_rows {
-        return Ok(((0..row_count).collect(), "none".to_string()));
-    }
-    if cfg.uses_arl_labels {
-        return Err(anyhow::anyhow!(
-            "downsampling refuses ARL labels parity path"
-        ));
-    }
-
-    if cfg.is_link_prediction && !cfg.list_distinct_target_is_array {
-        let mut seen = HashSet::new();
-        let mut unique = Vec::new();
-        for e in entities {
-            if seen.insert(e.clone()) {
-                unique.push(e.clone());
-            }
-        }
-        let num_ids = unique.len();
-        let id_sample_size = ((num_ids * cfg.max_rows) / row_count).max(1);
-        let sampled: HashSet<String> = unique.into_iter().take(id_sample_size).collect();
-        let mut idx = Vec::new();
-        for (i, e) in entities.iter().enumerate() {
-            if sampled.contains(e) {
-                idx.push(i);
-            }
-        }
-        if idx.len() > cfg.max_rows {
-            idx.truncate(cfg.max_rows);
-        }
-        return Ok((idx, "link_by_entity".to_string()));
-    }
-
-    Ok(((0..cfg.max_rows).collect(), "limit".to_string()))
-}
-
-fn patch_summary_for_final_rows(
-    summary_json: String,
-    final_row_count: usize,
-    entity_values: Option<&[String]>,
-    target_values: Option<&[String]>,
-    cfg: &DownsamplingConfigNative,
-) -> anyhow::Result<String> {
-    let mut value: Value = serde_json::from_str(&summary_json)?;
-    let root = value
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("summary root must be object"))?;
-    let stats_val = root
-        .entry("stats")
-        .or_insert_with(|| Value::Object(serde_json::Map::new()));
-    let stats = stats_val
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("summary.stats must be object"))?;
-
-    stats.insert(
-        "num_total_rows".to_string(),
-        Value::from(final_row_count as u64),
-    );
-    stats.insert(
-        "num_train_rows".to_string(),
-        Value::from(final_row_count as u64),
-    );
-
-    if let Some(entities) = entity_values {
-        let uniq = entities.iter().collect::<HashSet<_>>().len();
-        stats.insert("num_entities".to_string(), Value::from(uniq as u64));
-    }
-    if let Some(targets) = target_values {
-        let uniq = targets.iter().collect::<HashSet<_>>().len();
-        stats.insert("num_targets".to_string(), Value::from(uniq as u64));
-    }
-    if cfg.is_link_prediction {
-        stats.insert("num_links".to_string(), Value::from(final_row_count as u64));
-    }
-
-    serde_json::to_string(&value).map_err(Into::into)
-}
-
-fn build_tt_stats_artifact_value(
-    summary: Option<&Value>,
-    row_count: u64,
-    plan: Option<&Value>,
-) -> Value {
-    let stats = summary
-        .and_then(|s| s.get("stats"))
-        .and_then(|s| s.as_object())
-        .cloned()
-        .unwrap_or_default();
-
-    let num_total_rows = stats
-        .get("num_total_rows")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(row_count);
-    let num_train_rows = stats
-        .get("num_train_rows")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(row_count);
-    let num_entities = stats
-        .get("num_entities")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let num_targets = stats
-        .get("num_targets")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let num_links = stats.get("num_links").and_then(|v| v.as_u64());
-
-    let exact_stats = stats.get("exact_stats").cloned().unwrap_or(Value::Null);
-    let split_payload = stats.get("split_payload").cloned().unwrap_or(Value::Null);
-
-    let timestamp_unique = exact_stats
-        .get("timestamp")
-        .and_then(|v| v.get("num_unique"))
-        .and_then(|v| v.as_u64());
-
-    // Use actual produced timestamps from split_payload (only timestamps with
-    // data), not the full input timestamp list from the plan.  The plan's
-    // temporal.timestamps includes ALL candidate timestamps, but some may
-    // produce zero rows (e.g. ASSUMING clause filters all entities).  GE's
-    // Spark path naturally excludes empty timeframes; DG must do the same.
-    let mut produced_timestamps: Vec<i64> = split_payload
-        .as_object()
-        .and_then(|sp| sp.get("artifacts_v3"))
-        .and_then(|a| a.get("timestamp_stage_assignments"))
-        .and_then(|arr| arr.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.get("timestamp").and_then(|t| t.as_i64()))
-                .collect()
-        })
-        .unwrap_or_default();
-    // Sort newest-first: stats_per_timeframe must be in reverse chronological
-    // order (Python's update_train_table_stats asserts this).
-    produced_timestamps.sort_unstable_by(|a, b| b.cmp(a));
-
-    let is_temporal = !produced_timestamps.is_empty()
-        || plan
-            .and_then(|p| p.get("temporal"))
-            .and_then(|t| t.get("timestamps"))
-            .and_then(|arr| arr.as_array())
-            .map(|a| !a.is_empty())
-            .unwrap_or(false);
-
-    let num_timeframes = if !produced_timestamps.is_empty() {
-        produced_timestamps.len() as u64
-    } else {
-        timestamp_unique.unwrap_or(0)
-    };
-    let num_timeframes_post_filter = num_timeframes;
-    let avg_entities_per_timeframe = if num_timeframes_post_filter > 0 {
-        (num_train_rows as f64 / num_timeframes_post_filter as f64).round() as u64
-    } else {
-        0
-    };
-    let avg_targets_per_timeframe = if num_timeframes_post_filter > 0 {
-        (num_targets as f64 / num_timeframes_post_filter as f64).round() as u64
-    } else {
-        0
-    };
-
-    let timestamp_max = exact_stats
-        .get("timestamp")
-        .and_then(|v| v.get("max"))
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
-    let is_link_prediction = plan
-        .and_then(|p| p.get("prediction_type"))
-        .and_then(|v| v.as_object())
-        .map(|m| m.contains_key("link"))
-        .unwrap_or(false);
-
-    // Extract per-timestamp row counts from the Rust TT gen stats.
-    // These are the real counts (like GE's Spark groupby on TIME_BUCKET_COL).
-    let ts_counts: HashMap<i64, u64> = stats
-        .get("timestamp_counts")
-        .and_then(|v| v.as_object())
-        .map(|m| {
-            m.iter()
-                .filter_map(|(k, v)| {
-                    let ts = k.parse::<i64>().ok()?;
-                    let count = v.as_u64()?;
-                    Some((ts, count))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let mut stats_per_timeframe: Vec<Value> = Vec::new();
-    if is_temporal {
-        let mut ts_values = produced_timestamps.clone();
-        if ts_values.is_empty() {
-            ts_values = vec![timestamp_max, timestamp_max];
-        } else if ts_values.len() == 1 {
-            ts_values.push(ts_values[0]);
-        }
-        for (idx, ts) in ts_values.iter().enumerate() {
-            let rows_for_tf = ts_counts.get(ts).copied().unwrap_or(0);
-            let dt = Utc
-                .timestamp_opt(*ts, 0)
-                .single()
-                .map(|d| d.to_rfc3339())
-                .unwrap_or_else(|| ts.to_string());
-            if is_link_prediction {
-                stats_per_timeframe.push(json!({
-                    "min_date": dt,
-                    "max_date": dt,
-                    "anchor_date": dt,
-                    "num_train_rows": rows_for_tf,
-                    "num_entities": num_entities,
-                    "num_targets": num_targets,
-                    "num_links": num_links,
-                    "index": idx,
-                }));
-            } else {
-                stats_per_timeframe.push(json!({
-                    "min_date": dt,
-                    "max_date": dt,
-                    "anchor_date": dt,
-                    "num_train_rows": rows_for_tf,
-                    "num_entities": num_entities,
-                    "num_targets": num_targets,
-                    "target_distribution": json!({}),
-                    "index": idx,
-                }));
-            }
-        }
-    }
-
-    let mut payload = json!({
-        "version": 2,
-        "kind": "tt_stats",
-        "num_total_rows": num_total_rows,
-        "num_train_rows": num_train_rows,
-        "num_entities": num_entities,
-        "num_targets": num_targets,
-        "num_links": num_links,
-        "num_target_rows": num_train_rows,
-        "num_timeframes": num_timeframes,
-        "num_timeframes_post_filter": num_timeframes_post_filter,
-        "avg_entities_per_timeframe": avg_entities_per_timeframe,
-        "avg_targets_per_timeframe": avg_targets_per_timeframe,
-        "node_degree_stats": Value::Null,
-        "stats_per_timeframe": stats_per_timeframe,
-        "target_distribution": json!({}),
-        "scoring_table_column_stats": Value::Null,
-        "exact_stats": exact_stats,
-        "split_payload": split_payload,
-    });
-
-    let mut provided_fields = vec![
-        "num_total_rows",
-        "num_train_rows",
-        "num_entities",
-        "num_targets",
-        "num_target_rows",
-        "num_timeframes",
-        "num_timeframes_post_filter",
-        "avg_entities_per_timeframe",
-        "avg_targets_per_timeframe",
-        "node_degree_stats",
-        "stats_per_timeframe",
-        "target_distribution",
-        "scoring_table_column_stats",
-    ];
-    if num_links.is_some() {
-        provided_fields.push("num_links");
-    }
-    if !payload
-        .get("exact_stats")
-        .map(|v| v.is_null())
-        .unwrap_or(true)
-    {
-        provided_fields.push("exact_stats");
-    }
-    if !payload
-        .get("split_payload")
-        .map(|v| v.is_null())
-        .unwrap_or(true)
-    {
-        provided_fields.push("split_payload");
-    }
-    payload["provided_fields"] = Value::Array(
-        provided_fields
-            .into_iter()
-            .map(|s| Value::String(s.to_string()))
-            .collect(),
-    );
-    payload
-}
-
-fn array_to_opt_strings(arr: &dyn Array) -> anyhow::Result<Vec<Option<String>>> {
-    if let Some(a) = arr.as_any().downcast_ref::<Int64Array>() {
-        return Ok((0..a.len())
-            .map(|i| {
-                if a.is_null(i) {
-                    None
-                } else {
-                    Some(a.value(i).to_string())
-                }
-            })
-            .collect());
-    }
-    if let Some(a) = arr.as_any().downcast_ref::<Float64Array>() {
-        return Ok((0..a.len())
-            .map(|i| {
-                if a.is_null(i) {
-                    None
-                } else {
-                    Some(a.value(i).to_string())
-                }
-            })
-            .collect());
-    }
-    if let Some(a) = arr.as_any().downcast_ref::<StringArray>() {
-        return Ok((0..a.len())
-            .map(|i| {
-                if a.is_null(i) {
-                    None
-                } else {
-                    Some(a.value(i).to_string())
-                }
-            })
-            .collect());
-    }
-    if let Some(a) = arr.as_any().downcast_ref::<BooleanArray>() {
-        return Ok((0..a.len())
-            .map(|i| {
-                if a.is_null(i) {
-                    None
-                } else {
-                    Some(a.value(i).to_string())
-                }
-            })
-            .collect());
-    }
-    if let Some(a) = arr.as_any().downcast_ref::<TimestampNanosecondArray>() {
-        return Ok((0..a.len())
-            .map(|i| {
-                if a.is_null(i) {
-                    None
-                } else {
-                    Some(a.value(i).to_string())
-                }
-            })
-            .collect());
-    }
-    Err(anyhow::anyhow!("unsupported column dtype for split stats"))
-}
-
-fn collect_column_opt_strings(
-    path: &str,
-    col_name: &str,
-) -> anyhow::Result<Option<Vec<Option<String>>>> {
-    let file = File::open(path)?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-    let schema = builder.schema().clone();
-    let Ok(col_idx) = schema.index_of(col_name) else {
-        return Ok(None);
-    };
-    // List-typed columns (e.g. `TARGET=List<Utf8>` from the
-    // `link_prediction(explode=False)` writer arm, or `FREQUENCY=List<Int64>`
-    // from `include_frequency=True`) cannot be downcast to a scalar Arrow
-    // array by `array_to_opt_strings`. Per-stage stats over a list-of-tokens
-    // column are not meaningful as a single string-summary anyway, so we
-    // signal "skip this column" by returning `Ok(None)` — the same shape
-    // already used for missing columns. `build_stage_stats_from_columns`
-    // accepts `target_vals=None` and emits the stats payload without a
-    // target distribution. Catches both `DataType::List` and
-    // `DataType::LargeList` so future writers using the large variant don't
-    // re-introduce the failure.
-    let field_dtype = schema.field(col_idx).data_type();
-    if matches!(
-        field_dtype,
-        DataType::List(_) | DataType::LargeList(_) | DataType::FixedSizeList(_, _)
-    ) {
-        return Ok(None);
-    }
-    let mut reader = builder.build()?;
-    let mut out: Vec<Option<String>> = Vec::new();
-    while let Some(batch_res) = reader.next() {
-        let batch = batch_res?;
-        let mut vals = array_to_opt_strings(batch.column(col_idx).as_ref())?;
-        out.append(&mut vals);
-    }
-    Ok(Some(out))
-}
-
-
-
-
-
-
-fn build_stage_stats_from_columns(
-    assignments: &[u8],
-    stage: u8,
-    entity_vals: Option<&[Option<String>]>,
-    target_vals: Option<&[Option<String>]>,
-    time_vals: Option<&[Option<String>]>,
-    task_type: Option<&str>,
-) -> Value {
-    let idx = assignments
-        .iter()
-        .enumerate()
-        .filter_map(|(i, s)| if *s == stage { Some(i) } else { None })
-        .collect::<Vec<_>>();
-    if idx.is_empty() {
-        return Value::Null;
-    }
-
-    let num_rows = idx.len() as u64;
-    let num_entities = if let Some(e) = entity_vals {
-        idx.iter()
-            .filter_map(|i| e.get(*i).and_then(|v| v.clone()))
-            .collect::<HashSet<_>>()
-            .len() as u64
-    } else {
-        num_rows
-    };
-
-    let mut num_targets: Option<u64> = None;
-    let mut target_distribution = Value::Null;
-    if let Some(t) = target_vals {
-        let vals = idx
-            .iter()
-            .filter_map(|i| t.get(*i).and_then(|v| v.clone()))
-            .collect::<Vec<_>>();
-        if !vals.is_empty() {
-            num_targets = Some(vals.iter().collect::<HashSet<_>>().len() as u64);
-            if let Some(tt) = task_type {
-                // Forecasting carries a scalar numerical `TARGET` column (the
-                // value being forecast) alongside the autoregression /
-                // year-over-year label lists, so its per-stage target
-                // distribution is the same numerical summary as regression.
-                // Kumo's `_assert_native_split_stats_contract` requires a
-                // non-null `target_distribution` for every non-link-pred task,
-                // forecasting included; without this branch forecasting split
-                // stats came back null and tripped that contract.
-                if tt == "regression" || tt == "forecasting" {
-                    target_distribution = build_numerical_target_distribution(&vals);
-                } else if tt == "binary_classification" || tt == "multiclass_classification" {
-                    let mut counts = std::collections::BTreeMap::<String, u64>::new();
-                    for v in vals {
-                        *counts.entry(v).or_insert(0) += 1;
-                    }
-                    let total: u64 = counts.values().sum();
-                    if total > 0 {
-                        let count_json = counts
-                            .iter()
-                            .map(|(k, v)| (k.clone(), Value::from(*v as f64)))
-                            .collect::<serde_json::Map<String, Value>>();
-                        let pct_json = counts
-                            .iter()
-                            .map(|(k, v)| {
-                                (k.clone(), Value::from((*v as f64) * 100.0 / (total as f64)))
-                            })
-                            .collect::<serde_json::Map<String, Value>>();
-                        target_distribution = json!({"count": count_json, "percentage": pct_json});
-                    }
-                } else if tt == "multilabel_classification" || tt == "multilabel_ranking" {
-                    // Multilabel targets arrive as a pipe-delimited scalar string
-                    // ("a|b|c") that ttgen builds by joining the per-row label
-                    // list, so they reach us here in `vals` (NOT as an Arrow list
-                    // column — if a future writer changes that, they'd be skipped
-                    // by `collect_column_opt_strings` and this would regress to
-                    // null). Split into individual labels and report per-label
-                    // PREVALENCE: percentage = count / (# rows with a target),
-                    // matching the `get_target_distribution` semantics this native
-                    // artifact replaces. Per-label percentages can sum past 100%;
-                    // do NOT use the label-occurrence total as the denominator
-                    // (that would make it multinomial). Kumo's
-                    // `_assert_native_split_stats_contract` requires a non-null
-                    // `target_distribution` for multilabel, same as other tasks.
-                    let mut counts = std::collections::BTreeMap::<String, u64>::new();
-                    for v in &vals {
-                        for label in v.split('|') {
-                            if !label.is_empty() {
-                                *counts.entry(label.to_string()).or_insert(0) += 1;
-                            }
-                        }
-                    }
-                    if !counts.is_empty() {
-                        let denom = vals.len() as f64;
-                        let count_json = counts
-                            .iter()
-                            .map(|(k, v)| (k.clone(), Value::from(*v as f64)))
-                            .collect::<serde_json::Map<String, Value>>();
-                        let pct_json = counts
-                            .iter()
-                            .map(|(k, v)| {
-                                (k.clone(), Value::from((*v as f64) * 100.0 / denom))
-                            })
-                            .collect::<serde_json::Map<String, Value>>();
-                        target_distribution = json!({"count": count_json, "percentage": pct_json});
-                        // Distinct individual labels, not distinct pipe-joined
-                        // strings ("a|b" and "a|c" are two values to the generic
-                        // counter above, which is wrong for multilabel).
-                        num_targets = Some(counts.len() as u64);
-                    }
-                }
-            }
-        }
-    }
-
-    let (min_date, max_date, anchor_date) = if let Some(t) = time_vals {
-        let vals = idx
-            .iter()
-            .filter_map(|i| t.get(*i).and_then(|v| v.clone()))
-            .collect::<Vec<_>>();
-        if vals.is_empty() {
-            (Value::Null, Value::Null, Value::Null)
-        } else if vals.iter().all(|v| v.parse::<f64>().is_ok()) {
-            let nums = vals
-                .iter()
-                .filter_map(|v| v.parse::<f64>().ok())
-                .collect::<Vec<_>>();
-            let min = nums.iter().cloned().fold(f64::INFINITY, f64::min);
-            let max = nums.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-            let min_dt = Utc
-                .timestamp_opt(min as i64, 0)
-                .single()
-                .map(|d| d.to_rfc3339())
-                .unwrap_or_else(|| (min as i64).to_string());
-            let max_dt = Utc
-                .timestamp_opt(max as i64, 0)
-                .single()
-                .map(|d| d.to_rfc3339())
-                .unwrap_or_else(|| (max as i64).to_string());
-            (json!(min_dt), json!(max_dt), json!(min_dt))
-        } else {
-            let min = vals.iter().min().cloned().unwrap_or_default();
-            let max = vals.iter().max().cloned().unwrap_or_default();
-            (json!(min.clone()), json!(max), json!(min))
-        }
-    } else {
-        (Value::Null, Value::Null, Value::Null)
-    };
-
-    json!({
-        "num_train_rows": num_rows,
-        "num_entities": num_entities,
-        "num_targets": num_targets,
-        "target_distribution": target_distribution,
-        "min_date": min_date,
-        "max_date": max_date,
-        "anchor_date": anchor_date,
-    })
-}
-
-fn build_numerical_target_distribution(targets: &[String]) -> Value {
-    use diskgraph_core::accumulators::{TDigestEstimator, WelfordAccumulator};
-
-    let mut welford = WelfordAccumulator::new();
-    let mut tdigest = TDigestEstimator::new(TDigestEstimator::DEFAULT_DELTA);
-    for target in targets {
-        if let Ok(value) = target.parse::<f64>() {
-            if value.is_finite() {
-                welford.observe(value);
-                tdigest.observe(value);
-            }
-        }
-    }
-    if welford.count == 0 {
-        return Value::Null;
-    }
-
-    let min = welford.min;
-    let max = welford.max;
-    let mean = welford.mean();
-    let (p25, median, p75) = tdigest.quantiles().unwrap_or((min, min, max));
-
-    let num_bins = 50usize;
-    let mut counts = vec![0u64; num_bins];
-    let bin_width = if max > min {
-        (max - min) / num_bins as f64
-    } else {
-        0.0
-    };
-    if bin_width == 0.0 {
-        counts[0] = welford.count;
-    } else {
-        for target in targets {
-            if let Ok(value) = target.parse::<f64>() {
-                if value.is_finite() {
-                    let mut idx = ((value - min) / bin_width).floor() as usize;
-                    if idx >= num_bins {
-                        idx = num_bins - 1;
-                    }
-                    counts[idx] += 1;
-                }
-            }
-        }
-    }
-    let (mode_idx, mode_count) = counts
-        .iter()
-        .enumerate()
-        .max_by(|a, b| a.1.cmp(b.1))
-        .map(|(idx, count)| (idx, *count))
-        .unwrap();
-    let mode = if bin_width == 0.0 {
-        min
-    } else {
-        min + bin_width * (mode_idx as f64 + 0.5)
-    };
-    let bins = (0..=num_bins)
-        .map(|i| Value::from(min + bin_width * i as f64))
-        .collect::<Vec<_>>();
-
-    json!({
-        "target_min": min,
-        "target_percentile_25": p25,
-        "target_mean": mean,
-        "target_median": median,
-        "target_mode": mode,
-        "target_mode_count": mode_count,
-        "target_mode_percentage": mode_count as f64 / welford.count as f64,
-        "target_percentile_75": p75,
-        "target_max": max,
-        "histogram": {
-            "counts": counts,
-            "bins": bins,
-            "num_bins": num_bins,
-            "bin_width": bin_width,
-        },
-    })
-}
-
-fn parse_timestamp_ns_json(v: &Value) -> anyhow::Result<i64> {
-    if let Some(i) = v.as_i64() {
-        return Ok(i);
-    }
-    if let Some(f) = v.as_f64() {
-        return Ok(f as i64);
-    }
-    if let Some(s) = v.as_str() {
-        if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
-            return Ok(dt
-                .with_timezone(&Utc)
-                .timestamp_nanos_opt()
-                .ok_or_else(|| anyhow::anyhow!("timestamp ns overflow"))?);
-        }
-        if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-            let dt = d
-                .and_hms_opt(0, 0, 0)
-                .ok_or_else(|| anyhow::anyhow!("invalid date"))?
-                .and_utc();
-            return Ok(dt
-                .timestamp_nanos_opt()
-                .ok_or_else(|| anyhow::anyhow!("timestamp ns overflow"))?);
-        }
-    }
-    Err(anyhow::anyhow!(
-        "timestamp must be numeric epoch-ns or parseable date string"
-    ))
-}
-
-/// Convert a timestamp value to nanoseconds based on the declared unit.
-fn to_nanoseconds(value: i64, timestamp_unit: &str) -> anyhow::Result<i64> {
-    let unit = TimeUnit::from_name(timestamp_unit)
-        .ok_or_else(|| anyhow::anyhow!("unsupported timestamp_unit: {}", timestamp_unit))?;
-    Ok(abs_from_unit::<Nanoseconds>(value, unit).raw())
-}
-
-/// Read `timestamp_unit` from split config, defaulting to "seconds".
-fn get_timestamp_unit(split_cfg: &Value) -> &str {
-    split_cfg
-        .get("timestamp_unit")
-        .and_then(|v| v.as_str())
-        .unwrap_or("seconds")
-}
-
-fn extract_sort_values(batch: &RecordBatch, col_name: &str) -> anyhow::Result<Vec<SortValue>> {
-    let idx = batch
-        .schema()
-        .index_of(col_name)
-        .map_err(|_| anyhow::anyhow!("ColumnSplit missing split column: {col_name}"))?;
-    let arr = batch.column(idx);
-
-    if let Some(a) = arr.as_any().downcast_ref::<Int64Array>() {
-        return Ok((0..a.len())
-            .map(|i| {
-                if a.is_null(i) {
-                    SortValue::Null
-                } else {
-                    SortValue::Int(a.value(i))
-                }
-            })
-            .collect());
-    }
-    if let Some(a) = arr.as_any().downcast_ref::<Float64Array>() {
-        return Ok((0..a.len())
-            .map(|i| {
-                if a.is_null(i) {
-                    SortValue::Null
-                } else {
-                    SortValue::Float(a.value(i))
-                }
-            })
-            .collect());
-    }
-    if let Some(a) = arr.as_any().downcast_ref::<StringArray>() {
-        return Ok((0..a.len())
-            .map(|i| {
-                if a.is_null(i) {
-                    SortValue::Null
-                } else {
-                    SortValue::Str(a.value(i).to_string())
-                }
-            })
-            .collect());
-    }
-    if let Some(a) = arr.as_any().downcast_ref::<BooleanArray>() {
-        return Ok((0..a.len())
-            .map(|i| {
-                if a.is_null(i) {
-                    SortValue::Null
-                } else {
-                    SortValue::Bool(a.value(i))
-                }
-            })
-            .collect());
-    }
-    if let Some(a) = arr.as_any().downcast_ref::<TimestampNanosecondArray>() {
-        return Ok((0..a.len())
-            .map(|i| {
-                if a.is_null(i) {
-                    SortValue::Null
-                } else {
-                    SortValue::Ts(a.value(i))
-                }
-            })
-            .collect());
-    }
-
-    Err(anyhow::anyhow!(
-        "ColumnSplit unsupported split column dtype for {col_name}"
-    ))
-}
-
-fn extract_string_values(batch: &RecordBatch, col_name: &str) -> anyhow::Result<Vec<String>> {
-    let idx = batch
-        .schema()
-        .index_of(col_name)
-        .map_err(|_| anyhow::anyhow!("ManualSplit missing split column: {col_name}"))?;
-    let arr = batch.column(idx);
-
-    if let Some(a) = arr.as_any().downcast_ref::<Int64Array>() {
-        return Ok((0..a.len())
-            .map(|i| {
-                if a.is_null(i) {
-                    "None".to_string()
-                } else {
-                    a.value(i).to_string()
-                }
-            })
-            .collect());
-    }
-    if let Some(a) = arr.as_any().downcast_ref::<Float64Array>() {
-        return Ok((0..a.len())
-            .map(|i| {
-                if a.is_null(i) {
-                    "None".to_string()
-                } else {
-                    a.value(i).to_string()
-                }
-            })
-            .collect());
-    }
-    if let Some(a) = arr.as_any().downcast_ref::<StringArray>() {
-        return Ok((0..a.len())
-            .map(|i| {
-                if a.is_null(i) {
-                    "None".to_string()
-                } else {
-                    a.value(i).to_string()
-                }
-            })
-            .collect());
-    }
-    if let Some(a) = arr.as_any().downcast_ref::<BooleanArray>() {
-        return Ok((0..a.len())
-            .map(|i| {
-                if a.is_null(i) {
-                    "None".to_string()
-                } else {
-                    a.value(i).to_string()
-                }
-            })
-            .collect());
-    }
-    if let Some(a) = arr.as_any().downcast_ref::<TimestampNanosecondArray>() {
-        return Ok((0..a.len())
-            .map(|i| {
-                if a.is_null(i) {
-                    "None".to_string()
-                } else {
-                    a.value(i).to_string()
-                }
-            })
-            .collect());
-    }
-
-    Err(anyhow::anyhow!(
-        "ManualSplit unsupported split column dtype for {col_name}"
-    ))
-}
-
-fn extend_timestamps_ns_from_batch(batch: &RecordBatch, time_col_name: &str, out: &mut Vec<i64>) {
-    if let Ok(idx) = batch.schema().index_of(time_col_name) {
-        if let Some(ts_arr) = batch
-            .column(idx)
-            .as_any()
-            .downcast_ref::<TimestampNanosecondArray>()
-        {
-            for i in 0..ts_arr.len() {
-                out.push(if ts_arr.is_null(i) {
-                    0
-                } else {
-                    ts_arr.value(i)
-                });
-            }
-        }
-    }
-}
-
-fn extend_include_mask_from_batch(batch: &RecordBatch, include_mask: &mut Option<Vec<bool>>) {
-    if let Ok(idx) = batch.schema().index_of("ENTITY_INCLUDE_BIT") {
-        if let Some(mask_arr) = batch.column(idx).as_any().downcast_ref::<BooleanArray>() {
-            if include_mask.is_none() {
-                *include_mask = Some(Vec::new());
-            }
-            if let Some(mask) = include_mask.as_mut() {
-                for i in 0..mask_arr.len() {
-                    mask.push(!mask_arr.is_null(i) && mask_arr.value(i));
-                }
-            }
-        }
-    }
-}
-
-#[pyfunction]
-#[pyo3(signature=(plan_json, index_path, output_path, split_config_json=None, split_family_hint=None, downsampling_config_json=None))]
-#[tracing::instrument(level = "info", skip(py, plan_json, split_config_json, downsampling_config_json), fields(index_path = %index_path, output_path = %output_path))]
-pub fn execute_tt_plan_materialize_with_split(
-    py: Python<'_>,
-    plan_json: &str,
-    index_path: &str,
-    output_path: &str,
-    split_config_json: Option<&str>,
-    split_family_hint: Option<&str>,
-    downsampling_config_json: Option<&str>,
-) -> PyResult<Py<PyAny>> {
-    let overall_start = std::time::Instant::now();
-    let plan: DiskGraphTTPlan<Seconds> = serde_json::from_str(plan_json)
-        .map_err(|e| crate::DiskgraphConfigError::new_err(format!("invalid plan JSON: {e}")))?;
-    let output_time_col_name = plan
-        .entity
-        .output_time_col_name
-        .clone()
-        .unwrap_or_else(|| "TIMESTAMP".to_string());
-
-    let split_cfg: Option<Value> = match split_config_json {
-        Some(s) if !s.is_empty() => Some(serde_json::from_str(s).map_err(|e| {
-            crate::DiskgraphConfigError::new_err(format!("invalid split config JSON: {e}"))
-        })?),
-        _ => None,
-    };
-
-    let family = split_family_from_config(split_family_hint, split_cfg.as_ref())
-        .unwrap_or_else(|| "UnknownSplit".to_string());
-
-    let split_column_name = split_cfg.as_ref().and_then(parse_split_column_name);
-    let downsampling_cfg: Option<Value> = match downsampling_config_json {
-        Some(s) if !s.is_empty() => Some(serde_json::from_str(s).map_err(|e| {
-            crate::DiskgraphConfigError::new_err(format!("invalid downsampling config JSON: {e}"))
-        })?),
-        _ => None,
-    };
-    let downsampling_cfg = parse_downsampling_config(downsampling_cfg.as_ref()).map_err(|e| {
-        crate::DiskgraphConfigError::new_err(format!("invalid downsampling config: {e}"))
-    })?;
-
-    let manual_train_values = split_cfg
-        .as_ref()
-        .map(|cfg| parse_optional_string_list(cfg, "manual_train_values"))
-        .unwrap_or_default();
-    let manual_val_values = split_cfg
-        .as_ref()
-        .map(|cfg| parse_optional_string_list(cfg, "manual_val_values"))
-        .unwrap_or_default();
-    let manual_test_values = split_cfg
-        .as_ref()
-        .map(|cfg| parse_optional_string_list(cfg, "manual_test_values"))
-        .unwrap_or_default();
-
-    let idx = index_path.to_owned();
-    let out = output_path.to_owned();
-
-    let (
-        rows_written,
-        summary_json,
-        split_bytes,
-        split_authoritative,
-        split_reason,
-        downsampling_handled,
-        downsampling_applied,
-        pre_downsample_row_count,
-        train_table_col_stats_json,
-    ) = py
-        .detach(|| -> anyhow::Result<(u64, String, Option<Vec<u8>>, bool, Option<String>, bool, bool, u64, Option<String>)> {
-            let traversal_start = std::time::Instant::now();
-            let (receiver, handle) =
-                diskgraph_train_table::ttgen_executor::execute_with_summary(&plan, Path::new(&idx))?;
-
-            let mut row_offset = 0i64;
-            let mut total_bytes_processed = 0usize;
-
-            // For downsampling (link_by_entity mode): track unique entities
-            // in encounter order. O(unique_entities) ≈ ~1.8 GB for Fetch.
-            // All other per-row data (timestamps, masks, entity/target
-            // strings) is extracted from post-DS final_batches after
-            // read-back — not accumulated during the consumer loop.
-            let mut entity_unique_ordered: Vec<String> = Vec::new();
-            let mut entity_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-            // Write raw batches to a scratch parquet file instead of
-            // accumulating in memory. The scratch file serves as:
-            //   1. The pre-downsample artifact (.pre_downsample.parquet)
-            //   2. The read-back source for post-downsample filtering
-            let scratch_path = format!("{}.scratch.parquet", out);
-            let mut scratch_guard = ScratchFileGuard::new(&scratch_path);
-            let mut scratch_writer = ScratchParquetWriter::new(&scratch_path);
-            let mut batch_count = 0u64;
-
-            let mut last_logged_gb = 0usize;
-            for batch in receiver.iter() {
-                let batch_memory = batch.get_array_memory_size();
-                total_bytes_processed += batch_memory;
-                batch_count += 1;
-
-                let current_gb = total_bytes_processed / (1024 * 1024 * 1024);
-                if current_gb > last_logged_gb {
-                    info!(
-                        batch_count = batch_count,
-                        bytes_processed_mb = total_bytes_processed / 1024 / 1024,
-                        process_rss_mb = get_current_rss_mb(),
-                        "TT-gen materialization progress"
-                    );
-                    last_logged_gb = current_gb;
-                }
-
-                // Build unique entity set only when link_by_entity downsampling
-                // may be needed (LP with non-array targets and DS enabled).
-                if downsampling_cfg.enabled
-                    && downsampling_cfg.is_link_prediction
-                    && !downsampling_cfg.list_distinct_target_is_array
-                {
-                    let entities = extract_entity_strings(&batch)?;
-                    for e in entities {
-                        if entity_seen.insert(e.clone()) {
-                            entity_unique_ordered.push(e);
-                        }
-                    }
-                }
-
-                row_offset += batch.num_rows() as i64;
-                scratch_writer.write_batch(&batch)?;
-            }
-            scratch_writer.finish()?;
-
-            if row_offset == 0 {
-                return Err(anyhow::anyhow!("diskgraph execute_tt_plan returned zero rows"));
-            }
-
-            let pre_downsample_row_count = row_offset as usize;
-
-            // Safety valve: if row count exceeds the threshold and
-            // downsampling is disabled, fail fast instead of OOMing
-            // on the entity/target string vectors (which are still
-            // accumulated in memory until streaming step 2 lands).
-            if row_offset as u64 > MAX_TT_ROWS_WITHOUT_DOWNSAMPLING
-                && !downsampling_cfg.enabled
-            {
-                // scratch_guard handles cleanup on return
-                return Err(anyhow::anyhow!(
-                    "TT-gen produced {} rows, exceeding the {} row limit. \
-                     Enable downsampling via downsampling_config_json \
-                     or reduce the entity/anchor space.",
-                    row_offset,
-                    MAX_TT_ROWS_WITHOUT_DOWNSAMPLING,
-                ));
-            }
-
-            info!(
-                rows_generated = pre_downsample_row_count,
-                bytes_processed_mb = total_bytes_processed / 1024 / 1024,
-                process_rss_mb = get_current_rss_mb(),
-                duration_ms = traversal_start.elapsed().as_millis(),
-                "Parallel traversal complete (batches written to scratch)"
-            );
-
-            // Free the seen set — no longer needed after consumer loop.
-            drop(entity_seen);
-
-            // Downsampling decision: build entity filter HashSet if needed.
-            // The HashSet is passed to read_scratch_filtered for O(1) per-row
-            // filtering during a single scratch read pass.
-            let mut sampled_entities: Option<std::collections::HashSet<String>> = None;
-            let mut downsampling_applied = false;
-            let mut downsampling_handled = false;
-            let mut ds_max_rows = usize::MAX;
-
-            if downsampling_cfg.enabled {
-                let downsample_start = std::time::Instant::now();
-                downsampling_handled = true;
-
-                if pre_downsample_row_count <= downsampling_cfg.max_rows {
-                    info!(
-                        rows = pre_downsample_row_count,
-                        max_rows = downsampling_cfg.max_rows,
-                        "Downsampling: under limit, no action"
-                    );
-                } else if downsampling_cfg.uses_arl_labels {
-                    return Err(anyhow::anyhow!(
-                        "downsampling refuses ARL labels parity path"
-                    ));
-                } else if downsampling_cfg.is_link_prediction
-                    && !downsampling_cfg.list_distinct_target_is_array
-                {
-                    // link_by_entity: sample first N unique entities
-                    let num_unique = entity_unique_ordered.len();
-                    let id_sample_size =
-                        ((num_unique as u64 * downsampling_cfg.max_rows as u64)
-                            / pre_downsample_row_count as u64)
-                            .max(1) as usize;
-                    let sampled: std::collections::HashSet<String> = entity_unique_ordered
-                        [..id_sample_size.min(num_unique)]
-                        .iter()
-                        .cloned()
-                        .collect();
-                    info!(
-                        unique_entities = num_unique,
-                        sampled_entities = sampled.len(),
-                        "Downsampling: link_by_entity entity sampling"
-                    );
-                    sampled_entities = Some(sampled);
-                    ds_max_rows = downsampling_cfg.max_rows;
-                    downsampling_applied = true;
-                } else {
-                    // Simple limit: cap at max_rows (no entity filter)
-                    ds_max_rows = downsampling_cfg.max_rows;
-                    downsampling_applied = true;
-                }
-
-                info!(
-                    downsampling_applied = downsampling_applied,
-                    ds_max_rows = ds_max_rows,
-                    duration_ms = downsample_start.elapsed().as_millis(),
-                    "Downsampling decision complete"
-                );
-            }
-            drop(entity_unique_ordered);
-
-            // Rename scratch to pre-downsample artifact path if preserving,
-            // otherwise read from scratch in place (guard handles cleanup).
-            let readback_path;
-            if downsampling_cfg.enabled && downsampling_cfg.preserve_pre_downsample_tt {
-                let pre_path = format!("{}.pre_downsample.parquet", out);
-                std::fs::rename(&scratch_path, &pre_path).map_err(|e| {
-                    anyhow::anyhow!("failed to rename scratch to pre_downsample artifact: {e}")
-                })?;
-                scratch_guard.disarm(); // file renamed, guard should not delete
-                readback_path = pre_path;
-            } else {
-                readback_path = scratch_path.clone();
-            }
-
-            // Single-pass read-back with entity filter + row cap.
-            // Post-DS row count is bounded (≤max_rows) so final_batches fits in memory.
-            let readback_start = std::time::Instant::now();
-            let mut final_batches = read_scratch_filtered(
-                &readback_path,
-                sampled_entities.as_ref(),
-                ds_max_rows,
-            )?;
-            // Disarm guard after successful read-back; delete scratch if not preserved.
-            scratch_guard.disarm();
-            if readback_path == scratch_path {
-                let _ = std::fs::remove_file(&scratch_path);
-            }
-            let mut row_offset = row_count_of_batches(&final_batches) as i64;
-            info!(
-                rows_after_readback = row_offset,
-                duration_ms = readback_start.elapsed().as_millis(),
-                "Scratch read-back complete"
-            );
-
-            // Extract ALL per-row data from post-DS final_batches.
-            // These are bounded (≤200M rows) so they fit in memory.
-            let mut timestamps_ns: Vec<i64> = Vec::new();
-            let mut include_mask: Option<Vec<bool>> = None;
-            let mut column_sort_values: Vec<SortValue> = Vec::new();
-            let mut manual_values: Vec<String> = Vec::new();
-            let mut entity_values: Vec<String> = Vec::new();
-            let mut target_values: Vec<String> = Vec::new();
-            for batch in &final_batches {
-                extend_timestamps_ns_from_batch(batch, &output_time_col_name, &mut timestamps_ns);
-                extend_include_mask_from_batch(batch, &mut include_mask);
-                if family == "ColumnSplit" {
-                    let col_name = split_column_name
-                        .as_deref()
-                        .ok_or_else(|| anyhow::anyhow!("ColumnSplit requires split.col name"))?;
-                    column_sort_values.append(&mut extract_sort_values(batch, col_name)?);
-                } else if family == "ManualSplit" || family == "CustomSplit" {
-                    let col_name = split_column_name
-                        .as_deref()
-                        .ok_or_else(|| anyhow::anyhow!("{family} requires split.col name"))?;
-                    manual_values.append(&mut extract_string_values(batch, col_name)?);
-                }
-                if let Ok(mut e) = extract_entity_strings(batch) {
-                    entity_values.append(&mut e);
-                }
-                if let Ok(mut t) = extract_string_values(batch, "TARGET") {
-                    target_values.append(&mut t);
-                }
-            }
-
-            let summary = handle
-                .join()
-                .map_err(|_| anyhow::anyhow!("TT-gen summary thread panicked"))??;
-            let raw_summary_json = serde_json::to_string(&summary)?;
-
-            let split_authoritative = true;
-            let split_reason: Option<String> = None;
-            let split_assignments = if let Some(split_cfg) = split_cfg.as_ref() {
-                let mut out = match family.as_str() {
-                    "FixedSplit" => {
-                        let ratio = parse_ratio(split_cfg)?;
-                        split_assignments::compute_dense_split_assignments_core(
-                            "FixedSplit",
-                            row_offset as usize,
-                            ratio,
-                            None,
-                            None,
-                        )
-                        .map_err(|e| anyhow::anyhow!(e.to_string()))?
-                    }
-                    "RandomSplit" => {
-                        let ratio = parse_ratio(split_cfg)?;
-                        let seed = split_cfg.get("rnd_seed").and_then(|v| v.as_u64());
-                        split_assignments::compute_dense_split_assignments_core(
-                            "RandomSplit",
-                            row_offset as usize,
-                            ratio,
-                            seed,
-                            None,
-                        )
-                        .map_err(|e| anyhow::anyhow!(e.to_string()))?
-                    }
-                    "TemporalSplit" => {
-                        let ratio = parse_ratio(split_cfg)?;
-                        split_assignments::compute_dense_split_assignments_core(
-                            "TemporalSplit",
-                            row_offset as usize,
-                            ratio,
-                            None,
-                            Some(timestamps_ns.clone()),
-                        )
-                        .map_err(|e| anyhow::anyhow!(e.to_string()))?
-                    }
-                    "ApproxDateOffsetSplit" => {
-                        let ratio = parse_ratio(split_cfg)?;
-                        split_assignments::assign_approx_date_offset_split(
-                            timestamps_ns.clone(),
-                            ratio,
-                        )
-                        .map_err(|e| anyhow::anyhow!(e.to_string()))?
-                    }
-                    "DateOffsetSplit" => {
-                        let offsets = parse_i64_list(split_cfg, "offsets")?;
-                        let offset_unit = split_cfg
-                            .get("offset_unit")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("days");
-                        let unit = split_cfg
-                            .get("unit")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("days");
-                        let timeframe = split_cfg.get("timeframe").and_then(|v| v.as_i64());
-                        let anchor_start_offset = split_cfg
-                            .get("anchor_start_offset")
-                            .and_then(|v| v.as_i64())
-                            .unwrap_or(0);
-                        split_assignments::assign_date_offset_split(
-                            timestamps_ns.clone(),
-                            offsets,
-                            offset_unit,
-                            unit,
-                            timeframe,
-                            anchor_start_offset,
-                        )
-                        .map_err(|e| anyhow::anyhow!(e.to_string()))?
-                    }
-                    "TimeRangeSplit" => {
-                        let ts_unit = get_timestamp_unit(split_cfg);
-                        let (starts, ends) = parse_time_ranges_ns(split_cfg, ts_unit)?;
-                        let timeframe = split_cfg.get("timeframe").and_then(|v| v.as_i64());
-                        let unit = split_cfg
-                            .get("unit")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("days");
-                        let anchor_start_offset = split_cfg
-                            .get("anchor_start_offset")
-                            .and_then(|v| v.as_i64())
-                            .unwrap_or(0);
-                        split_assignments::assign_time_range_split(
-                            timestamps_ns.clone(),
-                            starts,
-                            ends,
-                            timeframe,
-                            unit,
-                            anchor_start_offset,
-                        )
-                        .map_err(|e| anyhow::anyhow!(e.to_string()))?
-                    }
-                    "BacktestingSplit" => {
-                        let ts_unit = get_timestamp_unit(split_cfg);
-                        let ts_val = split_cfg
-                            .get("backtesting_timestamp")
-                            .ok_or_else(|| anyhow::anyhow!("BacktestingSplit requires backtesting_timestamp"))?;
-                        let ts = to_nanoseconds(parse_timestamp_ns_json(ts_val)?, ts_unit)?;
-                        split_assignments::assign_backtesting_split(timestamps_ns.clone(), ts)
-                    }
-                    "ColumnSplit" => {
-                        let ratio = parse_ratio(split_cfg)?;
-                        if column_sort_values.len() != row_offset as usize {
-                            return Err(anyhow::anyhow!(
-                                "ColumnSplit collected values mismatch rows (values={}, rows={})",
-                                column_sort_values.len(),
-                                row_offset
-                            ));
-                        }
-                        let mut keyed: Vec<(usize, SortValue)> = column_sort_values
-                            .iter()
-                            .cloned()
-                            .enumerate()
-                            .collect();
-                        keyed.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-                        let perm = keyed.into_iter().map(|(idx, _)| idx).collect::<Vec<_>>();
-                        split_assignments::assign_by_ratio_on_perm(
-                            row_offset as usize,
-                            ratio,
-                            perm,
-                        )
-                        .map_err(|e| anyhow::anyhow!(e.to_string()))?
-                    }
-                    "ManualSplit" | "CustomSplit" => {
-                        if manual_values.len() != row_offset as usize {
-                            return Err(anyhow::anyhow!(
-                                "{family} collected values mismatch rows (values={}, rows={})",
-                                manual_values.len(),
-                                row_offset
-                            ));
-                        }
-                        split_assignments::assign_manual_split(
-                            manual_values.clone(),
-                            manual_train_values.clone(),
-                            manual_val_values.clone(),
-                            manual_test_values.clone(),
-                        )
-                        .map_err(|e| anyhow::anyhow!(e.to_string()))?
-                    }
-                    "CustomLinkSplit" => {
-                        if !is_link_array_batches(&final_batches) {
-                            return Err(anyhow::anyhow!(
-                                "CustomLinkSplit requires array-target link-prediction batches"
-                            ));
-                        }
-                        let col_name = split_column_name
-                            .as_deref()
-                            .ok_or_else(|| anyhow::anyhow!("CustomLinkSplit requires split.col name"))?;
-                        let (transformed_batches, transformed_assignments) =
-                            transform_custom_link_split_link_array(
-                                &final_batches,
-                                col_name,
-                                manual_train_values.clone(),
-                                manual_val_values.clone(),
-                                manual_test_values.clone(),
-                            )?;
-                        final_batches = transformed_batches;
-                        row_offset = row_count_of_batches(&final_batches) as i64;
-
-                        if let Ok(mut entities) = final_batches
-                            .iter()
-                            .map(extract_entity_strings)
-                            .collect::<anyhow::Result<Vec<_>>>()
-                            .map(|chunks| chunks.into_iter().flatten().collect::<Vec<_>>())
-                        {
-                            entity_values = std::mem::take(&mut entities);
-                        }
-                        timestamps_ns.clear();
-                        include_mask = None;
-                        for batch in &final_batches {
-                            extend_timestamps_ns_from_batch(
-                                batch,
-                                &output_time_col_name,
-                                &mut timestamps_ns,
-                            );
-                            extend_include_mask_from_batch(batch, &mut include_mask);
-                        }
-
-                        transformed_assignments
-                    }
-                    "RandomLinkSplit" => {
-                        let ratio = parse_ratio(split_cfg)?;
-                        let seed = split_cfg.get("rnd_seed").and_then(|v| v.as_u64());
-                        if is_link_array_batches(&final_batches) {
-                            let (transformed_batches, transformed_assignments) =
-                                transform_random_link_split_link_array(&final_batches, ratio, seed)?;
-                            final_batches = transformed_batches;
-                            row_offset = row_count_of_batches(&final_batches) as i64;
-
-                            if let Ok(mut entities) = final_batches
-                                .iter()
-                                .map(extract_entity_strings)
-                                .collect::<anyhow::Result<Vec<_>>>()
-                                .map(|chunks| chunks.into_iter().flatten().collect::<Vec<_>>())
-                            {
-                                entity_values = std::mem::take(&mut entities);
-                            }
-                            timestamps_ns.clear();
-                            include_mask = None;
-                            for batch in &final_batches {
-                                extend_timestamps_ns_from_batch(
-                                    batch,
-                                    &output_time_col_name,
-                                    &mut timestamps_ns,
-                                );
-                                extend_include_mask_from_batch(batch, &mut include_mask);
-                            }
-
-                            transformed_assignments
-                        } else {
-                            split_assignments::compute_dense_split_assignments_core(
-                                "RandomLinkSplit",
-                                row_offset as usize,
-                                ratio,
-                                seed,
-                                None,
-                            )
-                            .map_err(|e| anyhow::anyhow!(e.to_string()))?
-                        }
-                    }
-                    other => {
-                        return Err(anyhow::anyhow!(
-                            "unsupported split family for diskgraph dense split assignment: {other}"
-                        ));
-                    }
-                };
-
-                if split_authoritative {
-                    out = if let Some(mask) = include_mask {
-                        split_assignments::apply_entity_include_mask(out, mask)
-                            .map_err(|e| anyhow::anyhow!(e.to_string()))?
-                    } else {
-                        out
-                    };
-                    Some(out)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            // Extract inline col stats from summary (produced by StatsMerger::finalize)
-            let train_table_col_stats_json = {
-                let summary_val: serde_json::Value = serde_json::from_str(&raw_summary_json)?;
-                let inline_stats = summary_val
-                    .get("stats")
-                    .and_then(|s| s.get("parsed_train_table_col_stats"));
-                match inline_stats {
-                    Some(stats) if !stats.is_null() => Some(serde_json::to_string(stats)?),
-                    _ => None,
-                }
-            };
-
-            let sequence_feature_indices = final_batches
-                .first()
-                .map(|batch| {
-                    sequence_feature_indices_from_schema(
-                        batch.schema().as_ref(),
-                        &output_time_col_name,
-                    )
-                })
-                .unwrap_or_default();
-            let mut sequence_feature_stats =
-                new_sequence_feature_stats(&sequence_feature_indices);
-            let sequence_stats_observer = if downsampling_applied
-                || sequence_feature_indices.is_empty()
-            {
-                None
-            } else {
-                Some((
-                    sequence_feature_indices.as_slice(),
-                    &mut sequence_feature_stats,
-                ))
-            };
-
-            let materialization_start = std::time::Instant::now();
-            let rows_written =
-                write_batches_with_arange(&out, &final_batches, None, sequence_stats_observer)?;
-            if rows_written as usize != row_offset as usize {
-                return Err(anyhow::anyhow!(
-                    "materialized row count mismatch after split processing (written={}, expected={})",
-                    rows_written,
-                    row_offset
-                ));
-            }
-            info!(
-                final_rows = rows_written,
-                duration_ms = materialization_start.elapsed().as_millis(),
-                "Final materialization complete"
-            );
-
-            // If downsampling actually ran, inline col stats reflect
-            // pre-downsample rows and require a recompute over final parquet.
-            // Otherwise, inject sequence feature stats collected while
-            // materializing the final in-memory batches.
-            let train_table_col_stats_json = if downsampling_applied {
-                let fallback_split_assignments;
-                let split_bytes_ref = match split_assignments.as_deref() {
-                    Some(bytes) if bytes.len() == rows_written as usize => bytes,
-                    Some(_) if downsampling_applied => &[],
-                    _ => {
-                        fallback_split_assignments = vec![0u8; rows_written as usize];
-                        fallback_split_assignments.as_slice()
-                    }
-                };
-                if split_bytes_ref.len() == rows_written as usize {
-                    let target_stype = plan
-                        .target_stype
-                        .as_deref()
-                        .ok_or_else(|| anyhow::anyhow!(
-                            "post-downsample col stats recompute requires target_stype on plan"
-                        ))?;
-                    let recompute_start = std::time::Instant::now();
-                    let payload = compute_train_table_col_stats_payload(
-                        &out,
-                        split_bytes_ref,
-                        "v1",
-                        target_stype,
-                        &output_time_col_name,
-                    )?;
-                    info!(
-                        rows = rows_written,
-                        duration_ms = recompute_start.elapsed().as_millis(),
-                        "Recomputed train_table col stats from final parquet"
-                    );
-                    Some(serde_json::to_string(&payload)?)
-                } else {
-                    // Length mismatch: keep inline stats. Should not happen.
-                    train_table_col_stats_json
-                }
-            } else {
-                match train_table_col_stats_json {
-                    Some(stats_json) if !sequence_feature_stats.is_empty() => {
-                        let mut payload: serde_json::Value = serde_json::from_str(&stats_json)?;
-                        add_sequence_feature_stats_to_payload(
-                            &mut payload,
-                            sequence_feature_stats,
-                            "v1",
-                        );
-                        Some(serde_json::to_string(&payload)?)
-                    }
-                    other => other,
-                }
-            };
-
-            let summary_json = patch_summary_for_final_rows(
-                raw_summary_json,
-                row_offset as usize,
-                if entity_values.len() == row_offset as usize {
-                    Some(entity_values.as_slice())
-                } else {
-                    None
-                },
-                if target_values.len() == row_offset as usize {
-                    Some(target_values.as_slice())
-                } else {
-                    None
-                },
-                &downsampling_cfg,
-            )?;
-
-            Ok((
-                rows_written,
-                summary_json,
-                split_assignments,
-                split_authoritative,
-                split_reason,
-                downsampling_handled,
-                downsampling_applied,
-                pre_downsample_row_count as u64,
-                train_table_col_stats_json,
-            ))
-        })
-        .map_err(|e| crate::map_anyhow_err(e))?;
-
-    info!(
-        total_rows = rows_written,
-        overall_duration_ms = overall_start.elapsed().as_millis(),
-        "execute_tt_plan_materialize_with_split finished"
-    );
-
-    let out = PyDict::new(py);
-    out.set_item("rows_written", rows_written)?;
-    out.set_item("summary_json", summary_json)?;
-    out.set_item("split_family", family)?;
-    out.set_item("split_authoritative", split_authoritative)?;
-    out.set_item("split_reason", split_reason)?;
-    out.set_item("downsampling_handled", downsampling_handled)?;
-    out.set_item("downsampling_applied", downsampling_applied)?;
-    out.set_item("pre_downsample_row_count", pre_downsample_row_count)?;
-    if let Some(bytes) = split_bytes {
-        out.set_item("split_assignments", PyBytes::new(py, &bytes))?;
-    } else {
-        out.set_item("split_assignments", py.None())?;
-    }
-    if let Some(train_col_stats_json) = train_table_col_stats_json {
-        out.set_item("train_table_col_stats_json", train_col_stats_json)?;
-    } else {
-        out.set_item("train_table_col_stats_json", py.None())?;
-    }
-    Ok(out.into())
-}
-
-#[pyfunction]
-#[tracing::instrument(level = "info", skip_all)]
-#[pyo3(signature=(row_count, summary_json=None, plan_json=None))]
-pub fn build_tt_stats_artifact(
-    py: Python<'_>,
-    row_count: u64,
-    summary_json: Option<&str>,
-    plan_json: Option<&str>,
-) -> PyResult<Py<PyAny>> {
-    let summary_value = summary_json.and_then(|s| serde_json::from_str::<Value>(s).ok());
-    let plan_value = plan_json.and_then(|s| serde_json::from_str::<Value>(s).ok());
-    let payload =
-        build_tt_stats_artifact_value(summary_value.as_ref(), row_count, plan_value.as_ref());
-
-    let out = PyDict::new(py);
-    out.set_item(
-        "payload_json",
-        serde_json::to_string(&payload)
-            .map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
-    )?;
-    Ok(out.into())
-}
-
-#[pyfunction]
-#[tracing::instrument(level = "info", skip_all)]
-#[pyo3(signature=(output_path, split_assignments, split_stats_config_json=None))]
-pub fn build_split_stats_artifact(
-    py: Python<'_>,
-    output_path: &str,
-    split_assignments: &[u8],
-    split_stats_config_json: Option<&str>,
-) -> PyResult<Py<PyAny>> {
-    let out = output_path.to_owned();
-    let assignments = split_assignments.to_vec();
-    let cfg_value = split_stats_config_json
-        .and_then(|s| serde_json::from_str::<Value>(s).ok())
-        .unwrap_or_else(|| json!({}));
-    let entity_col = cfg_value
-        .get("entity_col")
-        .and_then(|v| v.as_str())
-        .unwrap_or("ENTITY")
-        .to_string();
-    let target_col = cfg_value
-        .get("target_col")
-        .and_then(|v| v.as_str())
-        .unwrap_or("TARGET")
-        .to_string();
-    let time_col = cfg_value
-        .get("time_col")
-        .and_then(|v| v.as_str())
-        .unwrap_or("TIMESTAMP")
-        .to_string();
-    let task_type = cfg_value
-        .get("task_type")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    let payload = py
-        .detach(|| -> anyhow::Result<Value> {
-            let row_count = parquet::file::serialized_reader::SerializedFileReader::new(File::open(&out)?)?
-                .metadata()
-                .file_metadata()
-                .num_rows() as usize;
-            if row_count != assignments.len() {
-                return Err(anyhow::anyhow!(
-                    "split stats row count mismatch while building producer artifact (table_rows={}, assignment_rows={})",
-                    row_count,
-                    assignments.len()
-                ));
-            }
-
-            let entity_vals = collect_column_opt_strings(&out, &entity_col)?;
-            let target_vals = collect_column_opt_strings(&out, &target_col)?;
-            let time_vals = collect_column_opt_strings(&out, &time_col)?;
-
-            let train = build_stage_stats_from_columns(
-                &assignments,
-                0,
-                entity_vals.as_deref(),
-                target_vals.as_deref(),
-                time_vals.as_deref(),
-                task_type.as_deref(),
-            );
-            if train.is_null() {
-                return Err(anyhow::anyhow!(
-                    "split stats artifact must include non-empty train_table_stats"
-                ));
-            }
-
-            Ok(json!({
-                "version": 1,
-                "kind": "tt_split_stats",
-                "train_table_stats": train,
-                "val_table_stats": build_stage_stats_from_columns(
-                    &assignments,
-                    1,
-                    entity_vals.as_deref(),
-                    target_vals.as_deref(),
-                    time_vals.as_deref(),
-                    task_type.as_deref(),
-                ),
-                "test_table_stats": build_stage_stats_from_columns(
-                    &assignments,
-                    2,
-                    entity_vals.as_deref(),
-                    target_vals.as_deref(),
-                    time_vals.as_deref(),
-                    task_type.as_deref(),
-                ),
-                "provided_fields": ["train_table_stats", "val_table_stats", "test_table_stats"],
-            }))
-        })
-        .map_err(|e| crate::DiskgraphConfigError::new_err(format!("build_split_stats_artifact failed: {e:#}")))?;
-
-    let out_dict = PyDict::new(py);
-    out_dict.set_item(
-        "payload_json",
-        serde_json::to_string(&payload)
-            .map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
-    )?;
-    Ok(out_dict.into())
-}
-
-#[pyfunction]
-#[tracing::instrument(level = "info", skip_all)]
-#[pyo3(signature=(output_dir, train_table_name="custom_train_table", mask_present=true, mask_absent_reason=None, edge_attrs_path=None))]
-pub fn build_train_table_edge_bundle_artifact(
-    py: Python<'_>,
-    output_dir: &str,
-    train_table_name: &str,
-    mask_present: bool,
-    mask_absent_reason: Option<&str>,
-    edge_attrs_path: Option<&str>,
-) -> PyResult<Py<PyAny>> {
-    let out_dir = output_dir.to_owned();
-    let train_table_name = train_table_name.to_owned();
-    let edge_attrs_path = edge_attrs_path.map(|s| s.to_owned());
-    let mask_absent_reason = mask_absent_reason.map(|s| s.to_owned());
-
-    let payload = py
-        .detach(|| -> anyhow::Result<Value> {
-            build_train_table_edges_bundle_value(
-                Path::new(&out_dir),
-                &train_table_name,
-                mask_present,
-                mask_absent_reason.as_deref(),
-                edge_attrs_path.as_deref(),
-            )
-        })
-        .map_err(|e| {
-            crate::DiskgraphConfigError::new_err(format!(
-                "build_train_table_edge_bundle_artifact failed: {e:#}"
-            ))
-        })?;
-
-    let out_dict = PyDict::new(py);
-    out_dict.set_item(
-        "payload_json",
-        serde_json::to_string(&payload)
-            .map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
-    )?;
-    Ok(out_dict.into())
 }
 
 #[pyfunction]
@@ -3522,493 +1538,6 @@ pub fn build_prediction_table_edge_bundle_artifact(
         .map_err(|e| {
             crate::DiskgraphConfigError::new_err(format!(
                 "build_prediction_table_edge_bundle_artifact failed: {e:#}"
-            ))
-        })?;
-
-    let out_dict = PyDict::new(py);
-    out_dict.set_item(
-        "payload_json",
-        serde_json::to_string(&payload)
-            .map_err(|e| crate::DiskgraphConfigError::new_err(e.to_string()))?,
-    )?;
-    Ok(out_dict.into())
-}
-
-/// Pure Rust core of [`build_train_table_col_stats_artifact`].
-///
-/// Opens the parquet at `parquet_path`, observes each non-downsampled row
-/// (assignment != 255), and returns the inline col-stats payload as a
-/// `serde_json::Value`. Safe to call from any thread; no Python interaction.
-fn compute_train_table_col_stats_payload(
-    parquet_path: &str,
-    split_assignments: &[u8],
-    data_version: &str,
-    target_stype: &str,
-    time_col_name: &str,
-) -> anyhow::Result<Value> {
-    use diskgraph_core::accumulators::{
-        for_each_split_ascii_byte, HyperLogLog, TDigestEstimator, WelfordAccumulator,
-    };
-    use diskgraph_train_table::ttgen_stats::build_inline_col_stats;
-
-    let file = File::open(parquet_path)?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-    let schema = builder.schema().clone();
-
-    // Verify row count
-    let file2 = File::open(parquet_path)?;
-    let row_count = parquet::file::serialized_reader::SerializedFileReader::new(file2)?
-        .metadata()
-        .file_metadata()
-        .num_rows() as usize;
-    if row_count != split_assignments.len() {
-        return Err(anyhow::anyhow!(
-            "col stats row count mismatch (table_rows={}, assignment_rows={})",
-            row_count,
-            split_assignments.len()
-        ));
-    }
-
-    // Find column indices
-    let target_idx = schema
-        .index_of("TARGET")
-        .map_err(|_| anyhow::anyhow!("missing TARGET column"))?;
-    let entity_idx = schema
-        .index_of("ENTITY")
-        .map_err(|_| anyhow::anyhow!("missing ENTITY column"))?;
-    let timestamp_idx = schema
-        .index_of(time_col_name)
-        .map_err(|_| anyhow::anyhow!("missing {time_col_name} column"))?;
-    let frequency_idx = schema.index_of("__kumo_internal_frequency_column__").ok();
-    let include_bit_idx = schema.index_of("ENTITY_INCLUDE_BIT").ok();
-    let sequence_feature_indices =
-        sequence_feature_indices_from_schema(schema.as_ref(), time_col_name);
-
-    let target_is_categorical = matches!(
-        target_stype,
-        "categorical" | "boolean" | "ID" | "multicategorical"
-    );
-    let target_is_numerical = !target_is_categorical;
-    let is_multicat = target_stype == "multicategorical";
-
-    // Initialize accumulators
-    let mut target_welford = if target_is_numerical {
-        Some(WelfordAccumulator::new())
-    } else {
-        None
-    };
-    let mut target_tdigest = if target_is_numerical {
-        Some(TDigestEstimator::new(TDigestEstimator::DEFAULT_DELTA))
-    } else {
-        None
-    };
-    let mut target_hll = Some(HyperLogLog::new());
-    let mut target_invalid_count: u64 = 0;
-    let mut target_category_counts: Option<HashMap<String, u64>> = if target_is_categorical {
-        Some(HashMap::new())
-    } else {
-        None
-    };
-
-    let mut entity_hll = Some(HyperLogLog::new());
-    let mut entity_welford = Some(WelfordAccumulator::new());
-    let mut entity_tdigest = Some(TDigestEstimator::new(TDigestEstimator::DEFAULT_DELTA));
-    let mut entity_category_counts: HashMap<String, u64> = HashMap::new();
-
-    let mut timestamp_welford = Some(WelfordAccumulator::new());
-    let mut timestamp_tdigest = Some(TDigestEstimator::new(TDigestEstimator::DEFAULT_DELTA));
-    let mut timestamp_hll = Some(HyperLogLog::new());
-
-    let mut frequency_welford: Option<WelfordAccumulator> = if frequency_idx.is_some() {
-        Some(WelfordAccumulator::new())
-    } else {
-        None
-    };
-    let mut frequency_tdigest: Option<TDigestEstimator> = if frequency_idx.is_some() {
-        Some(TDigestEstimator::new(TDigestEstimator::DEFAULT_DELTA))
-    } else {
-        None
-    };
-    let mut frequency_hll: Option<HyperLogLog> = if frequency_idx.is_some() {
-        Some(HyperLogLog::new())
-    } else {
-        None
-    };
-    let mut frequency_invalid_count: u64 = 0;
-
-    let mut include_true_count: u64 = 0;
-    let mut include_false_count: u64 = 0;
-    let mut sequence_feature_stats = new_sequence_feature_stats(&sequence_feature_indices);
-
-    let mut num_total_rows: u64 = 0;
-    let mut global_row: usize = 0;
-    // Detected once from the first batch's TARGET column. Required for boolean
-    // CATEGORY_COUNTS to round-trip as JSON booleans (matching GE/Spark).
-    let mut target_is_bool_dtype: bool = false;
-
-    let mut reader = builder.build()?;
-    while let Some(batch_res) = reader.next() {
-        let batch = batch_res?;
-        let n = batch.num_rows();
-
-        let target_col = batch.column(target_idx);
-        let entity_col = batch.column(entity_idx);
-        let timestamp_col = batch.column(timestamp_idx);
-        let frequency_col = frequency_idx.map(|i| batch.column(i));
-        let include_bit_col = include_bit_idx.map(|i| batch.column(i));
-        if !target_is_bool_dtype
-            && target_col.as_any().downcast_ref::<BooleanArray>().is_some()
-        {
-            target_is_bool_dtype = true;
-        }
-
-        for row in 0..n {
-            let assign = split_assignments[global_row];
-            global_row += 1;
-
-            // Skip downsampled-out rows (assignment == 255).
-            // Compute stats on all selected rows (train + val + test),
-            // matching GE/Spark behavior.
-            if assign == 255 {
-                continue;
-            }
-            num_total_rows += 1;
-
-            for (idx, name) in &sequence_feature_indices {
-                if let Some(stats) = sequence_feature_stats.get_mut(name) {
-                    stats.observe(batch.column(*idx).as_ref(), row);
-                }
-            }
-
-            // --- ENTITY ---
-            let entity_str = if let Some(a) = entity_col.as_any().downcast_ref::<StringArray>() {
-                if a.is_null(row) {
-                    String::new()
-                } else {
-                    a.value(row).to_string()
-                }
-            } else if let Some(a) = entity_col.as_any().downcast_ref::<Int64Array>() {
-                if a.is_null(row) {
-                    String::new()
-                } else {
-                    a.value(row).to_string()
-                }
-            } else if let Some(a) = entity_col.as_any().downcast_ref::<Float64Array>() {
-                if a.is_null(row) {
-                    String::new()
-                } else {
-                    a.value(row).to_string()
-                }
-            } else {
-                String::new()
-            };
-
-            // Entity HLL
-            if let Some(ref mut h) = entity_hll {
-                h.observe_bytes(entity_str.as_bytes());
-            }
-
-            // Entity category counts
-            *entity_category_counts.entry(entity_str.clone()).or_insert(0) += 1;
-
-            // Entity Welford + TDigest (for integer entities)
-            if let Some(a) = entity_col.as_any().downcast_ref::<Int64Array>() {
-                if !a.is_null(row) {
-                    let v = a.value(row) as f64;
-                    if let Some(ref mut w) = entity_welford {
-                        w.observe(v);
-                    }
-                    if let Some(ref mut t) = entity_tdigest {
-                        t.observe(v);
-                    }
-                }
-            }
-
-            // --- TIMESTAMP ---
-            if let Some(a) = timestamp_col.as_any().downcast_ref::<Int64Array>() {
-                if !a.is_null(row) {
-                    let ts = a.value(row) as f64;
-                    if let Some(ref mut w) = timestamp_welford {
-                        w.observe(ts);
-                    }
-                    if let Some(ref mut t) = timestamp_tdigest {
-                        t.observe(ts);
-                    }
-                    if let Some(ref mut h) = timestamp_hll {
-                        h.observe_i64(a.value(row));
-                    }
-                }
-            } else if let Some(a) = timestamp_col
-                .as_any()
-                .downcast_ref::<TimestampNanosecondArray>()
-            {
-                if !a.is_null(row) {
-                    let ts = a.value(row);
-                    if let Some(ref mut w) = timestamp_welford {
-                        w.observe(ts as f64);
-                    }
-                    if let Some(ref mut t) = timestamp_tdigest {
-                        t.observe(ts as f64);
-                    }
-                    if let Some(ref mut h) = timestamp_hll {
-                        h.observe_i64(ts);
-                    }
-                }
-            } else if let Some(a) = timestamp_col.as_any().downcast_ref::<Float64Array>() {
-                if !a.is_null(row) {
-                    let ts = a.value(row);
-                    if let Some(ref mut w) = timestamp_welford {
-                        w.observe(ts);
-                    }
-                    if let Some(ref mut t) = timestamp_tdigest {
-                        t.observe(ts);
-                    }
-                    if let Some(ref mut h) = timestamp_hll {
-                        h.observe_f64(ts);
-                    }
-                }
-            }
-
-            // --- TARGET ---
-            if target_is_numerical {
-                let fval = if let Some(a) = target_col.as_any().downcast_ref::<Float64Array>() {
-                    if a.is_null(row) {
-                        None
-                    } else {
-                        Some(a.value(row))
-                    }
-                } else if let Some(a) = target_col.as_any().downcast_ref::<Int64Array>() {
-                    if a.is_null(row) {
-                        None
-                    } else {
-                        Some(a.value(row) as f64)
-                    }
-                } else {
-                    None
-                };
-                if let Some(f) = fval {
-                    if f.is_finite() {
-                        if let Some(ref mut w) = target_welford {
-                            w.observe(f);
-                        }
-                        if let Some(ref mut t) = target_tdigest {
-                            t.observe(f);
-                        }
-                    } else {
-                        target_invalid_count += 1;
-                    }
-                    // HLL for numerical target
-                    if let Some(ref mut h) = target_hll {
-                        if let Some(a) = target_col.as_any().downcast_ref::<Int64Array>() {
-                            h.observe_i64(a.value(row));
-                        } else {
-                            h.observe_f64(f);
-                        }
-                    }
-                }
-            } else {
-                // Categorical / multicategorical / boolean target
-                let target_str = if let Some(a) =
-                    target_col.as_any().downcast_ref::<StringArray>()
-                {
-                    if a.is_null(row) {
-                        None
-                    } else {
-                        Some(a.value(row).to_string())
-                    }
-                } else if let Some(a) = target_col.as_any().downcast_ref::<Int64Array>() {
-                    if a.is_null(row) {
-                        None
-                    } else {
-                        Some(a.value(row).to_string())
-                    }
-                } else if let Some(a) = target_col.as_any().downcast_ref::<Float64Array>() {
-                    if a.is_null(row) {
-                        None
-                    } else {
-                        Some(a.value(row).to_string())
-                    }
-                } else if let Some(a) = target_col.as_any().downcast_ref::<BooleanArray>() {
-                    if a.is_null(row) {
-                        None
-                    } else {
-                        Some(a.value(row).to_string())
-                    }
-                } else {
-                    None
-                };
-                if let Some(ts) = target_str {
-                    if is_multicat {
-                        for_each_split_ascii_byte(&ts, b'|', |tok| {
-                            let tok = tok.trim();
-                            let hash = HyperLogLog::hash_bytes(tok.as_bytes());
-                            if let Some(ref mut h) = target_hll {
-                                h.observe_hash(hash);
-                            }
-                            if let Some(ref mut counts) = target_category_counts {
-                                *counts.entry(tok.to_string()).or_insert(0) += 1;
-                            }
-                        });
-                    } else {
-                        if let Some(ref mut counts) = target_category_counts {
-                            *counts.entry(ts.clone()).or_insert(0) += 1;
-                        }
-                        if let Some(ref mut h) = target_hll {
-                            h.observe_bytes(ts.as_bytes());
-                        }
-                    }
-                }
-            }
-
-            // --- FREQUENCY ---
-            if let Some(ref freq_col) = frequency_col {
-                if let Some(a) = freq_col.as_any().downcast_ref::<Int64Array>() {
-                    if !a.is_null(row) {
-                        let freq = a.value(row);
-                        if let Some(ref mut w) = frequency_welford {
-                            w.observe(freq as f64);
-                        }
-                        if let Some(ref mut t) = frequency_tdigest {
-                            t.observe(freq as f64);
-                        }
-                        if let Some(ref mut h) = frequency_hll {
-                            h.observe_i64(freq);
-                        }
-                    }
-                } else if let Some(a) = freq_col.as_any().downcast_ref::<Float64Array>() {
-                    if !a.is_null(row) {
-                        let freq = a.value(row);
-                        if freq.is_finite() {
-                            if let Some(ref mut w) = frequency_welford {
-                                w.observe(freq);
-                            }
-                            if let Some(ref mut t) = frequency_tdigest {
-                                t.observe(freq);
-                            }
-                        } else {
-                            frequency_invalid_count += 1;
-                        }
-                        if let Some(ref mut h) = frequency_hll {
-                            h.observe_f64(freq);
-                        }
-                    }
-                }
-            }
-
-            // --- ENTITY_INCLUDE_BIT ---
-            if let Some(ref bit_col) = include_bit_col {
-                if let Some(a) = bit_col.as_any().downcast_ref::<BooleanArray>() {
-                    if !a.is_null(row) {
-                        if a.value(row) {
-                            include_true_count += 1;
-                        } else {
-                            include_false_count += 1;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // If entity_welford has no observations (entity was not Int64), clear it
-    if entity_welford.as_ref().is_none_or(|w| w.count == 0) {
-        entity_welford = None;
-        entity_tdigest = None;
-    }
-
-    let mut result = build_inline_col_stats(
-        &target_welford,
-        &mut target_tdigest,
-        &target_hll,
-        target_invalid_count,
-        &frequency_welford,
-        &mut frequency_tdigest,
-        &frequency_hll,
-        frequency_invalid_count,
-        include_true_count,
-        include_false_count,
-        num_total_rows,
-        data_version,
-        target_category_counts,
-        target_stype,
-        target_is_bool_dtype,
-        &entity_hll,
-        &entity_welford,
-        &mut entity_tdigest,
-        Some(entity_category_counts),
-        &timestamp_welford,
-        &mut timestamp_tdigest,
-        &timestamp_hll,
-    )
-    .unwrap_or_else(|| {
-        json!({
-            "version": 1,
-            "kind": "tt_train_table_col_stats",
-            "stats_format": "kumo_col_stats_v1",
-            "row_count": num_total_rows,
-            "stats": {},
-            "provided_fields": ["stats"]
-        })
-    });
-
-    add_sequence_feature_stats_to_payload(&mut result, sequence_feature_stats, data_version);
-
-    Ok(result)
-}
-
-#[pyfunction]
-#[tracing::instrument(level = "info", skip_all)]
-#[pyo3(signature=(output_path, split_assignments, train_table_col_stats_config_json=None))]
-pub fn build_train_table_col_stats_artifact(
-    py: Python<'_>,
-    output_path: &str,
-    split_assignments: &[u8],
-    train_table_col_stats_config_json: Option<&str>,
-) -> PyResult<Py<PyAny>> {
-    let out = output_path.to_owned();
-    let assignments = split_assignments.to_vec();
-    let cfg_value = train_table_col_stats_config_json
-        .and_then(|s| serde_json::from_str::<Value>(s).ok())
-        .unwrap_or_else(|| json!({}));
-    let data_version = cfg_value
-        .get("data_version")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            crate::DiskgraphConfigError::new_err(
-                "build_train_table_col_stats_artifact: data_version is required in \
-                 train_table_col_stats_config (no fallback)",
-            )
-        })?
-        .to_string();
-    let target_stype = cfg_value
-        .get("target_stype")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            crate::DiskgraphConfigError::new_err(
-                "build_train_table_col_stats_artifact: target_stype is required in \
-                 train_table_col_stats_config (no fallback)",
-            )
-        })?
-        .to_string();
-    let time_col_name = cfg_value
-        .get("time_col")
-        .and_then(|v| v.as_str())
-        .unwrap_or("TIMESTAMP")
-        .to_string();
-
-    let payload = py
-        .detach(|| -> anyhow::Result<Value> {
-            compute_train_table_col_stats_payload(
-                &out,
-                &assignments,
-                &data_version,
-                &target_stype,
-                &time_col_name,
-            )
-        })
-        .map_err(|e| {
-            crate::DiskgraphConfigError::new_err(format!(
-                "build_train_table_col_stats_artifact failed: {e:#}"
             ))
         })?;
 
@@ -4185,1052 +1714,6 @@ pub fn persist_prediction_artifact_bundle(
     Ok(out_dict.into())
 }
 
-#[pyfunction]
-#[tracing::instrument(level = "info", skip_all)]
-#[pyo3(signature=(output_path, row_count, stats_json, split_stats_json, split_bytes, train_table_col_stats_json, split_family=None, split_authoritative=false, split_reason=None, downsampling_json=None, producer_summary_json=None, train_table_edges_json=None))]
-pub fn persist_tt_artifact_bundle(
-    py: Python<'_>,
-    output_path: &str,
-    row_count: u64,
-    stats_json: &str,
-    split_stats_json: &str,
-    split_bytes: &[u8],
-    train_table_col_stats_json: &str,
-    split_family: Option<&str>,
-    split_authoritative: bool,
-    split_reason: Option<&str>,
-    downsampling_json: Option<&str>,
-    producer_summary_json: Option<&str>,
-    train_table_edges_json: Option<&str>,
-) -> PyResult<Py<PyAny>> {
-    let out = output_path.to_owned();
-    let split_family_s = split_family.unwrap_or("UnknownSplit").to_string();
-    let split_reason_s = split_reason.map(|s| s.to_string());
-    let downsampling_value: Value = downsampling_json
-        .and_then(|s| serde_json::from_str::<Value>(s).ok())
-        .unwrap_or_else(|| json!({}));
-    let producer_summary_value: Value = producer_summary_json
-        .and_then(|s| serde_json::from_str::<Value>(s).ok())
-        .unwrap_or(Value::Null);
-    let train_table_col_stats_payload = train_table_col_stats_json.to_string();
-    let train_table_edges_payload = train_table_edges_json.map(|s| s.to_string());
-    let train_table_edges_value: Option<Value> = match train_table_edges_payload.as_ref() {
-        Some(s) => Some(serde_json::from_str::<Value>(s).map_err(|e| {
-            crate::DiskgraphConfigError::new_err(format!("invalid train_table_edges_json: {e}"))
-        })?),
-        None => None,
-    };
-
-    let (manifest_path, artifacts_dir) = py
-        .detach(|| -> anyhow::Result<(String, String)> {
-            let artifacts_dir = format!("{}.artifacts", out);
-            ensure_artifacts_dir(&artifacts_dir)?;
-
-            let stats_path = format!("{}/stats.tt.json", artifacts_dir);
-            let split_path = format!("{}/split_assignments.row_stage.bin", artifacts_dir);
-            let split_stats_path = format!("{}/stats.split.json", artifacts_dir);
-            let train_table_col_stats_path =
-                format!("{}/stats.train_table_col_stats.json", artifacts_dir);
-            let manifest_path = format!("{}.manifest.json", out);
-
-            write_artifact_file(&stats_path, stats_json.as_bytes())?;
-            write_artifact_file(&split_path, split_bytes)?;
-            write_artifact_file(&split_stats_path, split_stats_json.as_bytes())?;
-            write_artifact_file(
-                &train_table_col_stats_path,
-                train_table_col_stats_payload.as_bytes(),
-            )?;
-
-            let mut checksums = serde_json::Map::new();
-            checksums.insert(
-                "train_table_sha256".to_string(),
-                json!(sha256_hex_path(Path::new(&out))?),
-            );
-            checksums.insert(
-                "split_sha256".to_string(),
-                json!(sha256_hex_bytes(split_bytes)),
-            );
-            checksums.insert(
-                "stats_sha256".to_string(),
-                json!(sha256_hex_bytes(stats_json.as_bytes())),
-            );
-            checksums.insert(
-                "split_stats_sha256".to_string(),
-                json!(sha256_hex_bytes(split_stats_json.as_bytes())),
-            );
-            checksums.insert(
-                "train_table_col_stats_sha256".to_string(),
-                json!(sha256_hex_bytes(train_table_col_stats_payload.as_bytes())),
-            );
-            if let Some(edge_bundle) = train_table_edges_value.as_ref() {
-                let raw = train_table_edges_payload
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("missing train_table_edges_payload"))?;
-                checksums.insert(
-                    "train_table_edges_sha256".to_string(),
-                    json!(sha256_hex_bytes(raw.as_bytes())),
-                );
-                merge_prefixed_checksums(&mut checksums, edge_bundle, "train_table_edges");
-            }
-
-            let mut manifest = serde_json::Map::new();
-            manifest.insert("version".to_string(), json!(1));
-            manifest.insert("row_count".to_string(), json!(row_count));
-            manifest.insert(
-                "train_table".to_string(),
-                artifact_ref(&out, "parquet_with_arange"),
-            );
-            manifest.insert(
-                "split".to_string(),
-                json!({
-                    "path": split_path,
-                    "format": "split_assignment_row_stage_bin",
-                    "authoritative": split_authoritative,
-                    "family": split_family_s,
-                    "reason": split_reason_s,
-                }),
-            );
-            manifest.insert(
-                "stats".to_string(),
-                artifact_ref(&stats_path, "tt_stats_json"),
-            );
-            manifest.insert(
-                "split_stats".to_string(),
-                artifact_ref(&split_stats_path, "tt_split_stats_json"),
-            );
-            manifest.insert(
-                "train_table_col_stats".to_string(),
-                artifact_ref(&train_table_col_stats_path, "tt_train_table_col_stats_json"),
-            );
-            if let Some(edge_bundle) = train_table_edges_value.as_ref() {
-                manifest.insert("train_table_edges".to_string(), edge_bundle.clone());
-            }
-            manifest.insert("checksums".to_string(), Value::Object(checksums));
-            manifest.insert("downsampling".to_string(), downsampling_value);
-            manifest.insert("producer_summary".to_string(), producer_summary_value);
-            let manifest = Value::Object(manifest);
-
-            write_manifest_json(&manifest_path, &manifest)?;
-
-            Ok((manifest_path, artifacts_dir))
-        })
-        .map_err(|e| {
-            crate::DiskgraphConfigError::new_err(format!(
-                "persist_tt_artifact_bundle failed: {e:#}"
-            ))
-        })?;
-
-    let out_dict = PyDict::new(py);
-    out_dict.set_item("manifest_path", manifest_path)?;
-    out_dict.set_item("artifacts_dir", artifacts_dir)?;
-    Ok(out_dict.into())
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_build_stage_stats_regression_target_distribution() {
-        let assignments = vec![0, 0, 0, 0];
-        let targets = vec![
-            Some("1.0".to_string()),
-            Some("inf".to_string()),
-            Some("2.0".to_string()),
-            Some("3.0".to_string()),
-        ];
-
-        let stats = build_stage_stats_from_columns(
-            &assignments,
-            0,
-            None,
-            Some(&targets),
-            None,
-            Some("regression"),
-        );
-        let dist = stats
-            .get("target_distribution")
-            .and_then(|v| v.as_object())
-            .expect("regression target_distribution should be populated");
-
-        assert_eq!(dist.get("target_min").and_then(|v| v.as_f64()),
-                   Some(1.0));
-        assert_eq!(dist.get("target_max").and_then(|v| v.as_f64()),
-                   Some(3.0));
-        assert!(dist.get("histogram").and_then(|v| v.as_object()).is_some());
-    }
-
-    #[test]
-    fn test_build_stage_stats_forecasting_target_distribution() {
-        // Forecasting carries a scalar numerical TARGET column, so its
-        // per-stage target distribution is the same numerical summary as
-        // regression. Without the "forecasting" branch this came back null and
-        // tripped Kumo's split-stats contract.
-        let assignments = vec![0, 0, 0, 0];
-        let targets = vec![
-            Some("1.0".to_string()),
-            Some("inf".to_string()),
-            Some("2.0".to_string()),
-            Some("3.0".to_string()),
-        ];
-
-        let stats = build_stage_stats_from_columns(
-            &assignments,
-            0,
-            None,
-            Some(&targets),
-            None,
-            Some("forecasting"),
-        );
-        let dist = stats
-            .get("target_distribution")
-            .and_then(|v| v.as_object())
-            .expect("forecasting target_distribution should be populated");
-
-        assert_eq!(dist.get("target_min").and_then(|v| v.as_f64()),
-                   Some(1.0));
-        assert_eq!(dist.get("target_max").and_then(|v| v.as_f64()),
-                   Some(3.0));
-        assert!(dist.get("histogram").and_then(|v| v.as_object()).is_some());
-    }
-
-    #[test]
-    fn test_build_stage_stats_multilabel_target_distribution() {
-        // Multilabel targets are pipe-delimited scalar strings; the per-stage
-        // distribution must split them into individual labels and report
-        // per-row PREVALENCE (count / #rows-with-target), which can sum past
-        // 100%. Row 1 has an empty label set (""), which contributes to the
-        // denominator but to no label. Row 4 (label "c") is in stage 1 and must
-        // be excluded from stage 0's distribution.
-        let assignments = vec![0, 0, 0, 0, 1];
-        let targets = vec![
-            Some("a|b".to_string()),
-            Some("".to_string()),
-            Some("b".to_string()),
-            Some("a".to_string()),
-            Some("c".to_string()),
-        ];
-
-        let stats = build_stage_stats_from_columns(
-            &assignments,
-            0,
-            None,
-            Some(&targets),
-            None,
-            Some("multilabel_classification"),
-        );
-
-        // Distinct individual labels in stage 0 (a, b) — not distinct
-        // pipe-strings ("a|b", "b", "a" would be 3).
-        assert_eq!(stats.get("num_targets").and_then(|v| v.as_u64()), Some(2));
-
-        let dist = stats
-            .get("target_distribution")
-            .and_then(|v| v.as_object())
-            .expect("multilabel target_distribution should be populated");
-        let count = dist.get("count").and_then(|v| v.as_object()).unwrap();
-        let pct = dist.get("percentage").and_then(|v| v.as_object()).unwrap();
-
-        // a in rows 0,3 ; b in rows 0,2 ; denominator = 4 rows in stage 0.
-        assert_eq!(count.get("a").and_then(|v| v.as_f64()), Some(2.0));
-        assert_eq!(count.get("b").and_then(|v| v.as_f64()), Some(2.0));
-        assert_eq!(pct.get("a").and_then(|v| v.as_f64()), Some(50.0));
-        assert_eq!(pct.get("b").and_then(|v| v.as_f64()), Some(50.0));
-        // "c" belongs to stage 1 and the empty label set produced no entry.
-        assert!(count.get("c").is_none());
-        assert!(count.get("").is_none());
-    }
-
-    #[test]
-    fn test_build_stage_stats_multilabel_ranking_target_distribution() {
-        // multilabel_ranking takes the same per-label path as classification.
-        let assignments = vec![0, 0];
-        let targets = vec![Some("x|y".to_string()), Some("x".to_string())];
-
-        let stats = build_stage_stats_from_columns(
-            &assignments,
-            0,
-            None,
-            Some(&targets),
-            None,
-            Some("multilabel_ranking"),
-        );
-
-        let dist = stats
-            .get("target_distribution")
-            .and_then(|v| v.as_object())
-            .expect("multilabel_ranking target_distribution should be populated");
-        let count = dist.get("count").and_then(|v| v.as_object()).unwrap();
-        let pct = dist.get("percentage").and_then(|v| v.as_object()).unwrap();
-        // x in both rows, y in one; denominator = 2.
-        assert_eq!(count.get("x").and_then(|v| v.as_f64()), Some(2.0));
-        assert_eq!(count.get("y").and_then(|v| v.as_f64()), Some(1.0));
-        assert_eq!(pct.get("x").and_then(|v| v.as_f64()), Some(100.0));
-        assert_eq!(pct.get("y").and_then(|v| v.as_f64()), Some(50.0));
-    }
-
-    #[test]
-    fn test_transform_random_link_split_link_array_basic() {
-        let target_values = {
-            let mut b = ListBuilder::new(StringBuilder::new());
-            b.values().append_value("a");
-            b.values().append_value("b");
-            b.values().append_value("c");
-            b.append(true);
-            Arc::new(b.finish()) as Arc<dyn Array>
-        };
-
-        let freq_values = {
-            let mut b = ListBuilder::new(Int64Builder::new());
-            b.values().append_value(1);
-            b.values().append_value(1);
-            b.values().append_value(1);
-            b.append(true);
-            Arc::new(b.finish()) as Arc<dyn Array>
-        };
-
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("ENTITY", DataType::Int64, true),
-            Field::new(
-                "TIMESTAMP",
-                DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, None),
-                true,
-            ),
-            Field::new(
-                "TARGET",
-                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
-                true,
-            ),
-            Field::new(
-                "__kumo_internal_frequency_column__",
-                DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
-                true,
-            ),
-            Field::new("ENTITY_INCLUDE_BIT", DataType::Boolean, true),
-        ]));
-
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(Int64Array::from(vec![Some(1)])),
-                Arc::new(TimestampNanosecondArray::from(vec![Some(100)])),
-                target_values,
-                freq_values,
-                Arc::new(BooleanArray::from(vec![Some(true)])),
-            ],
-        )
-        .unwrap();
-
-        let (out_batches, assignments) =
-            transform_random_link_split_link_array(&[batch], vec![0.5, 0.25, 0.25], Some(0))
-                .unwrap();
-
-        assert_eq!(row_count_of_batches(&out_batches), assignments.len());
-        assert_eq!(assignments.iter().filter(|x| **x == 0).count(), 1);
-        assert_eq!(assignments.iter().filter(|x| **x == 1).count(), 1);
-        assert_eq!(assignments.iter().filter(|x| **x == 2).count(), 1);
-    }
-
-    #[test]
-    fn test_transform_random_link_split_link_array_preserves_weight_column() {
-        let target_values = {
-            let mut b = ListBuilder::new(StringBuilder::new());
-            b.values().append_value("a");
-            b.values().append_value("b");
-            b.values().append_value("c");
-            b.append(true);
-            Arc::new(b.finish()) as Arc<dyn Array>
-        };
-
-        let freq_values = {
-            let mut b = ListBuilder::new(Int64Builder::new());
-            b.values().append_value(1);
-            b.values().append_value(1);
-            b.values().append_value(1);
-            b.append(true);
-            Arc::new(b.finish()) as Arc<dyn Array>
-        };
-
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("ENTITY", DataType::Int64, true),
-            Field::new(
-                "TIMESTAMP",
-                DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, None),
-                true,
-            ),
-            Field::new(
-                "TARGET",
-                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
-                true,
-            ),
-            Field::new(
-                "__kumo_internal_frequency_column__",
-                DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
-                true,
-            ),
-            Field::new("WEIGHT", DataType::Float64, true),
-        ]));
-
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(Int64Array::from(vec![Some(1)])),
-                Arc::new(TimestampNanosecondArray::from(vec![Some(100)])),
-                target_values,
-                freq_values,
-                Arc::new(Float64Array::from(vec![Some(2.5)])),
-            ],
-        )
-        .unwrap();
-
-        let (out_batches, assignments) =
-            transform_random_link_split_link_array(&[batch], vec![0.5, 0.25, 0.25], Some(0))
-                .unwrap();
-
-        assert_eq!(row_count_of_batches(&out_batches), assignments.len());
-        let out = &out_batches[0];
-        let widx = out.schema().index_of("WEIGHT").unwrap();
-        let warr = out
-            .column(widx)
-            .as_any()
-            .downcast_ref::<Float64Array>()
-            .unwrap();
-        assert_eq!(warr.len(), 3);
-        for i in 0..warr.len() {
-            assert!(!warr.is_null(i));
-            assert!((warr.value(i) - 2.5).abs() < 1e-9);
-        }
-    }
-
-    fn make_custom_link_split_batch(targets: &[&str], split_labels: &[&str]) -> RecordBatch {
-        let target_values = {
-            let mut b = ListBuilder::new(StringBuilder::new());
-            for target in targets {
-                b.values().append_value(target);
-            }
-            b.append(true);
-            Arc::new(b.finish()) as Arc<dyn Array>
-        };
-        let freq_values = {
-            let mut b = ListBuilder::new(Int64Builder::new());
-            for _ in targets {
-                b.values().append_value(1);
-            }
-            b.append(true);
-            Arc::new(b.finish()) as Arc<dyn Array>
-        };
-        let split_values = {
-            let mut b = ListBuilder::new(StringBuilder::new());
-            for label in split_labels {
-                b.values().append_value(label);
-            }
-            b.append(true);
-            Arc::new(b.finish()) as Arc<dyn Array>
-        };
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("ENTITY", DataType::Int64, true),
-            Field::new(
-                "TIMESTAMP",
-                DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, None),
-                true,
-            ),
-            Field::new(
-                "TARGET",
-                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
-                true,
-            ),
-            Field::new(
-                "__kumo_internal_frequency_column__",
-                DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
-                true,
-            ),
-            Field::new(
-                "__kumo_internal_split_column__",
-                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
-                true,
-            ),
-        ]));
-        RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(Int64Array::from(vec![Some(1)])),
-                Arc::new(TimestampNanosecondArray::from(vec![Some(100)])),
-                target_values,
-                freq_values,
-                split_values,
-            ],
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn test_transform_custom_link_split_link_array_basic() {
-        let batch = make_custom_link_split_batch(&["a", "b", "c"], &["train", "val", "train"]);
-        let (out_batches, assignments) = transform_custom_link_split_link_array(
-            &[batch],
-            "__kumo_internal_split_column__",
-            vec!["train".to_string()],
-            vec!["val".to_string()],
-            vec!["test".to_string()],
-        )
-        .unwrap();
-
-        assert_eq!(row_count_of_batches(&out_batches), assignments.len());
-        assert_eq!(assignments, vec![0u8, 1]);
-        let out = &out_batches[0];
-        assert!(out.schema().index_of("__kumo_internal_split_column__").is_err());
-        let stage_idx = out.schema().index_of("__internal_kumo_split_id_col__").unwrap();
-        let stage_arr = out
-            .column(stage_idx)
-            .as_any()
-            .downcast_ref::<UInt8Array>()
-            .unwrap();
-        assert_eq!(stage_arr.values(), &[0u8, 1]);
-    }
-
-    #[test]
-    fn test_transform_custom_link_split_rejects_misaligned_arrays() {
-        let batch = make_custom_link_split_batch(&["a", "b", "c"], &["train", "val"]);
-        let err = transform_custom_link_split_link_array(
-            &[batch],
-            "__kumo_internal_split_column__",
-            vec!["train".to_string()],
-            vec!["val".to_string()],
-            vec!["test".to_string()],
-        )
-        .unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(msg.contains("split-column list length mismatch with TARGET"));
-    }
-
-    #[test]
-    fn test_extend_timestamps_uses_configured_time_col() {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "PSEUDO_TIMESTAMP",
-            DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, None),
-            true,
-        )]));
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![Arc::new(TimestampNanosecondArray::from(vec![
-                Some(100),
-                None,
-                Some(300),
-            ]))],
-        )
-        .unwrap();
-
-        let mut timestamps = Vec::new();
-        extend_timestamps_ns_from_batch(&batch, "PSEUDO_TIMESTAMP", &mut timestamps);
-
-        assert_eq!(timestamps, vec![100, 0, 300]);
-    }
-
-    #[test]
-    fn test_col_stats_payload_uses_configured_time_col() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tt.parquet");
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("ENTITY", DataType::Int64, true),
-            Field::new(
-                "PSEUDO_TIMESTAMP",
-                DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, None),
-                true,
-            ),
-            Field::new("TARGET", DataType::Int64, true),
-        ]));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(Int64Array::from(vec![Some(1), Some(2)])),
-                Arc::new(TimestampNanosecondArray::from(vec![Some(10), Some(11)])),
-                Arc::new(Int64Array::from(vec![Some(0), Some(1)])),
-            ],
-        )
-        .unwrap();
-        let f = std::fs::File::create(&path).unwrap();
-        let mut w = ArrowWriter::try_new(f, schema, Some(WriterProperties::builder().build()))
-            .unwrap();
-        w.write(&batch).unwrap();
-        w.close().unwrap();
-
-        let payload = compute_train_table_col_stats_payload(
-            path.to_str().unwrap(),
-            &[0, 1],
-            "v1",
-            "categorical",
-            "PSEUDO_TIMESTAMP",
-        )
-        .unwrap();
-
-        assert_eq!(
-            payload.get("kind").and_then(|v| v.as_str()),
-            Some("tt_train_table_col_stats")
-        );
-        let stats = payload.get("stats").and_then(|v| v.as_object()).unwrap();
-        assert_eq!(
-            stats
-                .get("TIMESTAMP__kumo.numerical__COUNT__False")
-                .and_then(|v| v.get("value"))
-                .and_then(|v| v.as_u64()),
-            Some(2)
-        );
-        assert_eq!(
-            stats
-                .get("TIMESTAMP__kumo.numerical__MIN__False")
-                .and_then(|v| v.get("value"))
-                .and_then(|v| v.as_f64()),
-            Some(10.0)
-        );
-        assert!(compute_train_table_col_stats_payload(
-            path.to_str().unwrap(),
-            &[0, 1],
-            "v1",
-            "categorical",
-            "TIMESTAMP",
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn test_col_stats_payload_includes_sequence_feature_stats() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tt.parquet");
-        let embedding_values = {
-            let mut b = ListBuilder::new(Float64Builder::new());
-            b.values().append_value(1.0);
-            b.values().append_value(2.0);
-            b.append(true);
-            b.values().append_value(3.0);
-            b.values().append_value(4.0);
-            b.values().append_value(5.0);
-            b.append(true);
-            b.values().append_value(6.0);
-            b.append(true);
-            Arc::new(b.finish()) as Arc<dyn Array>
-        };
-        let autoregression_labels = {
-            let mut b = ListBuilder::new(Float64Builder::new());
-            b.values().append_value(0.0);
-            b.append(true);
-            b.values().append_value(1.0);
-            b.values().append_value(0.0);
-            b.append(true);
-            b.values().append_value(1.0);
-            b.append(true);
-            Arc::new(b.finish()) as Arc<dyn Array>
-        };
-        let yoy_labels = {
-            let mut b = ListBuilder::new(Float64Builder::new());
-            b.values().append_value(2.0);
-            b.append(true);
-            b.values().append_value(3.0);
-            b.append(true);
-            b.values().append_value(4.0);
-            b.append(true);
-            Arc::new(b.finish()) as Arc<dyn Array>
-        };
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("ENTITY", DataType::Int64, true),
-            Field::new(
-                "TIMESTAMP",
-                DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, None),
-                true,
-            ),
-            Field::new("TARGET", DataType::Int64, true),
-            Field::new(
-                "seed_embedding",
-                DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
-                true,
-            ),
-            Field::new(
-                AUTOREGRESSION_OUTPUT_ALIAS,
-                DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
-                true,
-            ),
-            Field::new(
-                YOY_OUTPUT_ALIAS,
-                DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
-                true,
-            ),
-        ]));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(Int64Array::from(vec![Some(1), Some(2), Some(3)])),
-                Arc::new(TimestampNanosecondArray::from(vec![
-                    Some(10),
-                    Some(11),
-                    Some(12),
-                ])),
-                Arc::new(Int64Array::from(vec![Some(0), Some(1), Some(0)])),
-                embedding_values,
-                autoregression_labels,
-                yoy_labels,
-            ],
-        )
-        .unwrap();
-        let f = std::fs::File::create(&path).unwrap();
-        let mut w = ArrowWriter::try_new(f, schema, Some(WriterProperties::builder().build()))
-            .unwrap();
-        w.write(&batch).unwrap();
-        w.close().unwrap();
-
-        let payload = compute_train_table_col_stats_payload(
-            path.to_str().unwrap(),
-            &[0, 1, 255],
-            "v1",
-            "categorical",
-            "TIMESTAMP",
-        )
-        .unwrap();
-
-        let stats = payload.get("stats").and_then(|v| v.as_object()).unwrap();
-        assert_eq!(
-            stats
-                .get("seed_embedding__kumo.sequence__COUNT__False")
-                .and_then(|v| v.get("value"))
-                .and_then(|v| v.as_u64()),
-            Some(2)
-        );
-        assert_eq!(
-            stats
-                .get("seed_embedding__kumo.sequence__SEQUENCE_MIN_LENGTH__False")
-                .and_then(|v| v.get("value"))
-                .and_then(|v| v.as_i64()),
-            Some(2)
-        );
-        assert_eq!(
-            stats
-                .get("seed_embedding__kumo.sequence__SEQUENCE_MAX_LENGTH__False")
-                .and_then(|v| v.get("value"))
-                .and_then(|v| v.as_i64()),
-            Some(3)
-        );
-        assert!(!stats.contains_key(
-            "autoregression_labels__kumo.sequence__SEQUENCE_MIN_LENGTH__False"
-        ));
-        assert!(!stats.contains_key(
-            "year_over_year_labels__kumo.sequence__SEQUENCE_MIN_LENGTH__False"
-        ));
-    }
-
-    #[test]
-    fn test_materialization_collects_sequence_feature_stats_inline() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tt.parquet");
-        let embedding_values = {
-            let mut b = ListBuilder::new(Float64Builder::new());
-            b.values().append_value(1.0);
-            b.append(true);
-            b.values().append_value(2.0);
-            b.values().append_value(3.0);
-            b.append(true);
-            b.values().append_value(4.0);
-            b.values().append_value(5.0);
-            b.values().append_value(6.0);
-            b.append(true);
-            Arc::new(b.finish()) as Arc<dyn Array>
-        };
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("ENTITY", DataType::Int64, true),
-            Field::new(
-                "TIMESTAMP",
-                DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, None),
-                true,
-            ),
-            Field::new("TARGET", DataType::Int64, true),
-            Field::new(
-                "seed_embedding",
-                DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
-                true,
-            ),
-        ]));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(Int64Array::from(vec![Some(1), Some(2), Some(3)])),
-                Arc::new(TimestampNanosecondArray::from(vec![
-                    Some(10),
-                    Some(11),
-                    Some(12),
-                ])),
-                Arc::new(Int64Array::from(vec![Some(0), Some(1), Some(0)])),
-                embedding_values,
-            ],
-        )
-        .unwrap();
-        let sequence_feature_indices =
-            sequence_feature_indices_from_schema(schema.as_ref(), "TIMESTAMP");
-        let mut sequence_feature_stats =
-            new_sequence_feature_stats(&sequence_feature_indices);
-
-        let rows_written = write_batches_with_arange(
-            path.to_str().unwrap(),
-            &[batch],
-            None,
-            Some((
-                sequence_feature_indices.as_slice(),
-                &mut sequence_feature_stats,
-            )),
-        )
-        .unwrap();
-
-        assert_eq!(rows_written, 3);
-        let stats = sequence_feature_stats.get("seed_embedding").unwrap();
-        assert_eq!(stats.count, 3);
-        assert_eq!(stats.min_len, Some(1));
-        assert_eq!(stats.max_len, Some(3));
-    }
-
-    #[test]
-    fn test_build_train_table_edges_bundle_value_basic() {
-        let root = std::env::temp_dir().join(format!("dg_tt_edges_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-
-        let fkey = root.join("custom_train_table_fkey_cols.parquet");
-        std::fs::create_dir_all(&fkey).unwrap();
-        std::fs::write(fkey.join("part-0000.parquet"), b"fkey").unwrap();
-
-        let mask = root.join("custom_train_table_mask.parquet");
-        std::fs::create_dir_all(&mask).unwrap();
-        std::fs::write(mask.join("part-0000.parquet"), b"mask").unwrap();
-
-        let edge = root
-            .join("users__rev_user_id__custom_train_table")
-            .join("edge.parquet");
-        std::fs::create_dir_all(&edge).unwrap();
-        std::fs::write(edge.join("part-0000.parquet"), b"edge").unwrap();
-
-        let payload =
-            build_train_table_edges_bundle_value(&root, "custom_train_table", true, None, None)
-                .unwrap();
-
-        assert_eq!(
-            payload.get("format").and_then(|v| v.as_str()),
-            Some("tt_edge_bundle_v1")
-        );
-        assert_eq!(
-            payload.get("kind").and_then(|v| v.as_str()),
-            Some("tt_train_table_edges")
-        );
-        assert!(payload
-            .get("reverse_edges")
-            .and_then(|v| v.as_object())
-            .map(|m| m.contains_key("users__rev_user_id__custom_train_table"))
-            .unwrap_or(false));
-        assert!(payload
-            .get("checksums")
-            .and_then(|v| v.as_object())
-            .map(|m| m.contains_key("fkey_cols_sha256") && m.contains_key("mask_sha256"))
-            .unwrap_or(false));
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn test_build_prediction_table_edges_bundle_value_basic() {
-        let root = std::env::temp_dir().join(format!("dg_pred_edges_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-
-        let fkey = root.join("custom_prediction_table_fkey_cols.parquet");
-        std::fs::create_dir_all(&fkey).unwrap();
-        std::fs::write(fkey.join("part-0000.parquet"), b"fkey").unwrap();
-
-        let edge = root
-            .join("users__rev_user_id__custom_prediction_table")
-            .join("edge.parquet");
-        std::fs::create_dir_all(&edge).unwrap();
-        std::fs::write(edge.join("part-0000.parquet"), b"edge").unwrap();
-
-        let payload = build_prediction_table_edges_bundle_value(
-            &root,
-            "custom_prediction_table",
-            false,
-            Some("mask_not_required"),
-            None,
-        )
-        .unwrap();
-
-        assert_eq!(
-            payload.get("format").and_then(|v| v.as_str()),
-            Some("tt_pred_edge_bundle_v1")
-        );
-        assert_eq!(
-            payload.get("kind").and_then(|v| v.as_str()),
-            Some("tt_prediction_table_edges")
-        );
-        assert_eq!(
-            payload
-                .get("mask")
-                .and_then(|v| v.get("present"))
-                .and_then(|v| v.as_bool()),
-            Some(false)
-        );
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn test_to_nanoseconds_seconds() {
-        assert_eq!(to_nanoseconds(1, "seconds").unwrap(), 1_000_000_000);
-        assert_eq!(to_nanoseconds(0, "seconds").unwrap(), 0);
-        assert_eq!(
-            to_nanoseconds(1735689600, "seconds").unwrap(),
-            1735689600_000_000_000
-        );
-    }
-
-    #[test]
-    fn test_to_nanoseconds_milliseconds() {
-        assert_eq!(to_nanoseconds(1, "milliseconds").unwrap(), 1_000_000);
-        assert_eq!(to_nanoseconds(1000, "milliseconds").unwrap(), 1_000_000_000);
-    }
-
-    #[test]
-    fn test_to_nanoseconds_microseconds() {
-        assert_eq!(to_nanoseconds(1, "microseconds").unwrap(), 1_000);
-        assert_eq!(
-            to_nanoseconds(1_000_000, "microseconds").unwrap(),
-            1_000_000_000
-        );
-    }
-
-    #[test]
-    fn test_to_nanoseconds_passthrough() {
-        assert_eq!(to_nanoseconds(42, "nanoseconds").unwrap(), 42);
-    }
-
-    #[test]
-    fn test_to_nanoseconds_unknown_unit() {
-        assert!(to_nanoseconds(1, "fortnights").is_err());
-    }
-
-    #[test]
-    fn test_get_timestamp_unit_present() {
-        let cfg: Value = serde_json::json!({"timestamp_unit": "milliseconds"});
-        assert_eq!(get_timestamp_unit(&cfg), "milliseconds");
-    }
-
-    #[test]
-    fn test_get_timestamp_unit_missing_defaults_to_seconds() {
-        let cfg: Value = serde_json::json!({});
-        assert_eq!(get_timestamp_unit(&cfg), "seconds");
-    }
-
-    #[test]
-    fn test_parse_time_ranges_ns_converts_seconds() {
-        // Ranges in epoch seconds, timestamp_unit = "seconds"
-        let cfg: Value = serde_json::json!({
-            "ranges": [[1000, 2000], [2000, 3000]],
-            "timestamp_unit": "seconds"
-        });
-        let (starts, ends) = parse_time_ranges_ns(&cfg, "seconds").unwrap();
-        assert_eq!(starts, vec![1000_000_000_000i64, 2000_000_000_000i64]);
-        assert_eq!(ends, vec![2000_000_000_000i64, 3000_000_000_000i64]);
-    }
-
-    #[test]
-    fn test_parse_time_ranges_ns_nanoseconds_passthrough() {
-        let cfg: Value = serde_json::json!({
-            "ranges": [[1_000_000_000i64, 2_000_000_000i64], [2_000_000_000i64, 3_000_000_000i64]],
-            "timestamp_unit": "nanoseconds"
-        });
-        let (starts, ends) = parse_time_ranges_ns(&cfg, "nanoseconds").unwrap();
-        assert_eq!(starts, vec![1_000_000_000i64, 2_000_000_000i64]);
-        assert_eq!(ends, vec![2_000_000_000i64, 3_000_000_000i64]);
-    }
-
-    // ── collect_column_opt_strings dtype-coverage tests ─────────────────────
-    //
-    // `build_split_stats_artifact` calls `collect_column_opt_strings` on
-    // ENTITY, TARGET, TIMESTAMP. Writers that emit `List<Utf8>` TARGET (the
-    // `link_prediction(explode=False)` arm) used to produce a TARGET parquet
-    // dtype that this helper could not downcast, returning the typed error
-    // `unsupported column dtype for split stats` and aborting the artifact
-    // build. The dtype-based gate below treats list-typed columns as "skip
-    // this column for stats" (returning `Ok(None)`), the same shape the
-    // helper already uses for missing columns. `build_stage_stats_from_columns`
-    // accepts `target_vals=None` and emits the stats payload without a
-    // target distribution.
-
-    fn write_temp_parquet_with_target_list_utf8(path: &std::path::Path) {
-        use parquet::arrow::ArrowWriter;
-        use parquet::file::properties::WriterProperties;
-        let mut tb = ListBuilder::new(StringBuilder::new());
-        tb.values().append_value("a");
-        tb.values().append_value("b");
-        tb.append(true);
-        tb.values().append_value("c");
-        tb.append(true);
-        let target_arr = Arc::new(tb.finish()) as Arc<dyn Array>;
-        let entity_arr = Arc::new(Int64Array::from(vec![Some(0i64), Some(1)])) as Arc<dyn Array>;
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("ENTITY", DataType::Int64, true),
-            Field::new(
-                "TARGET",
-                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
-                true,
-            ),
-        ]));
-        let batch = RecordBatch::try_new(schema.clone(), vec![entity_arr, target_arr]).unwrap();
-        let f = std::fs::File::create(path).unwrap();
-        let mut w = ArrowWriter::try_new(f, schema, Some(WriterProperties::builder().build()))
-            .unwrap();
-        w.write(&batch).unwrap();
-        w.close().unwrap();
-    }
-
-    #[test]
-    fn test_collect_column_opt_strings_skips_list_utf8_target() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tt.parquet");
-        write_temp_parquet_with_target_list_utf8(&path);
-
-        // Scalar ENTITY column collects normally.
-        let entity_vals =
-            collect_column_opt_strings(path.to_str().unwrap(), "ENTITY").unwrap();
-        assert_eq!(
-            entity_vals,
-            Some(vec![Some("0".to_string()), Some("1".to_string())])
-        );
-
-        // List<Utf8> TARGET column returns None (skip), not Err.
-        let target_vals =
-            collect_column_opt_strings(path.to_str().unwrap(), "TARGET").unwrap();
-        assert_eq!(
-            target_vals, None,
-            "List<Utf8> TARGET must signal skip, not collect or error",
-        );
-    }
-
-    #[test]
-    fn test_collect_column_opt_strings_skips_list_int64_frequency() {
-        // Same gate must handle the FREQUENCY shape (`List<Int64>`) emitted
-        // by the `include_frequency=True` writer, in case a future caller
-        // requests stats over that column.
-        use parquet::arrow::ArrowWriter;
-        use parquet::file::properties::WriterProperties;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tt.parquet");
-        let mut fb = ListBuilder::new(Int64Builder::new());
-        fb.values().append_value(1);
-        fb.values().append_value(2);
-        fb.append(true);
-        let freq_arr = Arc::new(fb.finish()) as Arc<dyn Array>;
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "FREQUENCY",
-            DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
-            true,
-        )]));
-        let batch = RecordBatch::try_new(schema.clone(), vec![freq_arr]).unwrap();
-        let f = std::fs::File::create(&path).unwrap();
-        let mut w = ArrowWriter::try_new(f, schema, Some(WriterProperties::builder().build()))
-            .unwrap();
-        w.write(&batch).unwrap();
-        w.close().unwrap();
-
-        let vals = collect_column_opt_strings(path.to_str().unwrap(), "FREQUENCY").unwrap();
-        assert_eq!(vals, None, "List<Int64> column must signal skip");
-    }
-}
+#[allow(deprecated)]
+mod tests;

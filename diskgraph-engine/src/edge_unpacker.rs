@@ -36,12 +36,25 @@ impl<'a> EdgeUnpacker<'a> {
 
         // Optimization: Branch on entry size once, then loop
         if self.entry_bytes <= 8 {
+            // Guard against dst_bits >= 64: shifting a u64 by 64 or more is
+            // a debug-mode panic (and UB in release). dst_bits=64 happens
+            // when compute_relation_layouts falls back for a dst_type that
+            // isn't visible to the layout-computation scope (e.g., a seed
+            // sub-index opened standalone where the parent's users table
+            // is absent from metadata.node_types). When dst_bits >= 64 the
+            // whole u64 is the dst id, and there can't be sort-key bits
+            // alongside, so the key is unconditionally 0.
+            let sort_key_shift_safe = self.dst_bits < 64;
             while n < count && unsafe { self.ptr.add(self.entry_bytes) <= self.end } {
                 let raw = unsafe { read_u64_partial(self.ptr, self.entry_bytes) };
 
                 unsafe {
                     *dst_out.get_unchecked_mut(n) = raw & self.dst_mask;
-                    *key_out.get_unchecked_mut(n) = (raw >> self.dst_bits) & self.sort_key_mask;
+                    *key_out.get_unchecked_mut(n) = if sort_key_shift_safe {
+                        (raw >> self.dst_bits) & self.sort_key_mask
+                    } else {
+                        0
+                    };
 
                     self.ptr = self.ptr.add(self.entry_bytes);
                 }

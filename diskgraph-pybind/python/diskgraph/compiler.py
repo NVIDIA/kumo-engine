@@ -37,8 +37,11 @@ LP_BP_LAYOUTS = {"hstack", "separate_lhs_rhs"}
 # ``kumo/utils/autoregression.py``; if either side renames, the
 # integration tests on both sides fail together.
 AUTOREGRESSION_OUTPUT_ALIAS = "autoregression_labels"
+FUTURE_LABELS_OUTPUT_ALIAS = "future_labels"
 YOY_OUTPUT_ALIAS = "year_over_year_labels"
 
+PRIMARY_ENTITY_COL = "ENTITY1"
+PRIMARY_TARGET_COL = "TARGET1"
 
 def _map_op(op: str) -> str:
     if op == '=':
@@ -91,6 +94,7 @@ class DiskGraphPlanCompiler:
         lp_rhs_entity_column: Optional[str] = None,
         lp_bp_layout: Optional[str] = None,
         lag_offsets_secs: Optional[List[int]] = None,
+        future_offsets_secs: Optional[List[int]] = None,
         yoy_offsets_secs: Optional[List[int]] = None,
         split: Optional[SplitSpec] = None,
     ) -> str:
@@ -104,7 +108,7 @@ class DiskGraphPlanCompiler:
             task_type: The ML task type (e.g., 'binary_classification', 'temporal_link_prediction').
             forecast_length: Number of future timesteps to ignore before the target window.
             lag_timesteps: Lookback window for autoregressive features.
-            list_distinct_target_is_array: If True, output Link Prediction targets as a single LIST column instead of exploded rows.
+            list_distinct_target_is_array: If True, output Link Prediction targets as a single LIST column (one row per anchor).
             include_frequency: When True and target is LIST_DISTINCT, include a
                 __kumo_internal_frequency_column__ column counting occurrences of each distinct value.
                 Set for RANK problems; unset for CLASSIFY.
@@ -135,6 +139,7 @@ class DiskGraphPlanCompiler:
 
         # 0. Target semantic type
         self.builder.set_target_stype(target_stype)
+        self.builder.set_is_prediction(is_prediction)
 
         # 1. Temporal Spec — pass raw timestamps with declared source unit to
         # Rust, which converts to the index unit system via UnitSystem trait.
@@ -211,7 +216,6 @@ class DiskGraphPlanCompiler:
         # 4. Set Prediction Type in Builder
         if is_link_pred:
             self.builder.link_prediction(
-                explode=not list_distinct_target_is_array,
                 include_frequency=include_frequency,
             )
         else:
@@ -245,6 +249,8 @@ class DiskGraphPlanCompiler:
                     0 if split_spec.anchor_start_offset is None
                     else split_spec.anchor_start_offset
                 ),
+                flexible_boundaries=split_spec.flexible_boundaries,
+                timeframe_step=split_spec.timeframe_step,
             )
 
         # 4. What-If (Assuming) — only for training, not prediction.
@@ -255,58 +261,68 @@ class DiskGraphPlanCompiler:
             self.builder.filter(sf)
 
         # 6. Target AST Traversal
-        if is_prediction:
+        is_forecasting = task_type == 'forecasting'
+
+        if is_forecasting:
+            self.builder.forecasting_prediction()
+            # Forecasting: Build historical lags.
+            # In Training mode, the Rust executor dynamically appends a '0' offset
+            # to the sequence to capture the label target without duplicating the AST traversal.
+            self._traverse_target(query.target_ast, query)
+            target_op_json = self.builder.pop_last_op_json()
+
+            # We expect the `lag_offsets_secs` to be passed for both training and BP
+            if not lag_offsets_secs:
+                raise DiskgraphConfigError("lag_offsets_secs is required for forecasting tasks")
+
+            if lag_offsets_secs:
+                self.builder.autoregression(AUTOREGRESSION_OUTPUT_ALIAS, target_op_json, lag_offsets_secs)
+            if future_offsets_secs and not is_prediction:
+                self.builder.future_labels(FUTURE_LABELS_OUTPUT_ALIAS, target_op_json, future_offsets_secs)
+            if yoy_offsets_secs:
+                self.builder.autoregression(YOY_OUTPUT_ALIAS, target_op_json, yoy_offsets_secs)
+
+            if not is_prediction:
+                # Training Table Generation (Forecasting)
+                # Preserve the entity-column anchor expected by downstream plan
+                # consumers. Rust resolves TARGET1 from the canonical
+                # autoregression op's inner aggregate, not from this column.
+                self.builder.column("entity_id_target", entity_table, entity_col)
+
+        elif is_prediction:
             if lp_prediction_mode in ('LHS', 'RHS'):
                 self.builder.pass_through_prediction()
                 # For Link Prediction separate dataset mode (or LHS pass), we stop here.
                 # No target operations are evaluated or injected.
                 return self.builder.build()
 
-            if lag_offsets_secs or yoy_offsets_secs:
-                self.builder.forecasting_prediction()
-                # Forecasting Prediction: Build historical lags, but suppress future label.
-                self._traverse_target(query.target_ast, query)
-                target_op_json = self.builder.pop_last_op_json()
-
-                # We can append multiple autoregression ops if both are requested
-                if lag_offsets_secs:
-                    self.builder.autoregression(AUTOREGRESSION_OUTPUT_ALIAS, target_op_json, lag_offsets_secs)
-                if yoy_offsets_secs:
-                    self.builder.autoregression(YOY_OUTPUT_ALIAS, target_op_json, yoy_offsets_secs)
-            else:
-                # Node or Link Prediction (non-forecasting)
-                # If it's a Static Node Prediction task,
-                # we must only predict for entities where TARGET IS NULL.
-                if is_static_query and not is_link_pred:
-                    # To apply Kumo's target null-emitting filter cleanly without breaking SQL math,
-                    # we do not execute the actual mathematical target. Instead, we perform a rapid
-                    # topology check (HasEdges) to see if the user traversed ANY edges.
-                    # If they traversed NO edges, we keep them (they are unlabeled!).
+            if not is_link_pred:
+                # Node prediction: emit entities only (PassThrough), no target.
+                # Static tasks still restrict to unlabeled entities (TARGET IS
+                # NULL): a HasEdges topology check keeps entities that traversed
+                # no edges, falling back to is_null for direct-column targets.
+                if is_static_query:
                     try:
                         has_edges_alias = self._has_target_edges(query.target_ast, query)
-                        sf = StageFilter.compare(has_edges_alias, "==", False)
-                        self.builder.filter(sf)
+                        self.builder.filter(StageFilter.compare(has_edges_alias, "==", False))
                     except DiskgraphConfigError:
-                        # Fallback for non-aggregation targets (e.g. direct column lookups).
-                        # In this case we CAN use is_null natively because columns evaluate correctly.
                         target_alias = self._traverse_target(query.target_ast, query)
-                        sf = StageFilter.compare(target_alias, "is_null", 0)
-                        self.builder.filter(sf)
-
-                    # We MUST emit a dummy non-null target alias as the final operation!
-                    # Otherwise, the Rust engine's 'write_target' will see the target is None
-                    # (because it passed the IS NULL filter!) and silently drop the row!
-                    entity_table, entity_col = query.entity_column.split('.')
-                    self.builder.column("entity_id_target", entity_table, entity_col)
-                else:
-                    # Standard Temporal Node or Link Prediction: Emit the entity ID as a dummy target
-                    # to satisfy the Rust engine's requirement for at least one Op.
-                    entity_table, entity_col = query.entity_column.split('.')
-                    self.builder.column("entity_id_target", entity_table, entity_col)
+                        self.builder.filter(StageFilter.compare(target_alias, "is_null", 0))
+                self.builder.pass_through_prediction()
+            else:
+                # Temporal / hstack Link Prediction: emit the entity ID as a dummy
+                # target to satisfy the engine's requirement for at least one Op.
+                self.builder.column("entity_id_target", entity_table, entity_col)
         else:
-            # Training Table Generation: evaluate target label natively.
+            # Training Table Generation (Node/Link Prediction): evaluate target label natively.
             self._traverse_target(query.target_ast, query)
 
+        fkey_mapping = [(PRIMARY_ENTITY_COL, entity_table)]
+        if is_link_pred and lp_rhs_entity_table is not None:
+            if not is_prediction and not list_distinct_target_is_array:
+                fkey_mapping.append((PRIMARY_TARGET_COL, lp_rhs_entity_table))
+
+        self.builder.set_fkey_mapping(fkey_mapping)
         return self.builder.build()
 
     def _extract_path(self, node: ASTNode, query: ValidatedPredictiveQuery, root_table: Optional[str] = None) -> Tuple[List[EdgeRef], ASTNode]:

@@ -305,6 +305,7 @@ fn encode_invalid_as_null(ctx: RowPackContext, array: ArrayRef) -> anyhow::Resul
         &mut data,
         &mut f16_buf,
         &key_bufs,
+        None,
         &mut observer,
     )?;
 
