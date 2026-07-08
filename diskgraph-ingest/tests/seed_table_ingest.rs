@@ -948,6 +948,16 @@ fn ingest_tiny_parent_index(
     num_shards: usize,
     num_rows: i64,
 ) -> Result<()> {
+    ingest_tiny_parent_index_named(parent_root, "users", pk_dtype, num_shards, num_rows)
+}
+
+fn ingest_tiny_parent_index_named(
+    parent_root: &Path,
+    table_name: &str,
+    pk_dtype: &IngestedType,
+    num_shards: usize,
+    num_rows: i64,
+) -> Result<()> {
     // Place inputs in a sibling dir to the index output — the ingest
     // pipeline owns the contents of `parent_root` and may wipe / rewrite
     // it on startup, so input fixtures must live outside it.
@@ -988,7 +998,7 @@ fn ingest_tiny_parent_index(
     write_parquet(&parquet_path, schema, vec![pk_array])?;
 
     let table = TableSpec {
-        name: "users".to_string(),
+        name: table_name.to_string(),
         columns: vec![ColumnSpec {
             name: "user_id".to_string(),
             source_dtype: None,
@@ -1038,6 +1048,42 @@ fn ingest_tiny_parent_index(
         None,
     )?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Regression — external-FK dst_table resolution is case-insensitive on the
+// node-dir path. Node dirs are written lowercased (graph_config table-name
+// normalization), while the FK `dst_table` carries the case-preserved logical
+// node-type name from the parent index metadata. A mixed-case entity table
+// (e.g. `Test_TRANS`, as produced by the connector-prefixed public-API path)
+// must resolve to its on-disk `nodes/test_trans` dir, not fail "dir not found".
+// ---------------------------------------------------------------------------
+#[test]
+fn external_pk_hash_shards_resolve_mixed_case_dst_table() {
+    let tmp = tempdir().unwrap();
+    let parent_root = tmp.path().join("parent_idx");
+    ingest_tiny_parent_index_named(&parent_root, "Test_TRANS", &IngestedType::Int64, 1, 16)
+        .expect("ingest mixed-case parent index");
+
+    // The on-disk node dir is lowercased by the ingest pipeline.
+    assert!(
+        parent_root.join("nodes").join("test_trans").is_dir(),
+        "node dir should be written lowercased"
+    );
+
+    // The loader is given the case-preserved logical name and must still find
+    // the lowercased dir (this fails "external FK dst_table dir not found"
+    // before the casing fix).
+    let key_type = key_type_for_external_parent(&parent_root, "Test_TRANS")
+        .expect("read parent metadata for mixed-case dst_table");
+    let shards = load_external_pk_hash_shards(
+        &parent_root,
+        "Test_TRANS",
+        key_type,
+        PkDataAdvice::Random,
+    )
+    .expect("mixed-case dst_table must resolve to lowercased node dir");
+    assert_eq!(shards.len(), 1, "expected one shard for the tiny parent index");
 }
 
 // ---------------------------------------------------------------------------

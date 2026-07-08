@@ -461,7 +461,12 @@ pub fn load_external_pk_hash_shards(
     key_type: KeyType,
     data_advice: PkDataAdvice,
 ) -> Result<Vec<PkHashShard>> {
-    let table_dir = parent_index_path.join("nodes").join(dst_table);
+    // Node directories are written lowercased (see `graph_config` table-name
+    // normalization), while the FK `dst_table` carries the case-preserved
+    // logical node-type name from the parent index metadata. Lowercase it here
+    // so a mixed-case table (e.g. `test_TRANS`) resolves to its on-disk
+    // `nodes/test_trans` dir instead of failing to find `nodes/test_TRANS`.
+    let table_dir = parent_index_path.join("nodes").join(dst_table.to_lowercase());
     if !table_dir.is_dir() {
         return Err(anyhow!(
             "external FK dst_table dir not found: {}",

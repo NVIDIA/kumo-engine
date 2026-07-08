@@ -6053,7 +6053,9 @@ impl IngestContext {
                     crate::mapping::PkDataAdvice::Random,
                 )?;
                 // Add to the byte counter so the caller's accounting is correct.
-                let shard_dir = parent_root.join("nodes").join(&dst_table);
+                // Node dirs are written lowercased; match that (see
+                // `load_external_pk_hash_shards`).
+                let shard_dir = parent_root.join("nodes").join(dst_table.to_lowercase());
                 if let Ok(read_dir) = std::fs::read_dir(&shard_dir) {
                     for entry in read_dir.flatten() {
                         if let Ok(meta) = entry.metadata() {
