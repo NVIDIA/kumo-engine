@@ -40,6 +40,10 @@ jobs:
     # major version, same glibc), so wheels remain compatible with
     # consumers expecting an `ubuntu-22.04`-targeted artifact.
     runs-on: ubuntu-22.04-large
+    environment: nightly-wheel-publish
+    permissions:
+      contents: read
+      id-token: write
     env:
       # See ci.yml for the full rationale: GNU ld peaks ~4 GB per
       # link job on the AWS-SDK / arrow / parquet chain, and 4
@@ -108,13 +112,16 @@ jobs:
           echo "WHEEL_PATH=$WHEEL_PATH" >> $GITHUB_ENV
           echo "WHEEL_BASENAME=$(basename "$WHEEL_PATH")" >> $GITHUB_ENV
 
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/github-actions-kumo-diskgraph-nightly-wheel-publish
+          aws-region: us-west-2
+          role-session-name: diskgraph-nightly-wheel-${{ github.run_id }}
+
       - name: Upload wheel
         run: |
           prefix="s3://kumo-diskgraph/packages/${{ matrix.os }}/py${{ matrix.python }}"
           aws s3 cp "${{ env.WHEEL_PATH }}" "$prefix/latest/${{ env.WHEEL_BASENAME }}"
           aws s3 cp "${{ env.WHEEL_PATH }}" "$prefix/${{ env.VERSION_TODAY }}/${{ env.WHEEL_BASENAME }}"
           aws s3 cp "${{ env.WHEEL_PATH }}" "$prefix/commit/${{ github.sha }}/${{ env.WHEEL_BASENAME }}"
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: 'us-west-2'
