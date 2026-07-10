@@ -49,6 +49,13 @@ def _manifest_view(
     return manifest, split_info
 
 
+def _use_seed_timestamps(manifest: Mapping[str, Any]) -> bool:
+    task = manifest.get("task") or {}
+    if not isinstance(task, Mapping) or "is_temporal" not in task:
+        return True
+    return bool(task.get("is_temporal"))
+
+
 def _stage_tables(manifest: Mapping[str, Any]) -> dict[str, dict[str, str]]:
     raw = manifest.get("stages") or {}
     if not isinstance(raw, Mapping):
@@ -311,6 +318,7 @@ def make_runtime_batch_iterator(
         int(rhs_seed_time) if rhs_seed_time is not None else None,
         bool(group_by_timestamp),  # see docstring: single-ts grouped batches.
         selected_stage_node_ids,
+        _use_seed_timestamps(manifest),
     )
     return iterator, iterator.num_samples()
 

@@ -400,6 +400,7 @@ fn test_resolution_runtime_batch_label_path() {
             None,                 // no negatives (S4)
             Some("users"),        // entity_node_type → seed from entity_node_id column
             Some("users"),        // target_node_type → emit ragged labels
+            true,                 // preserve old behavior: use seed timestamps when present
             None,                 // node_range: stage-table seeding (NodeRange off)
         )
         .expect("sample_runtime_batch must succeed on the resolution label path");
@@ -516,6 +517,7 @@ fn test_resolution_rhs_not_rooted() {
             None,
             Some("users"),
             Some("users"),
+            true, // preserve old behavior: use seed timestamps when present
             None, // node_range off
         )
         .expect("sample_runtime_batch must succeed");
@@ -688,6 +690,7 @@ fn test_resolution_exclude_hydrate() {
             None,
             Some("users"),
             Some("users"),
+            true,
             None,
         )
         .expect("sample_runtime_batch on the exclude path");
@@ -741,6 +744,7 @@ fn test_resolution_exclude_absent_when_all_empty() {
             None,
             Some("users"),
             Some("users"),
+            true,
             None,
         )
         .expect("sample_runtime_batch");
@@ -820,6 +824,7 @@ fn run_two_tower(tmp: &tempfile::TempDir, tt_id: &str, neg_rnd_seed: u64) -> cra
             Some(&negatives),  // two-tower: engine negatives requested
             Some("users"),     // entity_node_type
             Some("orders"),    // target_node_type == rhs type
+            true,              // preserve old behavior: use seed timestamps when present
             None,              // node_range off
         )
         .expect("two-tower sample_runtime_batch must succeed");
@@ -1019,6 +1024,7 @@ fn test_node_range_seeds_full_catalog() {
                 None, // no negatives
                 None, // no entity resolution
                 None, // no target resolution
+                true, // ignored by NodeRange, but preserves direct-call contract
                 Some(diskgraph_engine::engine::NodeRangeSeed {
                     rhs_node_type: "orders",
                     seed_time,

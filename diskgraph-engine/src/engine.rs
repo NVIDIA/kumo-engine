@@ -1049,6 +1049,7 @@ impl DiskGraphEngine {
         // legacy `seed.edges.bin` walk + raw-target behavior byte-for-byte.
         entity_node_type: Option<&str>,
         target_node_type: Option<&str>,
+        use_seed_timestamps: bool,
         // NodeRange seed mode (two-tower MIPS RHS pass). When `Some`, the engine
         // does NOT seed from a stage table: `batch_row_ids` ARE the RHS/target
         // catalog global node-ids directly, and every seed is anchored at the
@@ -1270,9 +1271,8 @@ impl DiskGraphEngine {
              )));
         }
 
-        let seed_timestamps: Option<Vec<i64>> = seed_target_batch
-            .as_ref()
-            .and_then(|rb| {
+        let seed_timestamps: Option<Vec<i64>> = if use_seed_timestamps {
+            seed_target_batch.as_ref().and_then(|rb| {
                 let idx = rb.schema().fields().iter().position(|f| f.name() == "TIMESTAMP")?;
                 let col = rb.column(idx);
                 col.as_any()
@@ -1283,7 +1283,10 @@ impl DiskGraphEngine {
                             .downcast_ref::<arrow_array::TimestampSecondArray>()
                             .map(|arr| (0..arr.len()).map(|i| arr.value(i)).collect())
                     })
-            });
+            })
+        } else {
+            None
+        };
 
         // 6. Build the sampling request: seed at the parent entity type(s)
         //    with the resolved ids, anchored at the seed timestamps when
@@ -1830,7 +1833,7 @@ impl DiskGraphEngine {
         let mut request_cow = std::borrow::Cow::Borrowed(request);
         if request.seed_timestamp_unit != TimeUnit::Seconds {
             if let Some(mut ts_map) = request.seed_timestamps.clone() {
-                for (_, ts_vec) in ts_map.iter_mut() {
+                for ts_vec in ts_map.values_mut() {
                     for ts in ts_vec.iter_mut() {
                         *ts = abs_from_unit::<Seconds>(*ts, request.seed_timestamp_unit).raw();
                     }

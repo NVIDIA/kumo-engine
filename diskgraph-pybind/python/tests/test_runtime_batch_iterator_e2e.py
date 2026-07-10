@@ -308,6 +308,36 @@ def test_iterator_yields_dict_matching_contract(seed_table_fixture):
         )
 
 
+def test_static_task_manifest_suppresses_seed_timestamps(
+        seed_table_fixture, tmp_path):
+    """Static task datasets may carry pseudo TIMESTAMP columns, but those
+    columns must not become temporal sampler anchors."""
+    manifest = json.loads(pathlib.Path(
+        seed_table_fixture["manifest_path"]).read_text())
+    manifest["task"] = {
+        "task_type": "multiclass_classification",
+        "is_temporal": False,
+    }
+    static_manifest = tmp_path / "static_manifest.json"
+    static_manifest.write_text(json.dumps(manifest))
+
+    iterator, _ = make_runtime_batch_iterator(
+        dataset_ref=str(static_manifest),
+        stage="train",
+        sampling_plan=_sampling_plan(),
+        num_workers=1,
+        worker_id=0,
+        shuffle=False,
+        rnd_seed=None,
+        epoch=0,
+        batch_size=3,
+        drop_last=False,
+    )
+
+    batch = next(iter(iterator))
+    assert "seed_timestamps" not in batch["task"]
+
+
 def test_iterator_selected_stage_node_ids_preserve_order(seed_table_fixture):
     selected = [4, 1, 3]
     iterator, num_samples = make_runtime_batch_iterator(

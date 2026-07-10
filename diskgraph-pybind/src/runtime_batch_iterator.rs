@@ -664,6 +664,11 @@ pub struct RuntimeBatchIterator {
     /// of the flat `offsets` path; `offsets` is left empty in that mode. `None`
     /// => the existing flat `make_worker_offsets` path (byte-identical).
     bucket_schedule: Option<BucketSchedule>,
+    /// Whether a TIMESTAMP column in the seed rowpack should be used as the
+    /// temporal sampler anchor. Static task datasets may still carry a pseudo
+    /// TIMESTAMP column for split/schema compatibility; those must not anchor
+    /// temporal-most-recent sampling.
+    use_seed_timestamps: bool,
 }
 
 #[pymethods]
@@ -696,6 +701,7 @@ impl RuntimeBatchIterator {
         rhs_seed_time=None,
         group_by_timestamp=false,
         selected_stage_node_ids=None,
+        use_seed_timestamps=true,
     ))]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -765,6 +771,7 @@ impl RuntimeBatchIterator {
         // XAI / targeted replay mode: explicit stage-table node ids, in caller
         // order. These are the same ids emitted as task.tt_stage_node_ids.
         selected_stage_node_ids: Option<Vec<u64>>,
+        use_seed_timestamps: bool,
     ) -> PyResult<Self> {
         if batch_size == 0 {
             return Err(DiskgraphConfigError::new_err("batch_size must be >= 1"));
@@ -981,6 +988,7 @@ impl RuntimeBatchIterator {
             rhs_seed_node_type,
             rhs_seed_time,
             bucket_schedule,
+            use_seed_timestamps,
         })
     }
 
@@ -1075,6 +1083,7 @@ impl RuntimeBatchIterator {
                         negatives,
                         entity_node_type,
                         target_node_type,
+                        self.use_seed_timestamps,
                         None,
                     )
                     .map_err(map_engine_err)?;
@@ -1117,6 +1126,7 @@ impl RuntimeBatchIterator {
                         negatives,
                         entity_node_type,
                         target_node_type,
+                        self.use_seed_timestamps,
                         None,
                     )
                 })
@@ -1165,6 +1175,7 @@ impl RuntimeBatchIterator {
                         None,
                         None,
                         None,
+                        true,
                         Some(diskgraph_engine::engine::NodeRangeSeed {
                             rhs_node_type: rhs_type,
                             seed_time,
@@ -1218,6 +1229,7 @@ impl RuntimeBatchIterator {
                     negatives,
                     entity_node_type,
                     target_node_type,
+                    self.use_seed_timestamps,
                     None, // node_range off (stage-table path)
                 )
             })

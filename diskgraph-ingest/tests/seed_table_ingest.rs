@@ -2388,6 +2388,7 @@ fn test_sample_runtime_batch_e2e() {
             None,
             None,
             None,
+            true,
             None, // node_range off
         )
         .expect("sample_runtime_batch must succeed end-to-end");
@@ -2695,6 +2696,7 @@ fn test_sample_runtime_batch_seed_topology_excluded_features_preserved() {
             None,
             None,
             None,
+            true,
             None,
         )
         .expect("sample_runtime_batch must succeed");
@@ -2899,6 +2901,7 @@ fn test_sample_runtime_batch_excludes_all_sibling_stage_seed_namespaces() {
             None,
             None,
             None,
+            true,
             None,
         )
         .expect("sample_runtime_batch (val stage) must succeed");
@@ -3045,6 +3048,7 @@ fn test_sample_runtime_batch_hop1_temporal_filter_no_leak() {
             None,
             None,
             None,
+            true,
             None, // node_range off
         )
         .expect("sample_runtime_batch must succeed");
@@ -3191,6 +3195,7 @@ fn run_sample_runtime_batch_with_flags(
             None,
             None,
             None,
+            true,
             None, // node_range off
         )
         .expect("sample_runtime_batch must succeed for any flag combination")
@@ -3394,6 +3399,7 @@ fn test_sample_runtime_batch_swap_edge_direction_preserves_rel_name() {
             None,
             None,
             None,
+            true,
             None, // node_range off
         )
         .unwrap();
@@ -3706,6 +3712,7 @@ fn test_sample_runtime_batch_reads_weight_column() {
             None,
             None,
             None,
+            true,
             None, // node_range off
         )
         .expect("sample_runtime_batch must succeed; WEIGHT read off the rowpack");
@@ -3776,6 +3783,7 @@ fn test_sample_runtime_batch_no_weight_column_keeps_weight_none() {
             None,
             None,
             None,
+            true,
             None, // node_range off
         )
         .unwrap();

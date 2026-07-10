@@ -280,7 +280,7 @@ def test_native_iterator_surface_forwards_selected_stage_node_ids(tmp_path, monk
             captured.args = args
 
         def num_samples(self):
-            return len(captured.args[-1])
+            return len(captured.args[-2])
 
     monkeypatch.setattr(diskgraph._c, "RuntimeBatchIterator", FakeRuntimeBatchIterator)
 
@@ -299,7 +299,57 @@ def test_native_iterator_surface_forwards_selected_stage_node_ids(tmp_path, monk
     )
 
     assert num_samples == 3
-    assert captured.args[-1] is selected_stage_node_ids
+    assert captured.args[-2] is selected_stage_node_ids
+    assert captured.args[-1] is True
+
+
+def test_native_iterator_surface_disables_seed_timestamps_for_static_task(
+        tmp_path, monkeypatch):
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({
+        "kind": "diskgraph_task_dataset",
+        "task": {
+            "task_type": "multiclass_classification",
+            "is_temporal": False,
+        },
+        "graph": {"index_path": "/idx"},
+        "table": {
+            "columns": {
+                "timestamp": "TIMESTAMP",
+            },
+        },
+        "stages": {
+            "train": {
+                "table_name": "tt_user__train",
+                "index_path": "/idx/train_tables/tt_user",
+                "row_count": 7,
+            }
+        },
+    }))
+    captured = SimpleNamespace(args=None)
+
+    class FakeRuntimeBatchIterator:
+        def __init__(self, *args):
+            captured.args = args
+
+        def num_samples(self):
+            return 7
+
+    monkeypatch.setattr(diskgraph._c, "RuntimeBatchIterator", FakeRuntimeBatchIterator)
+
+    make_runtime_batch_iterator(
+        str(manifest_path),
+        stage="train",
+        sampling_plan={"layers": []},
+        num_workers=1,
+        worker_id=0,
+        shuffle=False,
+        rnd_seed=None,
+        epoch=0,
+        batch_size=2,
+    )
+
+    assert captured.args[-1] is False
 
 
 def test_native_iterator_surface_forwards_pred_table_extension(tmp_path, monkeypatch):
