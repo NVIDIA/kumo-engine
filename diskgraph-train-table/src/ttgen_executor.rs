@@ -62,15 +62,15 @@ type PassAOutputs<U> = (
 );
 
 /// Build `[StageGenInfo; 3]` for train/val/test from the fused pass-B output.
-fn stage_gen_infos_from_parts(parts: [StagePartsOut; 3]) -> Vec<StageGenInfo> {
+fn stage_gen_infos_from_parts(parts: &[StagePartsOut; 3]) -> Vec<StageGenInfo> {
     const KEYS: [&str; 3] = ["train", "val", "test"];
     parts
-        .into_iter()
+        .iter()
         .enumerate()
         .map(|(i, p)| StageGenInfo {
             key: KEYS[i].to_string(),
             table_name: STAGE_TABLE_NAMES[i].to_string(),
-            parts: p.parts,
+            parts: p.parts.clone(),
             row_count: p.row_count,
             seed_time: p.seed_time,
         })
@@ -957,7 +957,7 @@ where
     };
 
     let stage_gen_infos: Option<Vec<StageGenInfo>> =
-        stage_parts.as_ref().map(|parts| stage_gen_infos_from_parts(parts.clone()));
+        stage_parts.as_ref().map(stage_gen_infos_from_parts);
 
     // Stats sidecar (kumo `tt_stats` envelope).
     let stats_path = write_stats_artifact(output_dir, &finalized_stats)?;
@@ -1008,17 +1008,18 @@ where
         },
     };
 
-    if matches!(plan.prediction_type, PredictionType::Forecasting) {
-        if let Some(parts) = stage_parts.as_ref() {
-            if let Some((path, sha)) =
-                crate::split_stats::write_forecasting_split_stats_artifact(output_dir, parts)?
-            {
-                manifest.split_stats = Some(ArtifactRef::new(
-                    path.to_string_lossy().into_owned(),
-                    SPLIT_STATS_FORMAT,
-                ));
-                manifest.checksums.split_stats_sha256 = Some(sha);
-            }
+    if let Some(parts) = stage_parts.as_ref() {
+        if let Some((path, sha)) = crate::split_stats::write_kumo_split_stats_artifact(
+            output_dir,
+            parts,
+            &plan.prediction_type,
+            target_stype_str.as_str(),
+        )? {
+            manifest.split_stats = Some(ArtifactRef::new(
+                path.to_string_lossy().into_owned(),
+                SPLIT_STATS_FORMAT,
+            ));
+            manifest.checksums.split_stats_sha256 = Some(sha);
         }
     }
 

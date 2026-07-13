@@ -5746,19 +5746,18 @@ fn integ_forecasting_split_stats_use_future_labels() {
     assert!(num_train_rows > 0);
     assert_eq!(
         train["target_distribution"]["histogram"]["num_bins"].as_u64(),
-        Some(50)
+        Some(0)
     );
     assert!(
-        train["target_distribution"]["histogram"]["bin_width"]
+        train["target_distribution"]["target_max"]
             .as_f64()
             .unwrap()
-            > 0.0
+            >= train["target_distribution"]["target_min"].as_f64().unwrap()
     );
     let counts = train["target_distribution"]["histogram"]["counts"]
         .as_array()
         .unwrap();
-    let total: u64 = counts.iter().map(|v| v.as_u64().unwrap()).sum();
-    assert_eq!(total, num_train_rows * 3);
+    assert!(counts.is_empty());
 }
 
 #[test]

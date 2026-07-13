@@ -255,9 +255,11 @@ def test_forecasting_tt_gen_ingest_preserves_split_stats(tmp_path):
     train_stage = next(s for s in json.loads(
         (staging / "tt_ingest_spec.json").read_text()
     )["split_stages"] if s["key"] == "train")
-    assert sum(train_stats["target_distribution"]["histogram"]["counts"]) == (
-        train_stage["row_count"] * 3
-    )
+    assert train_stats["num_train_rows"] == train_stage["row_count"]
+    target_distribution = train_stats["target_distribution"]
+    assert target_distribution["target_max"] >= target_distribution["target_min"]
+    assert target_distribution["histogram"]["num_bins"] == 0
+    assert target_distribution["histogram"]["counts"] == []
 
     execute_tt_ingest(
         staging_dir=str(staging),

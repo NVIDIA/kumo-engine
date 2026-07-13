@@ -33,8 +33,8 @@ use diskgraph_ingest::config::IngestOptions;
 use diskgraph_ingest::graph_config::*;
 use diskgraph_ingest::io::Dest;
 use diskgraph_train_table::manifest::{
-    read_manifest, sha256_file, ArtifactRef, SidecarRef, TTManifest, STATS_FORMAT,
-    TT_PARQUET_FORMAT,
+    read_manifest, sha256_file, ArtifactRef, SidecarRef, TTManifest, SPLIT_STATS_FORMAT,
+    STATS_FORMAT, TT_PARQUET_FORMAT,
 };
 use diskgraph_train_table::ttgen_executor::{
     execute_tt_pass, execute_tt_pass_with_source, CustomTtSource, TTPassOutput,
@@ -1986,11 +1986,7 @@ fn parquet_row_count(path: &Path) -> u64 {
     total
 }
 
-// ─── Phase 17: kumo-contract sidecar tests ──────────────────────────────────
-//
-// gen no longer produces `split_stats.json` (`manifest.split_stats` stays
-// `None`); per-stage row counts live in `stage_gen_infos` (tested above).
-// `train_table_col_stats.json` is still emitted — covered below.
+// ─── Kumo-contract sidecar tests ─────────────────────────────────────────────
 
 #[test]
 fn e2e_train_table_col_stats_emitted_when_payload_carries_data() {
@@ -2049,6 +2045,70 @@ fn e2e_train_table_col_stats_emitted_when_payload_carries_data() {
         manifest.checksums.train_table_col_stats_sha256.as_ref(),
         Some(&actual)
     );
+}
+
+#[test]
+fn e2e_split_stats_emitted_when_split_computed() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_e2e_graph(dir.path());
+    let mut plan = anchored_node_plan(vec![1000, 2000, 3000]);
+    plan.split = Some(time_range_split_spec(vec![
+        (0, 1500),
+        (1501, 2500),
+        (2501, 4000),
+    ]));
+
+    let out_dir = tempfile::tempdir().unwrap();
+    let output = execute_tt_pass(&plan, &index, out_dir.path()).unwrap();
+    assert_stage_infos_consistent(&output, out_dir.path());
+
+    let split_stats_path = out_dir.path().join("split_stats.json");
+    assert!(
+        split_stats_path.exists(),
+        "split_stats.json should be written when split stage parts are produced"
+    );
+
+    let raw = fs::read_to_string(&split_stats_path).unwrap();
+    let payload: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(payload["version"].as_u64(), Some(1));
+    assert_eq!(payload["kind"].as_str(), Some("tt_split_stats"));
+
+    let train = payload["train_table_stats"]
+        .as_object()
+        .expect("train_table_stats object");
+    assert_eq!(
+        train.get("num_train_rows").and_then(|v| v.as_u64()),
+        Some(stage_row_count(&output, "train")),
+    );
+    assert!(train.get("num_entities").and_then(|v| v.as_u64()).is_some());
+    assert!(train.get("num_targets").and_then(|v| v.as_u64()).is_some());
+    assert!(
+        train
+            .get("target_distribution")
+            .and_then(|v| v.get("histogram"))
+            .is_some(),
+        "numerical split stats should include a histogram"
+    );
+
+    for (stage_key, payload_key) in [("val", "val_table_stats"), ("test", "test_table_stats")] {
+        let row_count = stage_row_count(&output, stage_key);
+        if row_count == 0 {
+            assert!(payload[payload_key].is_null(), "{payload_key} should be null");
+        } else {
+            assert_eq!(
+                payload[payload_key]["num_train_rows"].as_u64(),
+                Some(row_count),
+                "{payload_key} row count should match stage_gen_infos"
+            );
+        }
+    }
+
+    let manifest = read_manifest(&output.manifest_path).unwrap();
+    let split_ref = manifest.split_stats.as_ref().expect("split_stats set");
+    assert_eq!(split_ref.format, SPLIT_STATS_FORMAT);
+    assert_eq!(split_ref.path, split_stats_path.to_string_lossy().as_ref());
+    let actual = sha256_file(&split_stats_path).unwrap();
+    assert_eq!(manifest.checksums.split_stats_sha256.as_ref(), Some(&actual));
 }
 
 #[test]

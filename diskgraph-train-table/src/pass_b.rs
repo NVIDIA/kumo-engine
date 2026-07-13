@@ -31,6 +31,7 @@ use crate::route::{
     LinkAssigner,
 };
 use crate::split_decider::SplitDecider;
+use crate::split_stats::{observe_pass_b_stage_batch, KumoStageStats};
 use diskgraph_core::time::UnitSystem;
 
 /// TIMESTAMP column name. Always present in tt.parquet; the router uses it for
@@ -47,7 +48,7 @@ pub const STAGE_TABLE_NAMES: [&str; 3] = ["train_seeds", "val_seeds", "test_seed
 
 /// One stage's fused-pass-B output: its relative part paths, total rows, and
 /// seed-time (min,max of the TIMESTAMP column over the stage's OUTPUT rows).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct StagePartsOut {
     /// Relative part paths, e.g. `["train_seeds/part-00000.parquet", ...]`,
     /// sorted by row-group index. Always at least one entry (a single
@@ -57,6 +58,7 @@ pub struct StagePartsOut {
     /// `(min, max)` of the stage's OUTPUT TIMESTAMP column in int64-ns, or
     /// `None` when the stage carried no finite timestamp (e.g. empty stage).
     pub seed_time: Option<[i64; 2]>,
+    pub(crate) split_stats: KumoStageStats,
 }
 
 /// Per-(row-group, stage) worker result.
@@ -65,6 +67,7 @@ struct WorkerStageResult {
     part: Option<String>,
     row_count: u64,
     seed_time: Option<(i64, i64)>,
+    split_stats: KumoStageStats,
 }
 
 /// Relative part path for a stage row-group, e.g.
@@ -155,6 +158,7 @@ where
                 merged[stage].parts.push(part);
             }
             merged[stage].row_count += ws.row_count;
+            merged[stage].split_stats.merge(ws.split_stats);
             if let Some((mn, mx)) = ws.seed_time {
                 merged[stage].seed_time = Some(match merged[stage].seed_time {
                     Some([emn, emx]) => [emn.min(mn), emx.max(mx)],
@@ -201,6 +205,7 @@ where
     let mut writers: [Option<ArrowWriter<File>>; 3] = [None, None, None];
     let mut counts: [u64; 3] = [0; 3];
     let mut seed_times: [Option<(i64, i64)>; 3] = [None, None, None];
+    let mut split_stats: [KumoStageStats; 3] = Default::default();
 
     let mut local_idx: u64 = 0;
     for batch_res in reader {
@@ -214,6 +219,7 @@ where
             }
             observe_seed_time(&sub, &mut seed_times[stage])?;
             counts[stage] += sub.num_rows() as u64;
+            observe_pass_b_stage_batch(&sub, &mut split_stats[stage])?;
             let writer = match writers[stage].as_mut() {
                 Some(w) => w,
                 None => {
@@ -231,9 +237,24 @@ where
 
     // Close any writers we opened; build the per-stage results.
     let mut out: [WorkerStageResult; 3] = [
-        WorkerStageResult { part: None, row_count: 0, seed_time: None },
-        WorkerStageResult { part: None, row_count: 0, seed_time: None },
-        WorkerStageResult { part: None, row_count: 0, seed_time: None },
+        WorkerStageResult {
+            part: None,
+            row_count: 0,
+            seed_time: None,
+            split_stats: KumoStageStats::default(),
+        },
+        WorkerStageResult {
+            part: None,
+            row_count: 0,
+            seed_time: None,
+            split_stats: KumoStageStats::default(),
+        },
+        WorkerStageResult {
+            part: None,
+            row_count: 0,
+            seed_time: None,
+            split_stats: KumoStageStats::default(),
+        },
     ];
     for stage in 0..3 {
         if let Some(w) = writers[stage].take() {
@@ -242,6 +263,7 @@ where
                 part: Some(part_rel_path(stage, rg_idx)),
                 row_count: counts[stage],
                 seed_time: seed_times[stage],
+                split_stats: std::mem::take(&mut split_stats[stage]),
             };
         }
     }
@@ -300,6 +322,7 @@ fn write_empty_stage_part(
         parts: vec![rel],
         row_count: 0,
         seed_time: None,
+        split_stats: KumoStageStats::default(),
     })
 }
 

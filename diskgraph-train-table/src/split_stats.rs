@@ -7,16 +7,19 @@
 //! folds them via `merge`. No sync primitives during workers.
 //!
 //! Buckets: `train / val / test / unused` = `0 / 1 / 2 / 3` (rows routed
-//! nowhere count as `unused`). [`build_split_stats_payload`] serializes to the
-//! `tt_split_stats_v1` JSON sidecar (currently unused by TT-NG gen, retained
-//! for the DG-main path).
+//! nowhere count as `unused`). [`write_kumo_split_stats_artifact`] writes the
+//! Kumo-facing `split_stats.json` sidecar from stats accumulated while pass B
+//! is already routing generated train/val/test seed parts; [`build_split_stats_payload`]
+//! is the older internal accumulator serializer retained for existing tests/helpers.
 
 use std::path::{Path, PathBuf};
 
 use arrow_array::{
-    Array, Float64Array, Int64Array, ListArray, RecordBatch, StringArray, TimestampNanosecondArray,
+    Array, BooleanArray, Float64Array, Int64Array, ListArray, RecordBatch, StringArray,
+    TimestampNanosecondArray,
 };
 use diskgraph_core::accumulators::{HyperLogLog, TDigestEstimator, WelfordAccumulator};
+use diskgraph_core::tt_builder::PredictionType;
 use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
 use parquet::arrow::ProjectionMask;
 use serde_json::{json, Value as JsonValue};
@@ -28,13 +31,24 @@ use crate::ttgen_resolve::FUTURE_LABELS_OUTPUT_ALIAS;
 
 const NUM_HISTOGRAM_BINS: usize = 50;
 const ENTITY_COL: &str = "ENTITY1";
+const TARGET_COL: &str = "TARGET1";
 
-struct KumoStageStats {
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum TargetStatsKind {
+    None,
+    Numerical,
+    Categorical,
+}
+
+pub(crate) struct KumoStageStats {
     row_count: u64,
     entity_hll: HyperLogLog,
     target_hll: HyperLogLog,
     target_welford: WelfordAccumulator,
     target_tdigest: TDigestEstimator,
+    target_observation_count: u64,
+    target_true_count: u64,
+    target_false_count: u64,
     timestamp_min: Option<i64>,
     timestamp_max: Option<i64>,
 }
@@ -47,17 +61,65 @@ impl Default for KumoStageStats {
             target_hll: HyperLogLog::new(),
             target_welford: WelfordAccumulator::new(),
             target_tdigest: TDigestEstimator::new(TDigestEstimator::DEFAULT_DELTA),
+            target_observation_count: 0,
+            target_true_count: 0,
+            target_false_count: 0,
             timestamp_min: None,
             timestamp_max: None,
         }
     }
 }
 
+impl std::fmt::Debug for KumoStageStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KumoStageStats")
+            .field("row_count", &self.row_count)
+            .field("num_entities", &(self.entity_hll.estimate() as u64))
+            .field("num_targets", &(self.target_hll.estimate() as u64))
+            .field("target_observation_count", &self.target_observation_count)
+            .field("target_true_count", &self.target_true_count)
+            .field("target_false_count", &self.target_false_count)
+            .field("timestamp_min", &self.timestamp_min)
+            .field("timestamp_max", &self.timestamp_max)
+            .finish()
+    }
+}
+
 impl KumoStageStats {
+    pub(crate) fn merge(&mut self, other: KumoStageStats) {
+        let KumoStageStats {
+            row_count,
+            entity_hll,
+            target_hll,
+            target_welford,
+            mut target_tdigest,
+            target_observation_count,
+            target_true_count,
+            target_false_count,
+            timestamp_min,
+            timestamp_max,
+        } = other;
+        self.row_count += row_count;
+        self.entity_hll.merge(&entity_hll);
+        self.target_hll.merge(&target_hll);
+        self.target_welford.merge(&target_welford);
+        self.target_tdigest.merge(&mut target_tdigest);
+        self.target_observation_count += target_observation_count;
+        self.target_true_count += target_true_count;
+        self.target_false_count += target_false_count;
+        if let Some(value) = timestamp_min {
+            self.timestamp_min = Some(self.timestamp_min.map_or(value, |v| v.min(value)));
+        }
+        if let Some(value) = timestamp_max {
+            self.timestamp_max = Some(self.timestamp_max.map_or(value, |v| v.max(value)));
+        }
+    }
+
     fn observe_target(&mut self, value: f64) {
         if !value.is_finite() {
             return;
         }
+        self.target_observation_count += 1;
         self.target_welford.observe(value);
         self.target_tdigest.observe(value);
         self.target_hll.observe_f64(value);
@@ -67,6 +129,226 @@ impl KumoStageStats {
         self.timestamp_min = Some(self.timestamp_min.map_or(value, |v| v.min(value)));
         self.timestamp_max = Some(self.timestamp_max.map_or(value, |v| v.max(value)));
     }
+
+    fn observe_bool_target(&mut self, value: bool) {
+        self.target_observation_count += 1;
+        if value {
+            self.target_true_count += 1;
+            self.target_hll.observe_i64(1);
+        } else {
+            self.target_false_count += 1;
+            self.target_hll.observe_i64(0);
+        }
+    }
+
+    fn observe_i64_target(&mut self, value: i64) {
+        self.target_observation_count += 1;
+        self.target_hll.observe_i64(value);
+    }
+
+    fn observe_string_target(&mut self, value: &str) {
+        self.target_observation_count += 1;
+        self.target_hll.observe_bytes(value.as_bytes());
+    }
+}
+
+pub fn write_kumo_split_stats_artifact(
+    output_dir: &Path,
+    stage_parts: &[StagePartsOut; 3],
+    prediction_type: &PredictionType,
+    target_stype: &str,
+) -> TTGenResult<Option<(PathBuf, String)>> {
+    if stage_parts.iter().all(|parts| parts.row_count == 0) {
+        return Ok(None);
+    }
+    if matches!(prediction_type, PredictionType::PassThrough) {
+        return Ok(None);
+    }
+
+    let target_kind = target_stats_kind(prediction_type, target_stype);
+    let payload = json!({
+        "version": 1,
+        "kind": "tt_split_stats",
+        "train_table_stats": stage_to_kumo_json_for_kind(
+            &stage_parts[0].split_stats,
+            true,
+            target_kind,
+        ),
+        "val_table_stats": stage_to_kumo_json_for_kind(
+            &stage_parts[1].split_stats,
+            false,
+            target_kind,
+        ),
+        "test_table_stats": stage_to_kumo_json_for_kind(
+            &stage_parts[2].split_stats,
+            false,
+            target_kind,
+        ),
+    });
+    let path = output_dir.join("split_stats.json");
+    let json = serde_json::to_string_pretty(&payload)
+        .map_err(|e| TTGenError::SystemError(format!("split-stats serialize: {e}")))?;
+    std::fs::write(&path, json)?;
+    let sha = sha256_file(&path)?;
+    Ok(Some((path, sha)))
+}
+
+fn target_stats_kind(prediction_type: &PredictionType, target_stype: &str) -> TargetStatsKind {
+    match prediction_type {
+        PredictionType::Link { .. } | PredictionType::PassThrough => TargetStatsKind::None,
+        PredictionType::Forecasting => TargetStatsKind::Numerical,
+        PredictionType::Node => match target_stype {
+            "numerical" => TargetStatsKind::Numerical,
+            _ => TargetStatsKind::Categorical,
+        },
+    }
+}
+
+pub(crate) fn observe_pass_b_stage_batch(
+    batch: &RecordBatch,
+    stats: &mut KumoStageStats,
+) -> TTGenResult<()> {
+    stats.row_count += batch.num_rows() as u64;
+    observe_entities(batch, stats)?;
+    observe_timestamps(batch, stats)?;
+    if let Some((idx, _)) = batch.schema_ref().column_with_name(TARGET_COL) {
+        observe_target_array(batch.column(idx).as_ref(), stats)?;
+    } else if let Some((idx, _)) = batch
+        .schema_ref()
+        .column_with_name(FUTURE_LABELS_OUTPUT_ALIAS)
+    {
+        observe_target_array(batch.column(idx).as_ref(), stats)?;
+    }
+    Ok(())
+}
+
+fn observe_target_array(arr: &dyn Array, stats: &mut KumoStageStats) -> TTGenResult<()> {
+    if let Some(a) = arr.as_any().downcast_ref::<Float64Array>() {
+        for i in 0..a.len() {
+            if !a.is_null(i) {
+                stats.observe_target(a.value(i));
+            }
+        }
+        return Ok(());
+    }
+    if let Some(a) = arr.as_any().downcast_ref::<Int64Array>() {
+        for i in 0..a.len() {
+            if !a.is_null(i) {
+                let value = a.value(i);
+                stats.observe_i64_target(value);
+                stats.target_welford.observe(value as f64);
+                stats.target_tdigest.observe(value as f64);
+            }
+        }
+        return Ok(());
+    }
+    if let Some(a) = arr.as_any().downcast_ref::<BooleanArray>() {
+        for i in 0..a.len() {
+            if !a.is_null(i) {
+                stats.observe_bool_target(a.value(i));
+            }
+        }
+        return Ok(());
+    }
+    if let Some(a) = arr.as_any().downcast_ref::<StringArray>() {
+        for i in 0..a.len() {
+            if !a.is_null(i) {
+                stats.observe_string_target(a.value(i));
+            }
+        }
+        return Ok(());
+    }
+    if let Some(list) = arr.as_any().downcast_ref::<ListArray>() {
+        for row in 0..list.len() {
+            if list.is_null(row) {
+                continue;
+            }
+            observe_target_array(list.value(row).as_ref(), stats)?;
+        }
+        return Ok(());
+    }
+    Err(TTGenError::SchemaError(format!(
+        "unsupported target dtype for split stats: {:?}",
+        arr.data_type()
+    )))
+}
+
+fn stage_to_kumo_json_for_kind(
+    stats: &KumoStageStats,
+    required: bool,
+    target_kind: TargetStatsKind,
+) -> JsonValue {
+    if stats.row_count == 0 && !required {
+        return JsonValue::Null;
+    }
+    let target_distribution = match target_kind {
+        TargetStatsKind::None => JsonValue::Null,
+        TargetStatsKind::Numerical if stats.target_welford.count > 0 => {
+            numerical_target_distribution(stats)
+        }
+        TargetStatsKind::Numerical | TargetStatsKind::Categorical => {
+            binary_target_distribution(stats).unwrap_or_else(|| json!({}))
+        }
+    };
+    let num_targets = match target_kind {
+        TargetStatsKind::None => JsonValue::Null,
+        _ if stats.target_observation_count > 0 => {
+            json!(stats.target_hll.estimate() as u64)
+        }
+        _ => JsonValue::Null,
+    };
+    json!({
+        "num_train_rows": stats.row_count,
+        "num_entities": stats.entity_hll.estimate() as u64,
+        "num_targets": num_targets,
+        "min_date": stats.timestamp_min.map(ns_to_iso),
+        "max_date": stats.timestamp_max.map(ns_to_iso),
+        "anchor_date": stats.timestamp_min.map(ns_to_iso),
+        "target_distribution": target_distribution,
+    })
+}
+
+fn binary_target_distribution(stats: &KumoStageStats) -> Option<JsonValue> {
+    let total = stats.target_true_count + stats.target_false_count;
+    if total == 0 {
+        return None;
+    }
+    Some(json!({
+        "count": {
+            "false": stats.target_false_count,
+            "true": stats.target_true_count,
+        },
+        "percentage": {
+            "false": stats.target_false_count as f64 * 100.0 / total as f64,
+            "true": stats.target_true_count as f64 * 100.0 / total as f64,
+        },
+    }))
+}
+
+fn numerical_target_distribution(stats: &KumoStageStats) -> JsonValue {
+    let mut td = stats.target_tdigest.clone();
+    let p25 = td.quantile_at(0.25);
+    let p50 = td.quantile_at(0.50);
+    let p75 = td.quantile_at(0.75);
+    let min = stats.target_welford.min;
+    let max = stats.target_welford.max;
+    json!({
+        "target_mean": stats.target_welford.mean(),
+        "target_min": min,
+        "target_max": max,
+        "target_percentile_25": p25,
+        "target_percentile_75": p75,
+        "target_median": p50,
+        "target_mode": min,
+        "target_mode_percentage": 0.0,
+        "target_mode_count": 0,
+        "histogram": {
+            "bins": JsonValue::Array(Vec::new()),
+            "counts": JsonValue::Array(Vec::new()),
+            "bin_width": 0.0,
+            "num_bins": 0,
+        },
+    })
 }
 
 pub fn write_forecasting_split_stats_artifact(
@@ -245,10 +527,7 @@ fn build_stage_histogram(
     let min = stats.target_welford.min;
     let width = histogram_bin_width(stats);
     for part in &parts.parts {
-        let reader = projected_reader(
-            &output_dir.join(part),
-            &[FUTURE_LABELS_OUTPUT_ALIAS],
-        )?;
+        let reader = projected_reader(&output_dir.join(part), &[FUTURE_LABELS_OUTPUT_ALIAS])?;
         for batch in reader {
             let batch = batch.map_err(|e| TTGenError::Parquet(e.to_string()))?;
             let idx = batch
@@ -271,19 +550,13 @@ fn build_stage_histogram(
     Ok(counts)
 }
 
-fn projected_reader(
-    path: &Path,
-    columns: &[&str],
-) -> TTGenResult<ParquetRecordBatchReader> {
+fn projected_reader(path: &Path, columns: &[&str]) -> TTGenResult<ParquetRecordBatchReader> {
     let file = std::fs::File::open(path)?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
     let mut indices = Vec::with_capacity(columns.len());
     for col in columns {
         let idx = builder.schema().index_of(col).map_err(|_| {
-            TTGenError::SchemaError(format!(
-                "split stats require {col} in {}",
-                path.display()
-            ))
+            TTGenError::SchemaError(format!("split stats require {col} in {}", path.display()))
         })?;
         indices.push(idx);
     }
@@ -647,6 +920,213 @@ fn column_to_json(col: &ColumnAccumulator) -> JsonValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use arrow_array::builder::{ListBuilder, StringBuilder};
+    use arrow_array::{
+        BooleanArray, Float64Array, Int64Array, RecordBatch, TimestampNanosecondArray,
+    };
+    use arrow_schema::{DataType, Field, Schema, TimeUnit};
+    use diskgraph_core::tt_builder::PredictionType;
+
+    fn bool_target_batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(ENTITY_COL, DataType::Int64, false),
+            Field::new(
+                TIMESTAMP_COL,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new(TARGET_COL, DataType::Boolean, true),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 2])),
+                Arc::new(TimestampNanosecondArray::from(vec![
+                    0,
+                    1_000_000_000,
+                    2_000_000_000,
+                ])),
+                Arc::new(BooleanArray::from(vec![true, false, true])),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn multilabel_target_batch() -> RecordBatch {
+        let mut target_builder = ListBuilder::new(StringBuilder::new());
+        for labels in [&["a", "b"][..], &[][..], &["a"][..]] {
+            for label in labels {
+                target_builder.values().append_value(label);
+            }
+            target_builder.append(true);
+        }
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(ENTITY_COL, DataType::Int64, false),
+            Field::new(
+                TIMESTAMP_COL,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new(
+                TARGET_COL,
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+                true,
+            ),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 3])),
+                Arc::new(TimestampNanosecondArray::from(vec![
+                    0,
+                    1_000_000_000,
+                    2_000_000_000,
+                ])),
+                Arc::new(target_builder.finish()),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn one_stage_parts(split_stats: KumoStageStats) -> [StagePartsOut; 3] {
+        let row_count = split_stats.row_count;
+        let seed_time = [
+            split_stats.timestamp_min.unwrap(),
+            split_stats.timestamp_max.unwrap(),
+        ];
+        [
+            StagePartsOut {
+                parts: vec!["train_seeds/part-00000.parquet".to_string()],
+                row_count,
+                seed_time: Some(seed_time),
+                split_stats,
+            },
+            StagePartsOut::default(),
+            StagePartsOut::default(),
+        ]
+    }
+
+    #[test]
+    fn test_write_kumo_split_stats_artifact_binary_distribution() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stats = KumoStageStats::default();
+        observe_pass_b_stage_batch(&bool_target_batch(), &mut stats).unwrap();
+        let parts = one_stage_parts(stats);
+
+        let (path, _) = write_kumo_split_stats_artifact(
+            dir.path(),
+            &parts,
+            &PredictionType::Node,
+            "categorical",
+        )
+        .unwrap()
+        .expect("split stats written");
+        let payload: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let train = &payload["train_table_stats"];
+        assert_eq!(train["num_train_rows"].as_u64(), Some(3));
+        assert_eq!(train["num_entities"].as_u64(), Some(2));
+        assert_eq!(train["num_targets"].as_u64(), Some(2));
+        assert_eq!(
+            train["target_distribution"]["count"]["true"].as_u64(),
+            Some(2)
+        );
+        assert_eq!(
+            train["target_distribution"]["count"]["false"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            train["target_distribution"]["percentage"]["true"].as_f64(),
+            Some(200.0 / 3.0)
+        );
+        assert_eq!(
+            train["target_distribution"]["percentage"]["false"].as_f64(),
+            Some(100.0 / 3.0)
+        );
+        assert!(payload["val_table_stats"].is_null());
+        assert!(payload["test_table_stats"].is_null());
+    }
+
+    #[test]
+    fn test_write_kumo_split_stats_artifact_multilabel_bounded_distribution() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stats = KumoStageStats::default();
+        observe_pass_b_stage_batch(&multilabel_target_batch(), &mut stats).unwrap();
+        let parts = one_stage_parts(stats);
+
+        let (path, _) = write_kumo_split_stats_artifact(
+            dir.path(),
+            &parts,
+            &PredictionType::Node,
+            "multicategorical",
+        )
+        .unwrap()
+        .expect("split stats written");
+        let payload: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let train = &payload["train_table_stats"];
+        assert_eq!(train["num_targets"].as_u64(), Some(2));
+        assert_eq!(
+            train["target_distribution"].as_object().map(|v| v.len()),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn test_write_kumo_split_stats_artifact_numerical_distribution() {
+        let dir = tempfile::tempdir().unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(ENTITY_COL, DataType::Int64, false),
+            Field::new(
+                TIMESTAMP_COL,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new(TARGET_COL, DataType::Float64, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![1, 2, 3])),
+                Arc::new(TimestampNanosecondArray::from(vec![
+                    0,
+                    1_000_000_000,
+                    2_000_000_000,
+                ])),
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+            ],
+        )
+        .unwrap();
+        let mut stats = KumoStageStats::default();
+        observe_pass_b_stage_batch(&batch, &mut stats).unwrap();
+        let parts = one_stage_parts(stats);
+
+        let (path, _) =
+            write_kumo_split_stats_artifact(dir.path(), &parts, &PredictionType::Node, "numerical")
+                .unwrap()
+                .expect("split stats written");
+        let payload: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let train = &payload["train_table_stats"];
+        assert_eq!(
+            train["target_distribution"]["target_mean"].as_f64(),
+            Some(2.0)
+        );
+        assert_eq!(
+            train["target_distribution"]["target_min"].as_f64(),
+            Some(1.0)
+        );
+        assert_eq!(
+            train["target_distribution"]["target_max"].as_f64(),
+            Some(3.0)
+        );
+        assert_eq!(
+            train["target_distribution"]["histogram"]["num_bins"].as_u64(),
+            Some(0)
+        );
+    }
 
     #[test]
     fn test_column_accumulator_observe_basic() {
