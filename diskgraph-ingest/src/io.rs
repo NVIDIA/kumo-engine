@@ -421,16 +421,20 @@ fn expand_local_data_paths(dir_path: &str) -> Result<(DataSource, u64)> {
     let mut parquet_files: Vec<String> = Vec::new();
     let mut csv_files: Vec<String> = Vec::new();
     let mut total_bytes: u64 = 0;
-    for entry in fs::read_dir(path).with_context(|| format!("Failed to read directory {dir_path}"))? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name_str = name.to_str().unwrap_or("").to_owned();
-        let file_path = entry.path().to_string_lossy().into_owned();
-        if name_str.ends_with(".parquet") {
-            total_bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
+    let mut files = Vec::new();
+    walk_local_files(
+        path,
+        path,
+        &std::collections::HashSet::new(),
+        &mut files,
+    )?;
+    for (_, file_path, size) in files {
+        let file_path = file_path.to_string_lossy().into_owned();
+        if file_path.ends_with(".parquet") {
+            total_bytes += size;
             parquet_files.push(file_path);
-        } else if name_str.ends_with(".csv") {
-            total_bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
+        } else if file_path.ends_with(".csv") {
+            total_bytes += size;
             csv_files.push(file_path);
         }
     }
@@ -1430,8 +1434,10 @@ mod tests {
     #[test]
     fn test_expand_local_parquet_dir() {
         let dir = tempdir().unwrap();
-        touch(dir.path(), "b.parquet");
         touch(dir.path(), "a.parquet");
+        let partition = dir.path().join("year=2025");
+        fs::create_dir_all(&partition).unwrap();
+        touch(&partition, "b.parquet");
         touch(dir.path(), "ignore.txt");
         let result = expand_local_data_paths(dir.path().to_str().unwrap()).unwrap();
         assert!(matches!(result.0, DataSource::Parquet { .. }));
@@ -1458,7 +1464,9 @@ mod tests {
     fn test_expand_local_mixed_dir_errors() {
         let dir = tempdir().unwrap();
         touch(dir.path(), "a.parquet");
-        touch(dir.path(), "b.csv");
+        let partition = dir.path().join("year=2025");
+        fs::create_dir(&partition).unwrap();
+        touch(&partition, "b.csv");
         let err = expand_local_data_paths(dir.path().to_str().unwrap()).unwrap_err();
         assert!(err.to_string().contains("both .parquet and .csv"));
     }
