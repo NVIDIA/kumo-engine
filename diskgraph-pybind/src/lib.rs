@@ -1156,16 +1156,21 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
 /// side.
 ///
 /// Row groups are processed in parallel (rayon); category counts use the
-/// memory-bounded Hybrid strategy. The parquet is read once — the full and
-/// min variants are both derived from that single pass.
+/// memory-bounded Hybrid strategy. Scalar and category statistics are computed
+/// in a first pass, then exact numerical and timestamp distributions in a
+/// second pass. The full and min variants share the accumulated statistics.
 ///
 /// Args:
 ///     parquet_paths: list of parquet file paths (single file or all parts
 ///         of a part-*.parquet directory).
 ///     kumo_column_specs_json: JSON list of ``{"name", "stype", "dtype"}``
 ///         records (optional ``"timestamp_unit"``: ``"s"``/``"ms"``/``"us"``/
-///         ``"ns"``), in parquet-schema order. Mapped via the same
-///         ``map_kumo_stype`` / ``map_kumo_dtype`` ingest uses.
+///         ``"ns"``). Each spec's ``name`` is matched to its physical parquet
+///         column by name, so the list order need not match the parquet
+///         schema. A spec name absent from the parquet, or an Arrow type
+///         incompatible with the declared ``dtype``, raises
+///         ``DiskgraphDataError``. Mapped via the same ``map_kumo_stype`` /
+///         ``map_kumo_dtype`` ingest uses.
 ///     data_version: version string stamped into every emitted entry.
 ///
 /// Returns ``(full_json, min_json)`` — the full ``kumo_col_stats_v1`` map and
@@ -1236,9 +1241,12 @@ fn compute_col_stats_for_parquet(
             paths_owned.iter().map(std::path::Path::new).collect();
         compute_parquet_col_stats(&paths, &columns, &data_version)
     })
-    .map_err(|e| {
-        DiskgraphSystemError::new_err(format!("compute_col_stats_for_parquet failed: {e:#}"))
-    })
+    // Route through `map_anyhow_err` so a name/type-mismatch surfaced by
+    // `resolve_parquet_indices` (message carries "schema error" / "type
+    // mismatch") is classified as `DiskgraphDataError`, not a blanket
+    // system error. Unclassified payloads still fall through to
+    // `DiskgraphSystemError`.
+    .map_err(map_anyhow_err)
 }
 
 /// Verify a local snapshot directory matches its ``_MANIFEST.json``.
