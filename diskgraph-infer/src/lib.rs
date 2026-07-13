@@ -375,7 +375,10 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
     convert_inferred_fkeys_to_fkeyspecs(&mut table_specs, &inferred_fkeys);
 
     let total_bytes: u64 = tables.iter().map(|table| table.total_bytes).sum();
-    let num_shards = estimate_num_shards(total_bytes);
+    // Route num_shards through ingest's cgroup-aware sizing so the config pinned here
+    // honors the cgroup memory limit (more, smaller shards that fit the slice).
+    let num_shards =
+        diskgraph_ingest::config_converter::inference::estimate_num_shards(total_bytes);
     let metadata = GraphConfig {
         dataset_name: root_dataset_name(root),
         tables: table_specs,
@@ -420,72 +423,6 @@ fn root_dataset_name(root: &RootSource) -> String {
                     .to_string()
             }
         }
-    }
-}
-
-fn estimate_num_shards(total_bytes: u64) -> usize {
-    if total_bytes == 0 {
-        return 1;
-    }
-    let shard_bytes = shard_target_bytes(total_bytes);
-    total_bytes.div_ceil(shard_bytes) as usize
-}
-
-fn shard_target_bytes(total_bytes: u64) -> u64 {
-    const FALLBACK_SHARD_BYTES: u64 = 1024 * 1024 * 1024;
-    let mem_total = read_system_memory_bytes();
-    let cpu_count = std::thread::available_parallelism()
-        .ok()
-        .map(|n| n.get() as u64);
-    match (mem_total, cpu_count) {
-        (Some(mem_total), Some(cpu_count)) if cpu_count > 0 => {
-            let per_cpu = mem_total / cpu_count;
-            let target = smooth_shard_target(per_cpu, total_bytes);
-            if target == 0 {
-                FALLBACK_SHARD_BYTES
-            } else {
-                target
-            }
-        }
-        _ => FALLBACK_SHARD_BYTES,
-    }
-}
-
-fn smooth_shard_target(per_cpu_bytes: u64, total_bytes: u64) -> u64 {
-    let total_gb = total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-    let divisor = if total_gb <= 40.0 {
-        let t = ((total_gb - 10.0) / 30.0).clamp(0.0, 1.0);
-        let smooth = t * t * (3.0 - 2.0 * t);
-        16.0 - 12.0 * smooth
-    } else if total_gb <= 1024.0 {
-        let t = ((total_gb - 40.0) / (1024.0 - 40.0)).clamp(0.0, 1.0);
-        let smooth = t * t * (3.0 - 2.0 * t);
-        4.0 - 3.0 * smooth
-    } else if total_gb <= 10_240.0 {
-        let t = ((total_gb - 1024.0) / (10_240.0 - 1024.0)).clamp(0.0, 1.0);
-        let smooth = t * t * (3.0 - 2.0 * t);
-        1.0 - 0.5 * smooth
-    } else {
-        0.75
-    };
-    (per_cpu_bytes as f64 / divisor).round() as u64
-}
-
-fn read_system_memory_bytes() -> Option<u64> {
-    #[cfg(target_os = "linux")]
-    {
-        let contents = std::fs::read_to_string("/proc/meminfo").ok()?;
-        for line in contents.lines() {
-            if let Some(rest) = line.strip_prefix("MemTotal:") {
-                let kb = rest.split_whitespace().next()?.parse::<u64>().ok()?;
-                return kb.checked_mul(1024);
-            }
-        }
-        None
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        None
     }
 }
 

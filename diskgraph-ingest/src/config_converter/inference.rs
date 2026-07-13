@@ -473,21 +473,33 @@ pub fn compute_total_bytes(
     Ok(total)
 }
 
-/// Sum file sizes in a local directory or single file.
-fn compute_local_dir_bytes(dir_path: &str) -> u64 {
+/// Sum file sizes under a local directory (recursing into subdirectories) or a single file.
+///
+/// Partitioned datasets nest their parquet files under subdirectories (e.g.
+/// `dt=.../part-*.parquet`), so a non-recursive sum would measure near-0 and under-shard.
+pub(crate) fn compute_local_dir_bytes(dir_path: &str) -> u64 {
+    let dir_path = dir_path.trim_start_matches("file://");
     let dir_path = dir_path.trim_end_matches('/');
-    let entries = match std::fs::read_dir(dir_path) {
+    match std::fs::metadata(dir_path) {
+        Ok(meta) if meta.is_file() => meta.len(),
+        Ok(_) => sum_dir_bytes_recursive(std::path::Path::new(dir_path)),
+        Err(_) => 0,
+    }
+}
+
+/// Recursively sum the sizes of all files under `path`.
+fn sum_dir_bytes_recursive(path: &std::path::Path) -> u64 {
+    let entries = match std::fs::read_dir(path) {
         Ok(entries) => entries,
-        Err(_) => {
-            // Maybe it's a single file, not a directory
-            return std::fs::metadata(dir_path).map(|m| m.len()).unwrap_or(0);
-        }
+        Err(_) => return 0,
     };
     let mut total: u64 = 0;
     for entry in entries.flatten() {
         if let Ok(meta) = entry.metadata() {
-            if meta.is_file() {
-                total += meta.len();
+            if meta.is_dir() {
+                total = total.saturating_add(sum_dir_bytes_recursive(&entry.path()));
+            } else {
+                total = total.saturating_add(meta.len());
             }
         }
     }
@@ -524,23 +536,43 @@ pub fn estimate_num_shards(total_bytes: u64) -> usize {
 /// Calculate the target size (in bytes) for a single shard.
 ///
 /// If system memory or CPU count cannot be determined, it falls back to a safe default (1 GB).
+///
+/// Memory is cgroup-aware. Shard sizing deliberately uses CPU *capacity*
+/// (the affinity/cpuset mask) rather than the CFS ``cpu.max`` quota. A lower
+/// CPU bandwidth quota must reduce worker pools, but it must not create
+/// fewer/larger shards and weaken the memory-safety floor. When there is no
+/// cgroup limit these reduce to the host values.
 fn shard_target_bytes(total_bytes: u64) -> u64 {
     const FALLBACK_SHARD_BYTES: u64 = 1024 * 1024 * 1024; // 1 GB
-    let mem_total = read_system_memory_bytes();
-    let cpu_count = std::thread::available_parallelism()
-        .ok()
-        .map(|n| n.get() as u64);
-    match (mem_total, cpu_count) {
-        (Some(mem_total), Some(cpu_count)) if cpu_count > 0 => {
-            let per_cpu = mem_total / cpu_count;
-            let target = smooth_shard_target(per_cpu, total_bytes);
-            if target == 0 {
-                FALLBACK_SHARD_BYTES
-            } else {
-                target
-            }
-        }
-        _ => FALLBACK_SHARD_BYTES,
+    // total_memory_bytes() = min(host MemTotal, memory.max on this process's
+    // own cgroup path). cpu_capacity_parallelism() honors CPU affinity/cpuset
+    // while intentionally ignoring cpu.max bandwidth quota for shard sizing.
+    let mem_total = crate::total_memory_bytes().or_else(read_system_memory_bytes);
+    let capacity_parallelism = crate::cpu_capacity_parallelism() as u64;
+    match mem_total {
+        Some(mem_total) => shard_target_bytes_for_capacity(
+            mem_total,
+            capacity_parallelism,
+            total_bytes,
+        ),
+        None => FALLBACK_SHARD_BYTES,
+    }
+}
+
+fn shard_target_bytes_for_capacity(
+    mem_total: u64,
+    capacity_parallelism: u64,
+    total_bytes: u64,
+) -> u64 {
+    const FALLBACK_SHARD_BYTES: u64 = 1024 * 1024 * 1024;
+    if capacity_parallelism == 0 {
+        return FALLBACK_SHARD_BYTES;
+    }
+    let target = smooth_shard_target(mem_total / capacity_parallelism, total_bytes);
+    if target == 0 {
+        FALLBACK_SHARD_BYTES
+    } else {
+        target
     }
 }
 
@@ -1117,6 +1149,93 @@ mod tests {
     }
 
     #[test]
+    fn test_effective_memory_never_exceeds_host() {
+        // total_memory_bytes() = min(host, cgroup) and must be <= host MemTotal. This
+        // guards the primary cgroup fix that feeds shard sizing.
+        if let (Some(eff), Some(host)) = (crate::total_memory_bytes(), read_system_memory_bytes())
+        {
+            assert!(
+                eff <= host,
+                "effective mem {eff} must not exceed host mem {host}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_effective_parallelism_never_exceeds_capacity() {
+        let eff = crate::effective_parallelism();
+        let capacity = crate::cpu_capacity_parallelism();
+        assert!(
+            eff <= capacity,
+            "effective cpus {eff} must not exceed affinity capacity {capacity}"
+        );
+        assert!(eff >= 1);
+        #[cfg(target_os = "linux")]
+        if let Some(quota) = crate::read_cgroup_cpu_quota() {
+            if quota < capacity {
+                assert_eq!(eff, quota.max(1));
+            }
+        }
+    }
+
+    #[test]
+    fn test_smaller_cgroup_mem_yields_more_shards() {
+        // Sizing shards for a smaller memory slice must produce >= as many shards as a
+        // larger one (smaller shards). Uses smooth_shard_target directly to simulate the
+        // per-cpu memory that shrinks with a memory cgroup.
+        let total = 182 * GB; // ~DoorDash source size
+        let cpus = 64u64;
+        let host_per_cpu = 497 * GB / cpus;
+        let cgroup_per_cpu = 128 * GB / cpus;
+        let host_shard = smooth_shard_target(host_per_cpu, total);
+        let cgroup_shard = smooth_shard_target(cgroup_per_cpu, total);
+        assert!(
+            cgroup_shard < host_shard,
+            "cgroup shard {cgroup_shard} should be smaller than host shard {host_shard}"
+        );
+        let host_shards = total.div_ceil(host_shard);
+        let cgroup_shards = total.div_ceil(cgroup_shard);
+        assert!(
+            cgroup_shards > host_shards,
+            "cgroup should plan more shards: {cgroup_shards} vs {host_shards}"
+        );
+    }
+
+    #[test]
+    fn test_cpu_quota_does_not_weaken_memory_shard_floor() {
+        let total = 182 * GB;
+        let memory = 128 * GB;
+        let capacity_parallelism = 64;
+        let target = shard_target_bytes_for_capacity(
+            memory,
+            capacity_parallelism,
+            total,
+        );
+        let expected_shards = total.div_ceil(target);
+
+        // Worker quotas affect effective_parallelism(), not the memory-driven
+        // shard target. Keep the shard floor fixed throughout a CPU sweep.
+        for worker_quota in [64u64, 32, 16, 8, 4] {
+            assert!(worker_quota <= capacity_parallelism);
+            let actual = total.div_ceil(shard_target_bytes_for_capacity(
+                memory,
+                capacity_parallelism,
+                total,
+            ));
+            assert_eq!(actual, expected_shards);
+        }
+
+        // Guard the exact old failure mode: substituting an 8-core cpu.max
+        // quota for capacity would plan fewer, larger shards.
+        let quota_sized = total.div_ceil(shard_target_bytes_for_capacity(
+            memory,
+            8,
+            total,
+        ));
+        assert!(quota_sized < expected_shards);
+    }
+
+    #[test]
     fn test_smooth_shard_target_small() {
         let per_cpu = 2 * GB; // 2GB per core
                               // Case: 10GB total (Start of small range)
@@ -1448,5 +1567,58 @@ mod tests {
             MulticatDelimiterDecision::Winner(",") => {}
             other => panic!("expected Winner(\",\"), got {:?}", other),
         }
+    }
+
+    fn write_file(path: &std::path::Path, size: usize) {
+        std::fs::write(path, vec![0u8; size]).unwrap();
+    }
+
+    #[test]
+    fn test_local_dir_bytes_flat_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(&dir.path().join("a.parquet"), 100);
+        write_file(&dir.path().join("b.parquet"), 250);
+        assert_eq!(
+            compute_local_dir_bytes(dir.path().to_str().unwrap()),
+            350
+        );
+    }
+
+    #[test]
+    fn test_local_dir_bytes_nested_partitions() {
+        let dir = tempfile::tempdir().unwrap();
+        let p1 = dir.path().join("dt=2020-01-01");
+        let p2 = dir.path().join("dt=2020-01-02");
+        std::fs::create_dir_all(&p1).unwrap();
+        std::fs::create_dir_all(&p2).unwrap();
+        write_file(&dir.path().join("top.parquet"), 10);
+        write_file(&p1.join("part-0.parquet"), 100);
+        write_file(&p1.join("part-1.parquet"), 200);
+        write_file(&p2.join("part-0.parquet"), 300);
+        // Sum of all nested files, not just the top-level file.
+        assert_eq!(
+            compute_local_dir_bytes(dir.path().to_str().unwrap()),
+            610
+        );
+    }
+
+    #[test]
+    fn test_local_dir_bytes_single_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("data.parquet");
+        write_file(&file, 512);
+        assert_eq!(compute_local_dir_bytes(file.to_str().unwrap()), 512);
+    }
+
+    #[test]
+    fn test_local_dir_bytes_file_scheme_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(&dir.path().join("a.parquet"), 128);
+        let bare = dir.path().to_str().unwrap();
+        let with_scheme = format!("file://{bare}");
+        assert_eq!(
+            compute_local_dir_bytes(&with_scheme),
+            compute_local_dir_bytes(bare)
+        );
     }
 }

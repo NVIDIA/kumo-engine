@@ -1273,6 +1273,12 @@ fn verify_snapshot_integrity(py: Python<'_>, output_dir: &str) -> PyResult<()> {
 fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let _ = pyo3_log::try_init();
     let _ = tracing_log::LogTracer::init();
+    // Cap otherwise-global rayon users (col stats, TT-gen, pass-B) to
+    // cpu.max. Ignore the error only when another owner initialized the
+    // process-global pool first; dedicated ingest pools are capped separately.
+    let _ = rayon::ThreadPoolBuilder::new()
+        .num_threads(diskgraph_ingest::effective_parallelism())
+        .build_global();
     m.add("DiskgraphDataError", m.py().get_type::<DiskgraphDataError>())?;
     m.add("DiskgraphConfigError", m.py().get_type::<DiskgraphConfigError>())?;
     m.add("DiskgraphSystemError", m.py().get_type::<DiskgraphSystemError>())?;

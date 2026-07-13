@@ -150,6 +150,20 @@ pub fn ingest_with_stats(
     ingest_with_stats_from_source(source, Some(base_dir), output, dest, options, None, None)
 }
 
+fn choose_ingest_num_shards(pinned: Option<usize>, memory_floor: usize) -> usize {
+    pinned.unwrap_or(0).max(memory_floor).max(1)
+}
+
+fn table_sized_bytes(
+    declared: Option<u64>,
+    compute_local_bytes: impl FnOnce() -> u64,
+) -> u64 {
+    match declared {
+        Some(bytes) if bytes > 0 => bytes,
+        _ => compute_local_bytes(),
+    }
+}
+
 /// Run ingest end-to-end.
 ///
 /// `output_dataplane_dir` (optional) is the fully-resolved dataplane
@@ -219,6 +233,54 @@ pub fn ingest_with_stats_from_source(
     // same pass) or was loaded directly from JSON. Idempotent. See
     // kumo-ai/kumo#28478.
     source.normalize_multicat_pseudo_list();
+    // Size num_shards in the process that spends the per-shard PK-map/MPHF
+    // memory. An upstream conversion may have pinned a host-sized value in a
+    // different cgroup, so the ingest process takes the maximum of that pin
+    // and its own memory-derived floor.
+    let sized_bytes: u64 = source
+        .tables
+        .iter()
+        .map(|table| {
+            table_sized_bytes(table.source_size, || {
+                table
+                    .get_paths()
+                    .iter()
+                    .filter(|path| !path.contains("://"))
+                    .map(|path| {
+                        crate::config_converter::inference::compute_local_dir_bytes(path)
+                    })
+                    .sum()
+            })
+        })
+        .sum();
+    let memory_floor = if sized_bytes > 0 {
+        crate::config_converter::inference::estimate_num_shards(sized_bytes)
+    } else {
+        tracing::warn!(
+            pinned = source.num_shards.unwrap_or(0),
+            "cannot derive ingest-cgroup shard floor: no source_size or resolved local bytes"
+        );
+        1
+    };
+    let pinned = source.num_shards;
+    let chosen = choose_ingest_num_shards(pinned, memory_floor);
+    tracing::info!(
+        pinned = pinned.unwrap_or(0),
+        memory_floor,
+        num_shards = chosen,
+        sized_bytes,
+        cgroup_mem_bytes = total_memory_bytes().unwrap_or(0),
+        worker_threads = default_worker_threads(),
+        "resolved num_shards to ingest cgroup budget"
+    );
+    if pinned.is_some() && pinned != Some(chosen) {
+        tracing::warn!(
+            pinned = pinned.unwrap_or(0),
+            chosen,
+            "overriding pinned num_shards: too few for this ingest cgroup's memory budget"
+        );
+    }
+    source.num_shards = Some(chosen);
     // Validate explicit multicategorical delimiters even on direct DiskGraph
     // configs (not just kumo→diskgraph converted ones). Pre-#28478 a wrong
     // delimiter would silently produce one-token tokenization downstream;
@@ -4948,8 +5010,26 @@ impl IngestContext {
                             if budget_total == 0 || estimate == 0 {
                                 None
                             } else {
-                                let request = estimate.min(budget_total);
-                                Some(budget.acquire(request)?)
+                                // A single shard whose PK-map estimate exceeds the whole
+                                // budget cannot be made to fit by halving threads (threads
+                                // don't shrink a shard), so retrying the same shard is
+                                // futile. Surface a permanent, actionable anyhow error
+                                // (rc=1 → ingest_runner classifies as "fatal"/
+                                // non-retryable) instead of letting `acquire` fail via
+                                // `panic!` (rc=134), which the runner would treat as
+                                // OOM-class and retry with halved threads to exhaustion.
+                                // With cgroup-aware shard sizing this should be rare.
+                                if estimate > budget_total {
+                                    anyhow::bail!(
+                                        "single-shard PK-map estimate {estimate} B exceeds \
+                                         memory budget {budget_total} B; increase num_shards \
+                                         (re-run infer or raise num_shards) — halving threads \
+                                         cannot reduce a single shard"
+                                    );
+                                }
+                                // Normal case (fits): keep the existing per-shard acquire
+                                // semantics, which block until the budget frees up.
+                                Some(budget.acquire(estimate)?)
                             }
                         } else {
                             None
@@ -8650,9 +8730,9 @@ fn edge_batch_buffer_limit(num_shards: usize) -> usize {
 }
 
 fn edge_writer_workers() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
+    // Pools consume CPU, so unlike the memory-driven shard floor they must
+    // honor the process's cpu.max quota.
+    effective_parallelism()
 }
 
 fn edge_writer_index(relation_hash: u64, shard: usize, workers: usize) -> usize {
@@ -10433,7 +10513,7 @@ fn default_index_mem_budget_bytes() -> Option<u64> {
 }
 
 #[cfg(target_os = "linux")]
-fn total_memory_bytes() -> Option<u64> {
+pub(crate) fn total_memory_bytes() -> Option<u64> {
     let mem_total = read_meminfo_total().unwrap_or(0);
     let cgroup_limit = read_cgroup_limit().unwrap_or(u64::MAX);
     let total = mem_total.min(cgroup_limit);
@@ -10445,7 +10525,7 @@ fn total_memory_bytes() -> Option<u64> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn total_memory_bytes() -> Option<u64> {
+pub(crate) fn total_memory_bytes() -> Option<u64> {
     None
 }
 
@@ -10492,20 +10572,84 @@ fn read_meminfo_total() -> Option<u64> {
     None
 }
 
+/// The cgroup-v2 sub-path this process belongs to, from `/proc/self/cgroup`
+/// (the `0::<path>` line). Returns "" for the root. `None` if unreadable.
+///
+/// When the limit is set on a NESTED cgroup (e.g. a `systemd-run --scope` slice, or a
+/// k8s pod slice) the enforced `memory.max` lives at
+/// `/sys/fs/cgroup/<this-path>/memory.max`, NOT at the mount root. Reading only the root
+/// misses a nested limit entirely. (Inside a container the cgroup namespace makes the root
+/// == the container's own cgroup, so the old root-only read happened to work there.)
+#[cfg(target_os = "linux")]
+fn cgroup_v2_self_path() -> Option<String> {
+    let contents = fs::read_to_string("/proc/self/cgroup").ok()?;
+    for line in contents.lines() {
+        if let Some(rest) = line.strip_prefix("0::") {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
+/// Walk the process's own cgroup-v2 subtree from leaf to root, reading `memory.max` at each
+/// level, and return the TIGHTEST (minimum) numeric limit found. Falls back to the mount
+/// root and the v1 hierarchy. Returns None when unlimited/unreadable.
 #[cfg(target_os = "linux")]
 fn read_cgroup_limit() -> Option<u64> {
-    if let Ok(limit) = fs::read_to_string("/sys/fs/cgroup/memory.max") {
-        let trimmed = limit.trim();
-        if trimmed != "max" {
-            if let Ok(bytes) = trimmed.parse::<u64>() {
-                return Some(bytes);
+    let read = |p: &std::path::Path| -> Option<String> { fs::read_to_string(p).ok() };
+    resolve_tightest_mem_limit(cgroup_v2_self_path().as_deref(), &read)
+}
+
+/// Pure leaf→root memory-limit resolution, parameterized on the file reader and the
+/// process's cgroup-v2 self path. Not cfg-gated so it is unit-testable on any OS.
+fn resolve_tightest_mem_limit(
+    self_cgroup: Option<&str>,
+    read: &impl Fn(&std::path::Path) -> Option<String>,
+) -> Option<u64> {
+    let parse = |s: &str| -> Option<u64> {
+        let t = s.trim();
+        if t == "max" {
+            None
+        } else {
+            t.parse::<u64>().ok()
+        }
+    };
+    let mut tightest: Option<u64> = None;
+    // cgroup v2: walk this process's own path up to the root.
+    if let Some(self_path) = self_cgroup {
+        let mut cur = std::path::PathBuf::from("/sys/fs/cgroup");
+        cur.push(self_path.trim_start_matches('/'));
+        loop {
+            if let Some(s) = read(&cur.join("memory.max")) {
+                if let Some(bytes) = parse(&s) {
+                    tightest = Some(tightest.map_or(bytes, |t| t.min(bytes)));
+                }
+            }
+            if cur == std::path::Path::new("/sys/fs/cgroup") {
+                break;
+            }
+            if !cur.pop() {
+                break;
             }
         }
     }
-    if let Ok(limit) = fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes") {
-        let trimmed = limit.trim();
-        if let Ok(bytes) = trimmed.parse::<u64>() {
-            return Some(bytes);
+    // v2 root fallback (also covers the container-namespaced case).
+    if let Some(s) = read(std::path::Path::new("/sys/fs/cgroup/memory.max")) {
+        if let Some(bytes) = parse(&s) {
+            tightest = Some(tightest.map_or(bytes, |t| t.min(bytes)));
+        }
+    }
+    if tightest.is_some() {
+        return tightest;
+    }
+    // cgroup v1 fallback.
+    if let Some(limit) = read(std::path::Path::new(
+        "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+    )) {
+        if let Ok(bytes) = limit.trim().parse::<u64>() {
+            if bytes < (u64::MAX / 2) {
+                return Some(bytes);
+            }
         }
     }
     None
@@ -10516,6 +10660,132 @@ fn parse_kb_line(value: &str) -> Option<u64> {
     let mut iter = value.split_whitespace();
     let num = iter.next()?.parse::<u64>().ok()?;
     Some(num.saturating_mul(1024))
+}
+
+/// Read the cgroup CPU quota as a whole-core count (rounded up, floored at 1), taking the
+/// TIGHTEST quota across this process's own cgroup-v2 path (leaf → root).
+/// v2: `cpu.max` = "<quota> <period>"; v1: `cpu.cfs_quota_us` / `cpu.cfs_period_us`.
+/// Returns None when unlimited or unreadable. Linux only.
+#[cfg(target_os = "linux")]
+pub(crate) fn read_cgroup_cpu_quota() -> Option<usize> {
+    let read = |p: &std::path::Path| -> Option<String> { fs::read_to_string(p).ok() };
+    resolve_tightest_cpu_quota(cgroup_v2_self_path().as_deref(), &read)
+}
+
+/// Pure leaf→root cpu-quota resolution, parameterized on the file reader and the process's
+/// cgroup-v2 self path. Not cfg-gated so it is unit-testable on any OS.
+fn resolve_tightest_cpu_quota(
+    self_cgroup: Option<&str>,
+    read: &impl Fn(&std::path::Path) -> Option<String>,
+) -> Option<usize> {
+    let quota_cores = |quota: i64, period: i64| -> Option<usize> {
+        if quota <= 0 || period <= 0 {
+            return None;
+        }
+        Some(((quota as f64 / period as f64).ceil() as usize).max(1))
+    };
+    let parse_cpu_max = |contents: &str| -> Option<usize> {
+        let mut parts = contents.split_whitespace();
+        let (q, p) = (parts.next()?, parts.next()?);
+        if q == "max" {
+            return None;
+        }
+        quota_cores(q.parse::<i64>().ok()?, p.parse::<i64>().ok()?)
+    };
+    let mut tightest: Option<usize> = None;
+    if let Some(self_path) = self_cgroup {
+        let mut cur = std::path::PathBuf::from("/sys/fs/cgroup");
+        cur.push(self_path.trim_start_matches('/'));
+        loop {
+            if let Some(s) = read(&cur.join("cpu.max")) {
+                if let Some(c) = parse_cpu_max(&s) {
+                    tightest = Some(tightest.map_or(c, |t| t.min(c)));
+                }
+            }
+            if cur == std::path::Path::new("/sys/fs/cgroup") {
+                break;
+            }
+            if !cur.pop() {
+                break;
+            }
+        }
+    }
+    if let Some(s) = read(std::path::Path::new("/sys/fs/cgroup/cpu.max")) {
+        if let Some(c) = parse_cpu_max(&s) {
+            tightest = Some(tightest.map_or(c, |t| t.min(c)));
+        }
+    }
+    if tightest.is_some() {
+        return tightest;
+    }
+    let q = read(std::path::Path::new("/sys/fs/cgroup/cpu/cpu.cfs_quota_us"));
+    let p = read(std::path::Path::new("/sys/fs/cgroup/cpu/cpu.cfs_period_us"));
+    if let (Some(q), Some(p)) = (q, p) {
+        if let (Ok(q), Ok(p)) = (q.trim().parse::<i64>(), p.trim().parse::<i64>()) {
+            return quota_cores(q, p);
+        }
+    }
+    None
+}
+
+/// CPU capacity available through the process affinity/cpuset mask, without
+/// applying a cgroup CPU-bandwidth quota (`cpu.max`).
+///
+/// Linux's `available_parallelism()` accounts for both affinity and
+/// `cpu.max`. Shard sizing needs the former but deliberately not the latter:
+/// lowering worker bandwidth must not produce fewer, larger shards.
+#[cfg(target_os = "linux")]
+pub fn cpu_capacity_parallelism() -> usize {
+    let mut set = unsafe { std::mem::zeroed::<libc::cpu_set_t>() };
+    let status = unsafe {
+        libc::sched_getaffinity(
+            0,
+            std::mem::size_of::<libc::cpu_set_t>(),
+            &mut set,
+        )
+    };
+    if status == 0 {
+        let count = (0..libc::CPU_SETSIZE as usize)
+            .filter(|cpu| unsafe { libc::CPU_ISSET(*cpu, &set) })
+            .count();
+        if count > 0 {
+            return count;
+        }
+    }
+    // `available_parallelism()` is not a safe fallback here because Linux's
+    // implementation also applies cpu.max. Online host CPUs may overestimate
+    // a cpuset but remain memory-safe by producing smaller shards.
+    let online = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) };
+    if online > 0 {
+        online as usize
+    } else {
+        1
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn cpu_capacity_parallelism() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+}
+
+/// Effective CPU parallelism for worker pools.
+///
+/// `available_parallelism()` honors affinity/cpuset and, on supported Linux
+/// versions, cgroup CPU quota. The explicit quota minimum also covers runtimes
+/// where the standard library does not discover the quota.
+pub fn effective_parallelism() -> usize {
+    let host = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(q) = read_cgroup_cpu_quota() {
+            return host.min(q).max(1);
+        }
+    }
+    host
 }
 
 #[allow(clippy::type_complexity)]
@@ -10615,10 +10885,8 @@ impl<S> Drop for TaskPool<S> {
     }
 }
 
-fn default_worker_threads() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
+pub fn default_worker_threads() -> usize {
+    effective_parallelism()
         .saturating_mul(105)
         .saturating_add(99)
         / 100
@@ -12618,4 +12886,132 @@ fn format_decimal_from_bigint(value: &num_bigint::BigInt, scale: i32) -> String 
     out.push('.');
     out.push_str(&digits[split..]);
     out
+}
+
+#[cfg(test)]
+mod tests_cgroup {
+    use super::{
+        choose_ingest_num_shards, resolve_tightest_cpu_quota,
+        resolve_tightest_mem_limit, table_sized_bytes,
+    };
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+
+    fn fake_reader(files: &[(&str, &str)]) -> impl Fn(&Path) -> Option<String> {
+        let map: HashMap<PathBuf, String> = files
+            .iter()
+            .map(|(p, v)| (PathBuf::from(p), v.to_string()))
+            .collect();
+        move |p: &Path| map.get(p).cloned()
+    }
+
+    // The v2 self path is joined onto "/sys/fs/cgroup", so a self path of "/slice/leaf"
+    // yields the level dirs .../slice/leaf, .../slice, then the mount root.
+
+    #[test]
+    fn mem_leaf_tighter_than_parent() {
+        let read = fake_reader(&[
+            ("/sys/fs/cgroup/slice/leaf/memory.max", "1000"),
+            ("/sys/fs/cgroup/slice/memory.max", "5000"),
+        ]);
+        assert_eq!(
+            resolve_tightest_mem_limit(Some("/slice/leaf"), &read),
+            Some(1000)
+        );
+    }
+
+    #[test]
+    fn mem_parent_tighter_than_leaf() {
+        let read = fake_reader(&[
+            ("/sys/fs/cgroup/slice/leaf/memory.max", "5000"),
+            ("/sys/fs/cgroup/slice/memory.max", "1000"),
+        ]);
+        assert_eq!(
+            resolve_tightest_mem_limit(Some("/slice/leaf"), &read),
+            Some(1000)
+        );
+    }
+
+    #[test]
+    fn mem_all_max_is_none() {
+        let read = fake_reader(&[
+            ("/sys/fs/cgroup/slice/leaf/memory.max", "max"),
+            ("/sys/fs/cgroup/slice/memory.max", "max"),
+            ("/sys/fs/cgroup/memory.max", "max"),
+        ]);
+        assert_eq!(resolve_tightest_mem_limit(Some("/slice/leaf"), &read), None);
+    }
+
+    #[test]
+    fn mem_only_v2_root_set() {
+        let read = fake_reader(&[("/sys/fs/cgroup/memory.max", "2048")]);
+        assert_eq!(
+            resolve_tightest_mem_limit(Some("/slice/leaf"), &read),
+            Some(2048)
+        );
+    }
+
+    #[test]
+    fn mem_v1_fallback() {
+        let read = fake_reader(&[(
+            "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+            "4096",
+        )]);
+        assert_eq!(resolve_tightest_mem_limit(None, &read), Some(4096));
+    }
+
+    #[test]
+    fn mem_unlimited_everywhere_is_none() {
+        let read = fake_reader(&[]);
+        assert_eq!(resolve_tightest_mem_limit(Some("/slice/leaf"), &read), None);
+    }
+
+    #[test]
+    fn cpu_four_cores() {
+        let read = fake_reader(&[("/sys/fs/cgroup/leaf/cpu.max", "400000 100000")]);
+        assert_eq!(resolve_tightest_cpu_quota(Some("/leaf"), &read), Some(4));
+    }
+
+    #[test]
+    fn cpu_max_quota_is_none() {
+        let read = fake_reader(&[("/sys/fs/cgroup/leaf/cpu.max", "max 100000")]);
+        assert_eq!(resolve_tightest_cpu_quota(Some("/leaf"), &read), None);
+    }
+
+    #[test]
+    fn cpu_leaf_tighter_than_parent() {
+        let read = fake_reader(&[
+            ("/sys/fs/cgroup/slice/leaf/cpu.max", "200000 100000"),
+            ("/sys/fs/cgroup/slice/cpu.max", "400000 100000"),
+        ]);
+        assert_eq!(
+            resolve_tightest_cpu_quota(Some("/slice/leaf"), &read),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn cpu_v1_fallback() {
+        let read = fake_reader(&[
+            ("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "300000"),
+            ("/sys/fs/cgroup/cpu/cpu.cfs_period_us", "100000"),
+        ]);
+        assert_eq!(resolve_tightest_cpu_quota(None, &read), Some(3));
+    }
+
+    #[test]
+    fn pinned_shard_count_cannot_weaken_ingest_memory_floor() {
+        assert_eq!(choose_ingest_num_shards(None, 165), 165);
+        assert_eq!(choose_ingest_num_shards(Some(43), 165), 165);
+        assert_eq!(choose_ingest_num_shards(Some(256), 165), 256);
+        assert_eq!(choose_ingest_num_shards(Some(0), 0), 1);
+    }
+
+    #[test]
+    fn mixed_declared_and_local_sources_contribute_to_shard_sizing() {
+        let declared = table_sized_bytes(Some(10), || 100);
+        let local = table_sized_bytes(None, || 20);
+        let zero_declared = table_sized_bytes(Some(0), || 30);
+        assert_eq!(declared + local + zero_declared, 60);
+    }
 }

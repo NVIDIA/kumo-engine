@@ -28,12 +28,17 @@ static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
     about = "Ingest raw CSV/Parquet into diskgraph index format."
 )]
 struct Args {
+    /// Print the resolved default worker-thread count (cgroup-aware) and exit.
+    /// The Kumo runner queries this so its thread default matches the binary's.
+    /// Exclusive: pass on its own, no other args.
+    #[arg(long, exclusive = true)]
+    print_resolved_threads: bool,
     /// Path or URL to diskgraph_config.json, or a directory containing it.
-    #[arg(long)]
-    source: PathBuf,
+    #[arg(long, required_unless_present = "print_resolved_threads")]
+    source: Option<PathBuf>,
     /// Output destination root (path or URL).
-    #[arg(long)]
-    output: String,
+    #[arg(long, required_unless_present = "print_resolved_threads")]
+    output: Option<String>,
     /// Destination kind.
     #[arg(long, value_enum, default_value = "local")]
     dest: DestArg,
@@ -162,11 +167,19 @@ fn main() -> Result<()> {
         .with_env_filter("info,pprof=warn")
         .init();
     let args = Args::parse();
-    let source_str = args.source.to_string_lossy();
-    let source_path = if args.source.is_dir() {
-        args.source.join("diskgraph_config.json")
+    // Answer the runner's thread-count query before opening any source.
+    if args.print_resolved_threads {
+        println!("{}", diskgraph_ingest::default_worker_threads());
+        return Ok(());
+    }
+    // `source`/`output` are required unless --print-resolved-threads (handled above).
+    let source = args.source.clone().expect("source is required");
+    let output = args.output.clone().expect("output is required");
+    let source_str = source.to_string_lossy();
+    let source_path = if source.is_dir() {
+        source.join("diskgraph_config.json")
     } else {
-        args.source.clone()
+        source.clone()
     };
     if !is_cloud_url(&source_str) && !source_path.is_file() {
         anyhow::bail!("diskgraph config not found at {}", source_path.display());
@@ -239,7 +252,7 @@ fn main() -> Result<()> {
         let metadata_bytes = download_cloud_config_bytes(&config_url)?;
         let source: GraphConfig = serde_json::from_slice(&metadata_bytes)?;
         ingest_with_stats_from_source(
-            source, None, &args.output, dest, options, dataplane, marker,
+            source, None, &output, dest, options, dataplane, marker,
         )?
     } else {
         let metadata_bytes = fs::read(&source_path)
@@ -247,7 +260,7 @@ fn main() -> Result<()> {
         let source: GraphConfig = serde_json::from_slice(&metadata_bytes)?;
         let base_dir = source_path.parent();
         ingest_with_stats_from_source(
-            source, base_dir, &args.output, dest, options, dataplane, marker,
+            source, base_dir, &output, dest, options, dataplane, marker,
         )?
     };
     drop(peak_tracker);
@@ -562,7 +575,7 @@ fn maybe_publish_stats(
         .stats_dataset
         .clone()
         .or_else(|| std::env::var("DISKGRAPH_STATS_DATASET").ok())
-        .unwrap_or_else(|| dataset_from_source(&args.source, source_str));
+        .unwrap_or_else(|| dataset_from_source(std::path::Path::new(source_str), source_str));
     let run_id = args
         .stats_run_id
         .clone()
@@ -571,7 +584,7 @@ fn maybe_publish_stats(
     let stats_dest = args.stats_dest.clone();
     let config = PublishConfig {
         source: source_str.to_string(),
-        output: args.output.clone(),
+        output: args.output.clone().expect("output is required"),
         dataset,
         run_id,
         stats_dest,
