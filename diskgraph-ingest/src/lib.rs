@@ -3208,6 +3208,7 @@ impl IngestContext {
         let dest_key_pool =
             DestKeyWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
         let node_senders = node_pool.senders();
+        let node_errors = node_pool.error();
         let edge_senders = edge_pool.senders();
         let edge_errors = edge_pool.error();
         let dest_key_senders = dest_key_pool.senders();
@@ -3298,6 +3299,7 @@ impl IngestContext {
                 let relationships = relationships.clone();
                 let target = std::sync::Arc::clone(&target);
                 let node_senders = std::sync::Arc::clone(&node_senders);
+                let node_errors = std::sync::Arc::clone(&node_errors);
                 let edge_senders = std::sync::Arc::clone(&edge_senders);
                 let dest_key_senders = std::sync::Arc::clone(&dest_key_senders);
                 let dest_key_errors = std::sync::Arc::clone(&dest_key_errors);
@@ -3365,6 +3367,7 @@ impl IngestContext {
                                 &progress,
                                 &mut key_failures,
                                 &node_senders,
+                                &node_errors,
                                 &dest_key_senders,
                                 &dest_key_errors,
                                 &fk_edge_targets,
@@ -3389,6 +3392,7 @@ impl IngestContext {
                                 &progress,
                                 &mut key_failures,
                                 &node_senders,
+                                &node_errors,
                                 &dest_key_senders,
                                 &dest_key_errors,
                                 &fk_edge_targets,
@@ -3846,6 +3850,7 @@ impl IngestContext {
         progress: &Option<ProgressCallback>,
         key_failures: &mut KeyFailureState,
         senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<NodeWriteMessage>>>,
+        node_errors: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
         dest_key_senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<DestKeyWriteMessage>>>,
         dest_key_errors: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
         fk_edge_targets: &HashMap<String, FkEdgeTarget>,
@@ -3931,6 +3936,7 @@ impl IngestContext {
             num_shards,
             buffer_limit,
             std::sync::Arc::clone(senders),
+            std::sync::Arc::clone(node_errors),
             table.group_by_timestamp,
         );
         let mut dest_fkey_batcher = DestFkeyBatcher::new(
@@ -9130,27 +9136,49 @@ struct NodeShardWriter {
 struct NodeWritePool {
     senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<NodeWriteMessage>>>,
     handles: Vec<std::thread::JoinHandle<Result<NodeWriterStats>>>,
+    // First worker error, mirrored into producers: when a worker dies its
+    // channel closes, and the producer's send error ("sending on a closed
+    // channel") would otherwise mask the root cause (e.g. EMFILE).
+    error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl NodeWritePool {
     fn new(target: std::sync::Arc<OutputTarget>, workers: usize) -> Self {
         let mut senders = Vec::with_capacity(workers);
         let mut handles = Vec::with_capacity(workers);
+        let error = std::sync::Arc::new(std::sync::Mutex::new(None));
         for _ in 0..workers {
             let (tx, rx) =
                 std::sync::mpsc::sync_channel::<NodeWriteMessage>(EDGE_WRITE_QUEUE_DEPTH);
             let target = std::sync::Arc::clone(&target);
-            handles.push(std::thread::spawn(move || node_writer_worker(target, rx)));
+            let error = std::sync::Arc::clone(&error);
+            handles.push(std::thread::spawn(move || {
+                match node_writer_worker(target, rx) {
+                    Ok(stats) => Ok(stats),
+                    Err(err) => {
+                        let mut guard = error.lock().unwrap_or_else(|e| e.into_inner());
+                        if guard.is_none() {
+                            *guard = Some(format!("{err:#}"));
+                        }
+                        Err(err)
+                    }
+                }
+            }));
             senders.push(tx);
         }
         Self {
             senders: std::sync::Arc::new(senders),
             handles,
+            error,
         }
     }
 
     fn senders(&self) -> std::sync::Arc<Vec<std::sync::mpsc::SyncSender<NodeWriteMessage>>> {
         std::sync::Arc::clone(&self.senders)
+    }
+
+    fn error(&self) -> std::sync::Arc<std::sync::Mutex<Option<String>>> {
+        std::sync::Arc::clone(&self.error)
     }
 
     fn finish(self) -> Result<NodeWriterStats> {
@@ -9162,6 +9190,11 @@ impl NodeWritePool {
                     stats.merge(result?);
                 }
                 Err(_) => return Err(anyhow!("node writer thread panicked")),
+            }
+        }
+        if let Ok(guard) = self.error.lock() {
+            if let Some(message) = guard.as_ref() {
+                return Err(anyhow!("node writer failed: {message}"));
             }
         }
         Ok(stats)
@@ -9364,6 +9397,7 @@ struct NodeBatcher {
     buffers: Vec<NodeShardBuffer>,
     buffer_limit: usize,
     senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<NodeWriteMessage>>>,
+    error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     // TT-NG timestamp grouping enabled for this table (see `group_by_timestamp`).
     group_by_timestamp: bool,
 }
@@ -9375,6 +9409,7 @@ struct NodeRowSink<'a> {
 }
 
 impl NodeBatcher {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         table: std::sync::Arc<str>,
         rel_names: std::sync::Arc<Vec<std::sync::Arc<str>>>,
@@ -9382,6 +9417,7 @@ impl NodeBatcher {
         num_shards: usize,
         buffer_limit: usize,
         senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<NodeWriteMessage>>>,
+        error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
         group_by_timestamp: bool,
     ) -> Self {
         let table_hash = hash_name(&table);
@@ -9413,6 +9449,7 @@ impl NodeBatcher {
             buffers,
             buffer_limit,
             senders,
+            error,
             group_by_timestamp,
         }
     }
@@ -9555,6 +9592,11 @@ impl NodeBatcher {
         shard: usize,
         sort_key_batchers: &mut [SortKeyComponentBatcher],
     ) -> Result<()> {
+        if let Ok(guard) = self.error.lock() {
+            if let Some(message) = guard.as_ref() {
+                return Err(anyhow!("node writer failed: {message}"));
+            }
+        }
         let buffer = self
             .buffers
             .get_mut(shard)
@@ -9624,7 +9666,14 @@ impl NodeBatcher {
         let idx = edge_writer_index(self.table_hash, shard, self.senders.len());
         self.senders[idx]
             .send(NodeWriteMessage::Batch(batch))
-            .map_err(|e| anyhow!("node writer channel error: {e}"))?;
+            .map_err(|e| {
+                if let Ok(guard) = self.error.lock() {
+                    if let Some(message) = guard.as_ref() {
+                        return anyhow!("node writer failed: {message}");
+                    }
+                }
+                anyhow!("node writer channel error: {e}")
+            })?;
         Ok(())
     }
 

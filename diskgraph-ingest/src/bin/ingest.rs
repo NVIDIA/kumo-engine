@@ -162,10 +162,37 @@ enum DestArg {
     Adls,
 }
 
+/// Increase the soft open-file limit to the hard limit. The encode phase holds
+/// one temp file open per (table, shard) — ~800+ on a 75-shard graph — which
+/// exceeds common container defaults (Docker: 1024 soft / 524288 hard).
+#[cfg(unix)]
+fn increase_nofile_limit() {
+    unsafe {
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) != 0 || lim.rlim_cur >= lim.rlim_max {
+            return;
+        }
+        let old = lim.rlim_cur;
+        lim.rlim_cur = lim.rlim_max;
+        if libc::setrlimit(libc::RLIMIT_NOFILE, &lim) == 0 {
+            tracing::info!(old, new = lim.rlim_max, "raised soft RLIMIT_NOFILE");
+        } else {
+            tracing::warn!(soft = old, "could not raise soft RLIMIT_NOFILE");
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn increase_nofile_limit() {}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter("info,pprof=warn")
         .init();
+    increase_nofile_limit();
     let args = Args::parse();
     // Answer the runner's thread-count query before opening any source.
     if args.print_resolved_threads {
