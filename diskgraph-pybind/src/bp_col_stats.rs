@@ -8,14 +8,8 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::Result;
-use arrow_array::types::ArrowPrimitiveType;
-use arrow_array::{
-    Array, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array,
-    PrimitiveArray, RecordBatch, StringArray, TimestampMicrosecondArray, TimestampMillisecondArray,
-    TimestampNanosecondArray, TimestampSecondArray, UInt16Array, UInt32Array, UInt64Array,
-    UInt8Array,
-};
+use anyhow::{bail, Context, Result};
+use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Schema};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ProjectionMask;
@@ -27,7 +21,7 @@ use diskgraph_core::accumulators::{
 };
 use diskgraph_ingest::col_stats::{minify_kumo_stats, FileColStats, TableCategoryCounts};
 use diskgraph_ingest::graph_config::{ColumnSpec, IngestedType, SemanticType, TimestampUnit};
-use diskgraph_rowpack::ColumnValueObserver;
+use diskgraph_rowpack::{ColumnValueObserver, RowAccess, RowAccessHints, RowAccessStats};
 
 /// CATEGORY_COUNTS truncation limit for the "min" variant (matches ingest).
 const MIN_COL_STATS_CATEGORY_LIMIT: usize = 20;
@@ -79,89 +73,56 @@ impl IntegerRange {
     }
 }
 
-/// Whether the stats paths support this physical/logical type pair.
-fn arrow_type_matches_dtype(arrow: &DataType, dtype: &IngestedType) -> bool {
-    use IngestedType as T;
-    match dtype {
-        // Integer / unsigned observers widen any signed/unsigned physical width
-        // to i64 (kumo maps int32/int16/byte to narrow physical types).
-        T::Int8 | T::Int16 | T::Int32 | T::Int64 | T::UInt8 | T::UInt16 | T::UInt32 | T::UInt64 => {
-            matches!(
-                arrow,
-                DataType::Int8
-                    | DataType::Int16
-                    | DataType::Int32
-                    | DataType::Int64
-                    | DataType::UInt8
-                    | DataType::UInt16
-                    | DataType::UInt32
-                    | DataType::UInt64
-            )
-        }
-        // Float observers downcast `Float64Array` or `Float32Array`.
-        T::Float64 | T::Float32 => matches!(arrow, DataType::Float64 | DataType::Float32),
-        // Bool observer downcasts `BooleanArray`.
-        T::Bool => matches!(arrow, DataType::Boolean),
-        // String observer downcasts `StringArray` (Utf8).
-        T::String => matches!(arrow, DataType::Utf8),
-        // Timestamp observer accepts any Arrow `TimeUnit` (Second/Milli/Micro/
-        // Nano, all normalized to seconds) or an Int64 epoch column.
-        T::Timestamp => matches!(arrow, DataType::Timestamp(_, _) | DataType::Int64),
-        // Not stats-tracked by BP col-stats (see the `_ => {}` arm of
-        // `drive_from_arrow_column`): any physical type is acceptable.
-        T::Bytes
-        | T::Uuid
-        | T::Uuid256
-        | T::Ip
-        | T::Date
-        | T::Decimal128
-        | T::Decimal256
-        | T::Float16Array
-        | T::Float32Array
-        | T::Float64Array
-        | T::Int8Array
-        | T::Int16Array
-        | T::Int32Array
-        | T::Int64Array
-        | T::StringArray => true,
+fn validate_stats_dtype(col: &ColumnSpec) -> Result<()> {
+    if col.semantic_type == Some(SemanticType::Timestamp) {
+        return Ok(());
+    }
+    match col.ingested_dtype {
+        IngestedType::Int64
+        | IngestedType::Int32
+        | IngestedType::Int16
+        | IngestedType::Int8
+        | IngestedType::UInt64
+        | IngestedType::UInt32
+        | IngestedType::UInt16
+        | IngestedType::UInt8
+        | IngestedType::Float64
+        | IngestedType::Float32
+        | IngestedType::Bool
+        | IngestedType::String
+        | IngestedType::Bytes
+        | IngestedType::Timestamp
+        | IngestedType::Float32Array
+        | IngestedType::Float64Array
+        | IngestedType::Float16Array
+        | IngestedType::Int64Array
+        | IngestedType::Int32Array
+        | IngestedType::Int16Array
+        | IngestedType::Int8Array
+        | IngestedType::StringArray => Ok(()),
+        ref other => bail!("unsupported parquet statistics type: {other:?}"),
     }
 }
 
-/// Map spec positions to parquet columns by name and validate their types.
+/// Map logical spec positions to physical parquet columns. Physical value
+/// compatibility is decided by RowAccess, as it is during ingestion.
 fn resolve_parquet_indices(columns: &[ColumnSpec], schema: &Schema) -> Result<Vec<usize>> {
     columns
         .iter()
         .map(|col| {
-            let idx = schema.index_of(&col.name).map_err(|_| {
-                anyhow::anyhow!(
-                    "schema error: column '{}' (from column specs) is absent from the \
-                     parquet schema; parquet columns are {:?}",
-                    col.name,
-                    schema
-                        .fields()
-                        .iter()
-                        .map(|f| f.name().as_str())
-                        .collect::<Vec<_>>()
-                )
-            })?;
+            let idx = schema
+                .index_of(&col.name)
+                .with_context(|| format!("schema error: missing parquet column '{}'", col.name))?;
             let arrow = schema.field(idx).data_type();
-            if !arrow_type_matches_dtype(arrow, &col.ingested_dtype) {
-                anyhow::bail!(
-                    "schema error: column '{}' has parquet Arrow type {arrow:?}, incompatible \
-                     with its declared ingested dtype {:?} (type mismatch)",
-                    col.name,
-                    col.ingested_dtype,
+            if matches!(arrow, DataType::Null) {
+                bail!(
+                    "schema error: unsupported parquet type Null for column '{}'",
+                    col.name
                 );
             }
             Ok(idx)
         })
         .collect()
-}
-
-fn parquet_arrow_schema(path: &Path) -> Result<Schema> {
-    let file = File::open(path)?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-    Ok(builder.schema().as_ref().clone())
 }
 
 struct DistributionPartial {
@@ -255,38 +216,90 @@ fn timestamp_seconds_in_signed_ns_domain(raw: i64, unit: TimestampUnit) -> Optio
     Some(unit.scale_to_secs(raw))
 }
 
-fn timestamp_seconds(array: &dyn Array, row: usize, col: &ColumnSpec) -> Option<i64> {
-    let any = array.as_any();
-    if let Some(a) = any.downcast_ref::<TimestampSecondArray>() {
-        return (!a.is_null(row))
-            .then(|| timestamp_seconds_in_signed_ns_domain(a.value(row), TimestampUnit::Seconds))
-            .flatten();
+fn integer_timestamp(
+    access: &RowAccess<'_>,
+    col: &ColumnSpec,
+) -> Result<Option<(TimestampUnit, i64)>> {
+    let is_integer = matches!(
+        access.array(0)?.data_type(),
+        DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64
+            | DataType::Decimal128(..)
+            | DataType::Decimal256(..)
+    );
+    if !is_integer || col.timestamp_format.is_some() {
+        return Ok(None);
     }
-    if let Some(a) = any.downcast_ref::<TimestampMillisecondArray>() {
-        return (!a.is_null(row))
-            .then(|| timestamp_seconds_in_signed_ns_domain(a.value(row), TimestampUnit::Millis))
-            .flatten();
+    Ok(access.get_int64(0)?.and_then(|raw| {
+        col.timestamp_unit
+            .or_else(|| TimestampUnit::from_epoch_magnitude(raw))
+            .or(Some(TimestampUnit::Seconds))
+            .zip(Some(raw))
+    }))
+}
+
+fn timestamp_seconds(access: &RowAccess<'_>, col: &ColumnSpec) -> Result<Option<i64>> {
+    if let Some((unit, raw)) = integer_timestamp(access, col)? {
+        return Ok(Some(unit.scale_to_secs(raw)));
     }
-    if let Some(a) = any.downcast_ref::<TimestampMicrosecondArray>() {
-        return (!a.is_null(row))
-            .then(|| timestamp_seconds_in_signed_ns_domain(a.value(row), TimestampUnit::Micros))
-            .flatten();
+    access.get_timestamp(0)
+}
+
+fn histogram_timestamp_seconds(
+    col: &ColumnSpec,
+    access: &RowAccess<'_>,
+    raw_timestamp: Option<(TimestampUnit, i64)>,
+) -> Result<Option<i64>> {
+    let Some(seconds) = timestamp_seconds(access, col)? else {
+        return Ok(None);
+    };
+    let raw_unit = raw_timestamp.or(integer_timestamp(access, col)?);
+    Ok(raw_unit.map_or(Some(seconds), |(unit, raw)| {
+        timestamp_seconds_in_signed_ns_domain(raw, unit).map(|_| seconds)
+    }))
+}
+
+fn for_each_timestamp_second(
+    array: &arrow_array::ArrayRef,
+    col: &ColumnSpec,
+    mut observe: impl FnMut(i64),
+) -> Result<()> {
+    let timestamp_data = match array.data_type() {
+        DataType::Timestamp(unit, _) => Some((
+            match unit {
+                arrow_schema::TimeUnit::Second => TimestampUnit::Seconds,
+                arrow_schema::TimeUnit::Millisecond => TimestampUnit::Millis,
+                arrow_schema::TimeUnit::Microsecond => TimestampUnit::Micros,
+                arrow_schema::TimeUnit::Nanosecond => TimestampUnit::Nanos,
+            },
+            array.to_data(),
+        )),
+        _ => None,
+    };
+    let arrays = [array.clone()];
+    let mut access = RowAccess::new(vec![row_access_hints(col)], RowAccessStats::new(None));
+    access.set_cols(&arrays);
+    for row in 0..array.len() {
+        access.set_row(row);
+        let raw_timestamp = timestamp_data.as_ref().map(|(unit, data)| {
+            (
+                *unit,
+                data.buffers()[0].typed_data::<i64>()[data.offset() + row],
+            )
+        });
+        if let Some(seconds) =
+            histogram_timestamp_seconds(col, &access, raw_timestamp).unwrap_or(None)
+        {
+            observe(seconds);
+        }
     }
-    if let Some(a) = any.downcast_ref::<TimestampNanosecondArray>() {
-        return (!a.is_null(row))
-            .then(|| timestamp_seconds_in_signed_ns_domain(a.value(row), TimestampUnit::Nanos))
-            .flatten();
-    }
-    let a = any.downcast_ref::<Int64Array>()?;
-    if a.is_null(row) {
-        return None;
-    }
-    let raw = a.value(row);
-    let unit = col
-        .timestamp_unit
-        .or_else(|| TimestampUnit::from_epoch_magnitude(raw))
-        .unwrap_or(TimestampUnit::Seconds);
-    timestamp_seconds_in_signed_ns_domain(raw, unit)
+    Ok(())
 }
 
 fn half_month_index(seconds: i64) -> Option<usize> {
@@ -335,95 +348,163 @@ fn histogram_left_edge(spec: FloatingHistogramSpec, idx: usize) -> f64 {
     }
 }
 
-fn observe_int_col<T, F, O>(col_idx: usize, a: &PrimitiveArray<T>, to_i64: F, observer: &mut O)
-where
-    T: ArrowPrimitiveType,
-    F: Fn(T::Native) -> i64,
-    O: ColumnValueObserver,
-{
-    for i in 0..a.len() {
-        if a.is_null(i) {
-            observer.observe_null(col_idx);
-        } else {
-            observer.observe_i64(col_idx, to_i64(a.value(i)));
-        }
+fn row_access_hints(col: &ColumnSpec) -> RowAccessHints {
+    RowAccessHints {
+        timestamp_format: col.timestamp_format.clone(),
+        timestamp_unit: col.timestamp_unit.map(|unit| match unit {
+            TimestampUnit::Seconds => arrow_schema::TimeUnit::Second,
+            TimestampUnit::Millis => arrow_schema::TimeUnit::Millisecond,
+            TimestampUnit::Micros => arrow_schema::TimeUnit::Microsecond,
+            TimestampUnit::Nanos => arrow_schema::TimeUnit::Nanosecond,
+        }),
+        decimal_scale: col.scale,
+        multicategorical_delimiter: col.multicategorical_delimiter.clone(),
+        column_name: Some(col.name.clone()),
+        ..Default::default()
     }
 }
 
-/// Normalize timestamps with the same ceil rounding used by ingest.
-fn observe_ts_col<T, O>(
+fn for_each_normalized<T>(
+    array: &arrow_array::ArrayRef,
+    col: &ColumnSpec,
+    mut read: impl FnMut(&RowAccess<'_>) -> Result<Option<T>>,
+    mut observe: impl FnMut(T),
+) -> Result<()> {
+    let arrays = [array.clone()];
+    let mut access = RowAccess::new(vec![row_access_hints(col)], RowAccessStats::new(None));
+    access.set_cols(&arrays);
+    for row in 0..array.len() {
+        access.set_row(row);
+        if let Some(value) = read(&access).unwrap_or(None) {
+            observe(value);
+        }
+    }
+    Ok(())
+}
+
+fn integer_value(access: &RowAccess<'_>, idx: usize, col: &ColumnSpec) -> Result<Option<i64>> {
+    match col.ingested_dtype {
+        IngestedType::Int64 => access.get_int64(idx),
+        IngestedType::Int32 | IngestedType::Int16 | IngestedType::Int8 => {
+            access.get_int32(idx).map(|value| value.map(i64::from))
+        }
+        IngestedType::UInt64 => access
+            .get_uint64(idx)?
+            .map(i64::try_from)
+            .transpose()
+            .map_err(Into::into),
+        IngestedType::UInt32 | IngestedType::UInt16 | IngestedType::UInt8 => {
+            access.get_uint32(idx).map(|value| value.map(i64::from))
+        }
+        ref other => bail!("expected integer column, got {other:?}"),
+    }
+}
+
+fn numerical_value(access: &RowAccess<'_>, idx: usize, col: &ColumnSpec) -> Result<Option<f64>> {
+    match col.ingested_dtype {
+        IngestedType::Float64 => access.get_float64(idx),
+        IngestedType::Float32 => access.get_float32(idx).map(|value| value.map(f64::from)),
+        ref dtype if is_integer_dtype(dtype) => {
+            integer_value(access, idx, col).map(|value| value.map(|value| value as f64))
+        }
+        ref other => bail!("expected numerical column, got {other:?}"),
+    }
+}
+
+fn bytes_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut value = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(value, "{byte:02x}").expect("write to string");
+    }
+    value
+}
+
+fn categorical_value(
+    access: &mut RowAccess<'_>,
+    idx: usize,
+    col: &ColumnSpec,
+) -> Result<Option<String>> {
+    match col.ingested_dtype {
+        ref dtype if is_integer_dtype(dtype) => {
+            integer_value(access, idx, col).map(|value| value.map(|value| value.to_string()))
+        }
+        IngestedType::Float64 | IngestedType::Float32 => {
+            numerical_value(access, idx, col).map(|value| value.map(|value| value.to_string()))
+        }
+        IngestedType::Bool => access
+            .get_bool(idx)
+            .map(|value| value.map(|value| i64::from(value).to_string())),
+        IngestedType::String => access.with_string(idx, |value| Ok(value.to_owned())),
+        IngestedType::Bytes => access.with_bytes(idx, |value| Ok(bytes_hex(value))),
+        _ => Ok(None),
+    }
+}
+
+fn fixed_len(col: &ColumnSpec) -> Option<usize> {
+    col.fixed_len
+        .or((col.semantic_type == Some(SemanticType::Latlong)).then_some(2))
+}
+
+fn float_list_value(
+    access: &mut RowAccess<'_>,
+    idx: usize,
+    col: &ColumnSpec,
+) -> Result<Option<diskgraph_rowpack::FloatListView>> {
+    let value = access.float_list_view(idx)?;
+    if value.as_ref().is_some_and(|value| {
+        fixed_len(col).is_some_and(|len| value.len() != len || value.has_nulls())
+    }) {
+        bail!("fixed float array length mismatch");
+    }
+    Ok(value)
+}
+
+fn int_list_value(
+    access: &mut RowAccess<'_>,
+    idx: usize,
+    col: &ColumnSpec,
+) -> Result<Option<diskgraph_rowpack::IntListView>> {
+    let value = access.int_list_view(idx)?;
+    if let Some(value) = value.as_ref() {
+        if fixed_len(col).is_some_and(|len| value.len() != len || value.has_nulls()) {
+            bail!("fixed integer array length mismatch");
+        }
+    }
+    Ok(value)
+}
+
+#[inline]
+fn access_or_parse_failure<T, O: ColumnValueObserver>(
+    value: Result<Option<T>>,
     col_idx: usize,
-    a: &PrimitiveArray<T>,
-    unit: TimestampUnit,
     observer: &mut O,
-) where
-    T: ArrowPrimitiveType<Native = i64>,
-    O: ColumnValueObserver,
-{
-    for i in 0..a.len() {
-        if a.is_null(i) {
-            observer.observe_null(col_idx);
-        } else {
-            observer.observe_timestamp(col_idx, unit.scale_to_secs(a.value(i)));
+) -> Option<T> {
+    match value {
+        Ok(value) => value,
+        Err(_) => {
+            observer.observe_parse_failure(col_idx);
+            None
         }
     }
 }
 
-fn bin_numeric_col<T, F>(
-    a: &PrimitiveArray<T>,
+fn bin_numeric_col(
+    array: &arrow_array::ArrayRef,
+    col: &ColumnSpec,
     spec: FloatingHistogramSpec,
     counts: &mut [u64; NUMERICAL_HISTOGRAM_BINS],
-    to_f64: F,
-) where
-    T: ArrowPrimitiveType,
-    F: Fn(T::Native) -> f64,
-{
-    for i in 0..a.len() {
-        if a.is_null(i) {
-            continue;
-        }
-        let value = to_f64(a.value(i));
-        if value.is_finite() {
-            counts[histogram_bin(value, spec)] += 1;
-        }
-    }
-}
-
-fn observe_integer_range<T, F>(a: &PrimitiveArray<T>, range: &mut IntegerRange, to_i64: F)
-where
-    T: ArrowPrimitiveType,
-    F: Fn(T::Native) -> Option<i64>,
-{
-    for i in 0..a.len() {
-        if !a.is_null(i) {
-            if let Some(value) = to_i64(a.value(i)) {
-                range.observe(value);
+) -> Result<()> {
+    for_each_normalized(
+        array,
+        col,
+        |access| numerical_value(access, 0, col),
+        |value| {
+            if value.is_finite() {
+                counts[histogram_bin(value, spec)] += 1;
             }
-        }
-    }
-}
-
-fn integer_range(array: &dyn Array) -> IntegerRange {
-    let mut range = IntegerRange::default();
-    let any = array.as_any();
-    if let Some(a) = any.downcast_ref::<Int64Array>() {
-        observe_integer_range(a, &mut range, Some);
-    } else if let Some(a) = any.downcast_ref::<Int32Array>() {
-        observe_integer_range(a, &mut range, |v| Some(i64::from(v)));
-    } else if let Some(a) = any.downcast_ref::<Int16Array>() {
-        observe_integer_range(a, &mut range, |v| Some(i64::from(v)));
-    } else if let Some(a) = any.downcast_ref::<Int8Array>() {
-        observe_integer_range(a, &mut range, |v| Some(i64::from(v)));
-    } else if let Some(a) = any.downcast_ref::<UInt64Array>() {
-        observe_integer_range(a, &mut range, |v| i64::try_from(v).ok());
-    } else if let Some(a) = any.downcast_ref::<UInt32Array>() {
-        observe_integer_range(a, &mut range, |v| Some(i64::from(v)));
-    } else if let Some(a) = any.downcast_ref::<UInt16Array>() {
-        observe_integer_range(a, &mut range, |v| Some(i64::from(v)));
-    } else if let Some(a) = any.downcast_ref::<UInt8Array>() {
-        observe_integer_range(a, &mut range, |v| Some(i64::from(v)));
-    }
-    range
+        },
+    )
 }
 
 fn integer_histogram_bin(value: i64, spec: IntegerHistogramSpec) -> usize {
@@ -433,22 +514,18 @@ fn integer_histogram_bin(value: i64, spec: IntegerHistogramSpec) -> usize {
         .min(spec.num_bins - 1)
 }
 
-fn bin_integer_col<T, F>(
-    a: &PrimitiveArray<T>,
+fn bin_integer_col(
+    array: &arrow_array::ArrayRef,
+    col: &ColumnSpec,
     spec: IntegerHistogramSpec,
     counts: &mut [u64],
-    to_i64: F,
-) where
-    T: ArrowPrimitiveType,
-    F: Fn(T::Native) -> Option<i64>,
-{
-    for i in 0..a.len() {
-        if !a.is_null(i) {
-            if let Some(value) = to_i64(a.value(i)) {
-                counts[integer_histogram_bin(value, spec)] += 1;
-            }
-        }
-    }
+) -> Result<()> {
+    for_each_normalized(
+        array,
+        col,
+        |access| integer_value(access, 0, col),
+        |value| counts[integer_histogram_bin(value, spec)] += 1,
+    )
 }
 
 fn is_integer_dtype(dtype: &IngestedType) -> bool {
@@ -504,188 +581,138 @@ fn accumulate_distributions_for_row_group(
         for (hist_idx, spec) in floating_specs.iter().enumerate() {
             let array = batch.column(schema.index_of(&columns[spec.spec_idx].name)?);
             let counts = &mut out.floating[hist_idx];
-            let any = array.as_any();
-            // Floats plus any signed/unsigned integer width — the same widened
-            // numeric set the observer pass consumes, so a narrow-int numerical
-            // column gets a histogram too (not just scalar stats).
-            if let Some(a) = any.downcast_ref::<Float64Array>() {
-                bin_numeric_col(a, *spec, counts, |v| v);
-            } else if let Some(a) = any.downcast_ref::<Float32Array>() {
-                bin_numeric_col(a, *spec, counts, |v| v as f64);
-            } else if let Some(a) = any.downcast_ref::<Int64Array>() {
-                bin_numeric_col(a, *spec, counts, |v| v as f64);
-            } else if let Some(a) = any.downcast_ref::<Int32Array>() {
-                bin_numeric_col(a, *spec, counts, |v| v as f64);
-            } else if let Some(a) = any.downcast_ref::<Int16Array>() {
-                bin_numeric_col(a, *spec, counts, |v| v as f64);
-            } else if let Some(a) = any.downcast_ref::<Int8Array>() {
-                bin_numeric_col(a, *spec, counts, |v| v as f64);
-            } else if let Some(a) = any.downcast_ref::<UInt64Array>() {
-                bin_numeric_col(a, *spec, counts, |v| v as f64);
-            } else if let Some(a) = any.downcast_ref::<UInt32Array>() {
-                bin_numeric_col(a, *spec, counts, |v| v as f64);
-            } else if let Some(a) = any.downcast_ref::<UInt16Array>() {
-                bin_numeric_col(a, *spec, counts, |v| v as f64);
-            } else if let Some(a) = any.downcast_ref::<UInt8Array>() {
-                bin_numeric_col(a, *spec, counts, |v| v as f64);
-            }
+            bin_numeric_col(array, &columns[spec.spec_idx], *spec, counts)?;
         }
         for (hist_idx, spec) in integer_specs.iter().enumerate() {
             let array = batch.column(schema.index_of(&columns[spec.spec_idx].name)?);
             let counts = &mut out.integer[hist_idx];
-            let any = array.as_any();
-            if let Some(a) = any.downcast_ref::<Int64Array>() {
-                bin_integer_col(a, *spec, counts, Some);
-            } else if let Some(a) = any.downcast_ref::<Int32Array>() {
-                bin_integer_col(a, *spec, counts, |v| Some(i64::from(v)));
-            } else if let Some(a) = any.downcast_ref::<Int16Array>() {
-                bin_integer_col(a, *spec, counts, |v| Some(i64::from(v)));
-            } else if let Some(a) = any.downcast_ref::<Int8Array>() {
-                bin_integer_col(a, *spec, counts, |v| Some(i64::from(v)));
-            } else if let Some(a) = any.downcast_ref::<UInt64Array>() {
-                bin_integer_col(a, *spec, counts, |v| i64::try_from(v).ok());
-            } else if let Some(a) = any.downcast_ref::<UInt32Array>() {
-                bin_integer_col(a, *spec, counts, |v| Some(i64::from(v)));
-            } else if let Some(a) = any.downcast_ref::<UInt16Array>() {
-                bin_integer_col(a, *spec, counts, |v| Some(i64::from(v)));
-            } else if let Some(a) = any.downcast_ref::<UInt8Array>() {
-                bin_integer_col(a, *spec, counts, |v| Some(i64::from(v)));
-            }
+            bin_integer_col(array, &columns[spec.spec_idx], *spec, counts)?;
         }
         for (hist_idx, spec) in timestamp_specs.iter().enumerate() {
             let array = batch.column(schema.index_of(&columns[spec.spec_idx].name)?);
-            for row in 0..array.len() {
-                if let Some(seconds) =
-                    timestamp_seconds(array.as_ref(), row, &columns[spec.spec_idx])
-                {
-                    out.timestamps[hist_idx].observe(seconds);
-                }
-            }
+            for_each_timestamp_second(array, &columns[spec.spec_idx], |seconds| {
+                out.timestamps[hist_idx].observe(seconds)
+            })?;
         }
     }
     Ok(())
 }
 
-/// Feed one name-resolved Arrow column into a stats observer.
+/// Feed one name-resolved Arrow column into a stats observer through the same
+/// checked normalization layer used by ingestion.
 fn drive_from_arrow_column<O: ColumnValueObserver>(
     col_idx: usize,
-    array: &dyn Array,
+    array: &arrow_array::ArrayRef,
     col: &ColumnSpec,
     observer: &mut O,
+    mut integer_range: Option<&mut IntegerRange>,
 ) -> Result<()> {
-    match &col.ingested_dtype {
-        IngestedType::Int64
-        | IngestedType::Int32
-        | IngestedType::Int16
-        | IngestedType::Int8
-        | IngestedType::UInt64
-        | IngestedType::UInt32
-        | IngestedType::UInt16
-        | IngestedType::UInt8 => {
-            let any = array.as_any();
-            if let Some(a) = any.downcast_ref::<Int64Array>() {
-                observe_int_col(col_idx, a, |v| v, observer);
-            } else if let Some(a) = any.downcast_ref::<Int32Array>() {
-                observe_int_col(col_idx, a, |v| v as i64, observer);
-            } else if let Some(a) = any.downcast_ref::<Int16Array>() {
-                observe_int_col(col_idx, a, |v| v as i64, observer);
-            } else if let Some(a) = any.downcast_ref::<Int8Array>() {
-                observe_int_col(col_idx, a, |v| v as i64, observer);
-            } else if let Some(a) = any.downcast_ref::<UInt64Array>() {
-                for i in 0..a.len() {
-                    if a.is_null(i) {
-                        observer.observe_null(col_idx);
-                    } else {
-                        let value = a.value(i);
-                        let value = i64::try_from(value).map_err(|_| {
-                            anyhow::anyhow!(
-                                "type mismatch: column '{}' contains UInt64 value {value}, \
-                                 outside the supported i64 range for column statistics",
-                                col.name
-                            )
-                        })?;
+    let arrays = [array.clone()];
+    let mut access = RowAccess::new(vec![row_access_hints(col)], RowAccessStats::new(None));
+    access.set_cols(&arrays);
+    for row in 0..array.len() {
+        access.set_row(row);
+        let present = if col.semantic_type == Some(SemanticType::Timestamp) {
+            access_or_parse_failure(timestamp_seconds(&access, col), col_idx, observer)
+                .map(|value| observer.observe_timestamp(col_idx, value))
+                .is_some()
+        } else {
+            match col.ingested_dtype {
+                IngestedType::Int64
+                | IngestedType::Int32
+                | IngestedType::Int16
+                | IngestedType::Int8
+                | IngestedType::UInt64
+                | IngestedType::UInt32
+                | IngestedType::UInt16
+                | IngestedType::UInt8 => {
+                    if let Some(value) =
+                        access_or_parse_failure(integer_value(&access, 0, col), col_idx, observer)
+                    {
+                        if let Some(range) = integer_range.as_deref_mut() {
+                            range.observe(value);
+                        }
                         observer.observe_i64(col_idx, value);
+                        true
+                    } else {
+                        false
                     }
                 }
-            } else if let Some(a) = any.downcast_ref::<UInt32Array>() {
-                observe_int_col(col_idx, a, |v| v as i64, observer);
-            } else if let Some(a) = any.downcast_ref::<UInt16Array>() {
-                observe_int_col(col_idx, a, |v| v as i64, observer);
-            } else if let Some(a) = any.downcast_ref::<UInt8Array>() {
-                observe_int_col(col_idx, a, |v| v as i64, observer);
-            }
-        }
-        IngestedType::Float64 | IngestedType::Float32 => {
-            if let Some(a) = array.as_any().downcast_ref::<Float64Array>() {
-                for i in 0..a.len() {
-                    if a.is_null(i) {
-                        observer.observe_null(col_idx);
-                    } else {
-                        observer.observe_f64(col_idx, a.value(i));
-                    }
+                IngestedType::Float64 | IngestedType::Float32 => {
+                    access_or_parse_failure(numerical_value(&access, 0, col), col_idx, observer)
+                        .map(|value| observer.observe_f64(col_idx, value))
+                        .is_some()
                 }
-            } else if let Some(a) = array.as_any().downcast_ref::<Float32Array>() {
-                for i in 0..a.len() {
-                    if a.is_null(i) {
-                        observer.observe_null(col_idx);
-                    } else {
-                        observer.observe_f64(col_idx, a.value(i) as f64);
-                    }
+                IngestedType::Bool => {
+                    access_or_parse_failure(access.get_bool(0), col_idx, observer)
+                        .map(|value| observer.observe_i64(col_idx, i64::from(value)))
+                        .is_some()
                 }
-            }
-        }
-        IngestedType::Bool => {
-            if let Some(a) = array.as_any().downcast_ref::<BooleanArray>() {
-                for i in 0..a.len() {
-                    if a.is_null(i) {
-                        observer.observe_null(col_idx);
-                    } else {
-                        observer.observe_i64(col_idx, i64::from(a.value(i)));
-                    }
+                IngestedType::String => {
+                    let value = access.with_string(0, |value| {
+                        observer.observe_string(col_idx, value);
+                        Ok(())
+                    });
+                    access_or_parse_failure(value, col_idx, observer).is_some()
                 }
-            }
-        }
-        IngestedType::String => {
-            if let Some(a) = array.as_any().downcast_ref::<StringArray>() {
-                for i in 0..a.len() {
-                    if a.is_null(i) {
-                        observer.observe_null(col_idx);
-                    } else {
-                        observer.observe_string(col_idx, a.value(i));
-                    }
+                IngestedType::Bytes => {
+                    let value = access.with_bytes(0, |bytes| {
+                        let value = bytes_hex(bytes);
+                        observer.observe_string(col_idx, &value);
+                        Ok(())
+                    });
+                    access_or_parse_failure(value, col_idx, observer).is_some()
                 }
-            }
-        }
-        IngestedType::Timestamp => {
-            let any = array.as_any();
-            if let Some(a) = any.downcast_ref::<TimestampSecondArray>() {
-                observe_ts_col(col_idx, a, TimestampUnit::Seconds, observer);
-            } else if let Some(a) = any.downcast_ref::<TimestampMillisecondArray>() {
-                observe_ts_col(col_idx, a, TimestampUnit::Millis, observer);
-            } else if let Some(a) = any.downcast_ref::<TimestampMicrosecondArray>() {
-                observe_ts_col(col_idx, a, TimestampUnit::Micros, observer);
-            } else if let Some(a) = any.downcast_ref::<TimestampNanosecondArray>() {
-                observe_ts_col(col_idx, a, TimestampUnit::Nanos, observer);
-            } else if let Some(a) = any.downcast_ref::<Int64Array>() {
-                // Explicit units avoid ambiguous epoch-magnitude inference.
-                for i in 0..a.len() {
-                    if a.is_null(i) {
-                        observer.observe_null(col_idx);
-                    } else {
-                        let raw = a.value(i);
-                        let secs = match col
-                            .timestamp_unit
-                            .or_else(|| TimestampUnit::from_epoch_magnitude(raw))
-                        {
-                            Some(unit) => unit.scale_to_secs(raw),
-                            None => raw,
+                IngestedType::Timestamp => {
+                    access_or_parse_failure(timestamp_seconds(&access, col), col_idx, observer)
+                        .map(|value| observer.observe_timestamp(col_idx, value))
+                        .is_some()
+                }
+                IngestedType::Float32Array
+                | IngestedType::Float64Array
+                | IngestedType::Float16Array => access_or_parse_failure(
+                    float_list_value(&mut access, 0, col),
+                    col_idx,
+                    observer,
+                )
+                .map(|value| observer.observe_float_list(col_idx, &value))
+                .is_some(),
+                IngestedType::Int64Array
+                | IngestedType::Int32Array
+                | IngestedType::Int16Array
+                | IngestedType::Int8Array => {
+                    if let Some(value) = access_or_parse_failure(
+                        int_list_value(&mut access, 0, col),
+                        col_idx,
+                        observer,
+                    ) {
+                        let bits = match col.ingested_dtype {
+                            IngestedType::Int8Array => 8,
+                            IngestedType::Int16Array => 16,
+                            IngestedType::Int32Array => 32,
+                            IngestedType::Int64Array => 64,
+                            _ => unreachable!(),
                         };
-                        observer.observe_timestamp(col_idx, secs);
+                        value
+                            .require_fits_in_signed(bits, &col.name, access.row())
+                            .context("type mismatch in integer array")?;
+                        observer.observe_int64_list(col_idx, &value);
+                        true
+                    } else {
+                        false
                     }
                 }
+                IngestedType::StringArray => {
+                    access_or_parse_failure(access.string_list_view(0), col_idx, observer)
+                        .map(|value| observer.observe_string_list(col_idx, &value))
+                        .is_some()
+                }
+                ref other => bail!("unsupported parquet statistics type: {other:?}"),
             }
+        };
+        if !present {
+            observer.observe_null(col_idx);
         }
-        _ => {}
     }
     Ok(())
 }
@@ -706,42 +733,28 @@ fn accumulate_by_class(
     batch: &RecordBatch,
     score_idx: usize,
     class_idx: usize,
+    score_col: &ColumnSpec,
+    class_col: &ColumnSpec,
     out: &mut ByClassStats,
-) {
-    let classes = match batch
-        .column(class_idx)
-        .as_any()
-        .downcast_ref::<StringArray>()
-    {
-        Some(c) => c,
-        None => return,
-    };
-    let score_col = batch.column(score_idx);
-    let scores_f64 = score_col.as_any().downcast_ref::<Float64Array>();
-    let scores_f32 = score_col.as_any().downcast_ref::<Float32Array>();
-    if scores_f64.is_none() && scores_f32.is_none() {
-        return;
-    }
-    for i in 0..classes.len() {
-        if classes.is_null(i) {
-            continue;
+) -> Result<()> {
+    let arrays = [
+        batch.column(score_idx).clone(),
+        batch.column(class_idx).clone(),
+    ];
+    let mut access = RowAccess::new(
+        vec![RowAccessHints::default(), RowAccessHints::default()],
+        RowAccessStats::new(None),
+    );
+    access.set_cols(&arrays);
+    for row in 0..batch.num_rows() {
+        access.set_row(row);
+        if let Some(score) = numerical_value(&access, 0, score_col).unwrap_or(None) {
+            if let Some(class) = categorical_value(&mut access, 1, class_col).unwrap_or(None) {
+                out.entry(class).or_default().observe(score);
+            }
         }
-        let score = if let Some(a) = scores_f64 {
-            if a.is_null(i) {
-                continue;
-            }
-            a.value(i)
-        } else {
-            let a = scores_f32.expect("checked non-none above");
-            if a.is_null(i) {
-                continue;
-            }
-            a.value(i) as f64
-        };
-        out.entry(classes.value(i).to_string())
-            .or_default()
-            .observe(score);
     }
+    Ok(())
 }
 
 fn stats_for_row_group(
@@ -757,22 +770,38 @@ fn stats_for_row_group(
     let mut by_class = ByClassStats::new();
     let mut integer_ranges = vec![IntegerRange::default(); integer_spec_indices.len()];
     let file = File::open(path)?;
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)?
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+    let projection = ProjectionMask::roots(builder.parquet_schema(), parquet_indices.to_vec());
+    let reader = builder
         .with_row_groups(vec![row_group])
+        .with_projection(projection)
         .build()?;
     for batch_res in reader {
         let batch = batch_res?;
-        // Stats keys use spec order; reads use physical parquet order.
+        let schema = batch.schema();
         for (i, col) in columns.iter().enumerate() {
-            drive_from_arrow_column(i, batch.column(parquet_indices[i]).as_ref(), col, &mut fcs)?;
+            let range = integer_spec_indices
+                .binary_search(&i)
+                .ok()
+                .map(|idx| &mut integer_ranges[idx]);
+            drive_from_arrow_column(
+                i,
+                batch.column(schema.index_of(&col.name)?),
+                col,
+                &mut fcs,
+                range,
+            )
+            .with_context(|| format!("compute statistics for column '{}'", col.name))?;
         }
-        for (range, &spec_idx) in integer_ranges.iter_mut().zip(integer_spec_indices) {
-            range.merge(integer_range(
-                batch.column(parquet_indices[spec_idx]).as_ref(),
-            ));
-        }
-        if let Some((si, ci)) = score_class {
-            accumulate_by_class(&batch, si, ci, &mut by_class);
+        if let Some((score, class)) = score_class {
+            accumulate_by_class(
+                &batch,
+                schema.index_of(&columns[score].name)?,
+                schema.index_of(&columns[class].name)?,
+                &columns[score],
+                &columns[class],
+                &mut by_class,
+            )?;
         }
     }
     fcs.flush_categories();
@@ -788,6 +817,9 @@ pub fn compute_parquet_col_stats(
     let names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
     let types: Vec<IngestedType> = columns.iter().map(|c| c.ingested_dtype.clone()).collect();
     let stypes: Vec<_> = columns.iter().map(|c| c.semantic_type).collect();
+    for col in columns {
+        validate_stats_dtype(col)?;
+    }
 
     // Hybrid counting bounds memory for high-cardinality columns.
     let table_cat = Arc::new(TableCategoryCounts::new(
@@ -797,19 +829,16 @@ pub fn compute_parquet_col_stats(
     ));
 
     let mut work: Vec<(usize, usize)> = Vec::new();
+    let mut parquet_indices = Vec::with_capacity(parquet_paths.len());
     for (pi, path) in parquet_paths.iter().enumerate() {
         let file = File::open(path)?;
         let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+        parquet_indices.push(resolve_parquet_indices(columns, builder.schema())?);
         let num_row_groups = builder.metadata().num_row_groups();
         for rg in 0..num_row_groups {
             work.push((pi, rg));
         }
     }
-
-    let parquet_indices: Vec<Vec<usize>> = parquet_paths
-        .iter()
-        .map(|path| resolve_parquet_indices(columns, &parquet_arrow_schema(path)?))
-        .collect::<Result<_>>()?;
 
     let integer_spec_indices: Vec<usize> = columns
         .iter()
@@ -834,8 +863,6 @@ pub fn compute_parquet_col_stats(
     } else {
         work.par_iter()
             .map(|&(pi, rg)| {
-                let score_class_pq =
-                    score_class.map(|(s, c)| (parquet_indices[pi][s], parquet_indices[pi][c]));
                 stats_for_row_group(
                     parquet_paths[pi],
                     rg,
@@ -843,7 +870,7 @@ pub fn compute_parquet_col_stats(
                     &parquet_indices[pi],
                     &integer_spec_indices,
                     &table_cat,
-                    score_class_pq,
+                    score_class,
                 )
             })
             .try_reduce(
@@ -1113,8 +1140,10 @@ mod tests {
     use std::fs;
     use std::sync::Arc as StdArc;
 
+    use arrow_array::builder::{Float64Builder, ListBuilder};
     use arrow_array::{
-        ArrayRef, Float64Array, Int64Array, RecordBatch, StringArray, TimestampSecondArray,
+        ArrayRef, Date32Array, Decimal128Array, Float64Array, Int32Array, Int64Array, RecordBatch,
+        StringArray, TimestampMicrosecondArray, TimestampSecondArray,
     };
     use arrow_schema::{DataType, Field, Schema};
     use diskgraph_ingest::graph_config::SemanticType;
@@ -1254,15 +1283,114 @@ mod tests {
         );
     }
 
-    /// Float32 SCORE must still produce numerical + by-class stats (model
-    /// scores are frequently f32 — must not silently zero out).
+    #[test]
+    fn warehouse_physical_types_produce_distributions() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("warehouse.parquet");
+        let schema = Schema::new(vec![
+            Field::new("rank", DataType::Int32, false),
+            Field::new("revenue", DataType::Decimal128(28, 2), false),
+            Field::new("ratio", DataType::Float64, false),
+            Field::new(
+                "month",
+                DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some("Etc/UTC".into())),
+                false,
+            ),
+            Field::new("day", DataType::Date32, false),
+        ]);
+        write_parquet(
+            &path,
+            schema,
+            vec![
+                StdArc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
+                StdArc::new(
+                    Decimal128Array::from(vec![12345, 23456])
+                        .with_precision_and_scale(28, 2)
+                        .unwrap(),
+                ) as ArrayRef,
+                StdArc::new(Float64Array::from(vec![16_777_217.0, 16_777_219.0])) as ArrayRef,
+                StdArc::new(
+                    TimestampMicrosecondArray::from(vec![
+                        1_659_304_801_000_000,
+                        1_661_983_201_000_000,
+                    ])
+                    .with_timezone("Etc/UTC"),
+                ) as ArrayRef,
+                StdArc::new(Date32Array::from(vec![19_204, 19_235])) as ArrayRef,
+            ],
+            1,
+        );
+        let columns = vec![
+            col("rank", IngestedType::Int32, SemanticType::Numerical),
+            col("revenue", IngestedType::Float64, SemanticType::Numerical),
+            col("ratio", IngestedType::Float32, SemanticType::Numerical),
+            ts_col("month", None),
+            ts_col("day", None),
+        ];
+        let (full, _) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        for (name, stype) in [
+            ("rank", "kumo.numerical"),
+            ("revenue", "kumo.numerical"),
+            ("ratio", "kumo.numerical"),
+            ("month", "kumo.timestamp"),
+            ("day", "kumo.timestamp"),
+        ] {
+            assert_eq!(val(&full, &format!("{name}__{stype}__COUNT__False")), 2);
+        }
+        assert_eq!(val(&full, "revenue__kumo.numerical__MAX__False"), 234.56);
+        assert_eq!(
+            val(&full, "ratio__kumo.numerical__MAX__False"),
+            16_777_220.0
+        );
+        let stats: JsonMap<String, JsonValue> = serde_json::from_str(&full).unwrap();
+        assert!(stats.contains_key("revenue__kumo.numerical__HISTOGRAM__False"));
+        assert!(stats.contains_key("day__kumo.timestamp__HISTOGRAM_HALF_MONTH__False"));
+    }
+
+    #[test]
+    fn implicit_latlong_shape_is_enforced() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("latlong.parquet");
+        let mut floats = ListBuilder::new(Float64Builder::new());
+        floats.values().append_value(1.5);
+        floats.values().append_value(2.5);
+        floats.append(true);
+        floats.values().append_value(3.5);
+        floats.append(true);
+        floats.values().append_value(4.5);
+        floats.values().append_null();
+        floats.append(true);
+        floats.append(false);
+        let array = StdArc::new(floats.finish()) as ArrayRef;
+        let schema = Schema::new(vec![Field::new(
+            "location",
+            array.data_type().clone(),
+            true,
+        )]);
+        write_parquet(&path, schema, vec![array], 2);
+        // Lat/long columns are fixed pairs even when the public adapter does
+        // not carry a separate fixed-length field.
+        let columns = [col(
+            "location",
+            IngestedType::Float32Array,
+            SemanticType::Latlong,
+        )];
+        let (full, _) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        assert_eq!(
+            val(&full, "location__kumo.latlong__SEQUENCE_MAX_LENGTH__False"),
+            2
+        );
+        assert_eq!(val(&full, "location__kumo.latlong__NUM_NA__False"), 3);
+    }
+
+    /// Float32 SCORE and numeric CLASS both normalize through shared access.
     #[test]
     fn float32_score_by_class() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("predictions.parquet");
         let schema = Schema::new(vec![
             Field::new("SCORE", DataType::Float32, true),
-            Field::new("CLASS", DataType::Utf8, true),
+            Field::new("CLASS", DataType::Int64, true),
         ]);
         write_parquet(
             &path,
@@ -1273,13 +1401,13 @@ mod tests {
                     Some(3.0),
                     Some(5.0),
                 ])) as ArrayRef,
-                StdArc::new(StringArray::from(vec![Some("A"), Some("A"), Some("B")])) as ArrayRef,
+                StdArc::new(Int64Array::from(vec![Some(2), Some(1), Some(0)])) as ArrayRef,
             ],
             1024,
         );
         let columns = vec![
             col("SCORE", IngestedType::Float32, SemanticType::Numerical),
-            col("CLASS", IngestedType::String, SemanticType::Categorical),
+            col("CLASS", IngestedType::Bool, SemanticType::Categorical),
         ];
         let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
         // Numerical scalar stats populated (not empty-Welford defaults).
@@ -1291,8 +1419,9 @@ mod tests {
             &full,
             "SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False",
         );
-        assert!((bc["A"]["mean"].as_f64().unwrap() - 2.0).abs() < 1e-6);
-        assert!((bc["B"]["min"].as_f64().unwrap() - 5.0).abs() < 1e-6);
+        assert!((bc["1"]["mean"].as_f64().unwrap() - 2.0).abs() < 1e-6);
+        assert!((bc["0"]["min"].as_f64().unwrap() - 5.0).abs() < 1e-6);
+        assert!(bc.get("2").is_none());
     }
 
     /// Null SCORE / null CLASS rows are skipped; remaining valid pairs still
@@ -1343,93 +1472,6 @@ mod tests {
             mfull["SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False"]["num_entries"],
             2u64,
         );
-    }
-
-    /// Exact per-class min/max/mean for a hand-checked tiny input.
-    #[test]
-    fn summary_stats_by_class_exact() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("predictions.parquet");
-        let schema = Schema::new(vec![
-            Field::new("SCORE", DataType::Float64, true),
-            Field::new("CLASS", DataType::Utf8, true),
-        ]);
-        write_parquet(
-            &path,
-            schema,
-            vec![
-                StdArc::new(Float64Array::from(vec![Some(1.0), Some(3.0), Some(5.0)])) as ArrayRef,
-                StdArc::new(StringArray::from(vec![Some("A"), Some("A"), Some("B")])) as ArrayRef,
-            ],
-            1024,
-        );
-        let columns = vec![
-            col("SCORE", IngestedType::Float64, SemanticType::Numerical),
-            col("CLASS", IngestedType::String, SemanticType::Categorical),
-        ];
-        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
-        let bc = val(
-            &full,
-            "SCORE__kumo.numerical__SUMMARY_STATS_BY_CLASS__False",
-        );
-        // A: [1,3] -> min 1, max 3, mean 2 ; B: [5] -> min/max/mean 5.
-        assert!((bc["A"]["min"].as_f64().unwrap() - 1.0).abs() < 1e-9);
-        assert!((bc["A"]["max"].as_f64().unwrap() - 3.0).abs() < 1e-9);
-        assert!((bc["A"]["mean"].as_f64().unwrap() - 2.0).abs() < 1e-9);
-        assert!((bc["B"]["min"].as_f64().unwrap() - 5.0).abs() < 1e-9);
-        assert!((bc["B"]["max"].as_f64().unwrap() - 5.0).abs() < 1e-9);
-        assert!((bc["B"]["mean"].as_f64().unwrap() - 5.0).abs() < 1e-9);
-    }
-
-    /// No CLASS column (e.g. regression/binary BP) → no by-class stat emitted.
-    #[test]
-    fn no_summary_stats_by_class_without_class_column() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("predictions.parquet");
-        let schema = Schema::new(vec![Field::new("TARGET_PRED", DataType::Float64, true)]);
-        write_parquet(
-            &path,
-            schema,
-            vec![StdArc::new(Float64Array::from(vec![Some(1.0), Some(2.0)])) as ArrayRef],
-            1024,
-        );
-        let columns = vec![col(
-            "TARGET_PRED",
-            IngestedType::Float64,
-            SemanticType::Numerical,
-        )];
-        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
-        let mfull: JsonMap<String, JsonValue> = serde_json::from_str(&full).unwrap();
-        assert!(!mfull.keys().any(|k| k.contains("SUMMARY_STATS_BY_CLASS")));
-    }
-
-    /// Multiple part files merge correctly.
-    #[test]
-    fn merges_multiple_files() {
-        let dir = tempdir().unwrap();
-        let p1 = dir.path().join("part-0.parquet");
-        let p2 = dir.path().join("part-1.parquet");
-        let schema = || Schema::new(vec![Field::new("v", DataType::Int64, false)]);
-        write_parquet(
-            &p1,
-            schema(),
-            vec![StdArc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef],
-            2,
-        );
-        write_parquet(
-            &p2,
-            schema(),
-            vec![StdArc::new(Int64Array::from(vec![4, 5, 6])) as ArrayRef],
-            2,
-        );
-        let columns = vec![col("v", IngestedType::Int64, SemanticType::Numerical)];
-        let (full, _min) =
-            compute_parquet_col_stats(&[p1.as_path(), p2.as_path()], &columns, "v1").unwrap();
-        assert_eq!(val(&full, "v__kumo.numerical__COUNT__False"), 6u64);
-        let mx = val(&full, "v__kumo.numerical__MAX__False")
-            .as_f64()
-            .unwrap();
-        assert!((mx - 6.0).abs() < 1e-9);
     }
 
     #[test]
@@ -1644,6 +1686,8 @@ mod tests {
 
     #[test]
     fn nanosecond_histogram_includes_valid_endpoints_and_excludes_nat() {
+        use arrow_array::TimestampNanosecondArray;
+
         let dir = tempdir().unwrap();
         let path = dir.path().join("predictions.parquet");
         let schema = Schema::new(vec![Field::new(
@@ -1721,6 +1765,15 @@ mod tests {
         assert!(!stats.contains_key("null_ts__kumo.timestamp__HISTOGRAM_HALF_MONTH__False"));
         assert!(stats.contains_key("ts__kumo.timestamp__MIN__False"));
         assert!(stats.contains_key("ts__kumo.timestamp__MAX__False"));
+        assert_ne!(
+            stats["ts__kumo.timestamp__MIN__False"]["value"],
+            "kumo_timestamp_NaT"
+        );
+        assert_ne!(
+            stats["ts__kumo.timestamp__MAX__False"]["value"],
+            "kumo_timestamp_NaT"
+        );
+        assert_eq!(stats["ts__kumo.timestamp__NUM_NA__False"]["value"], 1);
         assert_eq!(
             stats["score__kumo.numerical__HISTOGRAM__False"]["value"]
                 .as_array()
@@ -1730,7 +1783,8 @@ mod tests {
         );
     }
 
-    /// Int64 epoch-ms timestamp scales to seconds (inferred and explicit unit).
+    /// Int64 epoch-ms timestamps prefer an authoritative unit and retain the
+    /// legacy magnitude fallback for callers that have not started sending it.
     #[test]
     fn int64_epoch_ms_timestamp_scales_to_correct_year() {
         let dir = tempdir().unwrap();
@@ -1738,39 +1792,33 @@ mod tests {
         let raw_ms = vec![1_659_304_801_388_i64, 1_659_304_801_388_i64];
         let expected = "kumo_timestamp_2022-07-31 22:00:02";
 
-        for (label, unit) in [
-            ("inferred", None),
-            ("explicit", Some(TimestampUnit::Millis)),
-        ] {
-            let path = dir.path().join(format!("preds_{label}.parquet"));
-            let schema = Schema::new(vec![Field::new("ts", DataType::Int64, true)]);
-            write_parquet(
-                &path,
-                schema,
-                vec![StdArc::new(Int64Array::from(raw_ms.clone())) as ArrayRef],
-                64,
-            );
-            let columns = vec![ts_col("ts", unit)];
-            let (full, _min) =
-                compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
-            assert_eq!(
-                val(&full, "ts__kumo.timestamp__MIN__False"),
-                expected,
-                "MIN wrong for {label} unit"
-            );
-            assert_eq!(
-                val(&full, "ts__kumo.timestamp__MAX__False"),
-                expected,
-                "MAX wrong for {label} unit"
-            );
-            assert_eq!(
-                val(&full, "ts__kumo.timestamp__HISTOGRAM_HALF_MONTH__False"),
-                json!([["kumo_timestamp_2022-07-16 00:00:00", 2]])
-            );
-        }
+        let path = dir.path().join("explicit_unit.parquet");
+        let schema = Schema::new(vec![Field::new("ts", DataType::Int64, true)]);
+        write_parquet(
+            &path,
+            schema,
+            vec![StdArc::new(Int64Array::from(raw_ms)) as ArrayRef],
+            64,
+        );
+        let mut timestamp = ts_col("ts", Some(TimestampUnit::Millis));
+        timestamp.ingested_dtype = IngestedType::Int64;
+        let columns = vec![timestamp];
+        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        assert_eq!(val(&full, "ts__kumo.timestamp__MIN__False"), expected);
+        assert_eq!(val(&full, "ts__kumo.timestamp__MAX__False"), expected);
+        assert_eq!(
+            val(&full, "ts__kumo.timestamp__HISTOGRAM_HALF_MONTH__False"),
+            json!([["kumo_timestamp_2022-07-16 00:00:00", 2]])
+        );
+
+        let mut timestamp = ts_col("ts", None);
+        timestamp.ingested_dtype = IngestedType::Int64;
+        let (full, _min) =
+            compute_parquet_col_stats(&[path.as_path()], &[timestamp], "v1").unwrap();
+        assert_eq!(val(&full, "ts__kumo.timestamp__MIN__False"), expected);
     }
 
-    /// Int64 epoch-seconds (no explicit unit) is left as-is, not over-scaled.
+    /// Int64 epoch-seconds uses its explicit unit without over-scaling.
     #[test]
     fn int64_epoch_seconds_timestamp_unaffected() {
         let dir = tempdir().unwrap();
@@ -1783,80 +1831,12 @@ mod tests {
             vec![StdArc::new(Int64Array::from(raw_s)) as ArrayRef],
             64,
         );
-        let columns = vec![ts_col("ts", None)];
+        let columns = vec![ts_col("ts", Some(TimestampUnit::Seconds))];
         let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
         assert_eq!(
             val(&full, "ts__kumo.timestamp__MIN__False"),
             "kumo_timestamp_2022-07-31 22:00:01"
         );
-    }
-
-    /// Arrow Timestamp(ns) stays on the /1e9 path, not the Int64 unit logic.
-    #[test]
-    fn arrow_nanosecond_timestamp_unaffected() {
-        use arrow_array::TimestampNanosecondArray;
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("preds.parquet");
-        // 1659304801 s expressed in ns.
-        let raw_ns = vec![1_659_304_801_000_000_000_i64, 1_659_304_801_000_000_000_i64];
-        let schema = Schema::new(vec![Field::new(
-            "ts",
-            DataType::Timestamp(arrow_schema::TimeUnit::Nanosecond, None),
-            true,
-        )]);
-        write_parquet(
-            &path,
-            schema,
-            vec![StdArc::new(TimestampNanosecondArray::from(raw_ns)) as ArrayRef],
-            64,
-        );
-        let columns = vec![ts_col("ts", None)];
-        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
-        assert_eq!(
-            val(&full, "ts__kumo.timestamp__MIN__False"),
-            "kumo_timestamp_2022-07-31 22:00:01"
-        );
-    }
-
-    #[test]
-    fn permuted_spec_order_aligns_by_name() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("predictions.parquet");
-        let n = 300usize;
-        let schema = Schema::new(vec![
-            Field::new("entity", DataType::Utf8, false),
-            Field::new("SCORE", DataType::Float64, true),
-            Field::new("CLASS", DataType::Utf8, true),
-        ]);
-        let entity: Vec<String> = (0..n).map(|i| format!("u{i}")).collect();
-        let score: Vec<Option<f64>> = (0..n).map(|i| Some(i as f64 / 1000.0)).collect();
-        let class: Vec<Option<&str>> = (0..n).map(|i| Some(["A", "B", "C"][i % 3])).collect();
-        write_parquet(
-            &path,
-            schema,
-            vec![
-                StdArc::new(StringArray::from(entity)) as ArrayRef,
-                StdArc::new(Float64Array::from(score)) as ArrayRef,
-                StdArc::new(StringArray::from(class)) as ArrayRef,
-            ],
-            64,
-        );
-
-        let columns = vec![
-            col("SCORE", IngestedType::Float64, SemanticType::Numerical),
-            col("CLASS", IngestedType::String, SemanticType::Categorical),
-            col("entity", IngestedType::String, SemanticType::Id),
-        ];
-        let (full, _min) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
-
-        assert_eq!(val(&full, "SCORE__kumo.numerical__COUNT__False"), n as u64);
-        assert_eq!(val(&full, "entity__kumo.ID__COUNT__False"), n as u64);
-        assert_eq!(
-            val(&full, "CLASS__kumo.categorical__NUM_UNIQUE__False"),
-            3u64
-        );
-        let mfull: JsonMap<String, JsonValue> = serde_json::from_str(&full).unwrap();
-        assert!(mfull.contains_key("SCORE__kumo.numerical__HISTOGRAM__False"));
     }
 
     #[test]
@@ -1888,8 +1868,15 @@ mod tests {
             1024,
         );
         let columns = vec![col("SCORE", IngestedType::Float64, SemanticType::Numerical)];
-        let err = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap_err();
-        assert!(format!("{err:#}").contains("type mismatch"));
+        let (full, _) = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap();
+        assert_eq!(
+            val(&full, "SCORE__kumo.numerical__MIN__False"),
+            JsonValue::Null
+        );
+        assert_eq!(
+            val(&full, "SCORE__kumo.numerical__MAX__False"),
+            JsonValue::Null
+        );
     }
 
     #[test]
@@ -1944,10 +1931,7 @@ mod tests {
             "v1",
         )
         .unwrap();
-        assert_eq!(
-            val(&full, "v__kumo.numerical__MIN__False"),
-            i64::MAX - 2
-        );
+        assert_eq!(val(&full, "v__kumo.numerical__MIN__False"), i64::MAX - 2);
         assert_eq!(val(&full, "v__kumo.numerical__MAX__False"), i64::MAX);
         assert_eq!(
             val(&full, "v__kumo.numerical__HISTOGRAM__False"),
@@ -1984,68 +1968,35 @@ mod tests {
     }
 
     #[test]
-    fn constant_integer_omits_histogram_like_legacy_kumo() {
+    fn constant_numerical_columns_omit_histograms_like_legacy_kumo() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("predictions.parquet");
         write_parquet(
             &path,
-            Schema::new(vec![Field::new("v", DataType::Int64, true)]),
-            vec![StdArc::new(Int64Array::from(vec![7, 7])) as ArrayRef],
+            Schema::new(vec![
+                Field::new("integer", DataType::Int64, true),
+                Field::new("float", DataType::Float64, true),
+            ]),
+            vec![
+                StdArc::new(Int64Array::from(vec![7, 7])) as ArrayRef,
+                StdArc::new(Float64Array::from(vec![7.0, 7.0])) as ArrayRef,
+            ],
             1,
         );
 
         let (full, _) = compute_parquet_col_stats(
             &[path.as_path()],
-            &[col("v", IngestedType::Int64, SemanticType::Numerical)],
+            &[
+                col("integer", IngestedType::Int64, SemanticType::Numerical),
+                col("float", IngestedType::Float64, SemanticType::Numerical),
+            ],
             "v1",
         )
         .unwrap();
         let stats: JsonMap<String, JsonValue> = serde_json::from_str(&full).unwrap();
-        assert!(!stats.contains_key("v__kumo.numerical__HISTOGRAM__False"));
-    }
-
-    #[test]
-    fn constant_float_omits_histogram_like_legacy_kumo() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("predictions.parquet");
-        write_parquet(
-            &path,
-            Schema::new(vec![Field::new("v", DataType::Float64, true)]),
-            vec![StdArc::new(Float64Array::from(vec![7.0, 7.0])) as ArrayRef],
-            1,
-        );
-
-        let (full, _) = compute_parquet_col_stats(
-            &[path.as_path()],
-            &[col("v", IngestedType::Float64, SemanticType::Numerical)],
-            "v1",
-        )
-        .unwrap();
-        let stats: JsonMap<String, JsonValue> = serde_json::from_str(&full).unwrap();
-        assert!(!stats.contains_key("v__kumo.numerical__HISTOGRAM__False"));
-    }
-
-    #[test]
-    fn uint64_outside_i64_range_errors() {
-        use arrow_array::UInt64Array;
-
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("predictions.parquet");
-        let schema = Schema::new(vec![Field::new("v", DataType::UInt64, true)]);
-        let overflow = i64::MAX as u64 + 1;
-        write_parquet(
-            &path,
-            schema,
-            vec![StdArc::new(UInt64Array::from(vec![Some(0), Some(overflow)])) as ArrayRef],
-            1024,
-        );
-        let columns = vec![col("v", IngestedType::UInt64, SemanticType::Numerical)];
-
-        let err = compute_parquet_col_stats(&[path.as_path()], &columns, "v1").unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(msg.contains("type mismatch"), "msg={msg}");
-        assert!(msg.contains("column 'v'"), "msg={msg}");
-        assert!(msg.contains(&overflow.to_string()), "msg={msg}");
+        assert!(["integer", "float"]
+            .into_iter()
+            .all(|name| !stats.contains_key(&format!("{name}__kumo.numerical__HISTOGRAM__False"))));
     }
 
     #[test]

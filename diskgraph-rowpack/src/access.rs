@@ -811,7 +811,10 @@ impl<'p> RowAccess<'p> {
                     .as_any()
                     .downcast_ref::<arrow_array::UInt64Array>()
                     .ok_or_else(|| anyhow!("uint64 cast"))?;
-                Ok(Some(arr.value(self.row) as i64))
+                let value = arr.value(self.row);
+                i64::try_from(value)
+                    .map_err(|_| anyhow!("type mismatch: uint64 value {value} outside i64 range"))
+                    .map(Some)
             }
             DataType::UInt32 => {
                 let arr = array
@@ -886,7 +889,9 @@ impl<'p> RowAccess<'p> {
                     .ok_or_else(|| anyhow!("decimal128 cast"))?;
                 let value = arr.value(self.row);
                 let scaled = apply_decimal_scale_i128(value, i32::from(*scale));
-                Ok(Some(scaled as i64))
+                i64::try_from(scaled)
+                    .map_err(|_| anyhow!("decimal128 overflow"))
+                    .map(Some)
             }
             DataType::Decimal256(_, scale) => {
                 let arr = array
@@ -2364,7 +2369,9 @@ impl<'p> RowAccess<'p> {
                         .as_any()
                         .downcast_ref::<arrow_array::UInt64Array>()
                         .ok_or_else(|| anyhow!("uint64 cast"))?
-                        .value(self.row) as i64,
+                        .value(self.row)
+                        .try_into()
+                        .map_err(|_| anyhow!("uint64 date overflow"))?,
                     DataType::UInt32 => array
                         .as_any()
                         .downcast_ref::<arrow_array::UInt32Array>()
@@ -2529,7 +2536,9 @@ impl<'p> RowAccess<'p> {
                         .as_any()
                         .downcast_ref::<arrow_array::UInt64Array>()
                         .ok_or_else(|| anyhow!("uint64 cast"))?
-                        .value(self.row) as i64,
+                        .value(self.row)
+                        .try_into()
+                        .map_err(|_| anyhow!("uint64 timestamp overflow"))?,
                     DataType::UInt32 => array
                         .as_any()
                         .downcast_ref::<arrow_array::UInt32Array>()
@@ -3562,7 +3571,7 @@ impl<'p> RowAccess<'p> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::{Decimal128Array, Decimal256Array, Int64Array, StringArray};
+    use arrow_array::{Decimal128Array, Decimal256Array, Int64Array, StringArray, UInt64Array};
     use arrow_buffer::i256;
     use arrow_schema::TimeUnit;
 
@@ -3581,6 +3590,30 @@ mod tests {
             timestamp_unit: Some(unit),
             ..RowAccessHints::default()
         }
+    }
+
+    #[test]
+    fn i64_backed_conversions_reject_unsigned_and_decimal_overflow() {
+        let overflow = i64::MAX as u64 + 1;
+        let mut row = row_access_for(
+            Arc::new(UInt64Array::from(vec![overflow])),
+            ts_hint(TimeUnit::Second),
+        );
+        row.set_row(0);
+        assert!(row.get_int64(0).is_err());
+        assert!(row.get_date(0).is_err());
+        assert!(row.get_timestamp(0).is_err());
+
+        let mut row = row_access_for(
+            Arc::new(
+                Decimal128Array::from(vec![i128::from(i64::MAX) + 1])
+                    .with_precision_and_scale(38, 0)
+                    .unwrap(),
+            ),
+            RowAccessHints::default(),
+        );
+        row.set_row(0);
+        assert!(row.get_int64(0).is_err());
     }
 
     // An epoch stored as `NUMBER(38,0)` (Snowflake) / `DECIMAL(p,0)`

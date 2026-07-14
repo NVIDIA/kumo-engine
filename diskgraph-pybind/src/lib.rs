@@ -1165,12 +1165,15 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
 ///         of a part-*.parquet directory).
 ///     kumo_column_specs_json: JSON list of ``{"name", "stype", "dtype"}``
 ///         records (optional ``"timestamp_unit"``: ``"s"``/``"ms"``/``"us"``/
-///         ``"ns"``). Each spec's ``name`` is matched to its physical parquet
+///         ``"ns"`` and optional ``"timestamp_format"``). Each spec's
+///         ``name`` is matched to its physical parquet
 ///         column by name, so the list order need not match the parquet
-///         schema. A spec name absent from the parquet, or an Arrow type
-///         incompatible with the declared ``dtype``, raises
-///         ``DiskgraphDataError``. Mapped via the same ``map_kumo_stype`` /
-///         ``map_kumo_dtype`` ingest uses.
+///         schema. Integer-physical timestamps prefer authoritative unit/format
+///         metadata and retain magnitude inference for older callers. A missing
+///         name, Arrow Null column, or narrow integer-array overflow raises
+///         ``DiskgraphDataError``; other incompatible values are counted as
+///         invalid. Semantic and logical types are mapped through the same
+///         ``map_kumo_stype`` / ``map_kumo_dtype`` helpers ingest uses.
 ///     data_version: version string stamped into every emitted entry.
 ///
 /// Returns ``(full_json, min_json)`` — the full ``kumo_col_stats_v1`` map and
@@ -1198,12 +1201,13 @@ fn compute_col_stats_for_parquet(
         name: String,
         stype: String,
         dtype: String,
-        // Optional epoch unit for integer-physical timestamp columns ("s" /
-        // "ms" / "us" / "ns"). Usually absent for BP-output specs, in which
-        // case the BP col-stats Int64 path infers the unit from value
-        // magnitude. When supplied it is authoritative and threads through.
+        // Authoritative epoch unit for integer-physical timestamp columns
+        // ("s" / "ms" / "us" / "ns"). Arrow Timestamp columns carry their
+        // own unit and do not need this field; integer timestamps do.
         #[serde(default)]
         timestamp_unit: Option<String>,
+        #[serde(default)]
+        timestamp_format: Option<String>,
     }
 
     let kumo_cols: Vec<KumoColumnSpec> = serde_json::from_str(kumo_column_specs_json)
@@ -1219,13 +1223,22 @@ fn compute_col_stats_for_parquet(
                     c.name
                 ))
             })?;
+            let timestamp_unit = c
+                .timestamp_unit
+                .as_deref()
+                .map(|unit| {
+                    map_timestamp_unit(unit).ok_or_else(|| {
+                        DiskgraphConfigError::new_err(format!("unsupported timestamp unit '{unit}'"))
+                    })
+                })
+                .transpose()?;
             Ok(ColumnSpec {
                 name: c.name,
                 source_dtype: None,
                 ingested_dtype,
                 fixed_len: None,
-                timestamp_format: None,
-                timestamp_unit: c.timestamp_unit.as_deref().and_then(map_timestamp_unit),
+                timestamp_format: c.timestamp_format,
+                timestamp_unit,
                 precision: None,
                 scale: None,
                 semantic_type: map_kumo_stype(&c.stype),
@@ -1241,10 +1254,9 @@ fn compute_col_stats_for_parquet(
             paths_owned.iter().map(std::path::Path::new).collect();
         compute_parquet_col_stats(&paths, &columns, &data_version)
     })
-    // Route through `map_anyhow_err` so a name/type-mismatch surfaced by
-    // `resolve_parquet_indices` (message carries "schema error" / "type
-    // mismatch") is classified as `DiskgraphDataError`, not a blanket
-    // system error. Unclassified payloads still fall through to
+    // Route schema failures through the shared exception classifier rather
+    // than reporting missing columns or invalid timestamp metadata as a
+    // blanket system error. Unclassified failures still fall through to
     // `DiskgraphSystemError`.
     .map_err(map_anyhow_err)
 }
