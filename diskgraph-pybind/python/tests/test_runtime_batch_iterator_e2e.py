@@ -21,6 +21,7 @@ from __future__ import annotations
 import inspect
 import json
 import pathlib
+import struct
 from typing import Any
 
 import pyarrow as pa
@@ -455,6 +456,192 @@ def test_iterator_selected_stage_node_ids_rejects_invalid_id(seed_table_fixture)
             batch_size=2,
             selected_stage_node_ids=[0, 999],
         )
+
+
+def test_iterator_weighted_seed_sampling_draws_with_replacement(
+    seed_table_fixture,
+    tmp_path,
+):
+    sidecar_dir = tmp_path / "weighted"
+    sidecar_dir.mkdir()
+    false_node_ids = sidecar_dir / "false_node_ids.bin"
+    true_node_ids = sidecar_dir / "true_node_ids.bin"
+    false_node_ids.write_bytes((0).to_bytes(8, "little") + (1).to_bytes(8, "little"))
+    true_node_ids.write_bytes((2).to_bytes(8, "little"))
+
+    manifest = json.loads(pathlib.Path(
+        seed_table_fixture["manifest_path"]).read_text())
+    stage = manifest["stages"]["train"]
+    stage["binary_label_index"] = {
+        "false_node_ids": str(false_node_ids),
+        "false_count": 2,
+        "true_node_ids": str(true_node_ids),
+        "true_count": 1,
+    }
+    manifest_path = tmp_path / "weighted_manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+
+    iterator, num_samples = make_runtime_batch_iterator(
+        dataset_ref=str(manifest_path),
+        stage="train",
+        sampling_plan=_sampling_plan(),
+        num_workers=1,
+        worker_id=0,
+        shuffle=False,
+        rnd_seed=11,
+        epoch=0,
+        batch_size=2,
+        weighted_seed_sampling={
+            "false_weight": 1.0,
+            "true_weight": 10.0,
+            "num_samples": 6,
+        },
+    )
+
+    assert num_samples == 6
+    seen: list[int] = []
+    for batch in iterator:
+        seen.extend(int(v) for v in batch["task"]["tt_stage_node_ids"].to_pylist())
+    assert len(seen) == 6
+    assert set(seen) <= {0, 1, 2}
+    assert seen.count(2) > seen.count(0)
+    assert seen.count(2) > seen.count(1)
+
+
+def test_iterator_weighted_seed_sampling_partitions_across_workers(
+    seed_table_fixture,
+    tmp_path,
+):
+    sidecar_dir = tmp_path / "weighted_workers"
+    sidecar_dir.mkdir()
+    false_node_ids = sidecar_dir / "false_node_ids.bin"
+    true_node_ids = sidecar_dir / "true_node_ids.bin"
+    false_values = [0, 1, 2]
+    true_values = [3, 4, 5]
+    false_node_ids.write_bytes(
+        b"".join(value.to_bytes(8, "little") for value in false_values)
+    )
+    true_node_ids.write_bytes(
+        b"".join(value.to_bytes(8, "little") for value in true_values)
+    )
+
+    manifest = json.loads(pathlib.Path(
+        seed_table_fixture["manifest_path"]).read_text())
+    stage = manifest["stages"]["train"]
+    stage["binary_label_index"] = {
+        "false_node_ids": str(false_node_ids),
+        "false_count": len(false_values),
+        "true_node_ids": str(true_node_ids),
+        "true_count": len(true_values),
+    }
+    manifest_path = tmp_path / "weighted_workers_manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+
+    sampling_config = {
+        "false_weight": 1.0,
+        "true_weight": 2.0,
+        "num_samples": 17,
+    }
+
+    def collect(worker_id: int, num_workers: int) -> tuple[list[int], int]:
+        iterator, num_samples = make_runtime_batch_iterator(
+            dataset_ref=str(manifest_path),
+            stage="train",
+            sampling_plan=_sampling_plan(),
+            num_workers=num_workers,
+            worker_id=worker_id,
+            shuffle=False,
+            rnd_seed=37,
+            epoch=2,
+            batch_size=3,
+            weighted_seed_sampling=sampling_config,
+        )
+        seen: list[int] = []
+        for batch in iterator:
+            seen.extend(
+                int(v) for v in batch["task"]["tt_stage_node_ids"].to_pylist()
+            )
+        return seen, num_samples
+
+    global_seen, global_num_samples = collect(worker_id=0, num_workers=1)
+    assert global_num_samples == sampling_config["num_samples"]
+
+    num_workers = 4
+    seen_by_worker: list[list[int]] = []
+    for worker_id in range(num_workers):
+        seen, num_samples = collect(worker_id=worker_id, num_workers=num_workers)
+        expected = [
+            node_id
+            for pos, node_id in enumerate(global_seen)
+            if pos % num_workers == worker_id
+        ]
+        assert num_samples == len(expected)
+        assert seen == expected
+        seen_by_worker.append(seen)
+
+    reassembled: list[int] = []
+    cursors = [0] * num_workers
+    for pos in range(len(global_seen)):
+        worker_id = pos % num_workers
+        reassembled.append(seen_by_worker[worker_id][cursors[worker_id]])
+        cursors[worker_id] += 1
+    assert reassembled == global_seen
+
+
+def test_iterator_row_weight_seed_sampling_uses_cdf(
+    seed_table_fixture,
+    tmp_path,
+):
+    sidecar_dir = tmp_path / "row_weights"
+    sidecar_dir.mkdir()
+    node_ids = sidecar_dir / "node_ids.bin"
+    cdf = sidecar_dir / "cdf.bin"
+    node_ids.write_bytes(b"".join(value.to_bytes(8, "little") for value in [0, 1, 2]))
+    weights = [0.1, 0.1, 10.0]
+    total = 0.0
+    cdf_bytes = bytearray()
+    for weight in weights:
+        total += weight
+        cdf_bytes.extend(struct.pack("<d", total))
+    cdf.write_bytes(cdf_bytes)
+
+    manifest = json.loads(pathlib.Path(
+        seed_table_fixture["manifest_path"]).read_text())
+    manifest["stages"]["train"]["sample_weight_index"] = {
+        "all": {
+            "node_ids": str(node_ids),
+            "cdf": str(cdf),
+            "count": 3,
+            "total_weight": total,
+        },
+    }
+    manifest_path = tmp_path / "row_weight_manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+
+    iterator, num_samples = make_runtime_batch_iterator(
+        dataset_ref=str(manifest_path),
+        stage="train",
+        sampling_plan=_sampling_plan(),
+        num_workers=1,
+        worker_id=0,
+        shuffle=False,
+        rnd_seed=19,
+        epoch=0,
+        batch_size=3,
+        weighted_seed_sampling={
+            "use_sample_weights": True,
+            "num_samples": 12,
+        },
+    )
+
+    assert num_samples == 12
+    seen: list[int] = []
+    for batch in iterator:
+        seen.extend(int(v) for v in batch["task"]["tt_stage_node_ids"].to_pylist())
+    assert len(seen) == 12
+    assert set(seen) <= {0, 1, 2}
+    assert seen.count(2) > seen.count(0)
+    assert seen.count(2) > seen.count(1)
 
 
 @pytest.mark.parametrize(

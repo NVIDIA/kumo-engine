@@ -106,7 +106,11 @@ impl TtIngestSpec {
             fkey_mapping: plan.fkey_mapping.clone(),
             entity_table: plan.entity.table.clone(),
             lp_resolution: plan.lp_resolution.clone(),
-            is_temporal: plan.split.as_ref().and_then(|s| s.is_temporal).unwrap_or(false),
+            is_temporal: plan
+                .split
+                .as_ref()
+                .and_then(|s| s.is_temporal)
+                .unwrap_or(false),
             lp_rhs_is_temporal: plan.lp_rhs_is_temporal,
             // Filled by `execute_tt_gen` from the pass output.
             split_stages: None,
@@ -188,8 +192,7 @@ pub fn execute_tt_plan(
             // mirrors the kumo LOAD gate and legacy's `TimestampSampler` RHS
             // check — an atemporal RHS (e.g. amazon `products`) builds no bucket
             // index and the LOAD gate stays flat. Byte-identical otherwise.
-            let group_by_timestamp =
-                plan.lp_resolution.is_some() && plan.lp_rhs_is_temporal;
+            let group_by_timestamp = plan.lp_resolution.is_some() && plan.lp_rhs_is_temporal;
             let manifest_stages = ingest_resolved_stages(
                 &stages,
                 &tt_id_owned,
@@ -209,7 +212,11 @@ pub fn execute_tt_plan(
 
     // Self-describing manifest fields, derived from the plan (the fused path
     // has the plan in hand; the split ingest path recovers them from the spec).
-    let is_temporal = plan.split.as_ref().and_then(|s| s.is_temporal).unwrap_or(false);
+    let is_temporal = plan
+        .split
+        .as_ref()
+        .and_then(|s| s.is_temporal)
+        .unwrap_or(false);
     let rhs_node_type = rhs_node_type_from_resolution(&plan.lp_resolution);
     write_tt_manifest_and_build_result(
         py,
@@ -254,6 +261,8 @@ pub(crate) struct StageSpec {
     pub parquet_paths: Vec<std::path::PathBuf>,
     pub count: Option<u64>,
     pub seed_time: Option<[i64; 2]>,
+    pub binary_label_column: Option<String>,
+    pub sample_weight_column: Option<String>,
 }
 
 /// Relative part filenames (`<stage_table>/part-NNNNN.parquet`, recorded by
@@ -286,6 +295,9 @@ pub(crate) fn resolve_ingest_stages(
                     .collect(),
                 count: Some(info.row_count),
                 seed_time: info.seed_time,
+                binary_label_column: (info.key == "train").then(|| PRIMARY_TARGET_COL.to_string()),
+                sample_weight_column: (info.key == "train")
+                    .then(|| diskgraph_train_table::ttgen_output::WEIGHT_COL.to_string()),
             })
             .collect()),
         None => Ok(vec![StageSpec {
@@ -295,6 +307,8 @@ pub(crate) fn resolve_ingest_stages(
             parquet_paths: vec![tt_parquet.to_path_buf()],
             count: None,
             seed_time: None,
+            binary_label_column: None,
+            sample_weight_column: None,
         }]),
     }
 }
@@ -331,13 +345,8 @@ pub fn execute_tt_gen(
     let idx = index_path.to_owned();
     let tt_id_owned = tt_id.to_owned();
 
-    let (staging_dir, tt_parquet_path, ingest_spec_path, row_count): (
-        String,
-        String,
-        String,
-        u64,
-    ) = py
-        .detach(|| -> diskgraph_train_table::errors::TTGenResult<_> {
+    let (staging_dir, tt_parquet_path, ingest_spec_path, row_count): (String, String, String, u64) =
+        py.detach(|| -> diskgraph_train_table::errors::TTGenResult<_> {
             let index_root = Path::new(&idx);
             let staging_root = staging_root_for(index_root, &tt_id_owned);
             if staging_root.exists() {
@@ -477,8 +486,7 @@ pub fn execute_tt_ingest(
             // table is temporal (kumo-computed `lp_rhs_is_temporal`). This
             // mirrors the kumo LOAD gate and legacy's `TimestampSampler` RHS
             // check. Atemporal-RHS / non-LP ingest is byte-identical to before.
-            let group_by_timestamp =
-                spec.lp_resolution.is_some() && spec.lp_rhs_is_temporal;
+            let group_by_timestamp = spec.lp_resolution.is_some() && spec.lp_rhs_is_temporal;
             let manifest_stages = ingest_resolved_stages(
                 &stages,
                 &tt_id_owned,
@@ -581,7 +589,7 @@ pub(crate) fn ingest_resolved_stages(
     // Set only for the temporal-LP seed stages.
     group_by_timestamp: bool,
 ) -> diskgraph_train_table::errors::TTGenResult<Vec<ManifestStage>> {
-    let ts_groupings = ingest_stage_parquets_into_extension(
+    let stage_ingest = ingest_stage_parquets_into_extension(
         tt_id,
         ingest_root,
         stages,
@@ -596,7 +604,7 @@ pub(crate) fn ingest_resolved_stages(
     // bucket. Enforced here (was a kumo-side Python guard) since the bucket-list
     // length is exactly the distinct-ts count, already computed by ingest.
     for s in stages {
-        if let Some(grouping) = ts_groupings.get(&s.table_name) {
+        if let Some(grouping) = stage_ingest.ts_groupings.get(&s.table_name) {
             enforce_single_timestamp_eval_stage(&s.key, grouping.buckets.len())?;
         }
     }
@@ -616,7 +624,15 @@ pub(crate) fn ingest_resolved_stages(
                 count,
                 s.parquet_paths.len(),
                 s.seed_time,
-                ts_groupings.get(&s.table_name).cloned(),
+                stage_ingest.ts_groupings.get(&s.table_name).cloned(),
+                stage_ingest
+                    .binary_label_indexes
+                    .get(&s.table_name)
+                    .cloned(),
+                stage_ingest
+                    .sample_weight_indexes
+                    .get(&s.table_name)
+                    .cloned(),
             ))
         })
         .collect::<diskgraph_train_table::errors::TTGenResult<Vec<_>>>()?;
@@ -637,7 +653,36 @@ pub(crate) type ManifestStage = (
     usize,
     Option<[i64; 2]>,
     Option<diskgraph_ingest::ts_grouping::StageGrouping>,
+    Option<diskgraph_ingest::binary_label::BinaryLabelIndex>,
+    Option<diskgraph_ingest::sample_weight::SampleWeightIndex>,
 );
+
+fn weighted_bucket_to_pydict<'py>(
+    py: Python<'py>,
+    bucket: &diskgraph_ingest::sample_weight::WeightedBucketIndex,
+) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new(py);
+    out.set_item("node_ids", &bucket.node_ids)?;
+    out.set_item("cdf", &bucket.cdf)?;
+    out.set_item("count", bucket.count)?;
+    out.set_item("total_weight", bucket.total_weight)?;
+    Ok(out)
+}
+
+fn sample_weight_index_to_pydict<'py>(
+    py: Python<'py>,
+    index: &diskgraph_ingest::sample_weight::SampleWeightIndex,
+) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new(py);
+    out.set_item("all", weighted_bucket_to_pydict(py, &index.all)?)?;
+    if let Some(bucket) = &index.false_bucket {
+        out.set_item("false_bucket", weighted_bucket_to_pydict(py, bucket)?)?;
+    }
+    if let Some(bucket) = &index.true_bucket {
+        out.set_item("true_bucket", weighted_bucket_to_pydict(py, bucket)?)?;
+    }
+    Ok(out)
+}
 
 /// Write `<tt_extension>/diskgraph_manifest.json` and return the Python result
 /// dict. Shared by [`execute_tt_plan`] and [`execute_tt_ingest`] so both emit
@@ -672,7 +717,17 @@ pub(crate) fn write_tt_manifest_and_build_result(
             .collect()
     };
     let mut stages_json = serde_json::Map::new();
-    for (stage_key, table_name, row_count, part_count, seed_time, ts_grouping) in stages {
+    for (
+        stage_key,
+        table_name,
+        row_count,
+        part_count,
+        seed_time,
+        ts_grouping,
+        binary_index,
+        sample_weight_index,
+    ) in stages
+    {
         // TT-NG temporal-LP timestamp grouping: `<table>/bucket_index.bin`
         // (final node-ids grouped by TIMESTAMP) + the bucket list. Present only
         // for grouped stages; omitted entirely otherwise.
@@ -697,6 +752,21 @@ pub(crate) fn write_tt_manifest_and_build_result(
         });
         if let Some(bi) = bucket_index_json {
             entry["bucket_index"] = bi;
+        }
+        if let Some(index) = binary_index {
+            entry["binary_label_index"] = json!({
+                "false_node_ids": &index.false_node_ids,
+                "false_count": index.false_count,
+                "true_node_ids": &index.true_node_ids,
+                "true_count": index.true_count,
+            });
+        }
+        if let Some(index) = sample_weight_index {
+            entry["sample_weight_index"] = serde_json::to_value(index).map_err(|e| {
+                crate::DiskgraphSystemError::new_err(format!(
+                    "failed to encode sample_weight_index: {e}"
+                ))
+            })?;
         }
         stages_json.insert(stage_key.to_string(), entry);
     }
@@ -750,7 +820,17 @@ pub(crate) fn write_tt_manifest_and_build_result(
     task_dataset.set_item("rhs_node_type", rhs_node_type)?;
 
     let stages_dict = PyDict::new(py);
-    for (stage_key, table_name, row_count, part_count, seed_time, ts_grouping) in stages {
+    for (
+        stage_key,
+        table_name,
+        row_count,
+        part_count,
+        seed_time,
+        ts_grouping,
+        binary_index,
+        sample_weight_index,
+    ) in stages
+    {
         let stage_dict = PyDict::new(py);
         stage_dict.set_item("table_name", table_name)?;
         stage_dict.set_item("index_path", tt_extension_path)?;
@@ -762,10 +842,27 @@ pub(crate) fn write_tt_manifest_and_build_result(
         if let Some(g) = ts_grouping {
             let bi = PyDict::new(py);
             bi.set_item("path", &g.bucket_index_rel_path)?;
-            let buckets: Vec<(i64, u64, u64)> =
-                g.buckets.iter().map(|b| (b.ts, b.offset, b.count)).collect();
+            let buckets: Vec<(i64, u64, u64)> = g
+                .buckets
+                .iter()
+                .map(|b| (b.ts, b.offset, b.count))
+                .collect();
             bi.set_item("buckets", buckets)?;
             stage_dict.set_item("bucket_index", bi)?;
+        }
+        if let Some(index) = binary_index {
+            let bi = PyDict::new(py);
+            bi.set_item("false_node_ids", &index.false_node_ids)?;
+            bi.set_item("false_count", index.false_count)?;
+            bi.set_item("true_node_ids", &index.true_node_ids)?;
+            bi.set_item("true_count", index.true_count)?;
+            stage_dict.set_item("binary_label_index", bi)?;
+        }
+        if let Some(index) = sample_weight_index {
+            stage_dict.set_item(
+                "sample_weight_index",
+                sample_weight_index_to_pydict(py, index)?,
+            )?;
         }
         stages_dict.set_item(stage_key, stage_dict)?;
     }
@@ -910,8 +1007,9 @@ pub fn ingest_prediction_stage(
     };
 
     let parquet = Path::new(parquet_path);
-    let mut columns = diskgraph_ingest::infer_stage_columns(parquet)
-        .map_err(|e| crate::DiskgraphDataError::new_err(format!("TT stage column inference: {e:#}")))?;
+    let mut columns = diskgraph_ingest::infer_stage_columns(parquet).map_err(|e| {
+        crate::DiskgraphDataError::new_err(format!("TT stage column inference: {e:#}"))
+    })?;
     // Backfill a unit on any Timestamp column that lacks one (e.g. when the
     // source stored the timestamp as a plain integer rather than an arrow
     // Timestamp type).
@@ -957,9 +1055,7 @@ pub fn ingest_prediction_stage(
             )
         })
         .map_err(|e| {
-            crate::DiskgraphSystemError::new_err(format!(
-                "prediction-stage ingest failed: {e:#}"
-            ))
+            crate::DiskgraphSystemError::new_err(format!("prediction-stage ingest failed: {e:#}"))
         })?
         .counts;
 
@@ -985,9 +1081,7 @@ pub(crate) fn ingest_stage_parquets_into_extension(
     // list. Set only for the temporal-LP seed stages. Returns the per-stage
     // groupings (empty when disabled).
     group_by_timestamp: bool,
-) -> diskgraph_train_table::errors::TTGenResult<
-    std::collections::HashMap<String, diskgraph_ingest::ts_grouping::StageGrouping>,
-> {
+) -> diskgraph_train_table::errors::TTGenResult<diskgraph_ingest::StageExtensionResult> {
     let first_stage = stages_in.first().ok_or_else(|| {
         diskgraph_train_table::errors::TTGenError::InvalidPlan(
             "ingest_stage_parquets_into_extension: no stages supplied".to_string(),
@@ -1013,6 +1107,24 @@ pub(crate) fn ingest_stage_parquets_into_extension(
             parquet_paths: s.parquet_paths.clone(),
         })
         .collect();
+    let stage_sidecars: std::collections::HashMap<
+        String,
+        diskgraph_ingest::StageSidecarColumns,
+    > = stages_in
+        .iter()
+        .filter_map(|s| {
+            if s.binary_label_column.is_none() && s.sample_weight_column.is_none() {
+                return None;
+            }
+            Some((
+                s.table_name.clone(),
+                diskgraph_ingest::StageSidecarColumns {
+                    binary_label_column: s.binary_label_column.clone(),
+                    sample_weight_column: s.sample_weight_column.clone(),
+                },
+            ))
+        })
+        .collect();
 
     // FK-free LP "resolution mode": resolve the reference columns to graph
     // node-ids and write them as rowpack columns with NO FK edge. The stage
@@ -1031,11 +1143,12 @@ pub(crate) fn ingest_stage_parquets_into_extension(
                 node_id_col: r.node_id_col.clone(),
             })
             .collect();
-        return diskgraph_ingest::ingest_stage_extension_with_resolution(
+        return diskgraph_ingest::ingest_stage_extension_with_resolution_and_sidecars(
             &format!("tt_seeds_{tt_id}"),
             tt_root,
             graph_index_path,
             &stages,
+            stage_sidecars,
             columns,
             // No FK edges: the resolved columns become rowpack columns instead.
             Vec::new(),
@@ -1044,7 +1157,6 @@ pub(crate) fn ingest_stage_parquets_into_extension(
             true,
             group_by_timestamp,
         )
-        .map(|r| r.ts_groupings)
         .map_err(|e| {
             diskgraph_train_table::errors::TTGenError::SystemError(format!(
                 "TT resolution-mode stage-table ingest failed: {e:#}"
@@ -1081,11 +1193,12 @@ pub(crate) fn ingest_stage_parquets_into_extension(
     // stages. Behavior is identical to the previous inline GraphConfig
     // assembly (single-shard, col_stats on, parent_index_path set), so
     // `execute_tt_plan`'s output is unchanged.
-    diskgraph_ingest::ingest_stage_extension(
+    diskgraph_ingest::ingest_stage_extension_with_sidecars(
         &format!("tt_seeds_{tt_id}"),
         tt_root,
         graph_index_path,
         &stages,
+        stage_sidecars,
         columns,
         fkey_specs,
         None,
@@ -1097,7 +1210,6 @@ pub(crate) fn ingest_stage_parquets_into_extension(
         // false here, since it requires `lp_resolution.is_some()`.)
         false,
     )
-    .map(|r| r.ts_groupings)
     .map_err(|e| {
         diskgraph_train_table::errors::TTGenError::SystemError(format!(
             "TT stage-table ingest failed: {e:#}"
@@ -1176,7 +1288,17 @@ fn stage_part_rel_path(table_name: &str, part_idx: usize) -> String {
 /// `false` if no part is readable. Drives the manifest `weight` column.
 fn stages_have_weight_column(tt_extension_path: &str, stages: &[ManifestStage]) -> bool {
     let root = Path::new(tt_extension_path);
-    for (_stage_key, table_name, _row_count, part_count, _seed_time, _ts_grouping) in stages {
+    for (
+        _stage_key,
+        table_name,
+        _row_count,
+        part_count,
+        _seed_time,
+        _ts_grouping,
+        _binary_index,
+        _sample_weight_index,
+    ) in stages
+    {
         for part_idx in 0..*part_count {
             let part_path = root.join(stage_part_rel_path(table_name, part_idx));
             let Ok(file) = std::fs::File::open(&part_path) else {
@@ -1220,7 +1342,11 @@ fn copy_stage_artifacts(
             )?;
         }
     }
-    for sidecar in ["stats.json", "split_stats.json", "train_table_col_stats.json"] {
+    for sidecar in [
+        "stats.json",
+        "split_stats.json",
+        "train_table_col_stats.json",
+    ] {
         let src = artifacts.staging_dir.join(sidecar);
         if src.exists() {
             std::fs::copy(&src, tt_root.join(sidecar))?;

@@ -846,6 +846,248 @@
         entity.len() as u64
     }
 
+    #[test]
+    fn test_train_binary_label_index_is_emitted_by_stage_ingest() {
+        pyo3::prepare_freethreaded_python();
+        let dir = tempfile::tempdir().unwrap();
+        let index = t_build_graph(dir.path());
+        let stage_pq = dir.path().join("train_seed_rows.parquet");
+        t_write_custom_tt_node_parquet(&stage_pq);
+        let tt_ext = dir.path().join("tt_ext");
+        let columns = diskgraph_ingest::infer_stage_columns(&stage_pq).unwrap();
+        let result = diskgraph_ingest::ingest_stage_extension_with_sidecars(
+            "binary_label_index_test",
+            &tt_ext,
+            &index,
+            &[diskgraph_ingest::StageSpec {
+                stage_table_name: "train_seeds".to_string(),
+                parquet_paths: vec![stage_pq],
+            }],
+            std::collections::HashMap::from([(
+                "train_seeds".to_string(),
+                diskgraph_ingest::StageSidecarColumns {
+                    binary_label_column: Some(PRIMARY_TARGET_COL.to_string()),
+                    sample_weight_column: None,
+                },
+            )]),
+            columns,
+            vec![FKeySpec {
+                src_column: PRIMARY_ENTITY_COL.to_string(),
+                dst_table: "users".to_string(),
+                forward: Some(diskgraph_ingest::graph_config::DirectionSpec::default()),
+                reverse: None,
+                external_parent: true,
+                bidirectional: false,
+            }],
+            Some(2),
+            false,
+            false,
+        )
+        .unwrap();
+
+        let index = result
+            .binary_label_indexes
+            .get("train_seeds")
+            .expect("bool-like TARGET1 must emit sidecar");
+
+        assert_eq!(index.false_count, 2);
+        assert_eq!(index.true_count, 2);
+
+        fn read_node_ids(path: &Path) -> Vec<u64> {
+            std::fs::read(path)
+                .unwrap()
+                .chunks_exact(8)
+                .map(|chunk| {
+                    let mut raw = [0u8; 8];
+                    raw.copy_from_slice(chunk);
+                    u64::from_le_bytes(raw)
+                })
+                .collect()
+        }
+
+        assert_eq!(
+            read_node_ids(&tt_ext.join(&index.false_node_ids)),
+            vec![2, 3],
+            "false rows are source rows 1/3, which become shard-1 node ids"
+        );
+        assert_eq!(
+            read_node_ids(&tt_ext.join(&index.true_node_ids)),
+            vec![0, 1],
+            "true rows are source rows 0/2, which become shard-0 node ids"
+        );
+    }
+
+    #[test]
+    fn test_train_sample_weight_index_is_emitted_by_stage_ingest() {
+        use arrow_array::{Float64Array, Int64Array, TimestampNanosecondArray};
+        use arrow_schema::{DataType, Field, Schema, TimeUnit as ArrowTimeUnit};
+
+        pyo3::prepare_freethreaded_python();
+        let dir = tempfile::tempdir().unwrap();
+        let index = t_build_graph(dir.path());
+        let stage_pq = dir.path().join("train_seed_rows.parquet");
+        let entity = vec![0i64, 1, 2, 3];
+        let ts = vec![1000i64, 2000, 3000, 4000];
+        let target = vec![1.0f64, 0.0, 1.0, 0.0];
+        let weights = vec![0.5f64, 2.0, 4.0, 8.0];
+        let schema = StdArc2::new(Schema::new(vec![
+            Field::new(PRIMARY_ENTITY_COL, DataType::Int64, false),
+            Field::new(
+                TIMESTAMP_COL,
+                DataType::Timestamp(ArrowTimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new(PRIMARY_TARGET_COL, DataType::Float64, false),
+            Field::new(
+                diskgraph_train_table::ttgen_output::WEIGHT_COL,
+                DataType::Float64,
+                false,
+            ),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                StdArc2::new(Int64Array::from(entity)),
+                StdArc2::new(TimestampNanosecondArray::from(ts)),
+                StdArc2::new(Float64Array::from(target)),
+                StdArc2::new(Float64Array::from(weights)),
+            ],
+        )
+        .unwrap();
+        t_write_parquet(&stage_pq, &batch);
+
+        let tt_ext = dir.path().join("tt_ext");
+        let columns = diskgraph_ingest::infer_stage_columns(&stage_pq).unwrap();
+        let result = diskgraph_ingest::ingest_stage_extension_with_sidecars(
+            "sample_weight_index_test",
+            &tt_ext,
+            &index,
+            &[diskgraph_ingest::StageSpec {
+                stage_table_name: "train_seeds".to_string(),
+                parquet_paths: vec![stage_pq],
+            }],
+            std::collections::HashMap::from([(
+                "train_seeds".to_string(),
+                diskgraph_ingest::StageSidecarColumns {
+                    binary_label_column: Some(PRIMARY_TARGET_COL.to_string()),
+                    sample_weight_column: Some(
+                        diskgraph_train_table::ttgen_output::WEIGHT_COL.to_string(),
+                    ),
+                },
+            )]),
+            columns,
+            vec![FKeySpec {
+                src_column: PRIMARY_ENTITY_COL.to_string(),
+                dst_table: "users".to_string(),
+                forward: Some(diskgraph_ingest::graph_config::DirectionSpec::default()),
+                reverse: None,
+                external_parent: true,
+                bidirectional: false,
+            }],
+            Some(2),
+            false,
+            false,
+        )
+        .unwrap();
+
+        let index = result
+            .sample_weight_indexes
+            .get("train_seeds")
+            .expect("valid WEIGHT must emit sidecar");
+        assert_eq!(index.all.count, 4);
+        assert_eq!(index.all.total_weight, 14.5);
+
+        fn read_u64s(path: &Path) -> Vec<u64> {
+            std::fs::read(path)
+                .unwrap()
+                .chunks_exact(8)
+                .map(|chunk| {
+                    let mut raw = [0u8; 8];
+                    raw.copy_from_slice(chunk);
+                    u64::from_le_bytes(raw)
+                })
+                .collect()
+        }
+
+        fn read_f64s(path: &Path) -> Vec<f64> {
+            std::fs::read(path)
+                .unwrap()
+                .chunks_exact(8)
+                .map(|chunk| {
+                    let mut raw = [0u8; 8];
+                    raw.copy_from_slice(chunk);
+                    f64::from_le_bytes(raw)
+                })
+                .collect()
+        }
+
+        assert_eq!(
+            read_u64s(&tt_ext.join(&index.all.node_ids)),
+            vec![0, 1, 2, 3]
+        );
+        assert_eq!(
+            read_f64s(&tt_ext.join(&index.all.cdf)),
+            vec![0.5, 4.5, 6.5, 14.5]
+        );
+        let false_bucket = index.false_bucket.as_ref().unwrap();
+        assert_eq!(read_u64s(&tt_ext.join(&false_bucket.node_ids)), vec![2, 3]);
+        assert_eq!(read_f64s(&tt_ext.join(&false_bucket.cdf)), vec![2.0, 10.0]);
+        let true_bucket = index.true_bucket.as_ref().unwrap();
+        assert_eq!(read_u64s(&tt_ext.join(&true_bucket.node_ids)), vec![0, 1]);
+        assert_eq!(read_f64s(&tt_ext.join(&true_bucket.cdf)), vec![0.5, 4.5]);
+    }
+
+    #[test]
+    fn test_binary_label_index_is_train_only() {
+        pyo3::prepare_freethreaded_python();
+        let dir = tempfile::tempdir().unwrap();
+        let index = t_build_graph(dir.path());
+        let train_pq = dir.path().join("train_seed_rows.parquet");
+        let val_pq = dir.path().join("val_seed_rows.parquet");
+        t_write_custom_tt_node_parquet(&train_pq);
+        t_write_custom_tt_node_parquet(&val_pq);
+        let tt_ext = dir.path().join("tt_ext");
+        let columns = diskgraph_ingest::infer_stage_columns(&train_pq).unwrap();
+        let result = diskgraph_ingest::ingest_stage_extension_with_sidecars(
+            "binary_label_index_train_only_test",
+            &tt_ext,
+            &index,
+            &[
+                diskgraph_ingest::StageSpec {
+                    stage_table_name: "train_seeds".to_string(),
+                    parquet_paths: vec![train_pq],
+                },
+                diskgraph_ingest::StageSpec {
+                    stage_table_name: "val_seeds".to_string(),
+                    parquet_paths: vec![val_pq],
+                },
+            ],
+            std::collections::HashMap::from([(
+                "train_seeds".to_string(),
+                diskgraph_ingest::StageSidecarColumns {
+                    binary_label_column: Some(PRIMARY_TARGET_COL.to_string()),
+                    sample_weight_column: None,
+                },
+            )]),
+            columns,
+            vec![FKeySpec {
+                src_column: PRIMARY_ENTITY_COL.to_string(),
+                dst_table: "users".to_string(),
+                forward: Some(diskgraph_ingest::graph_config::DirectionSpec::default()),
+                reverse: None,
+                external_parent: true,
+                bidirectional: false,
+            }],
+            Some(2),
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert!(result.binary_label_indexes.contains_key("train_seeds"));
+        assert!(!result.binary_label_indexes.contains_key("val_seeds"));
+    }
+
     /// Write a PREDICTION custom-TT parquet (ENTITY1/TIMESTAMP, NO target) over
     /// `users` PKs that all exist in `t_build_graph`'s index. Mirrors
     /// `t_write_custom_tt_node_parquet` minus the TARGET1 column.

@@ -35,6 +35,7 @@ serde_json = "1.0"
 sha2 = "0.10"
 crossbeam-channel = "0.5"
 rand = "0.8"
+memmap2 = "0.9"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 anyhow = { workspace = true }
 tokio = { version = "1.33", features = ["full"] }

@@ -1,5 +1,6 @@
 //! Diskgraph ingest: convert raw CSV/Parquet sources into index-ready artifacts.
 
+pub mod binary_label;
 pub mod coercion;
 pub mod col_stats;
 pub mod col_stats_export;
@@ -10,25 +11,25 @@ pub mod consts;
 pub mod disk_manager;
 pub mod errors;
 pub mod graph_config;
-pub mod io;
 pub mod index_metadata;
+pub mod io;
 pub mod mapping;
 pub mod progress;
+pub mod sample_weight;
 pub mod scratch;
 pub mod snapshot_mirror;
 pub mod stage_extension;
 pub mod stats;
 pub mod stats_publish;
-pub mod ts_grouping;
 pub mod success_marker;
 #[cfg(test)]
 mod tests_unit;
+pub mod ts_grouping;
 pub mod utils;
 
-pub use crate::config::{
-    IngestOptions, IngestPhase, ResolveColumnSpec, ResolveKind, ALL_PHASES,
-};
+pub use crate::column_inference::infer_stage_columns;
 use crate::config::PeakMemStats;
+pub use crate::config::{IngestOptions, IngestPhase, ResolveColumnSpec, ResolveKind, ALL_PHASES};
 use crate::consts::*;
 pub use crate::errors::{
     CoercionError, CoercionWarning, ConvertError, KeyParseError, KeyParseResult,
@@ -55,9 +56,10 @@ pub use crate::scratch::{
     estimate_pk_map_bytes, estimate_varbytes_avg_len_multi, new_pk_map, reserve_map,
     EdgeMapScratch, PkMapHashMap, PkMapHasher, PkMapScratch,
 };
-pub use crate::column_inference::infer_stage_columns;
 pub use crate::stage_extension::{
-    ingest_stage_extension, ingest_stage_extension_with_resolution, ResolveSpec, StageSpec,
+    ingest_stage_extension, ingest_stage_extension_with_resolution,
+    ingest_stage_extension_with_resolution_and_sidecars, ingest_stage_extension_with_sidecars,
+    ResolveSpec, StageExtensionResult, StageSidecarColumns, StageSpec,
 };
 pub use crate::stats::{IngestReport, IngestStats, KeyFailureCounts, KeyFailureState, PerfStats};
 use anyhow::{anyhow, Context, Result};
@@ -154,10 +156,7 @@ fn choose_ingest_num_shards(pinned: Option<usize>, memory_floor: usize) -> usize
     pinned.unwrap_or(0).max(memory_floor).max(1)
 }
 
-fn table_sized_bytes(
-    declared: Option<u64>,
-    compute_local_bytes: impl FnOnce() -> u64,
-) -> u64 {
+fn table_sized_bytes(declared: Option<u64>, compute_local_bytes: impl FnOnce() -> u64) -> u64 {
     match declared {
         Some(bytes) if bytes > 0 => bytes,
         _ => compute_local_bytes(),
@@ -184,6 +183,28 @@ fn table_sized_bytes(
 /// marker out-of-band via `success_marker::write_success_marker` after
 /// ingest returns.
 pub fn ingest_with_stats_from_source(
+    source: GraphConfig,
+    base_dir: Option<&Path>,
+    output: &str,
+    dest: Dest,
+    options: IngestOptions,
+    output_dataplane_dir: Option<&str>,
+    success_marker_content: Option<&str>,
+) -> Result<(DatasetMetadata, IngestStats)> {
+    ingest_with_stats_from_source_and_sidecars(
+        source,
+        base_dir,
+        output,
+        dest,
+        options,
+        output_dataplane_dir,
+        success_marker_content,
+        HashMap::new(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     mut source: GraphConfig,
     base_dir: Option<&Path>,
     output: &str,
@@ -191,6 +212,7 @@ pub fn ingest_with_stats_from_source(
     options: IngestOptions,
     output_dataplane_dir: Option<&str>,
     success_marker_content: Option<&str>,
+    stage_sidecars: HashMap<String, StageSidecarColumns>,
 ) -> Result<(DatasetMetadata, IngestStats)> {
     let wall_start = std::time::Instant::now();
     // Reject the markerless-mirror config at the API boundary.
@@ -246,9 +268,7 @@ pub fn ingest_with_stats_from_source(
                     .get_paths()
                     .iter()
                     .filter(|path| !path.contains("://"))
-                    .map(|path| {
-                        crate::config_converter::inference::compute_local_dir_bytes(path)
-                    })
+                    .map(|path| crate::config_converter::inference::compute_local_dir_bytes(path))
                     .sum()
             })
         })
@@ -366,7 +386,7 @@ pub fn ingest_with_stats_from_source(
     // can reach the manifest/mirror after `ctx` has consumed its own
     // clone. Cloning an `Arc` is cheap (refcount bump).
     let target_for_finalize = std::sync::Arc::clone(&target);
-    let mut ctx = IngestContext::new(source, target, options, output)?;
+    let mut ctx = IngestContext::new(source, target, options, output, stage_sidecars)?;
     let profile_dir = ctx.profile_dir.clone();
     if let Some(profile_dir) = &profile_dir {
         fs::create_dir_all(profile_dir)?;
@@ -385,9 +405,7 @@ pub fn ingest_with_stats_from_source(
     // that may have partial output from a prior crash. Fresh runs already
     // wiped the entire output_dir at function entry; phases that succeed
     // and trigger downstream work don't need their successors wiped.
-    let wipe_on_entry = |p: IngestPhase| -> bool {
-        Some(p) == resume_from_phase
-    };
+    let wipe_on_entry = |p: IngestPhase| -> bool { Some(p) == resume_from_phase };
 
     // Repopulate in-memory state that skipped predecessor phases would
     // normally have produced. Order matches phase order so each helper
@@ -415,9 +433,13 @@ pub fn ingest_with_stats_from_source(
     ctx.set_peak_stage(Some(0));
     if should_run(IngestPhase::Context) {
         let context_start = std::time::Instant::now();
-        run_phase_with_marker(&local_root, "context",
-            wipe_on_entry(IngestPhase::Context), profile_dir.as_deref(),
-            || ctx.build_node_contexts())?;
+        run_phase_with_marker(
+            &local_root,
+            "context",
+            wipe_on_entry(IngestPhase::Context),
+            profile_dir.as_deref(),
+            || ctx.build_node_contexts(),
+        )?;
         context_wall = context_start.elapsed();
         tracing::info!(
             stage = "context",
@@ -431,9 +453,13 @@ pub fn ingest_with_stats_from_source(
     ctx.set_peak_stage(Some(1));
     if should_run(IngestPhase::Encode) {
         let encode_start = std::time::Instant::now();
-        run_phase_with_marker(&local_root, "encode",
-            wipe_on_entry(IngestPhase::Encode), profile_dir.as_deref(),
-            || ctx.build_temp_shards())?;
+        run_phase_with_marker(
+            &local_root,
+            "encode",
+            wipe_on_entry(IngestPhase::Encode),
+            profile_dir.as_deref(),
+            || ctx.build_temp_shards(),
+        )?;
         encode_wall = encode_start.elapsed();
         tracing::info!(
             stage = "encode",
@@ -452,9 +478,13 @@ pub fn ingest_with_stats_from_source(
         // Phase-pristine COW for fkey bitmaps so pk_map cannot leak partial
         // mutations into encode's outputs across a resume boundary.
         ctx.pk_map_pre()?;
-        run_phase_with_marker(&local_root, "pk_map",
-            wipe_on_entry(IngestPhase::PkMap), profile_dir.as_deref(),
-            || ctx.build_sharded_pk_maps())?;
+        run_phase_with_marker(
+            &local_root,
+            "pk_map",
+            wipe_on_entry(IngestPhase::PkMap),
+            profile_dir.as_deref(),
+            || ctx.build_sharded_pk_maps(),
+        )?;
         // Marker is now written; a crash from this line on does not invalidate
         // pk_map. Drop the pristines + free pkey.bin temp files we no longer
         // need (saves ~160 GB on DoorDash-shaped data).
@@ -468,12 +498,16 @@ pub fn ingest_with_stats_from_source(
             );
         }
         pk_map_wall = pk_map_start.elapsed();
-        let estimate_sum = ctx.pk_map_estimate_sum.load(std::sync::atomic::Ordering::Relaxed);
-        let observed_peak = ctx.pk_map_peak_rss.load(std::sync::atomic::Ordering::Relaxed);
+        let estimate_sum = ctx
+            .pk_map_estimate_sum
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let observed_peak = ctx
+            .pk_map_peak_rss
+            .load(std::sync::atomic::Ordering::Relaxed);
         let rss_after_pk_map = rss_anon_diag_bytes();
         let ratio_pct = if estimate_sum > 0 {
-            (observed_peak.saturating_sub(rss_before_pk_map) as f64
-                / estimate_sum as f64 * 100.0) as u64
+            (observed_peak.saturating_sub(rss_before_pk_map) as f64 / estimate_sum as f64 * 100.0)
+                as u64
         } else {
             0
         };
@@ -497,9 +531,13 @@ pub fn ingest_with_stats_from_source(
     ctx.set_peak_stage(Some(3));
     if should_run(IngestPhase::EdgesMap) {
         let edges_map_start = std::time::Instant::now();
-        run_phase_with_marker(&local_root, "edges_map",
-            wipe_on_entry(IngestPhase::EdgesMap), profile_dir.as_deref(),
-            || ctx.build_edges_mapped(&edge_ctx))?;
+        run_phase_with_marker(
+            &local_root,
+            "edges_map",
+            wipe_on_entry(IngestPhase::EdgesMap),
+            profile_dir.as_deref(),
+            || ctx.build_edges_mapped(&edge_ctx),
+        )?;
         edges_map_wall = edges_map_start.elapsed();
         tracing::info!(
             stage = "edges_map",
@@ -524,9 +562,13 @@ pub fn ingest_with_stats_from_source(
     if should_run(IngestPhase::Index) {
         let index_start = std::time::Instant::now();
         let index_metadata_for_phase = index_metadata.clone();
-        run_phase_with_marker(&local_root, "index",
-            wipe_on_entry(IngestPhase::Index), profile_dir.as_deref(),
-            || ctx.build_index(index_metadata_for_phase))?;
+        run_phase_with_marker(
+            &local_root,
+            "index",
+            wipe_on_entry(IngestPhase::Index),
+            profile_dir.as_deref(),
+            || ctx.build_index(index_metadata_for_phase),
+        )?;
         index_wall = index_start.elapsed();
         tracing::info!(
             stage = "index",
@@ -558,6 +600,8 @@ pub fn ingest_with_stats_from_source(
     // `finalize_metadata` (shard offsets / min-ids known) and BEFORE
     // `cleanup_temp` (spills live under `_tmp/`). No-op when grouping is off.
     let ts_groupings = ctx.run_ts_grouping()?;
+    let sample_weight_indexes = ctx.run_sample_weight_indexes()?;
+    let binary_label_indexes = ctx.run_binary_label_indexes()?;
     ctx.cleanup_temp()?;
     let finalize_wall = finalize_start.elapsed();
     ctx.set_peak_stage(None);
@@ -633,6 +677,8 @@ pub fn ingest_with_stats_from_source(
     let mut stats = stats;
     stats.num_shards = Some(ctx.num_shards);
     stats.ts_groupings = ts_groupings;
+    stats.sample_weight_indexes = sample_weight_indexes;
+    stats.binary_label_indexes = binary_label_indexes;
     let report = IngestReport {
         stats: stats.clone(),
         source: ctx.source.clone(),
@@ -923,8 +969,9 @@ mod tests_resume_phase {
     fn run_phase_with_marker_no_marker_on_failure() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        let result =
-            run_phase_with_marker(root, "context", false, None, || Err(anyhow!("synthetic boom")));
+        let result = run_phase_with_marker(root, "context", false, None, || {
+            Err(anyhow!("synthetic boom"))
+        });
         assert!(result.is_err());
         assert!(!phase_marker_exists(root, "context"));
     }
@@ -983,8 +1030,7 @@ mod tests_repopulate_helpers {
     //! whatever is already on disk.
     use super::*;
     use crate::graph_config::{
-        ColumnSpec, DataSource, EdgeTableSpec, ForeignKeySpec, GraphConfig, IngestedType,
-        TableSpec,
+        ColumnSpec, DataSource, EdgeTableSpec, ForeignKeySpec, GraphConfig, IngestedType, TableSpec,
     };
 
     // -- minimal fixtures --------------------------------------------------
@@ -1116,6 +1162,9 @@ mod tests_repopulate_helpers {
             shard_rows: HashMap::new(),
             shard_offsets: HashMap::new(),
             group_ts_counts: HashMap::new(),
+            stage_sidecars: HashMap::new(),
+            binary_label_counts: HashMap::new(),
+            sample_weight_counts: HashMap::new(),
             pk_hash_paths: HashMap::new(),
             relation_defs: Vec::new(),
             relationships: Vec::new(),
@@ -1215,13 +1264,7 @@ mod tests_repopulate_helpers {
         let table = node_table("Users", Some("id"));
         let num_shards = 2;
         for shard in 0..num_shards {
-            write_temp_meta(
-                &target,
-                &temp_node_data_meta_path(&table.name, shard),
-                7,
-                0,
-            )
-            .unwrap();
+            write_temp_meta(&target, &temp_node_data_meta_path(&table.name, shard), 7, 0).unwrap();
         }
         let mut ctx = make_ctx(graph_config(vec![table.clone()]), target, num_shards);
         // Pre-populate with garbage that doesn't match what's on disk.
@@ -1248,20 +1291,8 @@ mod tests_repopulate_helpers {
         let table = node_table("Users", Some("id"));
         let num_shards = 3;
         // Write meta for shards 0 and 2; leave shard 1 absent.
-        write_temp_meta(
-            &target,
-            &temp_node_data_meta_path(&table.name, 0),
-            5,
-            0,
-        )
-        .unwrap();
-        write_temp_meta(
-            &target,
-            &temp_node_data_meta_path(&table.name, 2),
-            11,
-            0,
-        )
-        .unwrap();
+        write_temp_meta(&target, &temp_node_data_meta_path(&table.name, 0), 5, 0).unwrap();
+        write_temp_meta(&target, &temp_node_data_meta_path(&table.name, 2), 11, 0).unwrap();
         let mut ctx = make_ctx(graph_config(vec![table]), target, num_shards);
         ctx.repopulate_node_stats_from_meta()
             .expect("missing meta should be skipped, not fail");
@@ -1274,28 +1305,79 @@ mod tests_repopulate_helpers {
     }
 
     #[test]
+    fn binary_label_index_fails_when_counted_spill_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = local_target(tmp.path());
+        let table = node_table("train_seeds", None);
+        let mut ctx = make_ctx(graph_config(vec![table]), target, 1);
+        ctx.stage_sidecars.insert(
+            "train_seeds".to_string(),
+            StageSidecarColumns {
+                binary_label_column: Some("TARGET1".to_string()),
+                sample_weight_column: None,
+            },
+        );
+        ctx.shard_offsets
+            .insert("train_seeds".to_string(), vec![100]);
+        ctx.binary_label_counts.insert(
+            ("train_seeds".to_string(), 0),
+            crate::binary_label::LabelCounts {
+                false_count: 1,
+                true_count: 1,
+                invalid_count: 0,
+            },
+        );
+
+        let err = ctx.run_binary_label_indexes().unwrap_err();
+        assert!(
+            err.to_string().contains("missing binary-label spill"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn sample_weight_index_fails_when_counted_spill_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = local_target(tmp.path());
+        let table = node_table("train_seeds", None);
+        let mut ctx = make_ctx(graph_config(vec![table]), target, 1);
+        ctx.stage_sidecars.insert(
+            "train_seeds".to_string(),
+            StageSidecarColumns {
+                binary_label_column: None,
+                sample_weight_column: Some("WEIGHT".to_string()),
+            },
+        );
+        ctx.shard_offsets
+            .insert("train_seeds".to_string(), vec![100]);
+        ctx.sample_weight_counts.insert(
+            ("train_seeds".to_string(), 0),
+            crate::sample_weight::WeightCounts {
+                row_count: 2,
+                valid_count: 2,
+                invalid_count: 0,
+                total_weight: 3.0,
+            },
+        );
+
+        let err = ctx.run_sample_weight_indexes().unwrap_err();
+        assert!(
+            err.to_string().contains("missing sample-weight spill"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
     fn repopulate_node_stats_skips_edge_tables() {
         let tmp = tempfile::tempdir().unwrap();
         let target = local_target(tmp.path());
         let users = node_table("Users", Some("id"));
         let edges = edge_table("Friendship", "Users", "Users");
         let num_shards = 1;
-        write_temp_meta(
-            &target,
-            &temp_node_data_meta_path(&users.name, 0),
-            42,
-            0,
-        )
-        .unwrap();
+        write_temp_meta(&target, &temp_node_data_meta_path(&users.name, 0), 42, 0).unwrap();
         // Even if an edge table somehow had a meta on disk, the helper
         // must not surface it under shard_rows.
-        write_temp_meta(
-            &target,
-            &temp_node_data_meta_path(&edges.name, 0),
-            99,
-            0,
-        )
-        .unwrap();
+        write_temp_meta(&target, &temp_node_data_meta_path(&edges.name, 0), 99, 0).unwrap();
         let mut ctx = make_ctx(graph_config(vec![users, edges]), target, num_shards);
         ctx.repopulate_node_stats_from_meta().unwrap();
         assert!(ctx.shard_rows.contains_key("Users"));
@@ -1342,16 +1424,10 @@ mod tests_repopulate_helpers {
                 .unwrap_or_else(|| panic!("missing pk_hash_paths for {}", t.name));
             assert_eq!(paths.len(), num_shards, "wrong shard count for {}", t.name);
             for (shard, p) in paths.iter().enumerate() {
-                let expected_hash = format!(
-                    "nodes/{}/pk_hash-{:05}.bin",
-                    t.name.to_lowercase(),
-                    shard
-                );
-                let expected_data = format!(
-                    "nodes/{}/pk_data-{:05}.bin",
-                    t.name.to_lowercase(),
-                    shard
-                );
+                let expected_hash =
+                    format!("nodes/{}/pk_hash-{:05}.bin", t.name.to_lowercase(), shard);
+                let expected_data =
+                    format!("nodes/{}/pk_data-{:05}.bin", t.name.to_lowercase(), shard);
                 assert_eq!(p.hash_path, expected_hash, "hash_path mismatch");
                 assert_eq!(p.data_path, expected_data, "data_path mismatch");
             }
@@ -1395,11 +1471,7 @@ mod tests_repopulate_helpers {
         // not try to read them and must not surface them in the map.
         touch_pk_files(root, &pkless.name, num_shards);
         touch_pk_files(root, &edges.name, num_shards);
-        let mut ctx = make_ctx(
-            graph_config(vec![users, pkless, edges]),
-            target,
-            num_shards,
-        );
+        let mut ctx = make_ctx(graph_config(vec![users, pkless, edges]), target, num_shards);
         ctx.repopulate_pk_hash_paths_from_disk().unwrap();
         assert!(ctx.pk_hash_paths.contains_key("Users"));
         assert!(
@@ -1516,7 +1588,10 @@ mod tests_repopulate_helpers {
             .expect_err("should error when ctx file missing");
         let msg = format!("{err}");
         assert!(msg.contains("Users"), "error must name the table: {msg}");
-        assert!(msg.contains("node_data.ctx"), "error must name the path: {msg}");
+        assert!(
+            msg.contains("node_data.ctx"),
+            "error must name the path: {msg}"
+        );
     }
 
     // -- D. wipe_phase_outputs rescoping coverage --------------------------
@@ -1762,6 +1837,15 @@ struct IngestContext {
     /// during encode from the node writer. Empty unless grouping is enabled.
     /// Consumed by the post-build merge to size buckets without a count pass.
     group_ts_counts: HashMap<(String, usize), HashMap<i64, u64>>,
+    /// TT-NG seed-sampling sidecar requests keyed by stage table name.
+    /// Empty for ordinary graph ingest.
+    stage_sidecars: HashMap<String, StageSidecarColumns>,
+    /// TT-NG binary-label sidecars: per-(table,shard) label counts captured by
+    /// the node writer. Empty unless requested in `stage_sidecars`.
+    binary_label_counts: HashMap<(String, usize), crate::binary_label::LabelCounts>,
+    /// TT-NG row-weight sidecars: per-(table,shard) weight counts captured by
+    /// the node writer. Empty unless requested in `stage_sidecars`.
+    sample_weight_counts: HashMap<(String, usize), crate::sample_weight::WeightCounts>,
     pk_hash_paths: HashMap<String, Vec<PkHashPaths>>,
     relation_defs: Vec<RelationDef>,
     relationships: Vec<RelationshipRuntime>,
@@ -2616,11 +2700,25 @@ impl IngestContext {
             self.key_failure_samples.push(sample);
         }
     }
+
+    fn binary_label_column_for(&self, table_name: &str) -> Option<&str> {
+        self.stage_sidecars
+            .get(table_name)
+            .and_then(|sidecars| sidecars.binary_label_column.as_deref())
+    }
+
+    fn sample_weight_column_for(&self, table_name: &str) -> Option<&str> {
+        self.stage_sidecars
+            .get(table_name)
+            .and_then(|sidecars| sidecars.sample_weight_column.as_deref())
+    }
+
     fn new(
         source: GraphConfig,
         target: std::sync::Arc<OutputTarget>,
         options: IngestOptions,
         output: &str,
+        stage_sidecars: HashMap<String, StageSidecarColumns>,
     ) -> Result<Self> {
         let index_mem_budget_bytes = options
             .index_mem_budget_bytes
@@ -2838,6 +2936,9 @@ impl IngestContext {
             shard_rows: HashMap::new(),
             shard_offsets: HashMap::new(),
             group_ts_counts: HashMap::new(),
+            stage_sidecars,
+            binary_label_counts: HashMap::new(),
+            sample_weight_counts: HashMap::new(),
             pk_hash_paths: HashMap::new(),
             relation_defs,
             relationships,
@@ -2965,7 +3066,8 @@ impl IngestContext {
                                         builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                                     for batch in reader {
                                         let batch = batch?;
-                                        let cols = build_access_cols(&batch, &table, &resolve_node_ids)?;
+                                        let cols =
+                                            build_access_cols(&batch, &table, &resolve_node_ids)?;
                                         access.set_cols(&cols);
                                         for row in 0..batch.num_rows() {
                                             if sampled >= sample_limit {
@@ -2995,7 +3097,8 @@ impl IngestContext {
                                         builder.with_batch_size(NODE_BATCH_SIZE).build()?;
                                     for batch in reader {
                                         let batch = batch?;
-                                        let cols = build_access_cols(&batch, &table, &resolve_node_ids)?;
+                                        let cols =
+                                            build_access_cols(&batch, &table, &resolve_node_ids)?;
                                         access.set_cols(&cols);
                                         for row in 0..batch.num_rows() {
                                             if sampled >= sample_limit {
@@ -3022,7 +3125,8 @@ impl IngestContext {
                                     let reader = builder.build(cursor)?;
                                     for batch in reader {
                                         let batch = batch?;
-                                        let cols = build_access_cols(&batch, &table, &resolve_node_ids)?;
+                                        let cols =
+                                            build_access_cols(&batch, &table, &resolve_node_ids)?;
                                         access.set_cols(&cols);
                                         for row in 0..batch.num_rows() {
                                             if sampled >= sample_limit {
@@ -3047,7 +3151,8 @@ impl IngestContext {
                                     let reader = builder.build(file)?;
                                     for batch in reader {
                                         let batch = batch?;
-                                        let cols = build_access_cols(&batch, &table, &resolve_node_ids)?;
+                                        let cols =
+                                            build_access_cols(&batch, &table, &resolve_node_ids)?;
                                         access.set_cols(&cols);
                                         for row in 0..batch.num_rows() {
                                             if sampled >= sample_limit {
@@ -3260,8 +3365,10 @@ impl IngestContext {
                          (the parent index whose pkmap resolves the reference columns)"
                     )
                 })?;
-                let dst_tables: Vec<String> =
-                    resolve_columns.iter().map(|r| r.dst_table.clone()).collect();
+                let dst_tables: Vec<String> = resolve_columns
+                    .iter()
+                    .map(|r| r.dst_table.clone())
+                    .collect();
                 Some(std::sync::Arc::new(crate::mapping::RefResolver::load(
                     parent_root,
                     &dst_tables,
@@ -3293,9 +3400,15 @@ impl IngestContext {
             let table_cat = table_cat_counts.get(&table.name).cloned();
             let resolve_columns = std::sync::Arc::clone(&resolve_columns);
             let ref_resolver = ref_resolver.clone();
+            let sidecars = self
+                .stage_sidecars
+                .get(&table.name)
+                .cloned()
+                .unwrap_or_default();
             let file_count = table.get_paths().len();
             for file_idx in 0..file_count {
                 let table = table.clone();
+                let sidecars = sidecars.clone();
                 let relationships = relationships.clone();
                 let target = std::sync::Arc::clone(&target);
                 let node_senders = std::sync::Arc::clone(&node_senders);
@@ -3373,6 +3486,7 @@ impl IngestContext {
                                 &fk_edge_targets,
                                 &resolve_columns,
                                 ref_resolver.as_deref(),
+                                &sidecars,
                                 &mut obs,
                             )?;
                             // Flush local category counts to shared state (Approach 3)
@@ -3398,6 +3512,7 @@ impl IngestContext {
                                 &fk_edge_targets,
                                 &resolve_columns,
                                 ref_resolver.as_deref(),
+                                &sidecars,
                                 &mut diskgraph_rowpack::NoOpObserver,
                             )?;
                             (result, None)
@@ -3520,8 +3635,7 @@ impl IngestContext {
                     }
                 }
             }
-            let json_bytes =
-                serde_json::to_vec_pretty(&serde_json::Value::Object(root_map))?;
+            let json_bytes = serde_json::to_vec_pretty(&serde_json::Value::Object(root_map))?;
             self.target.write_bytes("col_stats.json", json_bytes)?;
             eprintln!(
                 "wrote col_stats.json (and kumo_col_stats/) under {}",
@@ -3692,6 +3806,12 @@ impl IngestContext {
         if !stats.group_ts_counts.is_empty() {
             self.group_ts_counts = stats.group_ts_counts.clone();
         }
+        if !stats.binary_label_counts.is_empty() {
+            self.binary_label_counts = stats.binary_label_counts.clone();
+        }
+        if !stats.sample_weight_counts.is_empty() {
+            self.sample_weight_counts = stats.sample_weight_counts.clone();
+        }
     }
 
     fn write_consolidated_meta(
@@ -3856,6 +3976,7 @@ impl IngestContext {
         fk_edge_targets: &HashMap<String, FkEdgeTarget>,
         resolve_columns: &[crate::config::ResolveColumnSpec],
         ref_resolver: Option<&crate::mapping::RefResolver>,
+        sidecars: &StageSidecarColumns,
         observer: &mut O,
     ) -> Result<TempNodeFileResult> {
         // FK-free LP resolution mode: build the per-table runtime resolve specs
@@ -3929,6 +4050,14 @@ impl IngestContext {
         let has_pkey = pk_col.is_some() && pk_idx.is_some();
         let rel_names = std::sync::Arc::new(rel_names);
         let buffer_limit = edge_batch_buffer_limit(num_shards);
+        let binary_label_idx = sidecars
+            .binary_label_column
+            .as_deref()
+            .and_then(|col| column_index(table, col).ok());
+        let sample_weight_idx = sidecars
+            .sample_weight_column
+            .as_deref()
+            .and_then(|col| column_index(table, col).ok());
         let mut batcher = NodeBatcher::new(
             std::sync::Arc::<str>::from(table.name.clone()),
             std::sync::Arc::clone(&rel_names),
@@ -3938,6 +4067,8 @@ impl IngestContext {
             std::sync::Arc::clone(senders),
             std::sync::Arc::clone(node_errors),
             table.group_by_timestamp,
+            binary_label_idx.is_some(),
+            sample_weight_idx.is_some(),
         );
         let mut dest_fkey_batcher = DestFkeyBatcher::new(
             std::sync::Arc::<str>::from(table.name.clone()),
@@ -3964,7 +4095,6 @@ impl IngestContext {
         } else {
             None
         };
-
         let path = table
             .get_paths()
             .get(file_idx)
@@ -4065,6 +4195,8 @@ impl IngestContext {
                         observer,
                         create_time_info.as_ref().map(|(idx, _)| *idx),
                         group_ts_idx,
+                        binary_label_idx,
+                        sample_weight_idx,
                     )?;
                 }
             };
@@ -4178,6 +4310,157 @@ impl IngestContext {
         })
     }
 
+    fn binary_label_byte_from_access(access: &RowAccess<'_>, idx: usize) -> Result<u8> {
+        let array = access.array(idx)?;
+        let row = access.row();
+        if array.is_null(row) {
+            return Ok(crate::binary_label::LABEL_INVALID);
+        }
+        macro_rules! int_boolish {
+            ($array_ty:ty) => {
+                if let Some(values) = array.as_any().downcast_ref::<$array_ty>() {
+                    return Ok(match values.value(row) {
+                        0 => crate::binary_label::LABEL_FALSE,
+                        1 => crate::binary_label::LABEL_TRUE,
+                        _ => crate::binary_label::LABEL_INVALID,
+                    });
+                }
+            };
+        }
+        match array.data_type() {
+            DataType::Boolean => {
+                let values = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::BooleanArray>()
+                    .ok_or_else(|| anyhow!("bool cast"))?;
+                Ok(if values.value(row) {
+                    crate::binary_label::LABEL_TRUE
+                } else {
+                    crate::binary_label::LABEL_FALSE
+                })
+            }
+            DataType::Int8 => {
+                int_boolish!(arrow_array::Int8Array);
+                Ok(crate::binary_label::LABEL_INVALID)
+            }
+            DataType::Int16 => {
+                int_boolish!(arrow_array::Int16Array);
+                Ok(crate::binary_label::LABEL_INVALID)
+            }
+            DataType::Int32 => {
+                int_boolish!(arrow_array::Int32Array);
+                Ok(crate::binary_label::LABEL_INVALID)
+            }
+            DataType::Int64 => {
+                int_boolish!(arrow_array::Int64Array);
+                Ok(crate::binary_label::LABEL_INVALID)
+            }
+            DataType::UInt8 => {
+                int_boolish!(arrow_array::UInt8Array);
+                Ok(crate::binary_label::LABEL_INVALID)
+            }
+            DataType::UInt16 => {
+                int_boolish!(arrow_array::UInt16Array);
+                Ok(crate::binary_label::LABEL_INVALID)
+            }
+            DataType::UInt32 => {
+                int_boolish!(arrow_array::UInt32Array);
+                Ok(crate::binary_label::LABEL_INVALID)
+            }
+            DataType::UInt64 => {
+                int_boolish!(arrow_array::UInt64Array);
+                Ok(crate::binary_label::LABEL_INVALID)
+            }
+            DataType::Float32 => {
+                let values = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .ok_or_else(|| anyhow!("float32 cast"))?;
+                Ok(match values.value(row) {
+                    0.0 => crate::binary_label::LABEL_FALSE,
+                    1.0 => crate::binary_label::LABEL_TRUE,
+                    _ => crate::binary_label::LABEL_INVALID,
+                })
+            }
+            DataType::Float64 => {
+                let values = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .ok_or_else(|| anyhow!("float64 cast"))?;
+                Ok(match values.value(row) {
+                    0.0 => crate::binary_label::LABEL_FALSE,
+                    1.0 => crate::binary_label::LABEL_TRUE,
+                    _ => crate::binary_label::LABEL_INVALID,
+                })
+            }
+            _ => Ok(crate::binary_label::LABEL_INVALID),
+        }
+    }
+
+    fn sample_weight_from_access(access: &RowAccess<'_>, idx: usize) -> Result<f64> {
+        let array = access.array(idx)?;
+        let row = access.row();
+        if array.is_null(row) {
+            return Ok(f64::NAN);
+        }
+        macro_rules! numeric_weight {
+            ($array_ty:ty) => {
+                if let Some(values) = array.as_any().downcast_ref::<$array_ty>() {
+                    return Ok(values.value(row) as f64);
+                }
+            };
+        }
+        match array.data_type() {
+            DataType::Float64 => {
+                let values = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .ok_or_else(|| anyhow!("float64 cast"))?;
+                Ok(values.value(row))
+            }
+            DataType::Float32 => {
+                let values = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .ok_or_else(|| anyhow!("float32 cast"))?;
+                Ok(values.value(row) as f64)
+            }
+            DataType::Int8 => {
+                numeric_weight!(arrow_array::Int8Array);
+                Ok(f64::NAN)
+            }
+            DataType::Int16 => {
+                numeric_weight!(arrow_array::Int16Array);
+                Ok(f64::NAN)
+            }
+            DataType::Int32 => {
+                numeric_weight!(arrow_array::Int32Array);
+                Ok(f64::NAN)
+            }
+            DataType::Int64 => {
+                numeric_weight!(arrow_array::Int64Array);
+                Ok(f64::NAN)
+            }
+            DataType::UInt8 => {
+                numeric_weight!(arrow_array::UInt8Array);
+                Ok(f64::NAN)
+            }
+            DataType::UInt16 => {
+                numeric_weight!(arrow_array::UInt16Array);
+                Ok(f64::NAN)
+            }
+            DataType::UInt32 => {
+                numeric_weight!(arrow_array::UInt32Array);
+                Ok(f64::NAN)
+            }
+            DataType::UInt64 => {
+                numeric_weight!(arrow_array::UInt64Array);
+                Ok(f64::NAN)
+            }
+            _ => Ok(f64::NAN),
+        }
+    }
+
     // rel_specs is `&[(name, rel_id, fkey_idx, fkey_col, key_type, bidirectional)]`
     // — the per-relation spec table threaded through ingest's per-row
     // FK-resolution path. Kept as a tuple to avoid allocating per call.
@@ -4185,7 +4468,14 @@ impl IngestContext {
     fn write_node_row_from_access<O: diskgraph_rowpack::ColumnValueObserver>(
         table: &TableSpec,
         pk_idx: Option<usize>,
-        rel_specs: &[(std::sync::Arc<str>, usize, usize, String, IngestedType, bool)],
+        rel_specs: &[(
+            std::sync::Arc<str>,
+            usize,
+            usize,
+            String,
+            IngestedType,
+            bool,
+        )],
         fkeys_pre: &[Option<Vec<Option<Key>>>],
         row: usize,
         access: &mut RowAccess<'_>,
@@ -4211,6 +4501,8 @@ impl IngestContext {
         // TT-NG timestamp grouping: index of the `TIMESTAMP` column to spill per
         // node, or `None` when grouping is disabled for this table.
         group_ts_idx: Option<usize>,
+        binary_label_idx: Option<usize>,
+        sample_weight_idx: Option<usize>,
     ) -> Result<()> {
         for buf in key_bufs.iter_mut() {
             buf.clear();
@@ -4312,6 +4604,14 @@ impl IngestContext {
             ),
             None => None,
         };
+        let binary_label = match binary_label_idx {
+            Some(idx) => Some(Self::binary_label_byte_from_access(access, idx)?),
+            None => None,
+        };
+        let sample_weight = match sample_weight_idx {
+            Some(idx) => Some(Self::sample_weight_from_access(access, idx)?),
+            None => None,
+        };
         let node_tag_start;
         let node_bool_start;
         let node_data_start;
@@ -4368,6 +4668,12 @@ impl IngestContext {
             // spill aligned with surviving nodes.
             if let Some(ts) = group_ts {
                 batcher.push_group_ts(shard, ts)?;
+            }
+            if let Some(label) = binary_label {
+                batcher.push_binary_label(shard, label)?;
+            }
+            if let Some(weight) = sample_weight {
+                batcher.push_sample_weight(shard, weight)?;
             }
         }
         if has_pkey {
@@ -5941,9 +6247,7 @@ impl IngestContext {
                 max_ids.entry(nt.name.clone()).or_insert(nt.max_id);
                 let offsets: Vec<u64> = nt.shards.iter().map(|s| s.min_id).collect();
                 if !offsets.is_empty() {
-                    self.shard_offsets
-                        .entry(nt.name.clone())
-                        .or_insert(offsets);
+                    self.shard_offsets.entry(nt.name.clone()).or_insert(offsets);
                 }
             }
         }
@@ -6128,10 +6432,8 @@ impl IngestContext {
                          seed-table's FK target or the in-config table"
                     ));
                 }
-                let key_type = crate::mapping::key_type_for_external_parent(
-                    parent_root,
-                    &dst_table,
-                )?;
+                let key_type =
+                    crate::mapping::key_type_for_external_parent(parent_root, &dst_table)?;
                 let shards = crate::mapping::load_external_pk_hash_shards(
                     parent_root,
                     &dst_table,
@@ -7014,7 +7316,10 @@ impl IngestContext {
                 continue;
             }
             let offsets = self.shard_offsets.get(&table.name).ok_or_else(|| {
-                anyhow!("ts grouping: missing shard offsets for table {}", table.name)
+                anyhow!(
+                    "ts grouping: missing shard offsets for table {}",
+                    table.name
+                )
             })?;
             // Build the per-shard spill inputs. A shard with no spill file
             // (zero nodes routed to it) contributes nothing.
@@ -7024,8 +7329,7 @@ impl IngestContext {
                 let Some(count_map) = self.group_ts_counts.get(&key) else {
                     continue;
                 };
-                let spill_path =
-                    root.join(crate::ts_grouping::spill_rel_path(&table.name, shard));
+                let spill_path = root.join(crate::ts_grouping::spill_rel_path(&table.name, shard));
                 if !spill_path.exists() {
                     continue;
                 }
@@ -7044,9 +7348,160 @@ impl IngestContext {
                 crate::ts_grouping::BUCKET_INDEX_FILENAME
             );
             let bucket_abs = root.join(&bucket_rel);
-            let grouping =
-                crate::ts_grouping::merge_stage(&shards, &bucket_abs, bucket_rel)?;
+            let grouping = crate::ts_grouping::merge_stage(&shards, &bucket_abs, bucket_rel)?;
             out.insert(table.name.clone(), grouping);
+        }
+        Ok(out)
+    }
+
+    fn run_binary_label_indexes(
+        &self,
+    ) -> Result<HashMap<String, crate::binary_label::BinaryLabelIndex>> {
+        let mut out = HashMap::new();
+        if self.binary_label_counts.is_empty() {
+            return Ok(out);
+        }
+        let root = match &*self.target {
+            OutputTarget::Local { root, .. } => root.clone(),
+            _ => return Err(anyhow!("binary label sidecars require local output")),
+        };
+        for table in &self.source.tables {
+            if self.binary_label_column_for(&table.name).is_none() {
+                continue;
+            }
+            let offsets = self.shard_offsets.get(&table.name).ok_or_else(|| {
+                anyhow!(
+                    "binary label sidecars: missing shard offsets for table {}",
+                    table.name
+                )
+            })?;
+            let mut shards = Vec::with_capacity(self.num_shards);
+            for shard in 0..self.num_shards {
+                let key = (table.name.clone(), shard);
+                let Some(counts) = self.binary_label_counts.get(&key) else {
+                    continue;
+                };
+                let spill_path = root.join(crate::binary_label::spill_rel_path(&table.name, shard));
+                if !spill_path.exists() {
+                    return Err(anyhow!(
+                        "missing binary-label spill for table {} shard {} at {}",
+                        table.name,
+                        shard,
+                        spill_path.display()
+                    ));
+                }
+                shards.push(crate::binary_label::ShardSpill {
+                    min_id: offsets.get(shard).copied().ok_or_else(|| {
+                        anyhow!(
+                            "binary label sidecars: missing shard offset for table {} shard {}",
+                            table.name,
+                            shard
+                        )
+                    })?,
+                    counts: counts.clone(),
+                    spill_path,
+                });
+            }
+            if shards.is_empty() {
+                continue;
+            }
+            let (false_rel, true_rel) = crate::binary_label::output_rel_paths(&table.name);
+            if let Some(index) = crate::binary_label::merge_stage(
+                &shards,
+                &root.join(&false_rel),
+                false_rel,
+                &root.join(&true_rel),
+                true_rel,
+            )? {
+                out.insert(table.name.clone(), index);
+            }
+        }
+        Ok(out)
+    }
+
+    fn run_sample_weight_indexes(
+        &self,
+    ) -> Result<HashMap<String, crate::sample_weight::SampleWeightIndex>> {
+        let mut out = HashMap::new();
+        if self.sample_weight_counts.is_empty() {
+            return Ok(out);
+        }
+        let root = match &*self.target {
+            OutputTarget::Local { root, .. } => root.clone(),
+            _ => return Err(anyhow!("sample-weight sidecars require local output")),
+        };
+        for table in &self.source.tables {
+            if self.sample_weight_column_for(&table.name).is_none() {
+                continue;
+            }
+            let offsets = self.shard_offsets.get(&table.name).ok_or_else(|| {
+                anyhow!(
+                    "sample-weight sidecars: missing shard offsets for table {}",
+                    table.name
+                )
+            })?;
+            let mut shards = Vec::with_capacity(self.num_shards);
+            for shard in 0..self.num_shards {
+                let key = (table.name.clone(), shard);
+                let Some(counts) = self.sample_weight_counts.get(&key) else {
+                    continue;
+                };
+                let spill_path =
+                    root.join(crate::sample_weight::spill_rel_path(&table.name, shard));
+                if !spill_path.exists() {
+                    return Err(anyhow!(
+                        "missing sample-weight spill for table {} shard {} at {}",
+                        table.name,
+                        shard,
+                        spill_path.display()
+                    ));
+                }
+                let label_spill_path =
+                    root.join(crate::binary_label::spill_rel_path(&table.name, shard));
+                if self.binary_label_counts.contains_key(&key) && !label_spill_path.exists() {
+                    return Err(anyhow!(
+                        "missing binary-label spill for sample-weight table {} shard {} at {}",
+                        table.name,
+                        shard,
+                        label_spill_path.display()
+                    ));
+                }
+                shards.push(crate::sample_weight::ShardSpill {
+                    min_id: offsets.get(shard).copied().ok_or_else(|| {
+                        anyhow!(
+                            "sample-weight sidecars: missing shard offset for table {} shard {}",
+                            table.name,
+                            shard
+                        )
+                    })?,
+                    counts: counts.clone(),
+                    spill_path,
+                    label_spill_path: label_spill_path.exists().then_some(label_spill_path),
+                    label_counts: self.binary_label_counts.get(&key).cloned(),
+                });
+            }
+            if shards.is_empty() {
+                continue;
+            }
+            let [(all_ids_rel, all_cdf_rel), (false_ids_rel, false_cdf_rel), (true_ids_rel, true_cdf_rel)] =
+                crate::sample_weight::output_rel_paths(&table.name);
+            if let Some(index) = crate::sample_weight::merge_stage(
+                &shards,
+                &root.join(&all_ids_rel),
+                all_ids_rel,
+                &root.join(&all_cdf_rel),
+                all_cdf_rel,
+                &root.join(&false_ids_rel),
+                false_ids_rel,
+                &root.join(&false_cdf_rel),
+                false_cdf_rel,
+                &root.join(&true_ids_rel),
+                true_ids_rel,
+                &root.join(&true_cdf_rel),
+                true_cdf_rel,
+            )? {
+                out.insert(table.name.clone(), index);
+            }
         }
         Ok(out)
     }
@@ -7131,13 +7586,19 @@ impl IngestContext {
         // _tmp/fkeys/<src_table>/<rel>/shard-NNNNN/bitmap.bin
         for src_entry in fs::read_dir(&fkeys_root)? {
             let src = src_entry?.path();
-            if !src.is_dir() { continue; }
+            if !src.is_dir() {
+                continue;
+            }
             for rel_entry in fs::read_dir(&src)? {
                 let rel = rel_entry?.path();
-                if !rel.is_dir() { continue; }
+                if !rel.is_dir() {
+                    continue;
+                }
                 for shard_entry in fs::read_dir(&rel)? {
                     let shard = shard_entry?.path();
-                    if !shard.is_dir() { continue; }
+                    if !shard.is_dir() {
+                        continue;
+                    }
                     let bitmap = shard.join("bitmap.bin");
                     if bitmap.is_file() {
                         f(&bitmap)?;
@@ -7168,21 +7629,20 @@ impl IngestContext {
         self.for_each_fkey_bitmap(|bitmap| {
             let pristine = bitmap.with_extension("bin.pristine");
             if !pristine.exists() {
-                fs::copy(bitmap, &pristine).with_context(|| {
-                    format!("pk_map_pre: snapshot {}", bitmap.display())
-                })?;
+                fs::copy(bitmap, &pristine)
+                    .with_context(|| format!("pk_map_pre: snapshot {}", bitmap.display()))?;
                 snapshot_count += 1;
             } else {
-                fs::copy(&pristine, bitmap).with_context(|| {
-                    format!("pk_map_pre: restore {}", bitmap.display())
-                })?;
+                fs::copy(&pristine, bitmap)
+                    .with_context(|| format!("pk_map_pre: restore {}", bitmap.display()))?;
                 restore_count += 1;
             }
             Ok(())
         })?;
         tracing::info!(
             stage = "pk_map",
-            snapshot_count, restore_count,
+            snapshot_count,
+            restore_count,
             "pk_map_pre: bitmap pristine COW prepared"
         );
         Ok(())
@@ -7200,9 +7660,8 @@ impl IngestContext {
         self.for_each_fkey_bitmap(|bitmap| {
             let pristine = bitmap.with_extension("bin.pristine");
             if pristine.exists() {
-                fs::remove_file(&pristine).with_context(|| {
-                    format!("pk_map_post: remove {}", pristine.display())
-                })?;
+                fs::remove_file(&pristine)
+                    .with_context(|| format!("pk_map_post: remove {}", pristine.display()))?;
                 removed += 1;
             }
             Ok(())
@@ -7232,10 +7691,14 @@ impl IngestContext {
         let mut removed_bytes = 0u64;
         for table_entry in fs::read_dir(&nodes_root)? {
             let table_dir = table_entry?.path();
-            if !table_dir.is_dir() { continue; }
+            if !table_dir.is_dir() {
+                continue;
+            }
             for shard_entry in fs::read_dir(&table_dir)? {
                 let shard_dir = shard_entry?.path();
-                if !shard_dir.is_dir() { continue; }
+                if !shard_dir.is_dir() {
+                    continue;
+                }
                 for name in &["pkey.bin", "pkey.meta"] {
                     let p = shard_dir.join(name);
                     if p.is_file() {
@@ -7534,8 +7997,10 @@ impl IngestContext {
             },
             perf,
             num_shards: Some(self.num_shards),
-            // Populated by the main ingest flow after `run_ts_grouping`.
+            // Populated by the main ingest flow after post-finalize sidecars.
             ts_groupings: HashMap::new(),
+            binary_label_indexes: HashMap::new(),
+            sample_weight_indexes: HashMap::new(),
         }
     }
 
@@ -7927,18 +8392,15 @@ fn wipe_phase_outputs(root: &Path, phase: &str) -> Result<()> {
         "pk_map" => {
             let nodes = root.join("nodes");
             if nodes.is_dir() {
-                for entry in fs::read_dir(&nodes)
-                    .with_context(|| format!("read_dir {}", nodes.display()))?
+                for entry in
+                    fs::read_dir(&nodes).with_context(|| format!("read_dir {}", nodes.display()))?
                 {
                     let entry = entry?;
                     let table_dir = entry.path();
                     if !entry.file_type()?.is_dir() {
                         continue;
                     }
-                    wipe_files_with_prefixes(
-                        &table_dir,
-                        &["pk_hash-", "pk_data-"],
-                    )?;
+                    wipe_files_with_prefixes(&table_dir, &["pk_hash-", "pk_data-"])?;
                 }
             }
             Ok(())
@@ -7959,13 +8421,12 @@ fn wipe_phase_outputs(root: &Path, phase: &str) -> Result<()> {
         "index" => {
             let meta = root.join("index_metadata.json");
             if meta.exists() {
-                fs::remove_file(&meta)
-                    .with_context(|| format!("remove {}", meta.display()))?;
+                fs::remove_file(&meta).with_context(|| format!("remove {}", meta.display()))?;
             }
             let nodes = root.join("nodes");
             if nodes.is_dir() {
-                for table_entry in fs::read_dir(&nodes)
-                    .with_context(|| format!("read_dir {}", nodes.display()))?
+                for table_entry in
+                    fs::read_dir(&nodes).with_context(|| format!("read_dir {}", nodes.display()))?
                 {
                     let table_entry = table_entry?;
                     if !table_entry.file_type()?.is_dir() {
@@ -8010,9 +8471,7 @@ fn wipe_files_with_prefixes(dir: &Path, prefixes: &[&str]) -> Result<()> {
     if !dir.is_dir() {
         return Ok(());
     }
-    for entry in fs::read_dir(dir)
-        .with_context(|| format!("read_dir {}", dir.display()))?
-    {
+    for entry in fs::read_dir(dir).with_context(|| format!("read_dir {}", dir.display()))? {
         let entry = entry?;
         let ft = entry.file_type()?;
         if !ft.is_file() {
@@ -8024,8 +8483,7 @@ fn wipe_files_with_prefixes(dir: &Path, prefixes: &[&str]) -> Result<()> {
         };
         if prefixes.iter().any(|p| name.starts_with(p)) {
             let path = entry.path();
-            fs::remove_file(&path)
-                .with_context(|| format!("remove {}", path.display()))?;
+            fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
         }
     }
     Ok(())
@@ -8038,9 +8496,7 @@ fn wipe_dir_keep_ext(root: &Path, keep_ext: &str) -> Result<()> {
     if !root.is_dir() {
         return Ok(());
     }
-    for entry in fs::read_dir(root)
-        .with_context(|| format!("read_dir {}", root.display()))?
-    {
+    for entry in fs::read_dir(root).with_context(|| format!("read_dir {}", root.display()))? {
         let entry = entry?;
         let path = entry.path();
         let ft = entry.file_type()?;
@@ -8053,8 +8509,7 @@ fn wipe_dir_keep_ext(root: &Path, keep_ext: &str) -> Result<()> {
                 .map(|e| e == keep_ext)
                 .unwrap_or(false);
             if !keep {
-                fs::remove_file(&path)
-                    .with_context(|| format!("remove {}", path.display()))?;
+                fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
             }
         }
     }
@@ -8994,6 +9449,10 @@ struct NodeWriteBatch {
     // TT-NG timestamp grouping: per-node TIMESTAMP values in node-write order,
     // 1:1 with `node_data.rows`. `None` when grouping is disabled.
     group_ts: Option<Vec<i64>>,
+    // TT-NG binary-label sidecars: per-node label bytes in node-write order.
+    binary_labels: Option<Vec<u8>>,
+    // TT-NG row-weight sidecars: per-node weights in node-write order.
+    sample_weights: Option<Vec<f64>>,
 }
 
 struct RowPackSegmentBatch {
@@ -9017,6 +9476,10 @@ struct NodeWriterStats {
     // O(D) per shard. Empty unless grouping is enabled for the table. Used by
     // the post-build merge to size buckets without a count pass.
     group_ts_counts: HashMap<(String, usize), HashMap<i64, u64>>,
+    // TT-NG binary-label sidecars: per-(table,shard) false/true/invalid counts.
+    binary_label_counts: HashMap<(String, usize), crate::binary_label::LabelCounts>,
+    // TT-NG row-weight sidecars: per-(table,shard) valid/invalid counts.
+    sample_weight_counts: HashMap<(String, usize), crate::sample_weight::WeightCounts>,
 }
 
 impl NodeWriterStats {
@@ -9043,6 +9506,19 @@ impl NodeWriterStats {
                 let slot = entry.entry(ts).or_insert(0);
                 *slot = slot.saturating_add(c);
             }
+        }
+        for (key, counts) in other.binary_label_counts {
+            let entry = self.binary_label_counts.entry(key).or_default();
+            entry.false_count = entry.false_count.saturating_add(counts.false_count);
+            entry.true_count = entry.true_count.saturating_add(counts.true_count);
+            entry.invalid_count = entry.invalid_count.saturating_add(counts.invalid_count);
+        }
+        for (key, counts) in other.sample_weight_counts {
+            let entry = self.sample_weight_counts.entry(key).or_default();
+            entry.row_count = entry.row_count.saturating_add(counts.row_count);
+            entry.valid_count = entry.valid_count.saturating_add(counts.valid_count);
+            entry.invalid_count = entry.invalid_count.saturating_add(counts.invalid_count);
+            entry.total_weight += counts.total_weight;
         }
     }
 }
@@ -9213,6 +9689,10 @@ fn node_writer_worker(
     // TT-NG timestamp grouping: per-(table,shard) append-only spill FD. Opened
     // lazily on the first grouped batch. Empty unless grouping is enabled.
     let mut group_spills: HashMap<(std::sync::Arc<str>, usize), std::fs::File> = HashMap::new();
+    let mut binary_label_spills: HashMap<(std::sync::Arc<str>, usize), std::fs::File> =
+        HashMap::new();
+    let mut sample_weight_spills: HashMap<(std::sync::Arc<str>, usize), std::fs::File> =
+        HashMap::new();
     let mut stats = NodeWriterStats::default();
     while let Ok(msg) = rx.recv() {
         match msg {
@@ -9309,6 +9789,74 @@ fn node_writer_worker(
                         *counts.entry(*ts).or_insert(0) += 1;
                     }
                 }
+                if let Some(labels) = &batch.binary_labels {
+                    debug_assert_eq!(
+                        labels.len(),
+                        batch.node_data.rows.len(),
+                        "binary labels must be 1:1 with node rows"
+                    );
+                    let spill = match binary_label_spills.get_mut(&key) {
+                        Some(f) => f,
+                        None => {
+                            let rel =
+                                crate::binary_label::spill_rel_path(&batch.table, batch.shard);
+                            let path = target.join(&rel);
+                            if let Some(parent) = path.parent() {
+                                std::fs::create_dir_all(parent)?;
+                            }
+                            let f = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(&path)
+                                .with_context(|| {
+                                    format!("open binary-label spill {}", path.display())
+                                })?;
+                            binary_label_spills.entry(key.clone()).or_insert(f)
+                        }
+                    };
+                    crate::binary_label::append_spill(spill, labels)?;
+                    let counts = stats
+                        .binary_label_counts
+                        .entry((batch.table.to_string(), batch.shard))
+                        .or_default();
+                    for label in labels {
+                        counts.add(*label);
+                    }
+                }
+                if let Some(weights) = &batch.sample_weights {
+                    debug_assert_eq!(
+                        weights.len(),
+                        batch.node_data.rows.len(),
+                        "sample weights must be 1:1 with node rows"
+                    );
+                    let spill = match sample_weight_spills.get_mut(&key) {
+                        Some(f) => f,
+                        None => {
+                            let rel =
+                                crate::sample_weight::spill_rel_path(&batch.table, batch.shard);
+                            let path = target.join(&rel);
+                            if let Some(parent) = path.parent() {
+                                std::fs::create_dir_all(parent)?;
+                            }
+                            let f = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(&path)
+                                .with_context(|| {
+                                    format!("open sample-weight spill {}", path.display())
+                                })?;
+                            sample_weight_spills.entry(key.clone()).or_insert(f)
+                        }
+                    };
+                    crate::sample_weight::append_spill(spill, weights)?;
+                    let counts = stats
+                        .sample_weight_counts
+                        .entry((batch.table.to_string(), batch.shard))
+                        .or_default();
+                    for weight in weights {
+                        counts.add(*weight);
+                    }
+                }
                 if let Some(data) = batch.pkey_data {
                     if writer.pkey.is_none() {
                         writer.pkey = Some(open_temp_row_writer(
@@ -9373,6 +9921,12 @@ fn node_writer_worker(
     for (_, mut spill) in group_spills {
         spill.flush()?;
     }
+    for (_, mut spill) in binary_label_spills {
+        spill.flush()?;
+    }
+    for (_, mut spill) in sample_weight_spills {
+        spill.flush()?;
+    }
     Ok(stats)
 }
 
@@ -9388,6 +9942,10 @@ struct NodeShardBuffer {
     // TIMESTAMP value, pushed 1:1 with `push_node_row`/`push_empty_node`, in
     // node-write order. `None` (default) = grouping disabled, zero overhead.
     group_ts: Option<Vec<i64>>,
+    // TT-NG binary label sidecars: one label byte per node row in write order.
+    binary_labels: Option<Vec<u8>>,
+    // TT-NG row-weight sidecars: one f64 per node row in write order.
+    sample_weights: Option<Vec<f64>>,
 }
 
 struct NodeBatcher {
@@ -9400,6 +9958,8 @@ struct NodeBatcher {
     error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     // TT-NG timestamp grouping enabled for this table (see `group_by_timestamp`).
     group_by_timestamp: bool,
+    binary_label_enabled: bool,
+    sample_weight_enabled: bool,
 }
 
 struct NodeRowSink<'a> {
@@ -9419,6 +9979,8 @@ impl NodeBatcher {
         senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<NodeWriteMessage>>>,
         error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
         group_by_timestamp: bool,
+        binary_label_enabled: bool,
+        sample_weight_enabled: bool,
     ) -> Self {
         let table_hash = hash_name(&table);
         let buffers = (0..num_shards)
@@ -9440,6 +10002,16 @@ impl NodeBatcher {
                 } else {
                     None
                 },
+                binary_labels: if binary_label_enabled {
+                    Some(Vec::new())
+                } else {
+                    None
+                },
+                sample_weights: if sample_weight_enabled {
+                    Some(Vec::new())
+                } else {
+                    None
+                },
             })
             .collect();
         Self {
@@ -9451,6 +10023,8 @@ impl NodeBatcher {
             senders,
             error,
             group_by_timestamp,
+            binary_label_enabled,
+            sample_weight_enabled,
         }
     }
 
@@ -9468,6 +10042,34 @@ impl NodeBatcher {
             .ok_or_else(|| anyhow!("node buffer shard {} out of bounds", shard))?;
         if let Some(group_ts) = buffer.group_ts.as_mut() {
             group_ts.push(ts);
+        }
+        Ok(())
+    }
+
+    fn push_binary_label(&mut self, shard: usize, label: u8) -> Result<()> {
+        if !self.binary_label_enabled {
+            return Ok(());
+        }
+        let buffer = self
+            .buffers
+            .get_mut(shard)
+            .ok_or_else(|| anyhow!("node buffer shard {} out of bounds", shard))?;
+        if let Some(labels) = buffer.binary_labels.as_mut() {
+            labels.push(label);
+        }
+        Ok(())
+    }
+
+    fn push_sample_weight(&mut self, shard: usize, weight: f64) -> Result<()> {
+        if !self.sample_weight_enabled {
+            return Ok(());
+        }
+        let buffer = self
+            .buffers
+            .get_mut(shard)
+            .ok_or_else(|| anyhow!("node buffer shard {} out of bounds", shard))?;
+        if let Some(weights) = buffer.sample_weights.as_mut() {
+            weights.push(weight);
         }
         Ok(())
     }
@@ -9637,6 +10239,8 @@ impl NodeBatcher {
         // batch, leaving an empty Vec to keep accumulating. `None` when
         // grouping is disabled.
         let group_ts = buffer.group_ts.as_mut().map(std::mem::take);
+        let binary_labels = buffer.binary_labels.as_mut().map(std::mem::take);
+        let sample_weights = buffer.sample_weights.as_mut().map(std::mem::take);
         // Drain sort key data for this shard and bundle into the batch.
         let mut sort_keys = Vec::new();
         for sk in sort_key_batchers.iter_mut() {
@@ -9656,6 +10260,8 @@ impl NodeBatcher {
             fkey_rows,
             sort_keys,
             group_ts,
+            binary_labels,
+            sample_weights,
         };
         buffer.node.rows.clear();
         buffer.pkey_rows = 0;
@@ -10786,13 +11392,8 @@ fn resolve_tightest_cpu_quota(
 #[cfg(target_os = "linux")]
 pub fn cpu_capacity_parallelism() -> usize {
     let mut set = unsafe { std::mem::zeroed::<libc::cpu_set_t>() };
-    let status = unsafe {
-        libc::sched_getaffinity(
-            0,
-            std::mem::size_of::<libc::cpu_set_t>(),
-            &mut set,
-        )
-    };
+    let status =
+        unsafe { libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set) };
     if status == 0 {
         let count = (0..libc::CPU_SETSIZE as usize)
             .filter(|cpu| unsafe { libc::CPU_ISSET(*cpu, &set) })
@@ -11013,7 +11614,11 @@ fn resolve_list_element_type(container: &IngestedType) -> Result<IngestedType> {
         IngestedType::Int16Array => IngestedType::Int16,
         IngestedType::Int8Array => IngestedType::Int8,
         IngestedType::String | IngestedType::Int64 | IngestedType::Int32 => container.clone(),
-        other => return Err(anyhow!("unsupported resolution list element type: {other:?}")),
+        other => {
+            return Err(anyhow!(
+                "unsupported resolution list element type: {other:?}"
+            ))
+        }
     })
 }
 
@@ -11212,8 +11817,7 @@ fn resolve_overrides_for_row(
     scratch: &mut Vec<u8>,
     shard_buf: &mut Vec<u8>,
 ) -> Result<Vec<diskgraph_rowpack::ResolveOverride>> {
-    let mut overrides =
-        vec![diskgraph_rowpack::ResolveOverride::None; num_columns];
+    let mut overrides = vec![diskgraph_rowpack::ResolveOverride::None; num_columns];
     for spec in runtime {
         let shard_count = resolver.shard_count(&spec.dst_table).ok_or_else(|| {
             anyhow!(
@@ -12940,8 +13544,8 @@ fn format_decimal_from_bigint(value: &num_bigint::BigInt, scale: i32) -> String 
 #[cfg(test)]
 mod tests_cgroup {
     use super::{
-        choose_ingest_num_shards, resolve_tightest_cpu_quota,
-        resolve_tightest_mem_limit, table_sized_bytes,
+        choose_ingest_num_shards, resolve_tightest_cpu_quota, resolve_tightest_mem_limit,
+        table_sized_bytes,
     };
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
@@ -13002,10 +13606,7 @@ mod tests_cgroup {
 
     #[test]
     fn mem_v1_fallback() {
-        let read = fake_reader(&[(
-            "/sys/fs/cgroup/memory/memory.limit_in_bytes",
-            "4096",
-        )]);
+        let read = fake_reader(&[("/sys/fs/cgroup/memory/memory.limit_in_bytes", "4096")]);
         assert_eq!(resolve_tightest_mem_limit(None, &read), Some(4096));
     }
 

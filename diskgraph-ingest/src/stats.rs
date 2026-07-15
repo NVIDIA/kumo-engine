@@ -38,6 +38,14 @@ pub struct IngestStats {
     /// true`. Empty (and omitted from JSON) otherwise.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub ts_groupings: HashMap<String, crate::ts_grouping::StageGrouping>,
+    /// TT-NG binary-class seed sidecars, present only for requested tables whose
+    /// label column contains valid binary values.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub binary_label_indexes: HashMap<String, crate::binary_label::BinaryLabelIndex>,
+    /// TT-NG row-weight seed sidecars, present only for requested tables whose
+    /// weight column contains valid non-negative numeric values.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub sample_weight_indexes: HashMap<String, crate::sample_weight::SampleWeightIndex>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

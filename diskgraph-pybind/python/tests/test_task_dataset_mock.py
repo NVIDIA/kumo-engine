@@ -303,6 +303,145 @@ def test_native_iterator_surface_forwards_selected_stage_node_ids(tmp_path, monk
     assert captured.args[-1] is True
 
 
+def test_native_iterator_surface_resolves_weighted_seed_sampling(tmp_path, monkeypatch):
+    root = tmp_path / "idx" / "train_tables" / "tt1"
+    (root / "train_seeds").mkdir(parents=True)
+    false_node_ids = root / "train_seeds" / "false_node_ids.bin"
+    true_node_ids = root / "train_seeds" / "true_node_ids.bin"
+    false_node_ids.write_bytes(b"")
+    true_node_ids.write_bytes(b"")
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({
+        "kind": "diskgraph_task_dataset",
+        "graph": {"index_path": str(tmp_path / "idx")},
+        "stages": {
+            "train": {
+                "table_name": "train_seeds",
+                "index_path": str(root),
+                "row_count": 7,
+                "binary_label_index": {
+                    "false_node_ids": "train_seeds/false_node_ids.bin",
+                    "false_count": 5,
+                    "true_node_ids": "train_seeds/true_node_ids.bin",
+                    "true_count": 2,
+                },
+            }
+        },
+    }))
+    captured = SimpleNamespace(args=None)
+
+    class FakeRuntimeBatchIterator:
+        def __init__(self, *args):
+            captured.args = args
+
+        def num_samples(self):
+            return 6
+
+    monkeypatch.setattr(diskgraph._c, "RuntimeBatchIterator", FakeRuntimeBatchIterator)
+
+    _, num_samples = make_runtime_batch_iterator(
+        str(manifest_path),
+        stage="train",
+        sampling_plan={"layers": []},
+        num_workers=1,
+        worker_id=0,
+        shuffle=False,
+        rnd_seed=None,
+        epoch=0,
+        batch_size=3,
+        weighted_seed_sampling={
+            "false_weight": 1.0,
+            "true_weight": 3.0,
+            "num_samples": 6,
+        },
+    )
+
+    assert num_samples == 6
+    config = json.loads(captured.args[-3])
+    assert config["buckets"] == [
+        {
+            "name": "false",
+            "node_ids_path": str(false_node_ids),
+            "count": 5,
+            "mass": 5.0,
+        },
+        {
+            "name": "true",
+            "node_ids_path": str(true_node_ids),
+            "count": 2,
+            "mass": 6.0,
+        },
+    ]
+    assert config["num_samples"] == 6
+
+
+def test_native_iterator_surface_resolves_row_weight_sampling(tmp_path, monkeypatch):
+    root = tmp_path / "idx" / "train_tables" / "tt1"
+    (root / "train_seeds").mkdir(parents=True)
+    ids = root / "train_seeds" / "sample_weight_node_ids.bin"
+    cdf = root / "train_seeds" / "sample_weight_cdf_f64.bin"
+    ids.write_bytes(b"")
+    cdf.write_bytes(b"")
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({
+        "kind": "diskgraph_task_dataset",
+        "graph": {"index_path": str(tmp_path / "idx")},
+        "stages": {
+            "train": {
+                "table_name": "train_seeds",
+                "index_path": str(root),
+                "row_count": 7,
+                "sample_weight_index": {
+                    "all": {
+                        "node_ids": "train_seeds/sample_weight_node_ids.bin",
+                        "cdf": "train_seeds/sample_weight_cdf_f64.bin",
+                        "count": 7,
+                        "total_weight": 11.5,
+                    },
+                },
+            }
+        },
+    }))
+    captured = SimpleNamespace(args=None)
+
+    class FakeRuntimeBatchIterator:
+        def __init__(self, *args):
+            captured.args = args
+
+        def num_samples(self):
+            return 12
+
+    monkeypatch.setattr(diskgraph._c, "RuntimeBatchIterator", FakeRuntimeBatchIterator)
+
+    _, num_samples = make_runtime_batch_iterator(
+        str(manifest_path),
+        stage="train",
+        sampling_plan={"layers": []},
+        num_workers=1,
+        worker_id=0,
+        shuffle=False,
+        rnd_seed=None,
+        epoch=0,
+        batch_size=3,
+        weighted_seed_sampling={
+            "use_sample_weights": True,
+            "num_samples": 12,
+        },
+    )
+
+    assert num_samples == 12
+    config = json.loads(captured.args[-3])
+    assert config["buckets"] == [{
+        "name": "all",
+        "node_ids_path": str(ids),
+        "count": 7,
+        "mass": 11.5,
+        "cdf_path": str(cdf),
+        "total_weight": 11.5,
+    }]
+    assert config["num_samples"] == 12
+
+
 def test_native_iterator_surface_disables_seed_timestamps_for_static_task(
         tmp_path, monkeypatch):
     manifest_path = tmp_path / "manifest.json"

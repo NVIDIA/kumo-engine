@@ -17,13 +17,14 @@
 //! an orphan FK value silently mis-resolves rather than being dropped — see the
 //! contract on [`ingest_stage_extension`].
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
 use crate::config::{ResolveColumnSpec, ResolveKind};
 use crate::graph_config::{ColumnSpec, DataSource, FKeySpec, GraphConfig, IngestedType, TableSpec};
-use crate::{ingest_with_stats_from_source, Dest, IngestOptions};
+use crate::{ingest_with_stats_from_source_and_sidecars, Dest, IngestOptions};
 
 /// One stage table to ingest into a stage extension.
 pub struct StageSpec {
@@ -35,6 +36,21 @@ pub struct StageSpec {
     /// ingests them in parallel and the resulting sub-index is identical to
     /// ingesting one concatenated parquet (union of all part rows).
     pub parquet_paths: Vec<PathBuf>,
+}
+
+/// Optional seed-sampling sidecars to emit for a stage table.
+///
+/// Kept separate from [`TableSpec`] and [`StageSpec`] so ordinary graph/table
+/// config and ordinary stage ingestion do not need to mention weighted
+/// training internals.
+#[derive(Clone, Debug, Default)]
+pub struct StageSidecarColumns {
+    /// Binary target column for replacement-sampling class buckets.
+    /// Non-binary values omit the sidecar instead of failing ingest.
+    pub binary_label_column: Option<String>,
+    /// Numeric row-weight column for replacement-sampling CDF buckets.
+    /// Invalid values omit the sidecar instead of failing ingest.
+    pub sample_weight_column: Option<String>,
 }
 
 /// Ingest one or more pre-materialized stage parquets as a DG extension under
@@ -82,6 +98,35 @@ pub fn ingest_stage_extension(
     // TT-NG temporal-LP timestamp grouping. When true, every stage table in
     // this call emits a `<table>/bucket_index.bin` (final node-ids grouped by
     // TIMESTAMP) + bucket list. `false` is byte-identical to before.
+    group_by_timestamp: bool,
+) -> Result<StageExtensionResult> {
+    ingest_stage_extension_with_sidecars(
+        dataset_name,
+        extension_output_root,
+        parent_index_path,
+        stages,
+        HashMap::new(),
+        columns,
+        fkey_specs,
+        num_shards,
+        col_stats,
+        group_by_timestamp,
+    )
+}
+
+/// Identical to [`ingest_stage_extension`], plus optional per-stage sidecar
+/// requests for TT-NG replacement seed sampling.
+#[allow(clippy::too_many_arguments)]
+pub fn ingest_stage_extension_with_sidecars(
+    dataset_name: &str,
+    extension_output_root: &Path,
+    parent_index_path: &Path,
+    stages: &[StageSpec],
+    stage_sidecars: HashMap<String, StageSidecarColumns>,
+    columns: Vec<ColumnSpec>,
+    fkey_specs: Vec<FKeySpec>,
+    num_shards: Option<usize>,
+    col_stats: bool,
     group_by_timestamp: bool,
 ) -> Result<StageExtensionResult> {
     let tables: Vec<TableSpec> = stages
@@ -144,7 +189,7 @@ pub fn ingest_stage_extension(
         ..Default::default()
     };
 
-    let (_, stats) = ingest_with_stats_from_source(
+    let (_, stats) = ingest_with_stats_from_source_and_sidecars(
         graph_config,
         None,
         &extension_output_root.to_string_lossy(),
@@ -152,6 +197,7 @@ pub fn ingest_stage_extension(
         options,
         None,
         None,
+        stage_sidecars,
     )
     .with_context(|| {
         format!(
@@ -189,6 +235,8 @@ pub fn ingest_stage_extension(
     Ok(StageExtensionResult {
         counts,
         ts_groupings: stats.ts_groupings,
+        binary_label_indexes: stats.binary_label_indexes,
+        sample_weight_indexes: stats.sample_weight_indexes,
     })
 }
 
@@ -200,6 +248,10 @@ pub struct StageExtensionResult {
     pub counts: Vec<(String, u64)>,
     pub ts_groupings:
         std::collections::HashMap<String, crate::ts_grouping::StageGrouping>,
+    pub binary_label_indexes:
+        std::collections::HashMap<String, crate::binary_label::BinaryLabelIndex>,
+    pub sample_weight_indexes:
+        std::collections::HashMap<String, crate::sample_weight::SampleWeightIndex>,
 }
 
 /// A single FK-free LP resolution column for [`ingest_stage_extension_with_resolution`]:
@@ -247,6 +299,38 @@ pub fn ingest_stage_extension_with_resolution(
     extension_output_root: &Path,
     parent_index_path: &Path,
     stages: &[StageSpec],
+    columns: Vec<ColumnSpec>,
+    fkey_specs: Vec<FKeySpec>,
+    resolve_specs: &[ResolveSpec],
+    num_shards: Option<usize>,
+    col_stats: bool,
+    // TT-NG temporal-LP timestamp grouping (see [`ingest_stage_extension`]).
+    group_by_timestamp: bool,
+) -> Result<StageExtensionResult> {
+    ingest_stage_extension_with_resolution_and_sidecars(
+        dataset_name,
+        extension_output_root,
+        parent_index_path,
+        stages,
+        HashMap::new(),
+        columns,
+        fkey_specs,
+        resolve_specs,
+        num_shards,
+        col_stats,
+        group_by_timestamp,
+    )
+}
+
+/// Identical to [`ingest_stage_extension_with_resolution`], plus optional
+/// per-stage sidecar requests for TT-NG replacement seed sampling.
+#[allow(clippy::too_many_arguments)]
+pub fn ingest_stage_extension_with_resolution_and_sidecars(
+    dataset_name: &str,
+    extension_output_root: &Path,
+    parent_index_path: &Path,
+    stages: &[StageSpec],
+    stage_sidecars: HashMap<String, StageSidecarColumns>,
     columns: Vec<ColumnSpec>,
     fkey_specs: Vec<FKeySpec>,
     resolve_specs: &[ResolveSpec],
@@ -337,7 +421,7 @@ pub fn ingest_stage_extension_with_resolution(
         ..Default::default()
     };
 
-    let (_, stats) = ingest_with_stats_from_source(
+    let (_, stats) = ingest_with_stats_from_source_and_sidecars(
         graph_config,
         None,
         &extension_output_root.to_string_lossy(),
@@ -345,6 +429,7 @@ pub fn ingest_stage_extension_with_resolution(
         options,
         None,
         None,
+        stage_sidecars,
     )
     .with_context(|| {
         format!(
@@ -380,5 +465,7 @@ pub fn ingest_stage_extension_with_resolution(
     Ok(StageExtensionResult {
         counts,
         ts_groupings: stats.ts_groupings,
+        binary_label_indexes: stats.binary_label_indexes,
+        sample_weight_indexes: stats.sample_weight_indexes,
     })
 }

@@ -906,7 +906,10 @@ fn int32_yyyymmdd_create_time_via_format() {
             .unwrap()
             .and_utc()
             .timestamp();
-        assert_eq!(secs, expected, "Int32 YYYYMMDD should parse via format hint");
+        assert_eq!(
+            secs, expected,
+            "Int32 YYYYMMDD should parse via format hint"
+        );
     });
 }
 
@@ -949,6 +952,9 @@ fn int32_epoch_secs_no_format_unchanged() {
     let cols: Vec<ArrayRef> = vec![Arc::new(arr)];
     with_access(&table, cols, |access| {
         let secs = access.get_timestamp(0).unwrap().unwrap();
-        assert_eq!(secs, epoch as i64, "Epoch seconds should pass through unchanged");
+        assert_eq!(
+            secs, epoch as i64,
+            "Epoch seconds should pass through unchanged"
+        );
     });
 }

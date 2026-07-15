@@ -6,7 +6,9 @@ use diskgraph_index::graph::TableReader;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rand::seq::SliceRandom;
+use rand::Rng;
 use rand::{rngs::StdRng, SeedableRng};
+use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::{map_engine_err, DiskgraphConfigError, DiskgraphDataError, DiskgraphSystemError};
@@ -66,6 +68,315 @@ fn make_worker_offsets(
             }
         })
         .collect())
+}
+
+#[derive(Debug, Deserialize)]
+struct WeightedSeedSamplingConfig {
+    buckets: Vec<WeightedSeedBucketConfig>,
+    num_samples: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct WeightedSeedBucketConfig {
+    name: String,
+    node_ids_path: String,
+    count: u64,
+    mass: f64,
+    cdf_path: Option<String>,
+    total_weight: Option<f64>,
+}
+
+struct U64Sidecar {
+    path: String,
+    mmap: Option<memmap2::Mmap>,
+    len: u64,
+}
+
+impl U64Sidecar {
+    fn open(path: &str) -> PyResult<Self> {
+        let file = std::fs::File::open(path)
+            .map_err(|e| DiskgraphSystemError::new_err(format!("failed to open {path}: {e}")))?;
+        let byte_len = file
+            .metadata()
+            .map_err(|e| DiskgraphSystemError::new_err(format!("failed to stat {path}: {e}")))?
+            .len();
+        if byte_len % 8 != 0 {
+            return Err(DiskgraphDataError::new_err(format!(
+                "u64 sidecar {path} has {byte_len} bytes, not a multiple of 8"
+            )));
+        }
+        let mmap = if byte_len == 0 {
+            None
+        } else {
+            Some(unsafe { memmap2::Mmap::map(&file) }.map_err(|e| {
+                DiskgraphSystemError::new_err(format!("failed to mmap {path}: {e}"))
+            })?)
+        };
+        Ok(Self {
+            path: path.to_string(),
+            mmap,
+            len: byte_len / 8,
+        })
+    }
+
+    fn len(&self) -> u64 {
+        self.len
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn get(&self, index: u64) -> PyResult<u64> {
+        if index >= self.len {
+            return Err(DiskgraphDataError::new_err(format!(
+                "u64 sidecar {} index {index} out of range for len {}",
+                self.path, self.len
+            )));
+        }
+        let mmap = self.mmap.as_ref().ok_or_else(|| {
+            DiskgraphDataError::new_err(format!("u64 sidecar {} is empty", self.path))
+        })?;
+        let offset = (index as usize) * 8;
+        let mut raw = [0u8; 8];
+        raw.copy_from_slice(&mmap[offset..offset + 8]);
+        Ok(u64::from_le_bytes(raw))
+    }
+}
+
+struct F64Sidecar {
+    path: String,
+    mmap: Option<memmap2::Mmap>,
+    len: u64,
+}
+
+impl F64Sidecar {
+    fn open(path: &str) -> PyResult<Self> {
+        let file = std::fs::File::open(path)
+            .map_err(|e| DiskgraphSystemError::new_err(format!("failed to open {path}: {e}")))?;
+        let byte_len = file
+            .metadata()
+            .map_err(|e| DiskgraphSystemError::new_err(format!("failed to stat {path}: {e}")))?
+            .len();
+        if byte_len % 8 != 0 {
+            return Err(DiskgraphDataError::new_err(format!(
+                "f64 sidecar {path} has {byte_len} bytes, not a multiple of 8"
+            )));
+        }
+        let mmap = if byte_len == 0 {
+            None
+        } else {
+            Some(unsafe { memmap2::Mmap::map(&file) }.map_err(|e| {
+                DiskgraphSystemError::new_err(format!("failed to mmap {path}: {e}"))
+            })?)
+        };
+        Ok(Self {
+            path: path.to_string(),
+            mmap,
+            len: byte_len / 8,
+        })
+    }
+
+    fn len(&self) -> u64 {
+        self.len
+    }
+
+    fn get(&self, index: u64) -> PyResult<f64> {
+        if index >= self.len {
+            return Err(DiskgraphDataError::new_err(format!(
+                "f64 sidecar {} index {index} out of range for len {}",
+                self.path, self.len
+            )));
+        }
+        let mmap = self.mmap.as_ref().ok_or_else(|| {
+            DiskgraphDataError::new_err(format!("f64 sidecar {} is empty", self.path))
+        })?;
+        let offset = (index as usize) * 8;
+        let mut raw = [0u8; 8];
+        raw.copy_from_slice(&mmap[offset..offset + 8]);
+        Ok(f64::from_le_bytes(raw))
+    }
+
+    fn partition_point_le(&self, draw: f64) -> PyResult<u64> {
+        let mut left = 0u64;
+        let mut right = self.len;
+        while left < right {
+            let mid = left + (right - left) / 2;
+            if self.get(mid)? <= draw {
+                left = mid + 1;
+            } else {
+                right = mid;
+            }
+        }
+        Ok(left)
+    }
+}
+
+struct WeightedSeedBucket {
+    name: String,
+    node_ids: U64Sidecar,
+    cdf: Option<F64Sidecar>,
+    mass: f64,
+    total_weight: Option<f64>,
+}
+
+impl WeightedSeedBucket {
+    fn open(config: WeightedSeedBucketConfig) -> PyResult<Self> {
+        if !config.mass.is_finite() || config.mass < 0.0 {
+            return Err(DiskgraphConfigError::new_err(format!(
+                "weighted_seed_sampling bucket {} has invalid mass {}",
+                config.name, config.mass
+            )));
+        }
+        let node_ids = U64Sidecar::open(&config.node_ids_path)?;
+        if node_ids.len() != config.count {
+            return Err(DiskgraphDataError::new_err(format!(
+                "weighted_seed_sampling bucket {} count mismatch: manifest={} file={}",
+                config.name,
+                config.count,
+                node_ids.len()
+            )));
+        }
+        let cdf = match config.cdf_path {
+            Some(path) => {
+                let cdf = F64Sidecar::open(&path)?;
+                if cdf.len() != config.count {
+                    return Err(DiskgraphDataError::new_err(format!(
+                        "weighted_seed_sampling bucket {} cdf count mismatch: manifest={} file={}",
+                        config.name,
+                        config.count,
+                        cdf.len()
+                    )));
+                }
+                Some(cdf)
+            }
+            None => None,
+        };
+        if let Some(cdf_ref) = &cdf {
+            let total = config.total_weight.ok_or_else(|| {
+                DiskgraphConfigError::new_err(format!(
+                    "weighted_seed_sampling bucket {} missing total_weight",
+                    config.name
+                ))
+            })?;
+            if !total.is_finite() || total <= 0.0 {
+                return Err(DiskgraphConfigError::new_err(format!(
+                    "weighted_seed_sampling bucket {} has invalid total_weight {}",
+                    config.name, total
+                )));
+            }
+            if config.count > 0 {
+                let observed = cdf_ref.get(config.count - 1)?;
+                let tolerance = total.abs().max(1.0) * 1e-9;
+                if (observed - total).abs() > tolerance {
+                    return Err(DiskgraphDataError::new_err(format!(
+                        "weighted_seed_sampling bucket {} total_weight mismatch: manifest={} file={}",
+                        config.name, total, observed
+                    )));
+                }
+            }
+            Ok(Self {
+                name: config.name,
+                node_ids,
+                cdf,
+                mass: config.mass,
+                total_weight: Some(total),
+            })
+        } else {
+            Ok(Self {
+                name: config.name,
+                node_ids,
+                cdf,
+                mass: config.mass,
+                total_weight: None,
+            })
+        }
+    }
+
+    fn sample_node_id(&self, rng: &mut StdRng) -> PyResult<u64> {
+        if self.node_ids.is_empty() {
+            return Err(DiskgraphDataError::new_err(format!(
+                "weighted_seed_sampling bucket {} is empty",
+                self.name
+            )));
+        }
+        let index = if let Some(cdf) = self.cdf.as_ref() {
+            let total = self.total_weight.expect("cdf bucket has total_weight");
+            let draw = rng.gen_range(0.0..total);
+            let index = cdf.partition_point_le(draw)?;
+            if index >= self.node_ids.len() {
+                self.node_ids.len() - 1
+            } else {
+                index
+            }
+        } else {
+            rng.gen_range(0..self.node_ids.len())
+        };
+        self.node_ids.get(index)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_weighted_stage_node_ids(
+    config_json: &str,
+    stage_table: &TableReader,
+    stage_key: &str,
+    num_workers: u64,
+    worker_id: u64,
+    rnd_seed: Option<u64>,
+    epoch: u64,
+) -> PyResult<Vec<u64>> {
+    let config: WeightedSeedSamplingConfig = serde_json::from_str(config_json).map_err(|e| {
+        DiskgraphConfigError::new_err(format!("Invalid weighted_seed_sampling JSON: {e}"))
+    })?;
+    if config.num_samples == 0 {
+        return Ok(Vec::new());
+    }
+    let buckets = config
+        .buckets
+        .into_iter()
+        .map(WeightedSeedBucket::open)
+        .collect::<PyResult<Vec<_>>>()?;
+    let total_mass: f64 = buckets.iter().map(|bucket| bucket.mass).sum();
+    if total_mass <= 0.0 {
+        return Err(DiskgraphConfigError::new_err(
+            "weighted_seed_sampling has zero total sampling mass",
+        ));
+    }
+    let mut rng = StdRng::seed_from_u64(epoch_shuffle_seed(
+        rnd_seed.unwrap_or(0),
+        epoch,
+        &format!("{stage_key}:weighted_seed_sampling"),
+    ));
+    let mut local_ids = Vec::new();
+    for pos in 0..config.num_samples {
+        let draw = rng.gen_range(0.0..total_mass);
+        let mut running = 0.0;
+        let mut selected = buckets.last().ok_or_else(|| {
+            DiskgraphConfigError::new_err("weighted_seed_sampling requires at least one bucket")
+        })?;
+        for bucket in &buckets {
+            if bucket.mass <= 0.0 {
+                continue;
+            }
+            running += bucket.mass;
+            if draw < running {
+                selected = bucket;
+                break;
+            }
+        }
+        let node_id = selected.sample_node_id(&mut rng)?;
+        if pos % num_workers != worker_id {
+            continue;
+        }
+        if stage_table.shard_for_node(node_id).is_none() {
+            return Err(DiskgraphDataError::new_err(format!(
+                "weighted_seed_sampling node id {node_id} out of range for stage table {stage_key}"
+            )));
+        }
+        local_ids.push(node_id);
+    }
+    Ok(local_ids)
 }
 
 // ---------------------------------------------------------------------------
@@ -149,8 +460,7 @@ impl BucketSchedule {
         // Shuffle the bucket order deterministically by (base, epoch, stage_key)
         // — identical across workers.
         let mut order: Vec<usize> = (0..raw_buckets.len()).collect();
-        let mut rng =
-            StdRng::seed_from_u64(epoch_shuffle_seed(base_seed, epoch, &stage_key));
+        let mut rng = StdRng::seed_from_u64(epoch_shuffle_seed(base_seed, epoch, &stage_key));
         order.shuffle(&mut rng);
 
         let mut buckets = Vec::with_capacity(raw_buckets.len());
@@ -404,7 +714,6 @@ fn py_bool_array<'py>(py: Python<'py>, values: Vec<bool>) -> PyResult<Bound<'py,
         .to_pyarrow(py)
 }
 
-
 // ---------------------------------------------------------------------------
 // RuntimeBatchIterator — merged-reader path (replaces the legacy
 // dual-engine `TaskBatchIterator`).
@@ -423,9 +732,7 @@ fn py_bool_array<'py>(py: Python<'py>, values: Vec<bool>) -> PyResult<Bound<'py,
 //      (via `to_data().to_pyarrow` and `RecordBatch.to_pyarrow`).
 // ---------------------------------------------------------------------------
 
-use diskgraph_engine::output::{
-    GraphChannel, RawFeatureBank, RuntimeBatch, TaskBag,
-};
+use diskgraph_engine::output::{GraphChannel, RawFeatureBank, RuntimeBatch, TaskBag};
 
 /// Convert our Rust `RuntimeBatch` to PR-28765's PyDict shape. All Arrow
 /// payloads cross the FFI boundary via Arrow C Data Interface (zero-copy);
@@ -563,9 +870,11 @@ fn graph_channel_to_pydict<'py>(
             continue;
         }
         let rel_id = rel_idx as u16;
-        let (src, rel, dst) = channel.rel_id_to_names.get(&rel_id).cloned().unwrap_or_else(|| {
-            ("?".to_string(), format!("rel_{rel_id}"), "?".to_string())
-        });
+        let (src, rel, dst) = channel
+            .rel_id_to_names
+            .get(&rel_id)
+            .cloned()
+            .unwrap_or_else(|| ("?".to_string(), format!("rel_{rel_id}"), "?".to_string()));
         let key = PyDict::new(py);
         key.set_item("src", src)?;
         key.set_item("rel", rel)?;
@@ -636,6 +945,10 @@ pub struct RuntimeBatchIterator {
     /// These are final stage node ids (`task.tt_stage_node_ids`), not dense
     /// offsets.
     selected_stage_node_ids: Option<Vec<u64>>,
+    /// Worker-local replacement-sampled stage node ids for binary
+    /// WeightMode.SAMPLE. Built once per iterator epoch from binary label
+    /// node-id sidecars.
+    weighted_stage_node_ids: Option<Vec<u64>>,
     cursor: usize,
     batch_size: usize,
     drop_last: bool,
@@ -700,6 +1013,7 @@ impl RuntimeBatchIterator {
         rhs_seed_node_type=None,
         rhs_seed_time=None,
         group_by_timestamp=false,
+        weighted_seed_sampling_json=None,
         selected_stage_node_ids=None,
         use_seed_timestamps=true,
     ))]
@@ -768,6 +1082,7 @@ impl RuntimeBatchIterator {
         // Mutually exclusive with NodeRange mode (the RHS catalog pass has no
         // per-row timestamp to group on).
         group_by_timestamp: bool,
+        weighted_seed_sampling_json: Option<String>,
         // XAI / targeted replay mode: explicit stage-table node ids, in caller
         // order. These are the same ids emitted as task.tt_stage_node_ids.
         selected_stage_node_ids: Option<Vec<u64>>,
@@ -795,6 +1110,28 @@ impl RuntimeBatchIterator {
             if rhs_seed_node_type.is_some() {
                 return Err(DiskgraphConfigError::new_err(
                     "selected_stage_node_ids is incompatible with rhs_seed_node_type (NodeRange mode)",
+                ));
+            }
+        }
+        if weighted_seed_sampling_json.is_some() {
+            if selected_stage_node_ids.is_some() {
+                return Err(DiskgraphConfigError::new_err(
+                    "weighted_seed_sampling is incompatible with selected_stage_node_ids",
+                ));
+            }
+            if drop_last {
+                return Err(DiskgraphConfigError::new_err(
+                    "weighted_seed_sampling is incompatible with drop_last=True",
+                ));
+            }
+            if group_by_timestamp {
+                return Err(DiskgraphConfigError::new_err(
+                    "weighted_seed_sampling is incompatible with group_by_timestamp=True",
+                ));
+            }
+            if rhs_seed_node_type.is_some() {
+                return Err(DiskgraphConfigError::new_err(
+                    "weighted_seed_sampling is incompatible with rhs_seed_node_type (NodeRange mode)",
                 ));
             }
         }
@@ -874,6 +1211,19 @@ impl RuntimeBatchIterator {
         } else {
             None
         };
+        let weighted_stage_node_ids = if let Some(config_json) = weighted_seed_sampling_json {
+            Some(make_weighted_stage_node_ids(
+                &config_json,
+                stage_table_arc.as_ref(),
+                &stage_catalog_key,
+                num_workers,
+                worker_id,
+                rnd_seed,
+                epoch,
+            )?)
+        } else {
+            None
+        };
         let sampling_plan: SamplingPlan = serde_json::from_str(&sampling_plan_json)
             .map_err(|e| DiskgraphConfigError::new_err(format!("Invalid plan JSON: {e}")))?;
         // Grouped (single-timestamp) path: build the lazy bucket schedule from
@@ -907,7 +1257,7 @@ impl RuntimeBatchIterator {
         // ingest guarantee), NOT stage-table row offsets. Build the offsets over
         // the dense range and add `lo` so each offset IS the global node-id. The
         // stage table is ignored for seeding in this mode.
-        let offsets = if selected_stage_node_ids.is_some() {
+        let offsets = if selected_stage_node_ids.is_some() || weighted_stage_node_ids.is_some() {
             Vec::new()
         } else if group_by_timestamp {
             // Grouped path drives iteration from `bucket_schedule`, not offsets.
@@ -979,6 +1329,7 @@ impl RuntimeBatchIterator {
             },
             offsets,
             selected_stage_node_ids,
+            weighted_stage_node_ids,
             cursor: 0,
             batch_size,
             drop_last,
@@ -996,6 +1347,9 @@ impl RuntimeBatchIterator {
         if let Some(ids) = self.selected_stage_node_ids.as_ref() {
             return ids.len();
         }
+        if let Some(ids) = self.weighted_stage_node_ids.as_ref() {
+            return ids.len();
+        }
         // Grouped path: report the worker's batch count (offsets is empty).
         match &self.bucket_schedule {
             Some(sched) => sched.worker_batch_count() as usize,
@@ -1007,6 +1361,9 @@ impl RuntimeBatchIterator {
     /// number of owned global batch indices; Python's `__len__` calls it.
     pub fn worker_batch_count(&self) -> usize {
         if let Some(ids) = self.selected_stage_node_ids.as_ref() {
+            return ids.len().div_ceil(self.batch_size);
+        }
+        if let Some(ids) = self.weighted_stage_node_ids.as_ref() {
             return ids.len().div_ceil(self.batch_size);
         }
         match &self.bucket_schedule {
@@ -1136,6 +1493,45 @@ impl RuntimeBatchIterator {
             return Ok(Some(dict.into()));
         }
 
+        if let Some(weighted_ids) = self.weighted_stage_node_ids.as_ref() {
+            let remaining = weighted_ids.len().saturating_sub(self.cursor);
+            if remaining == 0 {
+                return Ok(None);
+            }
+            let take = self.batch_size.min(remaining);
+            let stage_node_ids = weighted_ids[self.cursor..self.cursor + take].to_vec();
+            self.cursor += take;
+
+            let engine = &self.engine;
+            let reader = &self.reader;
+            let stage_table_catalog_key = &self.stage_table_catalog_key;
+            let plan = &self.plan;
+            let flags = &self.flags;
+            let negatives = self.negatives.as_ref();
+            let entity_node_type = self.entity_node_type.as_deref();
+            let target_node_type = self.target_node_type.as_deref();
+            let runtime_batch = py
+                .detach(|| {
+                    engine.sample_runtime_batch(
+                        reader.as_ref(),
+                        stage_table_catalog_key,
+                        &stage_node_ids,
+                        diskgraph_core::dataset::DatasetId::nil(),
+                        plan,
+                        flags,
+                        negatives,
+                        entity_node_type,
+                        target_node_type,
+                        self.use_seed_timestamps,
+                        None,
+                    )
+                })
+                .map_err(map_engine_err)?;
+
+            let dict = runtime_batch_to_pydict(py, &runtime_batch)?;
+            return Ok(Some(dict.into()));
+        }
+
         let remaining = self.offsets.len().saturating_sub(self.cursor);
         if remaining == 0 {
             return Ok(None);
@@ -1152,9 +1548,9 @@ impl RuntimeBatchIterator {
         // `node_id_from_offset` map — pass them straight to the NodeRange engine
         // path with the fixed seed_time.
         if let Some(rhs_type) = self.rhs_seed_node_type.as_deref() {
-            let seed_time = self.rhs_seed_time.expect(
-                "rhs_seed_time present when rhs_seed_node_type is set (validated in new)",
-            );
+            let seed_time = self
+                .rhs_seed_time
+                .expect("rhs_seed_time present when rhs_seed_node_type is set (validated in new)");
             // Release the GIL around the multi-threaded rayon sample (the engine
             // is GIL-free pure Rust); re-acquire only to build the PyDict.
             // Capture only the Rust fields needed so the closure stays `Send`.
@@ -1275,7 +1671,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::make_worker_offsets;
-    use super::{read_bucket_index, worker_batch_count, BucketSchedule};
+    use super::{read_bucket_index, worker_batch_count, BucketSchedule, F64Sidecar, U64Sidecar};
     use pyo3::Python;
     use std::collections::HashSet;
     use std::io::Write;
@@ -1314,6 +1710,42 @@ mod tests {
             out.push(ids);
         }
         out
+    }
+
+    #[test]
+    fn u64_sidecar_mmap_reads_by_index_without_heap_decoding() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("ids.bin");
+        let mut f = std::fs::File::create(&path).unwrap();
+        for value in [7u64, 11, 42] {
+            f.write_all(&value.to_le_bytes()).unwrap();
+        }
+        drop(f);
+
+        let sidecar = U64Sidecar::open(path.to_str().unwrap()).unwrap();
+        assert_eq!(sidecar.len(), 3);
+        assert!(!sidecar.is_empty());
+        assert_eq!(sidecar.get(0).unwrap(), 7);
+        assert_eq!(sidecar.get(2).unwrap(), 42);
+        assert!(sidecar.get(3).is_err());
+    }
+
+    #[test]
+    fn f64_sidecar_binary_searches_cumulative_weights() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("cdf.bin");
+        let mut f = std::fs::File::create(&path).unwrap();
+        for value in [0.5f64, 2.5, 6.5] {
+            f.write_all(&value.to_le_bytes()).unwrap();
+        }
+        drop(f);
+
+        let sidecar = F64Sidecar::open(path.to_str().unwrap()).unwrap();
+        assert_eq!(sidecar.len(), 3);
+        assert_eq!(sidecar.partition_point_le(0.0).unwrap(), 0);
+        assert_eq!(sidecar.partition_point_le(0.5).unwrap(), 1);
+        assert_eq!(sidecar.partition_point_le(2.0).unwrap(), 1);
+        assert_eq!(sidecar.partition_point_le(6.4).unwrap(), 2);
     }
 
     /// THE partition-invariant test. For a sweep of worker counts, batch sizes,
@@ -1389,14 +1821,8 @@ mod tests {
                         );
                         total_batches_seen += batches.len() as u64;
                         for batch in &batches {
-                            assert!(
-                                !batch.is_empty(),
-                                "no empty batch should be emitted"
-                            );
-                            assert!(
-                                batch.len() <= batch_size,
-                                "batch exceeds batch_size"
-                            );
+                            assert!(!batch.is_empty(), "no empty batch should be emitted");
+                            assert!(batch.len() <= batch_size, "batch exceeds batch_size");
                             // I1: single timestamp per batch.
                             let first_ts = ts_of[&batch[0]];
                             for id in batch {
@@ -1491,8 +1917,7 @@ mod tests {
     fn bucket_schedule_more_workers_than_batches() {
         let tmp = tempfile::tempdir().unwrap();
         // 3 ids in 3 single-id buckets at batch_size 1 => exactly 3 batches.
-        let dist: Vec<(i64, Vec<u64>)> =
-            vec![(10, vec![500]), (20, vec![600]), (30, vec![700])];
+        let dist: Vec<(i64, Vec<u64>)> = vec![(10, vec![500]), (20, vec![600]), (30, vec![700])];
         let (bin_path, raw, all_ids) = write_bin(tmp.path(), &dist);
         let ts_of: std::collections::HashMap<u64, i64> = dist
             .iter()
@@ -1600,7 +2025,10 @@ mod tests {
                 reassembled[g] = batch;
             }
         }
-        assert_eq!(reassembled, global, "per-worker residue classes != global order");
+        assert_eq!(
+            reassembled, global,
+            "per-worker residue classes != global order"
+        );
 
         // Different epoch still a full partition.
         let mut u = HashSet::new();
@@ -1851,8 +2279,7 @@ mod tests {
 
         // Each epoch is byte-identical on replay.
         for (e, ordering) in orderings.iter().enumerate() {
-            let replay =
-                make_worker_offsets(64, 2, 0, true, Some(42), e as u64, "train").unwrap();
+            let replay = make_worker_offsets(64, 2, 0, true, Some(42), e as u64, "train").unwrap();
             assert_eq!(*ordering, replay, "epoch {} replay diverged", e);
         }
     }

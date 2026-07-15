@@ -56,7 +56,7 @@ def _use_seed_timestamps(manifest: Mapping[str, Any]) -> bool:
     return bool(task.get("is_temporal"))
 
 
-def _stage_tables(manifest: Mapping[str, Any]) -> dict[str, dict[str, str]]:
+def _stage_tables(manifest: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     raw = manifest.get("stages") or {}
     if not isinstance(raw, Mapping):
         raise DiskgraphConfigError("manifest.stages must be an object")
@@ -81,6 +81,12 @@ def _stage_tables(manifest: Mapping[str, Any]) -> dict[str, dict[str, str]]:
             "table_name": str(table_name),
             "index_path": str(index_path),
         }
+        binary_label_index = value.get("binary_label_index")
+        if isinstance(binary_label_index, Mapping):
+            out[str(stage)]["binary_label_index"] = dict(binary_label_index)
+        sample_weight_index = value.get("sample_weight_index")
+        if isinstance(sample_weight_index, Mapping):
+            out[str(stage)]["sample_weight_index"] = dict(sample_weight_index)
     return out
 
 
@@ -129,6 +135,105 @@ def _sampling_plan_json(sampling_plan: Any) -> str:
     if isinstance(sampling_plan, str):
         return sampling_plan
     return json.dumps(sampling_plan or {"layers": []}, sort_keys=True)
+
+
+def _weighted_seed_sampling_json(
+    ref: Mapping[str, Any],
+    stage: str,
+    weighted_seed_sampling: Any,
+) -> Optional[str]:
+    if weighted_seed_sampling is None:
+        return None
+    if not isinstance(weighted_seed_sampling, Mapping):
+        raise DiskgraphConfigError("weighted_seed_sampling must be a mapping")
+    root = str(ref["index_path"])
+
+    def _path(value: Any, *, context: str) -> str:
+        if not value:
+            raise DiskgraphConfigError(
+                f"weighted_seed_sampling for stage {stage!r} missing {context}"
+            )
+        return os.path.join(root, str(value))
+
+    def _weighted_bucket(
+        index: Mapping[str, Any],
+        key: str,
+        *,
+        multiplier: float = 1.0,
+    ) -> dict[str, Any]:
+        bucket = index.get(key)
+        if not isinstance(bucket, Mapping):
+            raise DiskgraphConfigError(
+                f"sample_weight_index for stage {stage!r} missing {key!r} bucket"
+            )
+        total_weight = float(bucket.get("total_weight", 0.0))
+        return {
+            "name": key,
+            "node_ids_path": _path(bucket.get("node_ids"),
+                                   context=f"{key}.node_ids"),
+            "count": int(bucket.get("count", 0)),
+            "mass": total_weight * multiplier,
+            "cdf_path": _path(bucket.get("cdf"), context=f"{key}.cdf"),
+            "total_weight": total_weight,
+        }
+
+    def _class_bucket(
+        binary_index: Mapping[str, Any],
+        key: str,
+        *,
+        class_weight: float,
+    ) -> dict[str, Any]:
+        node_key = f"{key}_node_ids"
+        count_key = f"{key}_count"
+        count = int(binary_index.get(count_key, 0))
+        return {
+            "name": key,
+            "node_ids_path": _path(binary_index.get(node_key),
+                                   context=node_key),
+            "count": count,
+            "mass": count * class_weight,
+        }
+
+    use_sample_weights = bool(
+        weighted_seed_sampling.get("use_sample_weights", False))
+    has_class_weights = ("false_weight" in weighted_seed_sampling
+                         or "true_weight" in weighted_seed_sampling)
+    false_weight = float(weighted_seed_sampling.get("false_weight", 1.0))
+    true_weight = float(weighted_seed_sampling.get("true_weight", 1.0))
+
+    buckets: list[dict[str, Any]]
+    if use_sample_weights:
+        sample_index = ref.get("sample_weight_index")
+        if not isinstance(sample_index, Mapping):
+            raise DiskgraphConfigError(
+                f"weighted_seed_sampling requires sample_weight_index for stage {stage!r}"
+            )
+        if has_class_weights:
+            buckets = [
+                _weighted_bucket(sample_index, "false_bucket",
+                                 multiplier=false_weight),
+                _weighted_bucket(sample_index, "true_bucket",
+                                 multiplier=true_weight),
+            ]
+        else:
+            buckets = [_weighted_bucket(sample_index, "all")]
+    else:
+        binary_index = ref.get("binary_label_index")
+        if not isinstance(binary_index, Mapping):
+            raise DiskgraphConfigError(
+                f"weighted_seed_sampling requires binary_label_index for stage {stage!r}"
+            )
+        buckets = [
+            _class_bucket(binary_index, "false",
+                          class_weight=false_weight),
+            _class_bucket(binary_index, "true", class_weight=true_weight),
+        ]
+
+    payload = {
+        "buckets": buckets,
+        "num_samples": int(weighted_seed_sampling["num_samples"]),
+    }
+    return json.dumps(payload, sort_keys=True)
 
 
 def _validate_worker_iterator_inputs(
@@ -185,6 +290,7 @@ def make_runtime_batch_iterator(
     rhs_seed_node_type: Optional[str] = None,
     rhs_seed_time: Optional[int] = None,
     group_by_timestamp: bool = False,
+    weighted_seed_sampling: Any = None,
     selected_stage_node_ids: Any = None,
 ) -> tuple[Any, int]:
     """Create a Rust-backed iterator over a stage table in the merged catalog.
@@ -241,6 +347,10 @@ def make_runtime_batch_iterator(
             ingest side recorded; FAILS LOUD if that artifact is missing (no
             silent fallback). ``False`` (default) keeps the flat worker-sharded
             path byte-for-byte. Incompatible with ``rhs_seed_node_type``.
+        weighted_seed_sampling: Optional binary replacement-sampling config
+            for ``WeightMode.SAMPLE``. The caller supplies class weights and
+            ``num_samples``; this wrapper resolves the per-stage
+            ``binary_label_index`` sidecar paths from the runtime manifest.
         selected_stage_node_ids: Optional explicit stage-table node ids to
             emit, in caller order. These are ``task.tt_stage_node_ids`` values,
             not batch-local ``task.input_ids`` or business primary keys. When
@@ -317,6 +427,7 @@ def make_runtime_batch_iterator(
         rhs_seed_node_type,
         int(rhs_seed_time) if rhs_seed_time is not None else None,
         bool(group_by_timestamp),  # see docstring: single-ts grouped batches.
+        _weighted_seed_sampling_json(ref, stage, weighted_seed_sampling),
         selected_stage_node_ids,
         _use_seed_timestamps(manifest),
     )
