@@ -70,9 +70,6 @@ def __getattr__(name):
             build_prediction_table_artifacts_for_existing_table,
         )
         return build_prediction_table_artifacts_for_existing_table
-    if name == "ingest_prediction_stage":
-        from .prediction_stage import ingest_prediction_stage
-        return ingest_prediction_stage
 
     _TD_ARTIFACTS = {
         "FeatureSchemaInputs",                          # feature_schema.json input shape
@@ -143,7 +140,6 @@ __all__ = [
     "build_prediction_table_artifact_bundle",
     "build_train_table_artifacts_for_existing_table",
     "build_prediction_table_artifacts_for_existing_table",
-    "ingest_prediction_stage",
     # Task-dataset rework surface
     "FeatureSchemaInputs",
     "GraphRuntimeMetadataInputs",

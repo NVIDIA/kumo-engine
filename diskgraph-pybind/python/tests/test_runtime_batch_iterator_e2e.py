@@ -123,6 +123,8 @@ def seed_table_fixture(tmp_path_factory) -> dict[str, Any]:
     # 2. Seed extension at <parent>/train_tables/tt_e2e/.
     n_seeds = 6
     seed_pq = data_dir / "seeds.parquet"
+    # Resolution mode: ENTITY1 is pre-resolved to entity_node_id (users node-id
+    # == user pk == ENTITY1 in this single-shard fixture).
     pq.write_table(
         pa.table({
             "ENTITY1": pa.array(list(range(n_seeds)), type=pa.int64()),
@@ -130,6 +132,7 @@ def seed_table_fixture(tmp_path_factory) -> dict[str, Any]:
                 [1000 + i for i in range(n_seeds)], type=pa.timestamp("s")
             ),
             "TARGET1": pa.array([i * 0.1 for i in range(n_seeds)], type=pa.float64()),
+            "entity_node_id": pa.array(list(range(n_seeds)), type=pa.uint64()),
         }),
         seed_pq,
     )
@@ -143,23 +146,11 @@ def seed_table_fixture(tmp_path_factory) -> dict[str, Any]:
                 {"name": "ENTITY1", "ingested_dtype": "int64"},
                 {"name": "TIMESTAMP", "ingested_dtype": "timestamp"},
                 {"name": "TARGET1", "ingested_dtype": "float64"},
+                {"name": "entity_node_id", "ingested_dtype": "u_int64"},
             ],
             "primary_key": None,
             "create_time": "TIMESTAMP",
-            "fkeys": [{
-                "src_column": "ENTITY1",
-                "dst_table": "users",
-                "forward": {
-                    "time": {
-                        "table": "train_seeds",
-                        "column": "TIMESTAMP",
-                        "bitwidth": 32,
-                        "unit": "s",
-                    },
-                },
-                "external_parent": True,
-                "bidirectional": False,
-            }],
+            "fkeys": [],
             "source": {"type": "parquet", "paths": [str(seed_pq)]},
         }],
     }
@@ -285,6 +276,7 @@ def test_iterator_yields_dict_matching_contract(seed_table_fixture):
     iterator, num_samples = make_runtime_batch_iterator(
         dataset_ref=seed_table_fixture["manifest_path"],
         stage="train",
+        entity_node_type="users",
         sampling_plan=_sampling_plan(),
         num_workers=1,
         worker_id=0,
@@ -325,6 +317,7 @@ def test_static_task_manifest_suppresses_seed_timestamps(
     iterator, _ = make_runtime_batch_iterator(
         dataset_ref=str(static_manifest),
         stage="train",
+        entity_node_type="users",
         sampling_plan=_sampling_plan(),
         num_workers=1,
         worker_id=0,
@@ -344,6 +337,7 @@ def test_iterator_selected_stage_node_ids_preserve_order(seed_table_fixture):
     iterator, num_samples = make_runtime_batch_iterator(
         dataset_ref=seed_table_fixture["manifest_path"],
         stage="train",
+        entity_node_type="users",
         sampling_plan=_sampling_plan(),
         num_workers=1,
         worker_id=0,
@@ -384,6 +378,7 @@ def test_iterator_selected_stage_node_ids_partitions_across_workers(
         iterator, num_samples = make_runtime_batch_iterator(
             dataset_ref=seed_table_fixture["manifest_path"],
             stage="train",
+            entity_node_type="users",
             sampling_plan=_sampling_plan(),
             num_workers=num_workers,
             worker_id=worker_id,
@@ -428,6 +423,7 @@ def test_iterator_selected_stage_node_ids_allows_empty_selection(seed_table_fixt
     iterator, num_samples = make_runtime_batch_iterator(
         dataset_ref=seed_table_fixture["manifest_path"],
         stage="train",
+        entity_node_type="users",
         sampling_plan=_sampling_plan(),
         num_workers=1,
         worker_id=0,
@@ -447,6 +443,7 @@ def test_iterator_selected_stage_node_ids_rejects_invalid_id(seed_table_fixture)
         make_runtime_batch_iterator(
             dataset_ref=seed_table_fixture["manifest_path"],
             stage="train",
+            entity_node_type="users",
             sampling_plan=_sampling_plan(),
             num_workers=1,
             worker_id=0,
@@ -484,6 +481,7 @@ def test_iterator_weighted_seed_sampling_draws_with_replacement(
     iterator, num_samples = make_runtime_batch_iterator(
         dataset_ref=str(manifest_path),
         stage="train",
+        entity_node_type="users",
         sampling_plan=_sampling_plan(),
         num_workers=1,
         worker_id=0,
@@ -547,6 +545,7 @@ def test_iterator_weighted_seed_sampling_partitions_across_workers(
         iterator, num_samples = make_runtime_batch_iterator(
             dataset_ref=str(manifest_path),
             stage="train",
+            entity_node_type="users",
             sampling_plan=_sampling_plan(),
             num_workers=num_workers,
             worker_id=worker_id,
@@ -621,6 +620,7 @@ def test_iterator_row_weight_seed_sampling_uses_cdf(
     iterator, num_samples = make_runtime_batch_iterator(
         dataset_ref=str(manifest_path),
         stage="train",
+        entity_node_type="users",
         sampling_plan=_sampling_plan(),
         num_workers=1,
         worker_id=0,
@@ -660,6 +660,7 @@ def test_iterator_selected_stage_node_ids_rejects_ambiguous_modes(
     kwargs = dict(
         dataset_ref=seed_table_fixture["manifest_path"],
         stage="train",
+        entity_node_type="users",
         sampling_plan=_sampling_plan(),
         num_workers=1,
         worker_id=0,
@@ -676,64 +677,11 @@ def test_iterator_selected_stage_node_ids_rejects_ambiguous_modes(
         make_runtime_batch_iterator(**kwargs)
 
 
-def test_prediction_stage_under_pred_tables_yields_batches(seed_table_fixture, tmp_path):
-    pred_pq = tmp_path / "pred.parquet"
-    pq.write_table(
-        pa.table({
-            "ENTITY1": pa.array([0, 1, 2], type=pa.int64()),
-            "TIMESTAMP": pa.array([1000, 1001, 1002], type=pa.timestamp("s")),
-        }),
-        pred_pq,
-    )
-    parent_root = pathlib.Path(seed_table_fixture["parent_root"])
-    pred_output = parent_root / "pred_tables" / "job_runtime_pred"
-    row_count = diskgraph.ingest_prediction_stage(
-        index_path=str(parent_root),
-        extension_output_root=str(pred_output),
-        stage_table_name="predict",
-        parquet_path=str(pred_pq),
-        entity_src_col="ENTITY1",
-        dst_table="users",
-        input_timestamp_unit="s",
-    )
-
-    manifest_path = tmp_path / "pred_manifest.json"
-    manifest_path.write_text(json.dumps({
-        "kind": "diskgraph_task_dataset",
-        "graph": {"index_path": str(parent_root)},
-        "stages": {
-            "predict": {
-                "table_name": "predict",
-                "index_path": str(pred_output),
-                "row_count": row_count,
-            }
-        },
-    }))
-
-    iterator, num_samples = make_runtime_batch_iterator(
-        dataset_ref=str(manifest_path),
-        stage="predict",
-        sampling_plan=_sampling_plan(),
-        num_workers=1,
-        worker_id=0,
-        shuffle=False,
-        rnd_seed=None,
-        epoch=0,
-        batch_size=3,
-    )
-
-    batch = next(iter(iterator))
-    assert num_samples == 3
-    assert "target" not in batch["task"]
-    assert batch["task"]["tt_stage_node_ids"].to_pylist() == [0, 1, 2]
-    assert batch["task"]["seed_node_ids"].to_pylist() == [0, 1, 2]
-    assert "job_runtime_pred/predict" not in batch["graphs"]["main"]["node_ids"]
-
-
 def test_iterator_accepts_sampler_flag_kwargs(seed_table_fixture):
     iterator, _ = make_runtime_batch_iterator(
         dataset_ref=seed_table_fixture["manifest_path"],
         stage="train",
+        entity_node_type="users",
         sampling_plan=_sampling_plan(),
         num_workers=1,
         worker_id=0,
@@ -764,6 +712,7 @@ def test_iterator_accepts_num_threads_kwarg(seed_table_fixture):
     it_threads, _ = make_runtime_batch_iterator(
         dataset_ref=seed_table_fixture["manifest_path"],
         stage="train",
+        entity_node_type="users",
         sampling_plan=_sampling_plan(),
         num_workers=1,
         worker_id=0,
@@ -783,6 +732,7 @@ def test_iterator_accepts_num_threads_kwarg(seed_table_fixture):
     it_default, _ = make_runtime_batch_iterator(
         dataset_ref=seed_table_fixture["manifest_path"],
         stage="train",
+        entity_node_type="users",
         sampling_plan=_sampling_plan(),
         num_workers=1,
         worker_id=0,
@@ -802,6 +752,7 @@ def test_iterator_multi_worker_offsets_are_disjoint(seed_table_fixture):
         it, _ = make_runtime_batch_iterator(
             dataset_ref=seed_table_fixture["manifest_path"],
             stage="train",
+            entity_node_type="users",
             sampling_plan=_sampling_plan(),
             num_workers=2,
             worker_id=worker_id,
@@ -839,6 +790,7 @@ def test_iterator_shuffle_is_deterministic_per_epoch(seed_table_fixture):
         it, _ = make_runtime_batch_iterator(
             dataset_ref=seed_table_fixture["manifest_path"],
             stage="train",
+            entity_node_type="users",
             sampling_plan=_sampling_plan(),
             num_workers=1,
             worker_id=0,
@@ -874,6 +826,7 @@ def test_iterator_drop_last_drops_partial_final_batch(seed_table_fixture):
     it, _ = make_runtime_batch_iterator(
         dataset_ref=seed_table_fixture["manifest_path"],
         stage="train",
+        entity_node_type="users",
         sampling_plan=_sampling_plan(),
         num_workers=1,
         worker_id=0,
@@ -1039,6 +992,7 @@ def test_execute_tt_plan_end_to_end(tmp_path):
     iterator, num_samples = make_runtime_batch_iterator(
         dataset_ref=str(manifest_path),
         stage="train",
+        entity_node_type="users",
         sampling_plan=_sampling_plan(),
         num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0,
@@ -1072,6 +1026,7 @@ def test_fused_and_nonfused_iterators_emit_same_dict_shape(seed_table_fixture):
         it, _ = make_runtime_batch_iterator(
             dataset_ref=seed_table_fixture["manifest_path"],
             stage="train",
+            entity_node_type="users",
             sampling_plan=_sampling_plan(),
             num_workers=1,
             worker_id=0,
@@ -1356,11 +1311,17 @@ def _ingest_lp_fixture(
     )
 
     tt_pq_path = data_dir / "lp_seeds.parquet"
+    # Resolution mode: ENTITY1/TARGET1 pre-resolved to node-ids (node-id == pk
+    # in this single-shard fixture). target_node_ids is the ragged positive list.
     pq.write_table(
         pa.table({
             "ENTITY1": pa.array(seed_entities, type=pa.int64()),
             "TIMESTAMP": pa.array(seed_timestamps, type=pa.timestamp("s")),
             "TARGET1": pa.array(seed_targets, type=pa.int64()),
+            "entity_node_id": pa.array(seed_entities, type=pa.uint64()),
+            "target_node_ids": pa.array(
+                [[t] for t in seed_targets], type=pa.list_(pa.int64())
+            ),
         }),
         tt_pq_path,
     )
@@ -1378,25 +1339,12 @@ def _ingest_lp_fixture(
                     {"name": "ENTITY1", "ingested_dtype": "int64"},
                     {"name": "TIMESTAMP", "ingested_dtype": "timestamp"},
                     {"name": "TARGET1", "ingested_dtype": "int64"},
+                    {"name": "entity_node_id", "ingested_dtype": "u_int64"},
+                    {"name": "target_node_ids", "ingested_dtype": "int64_array"},
                 ],
                 "primary_key": None,
                 "create_time": "TIMESTAMP",
-                "fkeys": [
-                    {
-                        "src_column": "ENTITY1",
-                        "dst_table": "users",
-                        "forward": {},
-                        "external_parent": True,
-                        "bidirectional": False,
-                    },
-                    {
-                        "src_column": "TARGET1",
-                        "dst_table": "items",
-                        "forward": {},
-                        "external_parent": True,
-                        "bidirectional": False,
-                    },
-                ],
+                "fkeys": [],
                 "source": {"type": "parquet", "paths": [str(tt_pq_path)]},
             }],
         }),
@@ -1445,6 +1393,8 @@ def test_negative_sampling_present_nontemporal(tmp_path):
     iterator, num_samples = make_runtime_batch_iterator(
         dataset_ref=fx["manifest_path"],
         stage="train",
+        entity_node_type="users",
+        target_node_type="items",
         sampling_plan={"layers": []},  # 0-hop: just the roots + negatives
         num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0,
@@ -1478,9 +1428,9 @@ def test_negative_sampling_present_nontemporal(tmp_path):
 
 
 def test_negative_sampling_absent_regression(tmp_path):
-    """(b) Without neg config (same fixture): amount_m == 0, rhs_seed_type is
-    None, seed_node_ids length == B. Pins backward compatibility — the dict is
-    byte-identical in shape to the pre-negatives contract.
+    """(b) Without neg config: amount_m == 0, rhs_seed_type is None,
+    seed_node_ids length == B. Positives are emitted as ragged LABELS, not
+    rooted into the subgraph (leak-free label path).
     """
     fx = _ingest_lp_fixture(tmp_path)
     B = fx["n_seeds"]
@@ -1488,6 +1438,8 @@ def test_negative_sampling_absent_regression(tmp_path):
     iterator, _ = make_runtime_batch_iterator(
         dataset_ref=fx["manifest_path"],
         stage="train",
+        entity_node_type="users",
+        target_node_type="items",
         sampling_plan={"layers": []},
         num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0,
@@ -1501,9 +1453,13 @@ def test_negative_sampling_absent_regression(tmp_path):
     assert task["num_positives"] == B, task["num_positives"]
     assert len(task["seed_node_ids"]) == B
 
-    # rhs node set is just the B positives — no extra negatives appended.
-    items = batch["graphs"]["main"]["node_ids"]["items"].to_pylist()
-    assert items == fx["seed_targets"], items
+    # Positives are labels, not rooted — no items node set without negatives.
+    assert "items" not in batch["graphs"]["main"]["node_ids"], (
+        "positives must not be rooted (leak-free label path)"
+    )
+    assert task["lp_pos_rhs_global"].to_pylist() == fx["seed_targets"], (
+        task["lp_pos_rhs_global"].to_pylist()
+    )
 
 
 def test_negative_sampling_temporal_rhs(tmp_path):
@@ -1551,6 +1507,8 @@ def test_negative_sampling_temporal_rhs(tmp_path):
     iterator, _ = make_runtime_batch_iterator(
         dataset_ref=fx["manifest_path"],
         stage="train",
+        entity_node_type="users",
+        target_node_type="items",
         sampling_plan={"layers": []},
         num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0,
@@ -1597,6 +1555,8 @@ def test_negative_sampling_neg_mask_present_nontemporal(tmp_path):
     iterator, _ = make_runtime_batch_iterator(
         dataset_ref=fx["manifest_path"],
         stage="train",
+        entity_node_type="users",
+        target_node_type="items",
         sampling_plan={"layers": []},
         num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0,
@@ -1641,6 +1601,8 @@ def test_negative_sampling_temporal_exhaustion_masks(tmp_path):
     iterator, _ = make_runtime_batch_iterator(
         dataset_ref=fx["manifest_path"],
         stage="train",
+        entity_node_type="users",
+        target_node_type="items",
         sampling_plan={"layers": []},
         num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0,
@@ -1756,6 +1718,7 @@ def test_custom_tt_weight_column_reaches_runtime_iterator(tmp_path):
     iterator, _ = make_runtime_batch_iterator(
         dataset_ref=str(task_manifest_path),
         stage="predict",
+        entity_node_type="users",
         sampling_plan={"layers": []},
         num_workers=1,
         worker_id=0,
@@ -1861,6 +1824,8 @@ def _collect_negatives(manifest_path, *, B, M, neg_rnd_seed):
     iterator, num_samples = make_runtime_batch_iterator(
         dataset_ref=manifest_path,
         stage="train",
+        entity_node_type="users",
+        target_node_type="items",
         sampling_plan={"layers": []},  # 0-hop: roots + negatives only
         num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0,
@@ -1943,6 +1908,8 @@ def test_negative_sampling_parallel_split_and_range_at_scale(tmp_path, multithre
     iterator, num_samples = make_runtime_batch_iterator(
         dataset_ref=fx["manifest_path"],
         stage="train",
+        entity_node_type="users",
+        target_node_type="items",
         sampling_plan={"layers": []},
         num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0,
@@ -1995,6 +1962,8 @@ def test_negative_sampling_parallel_temporal_valid_at_scale(tmp_path, multithrea
     iterator, _ = make_runtime_batch_iterator(
         dataset_ref=fx["manifest_path"],
         stage="train",
+        entity_node_type="users",
+        target_node_type="items",
         sampling_plan={"layers": []},
         num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0,

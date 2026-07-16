@@ -3,7 +3,7 @@
 //! Shared by the TT-NG stage-ingest callers (the PQL path in
 //! `diskgraph-pybind/src/tt_executor.rs` and the source-agnostic path in
 //! `diskgraph-train-table/src/tt_stage_ingest.rs`), both of which feed the
-//! result into [`crate::ingest_stage_extension`]. Sits next to that primitive
+//! result into [`crate::ingest_stage_extension_with_resolution`]. Sits next to that primitive
 //! and owns the dtype/timestamp-unit/semantic-type mapping so the two callers
 //! stay byte-for-byte identical.
 

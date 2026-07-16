@@ -42,6 +42,10 @@ pub const PRIMARY_TARGET_COL: &str = "TARGET1";
 /// `task.weight` and MUST skip it in `project_seed_rowpack` so it is never
 /// encoded as a model feature.
 pub const WEIGHT_COL: &str = "WEIGHT";
+/// Resolved LHS entity node-id (`u64` scalar); the engine seeds off this column.
+pub const ENTITY_NODE_ID_COL: &str = "entity_node_id";
+/// Resolved LP RHS positives (`list<i64>` node-ids).
+pub const TARGET_NODE_IDS_COL: &str = "target_node_ids";
 
 use crate::time::{Abs, Dur, UnitSystem};
 use serde::{Deserialize, Serialize};
@@ -84,13 +88,9 @@ pub struct DiskGraphTTPlan<U: UnitSystem> {
     #[serde(default)]
     pub fkey_mapping: Option<Vec<TTFKeySpec>>,
 
-    /// FK-free LP "resolution mode": instead of materializing `ENTITY1`/`TARGET1`
-    /// as `external_parent` FK edges, the special tt-ingest resolves these PK
-    /// reference columns to graph node-ids ONCE at ingest and writes them as
-    /// rowpack columns (`entity_node_id: u64` scalar, `target_node_ids: list<i64>`
-    /// ragged) with NO FK edge / NO `seed.edges.bin`. When `Some(_)`,
-    /// `execute_tt_ingest` takes the resolution-mode path; when `None`, the
-    /// existing edge-materializing path runs (back-compat, serde default).
+    /// LP resolution specs (`ENTITY1`/`TARGET1` → node-id rowpack columns).
+    /// `None` for non-LP; ingest then synthesizes the scalar `ENTITY1` spec (see
+    /// [`stage_resolution_specs`]).
     #[serde(default)]
     pub lp_resolution: Option<Vec<RefResolveSpec>>,
 
@@ -188,6 +188,36 @@ pub struct RefResolveSpec {
     /// Name of the NEW rowpack column the resolved node-id(s) are written to
     /// (e.g. `entity_node_id`, `target_node_ids`).
     pub node_id_col: String,
+}
+
+/// Resolution specs for stage ingest (seed→graph is a reference, never an FK
+/// edge). LP plans carry them in `lp_resolution`; non-LP plans carry none, so
+/// synthesize the scalar `ENTITY1 → entity_node_id` from `entity_table`. A
+/// `fkey_mapping` naming `TARGET1` without `lp_resolution` is the removed
+/// exploded-LP shape and is rejected.
+pub fn stage_resolution_specs(
+    lp_resolution: &Option<Vec<RefResolveSpec>>,
+    fkey_mapping: &Option<Vec<TTFKeySpec>>,
+    entity_table: &str,
+) -> Result<Vec<RefResolveSpec>, String> {
+    if let Some(specs) = lp_resolution {
+        return Ok(specs.clone());
+    }
+    if let Some(mapping) = fkey_mapping {
+        if mapping.iter().any(|f| f.src_col == PRIMARY_TARGET_COL) {
+            return Err(format!(
+                "stage ingest: fkey_mapping references `{PRIMARY_TARGET_COL}` with no \
+                 `lp_resolution` — the legacy exploded-LP FK-edge shape is unsupported; \
+                 an LP plan must declare `lp_resolution`"
+            ));
+        }
+    }
+    Ok(vec![RefResolveSpec {
+        src_col: PRIMARY_ENTITY_COL.to_string(),
+        dst_table: entity_table.to_string(),
+        kind: RefResolveKind::Scalar,
+        node_id_col: ENTITY_NODE_ID_COL.to_string(),
+    }])
 }
 
 /// Which table/column to iterate over.

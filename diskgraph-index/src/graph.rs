@@ -27,8 +27,8 @@ pub struct GraphIndexBuilder {
     source: GraphDataSource,
     output_root: PathBuf,
     /// Coordinated layout fix (write side). When ingesting a sub-index whose
-    /// FKs cross into a parent index (e.g. a seed table whose `external_parent`
-    /// FK points at `parent.users`), the parent's `users` isn't in
+    /// FKs cross into a parent index (a dst_table that lives in the parent,
+    /// not this config), the parent's dst node type isn't in
     /// `metadata.node_types`. `compute_relation_layouts` would then fall back
     /// to `dst_bits=64` for cross-boundary edges. Populating this with the
     /// parent's `node_types` lets layout computation pick up the real
@@ -768,8 +768,7 @@ fn merge_extension_into(
     }
     // Merge edge_relations into the unified view, rewriting src_type to use
     // the namespaced form. dst_type stays bare for FKs pointing at parent
-    // tables (the only case Phase 1 supports — external_parent + forward
-    // only). If a future extension ever introduces FKs whose dst is another
+    // tables. If a future extension ever introduces FKs whose dst is another
     // extension table, that namespace rewrite belongs here too.
     for rel in &ext.metadata.edge_relations {
         let mut merged_rel = rel.clone();

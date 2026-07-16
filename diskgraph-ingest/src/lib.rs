@@ -57,8 +57,7 @@ pub use crate::scratch::{
     EdgeMapScratch, PkMapHashMap, PkMapHasher, PkMapScratch,
 };
 pub use crate::stage_extension::{
-    ingest_stage_extension, ingest_stage_extension_with_resolution,
-    ingest_stage_extension_with_resolution_and_sidecars, ingest_stage_extension_with_sidecars,
+    ingest_stage_extension_with_resolution, ingest_stage_extension_with_resolution_and_sidecars,
     ResolveSpec, StageExtensionResult, StageSidecarColumns, StageSpec,
 };
 pub use crate::stats::{IngestReport, IngestStats, KeyFailureCounts, KeyFailureState, PerfStats};
@@ -1881,8 +1880,9 @@ struct IngestContext {
     row_subsample: bool,
     /// Text sample stats computed during the context phase (table -> col -> stats).
     text_sample_stats: HashMap<String, HashMap<String, crate::col_stats::TextSampleStats>>,
-    /// Parent DG index whose pkmap shards back any FK whose source config
-    /// declares `external_parent: true`. `None` when no FK is external.
+    /// Parent DG index whose pkmap shards back the resolution of stage-table
+    /// reference columns to node-ids (see `resolve_columns`). `None` for an
+    /// ordinary base-graph ingest.
     parent_index_path: Option<PathBuf>,
     /// FK-free LP resolution columns (see [`crate::config::ResolveColumnSpec`]).
     /// When non-empty the encode phase resolves the listed columns' PK
@@ -1897,10 +1897,6 @@ struct EdgeBuildContext {
     rel_sort_lookups: std::sync::Arc<HashMap<String, Option<std::sync::Arc<SortKeyLookup>>>>,
     max_ids: HashMap<String, u64>,
     pk_hash_store: Arc<PkHashStore>,
-    /// Membership verifier for cross-boundary FKs (`rel.external_parent`),
-    /// present iff this ingest has a parent index and at least one external
-    /// relationship. `None` for base-graph ingests — zero cost there.
-    pk_verifier: Option<Arc<crate::mapping::PkMembershipVerifier>>,
     pk_hash_total_bytes: u64,
     sort_key_total_bytes: u64,
     sort_key_edge_bytes: u64,
@@ -2104,10 +2100,6 @@ struct RelationshipRuntime {
     src_table: String,
     src_column: String,
     dst_table: String,
-    /// True when the dst_table lives in a parent DG index (not in this
-    /// config). Drives FK resolution via the externally-loaded pkmap
-    /// shards in `pk_hash_store`.
-    external_parent: bool,
     /// True when both forward and reverse edges should be emitted. False
     /// emits forward only — skips reverse RelationDef, reverse_batcher
     /// pushes, and DestFkeyBatcher pushes for this FK.
@@ -2892,7 +2884,6 @@ impl IngestContext {
                     src_table: table.name.clone(),
                     src_column: fkey.src_column.clone(),
                     dst_table: fkey.dst_table.clone(),
-                    external_parent: fkey.external_parent,
                     bidirectional: fkey.bidirectional,
                 });
             }
@@ -4027,14 +4018,7 @@ impl IngestContext {
                 .get(&fk_key)
                 .map(|t| t.target_type.clone())
                 .unwrap_or_else(|| table.columns[idx].ingested_dtype.clone());
-            rel_specs.push((
-                rel_name,
-                idx,
-                rel_pos,
-                rel.src_column.clone(),
-                target_type,
-                rel.external_parent,
-            ));
+            rel_specs.push((rel_name, idx, rel_pos, rel.src_column.clone(), target_type));
         }
         let mut total_rows = 0u64;
         let row_access_hints = build_row_access_hints(table);
@@ -4125,7 +4109,7 @@ impl IngestContext {
                 let precomputed = precompute_shards(pk_array, pk_col, num_shards);
 
                 let mut fkeys_pre = Vec::with_capacity(rel_specs.len());
-                for (_, idx, _, _, target_type, _) in &rel_specs {
+                for (_, idx, _, _, target_type) in &rel_specs {
                     let array = access.array(*idx).unwrap();
                     let kind = edge_fast_path_for_array(array, target_type);
                     let should_optimize = match kind {
@@ -4475,21 +4459,14 @@ impl IngestContext {
         }
     }
 
-    // rel_specs is `&[(name, rel_id, fkey_idx, fkey_col, key_type, bidirectional)]`
-    // — the per-relation spec table threaded through ingest's per-row
-    // FK-resolution path. Kept as a tuple to avoid allocating per call.
+    // rel_specs is `&[(name, rel_id, fkey_idx, fkey_col, key_type)]` — the
+    // per-relation spec table threaded through ingest's per-row FK-resolution
+    // path. Kept as a tuple to avoid allocating per call.
     #[allow(clippy::too_many_arguments, clippy::ptr_arg, clippy::type_complexity)]
     fn write_node_row_from_access<O: diskgraph_rowpack::ColumnValueObserver>(
         table: &TableSpec,
         pk_idx: Option<usize>,
-        rel_specs: &[(
-            std::sync::Arc<str>,
-            usize,
-            usize,
-            String,
-            IngestedType,
-            bool,
-        )],
+        rel_specs: &[(std::sync::Arc<str>, usize, usize, String, IngestedType)],
         fkeys_pre: &[Option<Vec<Option<Key>>>],
         row: usize,
         access: &mut RowAccess<'_>,
@@ -4552,7 +4529,7 @@ impl IngestContext {
         } else {
             (*row_id as usize) % num_shards
         };
-        for (i, (_rel_name, rel_idx, _rel_pos, _fk_col_name, target_type, _external_parent)) in
+        for (i, (_rel_name, rel_idx, _rel_pos, _fk_col_name, target_type)) in
             rel_specs.iter().enumerate()
         {
             let col = table
@@ -4699,21 +4676,16 @@ impl IngestContext {
         for sort_key in sort_key_batchers.iter_mut() {
             sort_key.push_row(shard, access)?;
         }
-        for (_rel_name, rel_idx, rel_pos, _fk_col_name, _, external_parent) in rel_specs {
+        for (_rel_name, rel_idx, rel_pos, _fk_col_name, _) in rel_specs {
             if let Some(buf) = key_bufs.get(*rel_idx) {
                 if buf.is_empty() {
                     batcher.push_fkey_empty(shard, *rel_pos)?;
                 } else {
                     batcher.push_fkey(shard, *rel_pos, buf, timestamp_valid)?;
                     // dest_fkey_batcher writes per-dst-shard accumulator data
-                    // used to build the reverse (dst→src) sort order. For
-                    // external_parent FKs the dst table lives in the parent
-                    // index and we don't emit a reverse relation here, so
-                    // this work is orphaned — skip it.
-                    if !*external_parent {
-                        let dst_shard = shard_for_key(buf, num_shards);
-                        dest_fkey_batcher.push(dst_shard, *rel_pos, buf)?;
-                    }
+                    // used to build the reverse (dst→src) sort order.
+                    let dst_shard = shard_for_key(buf, num_shards);
+                    dest_fkey_batcher.push(dst_shard, *rel_pos, buf)?;
                 }
             }
         }
@@ -6234,37 +6206,6 @@ impl IngestContext {
             let max_id = total.saturating_sub(1);
             max_ids.insert(table.clone(), max_id);
         }
-        // Cross-boundary FKs (rel.external_parent: true) have a dst_table
-        // that lives in the parent index, not in this ingest. The edge
-        // phase still computes dst_id = dst_offsets[dst_shard] + dst_local;
-        // without a real entry for the parent table in shard_offsets /
-        // max_ids it falls back to zero offsets, collapsing the global id
-        // to a shard-local id. Read the parent's per-node-type shard
-        // layout once here and merge it in so external dst_ids round-trip
-        // correctly to global ids in seed.edges.bin.
-        if let Some(parent_root) = self.parent_index_path.clone() {
-            let parent_meta_path = parent_root.join("index_metadata.json");
-            let bytes = fs::read(&parent_meta_path).with_context(|| {
-                format!(
-                    "external FK dst offsets: read parent metadata {}",
-                    parent_meta_path.display()
-                )
-            })?;
-            let parent_meta: DatasetMetadata =
-                serde_json::from_slice(&bytes).with_context(|| {
-                    format!(
-                        "external FK dst offsets: parse parent metadata {}",
-                        parent_meta_path.display()
-                    )
-                })?;
-            for nt in &parent_meta.node_types {
-                max_ids.entry(nt.name.clone()).or_insert(nt.max_id);
-                let offsets: Vec<u64> = nt.shards.iter().map(|s| s.min_id).collect();
-                if !offsets.is_empty() {
-                    self.shard_offsets.entry(nt.name.clone()).or_insert(offsets);
-                }
-            }
-        }
         let mut edge_tables = HashSet::new();
         for table in &self.source.tables {
             if table.edge_table.is_some() {
@@ -6286,29 +6227,12 @@ impl IngestContext {
         }
         let (pk_hash_store, pk_hash_total_bytes) = self.build_pk_hash_store_parallel(&root)?;
         let pk_hash_store = Arc::new(pk_hash_store);
-        // The external-parent pkmap lookup is a blind MPH (no membership
-        // verification), so orphan FK values silently collide onto arbitrary
-        // in-range parent nodes. Open the parent's verifying table readers
-        // once here; the edge tasks reject those false positives per row.
-        let external_dst_tables: Vec<String> = self
-            .relationships
-            .iter()
-            .filter(|rel| rel.external_parent)
-            .map(|rel| rel.dst_table.clone())
-            .collect();
-        let pk_verifier = match &self.parent_index_path {
-            Some(parent_root) if !external_dst_tables.is_empty() => Some(Arc::new(
-                crate::mapping::PkMembershipVerifier::open(parent_root, &external_dst_tables)?,
-            )),
-            _ => None,
-        };
         Ok(EdgeBuildContext {
             root,
             rel_sort_bits,
             rel_sort_lookups: std::sync::Arc::new(rel_sort_lookups),
             max_ids,
             pk_hash_store,
-            pk_verifier,
             pk_hash_total_bytes,
             sort_key_total_bytes,
             sort_key_edge_bytes,
@@ -6342,19 +6266,7 @@ impl IngestContext {
                 ));
             }
         }
-        // Collect external_parent FKs early so we can decide whether the
-        // store will be wholly empty (in which case we can early-return) or
-        // populated only via external load (skip the parallel loop, run the
-        // merge logic at the bottom).
-        let external_dst_tables: HashSet<String> = self
-            .source
-            .tables
-            .iter()
-            .flat_map(|t| t.fkeys.iter())
-            .filter(|fk| fk.external_parent)
-            .map(|fk| fk.dst_table.clone())
-            .collect();
-        if shard_jobs.is_empty() && external_dst_tables.is_empty() {
+        if shard_jobs.is_empty() {
             return Ok((PkHashStore::new(HashMap::new()), 0));
         }
         let mut total_bytes = 0u64;
@@ -6439,55 +6351,6 @@ impl IngestContext {
                     .push(shard.ok_or_else(|| anyhow!("missing pk hash shard {}", table_name))?);
             }
             final_tables.insert(table_name, resolved);
-        }
-        // Merge in pkmap shards for any FK marked `external_parent`: they
-        // live in a parent index, not in this config's tables, so the loop
-        // above skipped them. Each external dst_table is loaded once even
-        // if multiple FKs target it; collisions with in-config tables of
-        // the same name fail loudly to surface accidental dst_table reuse.
-        if !external_dst_tables.is_empty() {
-            let parent_root = self.parent_index_path.as_ref().ok_or_else(|| {
-                anyhow!(
-                    "GraphConfig declares {} external_parent FK(s) but \
-                     IngestOptions.parent_index_path is None — set it to \
-                     the path of the parent DG index whose pkmap shards \
-                     back the external dst_table(s)",
-                    external_dst_tables.len()
-                )
-            })?;
-            for dst_table in external_dst_tables {
-                if final_tables.contains_key(&dst_table) {
-                    return Err(anyhow!(
-                        "external_parent dst_table `{dst_table}` collides with \
-                         a table of the same name in this config — rename the \
-                         seed-table's FK target or the in-config table"
-                    ));
-                }
-                let key_type =
-                    crate::mapping::key_type_for_external_parent(parent_root, &dst_table)?;
-                let shards = crate::mapping::load_external_pk_hash_shards(
-                    parent_root,
-                    &dst_table,
-                    key_type,
-                    crate::mapping::PkDataAdvice::Random,
-                )?;
-                // Add to the byte counter so the caller's accounting is correct.
-                // Node dirs are written lowercased; match that (see
-                // `load_external_pk_hash_shards`).
-                let shard_dir = parent_root.join("nodes").join(dst_table.to_lowercase());
-                if let Ok(read_dir) = std::fs::read_dir(&shard_dir) {
-                    for entry in read_dir.flatten() {
-                        if let Ok(meta) = entry.metadata() {
-                            let name = entry.file_name();
-                            let name = name.to_string_lossy();
-                            if name.starts_with("pk_hash-") || name.starts_with("pk_data-") {
-                                total_bytes = total_bytes.saturating_add(meta.len());
-                            }
-                        }
-                    }
-                }
-                final_tables.insert(dst_table, shards);
-            }
         }
         Ok((PkHashStore::new(final_tables), total_bytes))
     }
@@ -6590,7 +6453,6 @@ impl IngestContext {
             let writer_senders = writer_pool.senders();
             let shard_offsets = self.shard_offsets.clone();
             let pk_hash_store = edge_ctx.pk_hash_store.clone();
-            let pk_verifier = edge_ctx.pk_verifier.clone();
             let max_ids = edge_ctx.max_ids.clone();
             let rel_sort_bits = edge_ctx.rel_sort_bits.clone();
             let rel_sort_lookups = std::sync::Arc::clone(&edge_ctx.rel_sort_lookups);
@@ -6620,14 +6482,6 @@ impl IngestContext {
                     .get(&fk_key)
                     .map(|t| t.target_type.clone())
                     .unwrap_or_else(|| src_fk_col.ingested_dtype.clone());
-                // Membership verification applies only to cross-boundary FKs;
-                // same-ingest FKs resolve against a pkmap built from this very
-                // source, so the hot base-graph path stays verify-free.
-                let rel_verifier = if rel.external_parent {
-                    pk_verifier.clone()
-                } else {
-                    None
-                };
                 let mut total_rows = 0u64;
                 for shard in 0..num_shards {
                     let fkey_meta = root.join(temp_fkey_meta_path(
@@ -6656,7 +6510,6 @@ impl IngestContext {
                     let progress = progress.clone();
                     let shard_offsets = shard_offsets.clone();
                     let pk_hash_store = pk_hash_store.clone();
-                    let rel_verifier = rel_verifier.clone();
                     let max_ids = max_ids.clone();
                     let rel_sort_bits = rel_sort_bits.clone();
                     let rel_sort_lookups = std::sync::Arc::clone(&rel_sort_lookups);
@@ -6739,17 +6592,8 @@ impl IngestContext {
                                 shard,
                             ));
                             let meta = read_temp_meta(&fkey_meta)?;
-                            // For cross-boundary FKs (rel.external_parent: true),
-                            // the dst_table lives in the parent index and its
-                            // pkmap was loaded by `load_external_pk_hash_shards`
-                            // with the parent's shard count. The local ingest's
-                            // num_shards (here `num_shards`) is the SRC-side
-                            // shard count and may differ — e.g. seed tables
-                            // typically use num_shards=1 against a multi-shard
-                            // parent. Use the pkmap's actual shard count for
-                            // routing dst keys and loading dst_maps; otherwise
-                            // the routing collapses to shard 0 and dst_id loses
-                            // the parent shard offset (kumo-diskgraph#279).
+                            // Route dst keys and load dst_maps with the dst
+                            // table's actual pkmap shard count.
                             let dst_num_shards = pk_hash_store
                                 .table_shard_count(&rel.dst_table)
                                 .unwrap_or(num_shards);
@@ -6764,21 +6608,9 @@ impl IngestContext {
                             let mut pk_duplicate_drops = 0u64;
                             // dst_degree_bits is a per-task bitvec sized for the dst
                             // table's max_id; it tracks which dst rows received an FK
-                            // edge so kumo can compute per-rel uniqueness stats. For
-                            // external-parent FKs the dst table lives in the parent
-                            // index — its stats belong to the parent ingest, not this
-                            // sub-ingest, and the kumo-stats path skips external rels
-                            // anyway (the dst table is absent from this source's
-                            // table_map). Allocating a parent-sized bitvec here would
-                            // be wasteful (~125 MB per task for a 1B-row parent) and
-                            // OOM-prone, so empty-alloc when external; the
-                            // `bit_idx / 8 < dst_bits.len()` guard below skips writes.
+                            // edge so kumo can compute per-rel uniqueness stats.
                             let dst_max = max_ids.get(&rel.dst_table).copied().unwrap_or(0);
-                            let mut dst_bits = if rel.external_parent {
-                                Vec::new()
-                            } else {
-                                vec![0u8; ((dst_max + 8) / 8) as usize]
-                            };
+                            let mut dst_bits = vec![0u8; ((dst_max + 8) / 8) as usize];
                             let fkey_path =
                                 root.join(temp_fkey_path(&rel.src_table, &rel.name_forward, shard));
                             let bitmap_path = root.join(temp_fkey_bitmap_path(
@@ -6871,34 +6703,6 @@ impl IngestContext {
                                         .copied()
                                         .unwrap_or(0)
                                         .saturating_add(dst_local);
-                                    // The MPH lookup above has no membership
-                                    // verification: an orphan key resolves to
-                                    // an arbitrary in-range parent node. For
-                                    // cross-boundary FKs, confirm the resolved
-                                    // node really stores this key; a mismatch
-                                    // is skipped + counted exactly like a
-                                    // pkmap miss. `Ok(None)` (parent table not
-                                    // verifiable) keeps the edge — never
-                                    // over-drop.
-                                    if let Some(verifier) = &rel_verifier {
-                                        if verifier.verify(&rel.dst_table, dst_id, &dst_key)?
-                                            == Some(false)
-                                        {
-                                            let sample = if result.key_failures.samples.len() < 10 {
-                                                sample_key(&dst_key)
-                                            } else {
-                                                None
-                                            };
-                                            record_key_membership_failure(
-                                                &mut result.key_failures.membership_failures,
-                                                &mut result.key_failures.samples,
-                                                &mut result.key_failures.by_context,
-                                                &lookup_context,
-                                                sample,
-                                            );
-                                            return Ok(());
-                                        }
-                                    }
                                     let forward_sort_key = match &forward_lookup {
                                         Some(lookup) => {
                                             lookup.sort_key(dst_shard, dst_local, shard, 0)?

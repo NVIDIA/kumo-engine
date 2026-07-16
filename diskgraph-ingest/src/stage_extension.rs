@@ -2,19 +2,19 @@
 //!
 //! A "stage extension" is a DG index extension containing one or more
 //! pre-materialized *stage* tables (e.g. `train_seeds`/`val_seeds`/`test_seeds`
-//! for the training path, or `predict`/`rhs_predict` for the batch-prediction
-//! path) whose rows carry foreign keys into a parent DG index. At ingest time
-//! the external pkmap loader resolves those FK values against the parent's
-//! primary-key map and writes the resolved parent node ids into the stage's
-//! `seed.edges.bin`.
+//! for the training path, or `predict` for the batch-prediction path) whose
+//! rows reference a parent DG index. Seed→graph is a reference, not topology:
+//! at ingest the reference PK column(s) are resolved against the parent's
+//! primary-key map into node-id rowpack columns (`entity_node_id`,
+//! `target_node_ids`) — NO seed FK edges / `seed.edges.bin` are produced.
 //!
 //! This module factors that ingest out of the TT-NG-specific pybind layer into
 //! a plain primitive: callers supply the stage parquet paths, the shared column
-//! schema, and the FK specs; the primitive assembles a [`GraphConfig`] (shard
-//! count size-derived or caller-overridden), runs
+//! schema, and the resolution specs; the primitive assembles a [`GraphConfig`]
+//! (shard count size-derived or caller-overridden), runs
 //! [`ingest_with_stats_from_source`], and reports the emitted row count per
-//! stage plus the orphan-FK skip counters — see the contract on
-//! [`ingest_stage_extension`].
+//! stage plus the orphan skip counters — see the contract on
+//! [`ingest_stage_extension_with_resolution`].
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -52,206 +52,11 @@ pub struct StageSidecarColumns {
     pub sample_weight_column: Option<String>,
 }
 
-/// Ingest one or more pre-materialized stage parquets as a DG extension under
-/// `extension_output_root`, resolving `fkey_specs` against the parent index at
-/// `parent_index_path`. All stages share `columns` + `fkey_specs`.
-///
-/// Returns `(stage_table_name, emitted_row_count)` for each stage (read back
-/// via `GraphIndexReader::table(stage).node_count()`).
-///
-/// `num_shards` controls how the extension itself is sharded:
-///   * `Some(n)` — use exactly `n` shards (an explicit override; useful in
-///     tests to force multi-shard without a huge fixture).
-///   * `None` — derive the shard count from the total on-disk size of the
-///     stage parquets via [`estimate_num_shards`] (clamped to `>= 1`). This is
-///     what callers pass in production so a large `rhs_predict` candidate
-///     catalog (100M+ rows) shards proportionally instead of forcing a single
-///     shard. Cross-boundary FK resolution writes the parent's GLOBAL node id
-///     into each shard's `seed.edges.bin`, so multi-shard extensions resolve
-///     correctly regardless of which parent shard a key lives in.
-///
-/// CONTRACT — orphan FK values are skipped, counted, and never mis-resolved.
-/// The external-parent FK resolution is a minimal-perfect-hash, so an orphan
-/// FK value (absent from the parent table) does not miss — it collides onto an
-/// arbitrary in-range parent node. Ingest therefore membership-verifies every
-/// resolved id against the parent node's stored PK: a mismatch drops the EDGE
-/// (the input row is still kept as a seed node, so `node_count` reflects all
-/// input rows) and is counted in [`StageExtensionResult::key_failures`]
-/// (`membership_failures`; genuine pkmap misses count as `lookup_failures`).
-/// When the parent table has no rowpack PK data the hit is trusted unverified
-/// — never over-drop. This makes re-ingesting a staging bundle into a graph
-/// other than its gen graph (cross-graph TT reuse / custom TT) safe: foreign
-/// seeds detach loudly instead of silently attaching to wrong parents. Callers
-/// must surface the skip counts. Gen-time producers still pre-filter orphans
-/// against the GEN graph (`custom_tt_chunk_processor`), so a same-graph
-/// re-ingest reports zero skips. See `test_orphan_rows_skipped` in
-/// `seed_table_ingest.rs`.
-///
-/// Plain `diskgraph-ingest` types only; no `diskgraph-core` dependency.
-// All eight inputs are distinct, required ingest parameters; bundling them into
-// a struct would not improve clarity for this single internal seam.
-#[allow(clippy::too_many_arguments)]
-pub fn ingest_stage_extension(
-    dataset_name: &str,
-    extension_output_root: &Path,
-    parent_index_path: &Path,
-    stages: &[StageSpec],
-    columns: Vec<ColumnSpec>,
-    fkey_specs: Vec<FKeySpec>,
-    num_shards: Option<usize>,
-    col_stats: bool,
-    // TT-NG temporal-LP timestamp grouping. When true, every stage table in
-    // this call emits a `<table>/bucket_index.bin` (final node-ids grouped by
-    // TIMESTAMP) + bucket list. `false` is byte-identical to before.
-    group_by_timestamp: bool,
-) -> Result<StageExtensionResult> {
-    ingest_stage_extension_with_sidecars(
-        dataset_name,
-        extension_output_root,
-        parent_index_path,
-        stages,
-        HashMap::new(),
-        columns,
-        fkey_specs,
-        num_shards,
-        col_stats,
-        group_by_timestamp,
-    )
-}
-
-/// Identical to [`ingest_stage_extension`], plus optional per-stage sidecar
-/// requests for TT-NG replacement seed sampling.
-#[allow(clippy::too_many_arguments)]
-pub fn ingest_stage_extension_with_sidecars(
-    dataset_name: &str,
-    extension_output_root: &Path,
-    parent_index_path: &Path,
-    stages: &[StageSpec],
-    stage_sidecars: HashMap<String, StageSidecarColumns>,
-    columns: Vec<ColumnSpec>,
-    fkey_specs: Vec<FKeySpec>,
-    num_shards: Option<usize>,
-    col_stats: bool,
-    group_by_timestamp: bool,
-) -> Result<StageExtensionResult> {
-    let tables: Vec<TableSpec> = stages
-        .iter()
-        .map(|stage| TableSpec {
-            name: stage.stage_table_name.clone(),
-            columns: columns.clone(),
-            primary_key: None,
-            create_time: None,
-            end_time: None,
-            weight: None,
-            edge_table: None,
-            rowpack: None,
-            source: DataSource::Parquet {
-                paths: stage
-                    .parquet_paths
-                    .iter()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .collect(),
-            },
-            source_size: None,
-            fkeys: fkey_specs.clone(),
-            data_version: None,
-            kumo_connector_id: None,
-            kumo_source_table_name: None,
-            group_by_timestamp,
-        })
-        .collect();
-
-    // Resolve the extension shard count. An explicit `Some(n)` wins; otherwise
-    // derive from the total on-disk size of the stage parquets (the same
-    // heuristic the kumo->DG converter uses for the base graph), clamped to a
-    // minimum of one shard. Missing/unreadable parquets contribute 0 bytes (an
-    // empty / not-yet-present file simply doesn't inflate the estimate; the
-    // subsequent ingest is what surfaces a genuinely missing source).
-    let resolved_num_shards = match num_shards {
-        Some(n) => n.max(1),
-        None => {
-            let total_bytes: u64 = stages
-                .iter()
-                .flat_map(|stage| stage.parquet_paths.iter())
-                .map(|path| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0))
-                .sum();
-            crate::config_converter::inference::estimate_num_shards(total_bytes).max(1)
-        }
-    };
-
-    let graph_config = GraphConfig {
-        dataset_name: dataset_name.to_string(),
-        tables,
-        rowpack: None,
-        num_shards: Some(resolved_num_shards),
-        edge_format: None,
-        coercion_mode: Default::default(),
-    };
-
-    let options = IngestOptions {
-        col_stats,
-        parent_index_path: Some(parent_index_path.to_path_buf()),
-        ..Default::default()
-    };
-
-    let (_, stats) = ingest_with_stats_from_source_and_sidecars(
-        graph_config,
-        None,
-        &extension_output_root.to_string_lossy(),
-        Dest::Local,
-        options,
-        None,
-        None,
-        stage_sidecars,
-    )
-    .with_context(|| {
-        format!(
-            "stage-extension ingest failed for dataset `{dataset_name}` at {}",
-            extension_output_root.display()
-        )
-    })?;
-
-    // Read back the emitted row count per stage from the on-disk node_count.
-    // (Orphan rows whose FK doesn't resolve are kept as seed nodes, so this
-    // counts all input rows.)
-    let metadata_path = extension_output_root.join("index_metadata.json");
-    let reader = diskgraph_index::graph::GraphIndexReader::open(&metadata_path, extension_output_root)
-        .with_context(|| {
-            format!(
-                "failed to open produced stage extension at {}",
-                extension_output_root.display()
-            )
-        })?;
-
-    let mut counts = Vec::with_capacity(stages.len());
-    for stage in stages {
-        let node_count = reader
-            .table(&stage.stage_table_name)
-            .with_context(|| {
-                format!(
-                    "stage table `{}` missing from produced extension at {}",
-                    stage.stage_table_name,
-                    extension_output_root.display()
-                )
-            })?
-            .node_count();
-        counts.push((stage.stage_table_name.clone(), node_count));
-    }
-    let key_failures = key_failures_from_stats(&stats);
-    Ok(StageExtensionResult {
-        counts,
-        ts_groupings: stats.ts_groupings,
-        binary_label_indexes: stats.binary_label_indexes,
-        sample_weight_indexes: stats.sample_weight_indexes,
-        key_failures,
-    })
-}
-
-/// Result of [`ingest_stage_extension`]: per-stage `(table_name, node_count)`
+/// Result of [`ingest_stage_extension_with_resolution`]: per-stage `(table_name, node_count)`
 /// plus, when `group_by_timestamp` was set, the per-stage-table timestamp
 /// grouping (`<table>/bucket_index.bin` + bucket list). `ts_groupings` is empty
 /// when grouping was disabled. `key_failures` carries the orphan-FK skip
-/// counters (see the contract on [`ingest_stage_extension`]).
+/// counters (see the contract on [`ingest_stage_extension_with_resolution`]).
 pub struct StageExtensionResult {
     pub counts: Vec<(String, u64)>,
     pub ts_groupings:
@@ -301,18 +106,10 @@ fn node_id_column(name: &str, dtype: IngestedType) -> ColumnSpec {
     }
 }
 
-/// FK-free LP "resolution mode" stage-extension ingest.
-///
-/// Identical to [`ingest_stage_extension`] except that, instead of emitting
-/// `external_parent` FK edges for the reference columns, it APPENDS the resolved
-/// node-id columns (`UInt64` for [`ResolveKind::Scalar`], `Int64Array` for
-/// [`ResolveKind::List`]) to every stage table's column list and resolves the
-/// reference PK value(s) to graph node-id(s) inline at ingest. The stage
-/// `TableSpec.fkeys` for these columns are LEFT EMPTY (the caller passes only
-/// fkeys it genuinely wants as edges, normally none), so no edge / no
-/// `seed.edges.bin` payload is produced for the resolved columns — the engine
-/// reads the node-id columns directly. See `ttng-lp-fkfree-resolution-design.md`
-/// §S3.
+/// Resolution-mode stage-extension ingest: appends a node-id column
+/// (`UInt64` for [`ResolveKind::Scalar`], `Int64Array` for [`ResolveKind::List`])
+/// per resolve spec and fills it inline from the parent pkmap. No FK edge is
+/// emitted for these columns — the engine reads the node-id columns directly.
 #[allow(clippy::too_many_arguments)]
 pub fn ingest_stage_extension_with_resolution(
     dataset_name: &str,
@@ -324,7 +121,7 @@ pub fn ingest_stage_extension_with_resolution(
     resolve_specs: &[ResolveSpec],
     num_shards: Option<usize>,
     col_stats: bool,
-    // TT-NG temporal-LP timestamp grouping (see [`ingest_stage_extension`]).
+    // Emit per-stage `bucket_index` (temporal LP only).
     group_by_timestamp: bool,
 ) -> Result<StageExtensionResult> {
     ingest_stage_extension_with_resolution_and_sidecars(
@@ -356,7 +153,7 @@ pub fn ingest_stage_extension_with_resolution_and_sidecars(
     resolve_specs: &[ResolveSpec],
     num_shards: Option<usize>,
     col_stats: bool,
-    // TT-NG temporal-LP timestamp grouping (see [`ingest_stage_extension`]).
+    // Emit per-stage `bucket_index` (temporal LP only).
     group_by_timestamp: bool,
 ) -> Result<StageExtensionResult> {
     // Append the synthetic resolved node-id columns to the shared column list.

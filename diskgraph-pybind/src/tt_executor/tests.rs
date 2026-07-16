@@ -982,7 +982,7 @@
         t_write_custom_tt_node_parquet(&stage_pq);
         let tt_ext = dir.path().join("tt_ext");
         let columns = diskgraph_ingest::infer_stage_columns(&stage_pq).unwrap();
-        let result = diskgraph_ingest::ingest_stage_extension_with_sidecars(
+        let result = diskgraph_ingest::ingest_stage_extension_with_resolution_and_sidecars(
             "binary_label_index_test",
             &tt_ext,
             &index,
@@ -998,13 +998,12 @@
                 },
             )]),
             columns,
-            vec![FKeySpec {
-                src_column: PRIMARY_ENTITY_COL.to_string(),
+            vec![],
+            &[diskgraph_ingest::ResolveSpec {
+                src_col: PRIMARY_ENTITY_COL.to_string(),
                 dst_table: "users".to_string(),
-                forward: Some(diskgraph_ingest::graph_config::DirectionSpec::default()),
-                reverse: None,
-                external_parent: true,
-                bidirectional: false,
+                kind: diskgraph_ingest::ResolveKind::Scalar,
+                node_id_col: "entity_node_id".to_string(),
             }],
             Some(2),
             false,
@@ -1085,7 +1084,7 @@
 
         let tt_ext = dir.path().join("tt_ext");
         let columns = diskgraph_ingest::infer_stage_columns(&stage_pq).unwrap();
-        let result = diskgraph_ingest::ingest_stage_extension_with_sidecars(
+        let result = diskgraph_ingest::ingest_stage_extension_with_resolution_and_sidecars(
             "sample_weight_index_test",
             &tt_ext,
             &index,
@@ -1103,13 +1102,12 @@
                 },
             )]),
             columns,
-            vec![FKeySpec {
-                src_column: PRIMARY_ENTITY_COL.to_string(),
+            vec![],
+            &[diskgraph_ingest::ResolveSpec {
+                src_col: PRIMARY_ENTITY_COL.to_string(),
                 dst_table: "users".to_string(),
-                forward: Some(diskgraph_ingest::graph_config::DirectionSpec::default()),
-                reverse: None,
-                external_parent: true,
-                bidirectional: false,
+                kind: diskgraph_ingest::ResolveKind::Scalar,
+                node_id_col: "entity_node_id".to_string(),
             }],
             Some(2),
             false,
@@ -1175,7 +1173,7 @@
         t_write_custom_tt_node_parquet(&val_pq);
         let tt_ext = dir.path().join("tt_ext");
         let columns = diskgraph_ingest::infer_stage_columns(&train_pq).unwrap();
-        let result = diskgraph_ingest::ingest_stage_extension_with_sidecars(
+        let result = diskgraph_ingest::ingest_stage_extension_with_resolution_and_sidecars(
             "binary_label_index_train_only_test",
             &tt_ext,
             &index,
@@ -1197,13 +1195,12 @@
                 },
             )]),
             columns,
-            vec![FKeySpec {
-                src_column: PRIMARY_ENTITY_COL.to_string(),
+            vec![],
+            &[diskgraph_ingest::ResolveSpec {
+                src_col: PRIMARY_ENTITY_COL.to_string(),
                 dst_table: "users".to_string(),
-                forward: Some(diskgraph_ingest::graph_config::DirectionSpec::default()),
-                reverse: None,
-                external_parent: true,
-                bidirectional: false,
+                kind: diskgraph_ingest::ResolveKind::Scalar,
+                node_id_col: "entity_node_id".to_string(),
             }],
             Some(2),
             false,

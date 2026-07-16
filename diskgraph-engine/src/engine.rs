@@ -1038,16 +1038,10 @@ impl DiskGraphEngine {
         plan: &SamplingPlan,
         flags: &SamplingFlags,
         negatives: Option<&diskgraph_core::sampling::NegativeSamplingSpec>,
-        // FK-free LP resolution (design §S5). When `entity_node_type` is set, the
-        // seed set is read from the `entity_node_id: u64` rowpack column instead
-        // of walking `seed.edges.bin` — the anchor node-id was resolved once at
-        // ingest. When `target_node_type` is set, the LP positive LABELS are read
-        // from the `target_node_ids: list<i64>` rowpack column and emitted as the
-        // ragged `lp_pos_*` fields. The positives are LABELS only — they are NEVER
-        // rooted as seeds (`seed_nodes[rhs]` stays empty), so there is no
-        // message-passing leak. Both `None` (non-LP / FK-edge path) preserves the
-        // legacy `seed.edges.bin` walk + raw-target behavior byte-for-byte.
+        // Seed set from the `entity_node_id` column; required (`None` errors).
         entity_node_type: Option<&str>,
+        // LP positives from `target_node_ids`, emitted as labels only — never
+        // rooted as seeds (no message-passing leak).
         target_node_type: Option<&str>,
         use_seed_timestamps: bool,
         // NodeRange seed mode (two-tower MIPS RHS pass). When `Some`, the engine
@@ -1105,41 +1099,22 @@ impl DiskGraphEngine {
             .map(|(id, _)| id)
             .collect();
 
-        // 2. Identify the seed-src relations + the parent entity type they
-        //    point at. First-match wins; multi-FK seed tables (multiple
-        //    cross-boundary edges per seed row) are deferred — the engine
-        //    will return an error if more than one distinct entity type
-        //    is involved.
-        let mut seed_src_rel_ids: HashSet<u16> = HashSet::new();
-        // We use a Vec of dst_type_id to quickly map segment index back to entity type.
-        let mut segment_to_dst_type: Vec<Option<usize>> = Vec::new();
-
-        let seed_table_reader = reader.table(stage_table).ok_or_else(|| {
+        // Anchors come from the `entity_node_id` column, so the type is required.
+        let entity_node_type = entity_node_type.ok_or_else(|| {
             EngineError::InvalidRequest(format!(
-                "reader has no table `{stage_table}` (catalog inconsistency)"
+                "stage table `{stage_table}`: `entity_node_type` is required \
+                 (resolution mode) — FK-edge seed mode was removed"
             ))
         })?;
 
-        // Drop edges originating from ANY stage seed table (current + siblings).
-        // Sibling stages aren't traversed, but keeping the edge-drop set over
-        // all seed types is symmetric with the topology exclusion below.
+        // Keep seed-table edges out of emitted topology (normally empty in
+        // resolution mode; kept for robustness).
+        let mut seed_src_rel_ids: HashSet<u16> = HashSet::new();
         for (rel_id_usize, src_id) in self.relation_src_type.iter().enumerate() {
             if !seed_type_ids.contains(src_id) {
                 continue;
             }
             seed_src_rel_ids.insert(rel_id_usize as u16);
-        }
-
-        // To map the local relation segments back to global node types, we check the catalog.
-
-        for rel in seed_table_reader.relations() {
-            // The relation name inside the table reader is the bare local name.
-            // The engine catalog uses the namespaced merged name.
-            let namespaced_rel = format!("{tt_id}/{}", rel.name);
-            let merged_rel_id = self.id_to_rel_name.iter().position(|r| r == &namespaced_rel)
-                .ok_or_else(|| EngineError::Internal(format!("Relation {} not found in merged catalog", namespaced_rel)))?;
-            let dst_type_id = self.relation_info[merged_rel_id];
-            segment_to_dst_type.push(Some(dst_type_id));
         }
 
         // 3. Build rel_id_to_names for the collator.
@@ -1184,52 +1159,20 @@ impl DiskGraphEngine {
             Some(combined)
         };
 
-        // 4b. Orphan-seed exclusion. Ingest membership-verifies every seed FK
-        //     against the training graph and SKIPS orphans (cross-graph TT
-        //     reuse / custom TT): a skipped seed row has a null
-        //     `entity_node_id` (resolution mode) or zero seed edges (FK-edge
-        //     mode). Such a row has no anchor, and every task array (`target`,
-        //     `input_ids`, weights, features) is row-aligned with the anchor
-        //     list — keeping it would shift later rows onto wrong labels
-        //     (FK-edge) or anchor at whatever the null slot decodes to
-        //     (resolution). Drop orphan rows from BOTH `batch_row_ids` and the
-        //     seed rowpack batch HERE, the single point everything downstream
-        //     reads, so anchors, labels, weights, timestamps, features, and
-        //     negative slots all stay aligned by construction.
-        let keep: Vec<bool> = if entity_node_type.is_some() {
-            match seed_target_batch.as_ref() {
-                Some(rb) => match rb.schema().index_of("entity_node_id") {
-                    Ok(idx) => {
-                        let col = rb.column(idx);
-                        (0..col.len()).map(|i| col.is_valid(i)).collect()
-                    }
-                    // Missing column errors in step 5 with a precise message.
-                    Err(_) => vec![true; batch_row_ids.len()],
-                },
-                None => vec![true; batch_row_ids.len()],
-            }
-        } else {
-            // FK-edge mode: a seed row whose entity edge was skipped at ingest
-            // has no mapped seed edge. Only segment counts are read here; the
-            // per-edge decode happens in step 5 over the kept rows.
-            let mut keep = Vec::with_capacity(batch_row_ids.len());
-            for &row_id in batch_row_ids {
-                let view = seed_table_reader.edges_for_node(row_id).map_err(|e| {
-                    EngineError::Internal(format!("edges_for_node({row_id}): {e}"))
-                })?;
-                let segments = view
-                    .relation_segments()
-                    .map_err(|e| EngineError::Internal(format!("relation_segments: {e}")))?;
-                keep.push(segments.iter().enumerate().any(|(seg_idx, seg)| {
-                    seg.count > 0
-                        && segment_to_dst_type
-                            .get(seg_idx)
-                            .copied()
-                            .flatten()
-                            .is_some()
-                }));
-            }
-            keep
+        // 4b. Orphan invariant: orphan rows are dropped at ingest, so a null
+        //     `entity_node_id` should never appear. If one does, drop the row
+        //     from both `batch_row_ids` and the seed batch here to keep every
+        //     row-aligned array in sync.
+        let keep: Vec<bool> = match seed_target_batch.as_ref() {
+            Some(rb) => match rb.schema().index_of("entity_node_id") {
+                Ok(idx) => {
+                    let col = rb.column(idx);
+                    (0..col.len()).map(|i| col.is_valid(i)).collect()
+                }
+                // Missing column errors in step 5 with a precise message.
+                Err(_) => vec![true; batch_row_ids.len()],
+            },
+            None => vec![true; batch_row_ids.len()],
         };
         let dropped = keep.iter().filter(|k| !**k).count();
         let kept_row_ids: Vec<u64>;
@@ -1239,17 +1182,17 @@ impl DiskGraphEngine {
             if dropped == batch_row_ids.len() {
                 return Err(EngineError::DataCorruption(format!(
                     "seed table `{stage_table}`: all {dropped} seed rows in this \
-                     batch are orphans skipped at ingest (their FK references do \
-                     not resolve in this graph — the train table was likely \
-                     generated against a different graph)"
+                     batch have a null `entity_node_id` — orphans are dropped at \
+                     ingest, so this should be unreachable (index corruption or a \
+                     stale edge-mode extension)"
                 )));
             }
             tracing::warn!(
                 stage_table,
                 dropped,
                 batch = batch_row_ids.len(),
-                "excluding orphan seed rows (ingest-skipped FK references) from \
-                 the sampling batch"
+                "excluding seed rows with null `entity_node_id` from the sampling \
+                 batch (unexpected: orphans are dropped at ingest)"
             );
             kept_row_ids = batch_row_ids
                 .iter()
@@ -1268,90 +1211,45 @@ impl DiskGraphEngine {
             }
         }
 
-        // 5. Build the seed set.
-        //
-        //    FK-free resolution path (design §S5): when `entity_node_type` is
-        //    set, the anchor node-id was resolved once at ingest into the
-        //    `entity_node_id: u64` rowpack column — read it straight off the
-        //    materialized seed batch. The `seed.edges.bin` per-edge walk +
-        //    `seed_src_rel_ids` / `segment_to_dst_type` scaffolding go inert.
-        //
-        //    Legacy FK-edge path (both `None`): walk `seed.edges.bin` for each
-        //    row to recover the parent entity ids the FK pre-resolved at ingest.
+        // 5. Build the seed set from the `entity_node_id` column.
         let mut seed_nodes: HashMap<String, Vec<u64>> = HashMap::new();
 
-        if let Some(entity_type) = entity_node_type {
-            let rb = seed_target_batch.as_ref().ok_or_else(|| {
+        let rb = seed_target_batch.as_ref().ok_or_else(|| {
+            EngineError::DataCorruption(format!(
+                "resolution mode: seed table `{stage_table}` produced no rowpack batch \
+                 (need `entity_node_id` column)"
+            ))
+        })?;
+        let idx = rb
+            .schema()
+            .fields()
+            .iter()
+            .position(|f| f.name() == "entity_node_id")
+            .ok_or_else(|| {
                 EngineError::DataCorruption(format!(
-                    "resolution mode: seed table `{stage_table}` produced no rowpack batch \
-                     (need `entity_node_id` column)"
+                    "resolution mode: seed table `{stage_table}` rowpack has no \
+                     `entity_node_id` column"
                 ))
             })?;
-            let idx = rb
-                .schema()
-                .fields()
-                .iter()
-                .position(|f| f.name() == "entity_node_id")
-                .ok_or_else(|| {
-                    EngineError::DataCorruption(format!(
-                        "resolution mode: seed table `{stage_table}` rowpack has no \
-                         `entity_node_id` column"
-                    ))
-                })?;
-            let col = rb.column(idx);
-            let ids: Vec<u64> = if let Some(a) =
-                col.as_any().downcast_ref::<arrow_array::UInt64Array>()
-            {
-                (0..a.len()).map(|i| a.value(i)).collect()
-            } else if let Some(a) = col.as_any().downcast_ref::<arrow_array::Int64Array>() {
-                (0..a.len()).map(|i| a.value(i) as u64).collect()
-            } else {
-                return Err(EngineError::DataCorruption(format!(
-                    "resolution mode: `entity_node_id` column has unsupported dtype {:?} \
-                     (expected UInt64/Int64)",
-                    col.data_type()
-                )));
-            };
-            seed_nodes.insert(entity_type.to_string(), ids);
+        let col = rb.column(idx);
+        let ids: Vec<u64> = if let Some(a) =
+            col.as_any().downcast_ref::<arrow_array::UInt64Array>()
+        {
+            (0..a.len()).map(|i| a.value(i)).collect()
+        } else if let Some(a) = col.as_any().downcast_ref::<arrow_array::Int64Array>() {
+            (0..a.len()).map(|i| a.value(i) as u64).collect()
         } else {
-            for &row_id in batch_row_ids {
-                let view = seed_table_reader
-                    .edges_for_node(row_id)
-                    .map_err(|e| EngineError::Internal(format!("edges_for_node({row_id}): {e}")))?;
-                let segments = view
-                    .relation_segments()
-                    .map_err(|e| EngineError::Internal(format!("relation_segments: {e}")))?;
-
-                for (seg_idx, seg) in segments.iter().enumerate() {
-                    if seg.count == 0 {
-                        continue;
-                    }
-                    let dst_type_id = match segment_to_dst_type.get(seg_idx).copied().flatten() {
-                        Some(id) => id,
-                        None => continue,
-                    };
-                    let dst_type_name = self.id_to_node_type[dst_type_id].clone();
-
-                    let entry_bytes = seg.layout.entry_bytes;
-                    let dst_mask = seg.layout.dst_mask as u128;
-
-                    let dst_vec = seed_nodes.entry(dst_type_name).or_default();
-
-                    // Read all edges in the segment
-                    for edge_idx in 0..seg.count {
-                        let offset = (edge_idx as usize) * entry_bytes;
-                        let mut buf = [0u8; 16];
-                        buf[..entry_bytes].copy_from_slice(&seg.data[offset..offset + entry_bytes]);
-                        let dst_id = (u128::from_le_bytes(buf) & dst_mask) as u64;
-                        dst_vec.push(dst_id);
-                    }
-                }
-            }
-        }
+            return Err(EngineError::DataCorruption(format!(
+                "resolution mode: `entity_node_id` column has unsupported dtype {:?} \
+                 (expected UInt64/Int64)",
+                col.data_type()
+            )));
+        };
+        seed_nodes.insert(entity_node_type.to_string(), ids);
 
         if seed_nodes.is_empty() {
              return Err(EngineError::DataCorruption(format!(
-                 "seed table `{stage_table}` batch has no cross-boundary FK edges"
+                 "seed table `{stage_table}` batch resolved no seed nodes"
              )));
         }
 

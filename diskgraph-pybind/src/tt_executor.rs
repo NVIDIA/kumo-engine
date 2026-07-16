@@ -75,11 +75,8 @@ pub(crate) struct TtIngestSpec {
     #[serde(default)]
     pub fkey_mapping: Option<Vec<TTFKeySpec>>,
     pub entity_table: String,
-    /// FK-free LP "resolution mode" (see `ttng-lp-fkfree-resolution-design.md`
-    /// §S3). When `Some(_)`, `execute_tt_ingest` resolves the listed reference
-    /// columns to graph node-ids and writes them as rowpack columns (no FK
-    /// edge) instead of materializing `external_parent` edges. `None` (serde
-    /// default, back-compat) → the existing edge-materializing ingest.
+    /// LP resolution specs (`ENTITY1`/`TARGET1` → node-id rowpack columns).
+    /// `None` for non-LP; ingest then synthesizes the scalar `ENTITY1` spec.
     #[serde(default)]
     pub lp_resolution: Option<Vec<RefResolveSpec>>,
     /// `plan.split.is_temporal`, carried so the ingest-output manifest is
@@ -199,14 +196,18 @@ pub fn execute_tt_plan(
             // check — an atemporal RHS (e.g. amazon `products`) builds no bucket
             // index and the LOAD gate stays flat. Byte-identical otherwise.
             let group_by_timestamp = plan.lp_resolution.is_some() && plan.lp_rhs_is_temporal;
+            let resolve_specs = diskgraph_core::tt_builder::stage_resolution_specs(
+                &plan.lp_resolution,
+                &plan.fkey_mapping,
+                &plan.entity.table,
+            )
+            .map_err(diskgraph_train_table::errors::TTGenError::InvalidPlan)?;
             let (manifest_stages, key_failures) = ingest_resolved_stages(
                 &stages,
                 &tt_id_owned,
                 &ingest_root,
                 index_root,
-                &plan.fkey_mapping,
-                &plan.entity.table,
-                &plan.lp_resolution,
+                &resolve_specs,
                 &artifacts,
                 &tt_root,
                 group_by_timestamp,
@@ -520,14 +521,18 @@ pub fn execute_tt_ingest(
             // mirrors the kumo LOAD gate and legacy's `TimestampSampler` RHS
             // check. Atemporal-RHS / non-LP ingest is byte-identical to before.
             let group_by_timestamp = spec.lp_resolution.is_some() && spec.lp_rhs_is_temporal;
+            let resolve_specs = diskgraph_core::tt_builder::stage_resolution_specs(
+                &spec.lp_resolution,
+                &spec.fkey_mapping,
+                &spec.entity_table,
+            )
+            .map_err(diskgraph_train_table::errors::TTGenError::InvalidPlan)?;
             let (manifest_stages, key_failures) = ingest_resolved_stages(
                 &stages,
                 &tt_id_owned,
                 &ingest_root,
                 index_root,
-                &spec.fkey_mapping,
-                &spec.entity_table,
-                &spec.lp_resolution,
+                &resolve_specs,
                 &artifacts,
                 &tt_root,
                 group_by_timestamp,
@@ -615,9 +620,7 @@ pub(crate) fn ingest_resolved_stages(
     tt_id: &str,
     ingest_root: &Path,
     index_root: &Path,
-    fkey_mapping: &Option<Vec<TTFKeySpec>>,
-    entity_table: &str,
-    lp_resolution: &Option<Vec<RefResolveSpec>>,
+    resolve_specs: &[RefResolveSpec],
     artifacts: &StagedTtArtifacts,
     tt_root: &Path,
     // TT-NG temporal-LP timestamp grouping: emit per-stage `bucket_index.bin`.
@@ -632,9 +635,7 @@ pub(crate) fn ingest_resolved_stages(
         ingest_root,
         stages,
         index_root,
-        fkey_mapping,
-        entity_table,
-        lp_resolution,
+        resolve_specs,
         group_by_timestamp,
     )?;
     // LP VAL/TEST single-timeframe contract: when ts grouping is built (i.e.
@@ -1035,111 +1036,15 @@ pub fn execute_bp_plan(
     Ok(rows)
 }
 
-/// Ingest a single pre-materialized batch-prediction stage parquet (LHS
-/// `predict` or RHS `rhs_predict`) as a DG extension under
-/// `extension_output_root`, resolving `entity_src_col` → `dst_table` against
-/// the parent index at `index_path`.
-///
-/// Returns the emitted row count for the stage. Columns are inferred from the
-/// parquet schema (mirroring the training path's `infer_stage_columns`); a
-/// `Timestamp`-typed column with no embedded unit is assigned
-/// `input_timestamp_unit` (one of "seconds" | "millis" | "micros" | "nanos").
-#[pyfunction]
-#[tracing::instrument(level = "info", skip_all, fields(index_path = %index_path, stage = %stage_table_name))]
-pub fn ingest_prediction_stage(
-    py: Python<'_>,
-    index_path: &str,
-    extension_output_root: &str,
-    stage_table_name: &str,
-    parquet_path: &str,
-    entity_src_col: &str,
-    dst_table: &str,
-    input_timestamp_unit: &str,
-) -> PyResult<u64> {
-    use diskgraph_ingest::graph_config::TimestampUnit;
-    let ts_unit = match input_timestamp_unit.to_ascii_lowercase().as_str() {
-        "seconds" | "second" | "s" => TimestampUnit::Seconds,
-        "millis" | "milliseconds" | "ms" => TimestampUnit::Millis,
-        "micros" | "microseconds" | "us" => TimestampUnit::Micros,
-        "nanos" | "nanoseconds" | "ns" => TimestampUnit::Nanos,
-        other => {
-            return Err(crate::DiskgraphConfigError::new_err(format!(
-                "ingest_prediction_stage: unknown input_timestamp_unit {other:?} \
-                 (expected one of seconds|millis|micros|nanos)"
-            )))
-        }
-    };
-
-    let parquet = Path::new(parquet_path);
-    let mut columns = diskgraph_ingest::infer_stage_columns(parquet).map_err(|e| {
-        crate::DiskgraphDataError::new_err(format!("TT stage column inference: {e:#}"))
-    })?;
-    // Backfill a unit on any Timestamp column that lacks one (e.g. when the
-    // source stored the timestamp as a plain integer rather than an arrow
-    // Timestamp type).
-    for col in columns.iter_mut() {
-        if matches!(
-            col.ingested_dtype,
-            diskgraph_ingest::graph_config::IngestedType::Timestamp
-        ) && col.timestamp_unit.is_none()
-        {
-            col.timestamp_unit = Some(ts_unit);
-        }
-    }
-
-    let fkey = diskgraph_ingest::graph_config::FKeySpec {
-        src_column: entity_src_col.to_string(),
-        dst_table: dst_table.to_string(),
-        forward: Some(diskgraph_ingest::graph_config::DirectionSpec::default()),
-        reverse: None,
-        external_parent: true,
-        bidirectional: false,
-    };
-
-    let index_path_owned = index_path.to_owned();
-    let extension_root_owned = extension_output_root.to_owned();
-    let stage_name_owned = stage_table_name.to_owned();
-    let parquet_owned = parquet.to_path_buf();
-
-    let counts = py
-        .detach(|| {
-            diskgraph_ingest::ingest_stage_extension(
-                &format!("pred_{stage_name_owned}"),
-                Path::new(&extension_root_owned),
-                Path::new(&index_path_owned),
-                &[diskgraph_ingest::StageSpec {
-                    stage_table_name: stage_name_owned.clone(),
-                    parquet_paths: vec![parquet_owned],
-                }],
-                columns,
-                vec![fkey],
-                None,
-                true,
-                false,
-            )
-        })
-        .map_err(|e| {
-            crate::DiskgraphSystemError::new_err(format!("prediction-stage ingest failed: {e:#}"))
-        })?
-        .counts;
-
-    Ok(counts.into_iter().map(|(_, n)| n).next().unwrap_or(0))
-}
-
-/// Genericized stage-table ingest over a VARIABLE list of stages (split path:
-/// three demuxed `train/val/test_seeds`; predict path: one `predict_seeds`).
-/// Columns are inferred from the first stage's parquet (all stages share one
-/// schema). The 3-stage split case is byte-identical to the prior hardcoded
-/// version (same dataset name, FK/resolution logic, single-shard col-stats).
-#[allow(clippy::too_many_arguments)]
+/// Stage-table ingest over a variable list of stages (split: `train/val/test_seeds`;
+/// predict: one stage). Columns inferred from the first stage's parquet (shared schema).
 pub(crate) fn ingest_stage_parquets_into_extension(
     tt_id: &str,
     tt_root: &Path,
     stages_in: &[StageSpec],
     graph_index_path: &Path,
-    fkey_mapping: &Option<Vec<TTFKeySpec>>,
-    entity_table: &str,
-    lp_resolution: &Option<Vec<RefResolveSpec>>,
+    // From `stage_resolution_specs` (at least the scalar `ENTITY1`).
+    resolve_specs: &[RefResolveSpec],
     // TT-NG temporal-LP timestamp grouping: when true, every stage table emits a
     // `<table>/bucket_index.bin` (final node-ids grouped by TIMESTAMP) + bucket
     // list. Set only for the temporal-LP seed stages. Returns the per-stage
@@ -1190,93 +1095,35 @@ pub(crate) fn ingest_stage_parquets_into_extension(
         })
         .collect();
 
-    // FK-free LP "resolution mode": resolve the reference columns to graph
-    // node-ids and write them as rowpack columns with NO FK edge. The stage
-    // tables carry no fkeys for the resolved columns, so no `seed.edges.bin`
-    // payload / edge relation is produced for them. See §S3.
-    if let Some(resolution) = lp_resolution {
-        let resolve_specs: Vec<diskgraph_ingest::ResolveSpec> = resolution
-            .iter()
-            .map(|r| diskgraph_ingest::ResolveSpec {
-                src_col: r.src_col.clone(),
-                dst_table: r.dst_table.clone(),
-                kind: match r.kind {
-                    RefResolveKind::Scalar => diskgraph_ingest::ResolveKind::Scalar,
-                    RefResolveKind::List => diskgraph_ingest::ResolveKind::List,
-                },
-                node_id_col: r.node_id_col.clone(),
-            })
-            .collect();
-        return diskgraph_ingest::ingest_stage_extension_with_resolution_and_sidecars(
-            &format!("tt_seeds_{tt_id}"),
-            tt_root,
-            graph_index_path,
-            &stages,
-            stage_sidecars,
-            columns,
-            // No FK edges: the resolved columns become rowpack columns instead.
-            Vec::new(),
-            &resolve_specs,
-            None,
-            true,
-            group_by_timestamp,
-        )
-        .map_err(|e| {
-            diskgraph_train_table::errors::TTGenError::SystemError(format!(
-                "TT resolution-mode stage-table ingest failed: {e:#}"
-            ))
-        });
-    }
-    // Build forward-only external_parent FKs from the seed stage table
-    // to the parent graph. At ingest time, the external pkmap loader resolves
-    // these values to parent row ids, which get written into `seed.edges.bin`.
-    let fkey_specs = if let Some(mappings) = fkey_mapping {
-        mappings
-            .iter()
-            .map(|m| diskgraph_ingest::graph_config::FKeySpec {
-                src_column: m.src_col.clone(),
-                dst_table: m.dst_table.clone(),
-                forward: Some(diskgraph_ingest::graph_config::DirectionSpec::default()),
-                reverse: None,
-                external_parent: true,
-                bidirectional: false,
-            })
-            .collect::<Vec<_>>()
-    } else {
-        vec![diskgraph_ingest::graph_config::FKeySpec {
-            src_column: diskgraph_train_table::ttgen_output::PRIMARY_ENTITY_COL.to_string(),
-            dst_table: entity_table.to_string(),
-            forward: Some(diskgraph_ingest::graph_config::DirectionSpec::default()),
-            reverse: None,
-            external_parent: true,
-            bidirectional: false,
-        }]
-    };
-    // Delegate to the source-agnostic stage-extension primitive. The training
-    // path supplies the three demuxed split parquets as `train/val/test_seeds`
-    // stages. Behavior is identical to the previous inline GraphConfig
-    // assembly (single-shard, col_stats on, parent_index_path set), so
-    // `execute_tt_plan`'s output is unchanged.
-    diskgraph_ingest::ingest_stage_extension_with_sidecars(
+    // Resolve reference columns to node-id rowpack columns (no FK edge).
+    let resolve_specs: Vec<diskgraph_ingest::ResolveSpec> = resolve_specs
+        .iter()
+        .map(|r| diskgraph_ingest::ResolveSpec {
+            src_col: r.src_col.clone(),
+            dst_table: r.dst_table.clone(),
+            kind: match r.kind {
+                RefResolveKind::Scalar => diskgraph_ingest::ResolveKind::Scalar,
+                RefResolveKind::List => diskgraph_ingest::ResolveKind::List,
+            },
+            node_id_col: r.node_id_col.clone(),
+        })
+        .collect();
+    diskgraph_ingest::ingest_stage_extension_with_resolution_and_sidecars(
         &format!("tt_seeds_{tt_id}"),
         tt_root,
         graph_index_path,
         &stages,
         stage_sidecars,
         columns,
-        fkey_specs,
+        Vec::new(), // no FK edges
+        &resolve_specs,
         None,
         true,
-        // Grouping only happens on the FK-free LP resolution path (returned
-        // early above); this FK path is never temporal-LP. Pass `false`
-        // explicitly so a future caller can't silently enable grouping on this
-        // unvalidated path. (The gate also guarantees `group_by_timestamp` is
-        // false here, since it requires `lp_resolution.is_some()`.)
-        false,
+        group_by_timestamp,
     )
     .map_err(|e| {
         diskgraph_train_table::errors::TTGenError::SystemError(format!(
-            "TT stage-table ingest failed: {e:#}"
+            "TT resolution-mode stage-table ingest failed: {e:#}"
         ))
     })
 }

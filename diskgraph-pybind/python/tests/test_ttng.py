@@ -361,6 +361,7 @@ def test_runtime_batch_iterator_dict_contract(tmp_path):
     iterator, num_samples = make_runtime_batch_iterator(
         dataset_ref=str(manifest_path),
         stage="train",
+        entity_node_type="users",
         sampling_plan=_default_sampling_plan(),
         num_workers=1, worker_id=0,
         shuffle=False, rnd_seed=None, epoch=0,
@@ -423,6 +424,7 @@ def test_multi_worker_yields_disjoint_shards(tmp_path):
         it, _ = make_runtime_batch_iterator(
             dataset_ref=str(manifest_path),
             stage="train",
+            entity_node_type="users",
             sampling_plan=_default_sampling_plan(),
             num_workers=2, worker_id=worker_id,
             shuffle=False, rnd_seed=None, epoch=0,

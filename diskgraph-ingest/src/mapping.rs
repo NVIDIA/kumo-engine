@@ -376,14 +376,14 @@ fn advise_data(map: &Mmap, advice: PkDataAdvice) {
 // External pkmap loader (Phase 1, subtask #2).
 //
 // Loads a parent DG index's pkmap shards for one table into the same
-// `PkHashShard` / `PkHashStore` shape consumed by the edge phase. Used when an
-// FK on a seed table declares `external_parent: true` — the destination table
-// lives in a separate, already-built index and its pkmap must be mmap'd
-// without rebuilding.
+// `PkHashShard` / `PkHashStore` shape consumed by the resolution phase. Used
+// when a seed table's reference columns resolve into a separate, already-built
+// parent index (`RefResolver`) — the parent's pkmap is mmap'd without
+// rebuilding.
 //
 // The loader is intentionally minimal: it does not parallelize across shards
-// (today's caller loads one external table per ingest, and shard count is
-// bounded by the parent's `num_shards`). If multi-table external FKs become
+// (today's caller loads one parent table per ingest, and shard count is
+// bounded by the parent's `num_shards`). If multi-table resolution becomes
 // common, this can be parallelized using the same `WorkItem` pattern as
 // `build_pk_hash_store_parallel`.
 // ---------------------------------------------------------------------------

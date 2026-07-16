@@ -2,10 +2,10 @@
 //!
 //! After a TT pass produces `tt.parquet` and (for split plans) the per-stage
 //! seed parquets, this module ingests the stages as a samplable DG extension
-//! via [`diskgraph_ingest::ingest_stage_extension`], then publishes the
-//! extension into the target subdir under the parent index
-//! (`train_tables/<id>/`). There is no `split.bin` — the fused pass-B writes the
-//! per-stage seed parts directly (greenfield TT-NG).
+//! via [`diskgraph_ingest::ingest_stage_extension_with_resolution`], then
+//! publishes the extension under the parent index (`train_tables/<id>/`). Every
+//! stage resolves its reference PK column(s) to node-id rowpack columns — there
+//! is no FK-edge mode.
 //!
 //! Two shapes:
 //!   * **Split** (training): per-stage seed parts present → ingest
@@ -22,17 +22,14 @@
 use std::path::{Path, PathBuf};
 
 use diskgraph_core::time::Seconds;
-use diskgraph_core::tt_builder::{DiskGraphTTPlan, RefResolveKind};
+use diskgraph_core::tt_builder::{stage_resolution_specs, DiskGraphTTPlan, RefResolveKind};
 
-use diskgraph_ingest::graph_config::{DirectionSpec, FKeySpec};
 use diskgraph_ingest::{
-    infer_stage_columns, ingest_stage_extension, ingest_stage_extension_with_resolution,
-    ResolveSpec, StageSpec,
+    infer_stage_columns, ingest_stage_extension_with_resolution, ResolveSpec, StageSpec,
 };
 
 use crate::errors::{TTGenError, TTGenResult};
 use crate::ttgen_executor::TTPassOutput;
-use crate::ttgen_output::PRIMARY_ENTITY_COL;
 
 /// Outcome of ingesting + publishing a TT extension.
 #[derive(Debug)]
@@ -46,50 +43,23 @@ pub struct StageIngestOutput {
     pub key_failures: diskgraph_ingest::KeyFailureState,
 }
 
-/// Translate a plan's `fkey_mapping` into `diskgraph-ingest` external-parent
-/// FK specs. Falls back to a single ENTITY1 → entity-table FK when the plan
-/// carries no mapping. Mirrors
-/// `tt_executor::ingest_stage_parquets_into_extension`.
-fn fkey_specs_from_plan(plan: &DiskGraphTTPlan<Seconds>) -> Vec<FKeySpec> {
-    if let Some(mappings) = &plan.fkey_mapping {
-        mappings
-            .iter()
-            .map(|m| FKeySpec {
-                src_column: m.src_col.clone(),
-                dst_table: m.dst_table.clone(),
-                forward: Some(DirectionSpec::default()),
-                reverse: None,
-                external_parent: true,
-                bidirectional: false,
-            })
-            .collect()
-    } else {
-        vec![FKeySpec {
-            src_column: PRIMARY_ENTITY_COL.to_string(),
-            dst_table: plan.entity.table.clone(),
-            forward: Some(DirectionSpec::default()),
-            reverse: None,
-            external_parent: true,
-            bidirectional: false,
-        }]
-    }
-}
-
-fn resolve_specs_from_plan(plan: &DiskGraphTTPlan<Seconds>) -> Option<Vec<ResolveSpec>> {
-    plan.lp_resolution.as_ref().map(|resolution| {
-        resolution
-            .iter()
-            .map(|r| ResolveSpec {
-                src_col: r.src_col.clone(),
-                dst_table: r.dst_table.clone(),
-                kind: match r.kind {
-                    RefResolveKind::Scalar => diskgraph_ingest::ResolveKind::Scalar,
-                    RefResolveKind::List => diskgraph_ingest::ResolveKind::List,
-                },
-                node_id_col: r.node_id_col.clone(),
-            })
-            .collect()
-    })
+/// This plan's resolution specs in the `diskgraph-ingest` type (see
+/// [`stage_resolution_specs`]).
+fn resolve_specs_from_plan(plan: &DiskGraphTTPlan<Seconds>) -> TTGenResult<Vec<ResolveSpec>> {
+    let specs = stage_resolution_specs(&plan.lp_resolution, &plan.fkey_mapping, &plan.entity.table)
+        .map_err(TTGenError::InvalidPlan)?;
+    Ok(specs
+        .iter()
+        .map(|r| ResolveSpec {
+            src_col: r.src_col.clone(),
+            dst_table: r.dst_table.clone(),
+            kind: match r.kind {
+                RefResolveKind::Scalar => diskgraph_ingest::ResolveKind::Scalar,
+                RefResolveKind::List => diskgraph_ingest::ResolveKind::List,
+            },
+            node_id_col: r.node_id_col.clone(),
+        })
+        .collect())
 }
 
 fn ingest_stage_set(
@@ -100,46 +70,28 @@ fn ingest_stage_set(
     columns: Vec<diskgraph_ingest::graph_config::ColumnSpec>,
     plan: &DiskGraphTTPlan<Seconds>,
 ) -> TTGenResult<(Vec<(String, u64)>, diskgraph_ingest::KeyFailureState)> {
-    // TT-NG single-timestamp grouping (#337): build the per-stage `bucket_index`
-    // only for resolution-mode LP whose RHS/target table is temporal. Mirrors
-    // the PQL gate in `tt_executor::execute_tt_plan` and legacy's
-    // `TimestampSampler` RHS check; flat (byte-identical) otherwise.
+    // Per-stage `bucket_index` only for LP with a temporal RHS.
     let group_by_timestamp = plan.lp_resolution.is_some() && plan.lp_rhs_is_temporal;
+    let resolve_specs = resolve_specs_from_plan(plan)?;
 
-    if let Some(resolve_specs) = resolve_specs_from_plan(plan) {
-        return ingest_stage_extension_with_resolution(
-            dataset_name,
-            ingest_root,
-            parent_index_path,
-            stages,
-            columns,
-            Vec::new(),
-            &resolve_specs,
-            None,
-            true,
-            group_by_timestamp,
-        )
-        .map(|r| (r.counts, r.key_failures))
-        .map_err(|e| {
-            TTGenError::SystemError(format!(
-                "TT resolution-mode stage-table ingest failed: {e:#}"
-            ))
-        });
-    }
-
-    ingest_stage_extension(
+    ingest_stage_extension_with_resolution(
         dataset_name,
         ingest_root,
         parent_index_path,
         stages,
         columns,
-        fkey_specs_from_plan(plan),
+        Vec::new(),
+        &resolve_specs,
         None,
         true,
         group_by_timestamp,
     )
     .map(|r| (r.counts, r.key_failures))
-    .map_err(|e| TTGenError::SystemError(format!("TT stage-table ingest failed: {e:#}")))
+    .map_err(|e| {
+        TTGenError::SystemError(format!(
+            "TT resolution-mode stage-table ingest failed: {e:#}"
+        ))
+    })
 }
 
 /// Demux (when a split.bin is present) + ingest + publish a TT extension for

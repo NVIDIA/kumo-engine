@@ -69,7 +69,6 @@ fn convert_inferred_fkeys_to_fkeyspecs(
                         dst_table: fk.dst_table.clone(),
                         forward: None,
                         reverse: None,
-                        external_parent: false,
                         bidirectional: true,
                     });
                 }

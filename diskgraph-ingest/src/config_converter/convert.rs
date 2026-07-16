@@ -580,7 +580,6 @@ fn detect_edge_table_or_fkeys(
                     dst_table: dst_table_name,
                     forward: forward_spec,
                     reverse: src_direction_spec.clone(),
-                    external_parent: false,
                     bidirectional: true,
                 }
             })

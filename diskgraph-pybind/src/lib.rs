@@ -1335,10 +1335,6 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tt_executor::execute_bp_plan, m)?)?;
     m.add_function(wrap_pyfunction!(tt_executor::drop_tt, m)?)?;
     m.add_function(wrap_pyfunction!(
-        tt_executor::ingest_prediction_stage,
-        m
-    )?)?;
-    m.add_function(wrap_pyfunction!(
         tt_executor::read_tt_parquet_batches,
         m
     )?)?;

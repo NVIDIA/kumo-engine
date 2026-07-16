@@ -166,7 +166,6 @@ fn ingest_parent_users_orders(parent_root: &Path, n_users: i64) -> Result<()> {
             dst_table: "users".to_string(),
             forward: Some(DirectionSpec::default()),
             reverse: Some(DirectionSpec::default()),
-            external_parent: false,
             bidirectional: true,
         }],
         data_version: None,

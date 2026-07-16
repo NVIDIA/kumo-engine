@@ -1208,7 +1208,6 @@ mod new_schema_types {
             dst_table: "users".into(),
             forward: None,
             reverse: None,
-            external_parent: false,
             bidirectional: true,
         };
         let json = serde_json::to_string(&spec).unwrap();
@@ -1216,8 +1215,7 @@ mod new_schema_types {
         assert!(json.contains(r#""dst_table":"users""#));
         assert!(!json.contains(r#""forward""#));
         assert!(!json.contains(r#""reverse""#));
-        // Default external_parent (false) and bidirectional (true) should be skipped.
-        assert!(!json.contains(r#""external_parent""#));
+        // Default bidirectional (true) should be skipped.
         assert!(!json.contains(r#""bidirectional""#));
     }
 
@@ -1250,7 +1248,6 @@ mod new_schema_types {
                     dtype: "float16".into(),
                 }),
             }),
-            external_parent: false,
             bidirectional: true,
         };
         let json = serde_json::to_string(&spec).unwrap();
@@ -1333,7 +1330,6 @@ mod new_schema_types {
                 dst_table: "users".into(),
                 forward: None,
                 reverse: None,
-                external_parent: false,
                 bidirectional: true,
             }],
             data_version: None,
@@ -1518,7 +1514,6 @@ mod new_schema_types {
             dst_table: "dst".into(),
             forward: Some(DirectionSpec::default()),
             reverse: None,
-            external_parent: false,
             bidirectional: true,
         };
         let json = serde_json::to_string(&original).unwrap();

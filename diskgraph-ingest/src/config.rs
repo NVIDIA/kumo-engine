@@ -174,14 +174,10 @@ pub struct IngestOptions {
     pub pk_map_threads: Option<usize>,
     pub edges_map_threads: Option<usize>,
     pub index_threads: Option<usize>,
-    /// Path to a parent DG index whose pkmap shards should be loaded for
-    /// any FK whose source config declares `external_parent: true`. When
-    /// `None` (default), external_parent FKs are not supported and ingest
-    /// errors loudly if the config contains them. Set when ingesting a
-    /// seed-table sub-index whose FKs target an already-built parent
-    /// (see docs/proposals/seed_tables_as_dg_node_tables.md).
+    /// Parent DG index whose pkmap shards resolve `resolve_columns` (below).
+    /// `None` for an ordinary base-graph ingest.
     pub parent_index_path: Option<PathBuf>,
-    /// FK-free LP resolution columns. When non-empty, the listed columns are
+    /// Resolution columns. When non-empty, the listed columns are
     /// resolved to node-ids at node-write time (using `parent_index_path`'s
     /// pkmap) and written as rowpack columns with NO FK edge. Empty (default)
     /// preserves the existing edge-materializing behaviour.

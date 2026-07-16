@@ -2460,12 +2460,28 @@ fn test_custom_tt_pred_passthrough_ingests_predict_stage() {
         tt_id,
     )
     .unwrap();
-    let dst = collect_stage_dst_ids(&reader, &format!("{tt_id}/predict"));
-    assert_eq!(dst.len(), 6, "6 predict seeds, each ENTITY1 → users");
+    // Resolution mode: the predict stage emits NO seed FK edges — each ENTITY1
+    // is resolved into the `entity_node_id` rowpack column instead.
+    let stage_table = format!("{tt_id}/predict");
+    assert!(
+        collect_stage_dst_ids(&reader, &stage_table).is_empty(),
+        "resolution-mode predict stage must not emit seed FK edges"
+    );
+    let predict = reader.table(&stage_table).unwrap();
+    let mut dst = Vec::new();
+    for node_id in 0..predict.node_count() {
+        let json = read_stage_node_json(&reader, &stage_table, node_id);
+        dst.push(
+            json.get("entity_node_id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or_else(|| panic!("entity_node_id missing/not u64 in {json}")),
+        );
+    }
+    assert_eq!(dst.len(), 6, "6 predict seeds, each ENTITY1 → entity_node_id");
     let n_users = reader.table("users").unwrap().node_count();
     assert!(
         dst.iter().all(|&d| d < n_users),
-        "every predict-stage ENTITY FK resolves to a valid user node; got {dst:?}"
+        "every predict-stage ENTITY resolves to a valid user node; got {dst:?}"
     );
 }
 
