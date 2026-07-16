@@ -41,6 +41,9 @@ pub struct StageIngestOutput {
     pub extension_path: PathBuf,
     /// `(stage_table_name, emitted_row_count)` per ingested stage.
     pub stage_counts: Vec<(String, u64)>,
+    /// Orphan-FK skip counters from the stage ingest (see the contract on
+    /// `diskgraph_ingest::ingest_stage_extension`).
+    pub key_failures: diskgraph_ingest::KeyFailureState,
 }
 
 /// Translate a plan's `fkey_mapping` into `diskgraph-ingest` external-parent
@@ -96,7 +99,7 @@ fn ingest_stage_set(
     stages: &[StageSpec],
     columns: Vec<diskgraph_ingest::graph_config::ColumnSpec>,
     plan: &DiskGraphTTPlan<Seconds>,
-) -> TTGenResult<Vec<(String, u64)>> {
+) -> TTGenResult<(Vec<(String, u64)>, diskgraph_ingest::KeyFailureState)> {
     // TT-NG single-timestamp grouping (#337): build the per-stage `bucket_index`
     // only for resolution-mode LP whose RHS/target table is temporal. Mirrors
     // the PQL gate in `tt_executor::execute_tt_plan` and legacy's
@@ -116,7 +119,7 @@ fn ingest_stage_set(
             true,
             group_by_timestamp,
         )
-        .map(|r| r.counts)
+        .map(|r| (r.counts, r.key_failures))
         .map_err(|e| {
             TTGenError::SystemError(format!(
                 "TT resolution-mode stage-table ingest failed: {e:#}"
@@ -135,7 +138,7 @@ fn ingest_stage_set(
         true,
         group_by_timestamp,
     )
-    .map(|r| r.counts)
+    .map(|r| (r.counts, r.key_failures))
     .map_err(|e| TTGenError::SystemError(format!("TT stage-table ingest failed: {e:#}")))
 }
 
@@ -160,7 +163,7 @@ pub fn ingest_and_publish_tt_extension(
     ingest_root: &Path,
     tt_root: &Path,
 ) -> TTGenResult<StageIngestOutput> {
-    let stage_counts = if let Some(infos) = pass_output.stage_gen_infos.as_ref() {
+    let (stage_counts, key_failures) = if let Some(infos) = pass_output.stage_gen_infos.as_ref() {
         // Split path: gen already wrote the per-stage seed parquets next to
         // tt.parquet (no split.bin, no demux). Ingest them directly.
         let gen_dir = pass_output.tt_parquet_path.parent().ok_or_else(|| {
@@ -219,5 +222,6 @@ pub fn ingest_and_publish_tt_extension(
     Ok(StageIngestOutput {
         extension_path: tt_root.to_path_buf(),
         stage_counts,
+        key_failures,
     })
 }

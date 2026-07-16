@@ -257,12 +257,13 @@ fn resolve_specs() -> Vec<ResolveColumnSpec> {
 }
 
 /// End-to-end: ingest a stage table in resolution mode against the parent.
-/// Returns the stage extension output dir.
-fn ingest_resolution(
+/// Returns the stage extension output dir plus the ingest stats (which carry
+/// the orphan skip counters).
+fn ingest_resolution_with_stats(
     tmp: &tempfile::TempDir,
     entities: &[i64],
     targets: &[Vec<i64>],
-) -> Result<std::path::PathBuf> {
+) -> Result<(std::path::PathBuf, diskgraph_ingest::IngestStats)> {
     let parent_root = tmp.path().join("parent_idx");
     ingest_tiny_parent_index(&parent_root, 16)?;
 
@@ -286,7 +287,7 @@ fn ingest_resolution(
         col_stats: false,
         ..Default::default()
     };
-    ingest_with_stats_from_source(
+    let (_, stats) = ingest_with_stats_from_source(
         config,
         None,
         output.to_str().unwrap(),
@@ -295,7 +296,17 @@ fn ingest_resolution(
         None,
         None,
     )?;
-    Ok(output)
+    Ok((output, stats))
+}
+
+/// End-to-end: ingest a stage table in resolution mode against the parent.
+/// Returns the stage extension output dir.
+fn ingest_resolution(
+    tmp: &tempfile::TempDir,
+    entities: &[i64],
+    targets: &[Vec<i64>],
+) -> Result<std::path::PathBuf> {
+    ingest_resolution_with_stats(tmp, entities, targets).map(|(output, _)| output)
 }
 
 /// Read one `train_seeds` node's rowpack columns back as JSON.
@@ -330,6 +341,95 @@ fn test_resolution_scalar_entity_node_id() {
             "row {row}: entity_node_id must resolve ENTITY1={ent} to node id {ent}"
         );
     }
+}
+
+// Orphan reference values (absent from the parent) must NEVER produce a
+// node-id. The pkmap is a blind MPH, so an orphan key collides onto an
+// arbitrary in-range parent slot; membership verification at resolution turns
+// that false positive into a null (scalar) / dropped element (list), counted
+// in the ingest key-failure stats. Rows are kept — only the resolved ids are
+// affected — mirroring how a null reference behaves.
+#[test]
+fn test_resolution_orphans_nulled_dropped_and_counted() {
+    let tmp = tempdir().unwrap();
+    // Row 0: member entity, target list with one orphan element (99) between
+    //        two members (order of survivors must hold).
+    // Row 1: ORPHAN entity (50), member target.
+    let entities: Vec<i64> = vec![0, 50];
+    let targets: Vec<Vec<i64>> = vec![vec![1, 99, 2], vec![3]];
+    let (output, stats) =
+        ingest_resolution_with_stats(&tmp, &entities, &targets).expect("resolution ingest");
+
+    let row0 = read_node_json(&output, 0);
+    assert_eq!(
+        row0.get("entity_node_id").and_then(|v| v.as_u64()),
+        Some(0),
+        "member entity resolves: {row0}"
+    );
+    let row0_targets: Vec<i64> = row0
+        .get("target_node_ids")
+        .and_then(|v| v.as_array())
+        .expect("target_node_ids array")
+        .iter()
+        .map(|v| v.as_i64().unwrap())
+        .collect();
+    assert_eq!(
+        row0_targets,
+        vec![1, 2],
+        "orphan list element dropped, member order preserved"
+    );
+
+    let row1 = read_node_json(&output, 1);
+    assert!(
+        row1.get("entity_node_id")
+            .map(|v| v.is_null())
+            .unwrap_or(true),
+        "orphan entity must resolve to null, never a collided node id: {row1}"
+    );
+    let row1_targets: Vec<i64> = row1
+        .get("target_node_ids")
+        .and_then(|v| v.as_array())
+        .expect("target_node_ids array")
+        .iter()
+        .map(|v| v.as_i64().unwrap())
+        .collect();
+    assert_eq!(row1_targets, vec![3], "member target survives");
+
+    // Both orphans are counted, attributed to their resolve contexts.
+    assert_eq!(
+        stats.key_membership_failures + stats.key_lookup_failures,
+        2,
+        "exactly the 2 orphan references are counted: {:?}",
+        stats.key_failures_by_context
+    );
+    let ctx = &stats.key_failures_by_context;
+    let ctx_total = |name: &str| {
+        ctx.get(name)
+            .map(|c| c.lookup_failures + c.membership_failures)
+            .unwrap_or(0)
+    };
+    assert_eq!(
+        ctx_total("resolve:train_seeds.ENTITY1_to_users"),
+        1,
+        "entity orphan attributed to the ENTITY1 context: {ctx:?}"
+    );
+    assert_eq!(
+        ctx_total("resolve:train_seeds.TARGET1_to_users"),
+        1,
+        "target orphan attributed to the TARGET1 context: {ctx:?}"
+    );
+}
+
+// Same-graph resolution (all members) must report zero skips.
+#[test]
+fn test_resolution_members_zero_counters() {
+    let tmp = tempdir().unwrap();
+    let entities: Vec<i64> = vec![0, 3, 7, 15];
+    let targets: Vec<Vec<i64>> = vec![vec![1], vec![2, 5], vec![4], vec![8, 9, 10]];
+    let (_, stats) =
+        ingest_resolution_with_stats(&tmp, &entities, &targets).expect("resolution ingest");
+    assert_eq!(stats.key_membership_failures, 0);
+    assert_eq!(stats.key_lookup_failures, 0);
 }
 
 #[test]

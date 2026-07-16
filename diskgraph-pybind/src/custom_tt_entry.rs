@@ -11,8 +11,9 @@
 //! takes a no-target parquet (`is_prediction=true`, split forced off → a single
 //! `predict` stage).
 //!
-//! GEN-ONLY (TT-NG durable bundle): this entry point mirrors `execute_tt_gen`.
-//! It runs the ttgen pass into a KEPT bundle dir (`<base>.artifacts/`), writes a
+//! GEN-ONLY (TT-NG durable bundle): this entry point runs the SAME shared gen
+//! core as `execute_tt_gen` (`tt_executor::run_gen_bundle`), just source-driven
+//! and into a KEPT bundle dir (`<base>.artifacts/`): the ttgen pass plus a
 //! self-describing `tt_ingest_spec.json` beside `tt.parquet` + the per-stage seed
 //! parquets, and STOPS. It does NOT ingest, does NOT publish a samplable
 //! `train_tables/<tt_id>/` extension, and does NOT delete the bundle. The
@@ -44,11 +45,11 @@ use diskgraph_core::tt_builder::{
     SplitSpec as PlanSplitSpec,
 };
 use diskgraph_train_table::ttgen_output::{PRIMARY_ENTITY_COL, PRIMARY_TARGET_COL};
-use diskgraph_train_table::ttgen_executor::{execute_tt_pass_with_source, CustomTtSource};
+use diskgraph_train_table::ttgen_executor::CustomTtSource;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use crate::tt_executor::{validate_tt_id, TtIngestSpec, TT_INGEST_SPEC_FILENAME};
+use crate::tt_executor::{run_gen_bundle, validate_tt_id};
 
 fn custom_tt_artifact_base(parquet_path: &Path) -> PathBuf {
     // Multi-part contract (kumo Phase 2): kumo passes the train-table
@@ -396,10 +397,15 @@ fn build_bundle_for_existing_table(
     let out_dir = artifacts_dir_path.clone();
     let tt_id_owned = tt_id.to_owned();
 
-    // GEN-ONLY (mirror `execute_tt_gen`): run the ttgen pass into the KEPT
-    // bundle dir, then write `tt_ingest_spec.json` beside `tt.parquet`. No
-    // ingest, no extension publish, no bundle delete — the separate
-    // `execute_tt_ingest` job consumes this durable bundle later.
+    // GEN-ONLY: run the shared gen core (`run_gen_bundle`, the same one
+    // `execute_tt_gen` uses) with the custom source, into the KEPT bundle
+    // dir. Source-mode gen reads every output column directly from the
+    // customer parquet (empty plan stages) and writes per-stage seed parquets
+    // (split) or a single `tt.parquet` (no split / predict), stats sidecars,
+    // and `weight.bin` into the bundle dir — the `weight.bin` travels WITH
+    // the bundle so re-ingest can carry it. No ingest, no extension publish,
+    // no bundle delete — the separate `execute_tt_ingest` job consumes this
+    // durable bundle later.
     let (tt_parquet_path, ingest_spec_path, pass_output_rows, split_counts_vec): (
         String,
         String,
@@ -410,31 +416,13 @@ fn build_bundle_for_existing_table(
             let index_root = Path::new(&idx);
             let out_dir_path = Path::new(&out_dir);
 
-            // Source-mode gen: read every output column directly from the
-            // customer parquet (empty plan stages). Writes per-stage seed
-            // parquets (split) or a single `tt.parquet` (no split / predict),
-            // stats sidecars, and `weight.bin` into the bundle dir. The
-            // `weight.bin` travels WITH the bundle so re-ingest can carry it.
-            let pass_output = execute_tt_pass_with_source(
+            let (pass_output, spec_path) = run_gen_bundle(
                 &plan,
                 index_root,
                 out_dir_path,
+                &tt_id_owned,
                 Some(custom_source),
             )?;
-
-            // Cross-job contract (identical to `execute_tt_gen`): serialize the
-            // plan fields the ingest phase consumes plus the per-stage seed
-            // parquets gen produced, so the separate ingest job needs neither
-            // the in-memory plan nor a demux.
-            let mut spec = TtIngestSpec::from_plan(&tt_id_owned, &plan);
-            spec.split_stages = pass_output.stage_gen_infos.clone();
-            let spec_path = out_dir_path.join(TT_INGEST_SPEC_FILENAME);
-            let spec_bytes = serde_json::to_vec_pretty(&spec).map_err(|e| {
-                diskgraph_train_table::errors::TTGenError::SystemError(format!(
-                    "failed to encode tt_ingest_spec.json: {e}"
-                ))
-            })?;
-            std::fs::write(&spec_path, spec_bytes)?;
 
             // split_counts source: gen's per-stage seed infos (split path).
             let split_counts_vec: Vec<(String, u64)> = pass_output

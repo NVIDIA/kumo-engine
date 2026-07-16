@@ -27,7 +27,9 @@ use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use diskgraph_core::time::Seconds;
 use diskgraph_core::tt_builder::{DiskGraphTTPlan, RefResolveKind, RefResolveSpec, TTFKeySpec};
-use diskgraph_train_table::ttgen_executor::{execute_tt_pass, StageGenInfo, TTPassOutput};
+use diskgraph_train_table::ttgen_executor::{
+    execute_tt_pass, execute_tt_pass_with_source, CustomTtSource, StageGenInfo, TTPassOutput,
+};
 use diskgraph_train_table::ttgen_output::{PRIMARY_ENTITY_COL, PRIMARY_TARGET_COL, TIMESTAMP_COL};
 use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
 use parquet::arrow::ProjectionMask;
@@ -162,7 +164,11 @@ pub fn execute_tt_plan(
     let idx = index_path.to_owned();
     let tt_id_owned = tt_id.to_owned();
 
-    let (manifest_stages, tt_extension_path): (Vec<ManifestStage>, String) = py
+    let (manifest_stages, tt_extension_path, key_failures): (
+        Vec<ManifestStage>,
+        String,
+        diskgraph_ingest::KeyFailureState,
+    ) = py
         .detach(|| -> diskgraph_train_table::errors::TTGenResult<_> {
             let index_root = Path::new(&idx);
             let tt_root = index_root.join("train_tables").join(&tt_id_owned);
@@ -193,7 +199,7 @@ pub fn execute_tt_plan(
             // check — an atemporal RHS (e.g. amazon `products`) builds no bucket
             // index and the LOAD gate stays flat. Byte-identical otherwise.
             let group_by_timestamp = plan.lp_resolution.is_some() && plan.lp_rhs_is_temporal;
-            let manifest_stages = ingest_resolved_stages(
+            let (manifest_stages, key_failures) = ingest_resolved_stages(
                 &stages,
                 &tt_id_owned,
                 &ingest_root,
@@ -206,7 +212,11 @@ pub fn execute_tt_plan(
                 group_by_timestamp,
             )?;
             let _ = std::fs::remove_dir_all(&staging_root);
-            Ok((manifest_stages, tt_root.to_string_lossy().to_string()))
+            Ok((
+                manifest_stages,
+                tt_root.to_string_lossy().to_string(),
+                key_failures,
+            ))
         })
         .map_err(crate::map_ttgen_err)?;
 
@@ -226,6 +236,7 @@ pub fn execute_tt_plan(
         &manifest_stages,
         is_temporal,
         rhs_node_type.as_deref(),
+        &key_failures,
     )
 }
 
@@ -315,6 +326,39 @@ pub(crate) fn resolve_ingest_stages(
 
 // ─── execute_tt_gen ──────────────────────────────────────────────────────────
 
+/// Shared gen-only core for BOTH TT producers — the PQL path
+/// ([`execute_tt_gen`], `source=None`, plan compiled from the predictive
+/// query) and the custom-TT path (`custom_tt_entry`, `source=Some`, minimal
+/// empty-stage plan reading every output column from the customer parquet).
+/// Runs the ttgen pass into `out_dir` and writes the cross-job
+/// `tt_ingest_spec.json` beside `tt.parquet`, producing the durable staging
+/// bundle the separate [`execute_tt_ingest`] job consumes. The producers
+/// differ only in how the plan is built, where the bundle lives, and their
+/// result-dict shapes — everything bundle-defining is here.
+pub(crate) fn run_gen_bundle(
+    plan: &DiskGraphTTPlan<Seconds>,
+    index_root: &Path,
+    out_dir: &Path,
+    tt_id: &str,
+    source: Option<CustomTtSource>,
+) -> diskgraph_train_table::errors::TTGenResult<(TTPassOutput, std::path::PathBuf)> {
+    let pass_output = execute_tt_pass_with_source(plan, index_root, out_dir, source)?;
+
+    // Cross-job contract: serialize the plan fields the ingest phase consumes
+    // plus the per-stage seed parquets gen produced, so the separate ingest
+    // job needs neither the in-memory plan nor a demux.
+    let mut spec = TtIngestSpec::from_plan(tt_id, plan);
+    spec.split_stages = pass_output.stage_gen_infos.clone();
+    let spec_path = out_dir.join(TT_INGEST_SPEC_FILENAME);
+    let spec_bytes = serde_json::to_vec_pretty(&spec).map_err(|e| {
+        diskgraph_train_table::errors::TTGenError::SystemError(format!(
+            "failed to encode tt_ingest_spec.json: {e}"
+        ))
+    })?;
+    std::fs::write(&spec_path, spec_bytes)?;
+    Ok((pass_output, spec_path))
+}
+
 /// Run ONLY the ttgen phase of a TT plan (no demux, no edge ingest, no
 /// publish). Writes `tt.parquet`, `split.bin`, `manifest.json`, and the
 /// kumo-contract stats sidecars into a single staging dir
@@ -354,20 +398,8 @@ pub fn execute_tt_gen(
             }
             std::fs::create_dir_all(&staging_root)?;
 
-            let pass_output = execute_tt_pass(&plan, index_root, &staging_root)?;
-
-            // Cross-job contract: serialize the plan fields the ingest phase
-            // consumes plus the per-stage seed parquets gen produced, so the
-            // separate ingest job needs neither the in-memory plan nor a demux.
-            let mut spec = TtIngestSpec::from_plan(&tt_id_owned, &plan);
-            spec.split_stages = pass_output.stage_gen_infos.clone();
-            let spec_path = staging_root.join(TT_INGEST_SPEC_FILENAME);
-            let spec_bytes = serde_json::to_vec_pretty(&spec).map_err(|e| {
-                diskgraph_train_table::errors::TTGenError::SystemError(format!(
-                    "failed to encode tt_ingest_spec.json: {e}"
-                ))
-            })?;
-            std::fs::write(&spec_path, spec_bytes)?;
+            let (pass_output, spec_path) =
+                run_gen_bundle(&plan, index_root, &staging_root, &tt_id_owned, None)?;
 
             Ok((
                 staging_root.to_string_lossy().to_string(),
@@ -437,11 +469,12 @@ pub fn execute_tt_ingest(
     let staging_dir_owned = staging_dir.to_owned();
     let predict_stage_key = predict_stage_name.unwrap_or_else(|| DEFAULT_PREDICT_STAGE.to_string());
 
-    let (manifest_stages, tt_extension_path, is_temporal, rhs_node_type): (
+    let (manifest_stages, tt_extension_path, is_temporal, rhs_node_type, key_failures): (
         Vec<ManifestStage>,
         String,
         bool,
         Option<String>,
+        diskgraph_ingest::KeyFailureState,
     ) = py
         .detach(|| -> diskgraph_train_table::errors::TTGenResult<_> {
             let index_root = Path::new(&idx);
@@ -487,7 +520,7 @@ pub fn execute_tt_ingest(
             // mirrors the kumo LOAD gate and legacy's `TimestampSampler` RHS
             // check. Atemporal-RHS / non-LP ingest is byte-identical to before.
             let group_by_timestamp = spec.lp_resolution.is_some() && spec.lp_rhs_is_temporal;
-            let manifest_stages = ingest_resolved_stages(
+            let (manifest_stages, key_failures) = ingest_resolved_stages(
                 &stages,
                 &tt_id_owned,
                 &ingest_root,
@@ -506,6 +539,7 @@ pub fn execute_tt_ingest(
                 tt_root.to_string_lossy().to_string(),
                 spec.is_temporal,
                 rhs_node_type,
+                key_failures,
             ))
         })
         .map_err(crate::map_ttgen_err)?;
@@ -518,6 +552,7 @@ pub fn execute_tt_ingest(
         &manifest_stages,
         is_temporal,
         rhs_node_type.as_deref(),
+        &key_failures,
     )
 }
 
@@ -588,7 +623,10 @@ pub(crate) fn ingest_resolved_stages(
     // TT-NG temporal-LP timestamp grouping: emit per-stage `bucket_index.bin`.
     // Set only for the temporal-LP seed stages.
     group_by_timestamp: bool,
-) -> diskgraph_train_table::errors::TTGenResult<Vec<ManifestStage>> {
+) -> diskgraph_train_table::errors::TTGenResult<(
+    Vec<ManifestStage>,
+    diskgraph_ingest::KeyFailureState,
+)> {
     let stage_ingest = ingest_stage_parquets_into_extension(
         tt_id,
         ingest_root,
@@ -637,7 +675,7 @@ pub(crate) fn ingest_resolved_stages(
         })
         .collect::<diskgraph_train_table::errors::TTGenResult<Vec<_>>>()?;
     publish_tt_extension(ingest_root, tt_root)?;
-    Ok(manifest_stages)
+    Ok((manifest_stages, stage_ingest.key_failures))
 }
 
 /// One published stage in the manifest `stages` map: `(stage_key, table_name,
@@ -698,6 +736,10 @@ pub(crate) fn write_tt_manifest_and_build_result(
     // table (`List`-resolution `dst_table`), `None` for node-prediction.
     is_temporal: bool,
     rhs_node_type: Option<&str>,
+    // Orphan-FK skip counters from the stage ingest (see the contract on
+    // `diskgraph_ingest::ingest_stage_extension`). Surfaced in both the
+    // manifest and the result dict so kumo can warn on cross-graph TT reuse.
+    key_failures: &diskgraph_ingest::KeyFailureState,
 ) -> PyResult<Py<PyAny>> {
     let diskgraph_manifest_path = Path::new(tt_extension_path)
         .join("diskgraph_manifest.json")
@@ -770,12 +812,18 @@ pub(crate) fn write_tt_manifest_and_build_result(
         }
         stages_json.insert(stage_key.to_string(), entry);
     }
+    let key_failures_json = serde_json::to_value(key_failures).map_err(|e| {
+        crate::DiskgraphSystemError::new_err(format!(
+            "failed to encode ingest key-failure counters: {e}"
+        ))
+    })?;
     let manifest_json = json!({
         "schema_version": "diskgraph.tt_execute_result.v1",
         "tt_id": tt_id,
         "graph_index_path": index_path,
         "tt_extension_path": tt_extension_path,
         "diskgraph_manifest_path": diskgraph_manifest_path,
+        "key_failures": key_failures_json,
         "task_dataset": {
             "schema_version": "diskgraph.task_dataset.v1",
             "graph_index_path": index_path,
@@ -811,6 +859,22 @@ pub(crate) fn write_tt_manifest_and_build_result(
     dict.set_item("graph_index_path", index_path)?;
     dict.set_item("tt_extension_path", tt_extension_path)?;
     dict.set_item("diskgraph_manifest_path", &diskgraph_manifest_path)?;
+
+    let kf = PyDict::new(py);
+    kf.set_item("parse_failures", key_failures.parse_failures)?;
+    kf.set_item("lookup_failures", key_failures.lookup_failures)?;
+    kf.set_item("membership_failures", key_failures.membership_failures)?;
+    kf.set_item("samples", key_failures.samples.clone())?;
+    let by_context = PyDict::new(py);
+    for (context, counts) in &key_failures.by_context {
+        let entry = PyDict::new(py);
+        entry.set_item("parse_failures", counts.parse_failures)?;
+        entry.set_item("lookup_failures", counts.lookup_failures)?;
+        entry.set_item("membership_failures", counts.membership_failures)?;
+        by_context.set_item(context, entry)?;
+    }
+    kf.set_item("by_context", by_context)?;
+    dict.set_item("key_failures", kf)?;
 
     let task_dataset = PyDict::new(py);
     task_dataset.set_item("schema_version", "diskgraph.task_dataset.v1")?;

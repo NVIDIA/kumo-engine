@@ -1184,6 +1184,90 @@ impl DiskGraphEngine {
             Some(combined)
         };
 
+        // 4b. Orphan-seed exclusion. Ingest membership-verifies every seed FK
+        //     against the training graph and SKIPS orphans (cross-graph TT
+        //     reuse / custom TT): a skipped seed row has a null
+        //     `entity_node_id` (resolution mode) or zero seed edges (FK-edge
+        //     mode). Such a row has no anchor, and every task array (`target`,
+        //     `input_ids`, weights, features) is row-aligned with the anchor
+        //     list — keeping it would shift later rows onto wrong labels
+        //     (FK-edge) or anchor at whatever the null slot decodes to
+        //     (resolution). Drop orphan rows from BOTH `batch_row_ids` and the
+        //     seed rowpack batch HERE, the single point everything downstream
+        //     reads, so anchors, labels, weights, timestamps, features, and
+        //     negative slots all stay aligned by construction.
+        let keep: Vec<bool> = if entity_node_type.is_some() {
+            match seed_target_batch.as_ref() {
+                Some(rb) => match rb.schema().index_of("entity_node_id") {
+                    Ok(idx) => {
+                        let col = rb.column(idx);
+                        (0..col.len()).map(|i| col.is_valid(i)).collect()
+                    }
+                    // Missing column errors in step 5 with a precise message.
+                    Err(_) => vec![true; batch_row_ids.len()],
+                },
+                None => vec![true; batch_row_ids.len()],
+            }
+        } else {
+            // FK-edge mode: a seed row whose entity edge was skipped at ingest
+            // has no mapped seed edge. Only segment counts are read here; the
+            // per-edge decode happens in step 5 over the kept rows.
+            let mut keep = Vec::with_capacity(batch_row_ids.len());
+            for &row_id in batch_row_ids {
+                let view = seed_table_reader.edges_for_node(row_id).map_err(|e| {
+                    EngineError::Internal(format!("edges_for_node({row_id}): {e}"))
+                })?;
+                let segments = view
+                    .relation_segments()
+                    .map_err(|e| EngineError::Internal(format!("relation_segments: {e}")))?;
+                keep.push(segments.iter().enumerate().any(|(seg_idx, seg)| {
+                    seg.count > 0
+                        && segment_to_dst_type
+                            .get(seg_idx)
+                            .copied()
+                            .flatten()
+                            .is_some()
+                }));
+            }
+            keep
+        };
+        let dropped = keep.iter().filter(|k| !**k).count();
+        let kept_row_ids: Vec<u64>;
+        let mut batch_row_ids: &[u64] = batch_row_ids;
+        let mut seed_target_batch = seed_target_batch;
+        if dropped > 0 {
+            if dropped == batch_row_ids.len() {
+                return Err(EngineError::DataCorruption(format!(
+                    "seed table `{stage_table}`: all {dropped} seed rows in this \
+                     batch are orphans skipped at ingest (their FK references do \
+                     not resolve in this graph — the train table was likely \
+                     generated against a different graph)"
+                )));
+            }
+            tracing::warn!(
+                stage_table,
+                dropped,
+                batch = batch_row_ids.len(),
+                "excluding orphan seed rows (ingest-skipped FK references) from \
+                 the sampling batch"
+            );
+            kept_row_ids = batch_row_ids
+                .iter()
+                .zip(&keep)
+                .filter(|(_, k)| **k)
+                .map(|(id, _)| *id)
+                .collect();
+            batch_row_ids = &kept_row_ids;
+            if let Some(rb) = seed_target_batch.take() {
+                let mask = arrow_array::BooleanArray::from(keep.clone());
+                let filtered = arrow_select::filter::filter_record_batch(&rb, &mask)
+                    .map_err(|e| {
+                        EngineError::Internal(format!("filter orphan seed rows: {e}"))
+                    })?;
+                seed_target_batch = Some(filtered);
+            }
+        }
+
         // 5. Build the seed set.
         //
         //    FK-free resolution path (design §S5): when `entity_node_type` is

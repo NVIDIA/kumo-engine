@@ -19,6 +19,13 @@ pub struct IngestStats {
     pub edge_counts: HashMap<String, u64>,
     pub key_parse_failures: u64,
     pub key_lookup_failures: u64,
+    /// FK reference values that DID resolve through the minimal-perfect-hash
+    /// pkmap but whose stored parent PK does not match the reference value —
+    /// i.e. MPH false positives (orphan keys colliding onto an in-range
+    /// parent slot). Only counted where membership verification runs
+    /// (external-parent FK edges and resolution-mode columns).
+    #[serde(default)]
+    pub key_membership_failures: u64,
     pub key_failure_samples: Vec<String>,
     pub key_failures_by_context: HashMap<String, KeyFailureCounts>,
     pub pk_duplicate_counts: HashMap<String, u64>,
@@ -52,12 +59,18 @@ pub struct IngestStats {
 pub struct KeyFailureCounts {
     pub parse_failures: u64,
     pub lookup_failures: u64,
+    /// MPH false positives dropped by membership verification (see
+    /// [`IngestStats::key_membership_failures`]).
+    #[serde(default)]
+    pub membership_failures: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct KeyFailureState {
     pub parse_failures: u64,
     pub lookup_failures: u64,
+    #[serde(default)]
+    pub membership_failures: u64,
     pub samples: Vec<String>,
     pub by_context: HashMap<String, KeyFailureCounts>,
 }
@@ -66,10 +79,16 @@ impl KeyFailureState {
     pub fn merge(&mut self, other: KeyFailureState) {
         self.parse_failures = self.parse_failures.saturating_add(other.parse_failures);
         self.lookup_failures = self.lookup_failures.saturating_add(other.lookup_failures);
+        self.membership_failures = self
+            .membership_failures
+            .saturating_add(other.membership_failures);
         for (context, counts) in other.by_context {
             let entry = self.by_context.entry(context).or_default();
             entry.parse_failures = entry.parse_failures.saturating_add(counts.parse_failures);
             entry.lookup_failures = entry.lookup_failures.saturating_add(counts.lookup_failures);
+            entry.membership_failures = entry
+                .membership_failures
+                .saturating_add(counts.membership_failures);
         }
         for sample in other.samples {
             if self.samples.len() >= 10 {

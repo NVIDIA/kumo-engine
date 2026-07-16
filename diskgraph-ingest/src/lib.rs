@@ -1179,6 +1179,7 @@ mod tests_repopulate_helpers {
             dropped_rows_counts: HashMap::new(),
             key_parse_failures: 0,
             key_lookup_failures: 0,
+            key_membership_failures: 0,
             key_failure_samples: Vec::new(),
             key_failures_by_context: HashMap::new(),
             output: String::new(),
@@ -1864,6 +1865,7 @@ struct IngestContext {
     dropped_rows_counts: HashMap<String, u64>,
     key_parse_failures: u64,
     key_lookup_failures: u64,
+    key_membership_failures: u64,
     key_failure_samples: Vec<String>,
     key_failures_by_context: HashMap<String, KeyFailureCounts>,
     output: String,
@@ -1895,6 +1897,10 @@ struct EdgeBuildContext {
     rel_sort_lookups: std::sync::Arc<HashMap<String, Option<std::sync::Arc<SortKeyLookup>>>>,
     max_ids: HashMap<String, u64>,
     pk_hash_store: Arc<PkHashStore>,
+    /// Membership verifier for cross-boundary FKs (`rel.external_parent`),
+    /// present iff this ingest has a parent index and at least one external
+    /// relationship. `None` for base-graph ingests — zero cost there.
+    pk_verifier: Option<Arc<crate::mapping::PkMembershipVerifier>>,
     pk_hash_total_bytes: u64,
     sort_key_total_bytes: u64,
     sort_key_edge_bytes: u64,
@@ -2688,10 +2694,16 @@ impl IngestContext {
         self.key_lookup_failures = self
             .key_lookup_failures
             .saturating_add(state.lookup_failures);
+        self.key_membership_failures = self
+            .key_membership_failures
+            .saturating_add(state.membership_failures);
         for (context, counts) in state.by_context {
             let entry = self.key_failures_by_context.entry(context).or_default();
             entry.parse_failures = entry.parse_failures.saturating_add(counts.parse_failures);
             entry.lookup_failures = entry.lookup_failures.saturating_add(counts.lookup_failures);
+            entry.membership_failures = entry
+                .membership_failures
+                .saturating_add(counts.membership_failures);
         }
         for sample in state.samples {
             if self.key_failure_samples.len() >= 10 {
@@ -2953,6 +2965,7 @@ impl IngestContext {
             dropped_rows_counts: HashMap::new(),
             key_parse_failures: 0,
             key_lookup_failures: 0,
+            key_membership_failures: 0,
             key_failure_samples: Vec::new(),
             key_failures_by_context: HashMap::new(),
             output: output.to_string(),
@@ -4167,6 +4180,7 @@ impl IngestContext {
                             num_columns,
                             &mut resolve_scratch,
                             &mut resolve_shard_buf,
+                            key_failures,
                         )?)
                     };
 
@@ -6272,12 +6286,29 @@ impl IngestContext {
         }
         let (pk_hash_store, pk_hash_total_bytes) = self.build_pk_hash_store_parallel(&root)?;
         let pk_hash_store = Arc::new(pk_hash_store);
+        // The external-parent pkmap lookup is a blind MPH (no membership
+        // verification), so orphan FK values silently collide onto arbitrary
+        // in-range parent nodes. Open the parent's verifying table readers
+        // once here; the edge tasks reject those false positives per row.
+        let external_dst_tables: Vec<String> = self
+            .relationships
+            .iter()
+            .filter(|rel| rel.external_parent)
+            .map(|rel| rel.dst_table.clone())
+            .collect();
+        let pk_verifier = match &self.parent_index_path {
+            Some(parent_root) if !external_dst_tables.is_empty() => Some(Arc::new(
+                crate::mapping::PkMembershipVerifier::open(parent_root, &external_dst_tables)?,
+            )),
+            _ => None,
+        };
         Ok(EdgeBuildContext {
             root,
             rel_sort_bits,
             rel_sort_lookups: std::sync::Arc::new(rel_sort_lookups),
             max_ids,
             pk_hash_store,
+            pk_verifier,
             pk_hash_total_bytes,
             sort_key_total_bytes,
             sort_key_edge_bytes,
@@ -6559,6 +6590,7 @@ impl IngestContext {
             let writer_senders = writer_pool.senders();
             let shard_offsets = self.shard_offsets.clone();
             let pk_hash_store = edge_ctx.pk_hash_store.clone();
+            let pk_verifier = edge_ctx.pk_verifier.clone();
             let max_ids = edge_ctx.max_ids.clone();
             let rel_sort_bits = edge_ctx.rel_sort_bits.clone();
             let rel_sort_lookups = std::sync::Arc::clone(&edge_ctx.rel_sort_lookups);
@@ -6588,6 +6620,14 @@ impl IngestContext {
                     .get(&fk_key)
                     .map(|t| t.target_type.clone())
                     .unwrap_or_else(|| src_fk_col.ingested_dtype.clone());
+                // Membership verification applies only to cross-boundary FKs;
+                // same-ingest FKs resolve against a pkmap built from this very
+                // source, so the hot base-graph path stays verify-free.
+                let rel_verifier = if rel.external_parent {
+                    pk_verifier.clone()
+                } else {
+                    None
+                };
                 let mut total_rows = 0u64;
                 for shard in 0..num_shards {
                     let fkey_meta = root.join(temp_fkey_meta_path(
@@ -6616,6 +6656,7 @@ impl IngestContext {
                     let progress = progress.clone();
                     let shard_offsets = shard_offsets.clone();
                     let pk_hash_store = pk_hash_store.clone();
+                    let rel_verifier = rel_verifier.clone();
                     let max_ids = max_ids.clone();
                     let rel_sort_bits = rel_sort_bits.clone();
                     let rel_sort_lookups = std::sync::Arc::clone(&rel_sort_lookups);
@@ -6830,6 +6871,34 @@ impl IngestContext {
                                         .copied()
                                         .unwrap_or(0)
                                         .saturating_add(dst_local);
+                                    // The MPH lookup above has no membership
+                                    // verification: an orphan key resolves to
+                                    // an arbitrary in-range parent node. For
+                                    // cross-boundary FKs, confirm the resolved
+                                    // node really stores this key; a mismatch
+                                    // is skipped + counted exactly like a
+                                    // pkmap miss. `Ok(None)` (parent table not
+                                    // verifiable) keeps the edge — never
+                                    // over-drop.
+                                    if let Some(verifier) = &rel_verifier {
+                                        if verifier.verify(&rel.dst_table, dst_id, &dst_key)?
+                                            == Some(false)
+                                        {
+                                            let sample = if result.key_failures.samples.len() < 10 {
+                                                sample_key(&dst_key)
+                                            } else {
+                                                None
+                                            };
+                                            record_key_membership_failure(
+                                                &mut result.key_failures.membership_failures,
+                                                &mut result.key_failures.samples,
+                                                &mut result.key_failures.by_context,
+                                                &lookup_context,
+                                                sample,
+                                            );
+                                            return Ok(());
+                                        }
+                                    }
                                     let forward_sort_key = match &forward_lookup {
                                         Some(lookup) => {
                                             lookup.sort_key(dst_shard, dst_local, shard, 0)?
@@ -7981,6 +8050,7 @@ impl IngestContext {
             edge_counts: self.edge_counts.clone(),
             key_parse_failures: self.key_parse_failures,
             key_lookup_failures: self.key_lookup_failures,
+            key_membership_failures: self.key_membership_failures,
             key_failure_samples: self.key_failure_samples.clone(),
             key_failures_by_context: self.key_failures_by_context.clone(),
             pk_duplicate_counts: self.pk_duplicate_counts.clone(),
@@ -11804,9 +11874,14 @@ fn build_access_cols(
 /// Compute the per-row resolution overrides for `row`, resolving the source PK
 /// reference value(s) of each runtime spec to graph node-id(s) via `resolver`.
 /// Returns a per-column override vector (length == `table.columns.len()`) with
-/// `ResolveOverride::None` for every non-resolution column. A pkmap miss
-/// (orphan) for a scalar leaves the column `None` (encoded as null); orphan list
-/// elements are dropped.
+/// `ResolveOverride::None` for every non-resolution column.
+///
+/// Resolution is membership-verified: a key absent from the parent table —
+/// whether a genuine pkmap miss or an MPH false positive rejected by the
+/// verifier — leaves a scalar column `None` (encoded as null) / drops the list
+/// element, and is counted into `key_failures` (misses as lookup failures,
+/// false positives as membership failures). Null / unparsable source values
+/// are left null silently, as before — they are legitimate input, not orphans.
 #[allow(clippy::too_many_arguments)]
 fn resolve_overrides_for_row(
     access: &mut RowAccess<'_>,
@@ -11816,7 +11891,9 @@ fn resolve_overrides_for_row(
     num_columns: usize,
     scratch: &mut Vec<u8>,
     shard_buf: &mut Vec<u8>,
+    key_failures: &mut KeyFailureState,
 ) -> Result<Vec<diskgraph_rowpack::ResolveOverride>> {
+    use crate::mapping::ResolveVerified;
     let mut overrides = vec![diskgraph_rowpack::ResolveOverride::None; num_columns];
     for spec in runtime {
         let shard_count = resolver.shard_count(&spec.dst_table).ok_or_else(|| {
@@ -11825,6 +11902,36 @@ fn resolve_overrides_for_row(
                 spec.dst_table
             )
         })?;
+        let record_failure = |key_failures: &mut KeyFailureState,
+                                  outcome: ResolveVerified,
+                                  key: &Key| {
+            let context = format!(
+                "resolve:{}.{}_to_{}",
+                table.name, table.columns[spec.src_idx].name, spec.dst_table
+            );
+            let sample = if key_failures.samples.len() < 10 {
+                sample_key(key)
+            } else {
+                None
+            };
+            match outcome {
+                ResolveVerified::Miss => record_key_lookup_failure(
+                    &mut key_failures.lookup_failures,
+                    &mut key_failures.samples,
+                    &mut key_failures.by_context,
+                    &context,
+                    sample,
+                ),
+                ResolveVerified::Orphan => record_key_membership_failure(
+                    &mut key_failures.membership_failures,
+                    &mut key_failures.samples,
+                    &mut key_failures.by_context,
+                    &context,
+                    sample,
+                ),
+                ResolveVerified::Resolved(_) => {}
+            }
+        };
         match spec.kind {
             crate::config::ResolveKind::Scalar => {
                 let col = &table.columns[spec.src_idx];
@@ -11840,11 +11947,14 @@ fn resolve_overrides_for_row(
                     Err(_) => continue,
                 };
                 let shard = shard_for_key_from_key(&key, shard_buf, shard_count)?;
-                if let Some(node_id) = resolver.resolve_in_shard(&spec.dst_table, shard, &key) {
-                    overrides[spec.node_id_idx] =
-                        diskgraph_rowpack::ResolveOverride::Scalar(node_id);
+                match resolver.resolve_verified_in_shard(&spec.dst_table, shard, &key)? {
+                    ResolveVerified::Resolved(node_id) => {
+                        overrides[spec.node_id_idx] =
+                            diskgraph_rowpack::ResolveOverride::Scalar(node_id);
+                    }
+                    // orphan → leave None (null) + count
+                    outcome => record_failure(key_failures, outcome, &key),
                 }
-                // orphan miss → leave None (null)
             }
             crate::config::ResolveKind::List => {
                 let keys =
@@ -11852,10 +11962,11 @@ fn resolve_overrides_for_row(
                 let mut ids: Vec<i64> = Vec::with_capacity(keys.len());
                 for key in &keys {
                     let shard = shard_for_key_from_key(key, shard_buf, shard_count)?;
-                    if let Some(node_id) = resolver.resolve_in_shard(&spec.dst_table, shard, key) {
-                        ids.push(node_id as i64);
+                    match resolver.resolve_verified_in_shard(&spec.dst_table, shard, key)? {
+                        ResolveVerified::Resolved(node_id) => ids.push(node_id as i64),
+                        // orphan element → drop (mirrors null-element drop) + count
+                        outcome => record_failure(key_failures, outcome, key),
                     }
-                    // orphan element → drop (mirrors null-element drop)
                 }
                 overrides[spec.node_id_idx] = diskgraph_rowpack::ResolveOverride::List(ids);
             }
@@ -12619,6 +12730,23 @@ fn record_key_lookup_failure(
     if samples.len() < 10 {
         if let Some(sample) = sample {
             samples.push(format!("{context}: {sample}"));
+        }
+    }
+}
+
+fn record_key_membership_failure(
+    total: &mut u64,
+    samples: &mut Vec<String>,
+    by_context: &mut HashMap<String, KeyFailureCounts>,
+    context: &str,
+    sample: Option<String>,
+) {
+    *total = total.saturating_add(1);
+    let entry = by_context.entry(context.to_string()).or_default();
+    entry.membership_failures = entry.membership_failures.saturating_add(1);
+    if samples.len() < 10 {
+        if let Some(sample) = sample {
+            samples.push(format!("{context} (membership): {sample}"));
         }
     }
 }

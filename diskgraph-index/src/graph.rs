@@ -405,7 +405,23 @@ pub struct GraphIndexReader {
 
 impl GraphIndexReader {
     pub fn open(metadata_path: &Path, root: &Path) -> Result<Self> {
-        Self::open_with_external_node_types(metadata_path, root, &[])
+        Self::open_impl(metadata_path, root, &[], None)
+    }
+
+    /// Open ONLY the named tables of an index (mmaps, pk maps, and rowpack
+    /// decoders are per-table costs). Used by callers that need a handful of
+    /// verified-lookup handles into a large parent index — e.g. the TT-ingest
+    /// membership verifier — where a full `open` would mmap every table ×
+    /// shard and load every pk hash for nothing. Tables absent from the index
+    /// are silently omitted (callers observe absence via [`Self::table`]).
+    /// Layout computation still sees ALL node types, so edge widths of the
+    /// opened tables stay correct.
+    pub fn open_subset(
+        metadata_path: &Path,
+        root: &Path,
+        only_tables: &std::collections::HashSet<String>,
+    ) -> Result<Self> {
+        Self::open_impl(metadata_path, root, &[], Some(only_tables))
     }
 
     /// Open an index but augment its `node_types` with the supplied
@@ -419,6 +435,15 @@ impl GraphIndexReader {
         metadata_path: &Path,
         root: &Path,
         external_node_types: &[NodeTypeMetadata],
+    ) -> Result<Self> {
+        Self::open_impl(metadata_path, root, external_node_types, None)
+    }
+
+    fn open_impl(
+        metadata_path: &Path,
+        root: &Path,
+        external_node_types: &[NodeTypeMetadata],
+        only_tables: Option<&std::collections::HashSet<String>>,
     ) -> Result<Self> {
         let bytes = fs::read(metadata_path).context("read index_metadata.json")?;
         let metadata: DatasetMetadata =
@@ -443,6 +468,11 @@ impl GraphIndexReader {
             }
         }
         for node_type in &metadata.node_types {
+            if let Some(only) = only_tables {
+                if !only.contains(&node_type.name) {
+                    continue;
+                }
+            }
             let (node_data_compression, node_data_decoder) = match &node_type.node_data_compression
             {
                 Some(cfg) => {
@@ -1092,7 +1122,18 @@ impl TableReader {
         None
     }
 
-    fn validate_pk_at_node(&self, node_id: u64, key: &Key) -> Result<Option<bool>> {
+    /// Verify that the node at `node_id` actually stores `key` as its primary
+    /// key. This is the membership check behind [`Self::node_id_from_pk`],
+    /// exposed for callers (e.g. stage-extension ingest) that resolve ids
+    /// through a standalone minimal-perfect-hash pkmap — which has no
+    /// membership verification and silently maps orphan keys onto arbitrary
+    /// in-range nodes — and need to reject those false positives.
+    ///
+    /// Returns `Ok(None)` when the node cannot be verified — no primary-key
+    /// map, no rowpack node data, no decoder, or a stored PK type with no
+    /// comparison arm (e.g. Decimal/Date/Timestamp PK columns); callers must
+    /// treat that as "unknown", not as a mismatch.
+    pub fn validate_pk_at_node(&self, node_id: u64, key: &Key) -> Result<Option<bool>> {
         let Some(pk) = self.primary_key_map.as_ref() else {
             return Ok(None);
         };

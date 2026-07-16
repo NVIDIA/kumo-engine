@@ -13,9 +13,8 @@
 //! schema, and the FK specs; the primitive assembles a [`GraphConfig`] (shard
 //! count size-derived or caller-overridden), runs
 //! [`ingest_with_stats_from_source`], and reports the emitted row count per
-//! stage. NOTE: the external-parent FK resolution does NOT verify membership, so
-//! an orphan FK value silently mis-resolves rather than being dropped — see the
-//! contract on [`ingest_stage_extension`].
+//! stage plus the orphan-FK skip counters — see the contract on
+//! [`ingest_stage_extension`].
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -71,16 +70,22 @@ pub struct StageSidecarColumns {
 ///     into each shard's `seed.edges.bin`, so multi-shard extensions resolve
 ///     correctly regardless of which parent shard a key lives in.
 ///
-/// CONTRACT — input must be membership-validated against the parent. The
-/// external-parent FK resolution is a minimal-perfect-hash with NO membership
-/// verification: an orphan FK value (absent from the parent table) does not
-/// fail or get dropped — it silently collides onto an arbitrary in-range
-/// parent node (a false positive), and every input row is kept as a seed node
-/// (so `node_count` reflects all input rows). Orphan filtering must therefore
-/// happen in the PRODUCING pass, never here: PQL generation emits only real
-/// members; custom inputs filter via `custom_tt_chunk_processor`
-/// (`node_id_from_pk`, which verifies the stored PK). See the
-/// `test_orphan_rows_skipped` characterization test in `seed_table_ingest.rs`.
+/// CONTRACT — orphan FK values are skipped, counted, and never mis-resolved.
+/// The external-parent FK resolution is a minimal-perfect-hash, so an orphan
+/// FK value (absent from the parent table) does not miss — it collides onto an
+/// arbitrary in-range parent node. Ingest therefore membership-verifies every
+/// resolved id against the parent node's stored PK: a mismatch drops the EDGE
+/// (the input row is still kept as a seed node, so `node_count` reflects all
+/// input rows) and is counted in [`StageExtensionResult::key_failures`]
+/// (`membership_failures`; genuine pkmap misses count as `lookup_failures`).
+/// When the parent table has no rowpack PK data the hit is trusted unverified
+/// — never over-drop. This makes re-ingesting a staging bundle into a graph
+/// other than its gen graph (cross-graph TT reuse / custom TT) safe: foreign
+/// seeds detach loudly instead of silently attaching to wrong parents. Callers
+/// must surface the skip counts. Gen-time producers still pre-filter orphans
+/// against the GEN graph (`custom_tt_chunk_processor`), so a same-graph
+/// re-ingest reports zero skips. See `test_orphan_rows_skipped` in
+/// `seed_table_ingest.rs`.
 ///
 /// Plain `diskgraph-ingest` types only; no `diskgraph-core` dependency.
 // All eight inputs are distinct, required ingest parameters; bundling them into
@@ -232,18 +237,21 @@ pub fn ingest_stage_extension_with_sidecars(
             .node_count();
         counts.push((stage.stage_table_name.clone(), node_count));
     }
+    let key_failures = key_failures_from_stats(&stats);
     Ok(StageExtensionResult {
         counts,
         ts_groupings: stats.ts_groupings,
         binary_label_indexes: stats.binary_label_indexes,
         sample_weight_indexes: stats.sample_weight_indexes,
+        key_failures,
     })
 }
 
 /// Result of [`ingest_stage_extension`]: per-stage `(table_name, node_count)`
 /// plus, when `group_by_timestamp` was set, the per-stage-table timestamp
 /// grouping (`<table>/bucket_index.bin` + bucket list). `ts_groupings` is empty
-/// when grouping was disabled.
+/// when grouping was disabled. `key_failures` carries the orphan-FK skip
+/// counters (see the contract on [`ingest_stage_extension`]).
 pub struct StageExtensionResult {
     pub counts: Vec<(String, u64)>,
     pub ts_groupings:
@@ -252,6 +260,18 @@ pub struct StageExtensionResult {
         std::collections::HashMap<String, crate::binary_label::BinaryLabelIndex>,
     pub sample_weight_indexes:
         std::collections::HashMap<String, crate::sample_weight::SampleWeightIndex>,
+    pub key_failures: crate::stats::KeyFailureState,
+}
+
+/// Lift the key-failure counters out of a full [`crate::stats::IngestStats`].
+fn key_failures_from_stats(stats: &crate::stats::IngestStats) -> crate::stats::KeyFailureState {
+    crate::stats::KeyFailureState {
+        parse_failures: stats.key_parse_failures,
+        lookup_failures: stats.key_lookup_failures,
+        membership_failures: stats.key_membership_failures,
+        samples: stats.key_failure_samples.clone(),
+        by_context: stats.key_failures_by_context.clone(),
+    }
 }
 
 /// A single FK-free LP resolution column for [`ingest_stage_extension_with_resolution`]:
@@ -462,10 +482,12 @@ pub fn ingest_stage_extension_with_resolution_and_sidecars(
             .node_count();
         counts.push((stage.stage_table_name.clone(), node_count));
     }
+    let key_failures = key_failures_from_stats(&stats);
     Ok(StageExtensionResult {
         counts,
         ts_groupings: stats.ts_groupings,
         binary_label_indexes: stats.binary_label_indexes,
         sample_weight_indexes: stats.sample_weight_indexes,
+        key_failures,
     })
 }

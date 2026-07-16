@@ -547,6 +547,23 @@ pub struct RefResolver {
     /// dst_table -> per-shard global-id base offset (parent's
     /// `node_types[].shards[].min_id`), shard-index order.
     offsets: std::collections::HashMap<String, Vec<u64>>,
+    /// Membership verifier over the same parent tables — the pkmap lookup is
+    /// a blind MPH, so resolution must reject false-positive hits for keys
+    /// absent from the parent (cross-graph TT reuse).
+    verifier: PkMembershipVerifier,
+}
+
+/// Outcome of a membership-verified resolution ([`RefResolver::resolve_verified_in_shard`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolveVerified {
+    /// Resolved to a parent global node-id (verified, or parent table not
+    /// verifiable — in which case the pkmap hit is trusted, never over-drop).
+    Resolved(u64),
+    /// Genuine pkmap miss (empty/tombstoned slot).
+    Miss,
+    /// MPH false positive: the slot's node stores a different PK — the key is
+    /// an orphan that does not exist in the parent table.
+    Orphan,
 }
 
 impl RefResolver {
@@ -600,7 +617,12 @@ impl RefResolver {
             shards.insert(dst_table.clone(), loaded);
             offsets.insert(dst_table.clone(), table_offsets);
         }
-        Ok(Self { shards, offsets })
+        let verifier = PkMembershipVerifier::open(parent_index_path, dst_tables)?;
+        Ok(Self {
+            shards,
+            offsets,
+            verifier,
+        })
     }
 
     /// Shard count for `dst_table` (needed to compute the destination shard
@@ -623,6 +645,110 @@ impl RefResolver {
             .copied()
             .unwrap_or(0);
         Some(base.saturating_add(u64::from(dst_local)))
+    }
+
+    /// [`Self::resolve_in_shard`] plus membership verification: a pkmap hit
+    /// whose parent node stores a different PK is reported as
+    /// [`ResolveVerified::Orphan`] instead of a silently wrong node-id.
+    pub fn resolve_verified_in_shard(
+        &self,
+        dst_table: &str,
+        shard: usize,
+        key: &Key,
+    ) -> Result<ResolveVerified> {
+        let Some(node_id) = self.resolve_in_shard(dst_table, shard, key) else {
+            return Ok(ResolveVerified::Miss);
+        };
+        match self.verifier.verify(dst_table, node_id, key)? {
+            Some(false) => Ok(ResolveVerified::Orphan),
+            _ => Ok(ResolveVerified::Resolved(node_id)),
+        }
+    }
+}
+
+/// Membership verifier for external-parent FK / resolution-mode lookups.
+///
+/// The pkmap used at ingest is a minimal-perfect-hash with no membership
+/// verification ([`lookup_id_only`]): a key ABSENT from the parent table does
+/// not miss — it collides onto an arbitrary in-range parent node. When a
+/// staging bundle is re-ingested into a graph other than the one it was
+/// generated against (cross-graph TT reuse), that silently attaches seeds to
+/// wrong parent nodes. This verifier re-reads the resolved parent node's
+/// stored primary key (rowpack node data) and confirms it equals the
+/// reference value, turning MPH false positives into countable misses.
+///
+/// `TableReader` mmap reads are `Send + Sync`, so one verifier is shared
+/// read-only across all edge/encode workers.
+pub struct PkMembershipVerifier {
+    tables: std::collections::HashMap<String, std::sync::Arc<diskgraph_index::graph::TableReader>>,
+}
+
+impl PkMembershipVerifier {
+    /// Open the parent index at `parent_index_path` and keep a handle for
+    /// each distinct table in `dst_tables`. Only those tables are opened —
+    /// a full open would mmap every parent table × shard and load every pk
+    /// hash for nothing on a wide production graph.
+    pub fn open(parent_index_path: &std::path::Path, dst_tables: &[String]) -> Result<Self> {
+        let metadata_path = parent_index_path.join("index_metadata.json");
+        let only: std::collections::HashSet<String> = dst_tables.iter().cloned().collect();
+        let reader = diskgraph_index::graph::GraphIndexReader::open_subset(
+            &metadata_path,
+            parent_index_path,
+            &only,
+        )
+        .map_err(|e| {
+            anyhow!(
+                "membership verifier: open parent index {}: {e}",
+                parent_index_path.display()
+            )
+        })?;
+        let mut tables = std::collections::HashMap::new();
+        for dst_table in dst_tables {
+            if tables.contains_key(dst_table) {
+                continue;
+            }
+            let table = reader.table(dst_table).ok_or_else(|| {
+                anyhow!(
+                    "membership verifier: dst_table `{dst_table}` not in parent index at {}",
+                    parent_index_path.display()
+                )
+            })?;
+            tables.insert(dst_table.clone(), table);
+        }
+        Ok(Self { tables })
+    }
+
+    /// Verify that the parent node `global_node_id` (as resolved through the
+    /// pkmap) really stores `key` as its primary key.
+    ///
+    /// Returns `Ok(None)` when the parent table cannot be verified (no
+    /// primary-key map / rowpack node data / decoder) — callers must treat
+    /// that as "unknown" and KEEP the edge, never over-drop. `Ok(Some(false))`
+    /// means the key is an orphan that falsely collided onto this node.
+    pub fn verify(
+        &self,
+        dst_table: &str,
+        global_node_id: u64,
+        key: &Key,
+    ) -> Result<Option<bool>> {
+        let table = self
+            .tables
+            .get(dst_table)
+            .ok_or_else(|| anyhow!("membership verifier: table `{dst_table}` not loaded"))?;
+        table.validate_pk_at_node(global_node_id, &to_index_key(key))
+    }
+}
+
+/// The ingest-side [`Key`] and `diskgraph_index::pkmap::Key` are structurally
+/// identical but distinct types; bridge them for verification.
+fn to_index_key(key: &Key) -> diskgraph_index::pkmap::Key {
+    use diskgraph_index::pkmap::Key as IndexKey;
+    match key {
+        Key::Int(v) => IndexKey::Int(*v),
+        Key::Bytes(b) => IndexKey::Bytes(b.clone()),
+        Key::Uuid(b) => IndexKey::Uuid(*b),
+        Key::Uuid256(b) => IndexKey::Uuid256(*b),
+        Key::Ip(b) => IndexKey::Ip(*b),
     }
 }
 

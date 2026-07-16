@@ -958,6 +958,33 @@ fn ingest_tiny_parent_index_named(
     num_shards: usize,
     num_rows: i64,
 ) -> Result<()> {
+    ingest_tiny_parent_index_impl(parent_root, table_name, pk_dtype, num_shards, num_rows, None)
+}
+
+/// Int64-PK parent with caller-chosen PK values (e.g. negative ids).
+fn ingest_tiny_parent_index_int_values(
+    parent_root: &Path,
+    num_shards: usize,
+    pk_values: &[i64],
+) -> Result<()> {
+    ingest_tiny_parent_index_impl(
+        parent_root,
+        "users",
+        &IngestedType::Int64,
+        num_shards,
+        pk_values.len() as i64,
+        Some(pk_values),
+    )
+}
+
+fn ingest_tiny_parent_index_impl(
+    parent_root: &Path,
+    table_name: &str,
+    pk_dtype: &IngestedType,
+    num_shards: usize,
+    num_rows: i64,
+    int_pk_values: Option<&[i64]>,
+) -> Result<()> {
     // Place inputs in a sibling dir to the index output — the ingest
     // pipeline owns the contents of `parent_root` and may wipe / rewrite
     // it on startup, so input fixtures must live outside it.
@@ -969,7 +996,11 @@ fn ingest_tiny_parent_index_named(
     let (pk_field, pk_array): (Field, ArrayRef) = match pk_dtype {
         IngestedType::Int64 => (
             Field::new("user_id", DataType::Int64, false),
-            Arc::new(Int64Array::from((0..num_rows).collect::<Vec<i64>>())),
+            Arc::new(Int64Array::from(
+                int_pk_values
+                    .map(|v| v.to_vec())
+                    .unwrap_or_else(|| (0..num_rows).collect()),
+            )),
         ),
         IngestedType::String => (
             Field::new("user_id", DataType::Utf8, false),
@@ -2553,6 +2584,160 @@ fn test_sample_runtime_batch_e2e() {
     }
 }
 
+// Orphan seeds (FK references skipped at ingest — cross-graph TT reuse) must
+// be EXCLUDED from the sampling batch entirely. An orphan seed row has no
+// seed edge; the anchor walk emits one anchor per EDGE while task.target /
+// input_ids / timestamps are per ROW, so keeping the row would shift every
+// later row onto the wrong label. The exclusion must drop the row from ALL
+// row-aligned arrays consistently.
+#[test]
+fn test_sample_runtime_batch_excludes_orphan_seeds() {
+    use diskgraph_core::dataset::DatasetId;
+    use diskgraph_core::sampling::{
+        AbsentKeyPolicy, FanoutSpec, LayerSpec, SamplingFlags, SamplingMode, SamplingPlan,
+    };
+
+    let tmp = tempdir().unwrap();
+    // Row 1's ENTITY1=50 is an orphan in the 16-user parent → its edge is
+    // skipped at ingest (membership verification). Rows 0,2,3 are members.
+    let parent_root =
+        ingest_parent_with_orders_and_one_tt(&tmp, "tt_orph", &[0, 50, 2, 3]).unwrap();
+    let reader = std::sync::Arc::new(
+        diskgraph_index::graph::GraphIndexReader::open_with_tt(&parent_root, "tt_orph").unwrap(),
+    );
+    let engine =
+        diskgraph_engine::engine::DiskGraphEngine::from_reader(reader.clone(), Some(42), Some(1))
+            .unwrap();
+
+    let plan = SamplingPlan {
+        layers: vec![LayerSpec {
+            fanouts: std::collections::HashMap::new(),
+            default_fanout: Some(FanoutSpec {
+                fanout: 4,
+                mode: SamplingMode::Uniform,
+                absent_key_policy: AbsentKeyPolicy::UniformFallback,
+            }),
+        }],
+    };
+    let flags = SamplingFlags {
+        replace: false,
+        directed: true,
+        disjoint: true,
+        return_edge_id: false,
+        adaptive: false,
+        fused_feature_fetching: false,
+        swap_edge_direction: false,
+    };
+
+    let batch = engine
+        .sample_runtime_batch(
+            reader.as_ref(),
+            "tt_orph/train_seeds",
+            &[0u64, 1, 2, 3],
+            DatasetId::nil(),
+            &plan,
+            &flags,
+            None,
+            None,
+            None,
+            true,
+            None,
+        )
+        .expect("batch with a partial orphan must still sample");
+
+    // The orphan row (stage node id 1) is gone from every row-aligned field.
+    assert_eq!(batch.task.input_ids, vec![0u32, 1, 2], "3 kept rows");
+    assert_eq!(
+        batch.task.tt_stage_node_ids,
+        vec![0u64, 2, 3],
+        "orphan stage row id 1 must be excluded"
+    );
+    assert_eq!(
+        batch.task.seed_node_ids,
+        vec![0u64, 2, 3],
+        "anchors = the kept members' parent ids (pk == id in this fixture)"
+    );
+    // LABEL ALIGNMENT: TARGET1[i] = i * 0.1 and TIMESTAMP[i] = 1000 + i by
+    // ROW; after exclusion the kept rows' labels must follow them, not shift.
+    let ts = batch.task.seed_timestamps.as_ref().expect("timestamps");
+    assert_eq!(ts, &vec![1000i64, 1002, 1003], "timestamps realigned");
+    let target_batch = batch.task.target.as_ref().expect("target");
+    assert_eq!(target_batch.num_rows(), 3);
+    let target_col = target_batch
+        .column_by_name("TARGET1")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<arrow_array::Float64Array>()
+        .unwrap();
+    let got: Vec<f64> = (0..3).map(|i| target_col.value(i)).collect();
+    for (g, e) in got.iter().zip([0.0, 0.2, 0.3]) {
+        assert!(
+            (g - e).abs() < 1e-9,
+            "labels must stay with their rows after orphan exclusion; got {got:?}"
+        );
+    }
+}
+
+// A batch consisting ONLY of orphan seeds cannot be sampled — fail with a
+// message pointing at the cross-graph cause instead of anchoring nowhere.
+#[test]
+fn test_sample_runtime_batch_all_orphan_batch_errors() {
+    use diskgraph_core::dataset::DatasetId;
+    use diskgraph_core::sampling::{
+        AbsentKeyPolicy, FanoutSpec, LayerSpec, SamplingFlags, SamplingMode, SamplingPlan,
+    };
+
+    let tmp = tempdir().unwrap();
+    let parent_root =
+        ingest_parent_with_orders_and_one_tt(&tmp, "tt_orph2", &[50, 99]).unwrap();
+    let reader = std::sync::Arc::new(
+        diskgraph_index::graph::GraphIndexReader::open_with_tt(&parent_root, "tt_orph2").unwrap(),
+    );
+    let engine =
+        diskgraph_engine::engine::DiskGraphEngine::from_reader(reader.clone(), Some(42), Some(1))
+            .unwrap();
+    let plan = SamplingPlan {
+        layers: vec![LayerSpec {
+            fanouts: std::collections::HashMap::new(),
+            default_fanout: Some(FanoutSpec {
+                fanout: 4,
+                mode: SamplingMode::Uniform,
+                absent_key_policy: AbsentKeyPolicy::UniformFallback,
+            }),
+        }],
+    };
+    let flags = SamplingFlags {
+        replace: false,
+        directed: true,
+        disjoint: true,
+        return_edge_id: false,
+        adaptive: false,
+        fused_feature_fetching: false,
+        swap_edge_direction: false,
+    };
+
+    let err = engine
+        .sample_runtime_batch(
+            reader.as_ref(),
+            "tt_orph2/train_seeds",
+            &[0u64, 1],
+            DatasetId::nil(),
+            &plan,
+            &flags,
+            None,
+            None,
+            None,
+            true,
+            None,
+        )
+        .expect_err("an all-orphan batch must fail loudly");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("orphan"),
+        "error must explain the orphan cause: {msg}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Seed-namespace TOPOLOGY exclusion must NOT drop seed RAW_FEATURES.
 //
@@ -3804,6 +3989,27 @@ fn test_sample_runtime_batch_no_weight_column_keeps_weight_none() {
 
 /// Write a prediction-stage parquet: ENTITY1 (Int64) + TIMESTAMP (Timestamp
 /// Second), NO target column. `entity_values` defines the rows.
+fn write_pred_parquet_str(parquet_path: &Path, entity_values: &[&str]) -> Result<()> {
+    let schema = Schema::new(vec![
+        Field::new("ENTITY1", DataType::Utf8, false),
+        Field::new(
+            "TIMESTAMP",
+            DataType::Timestamp(TimeUnit::Second, None),
+            false,
+        ),
+    ]);
+    let n = entity_values.len();
+    let timestamps: Vec<i64> = (0..n as i64).map(|i| 1_000 + i).collect();
+    write_parquet(
+        parquet_path,
+        schema,
+        vec![
+            Arc::new(StringArray::from(entity_values.to_vec())) as ArrayRef,
+            Arc::new(TimestampSecondArray::from(timestamps)) as ArrayRef,
+        ],
+    )
+}
+
 fn write_pred_parquet(parquet_path: &Path, entity_values: &[i64]) -> Result<()> {
     let schema = Schema::new(vec![
         Field::new("ENTITY1", DataType::Int64, false),
@@ -3854,6 +4060,13 @@ fn pred_columns() -> Vec<ColumnSpec> {
             multicategorical_delimiter: None,
         },
     ]
+}
+
+/// [`pred_columns`] with a String ENTITY1 (string-PK parent).
+fn pred_columns_str() -> Vec<ColumnSpec> {
+    let mut cols = pred_columns();
+    cols[0].ingested_dtype = IngestedType::String;
+    cols
 }
 
 /// ENTITY1 + TIMESTAMP + TARGET1 column specs — the training-stage shape.
@@ -4220,9 +4433,12 @@ fn test_no_split_no_target() {
     );
 }
 
-// Named for the task's checklist item (`test_orphan_rows_skipped`); the body
-// documents the ACTUAL observed behavior, which is that orphans are NOT
-// skipped — see the comment block below.
+// Orphan FK values (keys absent from the parent table) must be skipped and
+// counted, never mis-resolved. The external pkmap is a ptrhash minimal-
+// perfect-hash, so an orphan key does not miss — it collides onto an
+// arbitrary in-range parent slot (concretely 50 -> 6 and 99 -> 12 in this
+// fixture, which is how cross-graph TT reuse silently trained on wrong
+// parents before membership verification was added at ingest).
 #[test]
 fn test_orphan_rows_skipped() {
     let tmp = tempdir().unwrap();
@@ -4234,7 +4450,7 @@ fn test_orphan_rows_skipped() {
     write_pred_parquet(&pred_parquet, &[0, 1, 2, 50, 99]).unwrap();
 
     let extension_dir = parent_root.join("pred_tables").join("job_orphan");
-    let counts = diskgraph_ingest::ingest_stage_extension(
+    let result = diskgraph_ingest::ingest_stage_extension(
         "pred_orphan",
         &extension_dir,
         &parent_root,
@@ -4248,50 +4464,240 @@ fn test_orphan_rows_skipped() {
         true,
         false,
     )
-    .expect("ingest with orphan rows must succeed").counts;
+    .expect("ingest with orphan rows must succeed");
 
-    // OBSERVED orphan handling of `ingest_with_stats_from_source` (documented
-    // precisely here because it differs from the task's tentative assumption):
-    //
-    //   * Orphan rows are NEITHER skipped NOR dropped. All 5 input rows are
-    //     kept as seed nodes, so `node_count()` == 5 and the primitive's
-    //     emitted count == 5.
-    //   * The external parent PK map is a ptrhash minimal-perfect-hash with NO
-    //     membership verification. Orphan keys (50, 99 — absent from the
-    //     16-row parent) therefore do NOT fail to resolve; they collide onto
-    //     arbitrary *in-range* parent slots. Concretely 50 -> 6 and 99 -> 12
-    //     in this fixture, so all 5 ENTITY1 values produce forward edges and
-    //     all 5 dst_ids land inside [0, 16) — a silent false-positive
-    //     resolution, not a skip.
-    //
-    // Net: at the ingest layer there is no orphan filtering. Any orphan
-    // filtering must happen upstream (membership-checked join) before calling
-    // this primitive.
+    // Input rows are all kept as seed NODES (node_count == 5); only the
+    // orphan EDGES are dropped — the seed row simply has no resolved parent,
+    // exactly like a genuine pkmap miss.
     assert_eq!(
-        counts,
+        result.counts,
         vec![("predict".to_string(), 5u64)],
-        "all input rows are kept; node_count counts all 5"
+        "all input rows are kept as seed nodes"
     );
+    // Membership verification rejects both MPH false positives.
+    assert_eq!(
+        result.key_failures.membership_failures, 2,
+        "both orphan keys must be rejected by membership verification: {:?}",
+        result.key_failures
+    );
+    assert_eq!(
+        result.key_failures.lookup_failures, 0,
+        "member keys must not be dropped: {:?}",
+        result.key_failures
+    );
+    let by_context = &result.key_failures.by_context;
+    assert!(
+        by_context
+            .get("dst_lookup:predict_ENTITY1_to_users_id")
+            .map(|c| c.membership_failures == 2)
+            .unwrap_or(false),
+        "per-context counters must attribute the skips to the ENTITY1 FK: {by_context:?}"
+    );
+    assert!(
+        !result.key_failures.samples.is_empty(),
+        "skipped keys must be sampled for diagnostics"
+    );
+
+    // Only the 3 member keys (0, 1, 2) produce edges, resolved to their true
+    // parent node ids — no orphan edge survives.
     let dst_ids = distinct_dst_ids_in_stage(&parent_root, "pred_tables/job_orphan", "predict");
-    let users_node_count = diskgraph_index::graph::GraphIndexReader::open(
+    assert_eq!(
+        dst_ids.len(),
+        3,
+        "only member keys may produce edges: {dst_ids:?}"
+    );
+    assert!(
+        dst_ids.iter().all(|id| *id <= 2),
+        "member keys 0,1,2 resolve to their own node ids: {dst_ids:?}"
+    );
+}
+
+// Same-graph ingest (every key a member) must not drop anything and must
+// report zero skips — membership verification never over-drops.
+#[test]
+fn test_member_rows_not_skipped_zero_counters() {
+    let tmp = tempdir().unwrap();
+    let parent_root = tmp.path().join("parent_idx");
+    ingest_tiny_parent_index(&parent_root, &IngestedType::Int64, 1, 16).unwrap();
+
+    let pred_parquet = tmp.path().join("pred_input").join("members.parquet");
+    write_pred_parquet(&pred_parquet, &(0..16).collect::<Vec<_>>()).unwrap();
+
+    let extension_dir = parent_root.join("pred_tables").join("job_members");
+    let result = diskgraph_ingest::ingest_stage_extension(
+        "pred_members",
+        &extension_dir,
+        &parent_root,
+        &[diskgraph_ingest::StageSpec {
+            stage_table_name: "predict".to_string(),
+            parquet_paths: vec![pred_parquet],
+        }],
+        pred_columns(),
+        vec![ent_to("users")],
+        None,
+        true,
+        false,
+    )
+    .expect("all-member ingest must succeed");
+
+    assert_eq!(result.counts, vec![("predict".to_string(), 16u64)]);
+    assert_eq!(result.key_failures.membership_failures, 0);
+    assert_eq!(result.key_failures.lookup_failures, 0);
+    let dst_ids = distinct_dst_ids_in_stage(&parent_root, "pred_tables/job_members", "predict");
+    assert_eq!(dst_ids.len(), 16, "every member key keeps its edge");
+}
+
+// Orphan skipping must be correct when the PARENT is multi-shard: membership
+// verification runs against the parent's global node-id space, and member
+// keys in every parent shard keep their edges.
+#[test]
+fn test_orphan_rows_skipped_multi_shard_parent() {
+    let tmp = tempdir().unwrap();
+    let parent_root = tmp.path().join("parent_idx");
+    ingest_tiny_parent_index(&parent_root, &IngestedType::Int64, 4, 64).unwrap();
+
+    // Members spread across parent shards + orphans well outside [0, 64).
+    let pred_parquet = tmp.path().join("pred_input").join("orphan_ms.parquet");
+    write_pred_parquet(&pred_parquet, &[0, 17, 34, 51, 63, 100, 200, 999]).unwrap();
+
+    let extension_dir = parent_root.join("pred_tables").join("job_orphan_ms");
+    let result = diskgraph_ingest::ingest_stage_extension(
+        "pred_orphan_ms",
+        &extension_dir,
+        &parent_root,
+        &[diskgraph_ingest::StageSpec {
+            stage_table_name: "predict".to_string(),
+            parquet_paths: vec![pred_parquet],
+        }],
+        pred_columns(),
+        vec![ent_to("users")],
+        None,
+        true,
+        false,
+    )
+    .expect("multi-shard orphan ingest must succeed");
+
+    assert_eq!(result.counts, vec![("predict".to_string(), 8u64)]);
+    // Every orphan is rejected (membership mismatch or genuine pkmap miss —
+    // either way skipped + counted), every member survives.
+    let skipped =
+        result.key_failures.membership_failures + result.key_failures.lookup_failures;
+    assert_eq!(
+        skipped, 3,
+        "exactly the 3 orphan keys are skipped: {:?}",
+        result.key_failures
+    );
+    let dst_ids =
+        distinct_dst_ids_in_stage(&parent_root, "pred_tables/job_orphan_ms", "predict");
+    assert_eq!(dst_ids.len(), 5, "5 member keys keep edges: {dst_ids:?}");
+    // Golden check: each member edge points at exactly the node the parent's
+    // own verifying lookup resolves for that key.
+    let users = diskgraph_index::graph::GraphIndexReader::open(
         &parent_root.join("index_metadata.json"),
         &parent_root,
     )
     .unwrap()
     .table("users")
-    .unwrap()
-    .node_count();
-    // All 5 rows produce forward edges; orphans collide onto in-range slots
-    // (no membership check), so every dst_id is in [0, parent node_count).
+    .unwrap();
+    let expected: std::collections::HashSet<u64> = [0u64, 17, 34, 51, 63]
+        .iter()
+        .map(|k| {
+            users
+                .node_id_from_pk(&diskgraph_index::pkmap::Key::Int(*k))
+                .unwrap()
+                .expect("member key must resolve in parent")
+        })
+        .collect();
+    let got: std::collections::HashSet<u64> = dst_ids.iter().copied().collect();
+    assert_eq!(got, expected, "member edges resolve to their true parent nodes");
+}
+
+// Negative integer PKs are stored as two's-complement u64 keys; membership
+// verification must match them (regression: an earlier `pk_value_matches`
+// guard rejected any negative stored PK, which would have shed every
+// negative-id member's edge as a spurious membership failure).
+#[test]
+fn test_negative_int_member_keys_not_skipped() {
+    let tmp = tempdir().unwrap();
+    let parent_root = tmp.path().join("parent_idx");
+    ingest_tiny_parent_index_int_values(&parent_root, 1, &[-8, -5, -3, -1, 0, 2, 4, 7]).unwrap();
+
+    // Three negative members + one genuine orphan.
+    let pred_parquet = tmp.path().join("pred_input").join("neg.parquet");
+    write_pred_parquet(&pred_parquet, &[-8, -1, 7, 100]).unwrap();
+
+    let extension_dir = parent_root.join("pred_tables").join("job_neg");
+    let result = diskgraph_ingest::ingest_stage_extension(
+        "pred_neg",
+        &extension_dir,
+        &parent_root,
+        &[diskgraph_ingest::StageSpec {
+            stage_table_name: "predict".to_string(),
+            parquet_paths: vec![pred_parquet],
+        }],
+        pred_columns(),
+        vec![ent_to("users")],
+        None,
+        true,
+        false,
+    )
+    .expect("negative-pk ingest must succeed");
+
+    let skipped =
+        result.key_failures.membership_failures + result.key_failures.lookup_failures;
     assert_eq!(
-        dst_ids.len(),
-        5,
-        "all 5 rows resolve (orphans silently map to in-range slots)"
+        skipped, 1,
+        "only the genuine orphan is skipped; negative members verify: {:?}",
+        result.key_failures
     );
-    assert!(
-        dst_ids.iter().all(|id| *id < users_node_count),
-        "ptrhash resolves orphans to in-range parent ids: {dst_ids:?}"
+    let dst_ids = distinct_dst_ids_in_stage(&parent_root, "pred_tables/job_neg", "predict");
+    assert_eq!(dst_ids.len(), 3, "all 3 members keep edges: {dst_ids:?}");
+}
+
+// String-PK parent: orphan string keys are skipped + counted, members keep
+// their edges (VarBytes MPH domain + rowpack string compare).
+#[test]
+fn test_orphan_rows_skipped_string_pk() {
+    let tmp = tempdir().unwrap();
+    let parent_root = tmp.path().join("parent_idx");
+    ingest_tiny_parent_index(&parent_root, &IngestedType::String, 1, 16).unwrap();
+
+    // Parent PKs are "u00000000".."u00000015"; two orphans.
+    let pred_parquet = tmp.path().join("pred_input").join("orphan_str.parquet");
+    write_pred_parquet_str(
+        &pred_parquet,
+        &["u00000000", "u00000002", "not-a-user", "u99999999"],
+    )
+    .unwrap();
+
+    let extension_dir = parent_root.join("pred_tables").join("job_orphan_str");
+    let result = diskgraph_ingest::ingest_stage_extension(
+        "pred_orphan_str",
+        &extension_dir,
+        &parent_root,
+        &[diskgraph_ingest::StageSpec {
+            stage_table_name: "predict".to_string(),
+            parquet_paths: vec![pred_parquet],
+        }],
+        pred_columns_str(),
+        vec![ent_to("users")],
+        None,
+        true,
+        false,
+    )
+    .expect("string-pk orphan ingest must succeed");
+
+    assert_eq!(result.counts, vec![("predict".to_string(), 4u64)]);
+    let skipped =
+        result.key_failures.membership_failures + result.key_failures.lookup_failures;
+    assert_eq!(
+        skipped, 2,
+        "both string orphans are skipped: {:?}",
+        result.key_failures
     );
+    let dst_ids =
+        distinct_dst_ids_in_stage(&parent_root, "pred_tables/job_orphan_str", "predict");
+    assert_eq!(dst_ids.len(), 2, "member strings keep edges: {dst_ids:?}");
 }
 
 #[test]

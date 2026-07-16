@@ -220,6 +220,13 @@
     /// `count_orders` op below resolves and `ENTITY1` values map to real
     /// `users` node-ids during resolution-mode ingest. Returns the index dir.
     fn t_build_graph(root: &Path) -> std::path::PathBuf {
+        t_build_graph_with_users(root, &[0, 1, 2, 3, 4])
+    }
+
+    /// Like [`t_build_graph`] but with a caller-chosen `users` PK set —
+    /// used to build a SECOND graph missing some users for the cross-graph
+    /// TT-reuse orphan tests.
+    fn t_build_graph_with_users(root: &Path, user_ids: &[i64]) -> std::path::PathBuf {
         use arrow_array::{Int64Array, TimestampNanosecondArray};
         use arrow_schema::{DataType, Field, Schema, TimeUnit as ArrowTimeUnit};
 
@@ -227,7 +234,6 @@
         let index_dir = root.join("index");
         std::fs::create_dir_all(&data_dir).unwrap();
 
-        // users: 0..5
         let users_schema = StdArc2::new(Schema::new(vec![Field::new(
             "user_id",
             DataType::Int64,
@@ -235,7 +241,7 @@
         )]));
         let users_batch = RecordBatch::try_new(
             users_schema,
-            vec![StdArc2::new(Int64Array::from(vec![0i64, 1, 2, 3, 4]))],
+            vec![StdArc2::new(Int64Array::from(user_ids.to_vec()))],
         )
         .unwrap();
         t_write_parquet(&data_dir.join("users.parquet"), &users_batch);
@@ -245,7 +251,7 @@
         let mut ouser = Vec::new();
         let mut ots = Vec::new();
         let mut oid = 0i64;
-        for uid in 0..5i64 {
+        for &uid in user_ids {
             for j in 0..2i64 {
                 oids.push(oid);
                 ouser.push(uid);
@@ -601,6 +607,19 @@
             )
             .unwrap();
             let d = d.bind(py);
+            // Same-graph ingest: the orphan skip counters must exist and be 0.
+            let kf = d.get_item("key_failures").unwrap();
+            let membership: u64 = kf
+                .get_item("membership_failures")
+                .unwrap()
+                .extract()
+                .unwrap();
+            let lookup: u64 = kf.get_item("lookup_failures").unwrap().extract().unwrap();
+            assert_eq!(
+                (membership, lookup),
+                (0, 0),
+                "same-graph ingest must skip nothing"
+            );
             let ext: String = d.get_item("tt_extension_path").unwrap().extract().unwrap();
             ext
         });
@@ -698,6 +717,114 @@
                 "resolution mode must emit ZERO edges for predict_seeds node {node_id}"
             );
         }
+    }
+
+    // The cross-graph TT-reuse case that motivated ingest-time membership
+    // verification: a staging bundle generated against G1 is re-ingested into
+    // a DIFFERENT graph G2 missing some of G1's entities. Orphan seeds must
+    // resolve to NULL (resolution mode) and be counted in the result dict's
+    // `key_failures` — never silently collide onto a wrong G2 node.
+    #[test]
+    fn test_execute_tt_ingest_cross_graph_orphans_skipped_and_counted() {
+        pyo3::prepare_freethreaded_python();
+        let dir_g1 = tempfile::tempdir().unwrap();
+        let dir_g2 = tempfile::tempdir().unwrap();
+        let g1 = t_build_graph_with_users(dir_g1.path(), &[0, 1, 2, 3, 4]);
+        // G2 drops users 3 and 4 → any G1-gen'd seed for them is an orphan.
+        let g2 = t_build_graph_with_users(dir_g2.path(), &[0, 1, 2]);
+
+        let plan = t_node_plan(true);
+        let plan_json = serde_json::to_string(&plan).unwrap();
+        let (staging, total_rows) = pyo3::Python::with_gil(|py| {
+            let d = execute_tt_gen(py, &plan_json, g1.to_str().unwrap(), "ttx").unwrap();
+            let d = d.bind(py);
+            let staging: String = d.get_item("staging_dir").unwrap().extract().unwrap();
+            let n: u64 = d.get_item("row_count").unwrap().extract().unwrap();
+            (staging, n)
+        });
+        assert_eq!(total_rows % 5, 0, "gen emits the same seed count per user");
+        let rows_per_user = total_rows / 5;
+
+        let (tt_ext, skipped) = pyo3::Python::with_gil(|py| {
+            let d = execute_tt_ingest(
+                py,
+                &staging,
+                g2.to_str().unwrap(),
+                "ttx",
+                Some("predict".to_string()),
+            )
+            .unwrap();
+            let d = d.bind(py);
+            let kf = d.get_item("key_failures").unwrap();
+            let membership: u64 = kf
+                .get_item("membership_failures")
+                .unwrap()
+                .extract()
+                .unwrap();
+            let lookup: u64 = kf.get_item("lookup_failures").unwrap().extract().unwrap();
+            let ext: String = d.get_item("tt_extension_path").unwrap().extract().unwrap();
+            (ext, membership + lookup)
+        });
+        assert_eq!(
+            skipped,
+            2 * rows_per_user,
+            "every seed of the two dropped users is skipped + counted"
+        );
+
+        // The manifest persists the counters too (kumo can re-read them from
+        // disk without the live result dict).
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(Path::new(&tt_ext).join("diskgraph_manifest.json")).unwrap(),
+        )
+        .unwrap();
+        let mf_skipped = manifest["key_failures"]["membership_failures"]
+            .as_u64()
+            .unwrap()
+            + manifest["key_failures"]["lookup_failures"].as_u64().unwrap();
+        assert_eq!(mf_skipped, skipped, "manifest mirrors the result counters");
+
+        // Golden: every non-null entity_node_id points at a G2 node whose PK
+        // is one of the surviving users {0,1,2}; orphan seeds are null.
+        let ext = Path::new(&tt_ext);
+        let reader = diskgraph_index::graph::GraphIndexReader::open(
+            &ext.join("index_metadata.json"),
+            ext,
+        )
+        .unwrap();
+        let g2_reader =
+            diskgraph_index::graph::GraphIndexReader::open(&g2.join("index_metadata.json"), &g2)
+                .unwrap();
+        let g2_users = g2_reader.table("users").unwrap();
+        let valid_ids: std::collections::HashSet<u64> = [0u64, 1, 2]
+            .iter()
+            .map(|k| {
+                g2_users
+                    .node_id_from_pk(&diskgraph_index::pkmap::Key::Int(*k))
+                    .unwrap()
+                    .expect("surviving user resolves in G2")
+            })
+            .collect();
+        let table = reader.table("predict_seeds").unwrap();
+        assert_eq!(table.node_count(), total_rows, "all seed rows are kept");
+        let mut null_count = 0u64;
+        for node_id in 0..total_rows {
+            let view = table.edges_for_node(node_id).unwrap();
+            let json = table
+                .decode_node_data_json(&view)
+                .unwrap()
+                .expect("node data present");
+            match json.get("entity_node_id").and_then(|v| v.as_u64()) {
+                Some(id) => assert!(
+                    valid_ids.contains(&id),
+                    "resolved id {id} must be a surviving G2 user node: {json}"
+                ),
+                None => null_count += 1,
+            }
+        }
+        assert_eq!(
+            null_count, skipped,
+            "orphan seeds carry null entity_node_id, one per counted skip"
+        );
     }
 
     #[test]

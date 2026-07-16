@@ -116,7 +116,7 @@ impl<'a> EdgeListView<'a> {
             Ok(value) => value,
             Err(_) => return Ok(None),
         };
-        Ok(Some(pk_value_matches(key, &value)))
+        Ok(pk_value_matches(key, &value))
     }
 
     fn parse(&self) -> Result<(Vec<RelationSegment<'a>>, Option<&'a [u8]>), std::io::Error> {
@@ -201,22 +201,33 @@ impl<'a> EdgeListView<'a> {
     }
 }
 
-fn pk_value_matches(key: &Key, value: &ValueRef<'_>) -> bool {
+/// Compare a lookup `key` against the node's decoded stored PK `value`.
+///
+/// Returns `Some(bool)` only for genuinely comparable combinations; `None`
+/// when the stored PK's type has no comparison arm (e.g. Decimal128/256,
+/// Date/Timestamp PK columns) — callers must treat `None` as "cannot verify"
+/// and TRUST the pkmap hit, never drop, matching the table-level
+/// unverifiable fallback in `validate_pk_at_node`. Integer keys are compared
+/// in the two's-complement u64 domain the pkmap keys are built in, so
+/// negative PK values match their own keys. A `Null` stored PK is a genuine
+/// mismatch: the pkmap never maps a key to a node whose PK is NULL.
+fn pk_value_matches(key: &Key, value: &ValueRef<'_>) -> Option<bool> {
     match (key, value) {
-        (Key::Int(k), ValueRef::Int64(v)) => *v >= 0 && *k == *v as u64,
-        (Key::Int(k), ValueRef::Int32(v)) => *v >= 0 && *k == *v as u64,
-        (Key::Int(k), ValueRef::UInt64(v)) => *k == *v,
-        (Key::Int(k), ValueRef::UInt32(v)) => *k == *v as u64,
-        (Key::Bytes(k), ValueRef::Bytes(v)) => k.as_slice() == *v,
+        (Key::Int(k), ValueRef::Int64(v)) => Some(*k == *v as u64),
+        (Key::Int(k), ValueRef::Int32(v)) => Some(*k == *v as i64 as u64),
+        (Key::Int(k), ValueRef::UInt64(v)) => Some(*k == *v),
+        (Key::Int(k), ValueRef::UInt32(v)) => Some(*k == *v as u64),
+        (Key::Bytes(k), ValueRef::Bytes(v)) => Some(k.as_slice() == *v),
         (Key::Bytes(k), ValueRef::String(v)) => {
             let bytes = v.as_bytes();
             let trimmed = trim_trailing_nuls(bytes);
-            k.as_slice() == trimmed
+            Some(k.as_slice() == trimmed)
         }
-        (Key::Uuid(k), ValueRef::Uuid(v)) => k == v,
-        (Key::Uuid256(k), ValueRef::Uuid256(v)) => k == v,
-        (Key::Ip(k), ValueRef::Ip(v)) => k == v,
-        _ => false,
+        (Key::Uuid(k), ValueRef::Uuid(v)) => Some(k == v),
+        (Key::Uuid256(k), ValueRef::Uuid256(v)) => Some(k == v),
+        (Key::Ip(k), ValueRef::Ip(v)) => Some(k == v),
+        (_, ValueRef::Null) => Some(false),
+        _ => None,
     }
 }
 
@@ -283,4 +294,40 @@ fn decode_varint(buf: &[u8]) -> Result<(u32, usize), std::io::Error> {
         return Ok(((b0 << 24) | (b1 << 16) | (b2 << 8) | b3, 4));
     }
     Err(std::io::ErrorKind::InvalidData.into())
+}
+
+#[cfg(test)]
+mod pk_value_matches_tests {
+    use super::pk_value_matches;
+    use crate::pkmap::Key;
+    use diskgraph_rowpack::ValueRef;
+
+    #[test]
+    fn negative_int_pk_matches_its_own_key() {
+        // Keys for negative PKs are built as two's-complement u64; a member
+        // node with a negative id must verify true, never drop.
+        let key = Key::Int((-5i64) as u64);
+        assert_eq!(pk_value_matches(&key, &ValueRef::Int64(-5)), Some(true));
+        assert_eq!(pk_value_matches(&key, &ValueRef::Int64(-4)), Some(false));
+        let key32 = Key::Int((-7i64) as u64);
+        assert_eq!(pk_value_matches(&key32, &ValueRef::Int32(-7)), Some(true));
+    }
+
+    #[test]
+    fn uncomparable_pk_types_are_unverifiable_not_mismatch() {
+        // Decimal / Date / Timestamp PK columns have no comparison arm:
+        // verification must return None (trust the pkmap hit), not false —
+        // Some(false) would drop 100% of edges for such parents.
+        let key = Key::Int(42);
+        assert_eq!(pk_value_matches(&key, &ValueRef::Decimal128(42)), None);
+        assert_eq!(pk_value_matches(&key, &ValueRef::Date(42)), None);
+        assert_eq!(pk_value_matches(&key, &ValueRef::Timestamp(42)), None);
+    }
+
+    #[test]
+    fn null_stored_pk_is_a_mismatch() {
+        // The pkmap never maps a key to a node whose PK is NULL.
+        assert_eq!(pk_value_matches(&Key::Int(1), &ValueRef::Null),
+                   Some(false));
+    }
 }
