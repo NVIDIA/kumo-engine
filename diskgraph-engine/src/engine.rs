@@ -1159,55 +1159,16 @@ impl DiskGraphEngine {
             Some(combined)
         };
 
-        // 4b. Orphan invariant: orphan rows are dropped at ingest, so a null
-        //     `entity_node_id` should never appear. If one does, drop the row
-        //     from both `batch_row_ids` and the seed batch here to keep every
-        //     row-aligned array in sync.
-        let keep: Vec<bool> = match seed_target_batch.as_ref() {
-            Some(rb) => match rb.schema().index_of("entity_node_id") {
-                Ok(idx) => {
-                    let col = rb.column(idx);
-                    (0..col.len()).map(|i| col.is_valid(i)).collect()
+        // 4b. Orphan invariant: orphans are dropped at ingest, so `entity_node_id`
+        //     is never null here. O(1) guard (arrow precomputes `null_count`).
+        if let Some(rb) = seed_target_batch.as_ref() {
+            if let Ok(idx) = rb.schema().index_of("entity_node_id") {
+                if rb.column(idx).null_count() > 0 {
+                    return Err(EngineError::DataCorruption(format!(
+                        "seed table `{stage_table}`: null `entity_node_id` survived \
+                         ingest (stale/corrupt extension)"
+                    )));
                 }
-                // Missing column errors in step 5 with a precise message.
-                Err(_) => vec![true; batch_row_ids.len()],
-            },
-            None => vec![true; batch_row_ids.len()],
-        };
-        let dropped = keep.iter().filter(|k| !**k).count();
-        let kept_row_ids: Vec<u64>;
-        let mut batch_row_ids: &[u64] = batch_row_ids;
-        let mut seed_target_batch = seed_target_batch;
-        if dropped > 0 {
-            if dropped == batch_row_ids.len() {
-                return Err(EngineError::DataCorruption(format!(
-                    "seed table `{stage_table}`: all {dropped} seed rows in this \
-                     batch have a null `entity_node_id` — orphans are dropped at \
-                     ingest, so this should be unreachable (index corruption or a \
-                     stale edge-mode extension)"
-                )));
-            }
-            tracing::warn!(
-                stage_table,
-                dropped,
-                batch = batch_row_ids.len(),
-                "excluding seed rows with null `entity_node_id` from the sampling \
-                 batch (unexpected: orphans are dropped at ingest)"
-            );
-            kept_row_ids = batch_row_ids
-                .iter()
-                .zip(&keep)
-                .filter(|(_, k)| **k)
-                .map(|(id, _)| *id)
-                .collect();
-            batch_row_ids = &kept_row_ids;
-            if let Some(rb) = seed_target_batch.take() {
-                let mask = arrow_array::BooleanArray::from(keep.clone());
-                let filtered = arrow_select::filter::filter_record_batch(&rb, &mask)
-                    .map_err(|e| {
-                        EngineError::Internal(format!("filter orphan seed rows: {e}"))
-                    })?;
-                seed_target_batch = Some(filtered);
             }
         }
 

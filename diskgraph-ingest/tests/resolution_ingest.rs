@@ -309,6 +309,23 @@ fn ingest_resolution(
     ingest_resolution_with_stats(tmp, entities, targets).map(|(output, _)| output)
 }
 
+/// Number of stage-table nodes actually written to the produced extension
+/// (post encode-time orphan/null drop).
+fn stage_node_count(output: &Path, table: &str) -> u64 {
+    let metadata_path = output.join("index_metadata.json");
+    let reader = diskgraph_index::graph::GraphIndexReader::open(&metadata_path, output)
+        .expect("open produced extension");
+    reader
+        .table(table)
+        .unwrap_or_else(|| panic!("{table} table"))
+        .node_count()
+}
+
+/// `train_seeds` node count — the common case.
+fn train_seeds_node_count(output: &Path) -> u64 {
+    stage_node_count(output, "train_seeds")
+}
+
 /// Read one `train_seeds` node's rowpack columns back as JSON.
 fn read_node_json(output: &Path, node_id: u64) -> serde_json::Value {
     let metadata_path = output.join("index_metadata.json");
@@ -345,20 +362,27 @@ fn test_resolution_scalar_entity_node_id() {
 
 // Orphan reference values (absent from the parent) must NEVER produce a
 // node-id. The pkmap is a blind MPH, so an orphan key collides onto an
-// arbitrary in-range parent slot; membership verification at resolution turns
-// that false positive into a null (scalar) / dropped element (list), counted
-// in the ingest key-failure stats. Rows are kept — only the resolved ids are
-// affected — mirroring how a null reference behaves.
+// arbitrary in-range parent slot; membership verification rejects that false
+// positive and counts it. An orphan ANCHOR leaves the row rootless, so the row
+// is dropped AT ENCODE (never enters the shuffle pool); orphan list ELEMENTS
+// are dropped from the list while the row survives (≥1 target resolves).
 #[test]
-fn test_resolution_orphans_nulled_dropped_and_counted() {
+fn test_resolution_orphan_anchor_row_dropped_partial_list_kept_and_counted() {
     let tmp = tempdir().unwrap();
     // Row 0: member entity, target list with one orphan element (99) between
-    //        two members (order of survivors must hold).
-    // Row 1: ORPHAN entity (50), member target.
+    //        two members → row KEPT, orphan element dropped, order held.
+    // Row 1: ORPHAN entity (50), member target → row DROPPED.
     let entities: Vec<i64> = vec![0, 50];
     let targets: Vec<Vec<i64>> = vec![vec![1, 99, 2], vec![3]];
     let (output, stats) =
         ingest_resolution_with_stats(&tmp, &entities, &targets).expect("resolution ingest");
+
+    // Only the member-anchor row survives; the orphan-anchor row is gone.
+    assert_eq!(
+        train_seeds_node_count(&output),
+        1,
+        "orphan-anchor row dropped at encode, member-anchor row survives"
+    );
 
     let row0 = read_node_json(&output, 0);
     assert_eq!(
@@ -379,23 +403,8 @@ fn test_resolution_orphans_nulled_dropped_and_counted() {
         "orphan list element dropped, member order preserved"
     );
 
-    let row1 = read_node_json(&output, 1);
-    assert!(
-        row1.get("entity_node_id")
-            .map(|v| v.is_null())
-            .unwrap_or(true),
-        "orphan entity must resolve to null, never a collided node id: {row1}"
-    );
-    let row1_targets: Vec<i64> = row1
-        .get("target_node_ids")
-        .and_then(|v| v.as_array())
-        .expect("target_node_ids array")
-        .iter()
-        .map(|v| v.as_i64().unwrap())
-        .collect();
-    assert_eq!(row1_targets, vec![3], "member target survives");
-
-    // Both orphans are counted, attributed to their resolve contexts.
+    // Both orphan references are still counted, attributed to their contexts —
+    // dropping the row does not hide its orphan skips.
     assert_eq!(
         stats.key_membership_failures + stats.key_lookup_failures,
         2,
@@ -417,6 +426,58 @@ fn test_resolution_orphans_nulled_dropped_and_counted() {
         ctx_total("resolve:train_seeds.TARGET1_to_users"),
         1,
         "target orphan attributed to the TARGET1 context: {ctx:?}"
+    );
+}
+
+// A scalar-anchor orphan drops the whole row at encode — the surviving
+// `node_count` reflects only the member-anchor rows.
+#[test]
+fn test_resolution_scalar_orphan_anchor_drops_row() {
+    let tmp = tempdir().unwrap();
+    // Rows 0,2 member anchors; rows 1,3 orphan anchors (50, 99) → dropped.
+    let entities: Vec<i64> = vec![0, 50, 7, 99];
+    let targets: Vec<Vec<i64>> = vec![vec![1], vec![2], vec![4], vec![8]];
+    let output = ingest_resolution(&tmp, &entities, &targets).expect("resolution ingest");
+    assert_eq!(
+        train_seeds_node_count(&output),
+        2,
+        "two orphan-anchor rows dropped, two member-anchor rows survive"
+    );
+    // Surviving nodes carry the member anchors, in input order.
+    assert_eq!(
+        read_node_json(&output, 0)
+            .get("entity_node_id")
+            .and_then(|v| v.as_u64()),
+        Some(0)
+    );
+    assert_eq!(
+        read_node_json(&output, 1)
+            .get("entity_node_id")
+            .and_then(|v| v.as_u64()),
+        Some(7)
+    );
+}
+
+// A member anchor whose ENTIRE positives list is orphan is an untrainable row
+// (no positives) → dropped at encode. A row with ≥1 resolvable target survives.
+#[test]
+fn test_resolution_all_orphan_positives_drops_row() {
+    let tmp = tempdir().unwrap();
+    // Row 0: member anchor, ALL-orphan targets ([88,99]) → DROPPED.
+    // Row 1: member anchor, one member target → KEPT.
+    let entities: Vec<i64> = vec![0, 3];
+    let targets: Vec<Vec<i64>> = vec![vec![88, 99], vec![5]];
+    let output = ingest_resolution(&tmp, &entities, &targets).expect("resolution ingest");
+    assert_eq!(
+        train_seeds_node_count(&output),
+        1,
+        "all-orphan-positives row dropped, ≥1-target row survives"
+    );
+    let survivor = read_node_json(&output, 0);
+    assert_eq!(
+        survivor.get("entity_node_id").and_then(|v| v.as_u64()),
+        Some(3),
+        "the surviving row is the one with a resolvable target: {survivor}"
     );
 }
 
@@ -519,20 +580,19 @@ fn write_stage_parquet_with_exclude(
     )
 }
 
-#[test]
-fn test_resolution_exclude_node_ids() {
-    let tmp = tempdir().unwrap();
+/// Ingest a `val_seeds` stage with the exclude column into a fresh parent, and
+/// return the produced extension dir. Shared by the exclude-resolution tests.
+fn ingest_exclude_resolution(
+    tmp: &tempfile::TempDir,
+    entities: &[i64],
+    targets: &[Vec<i64>],
+    excludes: &[Vec<i64>],
+) -> std::path::PathBuf {
     let parent_root = tmp.path().join("parent_idx");
     ingest_tiny_parent_index(&parent_root, 16).unwrap();
 
-    let entities: Vec<i64> = vec![0, 1, 2];
-    let targets: Vec<Vec<i64>> = vec![vec![5], vec![6], vec![7]];
-    // val-style exclude lists: row0 empty, row1 one prior, row2 multi (order
-    // preserved; node id == PK in 1-shard parent).
-    let excludes: Vec<Vec<i64>> = vec![vec![], vec![3], vec![1, 8, 4]];
-
     let stage_parquet = tmp.path().join("stage_input").join("val_seeds.parquet");
-    write_stage_parquet_with_exclude(&stage_parquet, &entities, &targets, &excludes).unwrap();
+    write_stage_parquet_with_exclude(&stage_parquet, entities, targets, excludes).unwrap();
 
     // Stage spec: ENTITY1/TIMESTAMP/TARGET1/exclude_target_keys (source) +
     // entity_node_id/target_node_ids/exclude_node_ids (resolved, Int64Array).
@@ -612,28 +672,72 @@ fn test_resolution_exclude_node_ids() {
         None,
     )
     .expect("exclude resolution ingest");
+    output
+}
+
+/// Read a `val_seeds` node's resolved `exclude_node_ids` back as a Vec.
+fn read_exclude_node_ids(output: &Path, node_id: u64) -> Vec<i64> {
+    let metadata_path = output.join("index_metadata.json");
+    let reader = diskgraph_index::graph::GraphIndexReader::open(&metadata_path, output)
+        .expect("open produced extension");
+    let table = reader.table("val_seeds").expect("val_seeds table");
+    let view = table.edges_for_node(node_id).expect("edges_for_node");
+    let json = table
+        .decode_node_data_json(&view)
+        .expect("decode")
+        .expect("node data present");
+    json.get("exclude_node_ids")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| panic!("node {node_id}: exclude_node_ids missing/not array in {json}"))
+        .iter()
+        .map(|v| v.as_i64().expect("int"))
+        .collect()
+}
+
+#[test]
+fn test_resolution_exclude_node_ids() {
+    let tmp = tempdir().unwrap();
+    let entities: Vec<i64> = vec![0, 1, 2];
+    let targets: Vec<Vec<i64>> = vec![vec![5], vec![6], vec![7]];
+    // val-style exclude lists: row0 empty, row1 one prior, row2 multi (order
+    // preserved; node id == PK in 1-shard parent).
+    let excludes: Vec<Vec<i64>> = vec![vec![], vec![3], vec![1, 8, 4]];
+    let output = ingest_exclude_resolution(&tmp, &entities, &targets, &excludes);
 
     for (row, expected) in excludes.iter().enumerate() {
-        let metadata_path = output.join("index_metadata.json");
-        let reader = diskgraph_index::graph::GraphIndexReader::open(&metadata_path, &output)
-            .expect("open produced extension");
-        let table = reader.table("val_seeds").expect("val_seeds table");
-        let view = table.edges_for_node(row as u64).expect("edges_for_node");
-        let json = table
-            .decode_node_data_json(&view)
-            .expect("decode")
-            .expect("node data present");
-        let arr = json
-            .get("exclude_node_ids")
-            .and_then(|v| v.as_array())
-            .unwrap_or_else(|| panic!("row {row}: exclude_node_ids missing/not array in {json}"));
-        let got: Vec<i64> = arr.iter().map(|v| v.as_i64().expect("int")).collect();
         // 1-shard parent → node id == PK, so resolved == reference (order kept).
         assert_eq!(
-            &got, expected,
+            &read_exclude_node_ids(&output, row as u64),
+            expected,
             "row {row}: exclude_node_ids must resolve exclude_target_keys in order"
         );
     }
+}
+
+// An ALL-orphan exclude list resolves to empty but must NOT drop the row — the
+// exclude set is an exclusion, not a training requirement (empty = nothing to
+// exclude). Contrast with an all-orphan POSITIVES list, which DOES drop.
+#[test]
+fn test_resolution_all_orphan_exclude_keeps_row() {
+    let tmp = tempdir().unwrap();
+    let entities: Vec<i64> = vec![0, 1];
+    let targets: Vec<Vec<i64>> = vec![vec![5], vec![6]];
+    // Row 0: all-orphan exclude ([50,99]) → resolves empty, row KEPT.
+    // Row 1: member exclude ([3]) → resolves [3].
+    let excludes: Vec<Vec<i64>> = vec![vec![50, 99], vec![3]];
+    let output = ingest_exclude_resolution(&tmp, &entities, &targets, &excludes);
+
+    assert_eq!(
+        stage_node_count(&output, "val_seeds"),
+        2,
+        "all-orphan-exclude row is kept (exclude empties never drop)"
+    );
+    assert_eq!(
+        read_exclude_node_ids(&output, 0),
+        Vec::<i64>::new(),
+        "all-orphan exclude resolves to empty"
+    );
+    assert_eq!(read_exclude_node_ids(&output, 1), vec![3]);
 }
 
 #[test]

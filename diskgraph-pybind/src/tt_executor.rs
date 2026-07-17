@@ -161,10 +161,11 @@ pub fn execute_tt_plan(
     let idx = index_path.to_owned();
     let tt_id_owned = tt_id.to_owned();
 
-    let (manifest_stages, tt_extension_path, key_failures): (
+    let (manifest_stages, tt_extension_path, key_failures, input_row_count): (
         Vec<ManifestStage>,
         String,
         diskgraph_ingest::KeyFailureState,
+        u64,
     ) = py
         .detach(|| -> diskgraph_train_table::errors::TTGenResult<_> {
             let index_root = Path::new(&idx);
@@ -202,7 +203,7 @@ pub fn execute_tt_plan(
                 &plan.entity.table,
             )
             .map_err(diskgraph_train_table::errors::TTGenError::InvalidPlan)?;
-            let (manifest_stages, key_failures) = ingest_resolved_stages(
+            let (manifest_stages, key_failures, input_row_count) = ingest_resolved_stages(
                 &stages,
                 &tt_id_owned,
                 &ingest_root,
@@ -217,6 +218,7 @@ pub fn execute_tt_plan(
                 manifest_stages,
                 tt_root.to_string_lossy().to_string(),
                 key_failures,
+                input_row_count,
             ))
         })
         .map_err(crate::map_ttgen_err)?;
@@ -238,6 +240,7 @@ pub fn execute_tt_plan(
         is_temporal,
         rhs_node_type.as_deref(),
         &key_failures,
+        input_row_count,
     )
 }
 
@@ -262,16 +265,17 @@ pub(crate) fn ingest_root_for(index_path: &Path, tt_id: &str) -> std::path::Path
 /// sibling of `tt.parquet` and read back by [`execute_tt_ingest`].
 pub(crate) const TT_INGEST_SPEC_FILENAME: &str = "tt_ingest_spec.json";
 
-/// One ingest stage: manifest key, seed-table name, parquet part(s), row count,
-/// and seed-time `(min,max)`. The predict path leaves `count`/`seed_time` `None`
-/// (count read back post-publish) with a single part (`tt.parquet`); the split
-/// path may carry several `part-*.parquet` files into one stage table.
+/// One ingest stage: manifest key, seed-table name, parquet part(s), and
+/// seed-time `(min,max)`. The predict path leaves `seed_time` `None` with a
+/// single part (`tt.parquet`); the split path may carry several
+/// `part-*.parquet` files into one stage table. Row count is read back
+/// post-ingest as the surviving `node_count` (gen-time counts go stale after
+/// orphan drops).
 #[derive(Debug, Clone)]
 pub(crate) struct StageSpec {
     pub key: String,
     pub table_name: String,
     pub parquet_paths: Vec<std::path::PathBuf>,
-    pub count: Option<u64>,
     pub seed_time: Option<[i64; 2]>,
     pub binary_label_column: Option<String>,
     pub sample_weight_column: Option<String>,
@@ -305,7 +309,6 @@ pub(crate) fn resolve_ingest_stages(
                     .into_iter()
                     .map(|part| staging_dir.join(part))
                     .collect(),
-                count: Some(info.row_count),
                 seed_time: info.seed_time,
                 binary_label_column: (info.key == "train").then(|| PRIMARY_TARGET_COL.to_string()),
                 sample_weight_column: (info.key == "train")
@@ -317,7 +320,6 @@ pub(crate) fn resolve_ingest_stages(
             table_name: format!("{predict_key}_seeds"),
             // No-split (predict) path: the single `tt.parquet` is the one part.
             parquet_paths: vec![tt_parquet.to_path_buf()],
-            count: None,
             seed_time: None,
             binary_label_column: None,
             sample_weight_column: None,
@@ -470,12 +472,13 @@ pub fn execute_tt_ingest(
     let staging_dir_owned = staging_dir.to_owned();
     let predict_stage_key = predict_stage_name.unwrap_or_else(|| DEFAULT_PREDICT_STAGE.to_string());
 
-    let (manifest_stages, tt_extension_path, is_temporal, rhs_node_type, key_failures): (
+    let (manifest_stages, tt_extension_path, is_temporal, rhs_node_type, key_failures, input_row_count): (
         Vec<ManifestStage>,
         String,
         bool,
         Option<String>,
         diskgraph_ingest::KeyFailureState,
+        u64,
     ) = py
         .detach(|| -> diskgraph_train_table::errors::TTGenResult<_> {
             let index_root = Path::new(&idx);
@@ -527,7 +530,7 @@ pub fn execute_tt_ingest(
                 &spec.entity_table,
             )
             .map_err(diskgraph_train_table::errors::TTGenError::InvalidPlan)?;
-            let (manifest_stages, key_failures) = ingest_resolved_stages(
+            let (manifest_stages, key_failures, input_row_count) = ingest_resolved_stages(
                 &stages,
                 &tt_id_owned,
                 &ingest_root,
@@ -545,6 +548,7 @@ pub fn execute_tt_ingest(
                 spec.is_temporal,
                 rhs_node_type,
                 key_failures,
+                input_row_count,
             ))
         })
         .map_err(crate::map_ttgen_err)?;
@@ -558,6 +562,7 @@ pub fn execute_tt_ingest(
         is_temporal,
         rhs_node_type.as_deref(),
         &key_failures,
+        input_row_count,
     )
 }
 
@@ -629,6 +634,7 @@ pub(crate) fn ingest_resolved_stages(
 ) -> diskgraph_train_table::errors::TTGenResult<(
     Vec<ManifestStage>,
     diskgraph_ingest::KeyFailureState,
+    u64,
 )> {
     let stage_ingest = ingest_stage_parquets_into_extension(
         tt_id,
@@ -648,15 +654,12 @@ pub(crate) fn ingest_resolved_stages(
         }
     }
     copy_stage_artifacts(artifacts, stages, ingest_root)?;
-    // Resolve counts for stages that didn't carry one (predict path), reading
-    // node_count back from the just-ingested extension.
+    // Per-stage row count = surviving node_count (post-drop), split + predict
+    // alike. Pre-drop total is `task_dataset.input_row_count`.
     let manifest_stages = stages
         .iter()
         .map(|s| {
-            let count = match s.count {
-                Some(n) => n,
-                None => stage_node_count(ingest_root, &s.table_name)?,
-            };
+            let count = stage_node_count(ingest_root, &s.table_name)?;
             Ok((
                 s.key.clone(),
                 s.table_name.clone(),
@@ -676,7 +679,11 @@ pub(crate) fn ingest_resolved_stages(
         })
         .collect::<diskgraph_train_table::errors::TTGenResult<Vec<_>>>()?;
     publish_tt_extension(ingest_root, tt_root)?;
-    Ok((manifest_stages, stage_ingest.key_failures))
+    Ok((
+        manifest_stages,
+        stage_ingest.key_failures,
+        stage_ingest.input_row_count,
+    ))
 }
 
 /// One published stage in the manifest `stages` map: `(stage_key, table_name,
@@ -741,6 +748,8 @@ pub(crate) fn write_tt_manifest_and_build_result(
     // `diskgraph_ingest::ingest_stage_extension`). Surfaced in both the
     // manifest and the result dict so kumo can warn on cross-graph TT reuse.
     key_failures: &diskgraph_ingest::KeyFailureState,
+    // Pre-drop seed total (kept + dropped) — kumo's orphan-% denominator.
+    input_row_count: u64,
 ) -> PyResult<Py<PyAny>> {
     let diskgraph_manifest_path = Path::new(tt_extension_path)
         .join("diskgraph_manifest.json")
@@ -831,6 +840,7 @@ pub(crate) fn write_tt_manifest_and_build_result(
             "tt_extension_path": tt_extension_path,
             "is_temporal": is_temporal,
             "rhs_node_type": rhs_node_type,
+            "input_row_count": input_row_count,
             "stages": Value::Object(stages_json),
             "columns": {
                 "primary_entity": PRIMARY_ENTITY_COL,
@@ -883,6 +893,7 @@ pub(crate) fn write_tt_manifest_and_build_result(
     task_dataset.set_item("tt_extension_path", tt_extension_path)?;
     task_dataset.set_item("is_temporal", is_temporal)?;
     task_dataset.set_item("rhs_node_type", rhs_node_type)?;
+    task_dataset.set_item("input_row_count", input_row_count)?;
 
     let stages_dict = PyDict::new(py);
     for (

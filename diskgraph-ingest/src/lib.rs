@@ -4156,7 +4156,7 @@ impl IngestContext {
                         let resolver = ref_resolver.ok_or_else(|| {
                             anyhow!("resolution mode: RefResolver not provided to encode worker")
                         })?;
-                        Some(resolve_overrides_for_row(
+                        let (overrides, drop_row) = resolve_overrides_for_row(
                             &mut access,
                             table,
                             &resolve_runtime,
@@ -4165,7 +4165,14 @@ impl IngestContext {
                             &mut resolve_scratch,
                             &mut resolve_shard_buf,
                             key_failures,
-                        )?)
+                        )?;
+                        // Encode-time orphan drop: skip the write so the row
+                        // never enters the shuffle/batch pool.
+                        if drop_row {
+                            node_data_dropped += 1;
+                            continue;
+                        }
+                        Some(overrides)
                     };
 
                     Self::write_node_row_from_access(
@@ -11464,6 +11471,17 @@ fn column_index(table: &TableSpec, name: &str) -> Result<usize> {
 // worker resolves the source column's PK reference value(s) to graph node-ids
 // (via the shared `RefResolver`) and feeds the result into the encoder through
 // a dedicated override channel — NO FK edge / no temp-edge push.
+/// Resolution column role, driving the encode-time orphan-drop rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResolveRole {
+    /// `entity_node_id` — unresolved anchor drops the row.
+    Anchor,
+    /// `target_node_ids` — an all-orphan list drops the row.
+    Positives,
+    /// `exclude_node_ids` — empty is fine, never drops.
+    Exclude,
+}
+
 struct ResolveColRuntime {
     /// Column index of the NEW node-id column in `table.columns`.
     node_id_idx: usize,
@@ -11473,6 +11491,8 @@ struct ResolveColRuntime {
     dst_table: String,
     /// Scalar vs list arity.
     kind: crate::config::ResolveKind,
+    /// Drop-rule role.
+    role: ResolveRole,
     /// Element/scalar key type used to read the source value (Int64 / VarBytes /
     /// Uuid / …), derived from the source column's ingested dtype.
     src_type: IngestedType,
@@ -11628,12 +11648,24 @@ fn build_resolve_runtime(
                 }
             }
         }
+        // Scalar = anchor; list `target_node_ids` = positives, else exclude.
+        let role = match spec.kind {
+            crate::config::ResolveKind::Scalar => ResolveRole::Anchor,
+            crate::config::ResolveKind::List => {
+                if spec.node_id_col == diskgraph_core::tt_builder::TARGET_NODE_IDS_COL {
+                    ResolveRole::Positives
+                } else {
+                    ResolveRole::Exclude
+                }
+            }
+        };
         let src_type = table.columns[src_idx].ingested_dtype.clone();
         out.push(ResolveColRuntime {
             node_id_idx,
             src_idx,
             dst_table: spec.dst_table.clone(),
             kind: spec.kind,
+            role,
             src_type,
         });
     }
@@ -11696,9 +11728,11 @@ fn resolve_overrides_for_row(
     scratch: &mut Vec<u8>,
     shard_buf: &mut Vec<u8>,
     key_failures: &mut KeyFailureState,
-) -> Result<Vec<diskgraph_rowpack::ResolveOverride>> {
+) -> Result<(Vec<diskgraph_rowpack::ResolveOverride>, bool)> {
     use crate::mapping::ResolveVerified;
     let mut overrides = vec![diskgraph_rowpack::ResolveOverride::None; num_columns];
+    // Row has no trainable anchor / positives → caller skips the write.
+    let mut drop_row = false;
     for spec in runtime {
         let shard_count = resolver.shard_count(&spec.dst_table).ok_or_else(|| {
             anyhow!(
@@ -11740,24 +11774,27 @@ fn resolve_overrides_for_row(
             crate::config::ResolveKind::Scalar => {
                 let col = &table.columns[spec.src_idx];
                 scratch.clear();
+                let mut resolved = false;
                 if key_from_access_into_buf(access, spec.src_idx, col, &spec.src_type, scratch)
-                    .is_err()
+                    .is_ok()
                 {
-                    continue; // null / parse failure → leave column null
-                }
-                let mut data: &[u8] = scratch.as_slice();
-                let key = match read_key_from_buf_for_type(&mut data, &spec.src_type) {
-                    Ok(k) => k,
-                    Err(_) => continue,
-                };
-                let shard = shard_for_key_from_key(&key, shard_buf, shard_count)?;
-                match resolver.resolve_verified_in_shard(&spec.dst_table, shard, &key)? {
-                    ResolveVerified::Resolved(node_id) => {
-                        overrides[spec.node_id_idx] =
-                            diskgraph_rowpack::ResolveOverride::Scalar(node_id);
+                    let mut data: &[u8] = scratch.as_slice();
+                    if let Ok(key) = read_key_from_buf_for_type(&mut data, &spec.src_type) {
+                        let shard = shard_for_key_from_key(&key, shard_buf, shard_count)?;
+                        match resolver.resolve_verified_in_shard(&spec.dst_table, shard, &key)? {
+                            ResolveVerified::Resolved(node_id) => {
+                                overrides[spec.node_id_idx] =
+                                    diskgraph_rowpack::ResolveOverride::Scalar(node_id);
+                                resolved = true;
+                            }
+                            // orphan → count; anchor row dropped below
+                            outcome => record_failure(key_failures, outcome, &key),
+                        }
                     }
-                    // orphan → leave None (null) + count
-                    outcome => record_failure(key_failures, outcome, &key),
+                }
+                // Anchor with no resolved node (orphan/null/unparsable) → drop row.
+                if !resolved && spec.role == ResolveRole::Anchor {
+                    drop_row = true;
                 }
             }
             crate::config::ResolveKind::List => {
@@ -11772,11 +11809,19 @@ fn resolve_overrides_for_row(
                         outcome => record_failure(key_failures, outcome, key),
                     }
                 }
+                // All positives orphaned (had keys, none resolved) → drop the row.
+                // A source-empty list is kept (not an orphan); exclude never drops.
+                if !keys.is_empty()
+                    && ids.is_empty()
+                    && spec.role == ResolveRole::Positives
+                {
+                    drop_row = true;
+                }
                 overrides[spec.node_id_idx] = diskgraph_rowpack::ResolveOverride::List(ids);
             }
         }
     }
-    Ok(overrides)
+    Ok((overrides, drop_row))
 }
 
 /// Coerce Uuid/Uuid256/Ip source data to VarBytes (String or Bytes target).

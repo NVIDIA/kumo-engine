@@ -1437,12 +1437,10 @@ fn test_sample_runtime_batch_e2e() {
     }
 }
 
-// Orphan seeds (FK references skipped at ingest — cross-graph TT reuse) must
-// be EXCLUDED from the sampling batch entirely. An orphan seed row has no
-// seed edge; the anchor walk emits one anchor per EDGE while task.target /
-// input_ids / timestamps are per ROW, so keeping the row would shift every
-// later row onto the wrong label. The exclusion must drop the row from ALL
-// row-aligned arrays consistently.
+// Orphan seeds (FK references absent from the training graph — cross-graph TT
+// reuse) are DROPPED at ingest, so the stage table is already clean. Sampling
+// over the surviving rows keeps every row-aligned array (labels, timestamps,
+// input_ids) consistent, with the orphan's row and label gone.
 #[test]
 fn test_sample_runtime_batch_excludes_orphan_seeds() {
     use diskgraph_core::dataset::DatasetId;
@@ -1451,9 +1449,8 @@ fn test_sample_runtime_batch_excludes_orphan_seeds() {
     };
 
     let tmp = tempdir().unwrap();
-    // Row 1's ENTITY1=50 is an orphan in the 16-user parent → it resolves to a
-    // null `entity_node_id` at ingest and is dropped from the batch at sample
-    // time (engine step 4b). Rows 0,2,3 are members.
+    // Row 1's ENTITY1=50 is an orphan in the 16-user parent → its row is dropped
+    // at ingest. The 3 surviving rows (0,2,3) compact to stage node ids 0,1,2.
     let parent_root =
         ingest_parent_with_orders_and_one_tt(&tmp, "tt_orph", &[0, 50, 2, 3]).unwrap();
     let reader = std::sync::Arc::new(
@@ -1483,11 +1480,12 @@ fn test_sample_runtime_batch_excludes_orphan_seeds() {
         swap_edge_direction: false,
     };
 
+    // Only the 3 surviving rows exist on disk; sample over their compacted ids.
     let batch = engine
         .sample_runtime_batch(
             reader.as_ref(),
             "tt_orph/train_seeds",
-            &[0u64, 1, 2, 3],
+            &[0u64, 1, 2],
             DatasetId::nil(),
             &plan,
             &flags,
@@ -1497,14 +1495,14 @@ fn test_sample_runtime_batch_excludes_orphan_seeds() {
             true,
             None,
         )
-        .expect("batch with a partial orphan must still sample");
+        .expect("clean post-drop stage must sample");
 
-    // The orphan row (stage node id 1) is gone from every row-aligned field.
+    // The orphan row never entered the extension; kept rows are compacted.
     assert_eq!(batch.task.input_ids, vec![0u32, 1, 2], "3 kept rows");
     assert_eq!(
         batch.task.tt_stage_node_ids,
-        vec![0u64, 2, 3],
-        "orphan stage row id 1 must be excluded"
+        vec![0u64, 1, 2],
+        "surviving rows compact to node ids 0,1,2 (orphan dropped at ingest)"
     );
     assert_eq!(
         batch.task.seed_node_ids,
@@ -1532,64 +1530,22 @@ fn test_sample_runtime_batch_excludes_orphan_seeds() {
     }
 }
 
-// A batch whose seeds ALL resolve to null `entity_node_id` (every ENTITY1 is an
-// orphan in this graph) cannot be sampled — fail loudly with a message pointing
-// at the orphan cause instead of anchoring nowhere.
+// A TT whose seeds are ALL orphan (every ENTITY1 is absent from this graph)
+// drops every row at ingest → the stage table is EMPTY. The all-orphan case is
+// handled at ingest (drop) + kumo (100%-skip warn/hard-fail), never at sample
+// time — so the engine never faces an anchor-nowhere batch.
 #[test]
-fn test_sample_runtime_batch_all_orphan_batch_errors() {
-    use diskgraph_core::dataset::DatasetId;
-    use diskgraph_core::sampling::{
-        AbsentKeyPolicy, FanoutSpec, LayerSpec, SamplingFlags, SamplingMode, SamplingPlan,
-    };
-
+fn test_all_orphan_tt_ingests_empty_stage() {
     let tmp = tempdir().unwrap();
     let parent_root =
         ingest_parent_with_orders_and_one_tt(&tmp, "tt_orph2", &[50, 99]).unwrap();
     let reader = std::sync::Arc::new(
         diskgraph_index::graph::GraphIndexReader::open_with_tt(&parent_root, "tt_orph2").unwrap(),
     );
-    let engine =
-        diskgraph_engine::engine::DiskGraphEngine::from_reader(reader.clone(), Some(42), Some(1))
-            .unwrap();
-    let plan = SamplingPlan {
-        layers: vec![LayerSpec {
-            fanouts: std::collections::HashMap::new(),
-            default_fanout: Some(FanoutSpec {
-                fanout: 4,
-                mode: SamplingMode::Uniform,
-                absent_key_policy: AbsentKeyPolicy::UniformFallback,
-            }),
-        }],
-    };
-    let flags = SamplingFlags {
-        replace: false,
-        directed: true,
-        disjoint: true,
-        return_edge_id: false,
-        adaptive: false,
-        fused_feature_fetching: false,
-        swap_edge_direction: false,
-    };
-
-    let err = engine
-        .sample_runtime_batch(
-            reader.as_ref(),
-            "tt_orph2/train_seeds",
-            &[0u64, 1],
-            DatasetId::nil(),
-            &plan,
-            &flags,
-            None,
-            Some("users"),
-            None,
-            true,
-            None,
-        )
-        .expect_err("an all-orphan batch must fail loudly");
-    let msg = format!("{err}");
-    assert!(
-        msg.contains("orphan"),
-        "error must explain the orphan cause: {msg}"
+    assert_eq!(
+        reader.table("tt_orph2/train_seeds").unwrap().node_count(),
+        0,
+        "every orphan seed row is dropped at ingest → empty stage"
     );
 }
 

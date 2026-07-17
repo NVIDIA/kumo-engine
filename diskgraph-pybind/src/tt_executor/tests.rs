@@ -782,9 +782,17 @@
             .unwrap()
             + manifest["key_failures"]["lookup_failures"].as_u64().unwrap();
         assert_eq!(mf_skipped, skipped, "manifest mirrors the result counters");
+        // The denominator stays the PRE-drop seed total, so kumo's orphan-% is
+        // "% of original seeds" even though the orphan rows are now dropped.
+        assert_eq!(
+            manifest["task_dataset"]["input_row_count"].as_u64(),
+            Some(total_rows),
+            "input_row_count is the pre-drop seed total"
+        );
 
-        // Golden: every non-null entity_node_id points at a G2 node whose PK
-        // is one of the surviving users {0,1,2}; orphan seeds are null.
+        // Golden: orphan-anchor seed rows are DROPPED at ingest — the stage holds
+        // only the survivors, every one resolving to a G2 node whose PK is a
+        // surviving user {0,1,2}. No null entity_node_id ever reaches disk.
         let ext = Path::new(&tt_ext);
         let reader = diskgraph_index::graph::GraphIndexReader::open(
             &ext.join("index_metadata.json"),
@@ -805,26 +813,27 @@
             })
             .collect();
         let table = reader.table("predict_seeds").unwrap();
-        assert_eq!(table.node_count(), total_rows, "all seed rows are kept");
-        let mut null_count = 0u64;
-        for node_id in 0..total_rows {
+        let survivors = total_rows - skipped;
+        assert_eq!(
+            table.node_count(),
+            survivors,
+            "orphan-anchor rows dropped; only survivors kept"
+        );
+        for node_id in 0..survivors {
             let view = table.edges_for_node(node_id).unwrap();
             let json = table
                 .decode_node_data_json(&view)
                 .unwrap()
                 .expect("node data present");
-            match json.get("entity_node_id").and_then(|v| v.as_u64()) {
-                Some(id) => assert!(
-                    valid_ids.contains(&id),
-                    "resolved id {id} must be a surviving G2 user node: {json}"
-                ),
-                None => null_count += 1,
-            }
+            let id = json
+                .get("entity_node_id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or_else(|| panic!("survivor must carry a resolved id: {json}"));
+            assert!(
+                valid_ids.contains(&id),
+                "resolved id {id} must be a surviving G2 user node: {json}"
+            );
         }
-        assert_eq!(
-            null_count, skipped,
-            "orphan seeds carry null entity_node_id, one per counted skip"
-        );
     }
 
     #[test]

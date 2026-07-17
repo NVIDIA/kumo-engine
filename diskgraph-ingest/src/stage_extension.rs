@@ -59,6 +59,8 @@ pub struct StageSidecarColumns {
 /// counters (see the contract on [`ingest_stage_extension_with_resolution`]).
 pub struct StageExtensionResult {
     pub counts: Vec<(String, u64)>,
+    /// Pre-drop seed total (kept + dropped) — kumo's orphan-% denominator.
+    pub input_row_count: u64,
     pub ts_groupings:
         std::collections::HashMap<String, crate::ts_grouping::StageGrouping>,
     pub binary_label_indexes:
@@ -266,6 +268,7 @@ pub fn ingest_stage_extension_with_resolution_and_sidecars(
             })?;
 
     let mut counts = Vec::with_capacity(stages.len());
+    let mut input_row_count = 0u64;
     for stage in stages {
         let node_count = reader
             .table(&stage.stage_table_name)
@@ -277,11 +280,19 @@ pub fn ingest_stage_extension_with_resolution_and_sidecars(
                 )
             })?
             .node_count();
+        // Pre-drop = kept node_count + rows dropped at encode.
+        let dropped = stats
+            .dropped_rows_counts
+            .get(&stage.stage_table_name)
+            .copied()
+            .unwrap_or(0);
+        input_row_count = input_row_count.saturating_add(node_count).saturating_add(dropped);
         counts.push((stage.stage_table_name.clone(), node_count));
     }
     let key_failures = key_failures_from_stats(&stats);
     Ok(StageExtensionResult {
         counts,
+        input_row_count,
         ts_groupings: stats.ts_groupings,
         binary_label_indexes: stats.binary_label_indexes,
         sample_weight_indexes: stats.sample_weight_indexes,

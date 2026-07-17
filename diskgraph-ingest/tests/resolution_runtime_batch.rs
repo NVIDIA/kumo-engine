@@ -467,16 +467,17 @@ fn test_resolution_runtime_batch_label_path() {
     );
 }
 
-/// Orphan seeds (entity references skipped at ingest — cross-graph TT reuse)
-/// carry a NULL `entity_node_id`. Sampling must EXCLUDE those rows entirely:
-/// reading the null slot would anchor at node 0, and every task array
-/// (ragged labels, timestamps, weights) is row-aligned with the anchors.
+/// Orphan seeds (entity references absent from the training graph — cross-graph
+/// TT reuse) are DROPPED at ingest, so they never reach the extension. Sampling
+/// over the surviving rows therefore sees a clean, compacted stage table with no
+/// null anchors and every row-aligned task array (ragged labels, timestamps,
+/// weights) intact.
 #[test]
-fn test_resolution_runtime_batch_excludes_orphan_seeds() {
+fn test_resolution_runtime_batch_orphan_dropped_at_ingest() {
     let tmp = tempdir().unwrap();
-    // Row 1's ENTITY1=50 is an orphan in the 8-user parent → null
-    // entity_node_id at ingest. Distinct per-row targets make label
-    // misalignment observable.
+    // Row 1's ENTITY1=50 is an orphan in the 8-user parent → the row is dropped
+    // at ingest. The 3 surviving rows compact to stage node ids 0,1,2. Distinct
+    // per-row targets make any label misalignment observable.
     let entities: Vec<i64> = vec![0, 50, 5, 7];
     let targets: Vec<Vec<i64>> = vec![vec![1], vec![2, 3], vec![6], vec![4, 2]];
     let parent_root =
@@ -484,6 +485,12 @@ fn test_resolution_runtime_batch_excludes_orphan_seeds() {
 
     let reader = Arc::new(
         diskgraph_index::graph::GraphIndexReader::open_with_tt(&parent_root, "tt_orph").unwrap(),
+    );
+    // The orphan row never entered the extension: 3 survivors, not 4.
+    assert_eq!(
+        reader.table("tt_orph/train_seeds").unwrap().node_count(),
+        3,
+        "orphan-anchor row dropped at ingest"
     );
     let engine =
         diskgraph_engine::engine::DiskGraphEngine::from_reader(reader.clone(), Some(42), Some(1))
@@ -493,7 +500,8 @@ fn test_resolution_runtime_batch_excludes_orphan_seeds() {
         .sample_runtime_batch(
             reader.as_ref(),
             "tt_orph/train_seeds",
-            &(0..entities.len() as u64).collect::<Vec<_>>(),
+            // All 3 surviving stage rows (no orphan slot to exclude).
+            &[0u64, 1, 2],
             DatasetId::nil(),
             &depth2_plan(),
             &flags(),
@@ -503,28 +511,28 @@ fn test_resolution_runtime_batch_excludes_orphan_seeds() {
             true,
             None,
         )
-        .expect("batch with a partial orphan must still sample");
+        .expect("clean post-drop stage must sample");
 
-    // The orphan row is gone from the anchors...
+    // Anchors are the member entities, in surviving order — no null slot 0.
     assert_eq!(
         batch.task.seed_node_ids,
         vec![0u64, 5, 7],
-        "null entity_node_id row must be excluded, never anchored at slot 0"
+        "seed set == surviving member anchors (orphan already dropped)"
     );
-    // ...and its labels are gone WITH it — the kept rows keep their own
-    // targets (no shift onto wrong anchors).
+    // Each kept row keeps its own targets — the dropped orphan's [2, 3] are gone.
     assert_eq!(
         batch.task.lp_pos_counts,
         vec![1u32, 1, 2],
-        "ragged label counts must realign with the kept rows"
+        "ragged label counts align with the surviving rows"
     );
     assert_eq!(
         batch.task.lp_pos_rhs_global,
         vec![1i64, 6, 4, 2],
-        "the orphan row's targets [2, 3] must be dropped with the row"
+        "the orphan row's targets [2, 3] are absent"
     );
     assert_eq!(batch.task.input_ids, vec![0u32, 1, 2]);
-    assert_eq!(batch.task.tt_stage_node_ids, vec![0u64, 2, 3]);
+    // Node ids are compacted (0,1,2), not the pre-drop (0,2,3).
+    assert_eq!(batch.task.tt_stage_node_ids, vec![0u64, 1, 2]);
 }
 
 /// The positive is a LABEL, never rooted — `seed_nodes[rhs]` stays empty. We
