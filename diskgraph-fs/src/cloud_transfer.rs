@@ -1335,8 +1335,21 @@ fn env_u64(name: &str, default: u64) -> u64 {
 }
 
 fn default_cloud_max_bytes() -> u64 {
-    let total = host_mem_bytes().unwrap_or(8 * 1024 * 1024 * 1024);
-    total.saturating_mul(75) / 100
+    let total = effective_mem_bytes().unwrap_or(8 * 1024 * 1024 * 1024);
+    total / 4
+}
+
+#[cfg(target_os = "linux")]
+fn effective_mem_bytes() -> Option<u64> {
+    let host = host_mem_bytes().unwrap_or(0);
+    let cgroup = cgroup_mem_limit().unwrap_or(u64::MAX);
+    let effective = host.min(cgroup);
+    (effective > 0).then_some(effective)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn effective_mem_bytes() -> Option<u64> {
+    host_mem_bytes()
 }
 
 #[cfg(target_os = "linux")]
@@ -1353,6 +1366,58 @@ fn host_mem_bytes() -> Option<u64> {
     None
 }
 
+#[cfg(target_os = "linux")]
+fn cgroup_v2_self_path() -> Option<String> {
+    let contents = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    contents
+        .lines()
+        .find_map(|line| line.strip_prefix("0::").map(|path| path.trim().to_string()))
+}
+
+#[cfg(target_os = "linux")]
+fn cgroup_mem_limit() -> Option<u64> {
+    let read = |path: &Path| std::fs::read_to_string(path).ok();
+    resolve_tightest_mem_limit(cgroup_v2_self_path().as_deref(), &read)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn resolve_tightest_mem_limit(
+    self_cgroup: Option<&str>,
+    read: &impl Fn(&Path) -> Option<String>,
+) -> Option<u64> {
+    let parse = |value: &str| {
+        let value = value.trim();
+        (value != "max").then(|| value.parse::<u64>().ok()).flatten()
+    };
+    let mut tightest = None;
+
+    if let Some(self_path) = self_cgroup {
+        let root = Path::new("/sys/fs/cgroup");
+        let mut current = root.join(self_path.trim_start_matches('/'));
+        loop {
+            if let Some(limit) = read(&current.join("memory.max")).and_then(|v| parse(&v)) {
+                tightest = Some(tightest.map_or(limit, |prior: u64| prior.min(limit)));
+            }
+            if current == root || !current.pop() {
+                break;
+            }
+        }
+    }
+
+    if let Some(limit) = read(Path::new("/sys/fs/cgroup/memory.max")).and_then(|v| parse(&v)) {
+        tightest = Some(tightest.map_or(limit, |prior: u64| prior.min(limit)));
+    }
+    if tightest.is_some() {
+        return tightest;
+    }
+
+    read(Path::new(
+        "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+    ))
+    .and_then(|value| value.trim().parse::<u64>().ok())
+    .filter(|limit| *limit < u64::MAX / 2)
+}
+
 #[cfg(not(target_os = "linux"))]
 fn host_mem_bytes() -> Option<u64> {
     None
@@ -1362,6 +1427,7 @@ fn host_mem_bytes() -> Option<u64> {
 mod tests {
     use super::*;
     use object_store::memory::InMemory;
+    use std::collections::HashMap;
     use std::sync::Once;
 
     fn init_tracing() {
@@ -1374,6 +1440,29 @@ mod tests {
                 .with_test_writer()
                 .try_init();
         });
+    }
+
+    #[test]
+    fn cgroup_memory_uses_tightest_ancestor_limit() {
+        let files = HashMap::from([
+            (
+                "/sys/fs/cgroup/slice/leaf/memory.max".to_string(),
+                "8589934592\n".to_string(),
+            ),
+            (
+                "/sys/fs/cgroup/slice/memory.max".to_string(),
+                "4294967296\n".to_string(),
+            ),
+            (
+                "/sys/fs/cgroup/memory.max".to_string(),
+                "max\n".to_string(),
+            ),
+        ]);
+        let read = |path: &Path| files.get(&path.to_string_lossy().into_owned()).cloned();
+        assert_eq!(
+            resolve_tightest_mem_limit(Some("/slice/leaf"), &read),
+            Some(4_294_967_296)
+        );
     }
 
     #[test]

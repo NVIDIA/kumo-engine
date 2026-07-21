@@ -125,11 +125,19 @@ Nodes are distributed across shards by hashing the primary key: `gxhash(pk_bytes
 The encode phase uses a producer-consumer pipeline:
 
 ```
-Per-table encode task (reader thread)
-  → NodeBatcher: buffers rows by shard, flushes at buffer limit
+Loader pool → resident source (local file or complete cloud object in RAM)
+  → ordered node-file tasks or edge row-group partitions → shared encode pool
+    → NodeBatcher: buffers rows by shard, flushes at buffer limit
     → SyncSender<NodeWriteMessage>
       → NodeWritePool: N consumer threads write to shard files
 ```
+
+One reader abstraction covers local files and complete S3, GCS, or ADLS
+downloads. A bounded loader pool feeds work to the full encode pool. Node files
+remain single ordered tasks so primary-key deduplication and PK-less row IDs are
+stable within each source file; edge files can fan row groups out in parallel.
+Cloud buffers default to at most 25% of the tighter of host RAM and the active
+cgroup limit.
 
 `NodeBatcher` maintains per-shard buffers for node data, primary keys, and foreign keys. It flushes when any shard buffer exceeds `EDGE_BATCH_TARGET_BYTES / num_shards`. This keeps memory bounded regardless of input size.
 
@@ -141,7 +149,9 @@ If `--col-stats` is enabled, the encode phase attaches a `ColumnValueObserver` t
 
 ### Duplicate PK Handling
 
-When multiple rows share the same PK value, the last row (by input order) wins. Earlier duplicates are dropped. Duplicate counts are tracked per table and reported in ingest stats, with up to 10 sample values for debugging.
+When multiple rows share the same PK value, the first encoded row wins and later
+duplicates are dropped. Duplicate counts are tracked per table and reported in
+ingest stats, with up to 10 sample values for debugging.
 
 **What to watch when changing**: The encode phase's memory usage is bounded by batch buffer sizes, not by table size. If you add per-row state that grows with the table, you'll break the streaming property. Keep per-row state in the observer pattern (see col stats) or accumulate in fixed-size structures.
 

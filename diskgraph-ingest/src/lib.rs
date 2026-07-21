@@ -66,13 +66,14 @@ use arrow_array::{Array, ArrayRef};
 use arrow_schema::{DataType, Field, Schema};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use bytes::Bytes;
 use diskgraph_core::metadata::{
     DatasetMetadata, EdgeRelationMetadata, EdgeShardMetadata, EdgeSortKeyMetadata,
     EdgeSortKeyTimestampEncoding, EdgeSortKeyTimestampKind, EdgeSortKeyTimestampMetadata,
     EdgeSortKeyWeightEncoding, EdgeSortKeyWeightKind, EdgeSortKeyWeightMetadata, EdgeStorageFormat,
     NodeDataCompression, NodeShardMetadata, NodeTypeMetadata, PrimaryKeyMap,
 };
-use diskgraph_fs::CloudTransfer;
+use diskgraph_fs::{CloudTransfer, PooledBytes};
 use diskgraph_index::builder::{EdgeBufferPool as IndexEdgeBufferPool, MemoryBudget};
 use diskgraph_index::graph::{GraphDataSource, GraphIndexBuilder, GraphProgressSink};
 use diskgraph_rowpack::{
@@ -86,14 +87,15 @@ use half::f16;
 use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 use memmap2::Mmap;
 use num_traits::{Signed, ToPrimitive};
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ParquetRecordBatchReaderBuilder};
+use parquet::file::reader::{ChunkReader, Length};
 use pprof::protos::Message;
 use pprof::ProfilerGuard;
 use ptr_hash::DefaultPtrHash;
 use ptr_hash::PtrHashScratch;
 use serde_json::Value as JsonValue;
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{self as std_io, BufWriter, Cursor, Read, Write};
@@ -2084,6 +2086,189 @@ struct TempNodeFileResult {
     node_data_dropped: u64,
 }
 
+/// A local file or a complete pooled cloud download shared by row-group tasks.
+enum ResidentSource {
+    Local(PathBuf),
+    Cloud(PooledBytes),
+}
+
+enum ResidentReader {
+    Local(fs::File),
+    Cloud(Bytes),
+}
+
+impl Length for ResidentReader {
+    fn len(&self) -> u64 {
+        match self {
+            Self::Local(file) => file.metadata().map(|meta| meta.len()).unwrap_or(0),
+            Self::Cloud(bytes) => bytes.len() as u64,
+        }
+    }
+}
+
+impl ChunkReader for ResidentReader {
+    type T = Box<dyn Read + Send>;
+
+    fn get_read(&self, start: u64) -> parquet::errors::Result<Self::T> {
+        match self {
+            Self::Local(file) => Ok(Box::new(ChunkReader::get_read(file, start)?)),
+            Self::Cloud(bytes) => Ok(Box::new(ChunkReader::get_read(bytes, start)?)),
+        }
+    }
+
+    fn get_bytes(&self, start: u64, length: usize) -> parquet::errors::Result<Bytes> {
+        match self {
+            Self::Local(file) => ChunkReader::get_bytes(file, start, length),
+            Self::Cloud(bytes) => ChunkReader::get_bytes(bytes, start, length),
+        }
+    }
+}
+
+impl ResidentSource {
+    fn reader(&self, willneed: bool) -> Result<ResidentReader> {
+        match self {
+            Self::Local(path) => {
+                let file = fs::File::open(path)
+                    .with_context(|| format!("open resident source {}", path.display()))?;
+                if willneed {
+                    advise_file_willneed(&file);
+                }
+                Ok(ResidentReader::Local(file))
+            }
+            Self::Cloud(bytes) => Ok(ResidentReader::Cloud(bytes.bytes())),
+        }
+    }
+}
+
+struct ResidentFile {
+    source: ResidentSource,
+    parquet_metadata: Option<ArrowReaderMetadata>,
+}
+
+impl ResidentFile {
+    fn load(path: &str, format: TableFormat, transfer: Option<&CloudTransfer>) -> Result<Self> {
+        let source = if is_cloud_path(path) {
+            let transfer =
+                transfer.ok_or_else(|| anyhow!("cloud input transfer unavailable for {path}"))?;
+            ResidentSource::Cloud(download_cloud_bytes(transfer, path)?)
+        } else {
+            fs::metadata(path).with_context(|| format!("stat {path}"))?;
+            ResidentSource::Local(PathBuf::from(path))
+        };
+        let parquet_metadata = if format == TableFormat::Parquet {
+            // Advise the local file once while loading metadata. Partition
+            // readers must not repeatedly prefetch the complete file.
+            let reader = source.reader(true)?;
+            Some(ArrowReaderMetadata::load(&reader, Default::default())?)
+        } else {
+            None
+        };
+        Ok(Self {
+            source,
+            parquet_metadata,
+        })
+    }
+}
+
+type EncodePartition = Option<Vec<usize>>;
+
+fn parquet_encode_partitions(
+    table: &TableSpec,
+    resident: &ResidentFile,
+) -> Result<Vec<EncodePartition>> {
+    let metadata = resident
+        .parquet_metadata
+        .as_ref()
+        .ok_or_else(|| anyhow!("missing Parquet metadata for table {}", table.name))?;
+    let target_bytes = std::env::var("DISKGRAPH_ENCODE_PARTITION_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1024 * 1024 * 1024);
+    let compressed_row_group_bytes: Vec<u64> = metadata
+        .metadata()
+        .row_groups()
+        .iter()
+        .map(|row_group| row_group.compressed_size().max(0) as u64)
+        .collect();
+    Ok(plan_parquet_encode_partitions(
+        table.edge_table.is_none(),
+        &compressed_row_group_bytes,
+        target_bytes,
+    ))
+}
+
+fn plan_parquet_encode_partitions(
+    is_node_table: bool,
+    compressed_row_group_bytes: &[u64],
+    target_bytes: u64,
+) -> Vec<EncodePartition> {
+    if compressed_row_group_bytes.is_empty() {
+        return vec![Some(Vec::new())];
+    }
+
+    // Preserve source order for node tables. PK-bearing tables need stable
+    // duplicate resolution, while PK-less tables need a complete-file row
+    // ordinal for sharding. Edge tables can safely fan row groups out.
+    if is_node_table {
+        return vec![Some((0..compressed_row_group_bytes.len()).collect())];
+    }
+
+    let mut partitions = Vec::new();
+    let mut current = Vec::new();
+    let mut current_bytes = 0u64;
+    for (idx, row_group_bytes) in compressed_row_group_bytes.iter().copied().enumerate() {
+        current.push(idx);
+        current_bytes = current_bytes.saturating_add(row_group_bytes);
+        if current_bytes >= target_bytes {
+            partitions.push(Some(std::mem::take(&mut current)));
+            current_bytes = 0;
+        }
+    }
+    if !current.is_empty() {
+        partitions.push(Some(current));
+    }
+    partitions
+}
+
+fn catch_encode_worker_panic<T>(context: &str, run: impl FnOnce() -> Result<T>) -> Result<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).unwrap_or_else(|payload| {
+        let detail = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("unknown panic");
+        Err(anyhow!("{context} panicked: {detail}"))
+    })
+}
+
+#[cfg(test)]
+mod resident_encode_tests {
+    use super::*;
+
+    #[test]
+    fn node_row_groups_stay_in_one_ordered_partition() {
+        assert_eq!(
+            plan_parquet_encode_partitions(true, &[8, 8, 8], 1),
+            vec![Some(vec![0, 1, 2])]
+        );
+    }
+
+    #[test]
+    fn edge_row_groups_split_at_the_target() {
+        assert_eq!(
+            plan_parquet_encode_partitions(false, &[8, 8, 8], 16),
+            vec![Some(vec![0, 1]), Some(vec![2])]
+        );
+    }
+
+    #[test]
+    fn encode_worker_panics_become_errors() {
+        let error = catch_encode_worker_panic::<()>("test worker", || panic!("boom"))
+            .expect_err("panic should become an error");
+        assert!(error.to_string().contains("test worker panicked: boom"));
+    }
+}
+
 #[derive(Clone)]
 struct RelationDef {
     name: String,
@@ -3296,6 +3481,17 @@ impl IngestContext {
         fs::create_dir_all(&temp_root)?;
         let mut table_rows: HashMap<String, u64> = HashMap::new();
         let tables = self.source.tables.clone();
+        let mut node_encoders = HashMap::new();
+        for table in tables.iter().filter(|table| table.edge_table.is_none()) {
+            let ctx_path = root.join(temp_node_context_path(&table.name));
+            let ctx_bytes = fs::read(&ctx_path)
+                .with_context(|| format!("read node context {}", ctx_path.display()))?;
+            let node_context = diskgraph_rowpack::RowPackContext::from_bytes(&ctx_bytes)?;
+            node_encoders.insert(
+                table.name.clone(),
+                Arc::new(RowPackEncoder::new(node_context)?),
+            );
+        }
         struct EncodeResult {
             table: String,
             total_rows: u64,
@@ -3304,9 +3500,19 @@ impl IngestContext {
             file_col_stats: Option<crate::col_stats::FileColStats>,
         }
 
-        let (tx, rx) = std::sync::mpsc::channel::<Result<EncodeResult>>();
-        let mut tasks = Vec::new();
-        let relationships = self.relationships.clone();
+        struct LoadedFile {
+            table: Arc<TableSpec>,
+            resident: Arc<ResidentFile>,
+            partitions: Vec<EncodePartition>,
+            resume: std::sync::mpsc::Sender<()>,
+        }
+
+        enum EncodeEvent {
+            Loaded(Result<LoadedFile>),
+            Encoded(Result<EncodeResult>),
+        }
+
+        let relationships = Arc::new(self.relationships.clone());
         let relation_defs = std::sync::Arc::new(self.relation_defs.clone());
         let fk_edge_targets = std::sync::Arc::new(self.fk_edge_targets.clone());
         let num_shards = self.num_shards;
@@ -3324,7 +3530,6 @@ impl IngestContext {
         let dest_key_errors = dest_key_pool.error();
         let input_transfer = self.input_transfer.clone();
         let trimmed_strings = std::sync::Arc::clone(&self.trimmed_strings);
-        let progress = self.progress.clone();
         let col_stats_enabled = self.col_stats;
         let cat_count_strategy = self.cat_count_strategy;
         let row_subsample = self.row_subsample;
@@ -3352,7 +3557,6 @@ impl IngestContext {
         } else {
             HashMap::new()
         };
-
         // FK-free LP resolution mode: load the parent pkmap(s) ONCE here, before
         // the parallel encode pass, and share read-only via Arc so each encode
         // worker can resolve PK reference columns to graph node-ids inline (no
@@ -3379,6 +3583,7 @@ impl IngestContext {
                 )?))
             };
 
+        let mut files = Vec::new();
         for table in &tables {
             if let Some(cb) = &self.progress {
                 cb(ProgressEvent {
@@ -3391,196 +3596,303 @@ impl IngestContext {
                     status: None,
                 });
             }
-            let table = table.clone();
-            let relationships = relationships.clone();
-            let target = std::sync::Arc::clone(&target);
-            let node_senders = std::sync::Arc::clone(&node_senders);
-            let edge_senders = std::sync::Arc::clone(&edge_senders);
-            let trimmed_strings = std::sync::Arc::clone(&trimmed_strings);
-            let progress = progress.clone();
-            let root = root.clone();
-            let relation_defs = std::sync::Arc::clone(&relation_defs);
-            let fk_edge_targets = std::sync::Arc::clone(&fk_edge_targets);
-            let table_cat = table_cat_counts.get(&table.name).cloned();
-            let resolve_columns = std::sync::Arc::clone(&resolve_columns);
-            let ref_resolver = ref_resolver.clone();
-            let sidecars = self
-                .stage_sidecars
-                .get(&table.name)
-                .cloned()
-                .unwrap_or_default();
-            let file_count = table.get_paths().len();
-            for file_idx in 0..file_count {
-                let table = table.clone();
-                let sidecars = sidecars.clone();
-                let relationships = relationships.clone();
-                let target = std::sync::Arc::clone(&target);
-                let node_senders = std::sync::Arc::clone(&node_senders);
-                let node_errors = std::sync::Arc::clone(&node_errors);
-                let edge_senders = std::sync::Arc::clone(&edge_senders);
-                let dest_key_senders = std::sync::Arc::clone(&dest_key_senders);
-                let dest_key_errors = std::sync::Arc::clone(&dest_key_errors);
-                let trimmed_strings = std::sync::Arc::clone(&trimmed_strings);
-                let progress = progress.clone();
-                let root = root.clone();
-                let relation_defs = std::sync::Arc::clone(&relation_defs);
-                let fk_edge_targets = std::sync::Arc::clone(&fk_edge_targets);
-                let input_transfer = input_transfer.clone();
-                let tx = tx.clone();
-                let edge_errors = std::sync::Arc::clone(&edge_errors);
-                let table_cat = table_cat.clone();
-                let resolve_columns = std::sync::Arc::clone(&resolve_columns);
-                let ref_resolver = ref_resolver.clone();
-                tasks.push(WorkItem {
-                    bucket: None,
-                    run: Box::new(move |_scratch| {
-                        let mut key_failures = KeyFailureState::default();
-                        if table.edge_table.is_some() {
-                            let node_data_dropped = Self::build_temp_edge_file(
-                                &table,
-                                file_idx,
-                                num_shards,
-                                &target,
-                                input_transfer.clone(),
-                                &trimmed_strings,
-                                &progress,
-                                &mut key_failures,
-                                &edge_senders,
-                                &edge_errors,
-                                &dest_key_senders,
-                                &dest_key_errors,
-                                relation_defs.as_ref(),
-                                &fk_edge_targets,
-                            )?;
-                            tx.send(Ok(EncodeResult {
-                                table: table.name.clone(),
-                                total_rows: 0,
-                                node_data_dropped,
-                                key_failures,
-                                file_col_stats: None,
-                            }))
-                            .map_err(|e| anyhow!("encode output error: {e}"))?;
-                            return Ok(());
-                        }
-                        let (node, file_stats) = if col_stats_enabled {
-                            let mut obs = if let Some(ref tc) = table_cat {
-                                crate::col_stats::FileColStats::new_with_categories(
-                                    &table.columns,
-                                    std::sync::Arc::clone(tc),
-                                )
-                            } else {
-                                crate::col_stats::FileColStats::new(&table.columns)
-                            };
-                            let result = Self::build_temp_node_file(
-                                &table,
-                                &relationships,
-                                &relation_defs,
-                                file_idx,
-                                num_shards,
-                                &target,
-                                &root,
-                                input_transfer.clone(),
-                                &trimmed_strings,
-                                &progress,
-                                &mut key_failures,
-                                &node_senders,
-                                &node_errors,
-                                &dest_key_senders,
-                                &dest_key_errors,
-                                &fk_edge_targets,
-                                &resolve_columns,
-                                ref_resolver.as_deref(),
-                                &sidecars,
-                                &mut obs,
-                            )?;
-                            // Flush local category counts to shared state (Approach 3)
-                            obs.flush_categories();
-                            (result, Some(obs))
-                        } else {
-                            let result = Self::build_temp_node_file(
-                                &table,
-                                &relationships,
-                                &relation_defs,
-                                file_idx,
-                                num_shards,
-                                &target,
-                                &root,
-                                input_transfer.clone(),
-                                &trimmed_strings,
-                                &progress,
-                                &mut key_failures,
-                                &node_senders,
-                                &node_errors,
-                                &dest_key_senders,
-                                &dest_key_errors,
-                                &fk_edge_targets,
-                                &resolve_columns,
-                                ref_resolver.as_deref(),
-                                &sidecars,
-                                &mut diskgraph_rowpack::NoOpObserver,
-                            )?;
-                            (result, None)
-                        };
-                        tx.send(Ok(EncodeResult {
-                            table: table.name.clone(),
-                            total_rows: node.total_rows,
-                            node_data_dropped: node.node_data_dropped,
-                            key_failures,
-                            file_col_stats: file_stats,
-                        }))
-                        .map_err(|e| anyhow!("encode output error: {e}"))?;
-                        Ok(())
-                    }),
-                });
+            let table = Arc::new(table.clone());
+            for file_idx in 0..table.get_paths().len() {
+                files.push((Arc::clone(&table), file_idx));
             }
         }
-        drop(tx);
-        let task_count = tasks.len();
+        let file_count = files.len();
+
+        let encode_threads = if self.parallel {
+            self.encode_threads
+                .unwrap_or_else(default_worker_threads)
+                .max(1)
+        } else {
+            1
+        };
+        let loader_threads = std::env::var("DISKGRAPH_ENCODE_LOADER_THREADS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or_else(|| {
+                if self.parallel {
+                    (encode_threads / 8).clamp(2, 16)
+                } else {
+                    1
+                }
+            })
+            .max(1);
+        let target_tasks = encode_threads.saturating_mul(3).div_ceil(2).max(1);
         let pool = self.make_pool::<()>(IngestPhase::Encode);
-        run_tasks(tasks, &pool)?;
-        // Per-table col stats accumulator (Option C: merge on receive side)
+        let loader_pool = TaskPool::<()>::new(loader_threads);
+        // Declare the event channel after both pools so early returns drop its
+        // queued resume senders before TaskPool::drop joins blocked loaders.
+        let (tx, rx) = std::sync::mpsc::channel::<EncodeEvent>();
+        let progress = self.progress.clone();
+        for (table, file_idx) in files {
+            let input_transfer = input_transfer.clone();
+            let tx = tx.clone();
+            loader_pool.submit(WorkItem {
+                bucket: None,
+                run: Box::new(move |_scratch| {
+                    let (resume, ready) = std::sync::mpsc::channel();
+                    let result =
+                        catch_encode_worker_panic("encode loader", || -> Result<LoadedFile> {
+                            let path = &table.get_paths()[file_idx];
+                            let resident = Arc::new(ResidentFile::load(
+                                path,
+                                table.format(),
+                                input_transfer.as_ref(),
+                            )?);
+                            let partitions = match table.format() {
+                                TableFormat::Parquet => {
+                                    let metadata =
+                                        resident.parquet_metadata.as_ref().ok_or_else(|| {
+                                            anyhow!("missing Parquet metadata for {path}")
+                                        })?;
+                                    validate_parquet_column_types(
+                                        metadata.schema(),
+                                        &table.columns,
+                                        path,
+                                    )?;
+                                    parquet_encode_partitions(&table, &resident)?
+                                }
+                                TableFormat::Csv => vec![None],
+                            };
+                            Ok(LoadedFile {
+                                table,
+                                resident,
+                                partitions,
+                                resume,
+                            })
+                        });
+                    let wait = result.is_ok();
+                    tx.send(EncodeEvent::Loaded(result))
+                        .map_err(|e| anyhow!("loader output error: {e}"))?;
+                    if wait {
+                        ready
+                            .recv()
+                            .map_err(|e| anyhow!("loader admission error: {e}"))?;
+                    }
+                    Ok(())
+                }),
+            })?;
+        }
+
+        let mut loaded_files = 0usize;
+        let mut active_tasks = 0usize;
+        let mut waiting_loaders = VecDeque::new();
         let mut table_col_stats: HashMap<String, crate::col_stats::FileColStats> = HashMap::new();
-        for _ in 0..task_count {
-            let result = rx
+        while loaded_files < file_count || active_tasks > 0 {
+            match rx
                 .recv()
-                .map_err(|e| anyhow!("encode output error: {e}"))??;
-            if let Some(total) = table_rows.get_mut(&result.table) {
-                *total = total.saturating_add(result.total_rows);
-            } else if result.total_rows > 0 {
-                table_rows.insert(result.table.clone(), result.total_rows);
+                .map_err(|e| anyhow!("encode pipeline error: {e}"))?
+            {
+                EncodeEvent::Loaded(loaded) => {
+                    loaded_files += 1;
+                    let loaded = loaded?;
+                    let sidecars = self
+                        .stage_sidecars
+                        .get(&loaded.table.name)
+                        .cloned()
+                        .unwrap_or_default();
+                    active_tasks = active_tasks.saturating_add(loaded.partitions.len());
+                    let remaining =
+                        Arc::new(std::sync::atomic::AtomicUsize::new(loaded.partitions.len()));
+                    for partition in loaded.partitions {
+                        let resident = Arc::clone(&loaded.resident);
+                        let table = Arc::clone(&loaded.table);
+                        let relationships = Arc::clone(&relationships);
+                        let node_senders = Arc::clone(&node_senders);
+                        let node_errors = Arc::clone(&node_errors);
+                        let edge_senders = Arc::clone(&edge_senders);
+                        let dest_key_senders = Arc::clone(&dest_key_senders);
+                        let dest_key_errors = Arc::clone(&dest_key_errors);
+                        let trimmed_strings = Arc::clone(&trimmed_strings);
+                        let node_encoder = node_encoders.get(&table.name).cloned();
+                        let relation_defs = Arc::clone(&relation_defs);
+                        let fk_edge_targets = Arc::clone(&fk_edge_targets);
+                        let edge_errors = Arc::clone(&edge_errors);
+                        let table_cat = table_cat_counts.get(&table.name).cloned();
+                        let resolve_columns = Arc::clone(&resolve_columns);
+                        let ref_resolver = ref_resolver.clone();
+                        let sidecars = sidecars.clone();
+                        let remaining = Arc::clone(&remaining);
+                        let progress = progress.clone();
+                        let tx = tx.clone();
+                        pool.submit(WorkItem {
+                            bucket: None,
+                            run: Box::new(move |_scratch| {
+                                let result = catch_encode_worker_panic(
+                                    "encode partition worker",
+                                    || -> Result<EncodeResult> {
+                                        let mut key_failures = KeyFailureState::default();
+                                        if table.edge_table.is_some() {
+                                            let node_data_dropped =
+                                                Self::build_temp_edge_partition(
+                                                    &table,
+                                                    &resident,
+                                                    &partition,
+                                                    num_shards,
+                                                    &trimmed_strings,
+                                                    &mut key_failures,
+                                                    &edge_senders,
+                                                    &edge_errors,
+                                                    &dest_key_senders,
+                                                    &dest_key_errors,
+                                                    relation_defs.as_ref(),
+                                                    &fk_edge_targets,
+                                                )?;
+                                            return Ok(EncodeResult {
+                                                table: table.name.clone(),
+                                                total_rows: 0,
+                                                node_data_dropped,
+                                                key_failures,
+                                                file_col_stats: None,
+                                            });
+                                        }
+                                        let node_encoder =
+                                            node_encoder.as_deref().ok_or_else(|| {
+                                                anyhow!(
+                                                    "missing node encoder for table {}",
+                                                    table.name
+                                                )
+                                            })?;
+                                        let (node, file_stats) = if col_stats_enabled {
+                                            let mut obs = if let Some(ref tc) = table_cat {
+                                                crate::col_stats::FileColStats::new_with_categories(
+                                                    &table.columns,
+                                                    Arc::clone(tc),
+                                                )
+                                            } else {
+                                                crate::col_stats::FileColStats::new(&table.columns)
+                                            };
+                                            let node = Self::build_temp_node_partition(
+                                                &table,
+                                                &resident,
+                                                &partition,
+                                                &relationships,
+                                                &relation_defs,
+                                                num_shards,
+                                                node_encoder,
+                                                &trimmed_strings,
+                                                &mut key_failures,
+                                                &node_senders,
+                                                &node_errors,
+                                                &dest_key_senders,
+                                                &dest_key_errors,
+                                                &fk_edge_targets,
+                                                &resolve_columns,
+                                                ref_resolver.as_deref(),
+                                                &sidecars,
+                                                &mut obs,
+                                            )?;
+                                            obs.flush_categories();
+                                            (node, Some(obs))
+                                        } else {
+                                            (
+                                                Self::build_temp_node_partition(
+                                                    &table,
+                                                    &resident,
+                                                    &partition,
+                                                    &relationships,
+                                                    &relation_defs,
+                                                    num_shards,
+                                                    node_encoder,
+                                                    &trimmed_strings,
+                                                    &mut key_failures,
+                                                    &node_senders,
+                                                    &node_errors,
+                                                    &dest_key_senders,
+                                                    &dest_key_errors,
+                                                    &fk_edge_targets,
+                                                    &resolve_columns,
+                                                    ref_resolver.as_deref(),
+                                                    &sidecars,
+                                                    &mut diskgraph_rowpack::NoOpObserver,
+                                                )?,
+                                                None,
+                                            )
+                                        };
+                                        let result = EncodeResult {
+                                            table: table.name.clone(),
+                                            total_rows: node.total_rows,
+                                            node_data_dropped: node.node_data_dropped,
+                                            key_failures,
+                                            file_col_stats: file_stats,
+                                        };
+                                        if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
+                                            if let Some(cb) = progress {
+                                                cb(ProgressEvent {
+                                                    phase: ProgressPhase::Encode,
+                                                    table: table.name.clone(),
+                                                    shard: None,
+                                                    kind: ProgressKind::Advance,
+                                                    delta: 1,
+                                                    total: Some(table.get_paths().len() as u64),
+                                                    status: None,
+                                                });
+                                            }
+                                        }
+                                        Ok(result)
+                                    },
+                                );
+                                let sent = tx
+                                    .send(EncodeEvent::Encoded(result))
+                                    .map_err(|e| anyhow!("encode output error: {e}"));
+                                sent
+                            }),
+                        })?;
+                    }
+                    if active_tasks < target_tasks {
+                        let _ = loaded.resume.send(());
+                    } else {
+                        waiting_loaders.push_back(loaded.resume);
+                    }
+                }
+                EncodeEvent::Encoded(result) => {
+                    active_tasks = active_tasks.saturating_sub(1);
+                    if active_tasks < target_tasks {
+                        if let Some(resume) = waiting_loaders.pop_front() {
+                            let _ = resume.send(());
+                        }
+                    }
+                    let result = result?;
+                    if let Some(total) = table_rows.get_mut(&result.table) {
+                        *total = total.saturating_add(result.total_rows);
+                    } else if result.total_rows > 0 {
+                        table_rows.insert(result.table.clone(), result.total_rows);
+                    }
+                    if result.node_data_dropped > 0 {
+                        let count = self
+                            .dropped_rows_counts
+                            .entry(result.table.clone())
+                            .or_insert(0);
+                        *count = count.saturating_add(result.node_data_dropped);
+                    }
+                    self.merge_key_failures(result.key_failures);
+                    if let Some(mut file_stats) = result.file_col_stats {
+                        table_col_stats
+                            .entry(result.table.clone())
+                            .and_modify(|acc| acc.merge(&mut file_stats))
+                            .or_insert(file_stats);
+                    }
+                }
             }
-            if result.node_data_dropped > 0 {
-                let entry = self
-                    .dropped_rows_counts
-                    .entry(result.table.clone())
-                    .or_insert(0);
-                *entry = entry.saturating_add(result.node_data_dropped);
-            }
-            self.merge_key_failures(result.key_failures);
-            // Merge per-file col stats into per-table accumulator
-            if let Some(mut file_stats) = result.file_col_stats {
-                table_col_stats
-                    .entry(result.table.clone())
-                    .and_modify(|acc| acc.merge(&mut file_stats))
-                    .or_insert(file_stats);
-            }
-            if let Some(cb) = &self.progress {
-                let expected = tables
-                    .iter()
-                    .find(|t| t.name == result.table)
-                    .map(|t| t.get_paths().len() as u64)
-                    .unwrap_or(0);
+        }
+        if let Some(cb) = &self.progress {
+            for table in &tables {
                 cb(ProgressEvent {
                     phase: ProgressPhase::Encode,
-                    table: result.table.clone(),
+                    table: table.name.clone(),
                     shard: None,
                     kind: ProgressKind::Finish,
                     delta: 0,
-                    total: Some(expected),
+                    total: Some(table.get_paths().len() as u64),
                     status: None,
                 });
             }
         }
+        drop(tx);
         // Write col_stats.json if enabled
         if col_stats_enabled && !table_col_stats.is_empty() {
             // Check for timestamp parse failures before writing stats
@@ -3961,17 +4273,15 @@ impl IngestContext {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn build_temp_node_file<O: diskgraph_rowpack::ColumnValueObserver>(
+    fn build_temp_node_partition<O: diskgraph_rowpack::ColumnValueObserver>(
         table: &TableSpec,
+        resident: &ResidentFile,
+        partition: &EncodePartition,
         relationships: &[RelationshipRuntime],
         relation_defs: &[RelationDef],
-        file_idx: usize,
         num_shards: usize,
-        _target: &std::sync::Arc<OutputTarget>,
-        root: &Path,
-        input_transfer: Option<CloudTransfer>,
+        node_encoder: &RowPackEncoder,
         trimmed_strings: &std::sync::Arc<AtomicU64>,
-        progress: &Option<ProgressCallback>,
         key_failures: &mut KeyFailureState,
         senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<NodeWriteMessage>>>,
         node_errors: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
@@ -4024,18 +4334,6 @@ impl IngestContext {
         let row_access_hints = build_row_access_hints(table);
         let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
         let mut access = RowAccess::new(row_access_hints, stats);
-        let ctx_path = root.join(temp_node_context_path(&table.name));
-        let ctx_file_len = fs::metadata(&ctx_path).map(|m| m.len()).unwrap_or(0);
-        tracing::debug!(
-            table = %table.name,
-            path = %ctx_path.display(),
-            file_len = ctx_file_len,
-            "reading node_data.ctx",
-        );
-        let ctx_bytes = fs::read(&ctx_path)
-            .with_context(|| format!("read {} (file_len={})", ctx_path.display(), ctx_file_len,))?;
-        let node_context = diskgraph_rowpack::RowPackContext::from_bytes(&ctx_bytes)?;
-        let node_encoder = Some(RowPackEncoder::new(node_context)?);
         let mut key_bufs: Vec<Vec<u8>> = vec![Vec::new(); table.columns.len()];
         let mut f16_buf: Vec<f16> = Vec::new();
         // FK-free LP resolution-mode scratch + synthetic-column index set.
@@ -4092,13 +4390,7 @@ impl IngestContext {
         } else {
             None
         };
-        let path = table
-            .get_paths()
-            .get(file_idx)
-            .ok_or_else(|| anyhow!("missing input file {}", file_idx))?;
-        if !is_cloud_path(path) && !Path::new(path).exists() {
-            return Err(anyhow!("input path not found {}", path));
-        }
+
         let mut row_id = 0u64;
 
         macro_rules! process_node_batch {
@@ -4182,7 +4474,7 @@ impl IngestContext {
                         &fkeys_pre,
                         row,
                         &mut access,
-                        &node_encoder,
+                        node_encoder,
                         &mut batcher,
                         &mut dest_fkey_batcher,
                         &mut sort_key_batchers,
@@ -4207,108 +4499,39 @@ impl IngestContext {
             };
         }
 
-        match table.format() {
-            TableFormat::Parquet => {
-                if let Some(transfer) = &input_transfer {
-                    if is_cloud_path(path) {
-                        let pooled = download_cloud_bytes(transfer, path)?;
-                        let bytes = pooled.bytes();
-                        let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
-                        validate_parquet_column_types(builder.schema(), &table.columns, path)?;
-                        let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
-                        for batch in reader {
-                            let batch = batch?;
-                            let cols = build_access_cols(&batch, table, &resolve_node_ids)?;
-                            access.set_cols(&cols);
-                            process_node_batch!(batch);
-                        }
-                        drop(pooled);
-                    } else {
-                        let file =
-                            fs::File::open(path).with_context(|| format!("open {}", path))?;
-                        advise_file_willneed(&file);
-                        let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-                        validate_parquet_column_types(builder.schema(), &table.columns, path)?;
-                        let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
-                        for batch in reader {
-                            let batch = batch?;
-                            let cols = build_access_cols(&batch, table, &resolve_node_ids)?;
-                            access.set_cols(&cols);
-                            process_node_batch!(batch);
-                        }
-                    }
-                } else {
-                    let file = fs::File::open(path).with_context(|| format!("open {}", path))?;
-                    advise_file_willneed(&file);
-                    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-                    validate_parquet_column_types(builder.schema(), &table.columns, path)?;
-                    let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
-                    for batch in reader {
-                        let batch = batch?;
-                        let cols = build_access_cols(&batch, table, &resolve_node_ids)?;
-                        access.set_cols(&cols);
-                        process_node_batch!(batch);
-                    }
+        match partition {
+            Some(row_groups) => {
+                let metadata = resident.parquet_metadata.as_ref().ok_or_else(|| {
+                    anyhow!("missing resident Parquet metadata for table {}", table.name)
+                })?;
+                let reader = ParquetRecordBatchReaderBuilder::new_with_metadata(
+                    resident.source.reader(false)?,
+                    metadata.clone(),
+                )
+                .with_row_groups(row_groups.clone())
+                .with_batch_size(NODE_BATCH_SIZE)
+                .build()?;
+                for batch in reader {
+                    let batch = batch?;
+                    let cols = build_access_cols(&batch, table, &resolve_node_ids)?;
+                    access.set_cols(&cols);
+                    process_node_batch!(batch);
                 }
             }
-            TableFormat::Csv => {
+            None => {
                 let schema = table_schema(table)?;
-                if let Some(transfer) = &input_transfer {
-                    if is_cloud_path(path) {
-                        let pooled = download_cloud_bytes(transfer, path)?;
-                        let bytes = pooled.bytes();
-                        let cursor = Cursor::new(bytes);
-                        let builder =
-                            arrow_csv::ReaderBuilder::new(Arc::new(schema)).with_header(true);
-                        let reader = builder.build(cursor)?;
-                        for batch in reader {
-                            let batch = batch?;
-                            let cols = build_access_cols(&batch, table, &resolve_node_ids)?;
-                            access.set_cols(&cols);
-                            process_node_batch!(batch);
-                        }
-                        drop(pooled);
-                    } else {
-                        let file =
-                            fs::File::open(path).with_context(|| format!("open {}", path))?;
-                        advise_file_willneed(&file);
-                        let builder =
-                            arrow_csv::ReaderBuilder::new(Arc::new(schema)).with_header(true);
-                        let reader = builder.build(file)?;
-                        for batch in reader {
-                            let batch = batch?;
-                            let cols = build_access_cols(&batch, table, &resolve_node_ids)?;
-                            access.set_cols(&cols);
-                            process_node_batch!(batch);
-                        }
-                    }
-                } else {
-                    let file = fs::File::open(path).with_context(|| format!("open {}", path))?;
-                    advise_file_willneed(&file);
-                    let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema)).with_header(true);
-                    let reader = builder.build(file)?;
-                    for batch in reader {
-                        let batch = batch?;
-                        let cols = build_access_cols(&batch, table, &resolve_node_ids)?;
-                        access.set_cols(&cols);
-                        process_node_batch!(batch);
-                    }
+                let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema)).with_header(true);
+                let reader = builder.build(resident.source.reader(true)?.get_read(0)?)?;
+                for batch in reader {
+                    let batch = batch?;
+                    let cols = build_access_cols(&batch, table, &resolve_node_ids)?;
+                    access.set_cols(&cols);
+                    process_node_batch!(batch);
                 }
             }
         }
         batcher.flush_all(&mut sort_key_batchers)?;
         dest_fkey_batcher.flush_all()?;
-        if let Some(cb) = progress {
-            cb(ProgressEvent {
-                phase: ProgressPhase::Encode,
-                table: table.name.clone(),
-                shard: None,
-                kind: ProgressKind::Advance,
-                delta: 1,
-                total: Some(table.get_paths().len() as u64),
-                status: None,
-            });
-        }
         Ok(TempNodeFileResult {
             total_rows,
             node_data_dropped,
@@ -4477,7 +4700,7 @@ impl IngestContext {
         fkeys_pre: &[Option<Vec<Option<Key>>>],
         row: usize,
         access: &mut RowAccess<'_>,
-        node_encoder: &Option<RowPackEncoder>,
+        node_encoder: &RowPackEncoder,
         batcher: &mut NodeBatcher,
         dest_fkey_batcher: &mut DestFkeyBatcher,
         sort_key_batchers: &mut [SortKeyComponentBatcher],
@@ -4572,9 +4795,6 @@ impl IngestContext {
                 continue;
             }
         }
-        let encoder = node_encoder
-            .as_ref()
-            .ok_or_else(|| anyhow!("missing node encoder"))?;
         // TT-NG timestamp grouping: read this row's TIMESTAMP before the encoder
         // borrow. Stage seed tables for temporal LP always carry a valid
         // TIMESTAMP, so a null/undecodable value here is a hard error — silently
@@ -4618,7 +4838,7 @@ impl IngestContext {
             node_tag_start = sink.tags.len();
             node_bool_start = sink.bools.len();
             node_data_start = sink.data.len();
-            let lens = encoder.encode_row_observed(
+            let lens = node_encoder.encode_row_observed(
                 access,
                 sink.tags,
                 sink.bools,
@@ -4702,14 +4922,12 @@ impl IngestContext {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn build_temp_edge_file(
+    fn build_temp_edge_partition(
         table: &TableSpec,
-        file_idx: usize,
+        resident: &ResidentFile,
+        partition: &EncodePartition,
         num_shards: usize,
-        _target: &std::sync::Arc<OutputTarget>,
-        input_transfer: Option<CloudTransfer>,
         trimmed_strings: &std::sync::Arc<AtomicU64>,
-        progress: &Option<ProgressCallback>,
         key_failures: &mut KeyFailureState,
         senders: &std::sync::Arc<Vec<std::sync::mpsc::SyncSender<EdgeSrcWriteMessage>>>,
         error: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
@@ -4765,13 +4983,6 @@ impl IngestContext {
 
         let mut edge_dropped = 0u64;
 
-        let path = table
-            .get_paths()
-            .get(file_idx)
-            .ok_or_else(|| anyhow!("missing input file {}", file_idx))?;
-        if !is_cloud_path(path) && !Path::new(path).exists() {
-            return Err(anyhow!("input path not found {}", path));
-        }
         let row_access_hints = build_row_access_hints(table);
         let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
         let mut access = RowAccess::new(row_access_hints, stats);
@@ -4842,232 +5053,60 @@ impl IngestContext {
             };
         }
 
-        match table.format() {
-            TableFormat::Parquet => {
-                if let Some(transfer) = &input_transfer {
-                    if is_cloud_path(path) {
-                        let pooled = download_cloud_bytes(transfer, path)?;
-                        let bytes = pooled.bytes();
-                        let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
-                        validate_parquet_column_types(builder.schema(), &table.columns, path)?;
-                        let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
-                        for batch in reader {
-                            let batch = batch?;
-                            let mut cols = Vec::with_capacity(table.columns.len());
-                            for col in &table.columns {
-                                let idx = batch
-                                    .schema()
-                                    .index_of(&col.name)
-                                    .context("missing column in batch")?;
-                                cols.push(batch.column(idx).clone());
-                            }
-                            access.set_cols(&cols);
-                            let src_fast =
-                                edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
-                            let dst_fast =
-                                edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
-                            let mut src_key_buf = Vec::new();
-                            let mut dst_key_buf = Vec::new();
-                            let mut forward_row = Vec::new();
-                            process_edge_batch!(
-                                batch,
-                                &cols,
-                                src_fast,
-                                dst_fast,
-                                &mut src_key_buf,
-                                &mut dst_key_buf,
-                                &mut forward_row
-                            );
-                        }
-                        drop(pooled);
-                    } else {
-                        let file =
-                            fs::File::open(path).with_context(|| format!("open {}", path))?;
-                        advise_file_willneed(&file);
-                        let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-                        validate_parquet_column_types(builder.schema(), &table.columns, path)?;
-                        let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
-                        for batch in reader {
-                            let batch = batch?;
-                            let mut cols = Vec::with_capacity(table.columns.len());
-                            for col in &table.columns {
-                                let idx = batch
-                                    .schema()
-                                    .index_of(&col.name)
-                                    .context("missing column in batch")?;
-                                cols.push(batch.column(idx).clone());
-                            }
-                            access.set_cols(&cols);
-                            let src_fast =
-                                edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
-                            let dst_fast =
-                                edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
-                            let mut src_key_buf = Vec::new();
-                            let mut dst_key_buf = Vec::new();
-                            let mut forward_row = Vec::new();
-                            process_edge_batch!(
-                                batch,
-                                &cols,
-                                src_fast,
-                                dst_fast,
-                                &mut src_key_buf,
-                                &mut dst_key_buf,
-                                &mut forward_row
-                            );
-                        }
+        macro_rules! consume_edge_reader {
+            ($reader:expr) => {
+                for batch in $reader {
+                    let batch = batch?;
+                    let mut cols = Vec::with_capacity(table.columns.len());
+                    for col in &table.columns {
+                        let idx = batch
+                            .schema()
+                            .index_of(&col.name)
+                            .context("missing column in batch")?;
+                        cols.push(batch.column(idx).clone());
                     }
-                } else {
-                    let file = fs::File::open(path).with_context(|| format!("open {}", path))?;
-                    advise_file_willneed(&file);
-                    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-                    validate_parquet_column_types(builder.schema(), &table.columns, path)?;
-                    let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
-                    for batch in reader {
-                        let batch = batch?;
-                        let mut cols = Vec::with_capacity(table.columns.len());
-                        for col in &table.columns {
-                            let idx = batch
-                                .schema()
-                                .index_of(&col.name)
-                                .context("missing column in batch")?;
-                            cols.push(batch.column(idx).clone());
-                        }
-                        access.set_cols(&cols);
-                        let src_fast = edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
-                        let dst_fast = edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
-                        let mut src_key_buf = Vec::new();
-                        let mut dst_key_buf = Vec::new();
-                        let mut forward_row = Vec::new();
-                        process_edge_batch!(
-                            batch,
-                            &cols,
-                            src_fast,
-                            dst_fast,
-                            &mut src_key_buf,
-                            &mut dst_key_buf,
-                            &mut forward_row
-                        );
-                    }
+                    access.set_cols(&cols);
+                    let src_fast = edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
+                    let dst_fast = edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
+                    let mut src_key_buf = Vec::new();
+                    let mut dst_key_buf = Vec::new();
+                    let mut forward_row = Vec::new();
+                    process_edge_batch!(
+                        batch,
+                        &cols,
+                        src_fast,
+                        dst_fast,
+                        &mut src_key_buf,
+                        &mut dst_key_buf,
+                        &mut forward_row
+                    );
                 }
+            };
+        }
+
+        match partition {
+            Some(row_groups) => {
+                let metadata = resident.parquet_metadata.as_ref().ok_or_else(|| {
+                    anyhow!("missing resident Parquet metadata for table {}", table.name)
+                })?;
+                let reader = ParquetRecordBatchReaderBuilder::new_with_metadata(
+                    resident.source.reader(false)?,
+                    metadata.clone(),
+                )
+                .with_row_groups(row_groups.clone())
+                .with_batch_size(NODE_BATCH_SIZE)
+                .build()?;
+                consume_edge_reader!(reader);
             }
-            TableFormat::Csv => {
-                let builder =
-                    arrow_csv::ReaderBuilder::new(Arc::new(schema.clone())).with_header(true);
-                if let Some(transfer) = &input_transfer {
-                    if is_cloud_path(path) {
-                        let pooled = download_cloud_bytes(transfer, path)?;
-                        let bytes = pooled.bytes();
-                        let cursor = Cursor::new(bytes);
-                        let reader = builder.build(cursor)?;
-                        for batch in reader {
-                            let batch = batch?;
-                            let mut cols = Vec::with_capacity(table.columns.len());
-                            for col in &table.columns {
-                                let idx = batch
-                                    .schema()
-                                    .index_of(&col.name)
-                                    .context("missing column in batch")?;
-                                cols.push(batch.column(idx).clone());
-                            }
-                            access.set_cols(&cols);
-                            let src_fast =
-                                edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
-                            let dst_fast =
-                                edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
-                            let mut src_key_buf = Vec::new();
-                            let mut dst_key_buf = Vec::new();
-                            let mut forward_row = Vec::new();
-                            process_edge_batch!(
-                                batch,
-                                &cols,
-                                src_fast,
-                                dst_fast,
-                                &mut src_key_buf,
-                                &mut dst_key_buf,
-                                &mut forward_row
-                            );
-                        }
-                        drop(pooled);
-                    } else {
-                        let file =
-                            fs::File::open(path).with_context(|| format!("open {}", path))?;
-                        advise_file_willneed(&file);
-                        let reader = builder.build(file)?;
-                        for batch in reader {
-                            let batch = batch?;
-                            let mut cols = Vec::with_capacity(table.columns.len());
-                            for col in &table.columns {
-                                let idx = batch
-                                    .schema()
-                                    .index_of(&col.name)
-                                    .context("missing column in batch")?;
-                                cols.push(batch.column(idx).clone());
-                            }
-                            access.set_cols(&cols);
-                            let src_fast =
-                                edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
-                            let dst_fast =
-                                edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
-                            let mut src_key_buf = Vec::new();
-                            let mut dst_key_buf = Vec::new();
-                            let mut forward_row = Vec::new();
-                            process_edge_batch!(
-                                batch,
-                                &cols,
-                                src_fast,
-                                dst_fast,
-                                &mut src_key_buf,
-                                &mut dst_key_buf,
-                                &mut forward_row
-                            );
-                        }
-                    }
-                } else {
-                    let file = fs::File::open(path).with_context(|| format!("open {}", path))?;
-                    advise_file_willneed(&file);
-                    let reader = builder.build(file)?;
-                    for batch in reader {
-                        let batch = batch?;
-                        let mut cols = Vec::with_capacity(table.columns.len());
-                        for col in &table.columns {
-                            let idx = batch
-                                .schema()
-                                .index_of(&col.name)
-                                .context("missing column in batch")?;
-                            cols.push(batch.column(idx).clone());
-                        }
-                        access.set_cols(&cols);
-                        let src_fast = edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
-                        let dst_fast = edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
-                        let mut src_key_buf = Vec::new();
-                        let mut dst_key_buf = Vec::new();
-                        let mut forward_row = Vec::new();
-                        process_edge_batch!(
-                            batch,
-                            &cols,
-                            src_fast,
-                            dst_fast,
-                            &mut src_key_buf,
-                            &mut dst_key_buf,
-                            &mut forward_row
-                        );
-                    }
-                }
+            None => {
+                let reader = arrow_csv::ReaderBuilder::new(Arc::new(schema.clone()))
+                    .with_header(true)
+                    .build(resident.source.reader(true)?.get_read(0)?)?;
+                consume_edge_reader!(reader);
             }
         }
         batcher.flush_all(&mut sort_key_batchers)?;
         edge_key_batcher.flush_all()?;
-        if let Some(cb) = progress {
-            cb(ProgressEvent {
-                phase: ProgressPhase::Encode,
-                table: table.name.clone(),
-                shard: None,
-                kind: ProgressKind::Advance,
-                delta: 1,
-                total: Some(table.get_paths().len() as u64),
-                status: None,
-            });
-        }
         Ok(edge_dropped)
     }
 
@@ -11137,7 +11176,8 @@ fn read_cgroup_limit() -> Option<u64> {
 }
 
 /// Pure leaf→root memory-limit resolution, parameterized on the file reader and the
-/// process's cgroup-v2 self path. Not cfg-gated so it is unit-testable on any OS.
+/// process's cgroup-v2 self path. Also compiled in tests on non-Linux hosts.
+#[cfg(any(target_os = "linux", test))]
 fn resolve_tightest_mem_limit(
     self_cgroup: Option<&str>,
     read: &impl Fn(&std::path::Path) -> Option<String>,
@@ -11209,7 +11249,8 @@ pub(crate) fn read_cgroup_cpu_quota() -> Option<usize> {
 }
 
 /// Pure leaf→root cpu-quota resolution, parameterized on the file reader and the process's
-/// cgroup-v2 self path. Not cfg-gated so it is unit-testable on any OS.
+/// cgroup-v2 self path. Also compiled in tests on non-Linux hosts.
+#[cfg(any(target_os = "linux", test))]
 fn resolve_tightest_cpu_quota(
     self_cgroup: Option<&str>,
     read: &impl Fn(&std::path::Path) -> Option<String>,
@@ -11327,7 +11368,7 @@ struct WorkItem<S> {
 
 struct PoolTask<S> {
     item: WorkItem<S>,
-    done: std::sync::mpsc::Sender<Result<()>>,
+    done: Option<std::sync::mpsc::Sender<Result<()>>>,
 }
 
 enum PoolMessage<S> {
@@ -11366,7 +11407,9 @@ impl<S: Default + Send + 'static> TaskPool<S> {
                             if let Some(bucket) = &task.item.bucket {
                                 bucket.fetch_add(elapsed, std::sync::atomic::Ordering::Relaxed);
                             }
-                            let _ = task.done.send(result);
+                            if let Some(done) = task.done {
+                                let _ = done.send(result);
+                            }
                         }
                         PoolMessage::Stop => break,
                     }
@@ -11389,7 +11432,7 @@ impl<S: Default + Send + 'static> TaskPool<S> {
             self.sender
                 .send(PoolMessage::Task(PoolTask {
                     item: task,
-                    done: tx,
+                    done: Some(tx),
                 }))
                 .map_err(|e| anyhow!("task queue error: {e}"))?;
             receivers.push(rx);
@@ -11402,6 +11445,12 @@ impl<S: Default + Send + 'static> TaskPool<S> {
             }
         }
         Ok(())
+    }
+
+    fn submit(&self, item: WorkItem<S>) -> Result<()> {
+        self.sender
+            .send(PoolMessage::Task(PoolTask { item, done: None }))
+            .map_err(|e| anyhow!("task queue error: {e}"))
     }
 }
 
@@ -11466,8 +11515,8 @@ fn column_index(table: &TableSpec, name: &str) -> Result<usize> {
 
 // ─── FK-free LP resolution-mode helpers (S3) ────────────────────────────────
 //
-// Per-table runtime spec for one resolution column, built once in
-// `build_temp_node_file` from `IngestContext.resolve_columns`. The encode
+// Per-partition runtime spec for one resolution column, built at the start of
+// `build_temp_node_partition` from `IngestContext.resolve_columns`. The encode
 // worker resolves the source column's PK reference value(s) to graph node-ids
 // (via the shared `RefResolver`) and feeds the result into the encoder through
 // a dedicated override channel — NO FK edge / no temp-edge push.

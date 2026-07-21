@@ -425,15 +425,15 @@ fn ingest_parquet_multi_file_table_with_two_shards() -> Result<()> {
     let input_root = dir.path().join("input");
     let output_root = dir.path().join("output");
 
-    let user_ids_1: Vec<i64> = (0..10).collect();
-    let user_names_1: Vec<String> = (0..10).map(|id| format!("user{:04}", id)).collect();
-    let user_ids_2: Vec<i64> = (10..20).collect();
-    let user_names_2: Vec<String> = (10..20).map(|id| format!("user{:04}", id)).collect();
+    let user_ids_1: Vec<i64> = (0..1_100).collect();
+    let user_names_1: Vec<String> = (0..1_100).map(|id| format!("user{:04}", id)).collect();
+    let user_ids_2: Vec<i64> = (1_100..2_200).collect();
+    let user_names_2: Vec<String> = (1_100..2_200).map(|id| format!("user{:04}", id)).collect();
 
-    let order_ids_1: Vec<i64> = (0..10).collect();
-    let order_user_ids_1: Vec<i64> = (0..10).map(|id| (id + 1) % 20).collect();
-    let order_ids_2: Vec<i64> = (10..20).collect();
-    let order_user_ids_2: Vec<i64> = (10..20).map(|id| (id + 3) % 20).collect();
+    let order_ids_1: Vec<i64> = (0..1_100).collect();
+    let order_user_ids_1: Vec<i64> = (0..1_100).map(|id| (id + 1) % 2_200).collect();
+    let order_ids_2: Vec<i64> = (1_100..2_200).collect();
+    let order_user_ids_2: Vec<i64> = (1_100..2_200).map(|id| (id + 3) % 2_200).collect();
 
     let mut edge_rows_1 = Vec::new();
     let mut edge_rows_2 = Vec::new();
@@ -441,16 +441,16 @@ fn ingest_parquet_multi_file_table_with_two_shards() -> Result<()> {
     let mut edge_order_ids_1 = Vec::new();
     let mut edge_user_ids_2 = Vec::new();
     let mut edge_order_ids_2 = Vec::new();
-    for id in 0i64..10 {
-        let user_id = (id * 2) % 20;
-        let order_id = (id + 5) % 20;
+    for id in 0i64..1_100 {
+        let user_id = (id * 2) % 2_200;
+        let order_id = (id + 5) % 2_200;
         edge_rows_1.push(vec![user_id.to_string(), order_id.to_string()]);
         edge_user_ids_1.push(user_id);
         edge_order_ids_1.push(order_id);
     }
-    for id in 10i64..20 {
-        let user_id = (id * 3) % 20;
-        let order_id = (id + 7) % 20;
+    for id in 1_100..2_200 {
+        let user_id = (id * 3) % 2_200;
+        let order_id = (id + 7) % 2_200;
         edge_rows_2.push(vec![user_id.to_string(), order_id.to_string()]);
         edge_user_ids_2.push(user_id);
         edge_order_ids_2.push(order_id);
@@ -587,7 +587,7 @@ fn ingest_parquet_multi_file_table_with_two_shards() -> Result<()> {
             row_subsample: false,
             resume_from_phase: None,
             context_threads: None,
-            encode_threads: None,
+            encode_threads: Some(4),
             pk_map_threads: None,
             edges_map_threads: None,
             index_threads: None,
@@ -599,8 +599,8 @@ fn ingest_parquet_multi_file_table_with_two_shards() -> Result<()> {
     let reader = GraphIndexReader::open(&output_root.join("index_metadata.json"), &output_root)?;
     let user_table = reader.table("User").unwrap();
     let order_table = reader.table("Order").unwrap();
-    assert_eq!(user_table.node_count(), 20);
-    assert_eq!(order_table.node_count(), 20);
+    assert_eq!(user_table.node_count(), 2_200);
+    assert_eq!(order_table.node_count(), 2_200);
     let mut expected_edges = 0u64;
     let rel_idx = user_table
         .relations()
