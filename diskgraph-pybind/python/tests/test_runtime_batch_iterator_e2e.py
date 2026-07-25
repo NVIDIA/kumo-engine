@@ -1066,7 +1066,10 @@ def test_execute_tt_plan_end_to_end_multi_fk_custom_tt(tmp_path):
     n_users = 10
     n_items = 10
     pq.write_table(
-        pa.table({"user_id": pa.array(list(range(n_users)), type=pa.int64())}),
+        pa.table({
+            "user_id": pa.array(list(range(n_users)), type=pa.int64()),
+            "user_key": pa.array(list(range(n_users)), type=pa.int64()),
+        }),
         data_dir / "users.parquet",
     )
     pq.write_table(
@@ -1081,7 +1084,10 @@ def test_execute_tt_plan_end_to_end_multi_fk_custom_tt(tmp_path):
             "tables": [
                 {
                     "name": "users",
-                    "columns": [{"name": "user_id", "ingested_dtype": "int64"}],
+                    "columns": [
+                        {"name": "user_id", "ingested_dtype": "int64"},
+                        {"name": "user_key", "ingested_dtype": "int64"},
+                    ],
                     "primary_key": "user_id",
                     "source": {"type": "parquet", "paths": [str(data_dir / "users.parquet")]},
                 },
@@ -1194,10 +1200,21 @@ def test_execute_tt_plan_end_to_end_multi_fk_custom_tt(tmp_path):
     # not roots, unless negative sampling or RHS NodeRange mode is enabled.
     assert "users" in node_ids, "LHS user nodes missing from output"
 
-    # We didn't do any sampling (default plan is empty layers), so we should just get the roots.
-    # The nodes returned should be 0, 1 for users.
+    # We didn't do any sampling (default plan is empty layers), so every
+    # returned user node is a root. Parallel Encode deliberately does not
+    # preserve Parquet row order, so validate the stable business keys across
+    # both batches instead of assuming that key N has internal node ID N.
     users_nodes = node_ids["users"].to_pylist()
-    assert users_nodes == [0, 1]
+    user_key_by_node_id = _feature_value_by_node_id(
+        parent_root, "users", "user_key", n_users
+    )
+    all_user_keys = [
+        user_key_by_node_id[node_id]
+        for batch in batches
+        for node_id in batch["graphs"]["main"]["node_ids"]["users"].to_pylist()
+    ]
+    assert sorted(all_user_keys) == [0, 1, 2]
+    assert len(users_nodes) == 2
 
     # Check that seed_index matches local IDs for the lhs roots.
     users_batch = batch_dict["users"].to_pylist()
@@ -1228,6 +1245,44 @@ def test_execute_tt_plan_end_to_end_multi_fk_custom_tt(tmp_path):
 # TARGET1 -> rhs/target entity) directly via `diskgraph.ingest`, mirroring
 # `test_execute_tt_plan_end_to_end_multi_fk_custom_tt` above.
 # ---------------------------------------------------------------------------
+
+
+def _feature_value_by_node_id(
+    index_path: pathlib.Path,
+    node_type: str,
+    feature_name: str,
+    node_count: int,
+) -> dict[int, int]:
+    """Read a duplicate business-key feature for every dense internal ID."""
+    engine = diskgraph.SamplerEngine(str(index_path))
+    request = [{
+        "node_type": node_type,
+        "node_ids": list(range(node_count)),
+        "feature_names": [feature_name],
+    }]
+    batches = [
+        event["batch"] for event in engine.fetch_features(request)
+        if event["type"] == "feature"
+    ]
+    assert batches, f"no {node_type} feature batches"
+    table = pa.Table.from_batches(batches)
+    node_id_column = (
+        "node_id" if "node_id" in table.schema.names else table.schema.names[0]
+    )
+    return dict(
+        zip(
+            table.column(node_id_column).to_pylist(),
+            table.column(feature_name).to_pylist(),
+            strict=True,
+        ))
+
+
+def _expected_target_node_ids(fx: dict[str, Any], task: dict[str, Any]) -> list[int]:
+    """Return expected RHS internal IDs in the task's emitted seed-row order."""
+    return [
+        fx["target_node_id_by_entity_node_id"][entity_node_id]
+        for entity_node_id in task["seed_node_ids"].to_pylist()
+    ]
 
 
 def _ingest_lp_fixture(
@@ -1267,17 +1322,25 @@ def _ingest_lp_fixture(
     if seed_timestamps is None:
         seed_timestamps = [1000, 2000, 3000]
 
+    user_ids = list(range(n_users))
     pq.write_table(
-        pa.table({"user_id": pa.array(list(range(n_users)), type=pa.int64())}),
+        pa.table({
+            "user_id": pa.array(user_ids, type=pa.int64()),
+            "user_key": pa.array(user_ids, type=pa.int64()),
+        }),
         data_dir / "users.parquet",
     )
 
     items_cols: dict[str, Any] = {
         "item_id": pa.array(list(range(n_items)), type=pa.int64()),
+        "item_key": pa.array(list(range(n_items)), type=pa.int64()),
     }
     item_table_def: dict[str, Any] = {
         "name": "items",
-        "columns": [{"name": "item_id", "ingested_dtype": "int64"}],
+        "columns": [
+            {"name": "item_id", "ingested_dtype": "int64"},
+            {"name": "item_key", "ingested_dtype": "int64"},
+        ],
         "primary_key": "item_id",
     }
     if item_create_times is not None:
@@ -1299,7 +1362,10 @@ def _ingest_lp_fixture(
             "tables": [
                 {
                     "name": "users",
-                    "columns": [{"name": "user_id", "ingested_dtype": "int64"}],
+                    "columns": [
+                        {"name": "user_id", "ingested_dtype": "int64"},
+                        {"name": "user_key", "ingested_dtype": "int64"},
+                    ],
                     "primary_key": "user_id",
                     "source": {"type": "parquet", "paths": [str(data_dir / "users.parquet")]},
                 },
@@ -1310,17 +1376,35 @@ def _ingest_lp_fixture(
         col_stats=False,
     )
 
+    # Parallel Encode deliberately does not preserve Parquet row order. Resolve
+    # the source business keys through duplicate features before constructing
+    # the already-resolved stage fixture.
+    user_key_by_node_id = _feature_value_by_node_id(
+        parent_root, "users", "user_key", n_users
+    )
+    item_key_by_node_id = _feature_value_by_node_id(
+        parent_root, "items", "item_key", n_items
+    )
+    user_node_id_by_key = {
+        key: node_id for node_id, key in user_key_by_node_id.items()
+    }
+    item_node_id_by_key = {
+        key: node_id for node_id, key in item_key_by_node_id.items()
+    }
+    entity_node_ids = [user_node_id_by_key[key] for key in seed_entities]
+    target_node_ids = [item_node_id_by_key[key] for key in seed_targets]
+
     tt_pq_path = data_dir / "lp_seeds.parquet"
-    # Resolution mode: ENTITY1/TARGET1 pre-resolved to node-ids (node-id == pk
-    # in this single-shard fixture). target_node_ids is the ragged positive list.
+    # Resolution mode: ENTITY1/TARGET1 are pre-resolved to parent node IDs.
     pq.write_table(
         pa.table({
             "ENTITY1": pa.array(seed_entities, type=pa.int64()),
             "TIMESTAMP": pa.array(seed_timestamps, type=pa.timestamp("s")),
             "TARGET1": pa.array(seed_targets, type=pa.int64()),
-            "entity_node_id": pa.array(seed_entities, type=pa.uint64()),
+            "entity_node_id": pa.array(entity_node_ids, type=pa.uint64()),
             "target_node_ids": pa.array(
-                [[t] for t in seed_targets], type=pa.list_(pa.int64())
+                [[node_id] for node_id in target_node_ids],
+                type=pa.list_(pa.int64()),
             ),
         }),
         tt_pq_path,
@@ -1373,6 +1457,10 @@ def _ingest_lp_fixture(
         "n_items": n_items,
         "seed_entities": seed_entities,
         "seed_targets": seed_targets,
+        "item_key_by_node_id": item_key_by_node_id,
+        "target_node_id_by_entity_node_id": dict(
+            zip(entity_node_ids, target_node_ids, strict=True)
+        ),
         "seed_timestamps": seed_timestamps,
         "n_seeds": len(seed_entities),
     }
@@ -1420,8 +1508,10 @@ def test_negative_sampling_present_nontemporal(tmp_path):
     assert len(items) >= B * (1 + M), (len(items), B, M)
     positives = items[:B]
     negatives = items[B:B + B * M]
-    # positives, in seed order, are the TARGET ids.
-    assert positives == fx["seed_targets"], (positives, fx["seed_targets"])
+    # Positives follow the emitted seed-row order and contain the resolved
+    # TARGET node IDs, independent of parent/stage Encode ordering.
+    expected_positives = _expected_target_node_ids(fx, task)
+    assert positives == expected_positives, (positives, expected_positives)
     # negatives are valid item ids.
     for neg in negatives:
         assert 0 <= neg < fx["n_items"], neg
@@ -1457,7 +1547,8 @@ def test_negative_sampling_absent_regression(tmp_path):
     assert "items" not in batch["graphs"]["main"]["node_ids"], (
         "positives must not be rooted (leak-free label path)"
     )
-    assert task["lp_pos_rhs_global"].to_pylist() == fx["seed_targets"], (
+    expected_positives = _expected_target_node_ids(fx, task)
+    assert task["lp_pos_rhs_global"].to_pylist() == expected_positives, (
         task["lp_pos_rhs_global"].to_pylist()
     )
 
@@ -1532,8 +1623,10 @@ def test_negative_sampling_temporal_rhs(tmp_path):
         anchor = anchors[i]
         row_negs = negatives[i * M:(i + 1) * M]
         for neg in row_negs:
-            assert neg < n_past, (
-                f"row {i} (anchor {anchor}) drew future item {neg} "
+            item_key = fx["item_key_by_node_id"][neg]
+            assert item_key < n_past, (
+                f"row {i} (anchor {anchor}) drew future item key {item_key} "
+                f"(node ID {neg}) "
                 f"(create_time=10_000_000 > anchor) — temporal filter not applied"
             )
 
@@ -1934,7 +2027,9 @@ def test_negative_sampling_parallel_split_and_range_at_scale(tmp_path, multithre
     assert len(items) == B + B * M, (len(items), B, M)
     positives = items[:B]
     negatives = items[B:B + B * M]
-    assert positives == fx["seed_targets"], "positives must be the TARGET ids in seed order"
+    assert positives == _expected_target_node_ids(fx, task), (
+        "positives must be resolved TARGET node IDs in emitted seed order"
+    )
     for neg in negatives:
         assert 0 <= neg < fx["n_items"], neg
 
@@ -1990,8 +2085,10 @@ def test_negative_sampling_parallel_temporal_valid_at_scale(tmp_path, multithrea
             # A non-masked negative MUST be temporally valid: a past item, i.e.
             # create_time <= anchor. A future item here would prove the real
             # parallel temporal-decode path did not filter on this row.
-            assert neg < n_past, (
-                f"slot {slot}: non-masked negative {neg} is a future item "
+            item_key = fx["item_key_by_node_id"][neg]
+            assert item_key < n_past, (
+                f"slot {slot}: non-masked negative node ID {neg} has future "
+                f"item key {item_key} "
                 f"(>= {n_past}); real parallel temporal filter did not run"
             )
 

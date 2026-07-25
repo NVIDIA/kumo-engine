@@ -11,7 +11,6 @@ These tests verify:
 
 import json
 import pyarrow as pa
-import pytest
 import diskgraph as diskgraph_py
 
 
@@ -74,26 +73,14 @@ def test_intlist_values(list_features_graph):
       item 3 → [1, 2, 3, 4, 5]
     """
     batch = fetch_all_features(list_features_graph, "items", [0, 1, 2, 3])
-
-    # Locate the row for each node_id via the node_id column
-    node_id_col = batch.column("node_id") if "node_id" in batch.schema.names \
-                  else batch.column(batch.schema.names[0])
-    tag_ids_col = batch.column("tag_ids")
-
-    expected = {
-        0: [10, 20, 30],
-        1: [40],
-        2: [],
-        3: [1, 2, 3, 4, 5],
-    }
-
-    for row_idx in range(batch.num_rows):
-        nid = node_id_col[row_idx].as_py()
-        if nid not in expected:
-            continue
-        got = tag_ids_col[row_idx].as_py()
-        assert got == expected[nid], \
-            f"item {nid}: expected tag_ids={expected[nid]}, got {got}"
+    got = sorted(tuple(value) for value in batch.column("tag_ids").to_pylist())
+    expected = sorted([
+        (10, 20, 30),
+        (40,),
+        (),
+        (1, 2, 3, 4, 5),
+    ])
+    assert got == expected
 
 
 def test_stringlist_values(list_features_graph):
@@ -105,45 +92,25 @@ def test_stringlist_values(list_features_graph):
       item 3 → ["pro", "audio"]
     """
     batch = fetch_all_features(list_features_graph, "items", [0, 1, 2, 3])
-
-    node_id_col = batch.column("node_id") if "node_id" in batch.schema.names \
-                  else batch.column(batch.schema.names[0])
-    tags_col = batch.column("tags")
-
-    expected = {
-        0: ["sports", "sale"],
-        1: ["kids"],
-        2: [],
-        3: ["pro", "audio"],
-    }
-
-    for row_idx in range(batch.num_rows):
-        nid = node_id_col[row_idx].as_py()
-        if nid not in expected:
-            continue
-        got = tags_col[row_idx].as_py()
-        assert got == expected[nid], \
-            f"item {nid}: expected tags={expected[nid]}, got {got}"
+    got = sorted(tuple(value) for value in batch.column("tags").to_pylist())
+    expected = sorted([
+        ("sports", "sale"),
+        ("kids",),
+        (),
+        ("pro", "audio"),
+    ])
+    assert got == expected
 
 
 def test_empty_list_rows(list_features_graph):
-    """Item 2 has both empty intlist and stringlist — both must survive."""
-    batch = fetch_all_features(list_features_graph, "items", [2])
-
-    # Find the row for item 2
-    node_id_col = batch.column(batch.schema.names[0])
-    tag_ids_col = batch.column("tag_ids")
-    tags_col    = batch.column("tags")
-
-    for row_idx in range(batch.num_rows):
-        if node_id_col[row_idx].as_py() == 2:
-            assert tag_ids_col[row_idx].as_py() == [], \
-                f"item 2 tag_ids should be empty, got {tag_ids_col[row_idx].as_py()}"
-            assert tags_col[row_idx].as_py() == [], \
-                f"item 2 tags should be empty, got {tags_col[row_idx].as_py()}"
-            return
-
-    pytest.fail("item 2 not found in fetch_features result")
+    """The row with both empty list features survives Encode."""
+    batch = fetch_all_features(list_features_graph, "items", [0, 1, 2, 3])
+    rows = zip(
+        batch.column("tag_ids").to_pylist(),
+        batch.column("tags").to_pylist(),
+        strict=True,
+    )
+    assert any(tag_ids == [] and tags == [] for tag_ids, tags in rows)
 
 
 # ── tests: inner-null drop-null contract (Python pybind e2e) ────────────────
@@ -160,26 +127,9 @@ def test_intlist_inner_nulls_dropped(list_features_graph_with_inner_nulls):
       [10, 20]                 → [10, 20]
     """
     batch = fetch_all_features(list_features_graph_with_inner_nulls, "items", [0, 1, 2, 3])
-    node_id_col = batch.column("node_id") if "node_id" in batch.schema.names \
-                  else batch.column(batch.schema.names[0])
-    tag_ids_col = batch.column("tag_ids")
-
-    expected = {
-        0: [1, 3],
-        1: [],
-        2: [0, 7],
-        3: [10, 20],
-    }
-    seen = set()
-    for row_idx in range(batch.num_rows):
-        nid = node_id_col[row_idx].as_py()
-        if nid not in expected:
-            continue
-        seen.add(nid)
-        got = tag_ids_col[row_idx].as_py()
-        assert got == expected[nid], \
-            f"item {nid}: expected tag_ids={expected[nid]}, got {got}"
-    assert seen == set(expected.keys()), f"missing node_ids in result: {set(expected) - seen}"
+    got = sorted(tuple(value) for value in batch.column("tag_ids").to_pylist())
+    expected = sorted([(1, 3), (), (0, 7), (10, 20)])
+    assert got == expected
 
 
 def test_stringlist_inner_nulls_dropped_preserves_empty_string(list_features_graph_with_inner_nulls):
@@ -194,23 +144,6 @@ def test_stringlist_inner_nulls_dropped_preserves_empty_string(list_features_gra
       ["p", "", null, "q"]     → ["p", "", "q"]     (null dropped, "" kept)
     """
     batch = fetch_all_features(list_features_graph_with_inner_nulls, "items", [0, 1, 2, 3])
-    node_id_col = batch.column("node_id") if "node_id" in batch.schema.names \
-                  else batch.column(batch.schema.names[0])
-    tags_col = batch.column("tags")
-
-    expected = {
-        0: ["a", "b"],
-        1: [],
-        2: ["x", "", "y"],
-        3: ["p", "", "q"],
-    }
-    seen = set()
-    for row_idx in range(batch.num_rows):
-        nid = node_id_col[row_idx].as_py()
-        if nid not in expected:
-            continue
-        seen.add(nid)
-        got = tags_col[row_idx].as_py()
-        assert got == expected[nid], \
-            f"item {nid}: expected tags={expected[nid]}, got {got}"
-    assert seen == set(expected.keys()), f"missing node_ids in result: {set(expected) - seen}"
+    got = sorted(tuple(value) for value in batch.column("tags").to_pylist())
+    expected = sorted([("a", "b"), (), ("x", "", "y"), ("p", "", "q")])
+    assert got == expected

@@ -188,8 +188,8 @@ pub fn compute_text_sample_stats(values: &[&str]) -> TextSampleStats {
 
 pub use diskgraph_core::accumulators::{
     build_multicat_emit_stats, compute_min_occ, isqrt, kumo_entry, kumo_key, kumo_safe_div,
-    CategoryCountStrategy, CountStorage, IdentityBuildHasher, IdentityHasher, LocalColumnCounts,
-    MulticatInputKind, SharedColumnCounts, MAX_CATEGORIES,
+    CategoryCountStrategy, CategoryStringBudget, CountStorage, IdentityBuildHasher, IdentityHasher,
+    LocalColumnCounts, MulticatInputKind, SharedColumnCounts, MAX_CATEGORIES,
 };
 
 // ---------------------------------------------------------------------------
@@ -204,6 +204,7 @@ pub struct TableCategoryCounts {
     pub columns: Vec<Option<Arc<SharedColumnCounts>>>,
     /// Whether per-row subsampling is enabled (30% sampling, scale ÷0.3).
     pub row_subsample: bool,
+    string_budgeted: bool,
     /// Monotonic file counter for PRNG seeding (unique seed per file).
     file_counter: AtomicU64,
 }
@@ -219,22 +220,73 @@ impl TableCategoryCounts {
         semantic_types: &[Option<SemanticType>],
         row_subsample: bool,
     ) -> Self {
+        Self::new_inner(strategy, semantic_types, row_subsample, None)
+    }
+
+    pub fn new_with_string_budget(
+        strategy: CategoryCountStrategy,
+        semantic_types: &[Option<SemanticType>],
+        row_subsample: bool,
+        string_budget: Arc<CategoryStringBudget>,
+    ) -> Self {
+        Self::new_inner(strategy, semantic_types, row_subsample, Some(string_budget))
+    }
+
+    fn new_inner(
+        strategy: CategoryCountStrategy,
+        semantic_types: &[Option<SemanticType>],
+        row_subsample: bool,
+        string_budget: Option<Arc<CategoryStringBudget>>,
+    ) -> Self {
         let columns = semantic_types
             .iter()
             .map(|stype| match stype {
                 Some(SemanticType::Categorical) | Some(SemanticType::Id) => {
-                    let shared = match strategy {
-                        CategoryCountStrategy::Graduation => SharedColumnCounts::new_graduation(),
-                        _ => SharedColumnCounts::new_hashed(),
+                    if string_budget
+                        .as_ref()
+                        .is_some_and(|budget| !budget.try_reserve_column())
+                    {
+                        return None;
+                    }
+                    let shared = match (strategy, string_budget.as_ref()) {
+                        (CategoryCountStrategy::Graduation, Some(budget)) => {
+                            SharedColumnCounts::new_graduation_with_string_budget(Arc::clone(
+                                budget,
+                            ))
+                        }
+                        (CategoryCountStrategy::Graduation, None) => {
+                            SharedColumnCounts::new_graduation()
+                        }
+                        (_, Some(budget)) => {
+                            SharedColumnCounts::new_hashed_with_string_budget(Arc::clone(budget))
+                        }
+                        (_, None) => SharedColumnCounts::new_hashed(),
                     };
                     Some(Arc::new(shared))
                 }
                 Some(SemanticType::Multicategorical) => {
-                    let shared = match strategy {
-                        CategoryCountStrategy::Graduation => {
+                    if string_budget
+                        .as_ref()
+                        .is_some_and(|budget| !budget.try_reserve_column())
+                    {
+                        return None;
+                    }
+                    // Token cardinality can be proportional to the complete
+                    // input. Use the same bounded/abort policy as scalar
+                    // categorical columns so Encode memory remains capped.
+                    let shared = match (strategy, string_budget.as_ref()) {
+                        (CategoryCountStrategy::Graduation, Some(budget)) => {
+                            SharedColumnCounts::new_graduation_with_string_budget(Arc::clone(
+                                budget,
+                            ))
+                        }
+                        (CategoryCountStrategy::Graduation, None) => {
                             SharedColumnCounts::new_graduation_uncapped()
                         }
-                        _ => SharedColumnCounts::new_hashed_uncapped(),
+                        (_, Some(budget)) => {
+                            SharedColumnCounts::new_hashed_with_string_budget(Arc::clone(budget))
+                        }
+                        (_, None) => SharedColumnCounts::new_hashed_uncapped(),
                     };
                     Some(Arc::new(shared))
                 }
@@ -245,6 +297,7 @@ impl TableCategoryCounts {
             strategy,
             columns,
             row_subsample,
+            string_budgeted: string_budget.is_some(),
             file_counter: AtomicU64::new(0),
         }
     }
@@ -702,9 +755,13 @@ impl FileColStats {
                 .columns
                 .iter()
                 .map(|shared| {
-                    shared
-                        .as_ref()
-                        .map(|_| LocalColumnCounts::with_capacity(HYBRID_LOCAL_CAP))
+                    shared.as_ref().map(|_| {
+                        LocalColumnCounts::with_capacity(if table_cat.string_budgeted {
+                            0
+                        } else {
+                            HYBRID_LOCAL_CAP
+                        })
+                    })
                 })
                 .collect(),
             _ => (0..columns.len()).map(|_| None).collect(),
@@ -2005,7 +2062,9 @@ impl FileColStats {
                             if local.counts.contains_key(&hash) {
                                 *local.counts.get_mut(&hash).unwrap() += 1;
                             } else if local.len() < HYBRID_LOCAL_CAP {
-                                local.observe(hash, value);
+                                if col_shared.reserve_string_bytes(value.len()) {
+                                    local.observe(hash, value);
+                                }
                             } else {
                                 col_shared.observe_hashed(hash, value);
                             }
@@ -2030,13 +2089,17 @@ impl FileColStats {
                             if local.counts.contains_key(&hash) {
                                 *local.counts.get_mut(&hash).unwrap() += 1;
                             } else if local.len() < HYBRID_LOCAL_CAP {
-                                local.observe(hash, value);
+                                if col_shared.reserve_string_bytes(value.len()) {
+                                    local.observe(hash, value);
+                                }
                             } else {
                                 let snap = col_shared.merge_local_batch_graduation(local);
                                 local.clear();
                                 // Refresh graduated snapshot
                                 self.grad_snapshots[col_idx] = Some(snap);
-                                local.observe(hash, value);
+                                if col_shared.reserve_string_bytes(value.len()) {
+                                    local.observe(hash, value);
+                                }
                             }
                         }
                     }
@@ -2075,27 +2138,18 @@ impl FileColStats {
                                 match local.counts.entry(hash) {
                                     Entry::Occupied(mut e) => *e.get_mut() += 1,
                                     Entry::Vacant(e) => {
-                                        e.insert(1);
-                                        local.strings.insert(hash, value.to_string());
+                                        let string = value.to_string();
+                                        if col_shared.reserve_string_bytes(string.len()) {
+                                            e.insert(1);
+                                            local.strings.insert(hash, string);
+                                        }
                                     }
                                 }
                             } else {
-                                // Spill to global — inline for i64
-                                if let CountStorage::Hashed { counts, strings } =
-                                    &col_shared.storage
-                                {
-                                    let mut is_new = false;
-                                    counts.entry(hash).and_modify(|c| *c += 1).or_insert_with(
-                                        || {
-                                            is_new = true;
-                                            1
-                                        },
-                                    );
-                                    if is_new {
-                                        strings.entry(hash).or_insert_with(|| value.to_string());
-                                        col_shared.record_new_unique();
-                                    }
-                                }
+                                // Spill to the shared map through its byte-
+                                // budgeted insertion path.
+                                let string = value.to_string();
+                                col_shared.observe_hashed(hash, &string);
                             }
                         }
                     }
@@ -2122,8 +2176,11 @@ impl FileColStats {
                                 match local.counts.entry(hash) {
                                     Entry::Occupied(mut e) => *e.get_mut() += 1,
                                     Entry::Vacant(e) => {
-                                        e.insert(1);
-                                        local.strings.insert(hash, value.to_string());
+                                        let string = value.to_string();
+                                        if col_shared.reserve_string_bytes(string.len()) {
+                                            e.insert(1);
+                                            local.strings.insert(hash, string);
+                                        }
                                     }
                                 }
                             } else {
@@ -2135,8 +2192,11 @@ impl FileColStats {
                                 match local.counts.entry(hash) {
                                     Entry::Occupied(mut e) => *e.get_mut() += 1,
                                     Entry::Vacant(e) => {
-                                        e.insert(1);
-                                        local.strings.insert(hash, value.to_string());
+                                        let string = value.to_string();
+                                        if col_shared.reserve_string_bytes(string.len()) {
+                                            e.insert(1);
+                                            local.strings.insert(hash, string);
+                                        }
                                     }
                                 }
                             }

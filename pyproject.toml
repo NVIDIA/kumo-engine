@@ -10,7 +10,15 @@ version = "0.1.0"
 # (see diskgraph-pybind/Cargo.toml pyo3 abi3-py310). A single cp310-abi3
 # wheel installs on 3.10 through 3.14+.
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    # The helper intentionally uses one version-pinned connector adapter.  The
+    # Rust data plane owns Cloud Fetch download and Arrow decode.
+    "databricks-sql-connector==4.3.0",
+    "databricks-sdk==0.73.0",
+    "thrift==0.22.0",
+    # The connector advertises Arrow results only when PyArrow is importable.
+    "pyarrow==24.0.0",
+]
 
 [project.optional-dependencies]
 kumo = [

@@ -131,6 +131,35 @@ impl CloudTransferBytesTicket {
 }
 
 #[derive(Debug)]
+struct CloudTransferRangeTicket {
+    receiver: Option<oneshot::Receiver<Result<PooledBuffer>>>,
+}
+
+impl CloudTransferRangeTicket {
+    fn wait(mut self) -> Result<PooledBytes> {
+        let receiver = self.receiver.take().expect("cloud transfer range ticket");
+        let buffer = receiver
+            .blocking_recv()
+            .map_err(|_| anyhow!("cloud transfer stopped"))??;
+        Ok(buffer.into_pooled_bytes())
+    }
+}
+
+#[derive(Debug)]
+struct CloudTransferHeadTicket {
+    receiver: Option<oneshot::Receiver<Result<object_store::ObjectMeta>>>,
+}
+
+impl CloudTransferHeadTicket {
+    fn wait(mut self) -> Result<object_store::ObjectMeta> {
+        let receiver = self.receiver.take().expect("cloud transfer head ticket");
+        receiver
+            .blocking_recv()
+            .map_err(|_| anyhow!("cloud transfer stopped"))?
+    }
+}
+
+#[derive(Debug)]
 struct CloudTransferStatsInner {
     total_buffers: usize,
     available_buffers: AtomicUsize,
@@ -456,20 +485,18 @@ impl Drop for PooledBuffer {
 #[derive(Debug)]
 pub struct PooledBytes {
     bytes: Bytes,
-    owner: Arc<Vec<u8>>,
-    pool: Option<BufferPool>,
 }
 
 impl PooledBytes {
     fn new(buffer: Vec<u8>, pool: Option<BufferPool>) -> Self {
-        let owner = Arc::new(buffer);
-        let len = owner.len();
-        let bytes = Bytes::from_owner(SharedSlice {
-            data: Arc::clone(&owner),
-            start: 0,
-            end: len,
-        });
-        Self { bytes, owner, pool }
+        let bytes = match pool {
+            Some(pool) => Bytes::from_owner(ReturnToPool {
+                buffer: Some(buffer),
+                pool,
+            }),
+            None => Bytes::from(buffer),
+        };
+        Self { bytes }
     }
 
     pub fn bytes(&self) -> Bytes {
@@ -477,15 +504,21 @@ impl PooledBytes {
     }
 }
 
-impl Drop for PooledBytes {
+struct ReturnToPool {
+    buffer: Option<Vec<u8>>,
+    pool: BufferPool,
+}
+
+impl AsRef<[u8]> for ReturnToPool {
+    fn as_ref(&self) -> &[u8] {
+        self.buffer.as_deref().unwrap_or_default()
+    }
+}
+
+impl Drop for ReturnToPool {
     fn drop(&mut self) {
-        if let Some(pool) = self.pool.take() {
-            let bytes = std::mem::take(&mut self.bytes);
-            drop(bytes);
-            match Arc::try_unwrap(std::mem::take(&mut self.owner)) {
-                Ok(buffer) => pool.release(buffer),
-                Err(owner) => pool.release((*owner).clone()),
-            }
+        if let Some(buffer) = self.buffer.take() {
+            self.pool.release(buffer);
         }
     }
 }
@@ -655,6 +688,105 @@ impl CloudTransfer {
         })
     }
 
+    /// Queue a bounded object range through the same concurrency, retry, and
+    /// buffer-budget machinery used by complete-object downloads.
+    fn submit_range(
+        &self,
+        path: ObjectPath,
+        range: std::ops::Range<u64>,
+    ) -> Result<CloudTransferRangeTicket> {
+        if range.start > range.end {
+            return Err(anyhow!("invalid object byte range"));
+        }
+        let path_str = path.to_string();
+        let (tx, rx) = oneshot::channel();
+        let job = RangeJob {
+            path,
+            range,
+            attempt: 0,
+            response: tx,
+        };
+        self.inner.stats.queued_jobs.fetch_add(1, Ordering::Relaxed);
+        if self
+            .inner
+            .sender
+            .blocking_send(TransferJob::Range(job))
+            .is_err()
+        {
+            self.inner.stats.queued_jobs.fetch_sub(1, Ordering::Relaxed);
+            warn!(path = %path_str, "Range queue rejected: transfer stopped");
+            return Err(anyhow!("cloud transfer stopped"));
+        }
+        Ok(CloudTransferRangeTicket { receiver: Some(rx) })
+    }
+
+    pub fn get_range_blocking(
+        &self,
+        path: ObjectPath,
+        range: std::ops::Range<u64>,
+    ) -> Result<PooledBytes> {
+        self.submit_range(path, range)?.wait()
+    }
+
+    /// Queue an object metadata request so synchronous readers reuse the
+    /// transfer runtime and its retry policy.
+    fn submit_head(&self, path: ObjectPath) -> Result<CloudTransferHeadTicket> {
+        let path_str = path.to_string();
+        let (tx, rx) = oneshot::channel();
+        let job = HeadJob {
+            path,
+            attempt: 0,
+            response: tx,
+        };
+        self.inner.stats.queued_jobs.fetch_add(1, Ordering::Relaxed);
+        if self
+            .inner
+            .sender
+            .blocking_send(TransferJob::Head(job))
+            .is_err()
+        {
+            self.inner.stats.queued_jobs.fetch_sub(1, Ordering::Relaxed);
+            warn!(path = %path_str, "Head queue rejected: transfer stopped");
+            return Err(anyhow!("cloud transfer stopped"));
+        }
+        Ok(CloudTransferHeadTicket { receiver: Some(rx) })
+    }
+
+    pub fn head_blocking(&self, path: ObjectPath) -> Result<object_store::ObjectMeta> {
+        self.submit_head(path)?.wait()
+    }
+
+    /// Delete an object through the transfer runtime and retry policy. A
+    /// missing object is already in the requested state and succeeds.
+    fn submit_delete(&self, path: ObjectPath) -> Result<CloudTransferTicket> {
+        let path_str = path.to_string();
+        let (tx, rx) = oneshot::channel();
+        let job = DeleteJob {
+            path,
+            attempt: 0,
+            response: tx,
+        };
+        self.inner.stats.queued_jobs.fetch_add(1, Ordering::Relaxed);
+        if self
+            .inner
+            .sender
+            .blocking_send(TransferJob::Delete(job))
+            .is_err()
+        {
+            self.inner.stats.queued_jobs.fetch_sub(1, Ordering::Relaxed);
+            warn!(path = %path_str, "Delete queue rejected: transfer stopped");
+            return Err(anyhow!("cloud transfer stopped"));
+        }
+        Ok(CloudTransferTicket {
+            result: None,
+            receiver: Some(rx),
+        })
+    }
+
+    pub fn delete_blocking(&self, path: ObjectPath) -> Result<()> {
+        self.submit_delete(path)?.wait()
+    }
+
     pub fn stats_handle(&self) -> CloudTransferStatsHandle {
         CloudTransferStatsHandle {
             inner: Arc::clone(&self.inner.stats),
@@ -707,13 +839,20 @@ enum TransferJob {
     Upload(UploadJob),
     UploadFromPath(UploadFromPathJob),
     Download(DownloadJob),
+    Range(RangeJob),
+    Head(HeadJob),
+    Delete(DeleteJob),
 }
 
 impl TransferJob {
     fn into_upload(self) -> UploadJob {
         match self {
             TransferJob::Upload(job) => job,
-            TransferJob::UploadFromPath(_) | TransferJob::Download(_) => {
+            TransferJob::UploadFromPath(_)
+            | TransferJob::Download(_)
+            | TransferJob::Range(_)
+            | TransferJob::Head(_)
+            | TransferJob::Delete(_) => {
                 panic!("unexpected non-in-memory-upload job")
             }
         }
@@ -743,6 +882,25 @@ struct DownloadJob {
     response: oneshot::Sender<Result<PooledBuffer>>,
 }
 
+struct RangeJob {
+    path: ObjectPath,
+    range: std::ops::Range<u64>,
+    attempt: usize,
+    response: oneshot::Sender<Result<PooledBuffer>>,
+}
+
+struct HeadJob {
+    path: ObjectPath,
+    attempt: usize,
+    response: oneshot::Sender<Result<object_store::ObjectMeta>>,
+}
+
+struct DeleteJob {
+    path: ObjectPath,
+    attempt: usize,
+    response: oneshot::Sender<Result<()>>,
+}
+
 enum TransferResult {
     Upload {
         job: UploadJob,
@@ -755,6 +913,18 @@ enum TransferResult {
     Download {
         job: DownloadJob,
         result: Result<PooledBuffer, anyhow::Error>,
+    },
+    Range {
+        job: RangeJob,
+        result: Result<PooledBuffer, anyhow::Error>,
+    },
+    Head {
+        job: HeadJob,
+        result: Result<object_store::ObjectMeta, anyhow::Error>,
+    },
+    Delete {
+        job: DeleteJob,
+        result: Result<(), anyhow::Error>,
     },
 }
 
@@ -785,6 +955,7 @@ async fn upload_loop(
     loop {
         while inflight.len() < config.max_files_in_flight {
             if let Some(job) = retry_queue.pop_front() {
+                stats.queued_jobs.fetch_sub(1, Ordering::Relaxed);
                 inflight.spawn(handle_transfer_job(
                     Arc::clone(&store),
                     Arc::clone(&part_sema),
@@ -916,6 +1087,69 @@ async fn upload_loop(
                             }
                         }
                     },
+                    TransferResult::Range { mut job, result } => match result {
+                        Ok(buffer) => {
+                            info!(path = %job.path, start = job.range.start, end = job.range.end, attempt = job.attempt, "Range download completed");
+                            let _ = job.response.send(Ok(buffer));
+                        }
+                        Err(err) => {
+                            if let Ok(mut guard) = stats.last_error.lock() {
+                                *guard = Some(err.to_string());
+                            }
+                            stats.parts_errors.fetch_add(1, Ordering::Relaxed);
+                            job.attempt += 1;
+                            if job.attempt > config.max_file_retries {
+                                error!(path = %job.path, start = job.range.start, end = job.range.end, attempt = job.attempt, error = %err, "Range download failed after retries");
+                                let _ = job.response.send(Err(err));
+                            } else {
+                                warn!(path = %job.path, start = job.range.start, end = job.range.end, attempt = job.attempt, error = %err, "Range download failed; re-queueing retry");
+                                stats.queued_jobs.fetch_add(1, Ordering::Relaxed);
+                                retry_queue.push_back(TransferJob::Range(job));
+                            }
+                        }
+                    },
+                    TransferResult::Head { mut job, result } => match result {
+                        Ok(meta) => {
+                            info!(path = %job.path, size = meta.size, attempt = job.attempt, "Head completed");
+                            let _ = job.response.send(Ok(meta));
+                        }
+                        Err(err) => {
+                            if let Ok(mut guard) = stats.last_error.lock() {
+                                *guard = Some(err.to_string());
+                            }
+                            stats.parts_errors.fetch_add(1, Ordering::Relaxed);
+                            job.attempt += 1;
+                            if job.attempt > config.max_file_retries {
+                                error!(path = %job.path, attempt = job.attempt, error = %err, "Head failed after retries");
+                                let _ = job.response.send(Err(err));
+                            } else {
+                                warn!(path = %job.path, attempt = job.attempt, error = %err, "Head failed; re-queueing retry");
+                                stats.queued_jobs.fetch_add(1, Ordering::Relaxed);
+                                retry_queue.push_back(TransferJob::Head(job));
+                            }
+                        }
+                    },
+                    TransferResult::Delete { mut job, result } => match result {
+                        Ok(()) => {
+                            info!(path = %job.path, attempt = job.attempt, "Delete completed");
+                            let _ = job.response.send(Ok(()));
+                        }
+                        Err(err) => {
+                            if let Ok(mut guard) = stats.last_error.lock() {
+                                *guard = Some(err.to_string());
+                            }
+                            stats.parts_errors.fetch_add(1, Ordering::Relaxed);
+                            job.attempt += 1;
+                            if job.attempt > config.max_file_retries {
+                                error!(path = %job.path, attempt = job.attempt, error = %err, "Delete failed after retries");
+                                let _ = job.response.send(Err(err));
+                            } else {
+                                warn!(path = %job.path, attempt = job.attempt, error = %err, "Delete failed; re-queueing retry");
+                                stats.queued_jobs.fetch_add(1, Ordering::Relaxed);
+                                retry_queue.push_back(TransferJob::Delete(job));
+                            }
+                        }
+                    },
                 }
             }
             else => {
@@ -1014,7 +1248,127 @@ async fn handle_transfer_job(
                 result,
             }
         }
+        TransferJob::Range(job) => {
+            let RangeJob {
+                path,
+                range,
+                attempt,
+                response,
+            } = job;
+            let result = download_range_once(
+                Arc::clone(&store),
+                Arc::clone(&part_sema),
+                pool,
+                Arc::clone(&stats),
+                &path,
+                range.clone(),
+            )
+            .await;
+            TransferResult::Range {
+                job: RangeJob {
+                    path,
+                    range,
+                    attempt,
+                    response,
+                },
+                result,
+            }
+        }
+        TransferJob::Head(job) => {
+            let HeadJob {
+                path,
+                attempt,
+                response,
+            } = job;
+            stats.parts_started.fetch_add(1, Ordering::Relaxed);
+            stats.inflight_parts.fetch_add(1, Ordering::Relaxed);
+            let permit = part_sema.acquire_owned().await;
+            let result = match permit {
+                Ok(_permit) => store
+                    .head(&path)
+                    .await
+                    .map_err(|err| anyhow!("head failed for {}: {}", path, err)),
+                Err(_) => Err(anyhow!("head semaphore closed for {}", path)),
+            };
+            stats.inflight_parts.fetch_sub(1, Ordering::Relaxed);
+            TransferResult::Head {
+                job: HeadJob {
+                    path,
+                    attempt,
+                    response,
+                },
+                result,
+            }
+        }
+        TransferJob::Delete(job) => {
+            let DeleteJob {
+                path,
+                attempt,
+                response,
+            } = job;
+            stats.parts_started.fetch_add(1, Ordering::Relaxed);
+            stats.inflight_parts.fetch_add(1, Ordering::Relaxed);
+            let permit = part_sema.acquire_owned().await;
+            let result = match permit {
+                Ok(_permit) => match store.delete(&path).await {
+                    Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+                    Err(err) => Err(anyhow!("delete failed for {}: {}", path, err)),
+                },
+                Err(_) => Err(anyhow!("delete semaphore closed for {}", path)),
+            };
+            stats.inflight_parts.fetch_sub(1, Ordering::Relaxed);
+            TransferResult::Delete {
+                job: DeleteJob {
+                    path,
+                    attempt,
+                    response,
+                },
+                result,
+            }
+        }
     }
+}
+
+async fn download_range_once(
+    store: Arc<dyn ObjectStore>,
+    part_sema: Arc<Semaphore>,
+    pool: BufferPool,
+    stats: Arc<CloudTransferStatsInner>,
+    path: &ObjectPath,
+    range: std::ops::Range<u64>,
+) -> Result<PooledBuffer> {
+    let expected = range
+        .end
+        .checked_sub(range.start)
+        .ok_or_else(|| anyhow!("invalid object byte range"))?;
+    let expected = usize::try_from(expected)
+        .map_err(|_| anyhow!("range length exceeds addressable space for {}", path))?;
+    stats.parts_started.fetch_add(1, Ordering::Relaxed);
+    stats.inflight_parts.fetch_add(1, Ordering::Relaxed);
+    let permit = part_sema
+        .acquire_owned()
+        .await
+        .map_err(|_| anyhow!("range semaphore closed for {}", path));
+    let bytes = match permit {
+        Ok(_permit) => store
+            .get_range(path, range.clone())
+            .await
+            .map_err(|err| anyhow!("range download failed for {}: {}", path, err)),
+        Err(err) => Err(err),
+    };
+    stats.inflight_parts.fetch_sub(1, Ordering::Relaxed);
+    let bytes = bytes?;
+    if bytes.len() != expected {
+        return Err(anyhow!(
+            "range download for {} returned {} bytes, expected {}",
+            path,
+            bytes.len(),
+            expected
+        ));
+    }
+    let mut buffer = pool.acquire_raw_sized(expected)?;
+    buffer.copy_from_slice(&bytes);
+    Ok(pool.wrap_accounted(buffer))
 }
 
 async fn download_file_once(
@@ -1515,6 +1869,24 @@ mod tests {
         })?;
         let buffer = transfer.submit_download(path)?.wait()?;
         assert_eq!(buffer.as_slice(), b"read-back");
+        Ok(())
+    }
+
+    #[test]
+    fn cloud_transfer_delete_is_idempotent() -> Result<()> {
+        let store = Arc::new(InMemory::new()) as Arc<dyn ObjectStore>;
+        let transfer = CloudTransfer::new(store.clone(), CloudTransferConfig::from_env());
+        let path = ObjectPath::from("snapshot/_SUCCESS");
+        let rt = Runtime::new()?;
+        rt.block_on(async {
+            store
+                .put(&path, Bytes::from_static(b"published").into())
+                .await
+        })?;
+        transfer.delete_blocking(path.clone())?;
+        transfer.delete_blocking(path.clone())?;
+        let error = rt.block_on(store.head(&path)).unwrap_err();
+        assert!(matches!(error, object_store::Error::NotFound { .. }));
         Ok(())
     }
 

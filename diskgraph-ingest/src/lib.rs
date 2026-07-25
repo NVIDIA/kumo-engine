@@ -8,6 +8,7 @@ pub mod column_inference;
 pub mod config;
 pub mod config_converter;
 pub mod consts;
+pub mod databricks;
 pub mod disk_manager;
 pub mod errors;
 pub mod graph_config;
@@ -18,6 +19,7 @@ pub mod progress;
 pub mod sample_weight;
 pub mod scratch;
 pub mod snapshot_mirror;
+mod source_memory;
 pub mod stage_extension;
 pub mod stats;
 pub mod stats_publish;
@@ -40,8 +42,8 @@ use crate::graph_config::{
 };
 pub use crate::io::Dest;
 use crate::io::{
-    build_input_transfer, download_cloud_bytes, is_cloud_path, require_local_output,
-    resolve_local_paths, OutputSink, OutputTarget,
+    build_input_transfer, is_cloud_path, require_local_output, resolve_local_paths, OutputSink,
+    OutputTarget,
 };
 pub use crate::io::{build_transfer_for_cloud_path, object_path_from_cloud_url};
 use crate::mapping::{
@@ -56,13 +58,15 @@ pub use crate::scratch::{
     estimate_pk_map_bytes, estimate_varbytes_avg_len_multi, new_pk_map, reserve_map,
     EdgeMapScratch, PkMapHashMap, PkMapHasher, PkMapScratch,
 };
+use crate::source_memory::BudgetedVec;
 pub use crate::stage_extension::{
     ingest_stage_extension_with_resolution, ingest_stage_extension_with_resolution_and_sidecars,
     ResolveSpec, StageExtensionResult, StageSidecarColumns, StageSpec,
 };
 pub use crate::stats::{IngestReport, IngestStats, KeyFailureCounts, KeyFailureState, PerfStats};
 use anyhow::{anyhow, Context, Result};
-use arrow_array::{Array, ArrayRef};
+use arrow_array::{make_array, Array, ArrayRef, RecordBatch};
+use arrow_data::transform::MutableArrayData;
 use arrow_schema::{DataType, Field, Schema};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
@@ -73,7 +77,7 @@ use diskgraph_core::metadata::{
     EdgeSortKeyWeightEncoding, EdgeSortKeyWeightKind, EdgeSortKeyWeightMetadata, EdgeStorageFormat,
     NodeDataCompression, NodeShardMetadata, NodeTypeMetadata, PrimaryKeyMap,
 };
-use diskgraph_fs::{CloudTransfer, PooledBytes};
+use diskgraph_fs::CloudTransfer;
 use diskgraph_index::builder::{EdgeBufferPool as IndexEdgeBufferPool, MemoryBudget};
 use diskgraph_index::graph::{GraphDataSource, GraphIndexBuilder, GraphProgressSink};
 use diskgraph_rowpack::{
@@ -84,7 +88,7 @@ use epserde::prelude::Serialize as EpSerialize;
 use fasteval::{eval_compiled_ref, Compiler, Evaler, Parser, Slab};
 use gxhash::GxHasher;
 use half::f16;
-use lz4_flex::frame::{FrameDecoder, FrameEncoder};
+use lz4_flex::frame::{BlockSize, FrameDecoder, FrameEncoder, FrameInfo};
 use memmap2::Mmap;
 use num_traits::{Signed, ToPrimitive};
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ParquetRecordBatchReaderBuilder};
@@ -95,10 +99,10 @@ use ptr_hash::DefaultPtrHash;
 use ptr_hash::PtrHashScratch;
 use serde_json::Value as JsonValue;
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::{self as std_io, BufWriter, Cursor, Read, Write};
+use std::io::{self as std_io, BufWriter, Read, Write};
 #[cfg(target_os = "linux")]
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
@@ -107,6 +111,206 @@ use std::sync::Arc;
 use uuid_simd::{parse_hyphenated, parse_simple, AsOut};
 
 pub use graph_config::GraphConfig;
+
+struct PhaseMarkerChain {
+    first_incomplete: IngestPhase,
+    encode_complete: bool,
+}
+
+fn phase_marker_chain(root: &Path) -> Result<PhaseMarkerChain> {
+    let mut first_missing: Option<IngestPhase> = None;
+    let mut encode_complete = false;
+    for phase in ALL_PHASES {
+        let marker = root
+            .join("_tmp")
+            .join(format!("_phase_complete_{}", phase.name()));
+        if marker.exists() {
+            if let Some(missing) = first_missing {
+                anyhow::bail!(
+                    "invalid phase marker chain: '{}' exists after missing '{}'",
+                    phase.name(),
+                    missing.name(),
+                );
+            }
+            encode_complete |= phase == IngestPhase::Encode;
+        } else if first_missing.is_none() {
+            first_missing = Some(phase);
+        }
+    }
+    Ok(PhaseMarkerChain {
+        first_incomplete: first_missing.unwrap_or(IngestPhase::Index),
+        encode_complete,
+    })
+}
+
+pub fn first_incomplete_phase(root: &Path) -> Result<IngestPhase> {
+    Ok(phase_marker_chain(root)?.first_incomplete)
+}
+
+/// Return the safe automatic resume point for an unpublished local ingest.
+pub fn initial_resume_phase(root: &Path) -> Result<Option<IngestPhase>> {
+    if root.join(success_marker::SUCCESS_MARKER_FILENAME).exists() {
+        return Ok(None);
+    }
+    let chain = phase_marker_chain(root)?;
+    Ok(chain.encode_complete.then_some(chain.first_incomplete))
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct PhysicalFieldSignature {
+    pub name: String,
+    pub data_type: String,
+    pub nullable: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct SourceSchemaSignature {
+    pub tables: BTreeMap<String, Vec<PhysicalFieldSignature>>,
+}
+
+fn remove_temp_entry(path: &Path) -> std::io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+
+#[cfg(test)]
+mod cleanup_temp_tests {
+    use super::remove_temp_entry;
+    use std::fs;
+
+    #[test]
+    fn removes_both_files_and_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let marker = root.path().join("_phase_complete_encode");
+        let stage = root.path().join("encode");
+        fs::write(&marker, b"").unwrap();
+        fs::create_dir(&stage).unwrap();
+        fs::write(stage.join("part.bin"), b"data").unwrap();
+
+        remove_temp_entry(&marker).unwrap();
+        remove_temp_entry(&stage).unwrap();
+
+        assert!(!marker.exists());
+        assert!(!stage.exists());
+    }
+}
+
+fn physical_schema_signature(schema: &Schema) -> Vec<PhysicalFieldSignature> {
+    schema
+        .fields()
+        .iter()
+        .map(|field| PhysicalFieldSignature {
+            name: field.name().clone(),
+            data_type: format!("{:?}", field.data_type()),
+            nullable: field.is_nullable(),
+        })
+        .collect()
+}
+
+fn start_databricks_helper(
+    source: &GraphConfig,
+) -> Result<Option<crate::databricks::DatabricksHelper>> {
+    if !source
+        .tables
+        .iter()
+        .any(|table| matches!(table.source, graph_config::DataSource::Databricks { .. }))
+    {
+        return Ok(None);
+    }
+    let mut helper = crate::databricks::DatabricksHelper::spawn()?;
+    let hello = helper.hello()?;
+    if hello.protocol != 1 || hello.connector != "4.3.0" || hello.thrift != "0.22.0" {
+        return Err(anyhow!("Databricks helper protocol version mismatch"));
+    }
+    Ok(Some(helper))
+}
+
+fn visit_source_schemas(
+    source: &GraphConfig,
+    transfer: Option<&CloudTransfer>,
+    databricks_config_file: Option<&Path>,
+    helper: &mut Option<crate::databricks::DatabricksHelper>,
+    mut visit: impl FnMut(&TableSpec, &Schema) -> Result<()>,
+) -> Result<()> {
+    for table in &source.tables {
+        match &table.source {
+            graph_config::DataSource::Parquet { paths } => {
+                for path in paths {
+                    let resident = ResidentFile::load(path, TableFormat::Parquet, transfer)?;
+                    let schema = resident
+                        .parquet_metadata
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("missing prepared Parquet metadata for {path}"))?
+                        .schema();
+                    visit(table, schema.as_ref())?;
+                }
+            }
+            graph_config::DataSource::Csv { .. } => visit(table, &table_schema(table)?)?,
+            graph_config::DataSource::Databricks { .. } => {
+                let schema = helper
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("Databricks helper was not initialized"))?
+                    .schema(&table.source, databricks_config_file)?;
+                visit(table, schema.as_ref())?;
+            }
+            _ => return Err(anyhow!("table {} source is not implemented", table.name)),
+        }
+    }
+    Ok(())
+}
+
+/// Resolve the complete physical source schema without scanning source rows.
+/// The hardening benchmark uses this to compare the legacy materialized path
+/// with direct Databricks input for field order, type, and nullability.
+pub fn inspect_source_schema(
+    mut source: GraphConfig,
+    base_dir: Option<&Path>,
+    databricks_config_file: Option<&Path>,
+) -> Result<SourceSchemaSignature> {
+    if let Some(base_dir) = base_dir {
+        resolve_local_paths(&mut source, base_dir);
+    }
+    source.normalize_multicat_pseudo_list();
+    let transfer = build_input_transfer(&source)?;
+    let mut helper = start_databricks_helper(&source)?;
+    let mut tables = BTreeMap::new();
+    for table in &source.tables {
+        if tables.insert(table.name.clone(), None).is_some() {
+            return Err(anyhow!("duplicate table {}", table.name));
+        }
+    }
+    visit_source_schemas(
+        &source,
+        transfer.as_ref(),
+        databricks_config_file,
+        &mut helper,
+        |table, schema| {
+            let current = physical_schema_signature(schema);
+            let expected = tables.get_mut(&table.name).expect("validated table name");
+            if expected.as_ref().is_some_and(|prior| prior != &current) {
+                return Err(anyhow!(
+                    "table {} has inconsistent physical schemas across source files",
+                    table.name
+                ));
+            }
+            *expected = Some(current);
+            Ok(())
+        },
+    )?;
+    let tables = tables
+        .into_iter()
+        .map(|(table, signature)| {
+            signature
+                .map(|signature| (table.clone(), signature))
+                .ok_or_else(|| anyhow!("table {table} has no source files"))
+        })
+        .collect::<Result<_>>()?;
+    Ok(SourceSchemaSignature { tables })
+}
 
 /// Target type information for FK columns during edge key extraction.
 ///
@@ -127,6 +331,8 @@ pub struct FkEdgeTarget {
 }
 
 const DEFAULT_INDEX_MEM_BUDGET_FRAC: f64 = 0.7;
+const EPHEMERAL_DATABRICKS_CONFIG_ENV: &str =
+    "DISKGRAPH_EPHEMERAL_DATABRICKS_CONFIG";
 
 pub fn ingest(
     graph_config_path: &Path,
@@ -302,26 +508,8 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
         );
     }
     source.num_shards = Some(chosen);
-    // Validate explicit multicategorical delimiters even on direct DiskGraph
-    // configs (not just kumo→diskgraph converted ones). Pre-#28478 a wrong
-    // delimiter would silently produce one-token tokenization downstream;
-    // post-flip the same mistake bakes into the on-disk rowpack and is
-    // irreversible without re-ingest. Convert the error into an anyhow form
-    // here since `ingest_with_stats_from_source` already propagates anyhow.
-    let transfer = match crate::io::build_input_transfer(&source) {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::warn!(
-                "could not build input transfer for delim validation: {e}"
-            );
-            None
-        }
-    };
-    crate::config_converter::inference::validate_explicit_multicat_delimiters(
-        &source, &transfer,
-    )
-    .map_err(|e| anyhow!("{e}"))?;
     source.validate()?;
+    let encode_marker_payload = serde_json::to_vec(&source)?;
 
     // NOTE: We no longer call resolve_fk_types() here.
     // FK columns keep their original ingested_dtype for rowpack storage.
@@ -335,6 +523,11 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     if !matches!(&*target, OutputTarget::Local { .. }) {
         return Err(anyhow!("index build requires local output"));
     }
+    // Invalidation belongs at the reusable ingest boundary, not only in the
+    // CLI supervisor: pybind and direct Rust callers can also retry/resume.
+    // Complete this synchronously before `prepare`, a fresh local wipe, phase
+    // cleanup, or any upload can mutate objects below a published marker.
+    target.invalidate_publication()?;
     target.prepare()?;
     let resume_from_phase = options.resume_from_phase;
     if let OutputTarget::Local { root, .. } = &*target {
@@ -365,6 +558,14 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
                         phase_marker_path(root, pred.name()).display(),
                         rfp,
                     ));
+                }
+                if pred == IngestPhase::Encode {
+                    let marker = fs::read(phase_marker_path(root, pred.name()))?;
+                    if marker != encode_marker_payload {
+                        return Err(anyhow!(
+                            "resume source identity does not match the completed Encode marker"
+                        ));
+                    }
                 }
             }
         }
@@ -412,60 +613,56 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     // normally have produced. Order matches phase order so each helper
     // sees its own predecessors' output.
     if let Some(rfp) = resume_from_phase {
-        if rfp > IngestPhase::Context {
-            ctx.repopulate_table_contexts_from_source()?;
-        }
         if rfp > IngestPhase::Encode {
+            ctx.restore_encode_state()?;
+            ctx.repopulate_table_contexts_from_source()?;
             ctx.repopulate_node_stats_from_meta()?;
         }
         if rfp > IngestPhase::PkMap {
+            ctx.restore_resume_stats_state(PK_MAP_STATE_PATH)?;
             ctx.repopulate_pk_hash_paths_from_disk()?;
+        }
+        if rfp > IngestPhase::EdgesMap {
+            ctx.restore_resume_stats_state(EDGES_MAP_STATE_PATH)?;
         }
     }
 
     // Wall-time durations for each phase. Skipped phases stay at zero —
     // they're consumed by PerfStats below regardless of which phases ran.
-    let mut context_wall = std::time::Duration::ZERO;
+    let context_wall = std::time::Duration::ZERO;
     let mut encode_wall = std::time::Duration::ZERO;
     let mut pk_map_wall = std::time::Duration::ZERO;
     let mut edges_map_wall = std::time::Duration::ZERO;
     let mut index_wall = std::time::Duration::ZERO;
 
     ctx.set_peak_stage(Some(0));
-    if should_run(IngestPhase::Context) {
-        let context_start = std::time::Instant::now();
-        run_phase_with_marker(
-            &local_root,
-            "context",
-            wipe_on_entry(IngestPhase::Context),
-            profile_dir.as_deref(),
-            || ctx.build_node_contexts(),
-        )?;
-        context_wall = context_start.elapsed();
-        tracing::info!(
-            stage = "context",
-            elapsed_ms = context_wall.as_millis() as u64,
-            elapsed = %format_duration(context_wall.as_millis() as u64),
-            "context stage complete"
-        );
-    } else {
-        tracing::info!(stage = "context", "resume: skipped (marker present)");
-    }
-    ctx.set_peak_stage(Some(1));
     if should_run(IngestPhase::Encode) {
+        let wipe_encode_on_entry = wipe_on_entry(IngestPhase::Encode);
+        if wipe_encode_on_entry {
+            // An Encode retry starts from offset zero. Discard provisional
+            // output before even the schema query so a failed preflight can
+            // never leave prior partial output looking resumable.
+            wipe_phase_outputs(&local_root, "encode")?;
+        }
+        ctx.prepare_input_schemas()?;
         let encode_start = std::time::Instant::now();
-        run_phase_with_marker(
+        run_phase_with_marker_payload(
             &local_root,
             "encode",
-            wipe_on_entry(IngestPhase::Encode),
+            false,
             profile_dir.as_deref(),
-            || ctx.build_temp_shards(),
+            &encode_marker_payload,
+            || {
+                ctx.set_peak_stage(Some(1));
+                ctx.build_temp_shards()
+            },
         )?;
         encode_wall = encode_start.elapsed();
         tracing::info!(
             stage = "encode",
             elapsed_ms = encode_wall.as_millis() as u64,
             elapsed = %format_duration(encode_wall.as_millis() as u64),
+            context_ms = context_wall.as_millis() as u64,
             "encode stage complete"
         );
     } else {
@@ -484,7 +681,10 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
             "pk_map",
             wipe_on_entry(IngestPhase::PkMap),
             profile_dir.as_deref(),
-            || ctx.build_sharded_pk_maps(),
+            || {
+                ctx.build_sharded_pk_maps()?;
+                ctx.persist_resume_stats_state(PK_MAP_STATE_PATH)
+            },
         )?;
         // Marker is now written; a crash from this line on does not invalidate
         // pk_map. Drop the pristines + free pkey.bin temp files we no longer
@@ -537,7 +737,10 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
             "edges_map",
             wipe_on_entry(IngestPhase::EdgesMap),
             profile_dir.as_deref(),
-            || ctx.build_edges_mapped(&edge_ctx),
+            || {
+                ctx.build_edges_mapped(&edge_ctx)?;
+                ctx.persist_resume_stats_state(EDGES_MAP_STATE_PATH)
+            },
         )?;
         edges_map_wall = edges_map_start.elapsed();
         tracing::info!(
@@ -577,9 +780,9 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
             elapsed = %format_duration(index_wall.as_millis() as u64),
             "index stage complete"
         );
-        // Marker is on disk. edges_map intermediate is no longer needed by any
-        // phase; free it so disk pressure during finalize stays low.
-        let _ = ctx.cleanup_edge_stage("edges_map");
+        // Keep edges_map until publication. If finalization OOMs, the
+        // supervisor reruns Index from this durable predecessor without
+        // reopening Encode or rebuilding EdgesMap.
     } else {
         tracing::info!(stage = "index", "resume: skipped (marker present)");
     }
@@ -599,11 +802,11 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     // TT-NG timestamp grouping: merge the per-shard spills into per-stage
     // `bucket_index.bin` (final node-ids grouped by TIMESTAMP). Runs after
     // `finalize_metadata` (shard offsets / min-ids known) and BEFORE
-    // `cleanup_temp` (spills live under `_tmp/`). No-op when grouping is off.
+    // final publication (spills and resumable phase state live under `_tmp/`).
+    // No-op when grouping is off.
     let ts_groupings = ctx.run_ts_grouping()?;
     let sample_weight_indexes = ctx.run_sample_weight_indexes()?;
     let binary_label_indexes = ctx.run_binary_label_indexes()?;
-    ctx.cleanup_temp()?;
     let finalize_wall = finalize_start.elapsed();
     ctx.set_peak_stage(None);
     tracing::info!(
@@ -613,13 +816,19 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
         "finalize stage complete"
     );
     let wall_time = wall_start.elapsed();
-    let bytes_read = sum_input_bytes(&ctx.source);
+    // Preserve the existing Kumo SOURCE_SIZE contract: logical Arrow bytes
+    // observed by the one shared consumer, not compressed files, IPC framing,
+    // or Cloud Fetch wire bytes.
+    let source_total_bytes = Some(ctx.logical_arrow_source_bytes);
+    let bytes_read = ctx.logical_arrow_source_bytes;
     let bytes_written = match &*ctx.target {
-        OutputTarget::Local { root, .. } => sum_dir_bytes(root).unwrap_or(0),
+        OutputTarget::Local { root, .. } => sum_published_dir_bytes(root).unwrap_or(0),
         _ => 0,
     };
     let perf = PerfStats {
         wall_time_ms: wall_time.as_millis() as u64,
+        encode_wall_nanos: encode_wall.as_nanos().min(u64::MAX as u128) as u64,
+        source_input_wait_nanos: ctx.source_input_wait_nanos,
         context_wall_ms: context_wall.as_millis() as u64,
         encode_wall_ms: encode_wall.as_millis() as u64,
         pk_map_wall_ms: pk_map_wall.as_millis() as u64,
@@ -628,7 +837,12 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
         finalize_wall_ms: finalize_wall.as_millis() as u64,
         bytes_read,
         bytes_written,
-        source_total_bytes: Some(bytes_read),
+        source_total_bytes,
+        databricks_wire_bytes: ctx.databricks_wire_bytes,
+        databricks_decoded_ipc_bytes: ctx.databricks_decoded_ipc_bytes,
+        databricks_query_startup_nanos: ctx.databricks_query_startup_nanos,
+        encode_memory_high_water_bytes: ctx.encode_memory_high_water_bytes,
+        source_rows: ctx.logical_source_rows,
         temp_edges_src_bytes: ctx.temp_edges_src_bytes,
         temp_fkeys_bytes: ctx.temp_fkeys_bytes,
         temp_edges_map_bytes: ctx.temp_edges_map_bytes,
@@ -760,6 +974,19 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     // reach here without a marker is also without a mirror — nothing
     // to drain.
 
+    // Phase markers and EncodeState must survive every operation that can
+    // still fail publication. Once `_SUCCESS` is durable they are no longer
+    // needed. Cleanup is best-effort after publication: a temp-file deletion
+    // failure must not turn a valid published snapshot into a reported ingest
+    // failure (or arm CleanupGuard to erase it).
+    if success_marker_content.is_some() {
+        if let Err(error) = ctx.cleanup_temp() {
+            tracing::warn!("published snapshot retained temporary files: {error:#}");
+        }
+    } else {
+        ctx.cleanup_temp()?;
+    }
+
     if let Some(guard) = cleanup_guard {
         guard.disarm();
     }
@@ -790,6 +1017,13 @@ impl CleanupGuard {
 impl Drop for CleanupGuard {
     fn drop(&mut self) {
         if self.armed.load(std::sync::atomic::Ordering::SeqCst) {
+            if phase_marker_exists(&self.path, IngestPhase::Encode.name()) {
+                tracing::warn!(
+                    path = %self.path.display(),
+                    "preserving resumable ingest output after completed Encode"
+                );
+                return;
+            }
             tracing::warn!(
                 path = %self.path.display(),
                 "cleaning up partial ingest output"
@@ -833,7 +1067,6 @@ mod tests_resume_phase {
 
     #[test]
     fn ingest_phase_ordering() {
-        assert!(IngestPhase::Context < IngestPhase::Encode);
         assert!(IngestPhase::Encode < IngestPhase::PkMap);
         assert!(IngestPhase::PkMap < IngestPhase::EdgesMap);
         assert!(IngestPhase::EdgesMap < IngestPhase::Index);
@@ -845,15 +1078,14 @@ mod tests_resume_phase {
         assert_eq!(
             preds,
             vec![
-                IngestPhase::Context,
                 IngestPhase::Encode,
                 IngestPhase::PkMap,
                 IngestPhase::EdgesMap,
             ]
         );
         let preds: Vec<_> = IngestPhase::PkMap.predecessors().collect();
-        assert_eq!(preds, vec![IngestPhase::Context, IngestPhase::Encode]);
-        let preds: Vec<_> = IngestPhase::Context.predecessors().collect();
+        assert_eq!(preds, vec![IngestPhase::Encode]);
+        let preds: Vec<_> = IngestPhase::Encode.predecessors().collect();
         assert!(preds.is_empty());
     }
 
@@ -875,6 +1107,17 @@ mod tests_resume_phase {
         // marker lives under _tmp/ so cleanup_temp will sweep it
         let path = phase_marker_path(root, "encode");
         assert!(path.starts_with(root.join(TEMP_DIR_NAME)));
+    }
+
+    #[test]
+    fn ephemeral_databricks_config_removal_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("databricks.cfg");
+        fs::write(&path, b"[profile]\ntoken = secret\n").unwrap();
+
+        remove_ephemeral_databricks_config_path(&path).unwrap();
+        assert!(!path.exists());
+        remove_ephemeral_databricks_config_path(&path).unwrap();
     }
 
     #[test]
@@ -957,24 +1200,24 @@ mod tests_resume_phase {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         let called = std::cell::Cell::new(false);
-        run_phase_with_marker(root, "context", false, None, || {
+        run_phase_with_marker(root, "encode", false, None, || {
             called.set(true);
             Ok(())
         })
         .unwrap();
         assert!(called.get());
-        assert!(phase_marker_exists(root, "context"));
+        assert!(phase_marker_exists(root, "encode"));
     }
 
     #[test]
     fn run_phase_with_marker_no_marker_on_failure() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        let result = run_phase_with_marker(root, "context", false, None, || {
+        let result = run_phase_with_marker(root, "encode", false, None, || {
             Err(anyhow!("synthetic boom"))
         });
         assert!(result.is_err());
-        assert!(!phase_marker_exists(root, "context"));
+        assert!(!phase_marker_exists(root, "encode"));
     }
 
     #[test]
@@ -999,7 +1242,6 @@ mod tests_resume_phase {
     fn predecessor_check_passes_when_all_markers_present() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        write_phase_marker(root, "context").unwrap();
         write_phase_marker(root, "encode").unwrap();
         // emulate the same predecessor check that runs in
         // ingest_with_stats_from_source
@@ -1012,8 +1254,7 @@ mod tests_resume_phase {
     fn predecessor_check_detects_missing_marker() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        write_phase_marker(root, "context").unwrap();
-        // encode marker missing — pk_map should not be considered resumable
+        // Encode marker missing — pk_map should not be considered resumable.
         let missing: HashSet<_> = IngestPhase::PkMap
             .predecessors()
             .filter(|p| !phase_marker_exists(root, p.name()))
@@ -1147,9 +1388,11 @@ mod tests_repopulate_helpers {
             source,
             target,
             profile_dir: None,
+            databricks_config_file: None,
+            databricks_helper: None,
             parallel: false,
-            context_threads: None,
-            encode_threads: None,
+            source_loader_threads: None,
+            source_encoder_threads: None,
             pk_map_threads: None,
             edges_map_threads: None,
             index_threads: None,
@@ -1162,7 +1405,6 @@ mod tests_repopulate_helpers {
             table_contexts: HashMap::new(),
             shard_rows: HashMap::new(),
             shard_offsets: HashMap::new(),
-            group_ts_counts: HashMap::new(),
             stage_sidecars: HashMap::new(),
             binary_label_counts: HashMap::new(),
             sample_weight_counts: HashMap::new(),
@@ -1172,6 +1414,7 @@ mod tests_repopulate_helpers {
             fk_edge_targets: HashMap::new(),
             edge_counts: HashMap::new(),
             edge_dst_degree_bits: HashMap::new(),
+            edge_dst_nonzero_counts: HashMap::new(),
             pk_duplicate_counts: HashMap::new(),
             pk_duplicate_drops: HashMap::new(),
             pk_null_timestamp_drops: HashMap::new(),
@@ -1190,6 +1433,15 @@ mod tests_repopulate_helpers {
             temp_fkeys_bytes: 0,
             temp_edges_map_bytes: 0,
             temp_node_data_bytes: 0,
+            databricks_wire_bytes: 0,
+            databricks_decoded_ipc_bytes: 0,
+            databricks_query_startup_nanos: 0,
+            logical_arrow_source_bytes: 0,
+            logical_arrow_source_bytes_by_table: HashMap::new(),
+            source_input_wait_nanos: 0,
+            encode_memory_high_water_bytes: 0,
+            logical_source_rows: 0,
+            logical_source_rows_by_table: HashMap::new(),
             peak_mem_stats: None,
             col_stats: false,
             cat_count_strategy: crate::col_stats::CategoryCountStrategy::None,
@@ -1767,6 +2019,22 @@ mod tests_disk_space {
         }
         assert!(target.exists());
     }
+
+    #[test]
+    fn test_cleanup_guard_preserves_completed_encode_for_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("resumable_output");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("source-data.bin"), b"durable source data").unwrap();
+        write_phase_marker(&target, IngestPhase::Encode.name()).unwrap();
+
+        {
+            let _guard = CleanupGuard::new(target.clone());
+        }
+
+        assert!(target.join("source-data.bin").exists());
+        assert!(phase_marker_exists(&target, IngestPhase::Encode.name()));
+    }
 }
 
 /// Log available disk space as a pre-flight check. Non-blocking — just a warning.
@@ -1808,17 +2076,15 @@ fn disk_space_bytes(path: &Path) -> Option<(u64, u64)> {
     Some((total, available))
 }
 
-#[derive(Clone)]
-
 struct IngestContext {
     source: GraphConfig,
     target: std::sync::Arc<OutputTarget>,
     profile_dir: Option<PathBuf>,
+    databricks_config_file: Option<PathBuf>,
+    databricks_helper: Option<crate::databricks::DatabricksHelper>,
     parallel: bool,
-    /// Per-phase thread-count overrides. `None` falls back to
-    /// `default_worker_threads()`.
-    context_threads: Option<usize>,
-    encode_threads: Option<usize>,
+    source_loader_threads: Option<usize>,
+    source_encoder_threads: Option<usize>,
     pk_map_threads: Option<usize>,
     edges_map_threads: Option<usize>,
     index_threads: Option<usize>,
@@ -1835,10 +2101,6 @@ struct IngestContext {
     table_contexts: HashMap<String, String>,
     shard_rows: HashMap<String, Vec<u64>>,
     shard_offsets: HashMap<String, Vec<u64>>,
-    /// TT-NG timestamp grouping: per-(table,shard) distinct-ts → count, captured
-    /// during encode from the node writer. Empty unless grouping is enabled.
-    /// Consumed by the post-build merge to size buckets without a count pass.
-    group_ts_counts: HashMap<(String, usize), HashMap<i64, u64>>,
     /// TT-NG seed-sampling sidecar requests keyed by stage table name.
     /// Empty for ordinary graph ingest.
     stage_sidecars: HashMap<String, StageSidecarColumns>,
@@ -1856,8 +2118,11 @@ struct IngestContext {
     fk_edge_targets: HashMap<String, FkEdgeTarget>,
     edge_counts: HashMap<String, u64>,
     /// Per forward-relation bitvec of dst node IDs with nonzero degree.
-    /// Used to compute NUM_DST_NONZERO_DEGREE for kumo edge stats.
+    /// Used only during EdgesMap to compute NUM_DST_NONZERO_DEGREE.
     edge_dst_degree_bits: HashMap<String, Vec<u8>>,
+    /// Scalar result retained after EdgesMap so resume state never serializes
+    /// destination-sized bitmaps.
+    edge_dst_nonzero_counts: HashMap<String, u64>,
     pk_duplicate_counts: HashMap<String, u64>,
     pk_duplicate_drops: HashMap<String, u64>,
     pk_null_timestamp_drops: HashMap<String, u64>,
@@ -1876,6 +2141,15 @@ struct IngestContext {
     temp_fkeys_bytes: u64,
     temp_edges_map_bytes: u64,
     temp_node_data_bytes: u64,
+    databricks_wire_bytes: u64,
+    databricks_decoded_ipc_bytes: u64,
+    databricks_query_startup_nanos: u64,
+    logical_arrow_source_bytes: u64,
+    logical_arrow_source_bytes_by_table: HashMap<String, u64>,
+    source_input_wait_nanos: u64,
+    encode_memory_high_water_bytes: u64,
+    logical_source_rows: u64,
+    logical_source_rows_by_table: HashMap<String, u64>,
     peak_mem_stats: Option<std::sync::Arc<PeakMemStats>>,
     col_stats: bool,
     cat_count_strategy: crate::col_stats::CategoryCountStrategy,
@@ -1891,6 +2165,78 @@ struct IngestContext {
     /// reference value(s) to graph node-ids and writes them as rowpack columns
     /// (no FK edge). Empty (default) preserves the edge-materializing path.
     resolve_columns: Vec<crate::config::ResolveColumnSpec>,
+}
+
+const ENCODE_STATE_VERSION: u32 = 2;
+const ENCODE_STATE_PATH: &str = "_tmp/encode_state.json";
+const RESUME_STATS_STATE_VERSION: u32 = 1;
+const PK_MAP_STATE_PATH: &str = "_tmp/pk_map_state.json";
+const EDGES_MAP_STATE_PATH: &str = "_tmp/edges_map_state.json";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct EncodeLabelCounts {
+    table: String,
+    shard: usize,
+    counts: crate::binary_label::LabelCounts,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct EncodeWeightCounts {
+    table: String,
+    shard: usize,
+    counts: crate::sample_weight::WeightCounts,
+}
+
+/// Everything produced only in memory by Encode and needed by a later-phase
+/// resume. Encoded rows and contexts remain in their native files; this small
+/// manifest prevents inferred schema and counters from silently reverting.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct EncodeState {
+    version: u32,
+    source: GraphConfig,
+    binary_label_counts: Vec<EncodeLabelCounts>,
+    sample_weight_counts: Vec<EncodeWeightCounts>,
+    dropped_rows_counts: HashMap<String, u64>,
+    key_parse_failures: u64,
+    key_lookup_failures: u64,
+    key_membership_failures: u64,
+    key_failure_samples: Vec<String>,
+    key_failures_by_context: HashMap<String, KeyFailureCounts>,
+    trimmed_strings: u64,
+    temp_edges_src_bytes: u64,
+    temp_fkeys_bytes: u64,
+    temp_node_data_bytes: u64,
+    databricks_wire_bytes: u64,
+    databricks_decoded_ipc_bytes: u64,
+    databricks_query_startup_nanos: u64,
+    logical_arrow_source_bytes: u64,
+    logical_arrow_source_bytes_by_table: HashMap<String, u64>,
+    #[serde(default)]
+    source_input_wait_nanos: u64,
+    encode_memory_high_water_bytes: u64,
+    logical_source_rows: u64,
+    logical_source_rows_by_table: HashMap<String, u64>,
+}
+
+/// In-memory counters produced after Encode and required to make a later
+/// phase resume observationally equivalent to an uninterrupted ingest.
+/// Each completed phase writes a full snapshot so restore never has to
+/// combine deltas from multiple files.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ResumeStatsState {
+    version: u32,
+    edge_counts: HashMap<String, u64>,
+    edge_dst_nonzero_counts: HashMap<String, u64>,
+    pk_duplicate_counts: HashMap<String, u64>,
+    pk_duplicate_drops: HashMap<String, u64>,
+    pk_null_timestamp_drops: HashMap<String, u64>,
+    edge_null_timestamp_drops: HashMap<String, u64>,
+    pk_duplicate_samples: HashMap<String, Vec<String>>,
+    key_parse_failures: u64,
+    key_lookup_failures: u64,
+    key_membership_failures: u64,
+    key_failure_samples: Vec<String>,
+    key_failures_by_context: HashMap<String, KeyFailureCounts>,
 }
 
 struct EdgeBuildContext {
@@ -2086,22 +2432,941 @@ struct TempNodeFileResult {
     node_data_dropped: u64,
 }
 
-/// A local file or a complete pooled cloud download shared by row-group tasks.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct PublicIngestError {
+    message: String,
+}
+
+impl PublicIngestError {
+    fn new(message: String) -> Self {
+        Self { message }
+    }
+}
+
+pub fn public_ingest_error_message(error: &anyhow::Error) -> Option<String> {
+    error
+        .downcast_ref::<PublicIngestError>()
+        .map(ToString::to_string)
+}
+
+enum SourceBatchRetention {
+    Budget {
+        _permit: crate::source_memory::BytePermit,
+    },
+    Databricks {
+        _lease: crate::databricks::DatabricksBatchLease,
+    },
+}
+
+struct SourceBatch {
+    batch: RecordBatch,
+    _retention: SourceBatchRetention,
+}
+
+impl SourceBatch {
+    fn budgeted(batch: RecordBatch, permit: crate::source_memory::BytePermit) -> Self {
+        Self {
+            batch,
+            _retention: SourceBatchRetention::Budget { _permit: permit },
+        }
+    }
+
+    fn databricks(batch: crate::databricks::DatabricksBatch) -> Self {
+        let (batch, lease) = batch.into_parts();
+        Self {
+            batch,
+            _retention: SourceBatchRetention::Databricks { _lease: lease },
+        }
+    }
+
+    fn slice(self, offset: usize, length: usize) -> Self {
+        Self {
+            batch: self.batch.slice(offset, length),
+            _retention: self._retention,
+        }
+    }
+}
+
+struct EncodeBatchIter {
+    receiver: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<SourceBatch>>>,
+    active_retention: Option<SourceBatchRetention>,
+}
+
+impl Iterator for EncodeBatchIter {
+    type Item = Result<RecordBatch>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.active_retention = None;
+        let next = match self.receiver.lock() {
+            Ok(receiver) => receiver.recv().ok(),
+            Err(_) => return Some(Err(anyhow!("Encode batch queue lock was poisoned"))),
+        }?;
+        let SourceBatch {
+            batch,
+            _retention,
+        } = next;
+        self.active_retention = Some(_retention);
+        Some(Ok(batch))
+    }
+}
+
+fn run_encode_batch_workers<I, R, F>(batches: I, workers: usize, encode: F) -> Result<Vec<R>>
+where
+    I: IntoIterator<Item = Result<SourceBatch>>,
+    R: Send,
+    F: Fn(EncodeBatchIter) -> Result<R> + Sync,
+{
+    let mut batches = batches.into_iter();
+    // Reserve the first source batch before workers allocate their retained
+    // scratch. This guarantees that at least one worker can make progress even
+    // when the Encode working-memory budget is tight.
+    let first_batch = batches.next().transpose()?;
+    let workers = if first_batch.is_some() {
+        workers.max(1)
+    } else {
+        1
+    };
+    std::thread::scope(|scope| {
+        let (sender, receiver) =
+            std::sync::mpsc::sync_channel::<SourceBatch>(workers.saturating_mul(2).max(1));
+        let receiver = Arc::new(std::sync::Mutex::new(receiver));
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            let receiver = Arc::clone(&receiver);
+            let encode = &encode;
+            handles.push(scope.spawn(move || {
+                encode(EncodeBatchIter {
+                    receiver,
+                    active_retention: None,
+                })
+            }));
+        }
+        drop(receiver);
+
+        let mut source_error = None;
+        if let Some(batch) = first_batch {
+            if sender.send(batch).is_err() {
+                source_error = Some(anyhow!("all Encode batch workers stopped"));
+            }
+        }
+        for batch in batches {
+            if source_error.is_some() {
+                break;
+            }
+            match batch {
+                Ok(batch) => {
+                    if sender.send(batch).is_err() {
+                        source_error = Some(anyhow!("all Encode batch workers stopped"));
+                        break;
+                    }
+                }
+                Err(error) => {
+                    source_error = Some(error);
+                    break;
+                }
+            }
+        }
+        drop(sender);
+
+        let mut results = Vec::with_capacity(workers);
+        for handle in handles {
+            match handle.join() {
+                Ok(result) => results.push(result?),
+                Err(_) => return Err(anyhow!("Encode batch worker panicked")),
+            }
+        }
+        if let Some(error) = source_error {
+            return Err(error);
+        }
+        Ok(results)
+    })
+}
+
+fn node_row_scratch_bytes(table: &TableSpec) -> Result<u64> {
+    (MAX_NODE_DATA_LEN as u64)
+        .checked_mul(4)
+        .and_then(|bytes| {
+            (table.columns.len() as u64)
+                .checked_mul(MAX_VAR_KEY_LEN as u64)
+                .and_then(|keys| keys.checked_mul(2))
+                .and_then(|keys| bytes.checked_add(keys))
+        })
+        .and_then(|bytes| bytes.checked_add((MAX_VAR_KEY_LEN as u64) * 4))
+        .ok_or_else(|| anyhow!("node row scratch memory size overflowed"))
+}
+
+fn node_encode_worker_limit(
+    table: &TableSpec,
+    relation_defs: &[RelationDef],
+    requested: usize,
+    source_budget: &crate::source_memory::ByteBudget,
+) -> Result<usize> {
+    let scratch_bytes = node_row_scratch_bytes(table)?;
+    let sort_key_buffers = relation_defs
+        .iter()
+        .filter_map(|relation| relation.sort_key.as_ref())
+        .map(|sort_key| {
+            usize::from(
+                sort_key
+                    .timestamp
+                    .as_ref()
+                    .is_some_and(|timestamp| timestamp.table == table.name),
+            ) + usize::from(
+                sort_key
+                    .weight
+                    .as_ref()
+                    .is_some_and(|weight| weight.table == table.name),
+            )
+        })
+        .sum::<usize>();
+    // Node and destination-key batchers each retain up to one target-sized
+    // set, as does every active sort-key component.
+    let output_bytes = (2u64)
+        .checked_add(sort_key_buffers as u64)
+        .and_then(|sets| sets.checked_mul(EDGE_BATCH_TARGET_BYTES as u64))
+        .ok_or_else(|| anyhow!("node Encode worker memory size overflowed"))?;
+    let per_worker = scratch_bytes
+        .checked_add(output_bytes)
+        .ok_or_else(|| anyhow!("node Encode worker memory size overflowed"))?;
+    let prefix_reserve = (SOURCE_PREFIX_MAX_BYTES as u64)
+        .min(source_budget.normal_limit_bytes().saturating_sub(scratch_bytes));
+    let available = source_budget
+        .normal_limit_bytes()
+        .saturating_sub(prefix_reserve);
+    let memory_workers = (available / per_worker).max(1) as usize;
+    Ok(requested.max(1).min(memory_workers))
+}
+
+#[cfg(test)]
+#[test]
+fn encode_batch_dispatcher_runs_workers_in_parallel() {
+    let workers = 4;
+    let budget = crate::source_memory::ByteBudget::new(1024).unwrap();
+    let batches = (0..workers)
+        .map(|_| {
+            let batch = RecordBatch::new_empty(Arc::new(Schema::empty()));
+            Ok(SourceBatch::budgeted(batch, budget.acquire(1).unwrap()))
+        })
+        .collect::<Vec<_>>();
+    let rendezvous = Arc::new(std::sync::Barrier::new(workers));
+    let results = run_encode_batch_workers(batches, workers, |mut batches| {
+        let batch = batches.next().expect("worker did not receive a batch")?;
+        rendezvous.wait();
+        Ok(batch.num_rows())
+    })
+    .unwrap();
+    assert_eq!(results, vec![0; workers]);
+}
+
+#[cfg(test)]
+#[test]
+fn only_explicit_public_ingest_errors_are_publishable() {
+    let public_error = anyhow::Error::new(PublicIngestError::new(
+        "safe validation detail".to_string(),
+    ))
+    .context("internal worker context");
+    assert_eq!(
+        public_ingest_error_message(&public_error).as_deref(),
+        Some("safe validation detail")
+    );
+    assert!(public_ingest_error_message(&anyhow!("provider secret detail")).is_none());
+}
+
+const FILE_DECODE_READ_BUFFER_BYTES: usize = 64 * 1024;
+
+/// Drives Arrow's push CSV decoder with a hard byte boundary. Reaching the
+/// boundary at a record boundary yields a smaller batch; reaching it inside a
+/// record rejects before the decoder can grow again.
+struct BoundedCsvBatchReader {
+    reader: Box<dyn Read + Send>,
+    decoder: arrow_csv::reader::Decoder,
+    buffer: Vec<u8>,
+    buffer_start: usize,
+    buffer_end: usize,
+    decoded_since_flush: u64,
+    max_raw_batch_bytes: u64,
+    eof: bool,
+    finished: bool,
+}
+
+impl BoundedCsvBatchReader {
+    fn new(
+        reader: Box<dyn Read + Send>,
+        schema: Schema,
+        max_decode_bytes: u64,
+    ) -> Result<Self> {
+        // The decoder retains raw fields while Arrow arrays are built. Limit
+        // raw CSV to one quarter of the permit, leaving space for the copied
+        // Arrow values, offsets/validity, and parser/read buffers.
+        let max_raw_batch_bytes = max_decode_bytes / 4;
+        if max_raw_batch_bytes < 1024 {
+            return Err(anyhow!("Encode CSV decode budget is too small"));
+        }
+        let columns = schema.fields().len().max(1) as u64;
+        let estimated_per_row = columns
+            .checked_mul(32)
+            .ok_or_else(|| anyhow!("CSV decode row estimate overflowed"))?;
+        let batch_rows = usize::try_from(
+            (max_decode_bytes / 16 / estimated_per_row)
+                .clamp(1, 1024),
+        )
+        .unwrap_or(1);
+        let buffer_bytes = FILE_DECODE_READ_BUFFER_BYTES.min(
+            usize::try_from((max_decode_bytes / 16).max(1024)).unwrap_or(usize::MAX),
+        );
+        Ok(Self {
+            reader,
+            decoder: arrow_csv::ReaderBuilder::new(Arc::new(schema))
+                .with_header(true)
+                .with_batch_size(batch_rows)
+                .build_decoder(),
+            buffer: vec![0; buffer_bytes],
+            buffer_start: 0,
+            buffer_end: 0,
+            decoded_since_flush: 0,
+            max_raw_batch_bytes,
+            eof: false,
+            finished: false,
+        })
+    }
+
+    fn flush(&mut self) -> Option<Result<RecordBatch>> {
+        match self.decoder.flush() {
+            Ok(Some(batch)) => {
+                self.decoded_since_flush = 0;
+                Some(Ok(batch))
+            }
+            Ok(None) => {
+                self.decoded_since_flush = 0;
+                None
+            }
+            Err(error) => {
+                self.finished = true;
+                Some(Err(anyhow::Error::from(error)))
+            }
+        }
+    }
+}
+
+impl Iterator for BoundedCsvBatchReader {
+    type Item = Result<RecordBatch>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+        loop {
+            if self.decoder.capacity() == 0 {
+                if let Some(batch) = self.flush() {
+                    return Some(batch);
+                }
+            }
+            if self.decoded_since_flush >= self.max_raw_batch_bytes {
+                self.finished = true;
+                return Some(Err(anyhow!(
+                    "CSV record batch exceeds the bounded Encode decode chunk"
+                )));
+            }
+            if self.buffer_start == self.buffer_end && !self.eof {
+                match self.reader.read(&mut self.buffer) {
+                    Ok(0) => self.eof = true,
+                    Ok(read) => {
+                        self.buffer_start = 0;
+                        self.buffer_end = read;
+                    }
+                    Err(error) => {
+                        self.finished = true;
+                        return Some(Err(anyhow::Error::from(error)));
+                    }
+                }
+            }
+            if self.buffer_start == self.buffer_end && self.eof {
+                if let Err(error) = self.decoder.decode(&[]) {
+                    self.finished = true;
+                    return Some(Err(anyhow::Error::from(error)));
+                }
+                self.finished = true;
+                return self.flush();
+            }
+            let remaining = self
+                .max_raw_batch_bytes
+                .saturating_sub(self.decoded_since_flush);
+            let available = self.buffer_end.saturating_sub(self.buffer_start);
+            let offered = available.min(usize::try_from(remaining).unwrap_or(usize::MAX));
+            match self
+                .decoder
+                .decode(&self.buffer[self.buffer_start..self.buffer_start + offered])
+            {
+                Ok(0) => {
+                    if let Some(batch) = self.flush() {
+                        return Some(batch);
+                    }
+                }
+                Ok(decoded) => {
+                    self.buffer_start += decoded;
+                    self.decoded_since_flush = self
+                        .decoded_since_flush
+                        .saturating_add(decoded as u64);
+                }
+                Err(error) => {
+                    self.finished = true;
+                    return Some(Err(anyhow::Error::from(error)));
+                }
+            }
+        }
+    }
+}
+
+fn fixed_arrow_row_bytes(data_type: &DataType) -> Option<u64> {
+    Some(match data_type {
+        DataType::Null => 0,
+        DataType::Boolean | DataType::Int8 | DataType::UInt8 => 2,
+        DataType::Int16 | DataType::UInt16 | DataType::Float16 => 3,
+        DataType::Int32
+        | DataType::UInt32
+        | DataType::Float32
+        | DataType::Date32
+        | DataType::Time32(_)
+        | DataType::Interval(arrow_schema::IntervalUnit::YearMonth)
+        | DataType::Decimal32(_, _) => 5,
+        DataType::Int64
+        | DataType::UInt64
+        | DataType::Float64
+        | DataType::Date64
+        | DataType::Time64(_)
+        | DataType::Timestamp(_, _)
+        | DataType::Duration(_)
+        | DataType::Interval(arrow_schema::IntervalUnit::DayTime)
+        | DataType::Decimal64(_, _) => 9,
+        DataType::Interval(arrow_schema::IntervalUnit::MonthDayNano)
+        | DataType::Decimal128(_, _) => 17,
+        DataType::Decimal256(_, _) => 33,
+        DataType::FixedSizeBinary(width) if *width >= 0 => (*width as u64).saturating_add(1),
+        DataType::FixedSizeList(field, count) if *count >= 0 => fixed_arrow_row_bytes(
+            field.data_type(),
+        )?
+        .checked_mul(*count as u64)?
+        .saturating_add(1),
+        DataType::Struct(fields) => fields.iter().try_fold(1u64, |total, field| {
+            fixed_arrow_row_bytes(field.data_type()).and_then(|bytes| total.checked_add(bytes))
+        })?,
+        _ => return None,
+    })
+}
+
+fn variable_values_can_repeat_within_row(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Utf8
+        | DataType::LargeUtf8
+        | DataType::Utf8View
+        | DataType::Binary
+        | DataType::LargeBinary
+        | DataType::BinaryView => false,
+        DataType::Struct(fields) => fields
+            .iter()
+            .any(|field| variable_values_can_repeat_within_row(field.data_type())),
+        DataType::Dictionary(_, values) => variable_values_can_repeat_within_row(values),
+        _ => fixed_arrow_row_bytes(data_type).is_none(),
+    }
+}
+
+struct BoundedParquetBatchReader {
+    resident: Arc<ResidentFile>,
+    next_row_group: usize,
+    current: Option<Box<dyn Iterator<Item = Result<RecordBatch>>>>,
+    max_decode_bytes: u64,
+}
+
+impl BoundedParquetBatchReader {
+    fn open_next_row_group(&mut self) -> Result<bool> {
+        let metadata = self
+            .resident
+            .parquet_metadata
+            .as_ref()
+            .ok_or_else(|| anyhow!("missing Parquet metadata"))?;
+        if self.next_row_group >= metadata.metadata().num_row_groups() {
+            return Ok(false);
+        }
+        let row_group_index = self.next_row_group;
+        self.next_row_group += 1;
+        let row_group = metadata.metadata().row_group(row_group_index);
+        let uncompressed = u64::try_from(row_group.total_byte_size())
+            .map_err(|_| anyhow!("Parquet row group has a negative decoded size"))?;
+        let compressed = u64::try_from(row_group.compressed_size())
+            .map_err(|_| anyhow!("Parquet row group has a negative compressed size"))?;
+        let rows = u64::try_from(row_group.num_rows())
+            .map_err(|_| anyhow!("Parquet row group has a negative row count"))?;
+        let leaf_columns = row_group.num_columns() as u64;
+        let structural = rows
+            .checked_mul(leaf_columns)
+            .and_then(|value| value.checked_mul(16))
+            .ok_or_else(|| anyhow!("Parquet row group structural size overflowed"))?;
+        let decoder_bound = uncompressed
+            .checked_mul(2)
+            .and_then(|value| value.checked_add(compressed))
+            .and_then(|value| value.checked_add(structural))
+            .ok_or_else(|| anyhow!("Parquet row group decode bound overflowed"))?;
+        if decoder_bound > self.max_decode_bytes {
+            return Err(anyhow!(
+                "Parquet row group decode bound {decoder_bound} exceeds the Encode oversized chunk limit {}",
+                self.max_decode_bytes
+            ));
+        }
+        let fixed_row_bytes = metadata
+            .schema()
+            .fields()
+            .iter()
+            .try_fold(0u64, |total, field| {
+                fixed_arrow_row_bytes(field.data_type())
+                    .and_then(|bytes| total.checked_add(bytes))
+            });
+        let output_budget = self.max_decode_bytes - decoder_bound;
+        // Size fixed-width output before decode; dictionary encoding may make
+        // the Parquet bytes far smaller than the materialized Arrow array.
+        let batch_size = if let Some(row_bytes) = fixed_row_bytes {
+            let admitted_rows = output_budget
+                .checked_div(row_bytes)
+                .unwrap_or(NODE_BATCH_SIZE as u64);
+            if admitted_rows == 0 {
+                return Err(anyhow!(
+                    "one Parquet row exceeds the Encode oversized chunk limit"
+                ));
+            }
+            usize::try_from(admitted_rows.min(NODE_BATCH_SIZE as u64)).unwrap_or(NODE_BATCH_SIZE)
+        } else {
+            // For simple top-level variable values, one row's values are
+            // bounded by the row group's uncompressed data. Nested repeated
+            // values can expand a dictionary value once per leaf value, so
+            // use the metadata value count as a conservative multiplier.
+            let can_repeat = metadata.schema().fields().iter().any(|field| {
+                variable_values_can_repeat_within_row(field.data_type())
+            });
+            let value_multiplier = if can_repeat {
+                row_group
+                    .columns()
+                    .iter()
+                    .map(|column| u64::try_from(column.num_values()).unwrap_or(u64::MAX))
+                    .max()
+                    .unwrap_or(1)
+                    .max(1)
+            } else {
+                1
+            };
+            let output_bound = uncompressed
+                .checked_mul(value_multiplier)
+                .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?;
+            if output_bound > output_budget {
+                return Err(anyhow!(
+                    "Parquet Arrow output bound {output_bound} exceeds the Encode oversized chunk limit"
+                ));
+            }
+            1
+        };
+        let reader = ParquetRecordBatchReaderBuilder::new_with_metadata(
+            self.resident.source.reader(false)?,
+            metadata.clone(),
+        )
+        .with_row_groups(vec![row_group_index])
+        .with_batch_size(batch_size)
+        .build()?
+        .map(|batch| batch.map_err(anyhow::Error::from));
+        self.current = Some(Box::new(reader));
+        Ok(true)
+    }
+}
+
+impl Iterator for BoundedParquetBatchReader {
+    type Item = Result<RecordBatch>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(reader) = &mut self.current {
+                if let Some(batch) = reader.next() {
+                    return Some(batch);
+                }
+                self.current = None;
+            }
+            match self.open_next_row_group() {
+                Ok(true) => {}
+                Ok(false) => return None,
+                Err(error) => return Some(Err(error)),
+            }
+        }
+    }
+}
+
+struct ResidentBatchReader {
+    _resident: Arc<ResidentFile>,
+    batches: Box<dyn Iterator<Item = Result<RecordBatch>>>,
+}
+
+impl Iterator for ResidentBatchReader {
+    type Item = Result<RecordBatch>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.batches.next()
+    }
+}
+
+struct FileBatchStream {
+    table: TableSpec,
+    paths: VecDeque<String>,
+    transfer: Option<CloudTransfer>,
+    max_decode_bytes: u64,
+    current: Option<ResidentBatchReader>,
+}
+
+impl Iterator for FileBatchStream {
+    type Item = Result<RecordBatch>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(reader) = &mut self.current {
+                if let Some(batch) = reader.next() {
+                    return Some(batch);
+                }
+                self.current = None;
+            }
+            let path = self.paths.pop_front()?;
+            match open_resident_batch_reader(
+                &self.table,
+                &path,
+                self.transfer.as_ref(),
+                self.max_decode_bytes,
+            ) {
+                Ok(reader) => self.current = Some(reader),
+                Err(error) => {
+                    self.paths.clear();
+                    return Some(Err(error));
+                }
+            }
+        }
+    }
+}
+
+enum TableBatchStreamInner<'a> {
+    File(Box<FileBatchStream>),
+    Databricks(Box<crate::databricks::DatabricksQueryStream<'a>>),
+}
+
+struct TableBatchStream<'a> {
+    inner: TableBatchStreamInner<'a>,
+    rows_seen: u64,
+    logical_arrow_bytes: u64,
+    input_wait_nanos: u64,
+    source_budget: Arc<crate::source_memory::ByteBudget>,
+    budget_file_batches: bool,
+    active_file_permit: Option<crate::source_memory::BytePermit>,
+    table: TableSpec,
+    synthetic_columns: HashSet<String>,
+    schema_validated: bool,
+    multicat_validator:
+        Option<crate::config_converter::inference::ExplicitMulticatDelimiterValidator>,
+}
+
+impl TableBatchStream<'_> {
+    fn file(
+        stream: FileBatchStream,
+        source_budget: Arc<crate::source_memory::ByteBudget>,
+        synthetic_columns: HashSet<String>,
+    ) -> Self {
+        let multicat_validator = Some(
+            crate::config_converter::inference::ExplicitMulticatDelimiterValidator::new(
+                &stream.table,
+            ),
+        );
+        let table = stream.table.clone();
+        Self {
+            inner: TableBatchStreamInner::File(Box::new(stream)),
+            rows_seen: 0,
+            logical_arrow_bytes: 0,
+            input_wait_nanos: 0,
+            source_budget,
+            budget_file_batches: true,
+            active_file_permit: None,
+            table,
+            synthetic_columns,
+            schema_validated: false,
+            multicat_validator,
+        }
+    }
+
+    fn databricks<'a>(
+        stream: crate::databricks::DatabricksQueryStream<'a>,
+        table: &TableSpec,
+        source_budget: Arc<crate::source_memory::ByteBudget>,
+        synthetic_columns: HashSet<String>,
+    ) -> TableBatchStream<'a> {
+        TableBatchStream {
+            inner: TableBatchStreamInner::Databricks(Box::new(stream)),
+            rows_seen: 0,
+            logical_arrow_bytes: 0,
+            input_wait_nanos: 0,
+            source_budget,
+            budget_file_batches: false,
+            active_file_permit: None,
+            table: table.clone(),
+            synthetic_columns,
+            schema_validated: false,
+            multicat_validator: Some(
+                crate::config_converter::inference::ExplicitMulticatDelimiterValidator::new(table),
+            ),
+        }
+    }
+
+    fn databricks_metrics(&self) -> Option<crate::databricks::QueryMetrics> {
+        match &self.inner {
+            TableBatchStreamInner::File(_) => None,
+            TableBatchStreamInner::Databricks(stream) => Some(stream.metrics()),
+        }
+    }
+
+    fn rows_seen(&self) -> u64 {
+        self.rows_seen
+    }
+
+    fn logical_arrow_bytes(&self) -> u64 {
+        self.logical_arrow_bytes
+    }
+
+    fn input_wait_nanos(&self) -> u64 {
+        self.input_wait_nanos
+    }
+
+    fn finish_validation(&mut self) -> Result<()> {
+        if let Some(validator) = self.multicat_validator.take() {
+            validator.finish().map_err(|error| anyhow!("{error}"))?;
+        }
+        Ok(())
+    }
+}
+
+impl Iterator for TableBatchStream<'_> {
+    type Item = Result<SourceBatch>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let input_start = std::time::Instant::now();
+        // File decoders retain input/parser buffers across batches. Keep one
+        // full single-chunk permit for the decoder's lifetime; the bounded
+        // CSV and Parquet adapters below reject before they can exceed it.
+        if self.budget_file_batches && self.active_file_permit.is_none() {
+            match self
+                .source_budget
+                .acquire_input_chunk(self.source_budget.max_input_chunk_bytes())
+            {
+                Ok(permit) => self.active_file_permit = Some(permit),
+                Err(error) => return Some(Err(error)),
+            }
+        }
+        let next = match &mut self.inner {
+            TableBatchStreamInner::File(stream) => stream.next().map(|result| {
+                result.and_then(|batch| {
+                    let batch_bytes = batch.get_array_memory_size() as u64;
+                    if batch_bytes > self.source_budget.max_input_chunk_bytes() {
+                        return Err(anyhow!(
+                            "Encode input chunk exceeds the oversized chunk limit"
+                        ));
+                    }
+                    let permit = if batch_bytes <= self.source_budget.normal_limit_bytes() {
+                        self.source_budget.acquire_dispatched_batch(batch_bytes)?
+                    } else {
+                        self.active_file_permit.take().ok_or_else(|| {
+                            anyhow!("Encode oversized file batch is missing its input reservation")
+                        })?
+                    };
+                    Ok(SourceBatch::budgeted(batch, permit))
+                })
+            }),
+            TableBatchStreamInner::Databricks(stream) => {
+                stream.next().map(|result| result.map(SourceBatch::databricks))
+            }
+        };
+        self.input_wait_nanos = self
+            .input_wait_nanos
+            .saturating_add(input_start.elapsed().as_nanos().min(u64::MAX as u128) as u64);
+        if let Some(Ok(batch)) = &next {
+            if !self.schema_validated {
+                if let Err(error) = validate_source_schema(
+                    &self.table,
+                    batch.batch.schema().as_ref(),
+                    &self.synthetic_columns,
+                ) {
+                    return Some(Err(error));
+                }
+                self.schema_validated = true;
+            }
+            if let Err(error) = validate_source_batch_values(
+                &self.table,
+                &batch.batch,
+                &self.synthetic_columns,
+            ) {
+                return Some(Err(error));
+            }
+            self.rows_seen = self
+                .rows_seen
+                .saturating_add(batch.batch.num_rows() as u64);
+            let batch_bytes = batch
+                .batch
+                .columns()
+                .iter()
+                .try_fold(0u64, |total, array| {
+                    array
+                        .to_data()
+                        .get_slice_memory_size()
+                        .ok()
+                        .and_then(|bytes| total.checked_add(bytes as u64))
+                })
+                .unwrap_or(u64::MAX);
+            self.logical_arrow_bytes = self.logical_arrow_bytes.saturating_add(batch_bytes);
+            if let Some(validator) = &mut self.multicat_validator {
+                validator.observe(&batch.batch);
+            }
+        }
+        if next.is_none() {
+            self.active_file_permit = None;
+        }
+        next
+    }
+}
+
+const REMOTE_READ_CHUNK_BYTES: u64 = 8 * 1024 * 1024;
+const REMOTE_METADATA_RANGE_MAX_BYTES: usize = 256 * 1024 * 1024;
+
+/// A local file or a bounded-range cloud object.
 enum ResidentSource {
     Local(PathBuf),
-    Cloud(PooledBytes),
+    Cloud(Arc<RemoteObject>),
 }
 
 enum ResidentReader {
     Local(fs::File),
-    Cloud(Bytes),
+    Cloud(Arc<RemoteObject>),
+}
+
+struct RemoteObject {
+    transfer: CloudTransfer,
+    path: object_store::path::Path,
+    size: u64,
+}
+
+impl RemoteObject {
+    fn read_range(&self, start: u64, end: u64) -> Result<Bytes> {
+        if start > end || end > self.size {
+            return Err(anyhow!("remote object range is outside the object"));
+        }
+        let pooled = self
+            .transfer
+            .get_range_blocking(self.path.clone(), start..end)
+            .context("remote object range read failed")?;
+        Ok(pooled.bytes())
+    }
+}
+
+struct RemoteRangeReader {
+    object: Arc<RemoteObject>,
+    position: u64,
+    buffered_start: u64,
+    buffered: Bytes,
+}
+
+impl RemoteRangeReader {
+    fn new(object: Arc<RemoteObject>, position: u64) -> Self {
+        Self {
+            object,
+            position,
+            buffered_start: position,
+            buffered: Bytes::new(),
+        }
+    }
+
+    fn refill(&mut self) -> std_io::Result<()> {
+        if self.position >= self.object.size {
+            self.buffered = Bytes::new();
+            return Ok(());
+        }
+        let end = self
+            .position
+            .saturating_add(REMOTE_READ_CHUNK_BYTES)
+            .min(self.object.size);
+        // Release the previous pooled range before waiting for the next one.
+        // This keeps a one-buffer CloudTransfer configuration deadlock-free.
+        self.buffered = Bytes::new();
+        self.buffered = self
+            .object
+            .read_range(self.position, end)
+            .map_err(|_| std_io::Error::other("remote object range read failed"))?;
+        self.buffered_start = self.position;
+        Ok(())
+    }
+}
+
+impl Read for RemoteRangeReader {
+    fn read(&mut self, output: &mut [u8]) -> std_io::Result<usize> {
+        if output.is_empty() || self.position >= self.object.size {
+            return Ok(0);
+        }
+        let buffered_end = self
+            .buffered_start
+            .saturating_add(self.buffered.len() as u64);
+        if self.position < self.buffered_start || self.position >= buffered_end {
+            self.refill()?;
+        }
+        let offset = usize::try_from(self.position.saturating_sub(self.buffered_start))
+            .map_err(|_| std_io::Error::other("remote object offset overflowed"))?;
+        let available = self.buffered.len().saturating_sub(offset);
+        let count = available.min(output.len());
+        output[..count].copy_from_slice(&self.buffered[offset..offset + count]);
+        self.position = self.position.saturating_add(count as u64);
+        Ok(count)
+    }
+}
+
+#[cfg(test)]
+mod remote_range_reader_tests {
+    use super::*;
+    use diskgraph_fs::CloudTransferConfig;
+    use object_store::memory::InMemory;
+    use object_store::{ObjectStoreExt, PutPayload};
+
+    #[test]
+    fn remote_reader_supports_bounded_forward_and_random_ranges() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let path = object_store::path::Path::from("fixture.bin");
+        let payload = Bytes::from(
+            (0u8..=255)
+                .cycle()
+                .take(REMOTE_READ_CHUNK_BYTES as usize + 1024)
+                .collect::<Vec<_>>(),
+        );
+        let store = Arc::new(InMemory::new());
+        runtime
+            .block_on(store.put(&path, PutPayload::from(payload.clone())))
+            .unwrap();
+        let mut config = CloudTransferConfig::from_env();
+        config.buffer_count = 1;
+        let transfer = CloudTransfer::new(store, config);
+        let object = Arc::new(RemoteObject {
+            transfer,
+            path,
+            size: payload.len() as u64,
+        });
+        let mut forward = RemoteRangeReader::new(Arc::clone(&object), 17);
+        let mut decoded = Vec::new();
+        forward.read_to_end(&mut decoded).unwrap();
+        assert_eq!(decoded, payload.slice(17..));
+        drop(forward);
+
+        let reader = ResidentReader::Cloud(object);
+        assert_eq!(reader.get_bytes(100, 33).unwrap(), payload.slice(100..133));
+    }
 }
 
 impl Length for ResidentReader {
     fn len(&self) -> u64 {
         match self {
             Self::Local(file) => file.metadata().map(|meta| meta.len()).unwrap_or(0),
-            Self::Cloud(bytes) => bytes.len() as u64,
+            Self::Cloud(object) => object.size,
         }
     }
 }
@@ -2112,14 +3377,37 @@ impl ChunkReader for ResidentReader {
     fn get_read(&self, start: u64) -> parquet::errors::Result<Self::T> {
         match self {
             Self::Local(file) => Ok(Box::new(ChunkReader::get_read(file, start)?)),
-            Self::Cloud(bytes) => Ok(Box::new(ChunkReader::get_read(bytes, start)?)),
+            Self::Cloud(object) => {
+                if start > object.size {
+                    return Err(parquet::errors::ParquetError::General(
+                        "remote Parquet read starts beyond the object".to_string(),
+                    ));
+                }
+                Ok(Box::new(RemoteRangeReader::new(Arc::clone(object), start)))
+            }
         }
     }
 
     fn get_bytes(&self, start: u64, length: usize) -> parquet::errors::Result<Bytes> {
         match self {
             Self::Local(file) => ChunkReader::get_bytes(file, start, length),
-            Self::Cloud(bytes) => ChunkReader::get_bytes(bytes, start, length),
+            Self::Cloud(object) => {
+                if length > REMOTE_METADATA_RANGE_MAX_BYTES {
+                    return Err(parquet::errors::ParquetError::General(
+                        "remote Parquet metadata range exceeds the limit".to_string(),
+                    ));
+                }
+                let end = start.checked_add(length as u64).ok_or_else(|| {
+                    parquet::errors::ParquetError::General(
+                        "remote Parquet range overflowed".to_string(),
+                    )
+                })?;
+                object.read_range(start, end).map_err(|_| {
+                    parquet::errors::ParquetError::General(
+                        "remote Parquet range read failed".to_string(),
+                    )
+                })
+            }
         }
     }
 }
@@ -2135,7 +3423,7 @@ impl ResidentSource {
                 }
                 Ok(ResidentReader::Local(file))
             }
-            Self::Cloud(bytes) => Ok(ResidentReader::Cloud(bytes.bytes())),
+            Self::Cloud(object) => Ok(ResidentReader::Cloud(Arc::clone(object))),
         }
     }
 }
@@ -2150,7 +3438,13 @@ impl ResidentFile {
         let source = if is_cloud_path(path) {
             let transfer =
                 transfer.ok_or_else(|| anyhow!("cloud input transfer unavailable for {path}"))?;
-            ResidentSource::Cloud(download_cloud_bytes(transfer, path)?)
+            let object_path = object_path_from_cloud_url(path)?;
+            let size = transfer.head_blocking(object_path.clone())?.size;
+            ResidentSource::Cloud(Arc::new(RemoteObject {
+                transfer: transfer.clone(),
+                path: object_path,
+                size,
+            }))
         } else {
             fs::metadata(path).with_context(|| format!("stat {path}"))?;
             ResidentSource::Local(PathBuf::from(path))
@@ -2170,102 +3464,145 @@ impl ResidentFile {
     }
 }
 
-type EncodePartition = Option<Vec<usize>>;
-
-fn parquet_encode_partitions(
+fn open_file_batch_stream(
     table: &TableSpec,
-    resident: &ResidentFile,
-) -> Result<Vec<EncodePartition>> {
-    let metadata = resident
-        .parquet_metadata
-        .as_ref()
-        .ok_or_else(|| anyhow!("missing Parquet metadata for table {}", table.name))?;
-    let target_bytes = std::env::var("DISKGRAPH_ENCODE_PARTITION_BYTES")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(1024 * 1024 * 1024);
-    let compressed_row_group_bytes: Vec<u64> = metadata
-        .metadata()
-        .row_groups()
-        .iter()
-        .map(|row_group| row_group.compressed_size().max(0) as u64)
-        .collect();
-    Ok(plan_parquet_encode_partitions(
-        table.edge_table.is_none(),
-        &compressed_row_group_bytes,
-        target_bytes,
-    ))
+    transfer: Option<&CloudTransfer>,
+    max_decode_bytes: u64,
+) -> Result<FileBatchStream> {
+    if table.get_paths().is_empty() {
+        return Err(anyhow!("no input files for table {}", table.name));
+    }
+    Ok(FileBatchStream {
+        table: table.clone(),
+        paths: table.get_paths().iter().cloned().collect(),
+        transfer: transfer.cloned(),
+        max_decode_bytes,
+        current: None,
+    })
 }
 
-fn plan_parquet_encode_partitions(
-    is_node_table: bool,
-    compressed_row_group_bytes: &[u64],
-    target_bytes: u64,
-) -> Vec<EncodePartition> {
-    if compressed_row_group_bytes.is_empty() {
-        return vec![Some(Vec::new())];
-    }
-
-    // Preserve source order for node tables. PK-bearing tables need stable
-    // duplicate resolution, while PK-less tables need a complete-file row
-    // ordinal for sharding. Edge tables can safely fan row groups out.
-    if is_node_table {
-        return vec![Some((0..compressed_row_group_bytes.len()).collect())];
-    }
-
-    let mut partitions = Vec::new();
-    let mut current = Vec::new();
-    let mut current_bytes = 0u64;
-    for (idx, row_group_bytes) in compressed_row_group_bytes.iter().copied().enumerate() {
-        current.push(idx);
-        current_bytes = current_bytes.saturating_add(row_group_bytes);
-        if current_bytes >= target_bytes {
-            partitions.push(Some(std::mem::take(&mut current)));
-            current_bytes = 0;
+fn open_resident_batch_reader(
+    table: &TableSpec,
+    path: &str,
+    transfer: Option<&CloudTransfer>,
+    max_decode_bytes: u64,
+) -> Result<ResidentBatchReader> {
+    let resident = Arc::new(ResidentFile::load(path, table.format(), transfer)?);
+    let batches: Box<dyn Iterator<Item = Result<RecordBatch>>> = match table.format() {
+        TableFormat::Parquet => Box::new(BoundedParquetBatchReader {
+            resident: Arc::clone(&resident),
+            next_row_group: 0,
+            current: None,
+            max_decode_bytes,
+        }),
+        TableFormat::Csv => {
+            let schema = table_schema(table)?;
+            Box::new(BoundedCsvBatchReader::new(
+                resident.source.reader(true)?.get_read(0)?,
+                schema,
+                max_decode_bytes,
+            )?)
         }
-    }
-    if !current.is_empty() {
-        partitions.push(Some(current));
-    }
-    partitions
-}
-
-fn catch_encode_worker_panic<T>(context: &str, run: impl FnOnce() -> Result<T>) -> Result<T> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).unwrap_or_else(|payload| {
-        let detail = payload
-            .downcast_ref::<&str>()
-            .copied()
-            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-            .unwrap_or("unknown panic");
-        Err(anyhow!("{context} panicked: {detail}"))
+    };
+    Ok(ResidentBatchReader {
+        _resident: resident,
+        batches,
     })
 }
 
 #[cfg(test)]
-mod resident_encode_tests {
+mod bounded_file_decoder_tests {
     use super::*;
+    use arrow_array::{FixedSizeBinaryArray, Int64Array};
+    use parquet::arrow::arrow_writer::ArrowWriter;
+    use std::io::Cursor;
 
     #[test]
-    fn node_row_groups_stay_in_one_ordered_partition() {
-        assert_eq!(
-            plan_parquet_encode_partitions(true, &[8, 8, 8], 1),
-            vec![Some(vec![0, 1, 2])]
-        );
+    fn csv_rejects_a_record_before_crossing_the_decode_ceiling() {
+        let max_decode_bytes = 256 * 1024;
+        let mut csv = b"value\n".to_vec();
+        csv.extend(std::iter::repeat_n(b'x', max_decode_bytes as usize / 4 + 1));
+        csv.push(b'\n');
+        let schema = Schema::new(vec![Field::new("value", DataType::Utf8, true)]);
+        let mut reader = BoundedCsvBatchReader::new(
+            Box::new(Cursor::new(csv)),
+            schema,
+            max_decode_bytes,
+        )
+        .unwrap();
+        let error = reader.next().unwrap().unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("CSV record batch exceeds the bounded Encode decode chunk"));
+        assert!(reader.next().is_none());
     }
 
     #[test]
-    fn edge_row_groups_split_at_the_target() {
-        assert_eq!(
-            plan_parquet_encode_partitions(false, &[8, 8, 8], 16),
-            vec![Some(vec![0, 1]), Some(vec![2])]
+    fn parquet_rejects_an_unadmitted_row_group_before_arrow_decode() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("input.parquet");
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from_iter_values(0..1024))],
+        )
+        .unwrap();
+        let mut writer = ArrowWriter::try_new(fs::File::create(&path).unwrap(), schema, None)
+            .unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let resident = Arc::new(
+            ResidentFile::load(path.to_str().unwrap(), TableFormat::Parquet, None).unwrap(),
         );
+        let mut reader = BoundedParquetBatchReader {
+            resident,
+            next_row_group: 0,
+            current: None,
+            max_decode_bytes: 1024,
+        };
+        let error = reader.next().unwrap().unwrap_err();
+        assert!(error.to_string().contains("Parquet row group decode bound"));
     }
 
     #[test]
-    fn encode_worker_panics_become_errors() {
-        let error = catch_encode_worker_panic::<()>("test worker", || panic!("boom"))
-            .expect_err("panic should become an error");
-        assert!(error.to_string().contains("test worker panicked: boom"));
+    fn parquet_caps_dictionary_expanded_fixed_width_batches_before_decode() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("fixed.parquet");
+        let value = vec![7u8; 3000];
+        let values = std::iter::repeat_n(value.as_slice(), 100);
+        let array = FixedSizeBinaryArray::try_from_iter(values).unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            DataType::FixedSizeBinary(3000),
+            false,
+        )]));
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)]).unwrap();
+        let mut writer = ArrowWriter::try_new(fs::File::create(&path).unwrap(), schema, None)
+            .unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let max_decode_bytes = 1024 * 1024;
+        let resident = Arc::new(
+            ResidentFile::load(path.to_str().unwrap(), TableFormat::Parquet, None).unwrap(),
+        );
+        let mut reader = BoundedParquetBatchReader {
+            resident,
+            next_row_group: 0,
+            current: None,
+            max_decode_bytes,
+        };
+        let mut rows = 0;
+        let mut batches = 0;
+        for batch in &mut reader {
+            let batch = batch.unwrap();
+            assert!(batch.get_array_memory_size() as u64 <= max_decode_bytes);
+            rows += batch.num_rows();
+            batches += 1;
+        }
+        assert_eq!(rows, 100);
+        assert!(batches > 1, "dictionary expansion must reduce batch rows");
     }
 }
 
@@ -2753,6 +4090,7 @@ fn build_sort_key_batchers_for_node_table(
     table: &TableSpec,
     relation_defs: &[RelationDef],
     num_shards: usize,
+    source_budget: &Arc<crate::source_memory::ByteBudget>,
 ) -> Result<Vec<SortKeyComponentBatcher>> {
     let mut batchers = Vec::new();
     for rel in relation_defs {
@@ -2773,6 +4111,7 @@ fn build_sort_key_batchers_for_node_table(
                         encoding: ts.encoding.clone(),
                     },
                     num_shards,
+                    Arc::clone(source_budget),
                 ));
             }
         }
@@ -2789,6 +4128,7 @@ fn build_sort_key_batchers_for_node_table(
                         encoding: weight.encoding.clone(),
                     },
                     num_shards,
+                    Arc::clone(source_budget),
                 ));
             }
         }
@@ -2800,6 +4140,7 @@ fn build_sort_key_batchers_for_edge_table(
     table: &TableSpec,
     relation_defs: &[RelationDef],
     num_shards: usize,
+    source_budget: &Arc<crate::source_memory::ByteBudget>,
 ) -> Result<Vec<SortKeyComponentBatcher>> {
     let mut batchers = Vec::new();
     for rel in relation_defs {
@@ -2820,6 +4161,7 @@ fn build_sort_key_batchers_for_edge_table(
                         encoding: ts.encoding.clone(),
                     },
                     num_shards,
+                    Arc::clone(source_budget),
                 ));
             }
         }
@@ -2836,6 +4178,7 @@ fn build_sort_key_batchers_for_edge_table(
                         encoding: weight.encoding.clone(),
                     },
                     num_shards,
+                    Arc::clone(source_budget),
                 ));
             }
         }
@@ -2843,19 +4186,60 @@ fn build_sort_key_batchers_for_edge_table(
     Ok(batchers)
 }
 
+const BASE_ENCODE_MEMORY_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_DATABRICKS_ENCODE_MEMORY_BUDGET_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+
+fn encode_memory_budget_bytes(has_databricks: bool, total_memory: Option<u64>) -> u64 {
+    if !has_databricks {
+        return BASE_ENCODE_MEMORY_BUDGET_BYTES;
+    }
+    total_memory
+        .map(|bytes| bytes / 64)
+        .unwrap_or(BASE_ENCODE_MEMORY_BUDGET_BYTES)
+        .clamp(
+            BASE_ENCODE_MEMORY_BUDGET_BYTES,
+            MAX_DATABRICKS_ENCODE_MEMORY_BUDGET_BYTES,
+        )
+}
+
+#[cfg(test)]
+mod encode_memory_budget_tests {
+    use super::{
+        encode_memory_budget_bytes, BASE_ENCODE_MEMORY_BUDGET_BYTES,
+        MAX_DATABRICKS_ENCODE_MEMORY_BUDGET_BYTES,
+    };
+
+    #[test]
+    fn non_databricks_budget_does_not_scale() {
+        assert_eq!(
+            encode_memory_budget_bytes(false, Some(1024 * 1024 * 1024 * 1024)),
+            BASE_ENCODE_MEMORY_BUDGET_BYTES
+        );
+    }
+
+    #[test]
+    fn databricks_budget_scales_between_laptop_floor_and_vm_cap() {
+        assert_eq!(
+            encode_memory_budget_bytes(true, Some(24 * 1024 * 1024 * 1024)),
+            BASE_ENCODE_MEMORY_BUDGET_BYTES
+        );
+        assert_eq!(
+            encode_memory_budget_bytes(true, Some(512 * 1024 * 1024 * 1024)),
+            8 * 1024 * 1024 * 1024
+        );
+        assert_eq!(
+            encode_memory_budget_bytes(true, Some(4 * 1024 * 1024 * 1024 * 1024)),
+            MAX_DATABRICKS_ENCODE_MEMORY_BUDGET_BYTES
+        );
+    }
+}
+
 impl IngestContext {
-    fn make_pool<S: Default + Send + 'static>(&self, phase: IngestPhase) -> TaskPool<S> {
+    fn make_pool<S: Default + Send + 'static>(&self, threads: Option<usize>) -> TaskPool<S> {
         if !self.parallel {
             return TaskPool::new(1);
         }
-        let n = match phase {
-            IngestPhase::Context => self.context_threads,
-            IngestPhase::Encode => self.encode_threads,
-            IngestPhase::PkMap => self.pk_map_threads,
-            IngestPhase::EdgesMap => self.edges_map_threads,
-            IngestPhase::Index => self.index_threads,
-        }
-        .unwrap_or_else(default_worker_threads);
+        let n = threads.unwrap_or_else(default_worker_threads);
         let n = n.max(1);
         TaskPool::new(n)
     }
@@ -3108,9 +4492,11 @@ impl IngestContext {
             source,
             target,
             profile_dir: options.profile_dir,
+            databricks_config_file: options.databricks_config_file,
+            databricks_helper: None,
             parallel: options.parallel,
-            context_threads: options.context_threads,
-            encode_threads: options.encode_threads,
+            source_loader_threads: options.source_loader_threads,
+            source_encoder_threads: options.source_encoder_threads,
             pk_map_threads: options.pk_map_threads,
             edges_map_threads: options.edges_map_threads,
             index_threads: options.index_threads,
@@ -3123,7 +4509,6 @@ impl IngestContext {
             table_contexts: HashMap::new(),
             shard_rows: HashMap::new(),
             shard_offsets: HashMap::new(),
-            group_ts_counts: HashMap::new(),
             stage_sidecars,
             binary_label_counts: HashMap::new(),
             sample_weight_counts: HashMap::new(),
@@ -3133,6 +4518,7 @@ impl IngestContext {
             fk_edge_targets,
             edge_counts: HashMap::new(),
             edge_dst_degree_bits: HashMap::new(),
+            edge_dst_nonzero_counts: HashMap::new(),
             pk_duplicate_counts: HashMap::new(),
             pk_duplicate_drops: HashMap::new(),
             pk_null_timestamp_drops: HashMap::new(),
@@ -3151,6 +4537,15 @@ impl IngestContext {
             temp_fkeys_bytes: 0,
             temp_edges_map_bytes: 0,
             temp_node_data_bytes: 0,
+            databricks_wire_bytes: 0,
+            databricks_decoded_ipc_bytes: 0,
+            databricks_query_startup_nanos: 0,
+            logical_arrow_source_bytes: 0,
+            logical_arrow_source_bytes_by_table: HashMap::new(),
+            source_input_wait_nanos: 0,
+            encode_memory_high_water_bytes: 0,
+            logical_source_rows: 0,
+            logical_source_rows_by_table: HashMap::new(),
             peak_mem_stats: options.peak_mem_stats,
             col_stats: options.col_stats,
             cat_count_strategy: options.cat_count_strategy,
@@ -3167,311 +4562,27 @@ impl IngestContext {
         }
     }
 
-    fn build_node_contexts(&mut self) -> Result<()> {
-        type ContextResult = (
-            String,
-            String,
-            Vec<SemanticType>,
-            HashMap<String, crate::col_stats::TextSampleStats>,
-        );
-        let tables = self.source.tables.clone();
-        let (tx, rx) = std::sync::mpsc::channel::<Result<ContextResult>>();
-        let mut tasks = Vec::new();
-        let source_rowpack = self.source.rowpack.clone();
-        let input_transfer = self.input_transfer.clone();
-        let col_stats_enabled = self.col_stats;
-        let resolve_columns_all = self.resolve_columns.clone();
-        for table in &tables {
-            if table.edge_table.is_some() {
-                continue;
-            }
-            let table = table.clone();
-            let target = std::sync::Arc::clone(&self.target);
-            let trimmed_strings = std::sync::Arc::clone(&self.trimmed_strings);
-            let progress = self.progress.clone();
-            let tx = tx.clone();
-            let rowpack_cfg = source_rowpack.clone();
-            let input_transfer = input_transfer.clone();
-            // Synthetic resolution node-id column indices for THIS table (empty
-            // unless resolution mode). Used to inject placeholder arrays for the
-            // columns that are absent from the source parquet.
-            let resolve_node_ids: std::collections::HashSet<usize> = resolve_columns_all
-                .iter()
-                .filter(|r| r.table == table.name)
-                .filter_map(|r| column_index(&table, &r.node_id_col).ok())
-                .collect();
-            tasks.push(WorkItem {
-                bucket: None,
-                run: Box::new(move |_scratch| {
-                    if let Some(cb) = &progress {
-                        cb(ProgressEvent {
-                            phase: ProgressPhase::Context,
-                            table: table.name.clone(),
-                            shard: None,
-                            kind: ProgressKind::Start,
-                            delta: 0,
-                            total: Some(table.get_paths().len() as u64),
-                            status: None,
-                        });
-                    }
-                    let rowpack_config = rowpack_config_for_table(rowpack_cfg.as_ref(), &table);
-                    let node_columns = rowpack_columns(&table)?;
-                    let mut node_builder =
-                        RowPackContextBuilder::new(node_columns, rowpack_config.clone());
-                    let mut sampled = 0usize;
-                    let sample_limit = rowpack_config.sample_rows().min(SAMPLE_ROW_LIMIT);
-                    let row_access_hints = build_row_access_hints(&table);
-                    let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
-                    let mut access = RowAccess::new(row_access_hints, stats);
-                    let mut reached_limit = false;
-                    let mut processed_paths = 0u64;
-                    if table.get_paths().is_empty() {
-                        return Err(anyhow!("no input files for table {}", table.name));
-                    }
-                    'file_loop: for path in table.get_paths() {
-                        if !is_cloud_path(path) && !Path::new(path).exists() {
-                            return Err(anyhow!("input path not found {}", path));
-                        }
-                        let pooled = if let Some(transfer) = &input_transfer {
-                            if is_cloud_path(path) {
-                                Some(download_cloud_bytes(transfer, path)?)
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
-                        match table.format() {
-                            TableFormat::Parquet => {
-                                if let Some(pooled) = pooled {
-                                    let bytes = pooled.bytes();
-                                    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
-                                    validate_parquet_column_types(
-                                        builder.schema(),
-                                        &table.columns,
-                                        path,
-                                    )?;
-                                    let reader =
-                                        builder.with_batch_size(NODE_BATCH_SIZE).build()?;
-                                    for batch in reader {
-                                        let batch = batch?;
-                                        let cols =
-                                            build_access_cols(&batch, &table, &resolve_node_ids)?;
-                                        access.set_cols(&cols);
-                                        for row in 0..batch.num_rows() {
-                                            if sampled >= sample_limit {
-                                                reached_limit = true;
-                                                break;
-                                            }
-                                            access.set_row(row);
-                                            node_builder.observe_row_from_access(&mut access)?;
-                                            sampled = sampled.saturating_add(1);
-                                        }
-                                        if reached_limit {
-                                            break;
-                                        }
-                                    }
-                                    drop(pooled);
-                                } else {
-                                    let file = fs::File::open(path)
-                                        .with_context(|| format!("open {}", path))?;
-                                    advise_file_willneed(&file);
-                                    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-                                    validate_parquet_column_types(
-                                        builder.schema(),
-                                        &table.columns,
-                                        path,
-                                    )?;
-                                    let reader =
-                                        builder.with_batch_size(NODE_BATCH_SIZE).build()?;
-                                    for batch in reader {
-                                        let batch = batch?;
-                                        let cols =
-                                            build_access_cols(&batch, &table, &resolve_node_ids)?;
-                                        access.set_cols(&cols);
-                                        for row in 0..batch.num_rows() {
-                                            if sampled >= sample_limit {
-                                                reached_limit = true;
-                                                break;
-                                            }
-                                            access.set_row(row);
-                                            node_builder.observe_row_from_access(&mut access)?;
-                                            sampled = sampled.saturating_add(1);
-                                        }
-                                        if reached_limit {
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            TableFormat::Csv => {
-                                let schema = table_schema(&table)?;
-                                if let Some(pooled) = pooled {
-                                    let bytes = pooled.bytes();
-                                    let cursor = Cursor::new(bytes);
-                                    let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema))
-                                        .with_header(true);
-                                    let reader = builder.build(cursor)?;
-                                    for batch in reader {
-                                        let batch = batch?;
-                                        let cols =
-                                            build_access_cols(&batch, &table, &resolve_node_ids)?;
-                                        access.set_cols(&cols);
-                                        for row in 0..batch.num_rows() {
-                                            if sampled >= sample_limit {
-                                                reached_limit = true;
-                                                break;
-                                            }
-                                            access.set_row(row);
-                                            node_builder.observe_row_from_access(&mut access)?;
-                                            sampled = sampled.saturating_add(1);
-                                        }
-                                        if reached_limit {
-                                            break;
-                                        }
-                                    }
-                                    drop(pooled);
-                                } else {
-                                    let file = fs::File::open(path)
-                                        .with_context(|| format!("open {}", path))?;
-                                    advise_file_willneed(&file);
-                                    let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema))
-                                        .with_header(true);
-                                    let reader = builder.build(file)?;
-                                    for batch in reader {
-                                        let batch = batch?;
-                                        let cols =
-                                            build_access_cols(&batch, &table, &resolve_node_ids)?;
-                                        access.set_cols(&cols);
-                                        for row in 0..batch.num_rows() {
-                                            if sampled >= sample_limit {
-                                                reached_limit = true;
-                                                break;
-                                            }
-                                            access.set_row(row);
-                                            node_builder.observe_row_from_access(&mut access)?;
-                                            sampled = sampled.saturating_add(1);
-                                        }
-                                        if reached_limit {
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        processed_paths = processed_paths.saturating_add(1);
-                        if let Some(cb) = &progress {
-                            cb(ProgressEvent {
-                                phase: ProgressPhase::Context,
-                                table: table.name.clone(),
-                                shard: None,
-                                kind: ProgressKind::Advance,
-                                delta: 1,
-                                total: Some(table.get_paths().len() as u64),
-                                status: None,
-                            });
-                        }
-                        if reached_limit {
-                            break 'file_loop;
-                        }
-                    }
-                    // Infer semantic types from sample stats before finish() consumes the builder.
-                    let unique_counts = node_builder.sample_unique_counts();
-                    let fk_columns: HashSet<&str> = table
-                        .fkeys
-                        .iter()
-                        .map(|fk| fk.src_column.as_str())
-                        .collect();
-                    let semantic_types: Vec<SemanticType> = table
-                        .columns
-                        .iter()
-                        .zip(unique_counts.iter())
-                        .map(|(col, &(num_unique, count))| {
-                            // Respect explicit semantic_type from config.
-                            if let Some(stype) = col.semantic_type {
-                                return stype;
-                            }
-                            use crate::graph_config::{
-                                infer_semantic_type, ColumnRole, ColumnSampleStats,
-                            };
-                            let role = ColumnRole {
-                                is_pk: table
-                                    .primary_key
-                                    .as_deref()
-                                    .is_some_and(|pk| pk == col.name),
-                                is_fk: fk_columns.contains(col.name.as_str()),
-                                name: &col.name,
-                            };
-                            let sample = if num_unique > 0 || count > 0 {
-                                Some(ColumnSampleStats { num_unique, count })
-                            } else {
-                                None
-                            };
-                            infer_semantic_type(col, &role, sample.as_ref())
-                        })
-                        .collect();
-
-                    // Compute text sample stats from context-phase sample rows.
-                    // Read first parquet file(s) for text columns, up to 10K strings each.
-                    let text_stats_map = if col_stats_enabled {
-                        compute_context_text_stats(&table, &semantic_types, &input_transfer)?
-                    } else {
-                        HashMap::new()
-                    };
-
-                    let node_context = node_builder.finish()?;
-                    let ctx_bytes = node_context.to_bytes()?;
-                    tracing::debug!(
-                        table = %table.name,
-                        ctx_bytes_len = ctx_bytes.len(),
-                        temp_path = %temp_node_context_path(&table.name),
-                        "writing node_data.ctx",
-                    );
-                    target.write_bytes(&temp_node_context_path(&table.name), ctx_bytes.clone())?;
-                    target.write_bytes(&node_context_output_path(&table.name), ctx_bytes)?;
-                    if let Some(cb) = &progress {
-                        cb(ProgressEvent {
-                            phase: ProgressPhase::Context,
-                            table: table.name.clone(),
-                            shard: None,
-                            kind: ProgressKind::Finish,
-                            delta: 0,
-                            total: Some(processed_paths.max(1)),
-                            status: None,
-                        });
-                    }
-                    tx.send(Ok((
-                        table.name.clone(),
-                        format!("nodes/{}/node_data.ctx", table.name.to_lowercase()),
-                        semantic_types,
-                        text_stats_map,
-                    )))
-                    .map_err(|e| anyhow!("context output error: {e}"))?;
-                    Ok(())
-                }),
-            });
-        }
-        drop(tx);
-        let task_count = tasks.len();
-        let pool = self.make_pool::<()>(IngestPhase::Context);
-        run_tasks(tasks, &pool)?;
-        for _ in 0..task_count {
-            let result = rx
-                .recv()
-                .map_err(|e| anyhow!("context output error: {e}"))??;
-            let (table_name, ctx_path, semantic_types, text_stats) = result;
-            self.table_contexts.insert(table_name.clone(), ctx_path);
-            if !text_stats.is_empty() {
-                self.text_sample_stats
-                    .insert(table_name.clone(), text_stats);
-            }
-            // Populate semantic_type on each column.
-            if let Some(table) = self.source.tables.iter_mut().find(|t| t.name == table_name) {
-                for (col, stype) in table.columns.iter_mut().zip(semantic_types) {
-                    col.semantic_type = Some(stype);
-                }
-            }
-        }
+    /// Resolve every physical schema before the Encode marker/timer begins.
+    /// Databricks uses a LIMIT 0 metadata query on the same reusable helper
+    /// connection, so preparation does not add a full source scan.
+    fn prepare_input_schemas(&mut self) -> Result<()> {
+        let mut helper = start_databricks_helper(&self.source)?;
+        visit_source_schemas(
+            &self.source,
+            self.input_transfer.as_ref(),
+            self.databricks_config_file.as_deref(),
+            &mut helper,
+            |table, schema| {
+                let synthetic_columns = self
+                    .resolve_columns
+                    .iter()
+                    .filter(|resolution| resolution.table == table.name)
+                    .map(|resolution| resolution.node_id_col.clone())
+                    .collect::<HashSet<_>>();
+                validate_source_schema(table, schema, &synthetic_columns)
+            },
+        )?;
+        self.databricks_helper = helper;
         Ok(())
     }
 
@@ -3480,48 +4591,80 @@ impl IngestContext {
         let temp_root = root.join(TEMP_DIR_NAME);
         fs::create_dir_all(&temp_root)?;
         let mut table_rows: HashMap<String, u64> = HashMap::new();
-        let tables = self.source.tables.clone();
-        let mut node_encoders = HashMap::new();
-        for table in tables.iter().filter(|table| table.edge_table.is_none()) {
-            let ctx_path = root.join(temp_node_context_path(&table.name));
-            let ctx_bytes = fs::read(&ctx_path)
-                .with_context(|| format!("read node context {}", ctx_path.display()))?;
-            let node_context = diskgraph_rowpack::RowPackContext::from_bytes(&ctx_bytes)?;
-            node_encoders.insert(
-                table.name.clone(),
-                Arc::new(RowPackEncoder::new(node_context)?),
-            );
-        }
-        struct EncodeResult {
-            table: String,
-            total_rows: u64,
-            node_data_dropped: u64,
-            key_failures: KeyFailureState,
-            file_col_stats: Option<crate::col_stats::FileColStats>,
-        }
-
-        struct LoadedFile {
-            table: Arc<TableSpec>,
-            resident: Arc<ResidentFile>,
-            partitions: Vec<EncodePartition>,
-            resume: std::sync::mpsc::Sender<()>,
-        }
-
-        enum EncodeEvent {
-            Loaded(Result<LoadedFile>),
-            Encoded(Result<EncodeResult>),
-        }
-
+        const ENCODE_MAX_OVERSIZED_CHUNK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+        const CATEGORY_MEMORY_BUDGET_BYTES: u64 = 128 * 1024 * 1024;
+        let mut tables = self.source.tables.clone();
+        let encode_memory_budget_bytes = encode_memory_budget_bytes(
+            tables.iter().any(|table| {
+                matches!(
+                    table.source,
+                    graph_config::DataSource::Databricks { .. }
+                )
+            }),
+            total_memory_bytes(),
+        );
+        let source_rowpack = self.source.rowpack.clone();
         let relationships = Arc::new(self.relationships.clone());
         let relation_defs = std::sync::Arc::new(self.relation_defs.clone());
         let fk_edge_targets = std::sync::Arc::new(self.fk_edge_targets.clone());
         let num_shards = self.num_shards;
+        let source_writer_reserved_bytes = source_writer_resource_reservation(
+            &tables,
+            &relationships,
+            &relation_defs,
+            num_shards,
+        )?;
+        let category_memory_bytes = if self.col_stats
+            && self.cat_count_strategy != crate::col_stats::CategoryCountStrategy::None
+        {
+            CATEGORY_MEMORY_BUDGET_BYTES
+        } else {
+            0
+        };
+        let source_working_budget = encode_memory_budget_bytes
+            .checked_sub(source_writer_reserved_bytes)
+            .and_then(|bytes| bytes.checked_sub(category_memory_bytes))
+            .filter(|bytes| *bytes > 0)
+            .ok_or_else(|| {
+                anyhow!(
+                    "Encode persistent state requires {} bytes, exhausting the {} byte working budget",
+                    source_writer_reserved_bytes.saturating_add(category_memory_bytes),
+                    encode_memory_budget_bytes
+                )
+            })?;
+        let category_memory_budget = (category_memory_bytes > 0).then(|| {
+            Arc::new(crate::col_stats::CategoryStringBudget::new(
+                category_memory_bytes,
+            ))
+        });
+        let source_budget = crate::source_memory::ByteBudget::with_oversized_limit(
+            source_working_budget,
+            ENCODE_MAX_OVERSIZED_CHUNK_BYTES,
+        )?;
         let target = std::sync::Arc::clone(&self.target);
-        let node_pool = NodeWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
-        let edge_pool =
-            EdgeSrcWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
-        let dest_key_pool =
-            DestKeyWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
+        let source_encoder_workers = if self.parallel {
+            self.source_encoder_threads
+                .unwrap_or_else(edge_writer_workers)
+                .max(1)
+        } else {
+            1
+        };
+        let source_encoder_limit = EncodeConcurrency::new(source_encoder_workers);
+        let node_pool = NodeWritePool::new(
+            std::sync::Arc::clone(&target),
+            source_encoder_workers,
+            Arc::clone(&source_encoder_limit),
+        );
+        let edge_pool = EdgeSrcWritePool::new(
+            std::sync::Arc::clone(&target),
+            source_encoder_workers,
+            Arc::clone(&source_encoder_limit),
+        );
+        let dest_key_pool = DestKeyWritePool::new(
+            std::sync::Arc::clone(&target),
+            source_encoder_workers,
+            source_encoder_limit,
+        );
         let node_senders = node_pool.senders();
         let node_errors = node_pool.error();
         let edge_senders = edge_pool.senders();
@@ -3534,29 +4677,11 @@ impl IngestContext {
         let cat_count_strategy = self.cat_count_strategy;
         let row_subsample = self.row_subsample;
 
-        // Create shared category count state per table (if enabled).
-        let table_cat_counts: HashMap<
+        let mut table_cat_counts: HashMap<
             String,
             std::sync::Arc<crate::col_stats::TableCategoryCounts>,
-        > = if cat_count_strategy != crate::col_stats::CategoryCountStrategy::None
-            && col_stats_enabled
-        {
-            tables
-                .iter()
-                .filter(|t| t.edge_table.is_none()) // Only node tables
-                .map(|t| {
-                    let stypes: Vec<_> = t.columns.iter().map(|c| c.semantic_type).collect();
-                    let cat = crate::col_stats::TableCategoryCounts::new(
-                        cat_count_strategy,
-                        &stypes,
-                        row_subsample,
-                    );
-                    (t.name.clone(), std::sync::Arc::new(cat))
-                })
-                .collect()
-        } else {
-            HashMap::new()
-        };
+        > = HashMap::new();
+        let mut table_col_stats: HashMap<String, crate::col_stats::FileColStats> = HashMap::new();
         // FK-free LP resolution mode: load the parent pkmap(s) ONCE here, before
         // the parallel encode pass, and share read-only via Arc so each encode
         // worker can resolve PK reference columns to graph node-ids inline (no
@@ -3583,301 +4708,397 @@ impl IngestContext {
                 )?))
             };
 
-        let mut files = Vec::new();
-        for table in &tables {
-            if let Some(cb) = &self.progress {
-                cb(ProgressEvent {
-                    phase: ProgressPhase::Encode,
-                    table: table.name.clone(),
-                    shard: None,
-                    kind: ProgressKind::Start,
-                    delta: 0,
-                    total: Some(table.get_paths().len() as u64),
-                    status: None,
-                });
-            }
-            let table = Arc::new(table.clone());
-            for file_idx in 0..table.get_paths().len() {
-                files.push((Arc::clone(&table), file_idx));
-            }
-        }
-        let file_count = files.len();
-
-        let encode_threads = if self.parallel {
-            self.encode_threads
-                .unwrap_or_else(default_worker_threads)
-                .max(1)
-        } else {
-            1
-        };
-        let loader_threads = std::env::var("DISKGRAPH_ENCODE_LOADER_THREADS")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or_else(|| {
-                if self.parallel {
-                    (encode_threads / 8).clamp(2, 16)
+        // Every transport enters the same batch dispatcher and parallel
+        // node/edge consumers. Context sampling remains single-threaded;
+        // replay and all later batches may be encoded by any worker.
+        {
+            let mut helper = self.databricks_helper.take();
+            for table in &mut tables {
+                let synthetic_columns = resolve_columns
+                    .iter()
+                    .filter(|resolution| resolution.table == table.name)
+                    .map(|resolution| resolution.node_id_col.clone())
+                    .collect::<HashSet<_>>();
+                if let Some(callback) = &self.progress {
+                    callback(ProgressEvent {
+                        phase: ProgressPhase::Encode,
+                        table: table.name.clone(),
+                        shard: None,
+                        kind: ProgressKind::Start,
+                        delta: 0,
+                        total: Some(1),
+                        status: None,
+                    });
+                }
+                let sidecars = self
+                    .stage_sidecars
+                    .get(&table.name)
+                    .cloned()
+                    .unwrap_or_default();
+                let mut stream = match &table.source {
+                    graph_config::DataSource::Parquet { .. }
+                    | graph_config::DataSource::Csv { .. } => TableBatchStream::file(
+                        open_file_batch_stream(
+                            table,
+                            input_transfer.as_ref(),
+                            source_budget.max_input_chunk_bytes(),
+                        )?,
+                        Arc::clone(&source_budget),
+                        synthetic_columns.clone(),
+                    ),
+                    graph_config::DataSource::Databricks { .. } => {
+                        let mut query_options = crate::databricks::QueryStreamOptions::default();
+                        if let Some(loaders) = self.source_loader_threads {
+                            query_options.max_concurrent_downloads = loaders.max(1);
+                        }
+                        if std::env::var_os(
+                            "DISKGRAPH_DATABRICKS_BENCHMARK_ALLOW_HTTP_LOOPBACK",
+                        )
+                        .is_some_and(|value| value == "1")
+                        {
+                            query_options.allow_loopback_http_for_benchmark();
+                        }
+                        if std::env::var_os("DISKGRAPH_DATABRICKS_BENCHMARK_ISOLATE_CONSUMER")
+                            .is_some_and(|value| value == "1")
+                        {
+                            query_options.max_concurrent_downloads = 1;
+                            query_options.pause_download_while_batch_active();
+                        }
+                        TableBatchStream::databricks(
+                            crate::databricks::DatabricksQueryStream::open_with_shared_budget(
+                                helper.as_mut().ok_or_else(|| {
+                                    anyhow!("Databricks helper was not initialized")
+                                })?,
+                                &table.source,
+                                self.databricks_config_file.as_deref(),
+                                query_options,
+                                Arc::clone(&source_budget),
+                            )?,
+                            table,
+                            Arc::clone(&source_budget),
+                            synthetic_columns,
+                        )
+                    }
+                    _ => return Err(anyhow!("table {} source is not implemented", table.name)),
+                };
+                if table.edge_table.is_some() {
+                    let encode_table: &TableSpec = table;
+                    let results = run_encode_batch_workers(
+                        &mut stream,
+                        source_encoder_workers,
+                        |batches| {
+                            let mut key_failures = KeyFailureState::default();
+                            let dropped = Self::build_temp_edge_batches(
+                                encode_table,
+                                batches,
+                                num_shards,
+                                &trimmed_strings,
+                                &mut key_failures,
+                                &edge_senders,
+                                &edge_errors,
+                                &dest_key_senders,
+                                &dest_key_errors,
+                                &relation_defs,
+                                &fk_edge_targets,
+                                &source_budget,
+                            )?;
+                            Ok((dropped, key_failures))
+                        },
+                    )?;
+                    let mut dropped = 0u64;
+                    for (worker_dropped, key_failures) in results {
+                        dropped = dropped.saturating_add(worker_dropped);
+                        self.merge_key_failures(key_failures);
+                    }
+                    if dropped > 0 {
+                        self.dropped_rows_counts.insert(table.name.clone(), dropped);
+                    }
                 } else {
-                    1
-                }
-            })
-            .max(1);
-        let target_tasks = encode_threads.saturating_mul(3).div_ceil(2).max(1);
-        let pool = self.make_pool::<()>(IngestPhase::Encode);
-        let loader_pool = TaskPool::<()>::new(loader_threads);
-        // Declare the event channel after both pools so early returns drop its
-        // queued resume senders before TaskPool::drop joins blocked loaders.
-        let (tx, rx) = std::sync::mpsc::channel::<EncodeEvent>();
-        let progress = self.progress.clone();
-        for (table, file_idx) in files {
-            let input_transfer = input_transfer.clone();
-            let tx = tx.clone();
-            loader_pool.submit(WorkItem {
-                bucket: None,
-                run: Box::new(move |_scratch| {
-                    let (resume, ready) = std::sync::mpsc::channel();
-                    let result =
-                        catch_encode_worker_panic("encode loader", || -> Result<LoadedFile> {
-                            let path = &table.get_paths()[file_idx];
-                            let resident = Arc::new(ResidentFile::load(
-                                path,
-                                table.format(),
-                                input_transfer.as_ref(),
-                            )?);
-                            let partitions = match table.format() {
-                                TableFormat::Parquet => {
-                                    let metadata =
-                                        resident.parquet_metadata.as_ref().ok_or_else(|| {
-                                            anyhow!("missing Parquet metadata for {path}")
-                                        })?;
-                                    validate_parquet_column_types(
-                                        metadata.schema(),
-                                        &table.columns,
-                                        path,
-                                    )?;
-                                    parquet_encode_partitions(&table, &resident)?
-                                }
-                                TableFormat::Csv => vec![None],
-                            };
-                            Ok(LoadedFile {
-                                table,
-                                resident,
-                                partitions,
-                                resume,
-                            })
-                        });
-                    let wait = result.is_ok();
-                    tx.send(EncodeEvent::Loaded(result))
-                        .map_err(|e| anyhow!("loader output error: {e}"))?;
-                    if wait {
-                        ready
-                            .recv()
-                            .map_err(|e| anyhow!("loader admission error: {e}"))?;
-                    }
-                    Ok(())
-                }),
-            })?;
-        }
-
-        let mut loaded_files = 0usize;
-        let mut active_tasks = 0usize;
-        let mut waiting_loaders = VecDeque::new();
-        let mut table_col_stats: HashMap<String, crate::col_stats::FileColStats> = HashMap::new();
-        while loaded_files < file_count || active_tasks > 0 {
-            match rx
-                .recv()
-                .map_err(|e| anyhow!("encode pipeline error: {e}"))?
-            {
-                EncodeEvent::Loaded(loaded) => {
-                    loaded_files += 1;
-                    let loaded = loaded?;
-                    let sidecars = self
-                        .stage_sidecars
-                        .get(&loaded.table.name)
-                        .cloned()
-                        .unwrap_or_default();
-                    active_tasks = active_tasks.saturating_add(loaded.partitions.len());
-                    let remaining =
-                        Arc::new(std::sync::atomic::AtomicUsize::new(loaded.partitions.len()));
-                    for partition in loaded.partitions {
-                        let resident = Arc::clone(&loaded.resident);
-                        let table = Arc::clone(&loaded.table);
-                        let relationships = Arc::clone(&relationships);
-                        let node_senders = Arc::clone(&node_senders);
-                        let node_errors = Arc::clone(&node_errors);
-                        let edge_senders = Arc::clone(&edge_senders);
-                        let dest_key_senders = Arc::clone(&dest_key_senders);
-                        let dest_key_errors = Arc::clone(&dest_key_errors);
-                        let trimmed_strings = Arc::clone(&trimmed_strings);
-                        let node_encoder = node_encoders.get(&table.name).cloned();
-                        let relation_defs = Arc::clone(&relation_defs);
-                        let fk_edge_targets = Arc::clone(&fk_edge_targets);
-                        let edge_errors = Arc::clone(&edge_errors);
-                        let table_cat = table_cat_counts.get(&table.name).cloned();
-                        let resolve_columns = Arc::clone(&resolve_columns);
-                        let ref_resolver = ref_resolver.clone();
-                        let sidecars = sidecars.clone();
-                        let remaining = Arc::clone(&remaining);
-                        let progress = progress.clone();
-                        let tx = tx.clone();
-                        pool.submit(WorkItem {
-                            bucket: None,
-                            run: Box::new(move |_scratch| {
-                                let result = catch_encode_worker_panic(
-                                    "encode partition worker",
-                                    || -> Result<EncodeResult> {
-                                        let mut key_failures = KeyFailureState::default();
-                                        if table.edge_table.is_some() {
-                                            let node_data_dropped =
-                                                Self::build_temp_edge_partition(
-                                                    &table,
-                                                    &resident,
-                                                    &partition,
-                                                    num_shards,
-                                                    &trimmed_strings,
-                                                    &mut key_failures,
-                                                    &edge_senders,
-                                                    &edge_errors,
-                                                    &dest_key_senders,
-                                                    &dest_key_errors,
-                                                    relation_defs.as_ref(),
-                                                    &fk_edge_targets,
-                                                )?;
-                                            return Ok(EncodeResult {
-                                                table: table.name.clone(),
-                                                total_rows: 0,
-                                                node_data_dropped,
-                                                key_failures,
-                                                file_col_stats: None,
-                                            });
-                                        }
-                                        let node_encoder =
-                                            node_encoder.as_deref().ok_or_else(|| {
-                                                anyhow!(
-                                                    "missing node encoder for table {}",
-                                                    table.name
-                                                )
-                                            })?;
-                                        let (node, file_stats) = if col_stats_enabled {
-                                            let mut obs = if let Some(ref tc) = table_cat {
-                                                crate::col_stats::FileColStats::new_with_categories(
-                                                    &table.columns,
-                                                    Arc::clone(tc),
-                                                )
-                                            } else {
-                                                crate::col_stats::FileColStats::new(&table.columns)
-                                            };
-                                            let node = Self::build_temp_node_partition(
-                                                &table,
-                                                &resident,
-                                                &partition,
-                                                &relationships,
-                                                &relation_defs,
-                                                num_shards,
-                                                node_encoder,
-                                                &trimmed_strings,
-                                                &mut key_failures,
-                                                &node_senders,
-                                                &node_errors,
-                                                &dest_key_senders,
-                                                &dest_key_errors,
-                                                &fk_edge_targets,
-                                                &resolve_columns,
-                                                ref_resolver.as_deref(),
-                                                &sidecars,
-                                                &mut obs,
-                                            )?;
-                                            obs.flush_categories();
-                                            (node, Some(obs))
-                                        } else {
-                                            (
-                                                Self::build_temp_node_partition(
-                                                    &table,
-                                                    &resident,
-                                                    &partition,
-                                                    &relationships,
-                                                    &relation_defs,
-                                                    num_shards,
-                                                    node_encoder,
-                                                    &trimmed_strings,
-                                                    &mut key_failures,
-                                                    &node_senders,
-                                                    &node_errors,
-                                                    &dest_key_senders,
-                                                    &dest_key_errors,
-                                                    &fk_edge_targets,
-                                                    &resolve_columns,
-                                                    ref_resolver.as_deref(),
-                                                    &sidecars,
-                                                    &mut diskgraph_rowpack::NoOpObserver,
-                                                )?,
-                                                None,
-                                            )
-                                        };
-                                        let result = EncodeResult {
-                                            table: table.name.clone(),
-                                            total_rows: node.total_rows,
-                                            node_data_dropped: node.node_data_dropped,
-                                            key_failures,
-                                            file_col_stats: file_stats,
-                                        };
-                                        if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
-                                            if let Some(cb) = progress {
-                                                cb(ProgressEvent {
-                                                    phase: ProgressPhase::Encode,
-                                                    table: table.name.clone(),
-                                                    shard: None,
-                                                    kind: ProgressKind::Advance,
-                                                    delta: 1,
-                                                    total: Some(table.get_paths().len() as u64),
-                                                    status: None,
-                                                });
-                                            }
-                                        }
-                                        Ok(result)
-                                    },
-                                );
-                                let sent = tx
-                                    .send(EncodeEvent::Encoded(result))
-                                    .map_err(|e| anyhow!("encode output error: {e}"));
-                                sent
-                            }),
+                    let rowpack_config = rowpack_config_for_table(source_rowpack.as_ref(), table);
+                    let sample_limit = rowpack_config.sample_rows().min(SAMPLE_ROW_LIMIT);
+                    let mut context_builder =
+                        RowPackContextBuilder::new(rowpack_columns(table)?, rowpack_config);
+                    let resolve_node_ids: HashSet<usize> = resolve_columns
+                        .iter()
+                        .filter(|resolution| resolution.table == table.name)
+                        .filter_map(|resolution| column_index(table, &resolution.node_id_col).ok())
+                        .collect();
+                    let row_access_hints = build_row_access_hints(table);
+                    let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
+                    let mut access = RowAccess::new(row_access_hints, stats);
+                    let mut prefix = Vec::new();
+                    let mut prefix_rows = 0usize;
+                    let mut prefix_bytes = 0usize;
+                    let mut remainder = None;
+                    while prefix_rows < sample_limit && prefix_bytes < SOURCE_PREFIX_MAX_BYTES {
+                        let batch = match stream.next() {
+                            Some(batch) => batch?,
+                            None => break,
+                        };
+                        if batch.batch.num_rows() == 0 {
+                            continue;
+                        }
+                        let remaining_prefix_bytes = SOURCE_PREFIX_MAX_BYTES - prefix_bytes;
+                        let mut prefix_permit =
+                            source_budget.acquire(remaining_prefix_bytes as u64)?;
+                        let compact = compact_prefix_with_budget(
+                            &batch.batch,
+                            sample_limit - prefix_rows,
+                            remaining_prefix_bytes,
+                        )?
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "table {} has a source row larger than the context prefix budget",
+                                table.name
+                            )
                         })?;
-                    }
-                    if active_tasks < target_tasks {
-                        let _ = loaded.resume.send(());
-                    } else {
-                        waiting_loaders.push_back(loaded.resume);
-                    }
-                }
-                EncodeEvent::Encoded(result) => {
-                    active_tasks = active_tasks.saturating_sub(1);
-                    if active_tasks < target_tasks {
-                        if let Some(resume) = waiting_loaders.pop_front() {
-                            let _ = resume.send(());
+                        let sampled_rows = compact.num_rows();
+                        prefix_permit.shrink_to(compact.get_array_memory_size() as u64);
+                        let cols = build_access_cols(&compact, table, &resolve_node_ids)?;
+                        access.set_cols(&cols);
+                        for row in 0..sampled_rows {
+                            access.set_row(row);
+                            context_builder.observe_row_from_access(&mut access)?;
+                        }
+                        access.set_cols(&[]);
+                        prefix_rows += sampled_rows;
+                        prefix_bytes = prefix_bytes.saturating_add(compact.get_array_memory_size());
+                        prefix.push(SourceBatch::budgeted(compact, prefix_permit));
+                        if sampled_rows < batch.batch.num_rows() {
+                            let remaining_rows = batch.batch.num_rows().saturating_sub(sampled_rows);
+                            remainder = Some(batch.slice(sampled_rows, remaining_rows));
+                            break;
                         }
                     }
-                    let result = result?;
-                    if let Some(total) = table_rows.get_mut(&result.table) {
-                        *total = total.saturating_add(result.total_rows);
-                    } else if result.total_rows > 0 {
-                        table_rows.insert(result.table.clone(), result.total_rows);
+
+                    let unique_counts = context_builder.sample_unique_counts();
+                    let fk_columns: HashSet<&str> = table
+                        .fkeys
+                        .iter()
+                        .map(|foreign_key| foreign_key.src_column.as_str())
+                        .collect();
+                    let semantic_types: Vec<SemanticType> = table
+                        .columns
+                        .iter()
+                        .zip(unique_counts.iter())
+                        .map(|(column, &(num_unique, count))| {
+                            if let Some(semantic_type) = column.semantic_type {
+                                return semantic_type;
+                            }
+                            let role = graph_config::ColumnRole {
+                                is_pk: table
+                                    .primary_key
+                                    .as_deref()
+                                    .is_some_and(|primary_key| primary_key == column.name),
+                                is_fk: fk_columns.contains(column.name.as_str()),
+                                name: &column.name,
+                            };
+                            let sample = (num_unique > 0 || count > 0)
+                                .then_some(graph_config::ColumnSampleStats { num_unique, count });
+                            graph_config::infer_semantic_type(column, &role, sample.as_ref())
+                        })
+                        .collect();
+                    if col_stats_enabled {
+                        let text_stats = text_stats_from_prefix(table, &semantic_types, &prefix)?;
+                        if !text_stats.is_empty() {
+                            self.text_sample_stats
+                                .insert(table.name.clone(), text_stats);
+                        }
                     }
-                    if result.node_data_dropped > 0 {
-                        let count = self
-                            .dropped_rows_counts
-                            .entry(result.table.clone())
-                            .or_insert(0);
-                        *count = count.saturating_add(result.node_data_dropped);
+                    for (column, semantic_type) in
+                        table.columns.iter_mut().zip(semantic_types.iter().copied())
+                    {
+                        column.semantic_type = Some(semantic_type);
                     }
-                    self.merge_key_failures(result.key_failures);
-                    if let Some(mut file_stats) = result.file_col_stats {
-                        table_col_stats
-                            .entry(result.table.clone())
-                            .and_modify(|acc| acc.merge(&mut file_stats))
-                            .or_insert(file_stats);
+                    if let Some(source_table) = self
+                        .source
+                        .tables
+                        .iter_mut()
+                        .find(|source_table| source_table.name == table.name)
+                    {
+                        source_table.columns.clone_from(&table.columns);
+                    }
+
+                    let node_context = context_builder.finish()?;
+                    let context_bytes = node_context.to_bytes()?;
+                    self.target
+                        .write_bytes(&temp_node_context_path(&table.name), context_bytes.clone())?;
+                    self.target
+                        .write_bytes(&node_context_output_path(&table.name), context_bytes)?;
+                    self.table_contexts.insert(
+                        table.name.clone(),
+                        format!("nodes/{}/node_data.ctx", table.name.to_lowercase()),
+                    );
+                    let node_encoder = RowPackEncoder::new(node_context)?;
+
+                    if cat_count_strategy != crate::col_stats::CategoryCountStrategy::None
+                        && col_stats_enabled
+                    {
+                        let stypes = table
+                            .columns
+                            .iter()
+                            .map(|column| column.semantic_type)
+                            .collect::<Vec<_>>();
+                        table_cat_counts.insert(
+                            table.name.clone(),
+                            Arc::new(
+                                if let Some(category_memory_budget) = &category_memory_budget {
+                                    crate::col_stats::TableCategoryCounts::new_with_string_budget(
+                                        cat_count_strategy,
+                                        &stypes,
+                                        row_subsample,
+                                        Arc::clone(category_memory_budget),
+                                    )
+                                } else {
+                                    crate::col_stats::TableCategoryCounts::new(
+                                        cat_count_strategy,
+                                        &stypes,
+                                        row_subsample,
+                                    )
+                                },
+                            ),
+                        );
+                    }
+                    let replay = prefix
+                        .into_iter()
+                        .map(Ok)
+                        .chain(remainder.into_iter().map(Ok))
+                        .chain(&mut stream);
+                    let table_cat = table_cat_counts.get(&table.name).cloned();
+                    let encode_table: &TableSpec = table;
+                    let node_encode_workers = node_encode_worker_limit(
+                        encode_table,
+                        &relation_defs,
+                        source_encoder_workers,
+                        &source_budget,
+                    )?;
+                    let results = run_encode_batch_workers(
+                        replay,
+                        node_encode_workers,
+                        |batches| {
+                            let mut key_failures = KeyFailureState::default();
+                            if col_stats_enabled {
+                                let mut observer = if let Some(categories) = &table_cat {
+                                    crate::col_stats::FileColStats::new_with_categories(
+                                        &encode_table.columns,
+                                        Arc::clone(categories),
+                                    )
+                                } else {
+                                    crate::col_stats::FileColStats::new(&encode_table.columns)
+                                };
+                                let node = Self::build_temp_node_batches(
+                                    encode_table,
+                                    batches,
+                                    &relationships,
+                                    &relation_defs,
+                                    num_shards,
+                                    &node_encoder,
+                                    &trimmed_strings,
+                                    &mut key_failures,
+                                    &node_senders,
+                                    &node_errors,
+                                    &dest_key_senders,
+                                    &dest_key_errors,
+                                    &fk_edge_targets,
+                                    &resolve_columns,
+                                    ref_resolver.as_deref(),
+                                    &sidecars,
+                                    &source_budget,
+                                    &mut observer,
+                                )?;
+                                observer.flush_categories();
+                                Ok((node, key_failures, Some(observer)))
+                            } else {
+                                let node = Self::build_temp_node_batches(
+                                    encode_table,
+                                    batches,
+                                    &relationships,
+                                    &relation_defs,
+                                    num_shards,
+                                    &node_encoder,
+                                    &trimmed_strings,
+                                    &mut key_failures,
+                                    &node_senders,
+                                    &node_errors,
+                                    &dest_key_senders,
+                                    &dest_key_errors,
+                                    &fk_edge_targets,
+                                    &resolve_columns,
+                                    ref_resolver.as_deref(),
+                                    &sidecars,
+                                    &source_budget,
+                                    &mut diskgraph_rowpack::NoOpObserver,
+                                )?;
+                                Ok((node, key_failures, None))
+                            }
+                        },
+                    )?;
+                    let mut total_rows = 0u64;
+                    let mut node_data_dropped = 0u64;
+                    let mut merged_stats: Option<crate::col_stats::FileColStats> = None;
+                    for (node, key_failures, file_stats) in results {
+                        total_rows = total_rows.saturating_add(node.total_rows);
+                        node_data_dropped =
+                            node_data_dropped.saturating_add(node.node_data_dropped);
+                        self.merge_key_failures(key_failures);
+                        if let Some(mut file_stats) = file_stats {
+                            if let Some(stats) = &mut merged_stats {
+                                stats.merge(&mut file_stats);
+                            } else {
+                                merged_stats = Some(file_stats);
+                            }
+                        }
+                    }
+                    table_rows.insert(table.name.clone(), total_rows);
+                    if node_data_dropped > 0 {
+                        self.dropped_rows_counts
+                            .insert(table.name.clone(), node_data_dropped);
+                    }
+                    if let Some(stats) = merged_stats {
+                        table_col_stats.insert(table.name.clone(), stats);
                     }
                 }
+                stream.finish_validation()?;
+                let source_rows = stream.rows_seen();
+                let source_bytes = stream.logical_arrow_bytes();
+                self.logical_source_rows =
+                    self.logical_source_rows.saturating_add(source_rows);
+                self.logical_source_rows_by_table
+                    .insert(table.name.clone(), source_rows);
+                self.source_input_wait_nanos = self
+                    .source_input_wait_nanos
+                    .saturating_add(stream.input_wait_nanos());
+                self.logical_arrow_source_bytes = self
+                    .logical_arrow_source_bytes
+                    .saturating_add(source_bytes);
+                self.logical_arrow_source_bytes_by_table
+                    .insert(table.name.clone(), source_bytes);
+                if let Some(metrics) = stream.databricks_metrics() {
+                    self.databricks_wire_bytes = self
+                        .databricks_wire_bytes
+                        .saturating_add(metrics.wire_bytes);
+                    self.databricks_decoded_ipc_bytes = self
+                        .databricks_decoded_ipc_bytes
+                        .saturating_add(metrics.decoded_ipc_bytes);
+                    self.databricks_query_startup_nanos = self
+                        .databricks_query_startup_nanos
+                        .saturating_add(metrics.query_startup_nanos);
+                }
+                if let Some(callback) = &self.progress {
+                    callback(ProgressEvent {
+                        phase: ProgressPhase::Encode,
+                        table: table.name.clone(),
+                        shard: None,
+                        kind: ProgressKind::Advance,
+                        delta: 1,
+                        total: Some(1),
+                        status: None,
+                    });
+                }
             }
+        }
+        if self.logical_source_rows == 0 && self.parent_index_path.is_none() {
+            return Err(anyhow!("graph source returned zero rows"));
         }
         if let Some(cb) = &self.progress {
             for table in &tables {
@@ -3887,12 +5108,11 @@ impl IngestContext {
                     shard: None,
                     kind: ProgressKind::Finish,
                     delta: 0,
-                    total: Some(table.get_paths().len() as u64),
+                    total: Some(1),
                     status: None,
                 });
             }
         }
-        drop(tx);
         // Write col_stats.json if enabled
         if col_stats_enabled && !table_col_stats.is_empty() {
             // Check for timestamp parse failures before writing stats
@@ -3967,6 +5187,166 @@ impl IngestContext {
         self.write_consolidated_meta(&node_stats, &edge_stats, &dest_key_stats)?;
         self.refresh_shard_rows_from_stats(&node_stats);
         self.table_rows = table_rows;
+        self.encode_memory_high_water_bytes = source_budget
+            .high_water_bytes()
+            .saturating_add(source_writer_reserved_bytes)
+            .saturating_add(
+                category_memory_budget
+                    .as_ref()
+                    .map_or(0, |budget| budget.used_bytes()),
+            );
+        self.persist_encode_state()?;
+        Ok(())
+    }
+
+    fn persist_encode_state(&self) -> Result<()> {
+        let state = EncodeState {
+            version: ENCODE_STATE_VERSION,
+            source: self.source.clone(),
+            binary_label_counts: self
+                .binary_label_counts
+                .iter()
+                .map(|((table, shard), counts)| EncodeLabelCounts {
+                    table: table.clone(),
+                    shard: *shard,
+                    counts: counts.clone(),
+                })
+                .collect(),
+            sample_weight_counts: self
+                .sample_weight_counts
+                .iter()
+                .map(|((table, shard), counts)| EncodeWeightCounts {
+                    table: table.clone(),
+                    shard: *shard,
+                    counts: counts.clone(),
+                })
+                .collect(),
+            dropped_rows_counts: self.dropped_rows_counts.clone(),
+            key_parse_failures: self.key_parse_failures,
+            key_lookup_failures: self.key_lookup_failures,
+            key_membership_failures: self.key_membership_failures,
+            key_failure_samples: self.key_failure_samples.clone(),
+            key_failures_by_context: self.key_failures_by_context.clone(),
+            trimmed_strings: self.trimmed_strings.load(Ordering::Relaxed),
+            temp_edges_src_bytes: self.temp_edges_src_bytes,
+            temp_fkeys_bytes: self.temp_fkeys_bytes,
+            temp_node_data_bytes: self.temp_node_data_bytes,
+            databricks_wire_bytes: self.databricks_wire_bytes,
+            databricks_decoded_ipc_bytes: self.databricks_decoded_ipc_bytes,
+            databricks_query_startup_nanos: self.databricks_query_startup_nanos,
+            logical_arrow_source_bytes: self.logical_arrow_source_bytes,
+            logical_arrow_source_bytes_by_table: self.logical_arrow_source_bytes_by_table.clone(),
+            source_input_wait_nanos: self.source_input_wait_nanos,
+            encode_memory_high_water_bytes: self.encode_memory_high_water_bytes,
+            logical_source_rows: self.logical_source_rows,
+            logical_source_rows_by_table: self.logical_source_rows_by_table.clone(),
+        };
+        self.target
+            .write_bytes(ENCODE_STATE_PATH, serde_json::to_vec_pretty(&state)?)
+    }
+
+    fn restore_encode_state(&mut self) -> Result<()> {
+        let root = match &*self.target {
+            OutputTarget::Local { root, .. } => root,
+            _ => return Ok(()),
+        };
+        let path = root.join(ENCODE_STATE_PATH);
+        let bytes = fs::read(&path)
+            .with_context(|| format!("read completed Encode state: {}", path.display()))?;
+        let state: EncodeState = serde_json::from_slice(&bytes)
+            .with_context(|| format!("decode completed Encode state: {}", path.display()))?;
+        if state.version != ENCODE_STATE_VERSION {
+            return Err(anyhow!(
+                "unsupported Encode state version {} at {}",
+                state.version,
+                path.display()
+            ));
+        }
+        self.source = state.source;
+        self.binary_label_counts = state
+            .binary_label_counts
+            .into_iter()
+            .map(|entry| ((entry.table, entry.shard), entry.counts))
+            .collect();
+        self.sample_weight_counts = state
+            .sample_weight_counts
+            .into_iter()
+            .map(|entry| ((entry.table, entry.shard), entry.counts))
+            .collect();
+        self.dropped_rows_counts = state.dropped_rows_counts;
+        self.key_parse_failures = state.key_parse_failures;
+        self.key_lookup_failures = state.key_lookup_failures;
+        self.key_membership_failures = state.key_membership_failures;
+        self.key_failure_samples = state.key_failure_samples;
+        self.key_failures_by_context = state.key_failures_by_context;
+        self.trimmed_strings
+            .store(state.trimmed_strings, Ordering::Relaxed);
+        self.temp_edges_src_bytes = state.temp_edges_src_bytes;
+        self.temp_fkeys_bytes = state.temp_fkeys_bytes;
+        self.temp_node_data_bytes = state.temp_node_data_bytes;
+        self.databricks_wire_bytes = state.databricks_wire_bytes;
+        self.databricks_decoded_ipc_bytes = state.databricks_decoded_ipc_bytes;
+        self.databricks_query_startup_nanos = state.databricks_query_startup_nanos;
+        self.logical_arrow_source_bytes = state.logical_arrow_source_bytes;
+        self.logical_arrow_source_bytes_by_table = state.logical_arrow_source_bytes_by_table;
+        self.source_input_wait_nanos = state.source_input_wait_nanos;
+        self.encode_memory_high_water_bytes = state.encode_memory_high_water_bytes;
+        self.logical_source_rows = state.logical_source_rows;
+        self.logical_source_rows_by_table = state.logical_source_rows_by_table;
+        Ok(())
+    }
+
+    fn persist_resume_stats_state(&self, relative_path: &str) -> Result<()> {
+        let root = require_local_output(&self.target)?;
+        let state = ResumeStatsState {
+            version: RESUME_STATS_STATE_VERSION,
+            edge_counts: self.edge_counts.clone(),
+            edge_dst_nonzero_counts: self.edge_dst_nonzero_counts.clone(),
+            pk_duplicate_counts: self.pk_duplicate_counts.clone(),
+            pk_duplicate_drops: self.pk_duplicate_drops.clone(),
+            pk_null_timestamp_drops: self.pk_null_timestamp_drops.clone(),
+            edge_null_timestamp_drops: self.edge_null_timestamp_drops.clone(),
+            pk_duplicate_samples: self.pk_duplicate_samples.clone(),
+            key_parse_failures: self.key_parse_failures,
+            key_lookup_failures: self.key_lookup_failures,
+            key_membership_failures: self.key_membership_failures,
+            key_failure_samples: self.key_failure_samples.clone(),
+            key_failures_by_context: self.key_failures_by_context.clone(),
+        };
+        write_durable_file(
+            &root.join(relative_path),
+            &serde_json::to_vec_pretty(&state)?,
+            "resume statistics state",
+        )
+    }
+
+    fn restore_resume_stats_state(&mut self, relative_path: &str) -> Result<()> {
+        let root = require_local_output(&self.target)?;
+        let path = root.join(relative_path);
+        let bytes = fs::read(&path)
+            .with_context(|| format!("read completed phase state: {}", path.display()))?;
+        let state: ResumeStatsState = serde_json::from_slice(&bytes)
+            .with_context(|| format!("decode completed phase state: {}", path.display()))?;
+        if state.version != RESUME_STATS_STATE_VERSION {
+            return Err(anyhow!(
+                "unsupported resume statistics state version {} at {}",
+                state.version,
+                path.display()
+            ));
+        }
+        self.edge_counts = state.edge_counts;
+        self.edge_dst_degree_bits.clear();
+        self.edge_dst_nonzero_counts = state.edge_dst_nonzero_counts;
+        self.pk_duplicate_counts = state.pk_duplicate_counts;
+        self.pk_duplicate_drops = state.pk_duplicate_drops;
+        self.pk_null_timestamp_drops = state.pk_null_timestamp_drops;
+        self.edge_null_timestamp_drops = state.edge_null_timestamp_drops;
+        self.pk_duplicate_samples = state.pk_duplicate_samples;
+        self.key_parse_failures = state.key_parse_failures;
+        self.key_lookup_failures = state.key_lookup_failures;
+        self.key_membership_failures = state.key_membership_failures;
+        self.key_failure_samples = state.key_failure_samples;
+        self.key_failures_by_context = state.key_failures_by_context;
         Ok(())
     }
 
@@ -4115,12 +5495,6 @@ impl IngestContext {
                 }
             }
             self.shard_rows.insert(table.name.clone(), shard_rows);
-        }
-        // TT-NG timestamp grouping: carry the per-(table,shard) count maps from
-        // the writer into the context so the post-build merge can size buckets.
-        // Empty unless grouping is enabled (no allocation in the common path).
-        if !stats.group_ts_counts.is_empty() {
-            self.group_ts_counts = stats.group_ts_counts.clone();
         }
         if !stats.binary_label_counts.is_empty() {
             self.binary_label_counts = stats.binary_label_counts.clone();
@@ -4273,10 +5647,9 @@ impl IngestContext {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn build_temp_node_partition<O: diskgraph_rowpack::ColumnValueObserver>(
+    fn build_temp_node_batches<O, I>(
         table: &TableSpec,
-        resident: &ResidentFile,
-        partition: &EncodePartition,
+        batches: I,
         relationships: &[RelationshipRuntime],
         relation_defs: &[RelationDef],
         num_shards: usize,
@@ -4291,8 +5664,13 @@ impl IngestContext {
         resolve_columns: &[crate::config::ResolveColumnSpec],
         ref_resolver: Option<&crate::mapping::RefResolver>,
         sidecars: &StageSidecarColumns,
+        source_budget: &Arc<crate::source_memory::ByteBudget>,
         observer: &mut O,
-    ) -> Result<TempNodeFileResult> {
+    ) -> Result<TempNodeFileResult>
+    where
+        O: diskgraph_rowpack::ColumnValueObserver,
+        I: IntoIterator<Item = Result<arrow_array::RecordBatch>>,
+    {
         // FK-free LP resolution mode: build the per-table runtime resolve specs
         // (only those targeting THIS table). When non-empty, the node-write pass
         // resolves the source PK reference column(s) to graph node-id(s) and
@@ -4336,6 +5714,16 @@ impl IngestContext {
         let mut access = RowAccess::new(row_access_hints, stats);
         let mut key_bufs: Vec<Vec<u8>> = vec![Vec::new(); table.columns.len()];
         let mut f16_buf: Vec<f16> = Vec::new();
+        // RowPack's three output Vecs and f16 conversion buffer can each keep
+        // allocator-rounded capacity between rows. Reserve a conservative
+        // upper bound for those allocations plus every reusable key buffer.
+        // Input batches use the separate oversized-chunk allowance, so this
+        // retained consumer working set cannot deadlock its own next batch.
+        let row_scratch_bytes = node_row_scratch_bytes(table)?;
+        let _row_scratch_permit = source_budget.acquire(row_scratch_bytes)?;
+        let mut node_tags = Vec::new();
+        let mut node_bools = Vec::new();
+        let mut node_data = Vec::new();
         // FK-free LP resolution-mode scratch + synthetic-column index set.
         let resolve_node_ids = resolve_node_id_indices(&resolve_runtime);
         let mut resolve_scratch: Vec<u8> = Vec::new();
@@ -4361,6 +5749,7 @@ impl IngestContext {
             buffer_limit,
             std::sync::Arc::clone(senders),
             std::sync::Arc::clone(node_errors),
+            Arc::clone(source_budget),
             table.group_by_timestamp,
             binary_label_idx.is_some(),
             sample_weight_idx.is_some(),
@@ -4372,9 +5761,14 @@ impl IngestContext {
             buffer_limit,
             std::sync::Arc::clone(dest_key_senders),
             std::sync::Arc::clone(dest_key_errors),
+            Arc::clone(source_budget),
         );
-        let mut sort_key_batchers =
-            build_sort_key_batchers_for_node_table(table, relation_defs, num_shards)?;
+        let mut sort_key_batchers = build_sort_key_batchers_for_node_table(
+            table,
+            relation_defs,
+            num_shards,
+            source_budget,
+        )?;
 
         let create_time_info = table.create_time.as_ref().and_then(|ct| {
             let idx = column_index(table, ct).ok()?;
@@ -4397,28 +5791,6 @@ impl IngestContext {
             ($batch:expr) => {
                 let timestamp_idx = create_time_info.as_ref().map(|(idx, _)| *idx);
                 let validity_array = timestamp_idx.map(|idx| access.array(idx).unwrap().clone());
-                let pk_array = pk_idx.and_then(|idx| access.array(idx).ok());
-                let precomputed = precompute_shards(pk_array, pk_col, num_shards);
-
-                let mut fkeys_pre = Vec::with_capacity(rel_specs.len());
-                for (_, idx, _, _, target_type) in &rel_specs {
-                    let array = access.array(*idx).unwrap();
-                    let kind = edge_fast_path_for_array(array, target_type);
-                    let should_optimize = match kind {
-                        Some(EdgeKeyFastKind::Int64ToInt32)
-                        | Some(EdgeKeyFastKind::StringToInt64)
-                        | Some(EdgeKeyFastKind::StringUuid)
-                        | Some(EdgeKeyFastKind::StringUuid256)
-                        | Some(EdgeKeyFastKind::StringIp) => true,
-                        _ => false,
-                    };
-                    if should_optimize {
-                        let keys_result = extract_batch_keys(array, kind.unwrap());
-                        fkeys_pre.push(keys_result.ok());
-                    } else {
-                        fkeys_pre.push(None);
-                    }
-                }
 
                 for row in 0..$batch.num_rows() {
                     access.set_row(row);
@@ -4433,12 +5805,6 @@ impl IngestContext {
                         node_data_dropped += 1;
                         continue;
                     }
-                    let shard_override = precomputed.as_ref().and_then(|p| p.shards[row]);
-                    let pk_pre = precomputed
-                        .as_ref()
-                        .and_then(|p| p.keys.as_ref())
-                        .and_then(|k| k[row].as_ref());
-
                     // FK-free LP resolution: resolve the source PK reference
                     // column(s) to graph node-id(s) for this row, producing a
                     // per-column override vector. Empty when not in resolve mode.
@@ -4471,7 +5837,6 @@ impl IngestContext {
                         table,
                         pk_idx,
                         &rel_specs,
-                        &fkeys_pre,
                         row,
                         &mut access,
                         node_encoder,
@@ -4480,14 +5845,15 @@ impl IngestContext {
                         &mut sort_key_batchers,
                         &mut row_id,
                         pk_col,
-                        pk_pre,
                         &mut key_bufs,
                         &mut f16_buf,
+                        &mut node_tags,
+                        &mut node_bools,
+                        &mut node_data,
                         &mut node_data_dropped,
                         num_shards,
                         key_failures,
                         timestamp_valid,
-                        shard_override,
                         resolve_overrides.as_deref(),
                         observer,
                         create_time_info.as_ref().map(|(idx, _)| *idx),
@@ -4499,36 +5865,12 @@ impl IngestContext {
             };
         }
 
-        match partition {
-            Some(row_groups) => {
-                let metadata = resident.parquet_metadata.as_ref().ok_or_else(|| {
-                    anyhow!("missing resident Parquet metadata for table {}", table.name)
-                })?;
-                let reader = ParquetRecordBatchReaderBuilder::new_with_metadata(
-                    resident.source.reader(false)?,
-                    metadata.clone(),
-                )
-                .with_row_groups(row_groups.clone())
-                .with_batch_size(NODE_BATCH_SIZE)
-                .build()?;
-                for batch in reader {
-                    let batch = batch?;
-                    let cols = build_access_cols(&batch, table, &resolve_node_ids)?;
-                    access.set_cols(&cols);
-                    process_node_batch!(batch);
-                }
-            }
-            None => {
-                let schema = table_schema(table)?;
-                let builder = arrow_csv::ReaderBuilder::new(Arc::new(schema)).with_header(true);
-                let reader = builder.build(resident.source.reader(true)?.get_read(0)?)?;
-                for batch in reader {
-                    let batch = batch?;
-                    let cols = build_access_cols(&batch, table, &resolve_node_ids)?;
-                    access.set_cols(&cols);
-                    process_node_batch!(batch);
-                }
-            }
+        for batch in batches {
+            let batch = batch?;
+            let cols = build_access_cols(&batch, table, &resolve_node_ids)?;
+            access.set_cols(&cols);
+            process_node_batch!(batch);
+            access.set_cols(&[]);
         }
         batcher.flush_all(&mut sort_key_batchers)?;
         dest_fkey_batcher.flush_all()?;
@@ -4697,7 +6039,6 @@ impl IngestContext {
         table: &TableSpec,
         pk_idx: Option<usize>,
         rel_specs: &[(std::sync::Arc<str>, usize, usize, String, IngestedType)],
-        fkeys_pre: &[Option<Vec<Option<Key>>>],
         row: usize,
         access: &mut RowAccess<'_>,
         node_encoder: &RowPackEncoder,
@@ -4706,14 +6047,15 @@ impl IngestContext {
         sort_key_batchers: &mut [SortKeyComponentBatcher],
         row_id: &mut u64,
         pk_col: Option<&ColumnSpec>,
-        pk_pre: Option<&Key>,
         key_bufs: &mut Vec<Vec<u8>>,
         f16_buf: &mut Vec<f16>,
+        node_tags: &mut Vec<u8>,
+        node_bools: &mut Vec<u8>,
+        node_data: &mut Vec<u8>,
         node_data_dropped: &mut u64,
         num_shards: usize,
         key_failures: &mut KeyFailureState,
         timestamp_valid: bool,
-        shard_override: Option<usize>,
         // FK-free LP resolution overrides for this row (per-column), or `None`
         // when not in resolution mode. Forwarded to `encode_row_observed`.
         resolve_overrides: Option<&[diskgraph_rowpack::ResolveOverride]>,
@@ -4733,16 +6075,12 @@ impl IngestContext {
             let buf = key_bufs
                 .get_mut(idx)
                 .ok_or_else(|| anyhow!("missing key buffer"))?;
-            let res = if let Some(key) = pk_pre {
-                write_key_to_buf(buf, key).map_err(|_| KeyParseError::TypeMismatch)
-            } else {
-                key_from_access_into_buf(access, idx, pk_col, &pk_col.ingested_dtype, buf)
-            };
+            let res = key_from_access_into_buf(access, idx, pk_col, &pk_col.ingested_dtype, buf);
 
             match res {
                 Ok(_) => {
                     has_pkey = true;
-                    shard_override.unwrap_or_else(|| shard_for_key(buf, num_shards))
+                    shard_for_key(buf, num_shards)
                 }
                 Err(_) => {
                     let context = format!("pkey:{}.{}", table.name, pk_col.name);
@@ -4759,9 +6097,7 @@ impl IngestContext {
         } else {
             (*row_id as usize) % num_shards
         };
-        for (i, (_rel_name, rel_idx, _rel_pos, _fk_col_name, target_type)) in
-            rel_specs.iter().enumerate()
-        {
+        for (_rel_name, rel_idx, _rel_pos, _fk_col_name, target_type) in rel_specs {
             let col = table
                 .columns
                 .get(*rel_idx)
@@ -4770,17 +6106,7 @@ impl IngestContext {
                 .get_mut(*rel_idx)
                 .ok_or_else(|| anyhow!("missing key buffer"))?;
 
-            let res = if let Some(keys) = fkeys_pre.get(i).and_then(|k| k.as_ref()) {
-                if let Some(Some(key)) = keys.get(row) {
-                    write_key_to_buf(buf, key).map_err(|_| KeyParseError::TypeMismatch)
-                } else {
-                    // Fallback to RowAccess for None values to ensure correct error reporting
-                    // (extract_batch_keys uses None for both nulls and parse errors).
-                    key_from_access_into_buf(access, *rel_idx, col, target_type, buf)
-                }
-            } else {
-                key_from_access_into_buf(access, *rel_idx, col, target_type, buf)
-            };
+            let res = key_from_access_into_buf(access, *rel_idx, col, target_type, buf);
 
             if res.is_err() {
                 let context = format!("fkey:{}.{}", table.name, col.name);
@@ -4830,37 +6156,30 @@ impl IngestContext {
             Some(idx) => Some(Self::sample_weight_from_access(access, idx)?),
             None => None,
         };
-        let node_tag_start;
-        let node_bool_start;
-        let node_data_start;
+        node_tags.clear();
+        node_bools.clear();
+        node_data.clear();
+        let lens = node_encoder.encode_row_observed(
+            access,
+            node_tags,
+            node_bools,
+            node_data,
+            f16_buf,
+            key_bufs,
+            resolve_overrides,
+            observer,
+        )?;
         {
-            let sink = batcher.node_sink(shard)?;
-            node_tag_start = sink.tags.len();
-            node_bool_start = sink.bools.len();
-            node_data_start = sink.data.len();
-            let lens = node_encoder.encode_row_observed(
-                access,
-                sink.tags,
-                sink.bools,
-                sink.data,
-                f16_buf,
-                key_bufs,
-                resolve_overrides,
-                observer,
-            )?;
             // Drop row if time_col was encoded as null (tag bits == 0).
             // This catches: Arrow null that slipped past Phase 2, string parse
             // failures, and out-of-range dates (Change A in access.rs).
             if let Some(ts_idx) = create_time_col_idx {
                 let bit_offset = ts_idx * 2; // 2 tag bits per column
-                let byte_idx = node_tag_start + (bit_offset / 8);
+                let byte_idx = bit_offset / 8;
                 let bit_pos = (bit_offset % 8) as u8;
-                if byte_idx < sink.tags.len() {
-                    let tag_val = (sink.tags[byte_idx] >> bit_pos) & 0b11;
+                if byte_idx < node_tags.len() {
+                    let tag_val = (node_tags[byte_idx] >> bit_pos) & 0b11;
                     if tag_val == 0 {
-                        sink.tags.truncate(node_tag_start);
-                        sink.bools.truncate(node_bool_start);
-                        sink.data.truncate(node_data_start);
                         *node_data_dropped = node_data_dropped.saturating_add(1);
                         *row_id = row_id.saturating_add(1);
                         return Ok(());
@@ -4872,13 +6191,10 @@ impl IngestContext {
                 .saturating_add(lens.bool_bytes)
                 .saturating_add(lens.data_bytes);
             if row_len > MAX_NODE_DATA_LEN {
-                sink.tags.truncate(node_tag_start);
-                sink.bools.truncate(node_bool_start);
-                sink.data.truncate(node_data_start);
                 *node_data_dropped = node_data_dropped.saturating_add(1);
                 batcher.push_empty_node(shard)?;
             } else {
-                batcher.push_node_row(shard, lens)?;
+                batcher.push_encoded_node(shard, lens, node_tags, node_bools, node_data)?;
             }
             // Record the grouping timestamp 1:1 with the node just pushed (both
             // the normal and oversized-empty paths emit a node). The two
@@ -4922,10 +6238,9 @@ impl IngestContext {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn build_temp_edge_partition(
+    fn build_temp_edge_batches<I>(
         table: &TableSpec,
-        resident: &ResidentFile,
-        partition: &EncodePartition,
+        batches: I,
         num_shards: usize,
         trimmed_strings: &std::sync::Arc<AtomicU64>,
         key_failures: &mut KeyFailureState,
@@ -4935,7 +6250,11 @@ impl IngestContext {
         dest_key_errors: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
         relation_defs: &[RelationDef],
         fk_edge_targets: &HashMap<String, FkEdgeTarget>,
-    ) -> Result<u64> {
+        source_budget: &Arc<crate::source_memory::ByteBudget>,
+    ) -> Result<u64>
+    where
+        I: IntoIterator<Item = Result<arrow_array::RecordBatch>>,
+    {
         let edge = table
             .edge_table
             .as_ref()
@@ -4955,7 +6274,6 @@ impl IngestContext {
             .unwrap_or(&dst_fk_col.ingested_dtype);
         let src_context = format!("edge_fk:{}.{}", table.name, edge.src_fk.edge_column);
         let dst_context = format!("edge_fk:{}.{}", table.name, edge.dst_fk.edge_column);
-        let schema = table_schema(table)?;
         let rel_name = std::sync::Arc::<str>::from(format!("edge_{}_src_to_dst", table.name));
         let buffer_limit = edge_batch_buffer_limit(num_shards);
         let mut batcher = EdgeSrcBatcher::new(
@@ -4964,6 +6282,7 @@ impl IngestContext {
             buffer_limit,
             std::sync::Arc::clone(senders),
             std::sync::Arc::clone(error),
+            Arc::clone(source_budget),
         );
         let mut edge_key_batcher = EdgeKeyBatcher::new(
             std::sync::Arc::<str>::from(table.name.clone()),
@@ -4971,9 +6290,14 @@ impl IngestContext {
             buffer_limit,
             std::sync::Arc::clone(dest_key_senders),
             std::sync::Arc::clone(dest_key_errors),
+            Arc::clone(source_budget),
         );
-        let mut sort_key_batchers =
-            build_sort_key_batchers_for_edge_table(table, relation_defs, num_shards)?;
+        let mut sort_key_batchers = build_sort_key_batchers_for_edge_table(
+            table,
+            relation_defs,
+            num_shards,
+            source_budget,
+        )?;
 
         let create_time_info = table.create_time.as_ref().and_then(|ct| {
             let idx = column_index(table, ct).ok()?;
@@ -4986,18 +6310,18 @@ impl IngestContext {
         let row_access_hints = build_row_access_hints(table);
         let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
         let mut access = RowAccess::new(row_access_hints, stats);
+        // Two variable-width key buffers plus their combined framed row retain
+        // at most allocator-rounded capacities across batches.
+        let edge_scratch_bytes = (MAX_VAR_KEY_LEN as u64)
+            .checked_mul(8)
+            .and_then(|bytes| bytes.checked_add(8))
+            .ok_or_else(|| anyhow!("edge row scratch memory size overflowed"))?;
+        let _edge_scratch_permit = source_budget.acquire(edge_scratch_bytes)?;
 
         macro_rules! process_edge_batch {
-            ($batch:expr, $cols:expr, $src_fast:expr, $dst_fast:expr, $src_key_buf:expr, $dst_key_buf:expr, $forward_row:expr) => {
+            ($batch:expr, $src_key_buf:expr, $dst_key_buf:expr, $forward_row:expr) => {
                 let timestamp_idx = create_time_info.as_ref().map(|(idx, _)| *idx);
                 let validity_array = timestamp_idx.map(|idx| access.array(idx).unwrap().clone());
-
-                let src_keys_pre = $src_fast
-                    .map(|kind| extract_batch_keys(&$cols[src_fk_idx], kind))
-                    .transpose()?;
-                let dst_keys_pre = $dst_fast
-                    .map(|kind| extract_batch_keys(&$cols[dst_fk_idx], kind))
-                    .transpose()?;
 
                 let create_time_col_idx = create_time_info.as_ref().map(|(idx, _)| *idx);
                 for row in 0..$batch.num_rows() {
@@ -5022,9 +6346,6 @@ impl IngestContext {
                         edge_dropped += 1;
                         continue;
                     }
-                    let src_key_pre = src_keys_pre.as_ref().and_then(|v| v[row].as_ref());
-                    let dst_key_pre = dst_keys_pre.as_ref().and_then(|v| v[row].as_ref());
-
                     Self::write_edge_row_from_access(
                         src_fk_idx,
                         dst_fk_idx,
@@ -5034,10 +6355,6 @@ impl IngestContext {
                         dst_target_type,
                         &src_context,
                         &dst_context,
-                        $cols,
-                        row,
-                        src_key_pre,
-                        dst_key_pre,
                         &mut access,
                         $src_key_buf,
                         $dst_key_buf,
@@ -5066,45 +6383,21 @@ impl IngestContext {
                         cols.push(batch.column(idx).clone());
                     }
                     access.set_cols(&cols);
-                    let src_fast = edge_fast_path_for_array(&cols[src_fk_idx], src_target_type);
-                    let dst_fast = edge_fast_path_for_array(&cols[dst_fk_idx], dst_target_type);
                     let mut src_key_buf = Vec::new();
                     let mut dst_key_buf = Vec::new();
                     let mut forward_row = Vec::new();
                     process_edge_batch!(
                         batch,
-                        &cols,
-                        src_fast,
-                        dst_fast,
                         &mut src_key_buf,
                         &mut dst_key_buf,
                         &mut forward_row
                     );
+                    access.set_cols(&[]);
                 }
             };
         }
 
-        match partition {
-            Some(row_groups) => {
-                let metadata = resident.parquet_metadata.as_ref().ok_or_else(|| {
-                    anyhow!("missing resident Parquet metadata for table {}", table.name)
-                })?;
-                let reader = ParquetRecordBatchReaderBuilder::new_with_metadata(
-                    resident.source.reader(false)?,
-                    metadata.clone(),
-                )
-                .with_row_groups(row_groups.clone())
-                .with_batch_size(NODE_BATCH_SIZE)
-                .build()?;
-                consume_edge_reader!(reader);
-            }
-            None => {
-                let reader = arrow_csv::ReaderBuilder::new(Arc::new(schema.clone()))
-                    .with_header(true)
-                    .build(resident.source.reader(true)?.get_read(0)?)?;
-                consume_edge_reader!(reader);
-            }
-        }
+        consume_edge_reader!(batches);
         batcher.flush_all(&mut sort_key_batchers)?;
         edge_key_batcher.flush_all()?;
         Ok(edge_dropped)
@@ -5120,10 +6413,6 @@ impl IngestContext {
         dst_target_type: &IngestedType,
         src_context: &str,
         dst_context: &str,
-        _cols: &[ArrayRef],
-        _row: usize,
-        src_key_pre: Option<&Key>,
-        dst_key_pre: Option<&Key>,
         access: &mut RowAccess<'_>,
         src_key_buf: &mut Vec<u8>,
         dst_key_buf: &mut Vec<u8>,
@@ -5137,19 +6426,7 @@ impl IngestContext {
     ) -> Result<()> {
         src_key_buf.clear();
         dst_key_buf.clear();
-        if let Some(key) = src_key_pre {
-            if write_key_to_buf(src_key_buf, key).is_err() {
-                record_key_parse_failure_sample(
-                    &mut key_failures.parse_failures,
-                    &mut key_failures.samples,
-                    &mut key_failures.by_context,
-                    src_context,
-                    sample_from_access(access, src_idx),
-                );
-                return Ok(());
-            }
-        } else if key_from_access_into_buf(access, src_idx, src_col, src_target_type, src_key_buf)
-            .is_err()
+        if key_from_access_into_buf(access, src_idx, src_col, src_target_type, src_key_buf).is_err()
         {
             record_key_parse_failure_sample(
                 &mut key_failures.parse_failures,
@@ -5161,19 +6438,7 @@ impl IngestContext {
             return Ok(());
         }
 
-        if let Some(key) = dst_key_pre {
-            if write_key_to_buf(dst_key_buf, key).is_err() {
-                record_key_parse_failure_sample(
-                    &mut key_failures.parse_failures,
-                    &mut key_failures.samples,
-                    &mut key_failures.by_context,
-                    dst_context,
-                    sample_from_access(access, dst_idx),
-                );
-                return Ok(());
-            }
-        } else if key_from_access_into_buf(access, dst_idx, dst_col, dst_target_type, dst_key_buf)
-            .is_err()
+        if key_from_access_into_buf(access, dst_idx, dst_col, dst_target_type, dst_key_buf).is_err()
         {
             record_key_parse_failure_sample(
                 &mut key_failures.parse_failures,
@@ -5211,6 +6476,9 @@ impl IngestContext {
 
     fn build_sharded_pk_maps(&mut self) -> Result<()> {
         let root = require_local_output(&self.target)?.to_path_buf();
+        self.pk_duplicate_counts.clear();
+        self.pk_duplicate_samples.clear();
+        self.pk_null_timestamp_drops.clear();
         let pk_map_budget = total_memory_bytes().map(|total| {
             let budget = (total as f64 * PK_MAP_MEM_BUDGET_FRAC) as u64;
             std::sync::Arc::new(MemoryBudget::new(budget))
@@ -6130,7 +7398,7 @@ impl IngestContext {
                 });
             }
         }
-        let pool = self.make_pool::<PkMapScratch>(IngestPhase::PkMap);
+        let pool = self.make_pool::<PkMapScratch>(self.pk_map_threads);
         let run_result = run_tasks(std::mem::take(&mut tasks), &pool);
         run_result?;
         for table in &self.source.tables {
@@ -6361,7 +7629,7 @@ impl IngestContext {
             });
         }
         drop(tx);
-        let pool = self.make_pool::<()>(IngestPhase::EdgesMap);
+        let pool = self.make_pool::<()>(self.edges_map_threads);
         run_tasks(tasks, &pool)?;
         let mut tables: HashMap<String, Vec<Option<PkHashShard>>> = HashMap::new();
         for (table_name, shard_count) in table_shard_counts {
@@ -6436,7 +7704,7 @@ impl IngestContext {
             });
         }
         drop(tx);
-        let pool = self.make_pool::<()>(IngestPhase::EdgesMap);
+        let pool = self.make_pool::<()>(self.edges_map_threads);
         run_tasks(tasks, &pool)?;
         let mut lookups = HashMap::with_capacity(self.relation_defs.len());
         for _ in 0..self.relation_defs.len() {
@@ -6456,8 +7724,12 @@ impl IngestContext {
     fn build_edges_mapped(&mut self, edge_ctx: &EdgeBuildContext) -> Result<()> {
         let root = &edge_ctx.root;
         self.edge_counts.clear();
+        self.edge_dst_degree_bits.clear();
+        self.edge_dst_nonzero_counts.clear();
+        self.pk_duplicate_drops.clear();
+        self.edge_null_timestamp_drops.clear();
 
-        let pool = self.make_pool::<EdgeMapScratch>(IngestPhase::EdgesMap);
+        let pool = self.make_pool::<EdgeMapScratch>(self.edges_map_threads);
         {
             #[derive(Default)]
             struct EdgeMapResult {
@@ -7171,6 +8443,13 @@ impl IngestContext {
             self.temp_edges_map_bytes = self
                 .temp_edges_map_bytes
                 .saturating_add(self.record_edge_stage_bytes("edges_map")?);
+            self.edge_dst_nonzero_counts = std::mem::take(&mut self.edge_dst_degree_bits)
+                .into_iter()
+                .map(|(relation, bits)| {
+                    let count = bits.iter().map(|byte| byte.count_ones() as u64).sum();
+                    (relation, count)
+                })
+                .collect();
             // Post-edges_map cleanup of inputs (edges_src/fkeys/fkeys_dst/edge_keys)
             // is now driven by `ingest_with_stats_from_source` after the edges_map
             // marker is written, so a crash mid-cleanup cannot leave the pipeline
@@ -7223,7 +8502,12 @@ impl IngestContext {
     /// in. Requires local output + already-built `shard_offsets`.
     fn run_ts_grouping(&self) -> Result<HashMap<String, crate::ts_grouping::StageGrouping>> {
         let mut out = HashMap::new();
-        if self.group_ts_counts.is_empty() {
+        if !self
+            .source
+            .tables
+            .iter()
+            .any(|table| table.group_by_timestamp)
+        {
             return Ok(out);
         }
         let root = match &*self.target {
@@ -7244,17 +8528,12 @@ impl IngestContext {
             // (zero nodes routed to it) contributes nothing.
             let mut shards = Vec::with_capacity(self.num_shards);
             for shard in 0..self.num_shards {
-                let key = (table.name.clone(), shard);
-                let Some(count_map) = self.group_ts_counts.get(&key) else {
-                    continue;
-                };
                 let spill_path = root.join(crate::ts_grouping::spill_rel_path(&table.name, shard));
                 if !spill_path.exists() {
                     continue;
                 }
                 shards.push(crate::ts_grouping::ShardSpill {
                     min_id: offsets.get(shard).copied().unwrap_or(0),
-                    count_map: count_map.clone(),
                     spill_path,
                 });
             }
@@ -7443,7 +8722,7 @@ impl IngestContext {
                         for p in &entries {
                             let p = p.clone();
                             s.spawn(move || {
-                                if let Err(e) = std::fs::remove_dir_all(&p) {
+                                if let Err(e) = remove_temp_entry(&p) {
                                     tracing::warn!(
                                         "cleanup_temp: failed to delete {}: {}",
                                         p.display(),
@@ -7700,7 +8979,7 @@ impl IngestContext {
                 }),
             });
         }
-        let pool = self.make_pool::<()>(IngestPhase::Index);
+        let pool = self.make_pool::<()>(self.index_threads);
         run_tasks(tasks, &pool)?;
         Ok(())
     }
@@ -7910,6 +9189,8 @@ impl IngestContext {
             pk_duplicate_total,
             pk_duplicate_samples: self.pk_duplicate_samples.clone(),
             dropped_rows_counts,
+            source_rows_by_table: self.logical_source_rows_by_table.clone(),
+            source_bytes_by_table: self.logical_arrow_source_bytes_by_table.clone(),
             trimmed_strings: if trimmed_strings > 0 {
                 Some(trimmed_strings)
             } else {
@@ -8013,11 +9294,12 @@ impl IngestContext {
             // For FK→PK, forward_count = unique src nodes (each src row → 0 or 1 edge)
             let num_src_nonzero = edge_count;
 
-            // Unique dst from bitvec popcount
+            // Unique destinations reduced from the EdgesMap bitvec before the
+            // phase snapshot is serialized.
             let num_dst_nonzero = self
-                .edge_dst_degree_bits
+                .edge_dst_nonzero_counts
                 .get(&rel.name_forward)
-                .map(|bits| bits.iter().map(|b| b.count_ones() as u64).sum::<u64>())
+                .copied()
                 .unwrap_or(0);
 
             let frac_src = if num_src_nodes > 0 {
@@ -8089,127 +9371,118 @@ impl IngestContext {
 /// Compute text sample stats during the context phase.
 /// Reads up to TEXT_SAMPLE_LIMIT rows from the first parquet file(s) for text columns.
 const TEXT_SAMPLE_LIMIT: usize = 10_000;
+const SOURCE_PREFIX_MAX_BYTES: usize = 64 * 1024 * 1024;
 
-fn compute_context_text_stats(
-    table: &crate::graph_config::TableSpec,
+/// Copy a bounded row prefix into compact Arrow buffers. `RecordBatch::slice`
+/// alone retains the complete source batch and defeats Encode-phase memory
+/// bounds when the sampled prefix is small.
+fn compact_record_batch_prefix(batch: &RecordBatch, rows: usize) -> Result<RecordBatch> {
+    if rows > batch.num_rows() {
+        return Err(anyhow!("source prefix row count exceeds its batch"));
+    }
+    let arrays = batch
+        .columns()
+        .iter()
+        .map(|array| {
+            let data = array.to_data();
+            let mut compact = MutableArrayData::new(vec![&data], false, rows);
+            compact.extend(0, 0, rows);
+            make_array(compact.freeze())
+        })
+        .collect();
+    Ok(RecordBatch::try_new(batch.schema(), arrays)?)
+}
+
+fn compact_prefix_with_budget(
+    batch: &RecordBatch,
+    max_rows: usize,
+    max_bytes: usize,
+) -> Result<Option<RecordBatch>> {
+    let max_rows = max_rows.min(batch.num_rows());
+    if max_rows == 0 || max_bytes == 0 {
+        return Ok(None);
+    }
+    let mut low = 1usize;
+    let mut high = max_rows;
+    let mut best_rows = None;
+    while low <= high {
+        let rows = low + (high - low) / 2;
+        let candidate_bytes = batch.columns().iter().try_fold(0usize, |total, array| {
+            array
+                .slice(0, rows)
+                .to_data()
+                .get_slice_memory_size()
+                .ok()
+                .and_then(|bytes| total.checked_add(bytes))
+        });
+        if candidate_bytes.is_some_and(|bytes| bytes <= max_bytes) {
+            best_rows = Some(rows);
+            low = rows.saturating_add(1);
+        } else {
+            high = rows.saturating_sub(1);
+        }
+    }
+    let Some(rows) = best_rows else {
+        return Ok(None);
+    };
+    let compact = compact_record_batch_prefix(batch, rows)?;
+    if compact.get_array_memory_size() > max_bytes {
+        return Ok(None);
+    }
+    Ok(Some(compact))
+}
+
+fn text_stats_from_prefix(
+    table: &TableSpec,
     semantic_types: &[SemanticType],
-    input_transfer: &Option<CloudTransfer>,
+    batches: &[SourceBatch],
 ) -> Result<HashMap<String, crate::col_stats::TextSampleStats>> {
-    // Find text column indices and names.
     let text_cols: Vec<(usize, &str)> = table
         .columns
         .iter()
-        .zip(semantic_types.iter())
+        .zip(semantic_types)
         .enumerate()
-        .filter(|(_, (_, stype))| **stype == SemanticType::Text)
-        .map(|(i, (col, _))| (i, col.name.as_str()))
+        .filter(|(_, (_, semantic_type))| **semantic_type == SemanticType::Text)
+        .map(|(index, (column, _))| (index, column.name.as_str()))
         .collect();
-
-    if text_cols.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    // Buffer: col_idx -> Vec<String>
-    let mut buffers: Vec<Vec<String>> = vec![Vec::new(); text_cols.len()];
-
-    // Decide how many files to read and rows per file:
-    //   1 file  → 10K from it
-    //   2 files → 5K each
-    //   3+ files → 4K, 3K, 3K
-    let all_paths = table.get_paths();
-    let num_files = all_paths.len();
-    let file_limits: Vec<(&str, usize)> = if num_files == 1 {
-        vec![(all_paths[0].as_str(), TEXT_SAMPLE_LIMIT)]
-    } else if num_files == 2 {
-        vec![
-            (all_paths[0].as_str(), 5_000),
-            (all_paths[1].as_str(), 5_000),
-        ]
-    } else {
-        vec![
-            (all_paths[0].as_str(), 4_000),
-            (all_paths[1].as_str(), 3_000),
-            (all_paths[2].as_str(), 3_000),
-        ]
-    };
-
-    for (path, row_limit) in &file_limits {
-        let mut rows_read = 0usize;
-        match table.format() {
-            TableFormat::Parquet => {
-                let pooled = if let Some(transfer) = input_transfer {
-                    if is_cloud_path(path) {
-                        Some(download_cloud_bytes(transfer, path)?)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-
-                macro_rules! read_batches {
-                    ($reader:expr) => {
-                        for batch in $reader {
-                            let batch = batch?;
-                            for (buf_idx, &(col_idx, _)) in text_cols.iter().enumerate() {
-                                let col_name = &table.columns[col_idx].name;
-                                let arr_idx = batch
-                                    .schema()
-                                    .index_of(col_name)
-                                    .context("missing column in batch")?;
-                                let array = batch.column(arr_idx);
-                                for row in 0..batch.num_rows() {
-                                    if rows_read + row >= *row_limit {
-                                        break;
-                                    }
-                                    if array.is_null(row) {
-                                        continue;
-                                    }
-                                    if let Some(s) =
-                                        array.as_any().downcast_ref::<arrow_array::StringArray>()
-                                    {
-                                        buffers[buf_idx].push(s.value(row).to_string());
-                                    } else if let Some(s) = array
-                                        .as_any()
-                                        .downcast_ref::<arrow_array::LargeStringArray>(
-                                    ) {
-                                        buffers[buf_idx].push(s.value(row).to_string());
-                                    }
-                                }
-                            }
-                            rows_read += batch.num_rows();
-                            if rows_read >= *row_limit {
-                                break;
-                            }
-                        }
-                    };
-                }
-
-                if let Some(pooled) = pooled {
-                    let bytes = pooled.bytes();
-                    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
-                    let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
-                    read_batches!(reader);
-                } else {
-                    let file = fs::File::open(path).with_context(|| format!("open {}", path))?;
-                    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-                    let reader = builder.with_batch_size(NODE_BATCH_SIZE).build()?;
-                    read_batches!(reader);
-                }
+    let mut samples: Vec<Vec<String>> = vec![Vec::new(); text_cols.len()];
+    for source_batch in batches {
+        let batch = &source_batch.batch;
+        for (sample_index, &(column_index, _)) in text_cols.iter().enumerate() {
+            if samples[sample_index].len() >= TEXT_SAMPLE_LIMIT {
+                continue;
             }
-            TableFormat::Csv => {
-                break;
+            let source_index = batch
+                .schema()
+                .index_of(&table.columns[column_index].name)
+                .context("missing text column in Encode prefix")?;
+            let array = batch.column(source_index);
+            for row in 0..batch.num_rows() {
+                if samples[sample_index].len() >= TEXT_SAMPLE_LIMIT {
+                    break;
+                }
+                if array.is_null(row) {
+                    continue;
+                }
+                if let Some(values) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
+                    samples[sample_index].push(values.value(row).to_owned());
+                } else if let Some(values) = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::LargeStringArray>()
+                {
+                    samples[sample_index].push(values.value(row).to_owned());
+                }
             }
         }
     }
-
-    // Compute text sample stats for each text column.
     let mut result = HashMap::new();
-    for (buf_idx, &(_, col_name)) in text_cols.iter().enumerate() {
-        let refs: Vec<&str> = buffers[buf_idx].iter().map(|s| s.as_str()).collect();
-        if !refs.is_empty() {
-            let stats = crate::col_stats::compute_text_sample_stats(&refs);
-            result.insert(col_name.to_string(), stats);
+    for (sample_index, &(_, column_name)) in text_cols.iter().enumerate() {
+        let values: Vec<&str> = samples[sample_index].iter().map(String::as_str).collect();
+        if !values.is_empty() {
+            result.insert(
+                column_name.to_owned(),
+                crate::col_stats::compute_text_sample_stats(&values),
+            );
         }
     }
     Ok(result)
@@ -8244,17 +9517,33 @@ fn phase_marker_exists(root: &Path, name: &str) -> bool {
     phase_marker_path(root, name).exists()
 }
 
-/// Write the phase marker atomically: tmp file + rename + best-effort dir fsync.
+/// Write the phase marker atomically after its payload is durable.
+#[cfg(test)]
 fn write_phase_marker(root: &Path, name: &str) -> Result<()> {
+    write_phase_marker_payload(root, name, b"")
+}
+
+fn write_phase_marker_payload(root: &Path, name: &str, payload: &[u8]) -> Result<()> {
     let final_path = phase_marker_path(root, name);
+    write_durable_file(&final_path, payload, "phase marker")
+}
+
+fn write_durable_file(final_path: &Path, payload: &[u8], description: &str) -> Result<()> {
     if let Some(parent) = final_path.parent() {
         fs::create_dir_all(parent)?;
     }
     let tmp_path = final_path.with_extension("inprogress");
-    fs::write(&tmp_path, b"")
-        .with_context(|| format!("write phase marker tmp: {}", tmp_path.display()))?;
-    fs::rename(&tmp_path, &final_path)
-        .with_context(|| format!("rename phase marker: {}", final_path.display()))?;
+    let mut marker = fs::File::create(&tmp_path)
+        .with_context(|| format!("create {description} tmp: {}", tmp_path.display()))?;
+    marker
+        .write_all(payload)
+        .with_context(|| format!("write {description} tmp: {}", tmp_path.display()))?;
+    marker
+        .sync_all()
+        .with_context(|| format!("sync {description} tmp: {}", tmp_path.display()))?;
+    drop(marker);
+    fs::rename(&tmp_path, final_path)
+        .with_context(|| format!("rename {description}: {}", final_path.display()))?;
     if let Some(parent) = final_path.parent() {
         let _ = fs::File::open(parent).and_then(|f| f.sync_all());
     }
@@ -8266,43 +9555,38 @@ fn write_phase_marker(root: &Path, name: &str) -> Result<()> {
 /// a prior crash — i.e. on the resume-target phase. Fresh ingests rely on the
 /// top-level output_dir wipe and never call this.
 ///
-/// `encode` is special-cased: it shares `_tmp/nodes/` with `context` (context
-/// writes `.ctx` files there). Encode's wipe must preserve `.ctx` files but
-/// remove all other files inside `_tmp/nodes/` (encode's `.bin`/`.meta`).
 fn wipe_phase_outputs(root: &Path, phase: &str) -> Result<()> {
     // Remove stale marker if present (we are re-running this phase).
     let _ = fs::remove_file(phase_marker_path(root, phase));
 
     match phase {
-        // Context has no exclusive outputs — its `.ctx` files live in
-        // `_tmp/nodes/<table>/shard-N/` which is shared with encode.
-        // If we ever resume "from context" we're effectively running
-        // from scratch; the top-level wipe (which fired because
-        // resume_from_phase == Context implies nothing valid on disk
-        // yet) is sufficient.
-        "context" => Ok(()),
-
-        // Encode shares `_tmp/nodes/` with context. Wipe all of encode's
-        // siblings wholesale; in `_tmp/nodes/`, remove everything except
-        // `*.ctx` (which belongs to context).
+        // Encode owns both the context and encoded outputs. A retry starts
+        // from offset zero, so no provisional context, encoded file, stats, or
+        // later-phase artifact may survive.
         "encode" => {
-            for d in [
-                "_tmp/fkeys",
-                "_tmp/fkeys_dst",
-                "_tmp/edge_keys",
-                "_tmp/edges_src",
-                "_tmp/sort_keys",
-            ] {
-                let p = root.join(d);
-                if p.exists() {
-                    fs::remove_dir_all(&p)
-                        .with_context(|| format!("wipe encode output: {}", p.display()))?;
+            for relative in [TEMP_DIR_NAME, "nodes", "kumo_col_stats"] {
+                let path = root.join(relative);
+                if path.exists() {
+                    fs::remove_dir_all(&path)
+                        .with_context(|| format!("wipe encode output: {}", path.display()))?;
                 }
             }
-            let nodes_root = root.join(TEMP_DIR_NAME).join("nodes");
-            if nodes_root.exists() {
-                wipe_dir_keep_ext(&nodes_root, "ctx")?;
+            for relative in [
+                "col_stats.json",
+                crate::col_stats_export::EDGE_STATS_FILENAME,
+                "ingest_stats.json",
+                "index_metadata.json",
+                "diskgraph_config.json",
+                crate::snapshot_mirror::MANIFEST_FILENAME,
+                crate::success_marker::SUCCESS_MARKER_FILENAME,
+            ] {
+                let path = root.join(relative);
+                if path.exists() {
+                    fs::remove_file(&path)
+                        .with_context(|| format!("wipe encode output: {}", path.display()))?;
+                }
             }
+            fs::create_dir_all(root.join(TEMP_DIR_NAME))?;
             Ok(())
         }
 
@@ -8310,6 +9594,13 @@ fn wipe_phase_outputs(root: &Path, phase: &str) -> Result<()> {
         // pk_hash-NNNNN.meta.json into nodes/<table>/. Preserve siblings
         // (node_data.ctx from context, shard-NNNNN/ from index).
         "pk_map" => {
+            for relative in [PK_MAP_STATE_PATH, EDGES_MAP_STATE_PATH] {
+                let state = root.join(relative);
+                if state.exists() {
+                    fs::remove_file(&state)
+                        .with_context(|| format!("remove {}", state.display()))?;
+                }
+            }
             let nodes = root.join("nodes");
             if nodes.is_dir() {
                 for entry in
@@ -8327,6 +9618,11 @@ fn wipe_phase_outputs(root: &Path, phase: &str) -> Result<()> {
         }
 
         "edges_map" => {
+            let state = root.join(EDGES_MAP_STATE_PATH);
+            if state.exists() {
+                fs::remove_file(&state)
+                    .with_context(|| format!("remove {}", state.display()))?;
+            }
             let p = root.join("_tmp/edges_map");
             if p.exists() {
                 fs::remove_dir_all(&p)
@@ -8385,6 +9681,13 @@ fn wipe_phase_outputs(root: &Path, phase: &str) -> Result<()> {
     }
 }
 
+/// Remove every provisional artifact owned by an incomplete Encode phase.
+/// The supervisor uses this after its final failed Encode attempt so a large
+/// partial ingest does not remain stranded without a resumable phase marker.
+pub fn discard_provisional_encode_outputs(root: &Path) -> Result<()> {
+    wipe_phase_outputs(root, "encode")
+}
+
 /// Remove regular files in `dir` whose names start with any of the given
 /// prefixes. Non-recursive; subdirs and non-matching files are left intact.
 fn wipe_files_with_prefixes(dir: &Path, prefixes: &[&str]) -> Result<()> {
@@ -8409,33 +9712,6 @@ fn wipe_files_with_prefixes(dir: &Path, prefixes: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Recursively walk `root`, removing every regular file whose extension is
-/// not `keep_ext`. Empty directories are left in place (they're cheap and
-/// the next phase recreates them on demand).
-fn wipe_dir_keep_ext(root: &Path, keep_ext: &str) -> Result<()> {
-    if !root.is_dir() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(root).with_context(|| format!("read_dir {}", root.display()))? {
-        let entry = entry?;
-        let path = entry.path();
-        let ft = entry.file_type()?;
-        if ft.is_dir() {
-            wipe_dir_keep_ext(&path, keep_ext)?;
-        } else if ft.is_file() || ft.is_symlink() {
-            let keep = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e == keep_ext)
-                .unwrap_or(false);
-            if !keep {
-                fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Run a single pipeline phase with marker semantics.
 ///
 /// `wipe_on_entry` should be true only when re-running a phase that may
@@ -8449,6 +9725,30 @@ fn run_phase_with_marker(
     profile_dir: Option<&Path>,
     f: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
+    run_phase_with_marker_payload(root, name, wipe_on_entry, profile_dir, b"", f)
+}
+
+fn run_phase_with_marker_payload(
+    root: &Path,
+    name: &str,
+    wipe_on_entry: bool,
+    profile_dir: Option<&Path>,
+    marker_payload: &[u8],
+    f: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    // Any phase rerun invalidates publication first. This also protects
+    // explicit later-phase resumes from leaving a stale success marker while
+    // index artifacts are being replaced.
+    for relative in [
+        crate::success_marker::SUCCESS_MARKER_FILENAME,
+        crate::snapshot_mirror::MANIFEST_FILENAME,
+    ] {
+        let path = root.join(relative);
+        if path.exists() {
+            fs::remove_file(&path)
+                .with_context(|| format!("invalidate publication marker {}", path.display()))?;
+        }
+    }
     if wipe_on_entry {
         wipe_phase_outputs(root, name)?;
     }
@@ -8457,7 +9757,47 @@ fn run_phase_with_marker(
     } else {
         f()?;
     }
-    write_phase_marker(root, name)?;
+    if name == "encode" {
+        sync_output_tree(root)?;
+    }
+    write_phase_marker_payload(root, name, marker_payload)?;
+    if name == "encode" {
+        remove_ephemeral_databricks_config()?;
+    }
+    Ok(())
+}
+
+fn remove_ephemeral_databricks_config() -> Result<()> {
+    let Some(path) = std::env::var_os(EPHEMERAL_DATABRICKS_CONFIG_ENV) else {
+        return Ok(());
+    };
+    remove_ephemeral_databricks_config_path(&PathBuf::from(path))
+}
+
+fn remove_ephemeral_databricks_config_path(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error)
+            .with_context(|| format!("remove ephemeral Databricks config: {}", path.display())),
+    }
+}
+
+fn sync_output_tree(path: &Path) -> Result<()> {
+    if path.is_dir() {
+        for entry in fs::read_dir(path).with_context(|| format!("read_dir {}", path.display()))? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                sync_output_tree(&entry.path())?;
+            } else if file_type.is_file() {
+                fs::File::open(entry.path())?.sync_all()?;
+            }
+        }
+        fs::File::open(path)?.sync_all()?;
+    } else if path.is_file() {
+        fs::File::open(path)?.sync_all()?;
+    }
     Ok(())
 }
 
@@ -8712,22 +10052,25 @@ fn open_temp_row_writer(target: &OutputTarget, rel_path: &str) -> Result<TempRow
     }
     let sink = target.sink(&path)?;
     Ok(TempRowWriter {
-        writer: FrameEncoder::new(sink),
+        // Temp writers remain open per active shard. The default frame block
+        // can retain multi-megabyte src/dst buffers per writer, so use the
+        // smallest frame block to keep aggregate writer state bounded.
+        writer: FrameEncoder::with_frame_info(
+            FrameInfo::new().block_size(BlockSize::Max64KB),
+            sink,
+        ),
         row_count: 0,
     })
 }
 
-fn open_sort_key_writer(target: &OutputTarget, rel_path: &str) -> Result<BufWriter<OutputSink>> {
+fn open_sort_key_writer(target: &OutputTarget, rel_path: &str) -> Result<OutputSink> {
     let path = target.join(rel_path);
     if let OutputTarget::Local { .. } = target {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
     }
-    Ok(BufWriter::with_capacity(
-        4 * 1024 * 1024,
-        target.sink(&path)?,
-    ))
+    target.sink(&path)
 }
 
 fn ensure_sort_key_file(target: &OutputTarget, rel_path: &str) -> Result<()> {
@@ -8739,10 +10082,7 @@ fn ensure_sort_key_file(target: &OutputTarget, rel_path: &str) -> Result<()> {
     }
     let mut writer = open_sort_key_writer(target, rel_path)?;
     writer.flush()?;
-    let sink = writer
-        .into_inner()
-        .map_err(|_| anyhow!("sort key flush failed"))?;
-    sink.finish()?;
+    writer.finish()?;
     Ok(())
 }
 
@@ -8758,17 +10098,14 @@ fn ensure_temp_file(target: &OutputTarget, rel_path: &str) -> Result<()> {
     Ok(())
 }
 
-fn open_fkey_bitmap_writer(target: &OutputTarget, rel_path: &str) -> Result<BufWriter<OutputSink>> {
+fn open_fkey_bitmap_writer(target: &OutputTarget, rel_path: &str) -> Result<OutputSink> {
     let path = target.join(rel_path);
     if let OutputTarget::Local { .. } = target {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
     }
-    Ok(BufWriter::with_capacity(
-        4 * 1024 * 1024,
-        target.sink(&path)?,
-    ))
+    target.sink(&path)
 }
 
 fn ensure_fkey_bitmap_file(target: &OutputTarget, rel_path: &str) -> Result<()> {
@@ -8780,10 +10117,7 @@ fn ensure_fkey_bitmap_file(target: &OutputTarget, rel_path: &str) -> Result<()> 
     }
     let mut writer = open_fkey_bitmap_writer(target, rel_path)?;
     writer.flush()?;
-    let sink = writer
-        .into_inner()
-        .map_err(|_| anyhow!("fkey bitmap flush failed"))?;
-    sink.finish()?;
+    writer.finish()?;
     Ok(())
 }
 
@@ -8838,27 +10172,6 @@ fn finish_temp_writer(writer: TempRowWriter) -> Result<u64> {
         .map_err(|e| anyhow!("temp writer finish failed: {e}"))?;
     sink.finish()?;
     Ok(writer.row_count)
-}
-
-fn append_temp_row(buf: &mut Vec<u8>, row: &[u8]) -> Result<()> {
-    let len = row.len() as u32;
-    buf.extend_from_slice(&len.to_le_bytes());
-    buf.extend_from_slice(row);
-    Ok(())
-}
-
-fn append_fkey_bit(bits: &mut Vec<u8>, row_idx: u64, present: bool) -> usize {
-    let byte_idx = (row_idx / 8) as usize;
-    let bit = (row_idx % 8) as u8;
-    let mut added = 0usize;
-    if bits.len() <= byte_idx {
-        bits.push(0);
-        added = 1;
-    }
-    if present {
-        bits[byte_idx] |= 1u8 << bit;
-    }
-    added
 }
 
 fn read_temp_rows(path: &Path, mut f: impl FnMut(&[u8]) -> Result<()>) -> Result<()> {
@@ -9104,10 +10417,127 @@ const EDGE_BATCH_MIN_BYTES: usize = 64 * 1024;
 const EDGE_BATCH_TARGET_BYTES: usize = 8 * 1024 * 1024;
 const EDGE_BATCH_MAX_BYTES: usize = 2 * 1024 * 1024;
 
+struct EncodeConcurrency {
+    maximum: usize,
+    active: std::sync::Mutex<usize>,
+    available: std::sync::Condvar,
+}
+
+struct EncodeConcurrencyPermit<'a>(&'a EncodeConcurrency);
+
+impl EncodeConcurrency {
+    fn new(maximum: usize) -> Arc<Self> {
+        Arc::new(Self {
+            maximum: maximum.max(1),
+            active: std::sync::Mutex::new(0),
+            available: std::sync::Condvar::new(),
+        })
+    }
+
+    fn acquire(&self) -> EncodeConcurrencyPermit<'_> {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        while *active >= self.maximum {
+            active = self
+                .available
+                .wait(active)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+        *active += 1;
+        EncodeConcurrencyPermit(self)
+    }
+}
+
+impl Drop for EncodeConcurrencyPermit<'_> {
+    fn drop(&mut self) {
+        let mut active = self
+            .0
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        *active = active.saturating_sub(1);
+        self.0.available.notify_one();
+    }
+}
+
 fn edge_batch_buffer_limit(num_shards: usize) -> usize {
     let per = EDGE_BATCH_TARGET_BYTES / num_shards.max(1);
     let per = per.max(EDGE_BATCH_MIN_BYTES);
     per.min(EDGE_BATCH_MAX_BYTES)
+}
+
+/// Conservatively reserve memory for persistent Encode writer state and cap
+/// the number of simultaneously retained output handles. Temp LZ4 writers use
+/// 64 KiB blocks; 160 KiB covers their src/dst/hash state and map overhead.
+fn source_writer_resource_reservation(
+    tables: &[TableSpec],
+    relationships: &[RelationshipRuntime],
+    relation_defs: &[RelationDef],
+    num_shards: usize,
+) -> Result<u64> {
+    const COMPRESSED_WRITER_STATE_BYTES: u64 = 160 * 1024;
+    const MAX_ENCODE_WRITER_HANDLES: u64 = 65_536;
+
+    let mut compressed_per_shard = 0u64;
+    let mut handles_per_shard = 0u64;
+    for table in tables {
+        let sort_components = relation_defs
+            .iter()
+            .filter_map(|relation| relation.sort_key.as_ref())
+            .map(|sort_key| {
+                u64::from(
+                    sort_key
+                        .timestamp
+                        .as_ref()
+                        .is_some_and(|component| component.table == table.name),
+                ) + u64::from(
+                    sort_key
+                        .weight
+                        .as_ref()
+                        .is_some_and(|component| component.table == table.name),
+                )
+            })
+            .sum::<u64>();
+        if table.edge_table.is_some() {
+            // Forward edge rows plus source/destination key streams.
+            compressed_per_shard = compressed_per_shard
+                .checked_add(3)
+                .ok_or_else(|| anyhow!("Encode writer count overflowed"))?;
+            handles_per_shard = handles_per_shard
+                .checked_add(3 + sort_components)
+                .ok_or_else(|| anyhow!("Encode writer handle count overflowed"))?;
+        } else {
+            let relation_count = relationships
+                .iter()
+                .filter(|relationship| relationship.src_table == table.name)
+                .count() as u64;
+            // Node + optional PK + forward FK and destination-key streams.
+            let compressed = 1 + u64::from(table.primary_key.is_some()) + 2 * relation_count;
+            compressed_per_shard = compressed_per_shard
+                .checked_add(compressed)
+                .ok_or_else(|| anyhow!("Encode writer count overflowed"))?;
+            // Add one FK bitmap handle per relationship and conservatively
+            // allow all three optional sidecar spill handles.
+            handles_per_shard = handles_per_shard
+                .checked_add(compressed + relation_count + sort_components + 3)
+                .ok_or_else(|| anyhow!("Encode writer handle count overflowed"))?;
+        }
+    }
+    let shard_count = num_shards as u64;
+    let handles = handles_per_shard
+        .checked_mul(shard_count)
+        .ok_or_else(|| anyhow!("Encode writer handle count overflowed"))?;
+    if handles > MAX_ENCODE_WRITER_HANDLES {
+        return Err(anyhow!(
+            "Encode requires {handles} persistent writer handles, exceeding the bounded limit of {MAX_ENCODE_WRITER_HANDLES}"
+        ));
+    }
+    compressed_per_shard
+        .checked_mul(shard_count)
+        .and_then(|writers| writers.checked_mul(COMPRESSED_WRITER_STATE_BYTES))
+        .ok_or_else(|| anyhow!("Encode writer memory reservation overflowed"))
 }
 
 fn edge_writer_workers() -> usize {
@@ -9383,7 +10813,10 @@ struct RowPackSegmentBatch {
 }
 
 enum NodeWriteMessage {
-    Batch(NodeWriteBatch),
+    Batch {
+        batch: NodeWriteBatch,
+        _permits: Vec<crate::source_memory::BytePermit>,
+    },
 }
 
 #[derive(Default)]
@@ -9392,10 +10825,6 @@ struct NodeWriterStats {
     pkey_rows: HashMap<(String, usize), u64>,
     fkey_rows: HashMap<(String, String, usize), u64>,
     node_data_max_len: HashMap<(String, usize), u32>,
-    // TT-NG timestamp grouping: per-(table,shard) distinct-timestamp → count.
-    // O(D) per shard. Empty unless grouping is enabled for the table. Used by
-    // the post-build merge to size buckets without a count pass.
-    group_ts_counts: HashMap<(String, usize), HashMap<i64, u64>>,
     // TT-NG binary-label sidecars: per-(table,shard) false/true/invalid counts.
     binary_label_counts: HashMap<(String, usize), crate::binary_label::LabelCounts>,
     // TT-NG row-weight sidecars: per-(table,shard) valid/invalid counts.
@@ -9420,13 +10849,6 @@ impl NodeWriterStats {
             let entry = self.node_data_max_len.entry(key).or_insert(0);
             *entry = (*entry).max(value);
         }
-        for (key, counts) in other.group_ts_counts {
-            let entry = self.group_ts_counts.entry(key).or_default();
-            for (ts, c) in counts {
-                let slot = entry.entry(ts).or_insert(0);
-                *slot = slot.saturating_add(c);
-            }
-        }
         for (key, counts) in other.binary_label_counts {
             let entry = self.binary_label_counts.entry(key).or_default();
             entry.false_count = entry.false_count.saturating_add(counts.false_count);
@@ -9444,13 +10866,13 @@ impl NodeWriterStats {
 }
 
 struct BitWriter {
-    writer: BufWriter<OutputSink>,
+    writer: OutputSink,
     buffer: u8,
     bits_used: u8,
 }
 
 impl BitWriter {
-    fn new(writer: BufWriter<OutputSink>) -> Self {
+    fn new(writer: OutputSink) -> Self {
         Self {
             writer,
             buffer: 0,
@@ -9462,6 +10884,16 @@ impl BitWriter {
         let mut bits_remaining = count;
         let mut byte_idx = 0;
         while bits_remaining > 0 {
+            if self.bits_used == 0 && bits_remaining >= 8 {
+                let full_bytes = usize::try_from(bits_remaining / 8)
+                    .unwrap_or(usize::MAX)
+                    .min(data.len().saturating_sub(byte_idx));
+                self.writer
+                    .write_all(&data[byte_idx..byte_idx + full_bytes])?;
+                byte_idx += full_bytes;
+                bits_remaining -= (full_bytes as u64) * 8;
+                continue;
+            }
             let byte = data[byte_idx];
             byte_idx += 1;
             let take = bits_remaining.min(8) as u8;
@@ -9512,11 +10944,7 @@ impl BitWriter {
             self.writer.write_all(&[self.buffer])?;
         }
         self.writer.flush()?;
-        let sink = self
-            .writer
-            .into_inner()
-            .map_err(|_| anyhow!("bit writer flush failed"))?;
-        sink.finish()?;
+        self.writer.finish()?;
         Ok(())
     }
 }
@@ -9539,7 +10967,11 @@ struct NodeWritePool {
 }
 
 impl NodeWritePool {
-    fn new(target: std::sync::Arc<OutputTarget>, workers: usize) -> Self {
+    fn new(
+        target: std::sync::Arc<OutputTarget>,
+        workers: usize,
+        concurrency: Arc<EncodeConcurrency>,
+    ) -> Self {
         let mut senders = Vec::with_capacity(workers);
         let mut handles = Vec::with_capacity(workers);
         let error = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -9548,8 +10980,9 @@ impl NodeWritePool {
                 std::sync::mpsc::sync_channel::<NodeWriteMessage>(EDGE_WRITE_QUEUE_DEPTH);
             let target = std::sync::Arc::clone(&target);
             let error = std::sync::Arc::clone(&error);
+            let concurrency = Arc::clone(&concurrency);
             handles.push(std::thread::spawn(move || {
-                match node_writer_worker(target, rx) {
+                match node_writer_worker(target, rx, concurrency) {
                     Ok(stats) => Ok(stats),
                     Err(err) => {
                         let mut guard = error.lock().unwrap_or_else(|e| e.into_inner());
@@ -9577,10 +11010,11 @@ impl NodeWritePool {
         std::sync::Arc::clone(&self.error)
     }
 
-    fn finish(self) -> Result<NodeWriterStats> {
-        drop(self.senders);
+    fn finish(mut self) -> Result<NodeWriterStats> {
+        let senders = std::mem::replace(&mut self.senders, Arc::new(Vec::new()));
+        drop(senders);
         let mut stats = NodeWriterStats::default();
-        for handle in self.handles {
+        for handle in self.handles.drain(..) {
             match handle.join() {
                 Ok(result) => {
                     stats.merge(result?);
@@ -9597,9 +11031,20 @@ impl NodeWritePool {
     }
 }
 
+impl Drop for NodeWritePool {
+    fn drop(&mut self) {
+        let senders = std::mem::replace(&mut self.senders, Arc::new(Vec::new()));
+        drop(senders);
+        for handle in self.handles.drain(..) {
+            let _ = handle.join();
+        }
+    }
+}
+
 fn node_writer_worker(
     target: std::sync::Arc<OutputTarget>,
     rx: std::sync::mpsc::Receiver<NodeWriteMessage>,
+    concurrency: Arc<EncodeConcurrency>,
 ) -> Result<NodeWriterStats> {
     let mut writers: HashMap<(std::sync::Arc<str>, usize), NodeShardWriter> = HashMap::new();
     let mut sort_key_writers: HashMap<
@@ -9615,8 +11060,9 @@ fn node_writer_worker(
         HashMap::new();
     let mut stats = NodeWriterStats::default();
     while let Ok(msg) = rx.recv() {
+        let _concurrency = concurrency.acquire();
         match msg {
-            NodeWriteMessage::Batch(batch) => {
+            NodeWriteMessage::Batch { batch, .. } => {
                 let key = (std::sync::Arc::clone(&batch.table), batch.shard);
                 let writer = match writers.get_mut(&key) {
                     Some(writer) => writer,
@@ -9673,9 +11119,10 @@ fn node_writer_worker(
                 let entry = stats.node_data_max_len.entry(max_key).or_insert(0);
                 *entry = (*entry).max(batch_max_len);
                 // TT-NG timestamp grouping: append this batch's per-node
-                // timestamps (node-write order) to the shard spill, and fold
-                // them into the per-shard count map. The spill's record order IS
-                // the node order, so the k-th record's node-id is min_id + k.
+                // timestamps (node-write order) to the shard spill. Counts are
+                // derived later in a bounded post-Encode pass. The spill's
+                // record order IS the node order, so the k-th record's node-id
+                // is min_id + k.
                 if let Some(group_ts) = &batch.group_ts {
                     debug_assert_eq!(
                         group_ts.len(),
@@ -9701,13 +11148,6 @@ fn node_writer_worker(
                         }
                     };
                     crate::ts_grouping::append_spill(spill, group_ts)?;
-                    let counts = stats
-                        .group_ts_counts
-                        .entry((batch.table.to_string(), batch.shard))
-                        .or_default();
-                    for ts in group_ts {
-                        *counts.entry(*ts).or_insert(0) += 1;
-                    }
                 }
                 if let Some(labels) = &batch.binary_labels {
                     debug_assert_eq!(
@@ -9832,11 +11272,7 @@ fn node_writer_worker(
     }
     for (_, mut writer) in sort_key_writers {
         writer.writer.flush()?;
-        let sink = writer
-            .writer
-            .into_inner()
-            .map_err(|_| anyhow!("sort key flush failed"))?;
-        sink.finish()?;
+        writer.writer.finish()?;
     }
     for (_, mut spill) in group_spills {
         spill.flush()?;
@@ -9851,21 +11287,28 @@ fn node_writer_worker(
 }
 
 struct NodeShardBuffer {
-    node: RowPackSegmentBatch,
-    pkey: Option<Vec<u8>>,
+    node: BudgetedRowPackSegment,
+    pkey: Option<BudgetedVec<u8>>,
     pkey_rows: u64,
-    fkeys: Vec<Vec<u8>>,
-    fkey_bits: Vec<Vec<u8>>,
+    fkeys: Vec<BudgetedVec<u8>>,
+    fkey_bits: Vec<BudgetedVec<u8>>,
     fkey_rows: Vec<u64>,
     bytes: usize,
     // TT-NG timestamp grouping: when `Some`, holds this shard's per-node
     // TIMESTAMP value, pushed 1:1 with `push_node_row`/`push_empty_node`, in
     // node-write order. `None` (default) = grouping disabled, zero overhead.
-    group_ts: Option<Vec<i64>>,
+    group_ts: Option<BudgetedVec<i64>>,
     // TT-NG binary label sidecars: one label byte per node row in write order.
-    binary_labels: Option<Vec<u8>>,
+    binary_labels: Option<BudgetedVec<u8>>,
     // TT-NG row-weight sidecars: one f64 per node row in write order.
-    sample_weights: Option<Vec<f64>>,
+    sample_weights: Option<BudgetedVec<f64>>,
+}
+
+struct BudgetedRowPackSegment {
+    tags: BudgetedVec<u8>,
+    bools: BudgetedVec<u8>,
+    data: BudgetedVec<u8>,
+    rows: BudgetedVec<RowPackRowLens>,
 }
 
 struct NodeBatcher {
@@ -9882,12 +11325,6 @@ struct NodeBatcher {
     sample_weight_enabled: bool,
 }
 
-struct NodeRowSink<'a> {
-    tags: &'a mut Vec<u8>,
-    bools: &'a mut Vec<u8>,
-    data: &'a mut Vec<u8>,
-}
-
 impl NodeBatcher {
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -9898,6 +11335,7 @@ impl NodeBatcher {
         buffer_limit: usize,
         senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<NodeWriteMessage>>>,
         error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+        source_budget: Arc<crate::source_memory::ByteBudget>,
         group_by_timestamp: bool,
         binary_label_enabled: bool,
         sample_weight_enabled: bool,
@@ -9905,30 +11343,38 @@ impl NodeBatcher {
         let table_hash = hash_name(&table);
         let buffers = (0..num_shards)
             .map(|_| NodeShardBuffer {
-                node: RowPackSegmentBatch {
-                    tags: Vec::new(),
-                    bools: Vec::new(),
-                    data: Vec::new(),
-                    rows: Vec::new(),
+                node: BudgetedRowPackSegment {
+                    tags: BudgetedVec::new(Arc::clone(&source_budget)),
+                    bools: BudgetedVec::new(Arc::clone(&source_budget)),
+                    data: BudgetedVec::new(Arc::clone(&source_budget)),
+                    rows: BudgetedVec::new(Arc::clone(&source_budget)),
                 },
-                pkey: if has_pkey { Some(Vec::new()) } else { None },
+                pkey: if has_pkey {
+                    Some(BudgetedVec::new(Arc::clone(&source_budget)))
+                } else {
+                    None
+                },
                 pkey_rows: 0,
-                fkeys: vec![Vec::new(); rel_names.len()],
-                fkey_bits: vec![Vec::new(); rel_names.len()],
+                fkeys: (0..rel_names.len())
+                    .map(|_| BudgetedVec::new(Arc::clone(&source_budget)))
+                    .collect(),
+                fkey_bits: (0..rel_names.len())
+                    .map(|_| BudgetedVec::new(Arc::clone(&source_budget)))
+                    .collect(),
                 fkey_rows: vec![0; rel_names.len()],
                 bytes: 0,
                 group_ts: if group_by_timestamp {
-                    Some(Vec::new())
+                    Some(BudgetedVec::new(Arc::clone(&source_budget)))
                 } else {
                     None
                 },
                 binary_labels: if binary_label_enabled {
-                    Some(Vec::new())
+                    Some(BudgetedVec::new(Arc::clone(&source_budget)))
                 } else {
                     None
                 },
                 sample_weights: if sample_weight_enabled {
-                    Some(Vec::new())
+                    Some(BudgetedVec::new(Arc::clone(&source_budget)))
                 } else {
                     None
                 },
@@ -9961,7 +11407,7 @@ impl NodeBatcher {
             .get_mut(shard)
             .ok_or_else(|| anyhow!("node buffer shard {} out of bounds", shard))?;
         if let Some(group_ts) = buffer.group_ts.as_mut() {
-            group_ts.push(ts);
+            group_ts.push(ts)?;
         }
         Ok(())
     }
@@ -9975,7 +11421,7 @@ impl NodeBatcher {
             .get_mut(shard)
             .ok_or_else(|| anyhow!("node buffer shard {} out of bounds", shard))?;
         if let Some(labels) = buffer.binary_labels.as_mut() {
-            labels.push(label);
+            labels.push(label)?;
         }
         Ok(())
     }
@@ -9989,24 +11435,19 @@ impl NodeBatcher {
             .get_mut(shard)
             .ok_or_else(|| anyhow!("node buffer shard {} out of bounds", shard))?;
         if let Some(weights) = buffer.sample_weights.as_mut() {
-            weights.push(weight);
+            weights.push(weight)?;
         }
         Ok(())
     }
 
-    fn node_sink(&mut self, shard: usize) -> Result<NodeRowSink<'_>> {
-        let buffer = self
-            .buffers
-            .get_mut(shard)
-            .ok_or_else(|| anyhow!("node buffer shard {} out of bounds", shard))?;
-        Ok(NodeRowSink {
-            tags: &mut buffer.node.tags,
-            bools: &mut buffer.node.bools,
-            data: &mut buffer.node.data,
-        })
-    }
-
-    fn push_node_row(&mut self, shard: usize, lens: RowPackRowLens) -> Result<()> {
+    fn push_encoded_node(
+        &mut self,
+        shard: usize,
+        lens: RowPackRowLens,
+        tags: &[u8],
+        bools: &[u8],
+        data: &[u8],
+    ) -> Result<()> {
         let buffer = self
             .buffers
             .get_mut(shard)
@@ -10016,19 +11457,33 @@ impl NodeBatcher {
             .saturating_add(lens.bool_bytes)
             .saturating_add(lens.data_bytes);
         let _ = u16::try_from(row_len).map_err(|_| anyhow!("temp row too large"))?;
-        buffer.node.rows.push(lens);
+        if tags.len() != lens.tag_bytes
+            || bools.len() != lens.bool_bytes
+            || data.len() != lens.data_bytes
+        {
+            return Err(anyhow!(
+                "rowpack encoded buffer lengths do not match row metadata"
+            ));
+        }
+        buffer.node.tags.extend_from_slice(tags)?;
+        buffer.node.bools.extend_from_slice(bools)?;
+        buffer.node.data.extend_from_slice(data)?;
+        buffer.node.rows.push(lens)?;
         buffer.bytes = buffer.bytes.saturating_add(2 + row_len);
         Ok(())
     }
 
     fn push_empty_node(&mut self, shard: usize) -> Result<()> {
-        self.push_node_row(
+        self.push_encoded_node(
             shard,
             RowPackRowLens {
                 tag_bytes: 0,
                 bool_bytes: 0,
                 data_bytes: 0,
             },
+            &[],
+            &[],
+            &[],
         )
     }
 
@@ -10039,9 +11494,9 @@ impl NodeBatcher {
             .ok_or_else(|| anyhow!("pkey buffer shard {} out of bounds", shard))?;
         if let Some(pkey) = buffer.pkey.as_mut() {
             let total_len = (row.len() + 1) as u32;
-            pkey.extend_from_slice(&total_len.to_le_bytes());
-            pkey.extend_from_slice(row);
-            pkey.push(if timestamp_valid { 1 } else { 0 });
+            pkey.extend_from_slice(&total_len.to_le_bytes())?;
+            pkey.extend_from_slice(row)?;
+            pkey.push(if timestamp_valid { 1 } else { 0 })?;
             buffer.pkey_rows = buffer.pkey_rows.saturating_add(1);
             buffer.bytes = buffer.bytes.saturating_add(4 + row.len() + 1);
         }
@@ -10061,12 +11516,25 @@ impl NodeBatcher {
             .ok_or_else(|| anyhow!("fkey buffer shard {} out of bounds", shard))?;
         if let Some(fkey) = buffer.fkeys.get_mut(rel_idx) {
             let row_idx = buffer.fkey_rows.get(rel_idx).copied().unwrap_or(0);
-            append_temp_row(fkey, row)?;
+            let len = u32::try_from(row.len()).map_err(|_| anyhow!("temp row too large"))?;
+            fkey.extend_from_slice(&len.to_le_bytes())?;
+            fkey.extend_from_slice(row)?;
             if let Some(count) = buffer.fkey_rows.get_mut(rel_idx) {
                 *count = count.saturating_add(1);
             }
             if let Some(bits) = buffer.fkey_bits.get_mut(rel_idx) {
-                let added = append_fkey_bit(bits, row_idx, timestamp_valid);
+                let byte_idx = (row_idx / 8) as usize;
+                let bit = (row_idx % 8) as u8;
+                let mut added = 0usize;
+                if bits.len() <= byte_idx {
+                    bits.push(0)?;
+                    added = 1;
+                }
+                if timestamp_valid {
+                    *bits
+                        .get_mut(byte_idx)
+                        .ok_or_else(|| anyhow!("missing fkey validity byte"))? |= 1u8 << bit;
+                }
                 buffer.bytes = buffer.bytes.saturating_add(added);
             }
             buffer.bytes = buffer.bytes.saturating_add(4 + row.len());
@@ -10081,12 +11549,17 @@ impl NodeBatcher {
             .ok_or_else(|| anyhow!("fkey buffer shard {} out of bounds", shard))?;
         if let Some(fkey) = buffer.fkeys.get_mut(rel_idx) {
             let row_idx = buffer.fkey_rows.get(rel_idx).copied().unwrap_or(0);
-            append_temp_row(fkey, &[])?;
+            fkey.extend_from_slice(&0u32.to_le_bytes())?;
             if let Some(count) = buffer.fkey_rows.get_mut(rel_idx) {
                 *count = count.saturating_add(1);
             }
             if let Some(bits) = buffer.fkey_bits.get_mut(rel_idx) {
-                let added = append_fkey_bit(bits, row_idx, false);
+                let byte_idx = (row_idx / 8) as usize;
+                let mut added = 0usize;
+                if bits.len() <= byte_idx {
+                    bits.push(0)?;
+                    added = 1;
+                }
                 buffer.bytes = buffer.bytes.saturating_add(added);
             }
             buffer.bytes = buffer.bytes.saturating_add(4);
@@ -10103,7 +11576,11 @@ impl NodeBatcher {
             .buffers
             .get(shard)
             .ok_or_else(|| anyhow!("node buffer shard {} out of bounds", shard))?;
-        if buffer.bytes >= self.buffer_limit {
+        let sort_key_bytes = sort_key_batchers
+            .iter()
+            .map(|batcher| batcher.buffered_bytes(shard))
+            .sum::<usize>();
+        if buffer.bytes.saturating_add(sort_key_bytes) >= self.buffer_limit {
             self.flush_shard(shard, sort_key_batchers)?;
         }
         Ok(())
@@ -10129,38 +11606,58 @@ impl NodeBatcher {
         {
             return Ok(());
         }
-        let mut node = RowPackSegmentBatch {
-            tags: Vec::with_capacity(buffer.node.tags.capacity()),
-            bools: Vec::with_capacity(buffer.node.bools.capacity()),
-            data: Vec::with_capacity(buffer.node.data.capacity()),
-            rows: Vec::with_capacity(buffer.node.rows.capacity()),
+        let (tags, mut permits) = buffer.node.tags.take();
+        let (bools, bool_permits) = buffer.node.bools.take();
+        permits.extend(bool_permits);
+        let (data, data_permits) = buffer.node.data.take();
+        permits.extend(data_permits);
+        let (rows, row_permits) = buffer.node.rows.take();
+        permits.extend(row_permits);
+        let node = RowPackSegmentBatch {
+            tags,
+            bools,
+            data,
+            rows,
         };
-        std::mem::swap(&mut node, &mut buffer.node);
-        let pkey = buffer.pkey.as_mut().map(|src| {
-            let mut data = Vec::with_capacity(src.capacity());
-            std::mem::swap(&mut data, src);
-            data
-        });
+        let pkey = if let Some(src) = buffer.pkey.as_mut() {
+            let (data, pkey_permits) = src.take();
+            permits.extend(pkey_permits);
+            Some(data)
+        } else {
+            None
+        };
         let pkey_rows = buffer.pkey_rows;
         let mut fkeys = Vec::with_capacity(buffer.fkeys.len());
-        for mut entry in buffer.fkeys.drain(..) {
-            let mut data = Vec::with_capacity(entry.capacity());
-            std::mem::swap(&mut data, &mut entry);
+        for entry in &mut buffer.fkeys {
+            let (data, entry_permits) = entry.take();
+            permits.extend(entry_permits);
             fkeys.push(data);
         }
         let mut fkey_bits = Vec::with_capacity(buffer.fkey_bits.len());
-        for mut entry in buffer.fkey_bits.drain(..) {
-            let mut data = Vec::with_capacity(entry.capacity());
-            std::mem::swap(&mut data, &mut entry);
+        for entry in &mut buffer.fkey_bits {
+            let (data, entry_permits) = entry.take();
+            permits.extend(entry_permits);
             fkey_bits.push(data);
         }
         let fkey_rows = buffer.fkey_rows.clone();
         // Drain this shard's grouping timestamps (node-write order) into the
         // batch, leaving an empty Vec to keep accumulating. `None` when
         // grouping is disabled.
-        let group_ts = buffer.group_ts.as_mut().map(std::mem::take);
-        let binary_labels = buffer.binary_labels.as_mut().map(std::mem::take);
-        let sample_weights = buffer.sample_weights.as_mut().map(std::mem::take);
+        let group_ts = buffer.group_ts.as_mut().map(|values| {
+            let (data, value_permits) = values.take();
+            permits.extend(value_permits);
+            data
+        });
+        let binary_labels = buffer.binary_labels.as_mut().map(|values| {
+            let (data, value_permits) = values.take();
+            permits.extend(value_permits);
+            data
+        });
+        let sample_weights = buffer.sample_weights.as_mut().map(|values| {
+            let (data, value_permits) = values.take();
+            permits.extend(value_permits);
+            data
+        });
         // Drain sort key data for this shard and bundle into the batch.
         let mut sort_keys = Vec::new();
         for sk in sort_key_batchers.iter_mut() {
@@ -10183,15 +11680,15 @@ impl NodeBatcher {
             binary_labels,
             sample_weights,
         };
-        buffer.node.rows.clear();
         buffer.pkey_rows = 0;
-        buffer.fkey_rows = vec![0; self.rel_names.len()];
-        buffer.fkeys = vec![Vec::new(); self.rel_names.len()];
-        buffer.fkey_bits = vec![Vec::new(); self.rel_names.len()];
+        buffer.fkey_rows.fill(0);
         buffer.bytes = 0;
         let idx = edge_writer_index(self.table_hash, shard, self.senders.len());
         self.senders[idx]
-            .send(NodeWriteMessage::Batch(batch))
+            .send(NodeWriteMessage::Batch {
+                batch,
+                _permits: permits,
+            })
             .map_err(|e| {
                 if let Ok(guard) = self.error.lock() {
                     if let Some(message) = guard.as_ref() {
@@ -10219,6 +11716,7 @@ struct SortKeyWriteBatch {
     data: Vec<u8>,
     row_count: u64,
     width_bytes: usize,
+    _permits: Vec<crate::source_memory::BytePermit>,
 }
 
 /// Write a single sort key batch to the appropriate shard writer, creating it
@@ -10257,7 +11755,7 @@ fn write_sort_key_batch(
 }
 
 struct SortKeyShardWriter {
-    writer: BufWriter<OutputSink>,
+    writer: OutputSink,
     width_bytes: usize,
 }
 
@@ -10266,7 +11764,7 @@ struct SortKeyComponentBatcher {
     kind: SortKeyComponentKind,
     width_bytes: u8,
     encoder: SortKeyComponentEncoder,
-    buffers: Vec<Vec<u8>>,
+    buffers: Vec<BudgetedVec<u8>>,
     rows: Vec<u64>,
 }
 
@@ -10277,13 +11775,16 @@ impl SortKeyComponentBatcher {
         width_bytes: u8,
         encoder: SortKeyComponentEncoder,
         num_shards: usize,
+        source_budget: Arc<crate::source_memory::ByteBudget>,
     ) -> Self {
         Self {
             rel,
             kind,
             width_bytes,
             encoder,
-            buffers: vec![Vec::new(); num_shards],
+            buffers: (0..num_shards)
+                .map(|_| BudgetedVec::new(Arc::clone(&source_budget)))
+                .collect(),
             rows: vec![0; num_shards],
         }
     }
@@ -10315,11 +11816,16 @@ impl SortKeyComponentBatcher {
             .buffers
             .get_mut(shard)
             .ok_or_else(|| anyhow!("sort key buffer shard {} out of bounds", shard))?;
-        push_u64_width(buffer, value, self.width_bytes);
+        let bytes = value.to_le_bytes();
+        buffer.extend_from_slice(&bytes[..self.width_bytes as usize])?;
         if let Some(row_count) = self.rows.get_mut(shard) {
             *row_count = row_count.saturating_add(1);
         }
         Ok(())
+    }
+
+    fn buffered_bytes(&self, shard: usize) -> usize {
+        self.buffers.get(shard).map(BudgetedVec::len).unwrap_or(0)
     }
 
     /// Drain the buffer for a shard, returning a `SortKeyWriteBatch` if there
@@ -10337,8 +11843,7 @@ impl SortKeyComponentBatcher {
         if *rows == 0 {
             return Ok(None);
         }
-        let mut data = Vec::with_capacity(buffer.capacity());
-        std::mem::swap(&mut data, buffer);
+        let (data, permits) = buffer.take();
         let batch = SortKeyWriteBatch {
             rel: std::sync::Arc::clone(&self.rel),
             kind: self.kind,
@@ -10346,6 +11851,7 @@ impl SortKeyComponentBatcher {
             data,
             row_count: *rows,
             width_bytes: self.width_bytes as usize,
+            _permits: permits,
         };
         *rows = 0;
         Ok(Some(batch))
@@ -10361,7 +11867,10 @@ struct EdgeSrcWriteBatch {
 }
 
 enum EdgeSrcWriteMessage {
-    Batch(EdgeSrcWriteBatch),
+    Batch {
+        batch: EdgeSrcWriteBatch,
+        _permits: Vec<crate::source_memory::BytePermit>,
+    },
 }
 
 #[derive(Default)]
@@ -10385,7 +11894,11 @@ struct EdgeSrcWritePool {
 }
 
 impl EdgeSrcWritePool {
-    fn new(target: std::sync::Arc<OutputTarget>, workers: usize) -> Self {
+    fn new(
+        target: std::sync::Arc<OutputTarget>,
+        workers: usize,
+        concurrency: Arc<EncodeConcurrency>,
+    ) -> Self {
         let mut senders = Vec::with_capacity(workers);
         let mut handles = Vec::with_capacity(workers);
         let error = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -10394,8 +11907,9 @@ impl EdgeSrcWritePool {
                 std::sync::mpsc::sync_channel::<EdgeSrcWriteMessage>(EDGE_WRITE_QUEUE_DEPTH);
             let target = std::sync::Arc::clone(&target);
             let error = std::sync::Arc::clone(&error);
+            let concurrency = Arc::clone(&concurrency);
             handles.push(std::thread::spawn(move || {
-                match edge_src_writer_worker(target, rx) {
+                match edge_src_writer_worker(target, rx, concurrency) {
                     Ok(stats) => Ok(stats),
                     Err(err) => {
                         let mut guard = error.lock().unwrap_or_else(|e| e.into_inner());
@@ -10423,10 +11937,11 @@ impl EdgeSrcWritePool {
         std::sync::Arc::clone(&self.error)
     }
 
-    fn finish(self) -> Result<EdgeSrcWriterStats> {
-        drop(self.senders);
+    fn finish(mut self) -> Result<EdgeSrcWriterStats> {
+        let senders = std::mem::replace(&mut self.senders, Arc::new(Vec::new()));
+        drop(senders);
         let mut stats = EdgeSrcWriterStats::default();
-        for handle in self.handles {
+        for handle in self.handles.drain(..) {
             match handle.join() {
                 Ok(result) => {
                     stats.merge(result?);
@@ -10443,9 +11958,20 @@ impl EdgeSrcWritePool {
     }
 }
 
+impl Drop for EdgeSrcWritePool {
+    fn drop(&mut self) {
+        let senders = std::mem::replace(&mut self.senders, Arc::new(Vec::new()));
+        drop(senders);
+        for handle in self.handles.drain(..) {
+            let _ = handle.join();
+        }
+    }
+}
+
 fn edge_src_writer_worker(
     target: std::sync::Arc<OutputTarget>,
     rx: std::sync::mpsc::Receiver<EdgeSrcWriteMessage>,
+    concurrency: Arc<EncodeConcurrency>,
 ) -> Result<EdgeSrcWriterStats> {
     let mut writers: HashMap<(std::sync::Arc<str>, usize), TempRowWriter> = HashMap::new();
     let mut sort_key_writers: HashMap<
@@ -10454,8 +11980,9 @@ fn edge_src_writer_worker(
     > = HashMap::new();
     let mut stats = EdgeSrcWriterStats::default();
     while let Ok(msg) = rx.recv() {
+        let _concurrency = concurrency.acquire();
         match msg {
-            EdgeSrcWriteMessage::Batch(batch) => {
+            EdgeSrcWriteMessage::Batch { batch, .. } => {
                 let key = (std::sync::Arc::clone(&batch.rel), batch.shard);
                 let writer = match writers.get_mut(&key) {
                     Some(writer) => writer,
@@ -10488,11 +12015,7 @@ fn edge_src_writer_worker(
     }
     for (_, mut writer) in sort_key_writers {
         writer.writer.flush()?;
-        let sink = writer
-            .writer
-            .into_inner()
-            .map_err(|_| anyhow!("sort key flush failed"))?;
-        sink.finish()?;
+        writer.writer.finish()?;
     }
     Ok(stats)
 }
@@ -10504,6 +12027,7 @@ enum DestKeyWriteMessage {
         shard: usize,
         data: Vec<u8>,
         row_count: u64,
+        _permits: Vec<crate::source_memory::BytePermit>,
     },
     EdgeKey {
         edge_table: std::sync::Arc<str>,
@@ -10511,6 +12035,7 @@ enum DestKeyWriteMessage {
         shard: usize,
         data: Vec<u8>,
         row_count: u64,
+        _permits: Vec<crate::source_memory::BytePermit>,
     },
 }
 
@@ -10540,7 +12065,11 @@ struct DestKeyWritePool {
 }
 
 impl DestKeyWritePool {
-    fn new(target: std::sync::Arc<OutputTarget>, workers: usize) -> Self {
+    fn new(
+        target: std::sync::Arc<OutputTarget>,
+        workers: usize,
+        concurrency: Arc<EncodeConcurrency>,
+    ) -> Self {
         let mut senders = Vec::with_capacity(workers);
         let mut handles = Vec::with_capacity(workers);
         let error = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -10549,8 +12078,9 @@ impl DestKeyWritePool {
                 std::sync::mpsc::sync_channel::<DestKeyWriteMessage>(EDGE_WRITE_QUEUE_DEPTH);
             let target = std::sync::Arc::clone(&target);
             let error = std::sync::Arc::clone(&error);
+            let concurrency = Arc::clone(&concurrency);
             handles.push(std::thread::spawn(move || {
-                match dest_key_writer_worker(target, rx) {
+                match dest_key_writer_worker(target, rx, concurrency) {
                     Ok(stats) => Ok(stats),
                     Err(err) => {
                         let mut guard = error.lock().unwrap_or_else(|e| e.into_inner());
@@ -10578,10 +12108,11 @@ impl DestKeyWritePool {
         std::sync::Arc::clone(&self.error)
     }
 
-    fn finish(self) -> Result<DestKeyWriterStats> {
-        drop(self.senders);
+    fn finish(mut self) -> Result<DestKeyWriterStats> {
+        let senders = std::mem::replace(&mut self.senders, Arc::new(Vec::new()));
+        drop(senders);
         let mut stats = DestKeyWriterStats::default();
-        for handle in self.handles {
+        for handle in self.handles.drain(..) {
             match handle.join() {
                 Ok(result) => {
                     stats.merge(result?);
@@ -10598,9 +12129,20 @@ impl DestKeyWritePool {
     }
 }
 
+impl Drop for DestKeyWritePool {
+    fn drop(&mut self) {
+        let senders = std::mem::replace(&mut self.senders, Arc::new(Vec::new()));
+        drop(senders);
+        for handle in self.handles.drain(..) {
+            let _ = handle.join();
+        }
+    }
+}
+
 fn dest_key_writer_worker(
     target: std::sync::Arc<OutputTarget>,
     rx: std::sync::mpsc::Receiver<DestKeyWriteMessage>,
+    concurrency: Arc<EncodeConcurrency>,
 ) -> Result<DestKeyWriterStats> {
     let mut node_writers: HashMap<
         (std::sync::Arc<str>, std::sync::Arc<str>, usize),
@@ -10610,6 +12152,7 @@ fn dest_key_writer_worker(
         HashMap::new();
     let mut stats = DestKeyWriterStats::default();
     while let Ok(msg) = rx.recv() {
+        let _concurrency = concurrency.acquire();
         match msg {
             DestKeyWriteMessage::NodeFkey {
                 table,
@@ -10617,6 +12160,7 @@ fn dest_key_writer_worker(
                 shard,
                 data,
                 row_count,
+                ..
             } => {
                 let key = (
                     std::sync::Arc::clone(&table),
@@ -10649,6 +12193,7 @@ fn dest_key_writer_worker(
                 shard,
                 data,
                 row_count,
+                ..
             } => {
                 let key = (std::sync::Arc::clone(&edge_table), kind, shard);
                 let writer = match edge_writers.get_mut(&key) {
@@ -10683,7 +12228,7 @@ fn dest_key_writer_worker(
 }
 
 struct EdgeSrcBuffer {
-    data: Vec<u8>,
+    data: BudgetedVec<u8>,
     row_count: u64,
 }
 
@@ -10703,11 +12248,12 @@ impl EdgeSrcBatcher {
         buffer_limit: usize,
         senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<EdgeSrcWriteMessage>>>,
         error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+        source_budget: Arc<crate::source_memory::ByteBudget>,
     ) -> Self {
         let rel_hash = hash_name(&rel);
         let buffers = (0..num_shards)
             .map(|_| EdgeSrcBuffer {
-                data: Vec::new(),
+                data: BudgetedVec::new(Arc::clone(&source_budget)),
                 row_count: 0,
             })
             .collect();
@@ -10733,11 +12279,15 @@ impl EdgeSrcBatcher {
             .get_mut(shard)
             .ok_or_else(|| anyhow!("edge src buffer shard {} out of bounds", shard))?;
         let total_len = (row.len() + 1) as u32;
-        buffer.data.extend_from_slice(&total_len.to_le_bytes());
-        buffer.data.extend_from_slice(row);
-        buffer.data.push(if timestamp_valid { 1 } else { 0 });
+        buffer.data.extend_from_slice(&total_len.to_le_bytes())?;
+        buffer.data.extend_from_slice(row)?;
+        buffer.data.push(if timestamp_valid { 1 } else { 0 })?;
         buffer.row_count = buffer.row_count.saturating_add(1);
-        if buffer.data.len() >= self.buffer_limit {
+        let sort_key_bytes = sort_key_batchers
+            .iter()
+            .map(|batcher| batcher.buffered_bytes(shard))
+            .sum::<usize>();
+        if buffer.data.len().saturating_add(sort_key_bytes) >= self.buffer_limit {
             self.flush_shard(shard, sort_key_batchers)?;
         }
         Ok(())
@@ -10760,8 +12310,7 @@ impl EdgeSrcBatcher {
         if buffer.row_count == 0 {
             return Ok(());
         }
-        let mut data = Vec::with_capacity(buffer.data.capacity());
-        std::mem::swap(&mut data, &mut buffer.data);
+        let (data, permits) = buffer.data.take();
         // Drain sort key data for this shard and bundle into the batch.
         let mut sort_keys = Vec::new();
         for sk in sort_key_batchers.iter_mut() {
@@ -10779,7 +12328,10 @@ impl EdgeSrcBatcher {
         buffer.row_count = 0;
         let idx = edge_writer_index(self.rel_hash, shard, self.senders.len());
         self.senders[idx]
-            .send(EdgeSrcWriteMessage::Batch(batch))
+            .send(EdgeSrcWriteMessage::Batch {
+                batch,
+                _permits: permits,
+            })
             .map_err(|e| {
                 if let Ok(guard) = self.error.lock() {
                     if let Some(message) = guard.as_ref() {
@@ -10800,7 +12352,7 @@ impl EdgeSrcBatcher {
 }
 
 struct DestFkeyBuffer {
-    data: Vec<u8>,
+    data: BudgetedVec<u8>,
     row_count: u64,
 }
 
@@ -10827,6 +12379,7 @@ impl DestFkeyBatcher {
         buffer_limit: usize,
         senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<DestKeyWriteMessage>>>,
         error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+        source_budget: Arc<crate::source_memory::ByteBudget>,
     ) -> Self {
         let table_hash = hash_name(&table);
         let buffers = (0..num_shards)
@@ -10834,7 +12387,7 @@ impl DestFkeyBatcher {
                 fkeys: rel_names
                     .iter()
                     .map(|_| DestFkeyBuffer {
-                        data: Vec::new(),
+                        data: BudgetedVec::new(Arc::clone(&source_budget)),
                         row_count: 0,
                     })
                     .collect(),
@@ -10861,7 +12414,9 @@ impl DestFkeyBatcher {
             .fkeys
             .get_mut(rel_idx)
             .ok_or_else(|| anyhow!("dest fkey rel {} out of bounds", rel_idx))?;
-        append_temp_row(&mut fkey.data, row)?;
+        let len = u32::try_from(row.len()).map_err(|_| anyhow!("temp row too large"))?;
+        fkey.data.extend_from_slice(&len.to_le_bytes())?;
+        fkey.data.extend_from_slice(row)?;
         fkey.row_count = fkey.row_count.saturating_add(1);
         buffer.bytes = buffer.bytes.saturating_add(4 + row.len());
         if buffer.bytes >= self.buffer_limit {
@@ -10887,8 +12442,7 @@ impl DestFkeyBatcher {
             if entry.row_count == 0 {
                 continue;
             }
-            let mut data = Vec::with_capacity(entry.data.capacity());
-            std::mem::swap(&mut data, &mut entry.data);
+            let (data, permits) = entry.data.take();
             let rel = self
                 .rel_names
                 .get(rel_idx)
@@ -10900,6 +12454,7 @@ impl DestFkeyBatcher {
                 shard,
                 data,
                 row_count: entry.row_count,
+                _permits: permits,
             };
             entry.row_count = 0;
             let idx = edge_writer_index(self.table_hash, shard, self.senders.len());
@@ -10920,7 +12475,7 @@ impl DestFkeyBatcher {
 }
 
 struct EdgeKeyBuffer {
-    data: Vec<u8>,
+    data: BudgetedVec<u8>,
     row_count: u64,
 }
 
@@ -10941,17 +12496,18 @@ impl EdgeKeyBatcher {
         buffer_limit: usize,
         senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<DestKeyWriteMessage>>>,
         error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+        source_budget: Arc<crate::source_memory::ByteBudget>,
     ) -> Self {
         let edge_hash = hash_name(&edge_table);
         let buffers_src = (0..num_shards)
             .map(|_| EdgeKeyBuffer {
-                data: Vec::new(),
+                data: BudgetedVec::new(Arc::clone(&source_budget)),
                 row_count: 0,
             })
             .collect();
         let buffers_dst = (0..num_shards)
             .map(|_| EdgeKeyBuffer {
-                data: Vec::new(),
+                data: BudgetedVec::new(Arc::clone(&source_budget)),
                 row_count: 0,
             })
             .collect();
@@ -10982,7 +12538,9 @@ impl EdgeKeyBatcher {
         let buffer = buffers
             .get_mut(shard)
             .ok_or_else(|| anyhow!("edge key buffer shard {} out of bounds", shard))?;
-        append_temp_row(&mut buffer.data, row)?;
+        let len = u32::try_from(row.len()).map_err(|_| anyhow!("temp row too large"))?;
+        buffer.data.extend_from_slice(&len.to_le_bytes())?;
+        buffer.data.extend_from_slice(row)?;
         buffer.row_count = buffer.row_count.saturating_add(1);
         if buffer.data.len() >= self.buffer_limit {
             self.flush_shard(kind, shard)?;
@@ -11006,14 +12564,14 @@ impl EdgeKeyBatcher {
         if buffer.row_count == 0 {
             return Ok(());
         }
-        let mut data = Vec::with_capacity(buffer.data.capacity());
-        std::mem::swap(&mut data, &mut buffer.data);
+        let (data, permits) = buffer.data.take();
         let batch = DestKeyWriteMessage::EdgeKey {
             edge_table: std::sync::Arc::clone(&self.edge_table),
             kind,
             shard,
             data,
             row_count: buffer.row_count,
+            _permits: permits,
         };
         buffer.row_count = 0;
         let idx = edge_writer_index(self.edge_hash, shard, self.senders.len());
@@ -11048,21 +12606,6 @@ fn table_by_name<'a>(source: &'a GraphConfig, name: &str) -> Result<&'a TableSpe
         .ok_or_else(|| anyhow!("table {} not found", name))
 }
 
-fn sum_input_bytes(source: &GraphConfig) -> u64 {
-    let mut total = 0u64;
-    for table in &source.tables {
-        for path in table.get_paths() {
-            if is_cloud_path(path) {
-                continue;
-            }
-            if let Ok(meta) = fs::metadata(path) {
-                total = total.saturating_add(meta.len());
-            }
-        }
-    }
-    total
-}
-
 fn sum_dir_bytes(path: &Path) -> Result<u64> {
     let mut total = 0u64;
     if path.is_file() {
@@ -11078,6 +12621,21 @@ fn sum_dir_bytes(path: &Path) -> Result<u64> {
                 total = total.saturating_add(meta.len());
             }
         }
+    }
+    Ok(total)
+}
+
+fn sum_published_dir_bytes(root: &Path) -> Result<u64> {
+    let mut total = 0u64;
+    if !root.is_dir() {
+        return sum_dir_bytes(root);
+    }
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        if entry.file_name() == TEMP_DIR_NAME {
+            continue;
+        }
+        total = total.saturating_add(sum_dir_bytes(&entry.path())?);
     }
     Ok(total)
 }
@@ -11446,12 +13004,6 @@ impl<S: Default + Send + 'static> TaskPool<S> {
         }
         Ok(())
     }
-
-    fn submit(&self, item: WorkItem<S>) -> Result<()> {
-        self.sender
-            .send(PoolMessage::Task(PoolTask { item, done: None }))
-            .map_err(|e| anyhow!("task queue error: {e}"))
-    }
 }
 
 impl<S> Drop for TaskPool<S> {
@@ -11515,9 +13067,9 @@ fn column_index(table: &TableSpec, name: &str) -> Result<usize> {
 
 // ─── FK-free LP resolution-mode helpers (S3) ────────────────────────────────
 //
-// Per-partition runtime spec for one resolution column, built at the start of
-// `build_temp_node_partition` from `IngestContext.resolve_columns`. The encode
-// worker resolves the source column's PK reference value(s) to graph node-ids
+// Runtime spec for one resolution column, built at the start of
+// `build_temp_node_batches` from `IngestContext.resolve_columns`. The Encode
+// consumer resolves the source column's PK reference value(s) to graph node-ids
 // (via the shared `RefResolver`) and feeds the result into the encoder through
 // a dedicated override channel — NO FK edge / no temp-edge push.
 /// Resolution column role, driving the encode-time orphan-drop rule.
@@ -12657,6 +14209,95 @@ fn table_schema(table: &TableSpec) -> Result<Schema> {
     Ok(Schema::new(fields))
 }
 
+fn validate_source_schema(
+    table: &TableSpec,
+    schema: &Schema,
+    synthetic_columns: &HashSet<String>,
+) -> Result<()> {
+    for column in &table.columns {
+        if synthetic_columns.contains(&column.name) {
+            continue;
+        }
+        let field_index = schema.index_of(&column.name).map_err(|_| {
+            anyhow!(
+                "table {} source schema is missing column '{}'",
+                table.name, column.name
+            )
+        })?;
+        let actual = schema.field(field_index).data_type();
+        if *actual == DataType::Null {
+            return Err(anyhow!(
+                "table {} column '{}' has Null data type in the source schema",
+                table.name,
+                column.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_source_batch_values(
+    table: &TableSpec,
+    batch: &RecordBatch,
+    synthetic_columns: &HashSet<String>,
+) -> Result<()> {
+    for column in &table.columns {
+        if synthetic_columns.contains(&column.name)
+            || column.ingested_dtype != IngestedType::Int64
+        {
+            continue;
+        }
+        let field_index = batch.schema().index_of(&column.name).map_err(|_| {
+            anyhow!(
+                "table {} source batch is missing column '{}'",
+                table.name,
+                column.name
+            )
+        })?;
+        let array = batch.column(field_index);
+        match array.data_type() {
+            DataType::Decimal128(_, scale) if *scale == 0 => {
+                let values = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal128Array>()
+                    .ok_or_else(|| anyhow!("decimal128 array cast failed"))?;
+                for row in 0..values.len() {
+                    if !values.is_null(row) && i64::try_from(values.value(row)).is_err() {
+                        return Err(PublicIngestError::new(format!(
+                            "table {} column '{}' contains a scale-zero decimal value outside \
+                             Kumo's signed 64-bit integer range; cast the column to DOUBLE or \
+                             STRING in Custom SQL, or keep its values within the signed 64-bit \
+                             range",
+                            table.name, column.name,
+                        ))
+                        .into());
+                    }
+                }
+            }
+            DataType::Decimal256(_, scale) if *scale == 0 => {
+                let values = array
+                    .as_any()
+                    .downcast_ref::<arrow_array::Decimal256Array>()
+                    .ok_or_else(|| anyhow!("decimal256 array cast failed"))?;
+                for row in 0..values.len() {
+                    if !values.is_null(row) && values.value(row).to_i64().is_none() {
+                        return Err(PublicIngestError::new(format!(
+                            "table {} column '{}' contains a scale-zero decimal value outside \
+                             Kumo's signed 64-bit integer range; cast the column to DOUBLE or \
+                             STRING in Custom SQL, or keep its values within the signed 64-bit \
+                             range",
+                            table.name, column.name,
+                        ))
+                        .into());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn rowpack_config_for_table(
     source_cfg: Option<&RowPackConfig>,
     table: &TableSpec,
@@ -12743,148 +14384,6 @@ fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackCo
     Ok(columns)
 }
 
-fn validate_parquet_column_types(
-    schema: &Schema,
-    columns: &[ColumnSpec],
-    file_path: &str,
-) -> Result<()> {
-    for col in columns {
-        if let Ok(idx) = schema.index_of(&col.name) {
-            if *schema.field(idx).data_type() == DataType::Null {
-                anyhow::bail!(
-                    "column '{}' in '{}' has Null data type (entire column is null). \
-                     This typically happens when Pandas writes a shard where the column \
-                     is entirely empty. Ensure all shards have properly typed columns.",
-                    col.name,
-                    file_path,
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-struct PrecomputedKeys {
-    shards: Vec<Option<usize>>,
-    keys: Option<Vec<Option<Key>>>,
-}
-
-fn precompute_shards(
-    pk_array: Option<&ArrayRef>,
-    pk_col: Option<&ColumnSpec>,
-    num_shards: usize,
-) -> Option<PrecomputedKeys> {
-    if num_shards <= 1 {
-        return None;
-    }
-    let array = pk_array?;
-    let pk_col = pk_col?;
-    let len = array.len();
-
-    match (array.data_type(), &pk_col.ingested_dtype) {
-        (DataType::Int64, IngestedType::Int64) => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::Int64Array>()
-                .unwrap();
-            let mut shards = Vec::with_capacity(len);
-            for i in 0..len {
-                if arr.is_null(i) {
-                    shards.push(None);
-                } else {
-                    let val = arr.value(i) as u64;
-                    let mut hasher = GxHasher::with_seed(GXHASH_SHARD_SEED as i64);
-                    hasher.write(&val.to_le_bytes());
-                    shards.push(Some((hasher.finish() as usize) % num_shards));
-                }
-            }
-            Some(PrecomputedKeys { shards, keys: None })
-        }
-        (DataType::Int64, IngestedType::Int32) => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::Int64Array>()
-                .unwrap();
-            let mut shards = Vec::with_capacity(len);
-            let mut keys = Vec::with_capacity(len);
-            for i in 0..len {
-                if arr.is_null(i) {
-                    shards.push(None);
-                    keys.push(None);
-                } else {
-                    let val = arr.value(i) as i32 as u64;
-                    let mut hasher = GxHasher::with_seed(GXHASH_SHARD_SEED as i64);
-                    hasher.write(&val.to_le_bytes());
-                    shards.push(Some((hasher.finish() as usize) % num_shards));
-                    keys.push(Some(Key::Int(val)));
-                }
-            }
-            Some(PrecomputedKeys {
-                shards,
-                keys: Some(keys),
-            })
-        }
-        (DataType::Utf8 | DataType::LargeUtf8, IngestedType::Uuid) => {
-            let mut shards = Vec::with_capacity(len);
-            let mut keys = Vec::with_capacity(len);
-            for i in 0..len {
-                if array.is_null(i) {
-                    shards.push(None);
-                    keys.push(None);
-                } else {
-                    let text = read_utf8(array, i).ok()?;
-                    let uuid = parse_uuid_string(text.as_bytes()).ok()?;
-                    let mut hasher = GxHasher::with_seed(GXHASH_SHARD_SEED as i64);
-                    hasher.write(&uuid);
-                    shards.push(Some((hasher.finish() as usize) % num_shards));
-                    keys.push(Some(Key::Uuid(uuid)));
-                }
-            }
-            Some(PrecomputedKeys {
-                shards,
-                keys: Some(keys),
-            })
-        }
-        (DataType::FixedSizeBinary(16), IngestedType::Uuid | IngestedType::Ip) => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
-                .unwrap();
-            let mut shards = Vec::with_capacity(len);
-            for i in 0..len {
-                if arr.is_null(i) {
-                    shards.push(None);
-                } else {
-                    let val = arr.value(i);
-                    let mut hasher = GxHasher::with_seed(GXHASH_SHARD_SEED as i64);
-                    hasher.write(val);
-                    shards.push(Some((hasher.finish() as usize) % num_shards));
-                }
-            }
-            Some(PrecomputedKeys { shards, keys: None })
-        }
-        (DataType::FixedSizeBinary(32), IngestedType::Uuid256) => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
-                .unwrap();
-            let mut shards = Vec::with_capacity(len);
-            for i in 0..len {
-                if arr.is_null(i) {
-                    shards.push(None);
-                } else {
-                    let val = arr.value(i);
-                    let mut hasher = GxHasher::with_seed(GXHASH_SHARD_SEED as i64);
-                    hasher.write(val);
-                    shards.push(Some((hasher.finish() as usize) % num_shards));
-                }
-            }
-            Some(PrecomputedKeys { shards, keys: None })
-        }
-        _ => None,
-    }
-}
-
 fn shard_for_key(bytes: &[u8], num_shards: usize) -> usize {
     if num_shards <= 1 {
         return 0;
@@ -12892,396 +14391,6 @@ fn shard_for_key(bytes: &[u8], num_shards: usize) -> usize {
     let mut hasher = GxHasher::with_seed(GXHASH_SHARD_SEED as i64);
     hasher.write(bytes);
     (hasher.finish() as usize) % num_shards
-}
-
-#[derive(Clone, Copy)]
-enum EdgeKeyFastKind {
-    Int64,
-    Int32,
-    Int16,
-    Int8,
-    UInt64,
-    UInt32,
-    UInt16,
-    UInt8,
-    Int64ToInt32,
-    StringToInt64,
-    StringVar,
-    BytesVar,
-    StringUuid,
-    BytesUuid,
-    StringUuid256,
-    BytesUuid256,
-    StringIp,
-    BytesIp,
-}
-
-fn edge_fast_path_for_array(
-    array: &ArrayRef,
-    target_type: &IngestedType,
-) -> Option<EdgeKeyFastKind> {
-    match (array.data_type(), target_type) {
-        (DataType::Int64, IngestedType::Int64) => Some(EdgeKeyFastKind::Int64),
-        (DataType::Int32, IngestedType::Int32) => Some(EdgeKeyFastKind::Int32),
-        (DataType::Int16, IngestedType::Int16) => Some(EdgeKeyFastKind::Int16),
-        (DataType::Int8, IngestedType::Int8) => Some(EdgeKeyFastKind::Int8),
-        (DataType::UInt64, IngestedType::UInt64) => Some(EdgeKeyFastKind::UInt64),
-        (DataType::UInt32, IngestedType::UInt32) => Some(EdgeKeyFastKind::UInt32),
-        (DataType::UInt16, IngestedType::UInt16) => Some(EdgeKeyFastKind::UInt16),
-        (DataType::UInt8, IngestedType::UInt8) => Some(EdgeKeyFastKind::UInt8),
-        (DataType::Int64, IngestedType::Int32) => Some(EdgeKeyFastKind::Int64ToInt32),
-        (DataType::Utf8 | DataType::LargeUtf8, IngestedType::Int64) => {
-            Some(EdgeKeyFastKind::StringToInt64)
-        }
-        (DataType::Utf8 | DataType::LargeUtf8, IngestedType::String) => {
-            Some(EdgeKeyFastKind::StringVar)
-        }
-        (
-            DataType::Binary | DataType::LargeBinary | DataType::FixedSizeBinary(_),
-            IngestedType::Bytes,
-        ) => Some(EdgeKeyFastKind::BytesVar),
-        (DataType::Utf8 | DataType::LargeUtf8, IngestedType::Uuid) => {
-            Some(EdgeKeyFastKind::StringUuid)
-        }
-        (
-            DataType::Binary | DataType::LargeBinary | DataType::FixedSizeBinary(_),
-            IngestedType::Uuid,
-        ) => Some(EdgeKeyFastKind::BytesUuid),
-        (DataType::Utf8 | DataType::LargeUtf8, IngestedType::Uuid256) => {
-            Some(EdgeKeyFastKind::StringUuid256)
-        }
-        (
-            DataType::Binary | DataType::LargeBinary | DataType::FixedSizeBinary(_),
-            IngestedType::Uuid256,
-        ) => Some(EdgeKeyFastKind::BytesUuid256),
-        (DataType::Utf8 | DataType::LargeUtf8, IngestedType::Ip) => Some(EdgeKeyFastKind::StringIp),
-        (
-            DataType::Binary | DataType::LargeBinary | DataType::FixedSizeBinary(_),
-            IngestedType::Ip,
-        ) => Some(EdgeKeyFastKind::BytesIp),
-        _ => None,
-    }
-}
-
-fn extract_batch_keys(array: &ArrayRef, kind: EdgeKeyFastKind) -> Result<Vec<Option<Key>>> {
-    let len = array.len();
-    let mut out = Vec::with_capacity(len);
-    match kind {
-        EdgeKeyFastKind::Int64 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::Int64Array>()
-                .unwrap();
-            for i in 0..len {
-                if arr.is_null(i) {
-                    out.push(None);
-                } else {
-                    out.push(Some(Key::Int(arr.value(i) as u64)));
-                }
-            }
-        }
-        EdgeKeyFastKind::Int32 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::Int32Array>()
-                .unwrap();
-            for i in 0..len {
-                if arr.is_null(i) {
-                    out.push(None);
-                } else {
-                    out.push(Some(Key::Int(arr.value(i) as u64)));
-                }
-            }
-        }
-        EdgeKeyFastKind::Int16 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::Int16Array>()
-                .unwrap();
-            for i in 0..len {
-                if arr.is_null(i) {
-                    out.push(None);
-                } else {
-                    out.push(Some(Key::Int(arr.value(i) as u64)));
-                }
-            }
-        }
-        EdgeKeyFastKind::Int8 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::Int8Array>()
-                .unwrap();
-            for i in 0..len {
-                if arr.is_null(i) {
-                    out.push(None);
-                } else {
-                    out.push(Some(Key::Int(arr.value(i) as u64)));
-                }
-            }
-        }
-        EdgeKeyFastKind::UInt64 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::UInt64Array>()
-                .unwrap();
-            for i in 0..len {
-                if arr.is_null(i) {
-                    out.push(None);
-                } else {
-                    out.push(Some(Key::Int(arr.value(i))));
-                }
-            }
-        }
-        EdgeKeyFastKind::UInt32 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::UInt32Array>()
-                .unwrap();
-            for i in 0..len {
-                if arr.is_null(i) {
-                    out.push(None);
-                } else {
-                    out.push(Some(Key::Int(arr.value(i) as u64)));
-                }
-            }
-        }
-        EdgeKeyFastKind::UInt16 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::UInt16Array>()
-                .unwrap();
-            for i in 0..len {
-                if arr.is_null(i) {
-                    out.push(None);
-                } else {
-                    out.push(Some(Key::Int(arr.value(i) as u64)));
-                }
-            }
-        }
-        EdgeKeyFastKind::UInt8 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::UInt8Array>()
-                .unwrap();
-            for i in 0..len {
-                if arr.is_null(i) {
-                    out.push(None);
-                } else {
-                    out.push(Some(Key::Int(arr.value(i) as u64)));
-                }
-            }
-        }
-        EdgeKeyFastKind::Int64ToInt32 => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<arrow_array::Int64Array>()
-                .unwrap();
-            for i in 0..len {
-                if arr.is_null(i) {
-                    out.push(None);
-                } else {
-                    out.push(Some(Key::Int(arr.value(i) as i32 as u64)));
-                }
-            }
-        }
-        EdgeKeyFastKind::StringToInt64 => {
-            for i in 0..len {
-                if array.is_null(i) {
-                    out.push(None);
-                } else {
-                    let res = (|| -> Result<u64> {
-                        let text = fast_string_value(array, i)?;
-                        let v = parse_base10_bytes(text.as_bytes())?;
-                        Ok(v)
-                    })();
-                    match res {
-                        Ok(v) => out.push(Some(Key::Int(v))),
-                        Err(_) => out.push(None),
-                    }
-                }
-            }
-        }
-        EdgeKeyFastKind::StringVar => {
-            for i in 0..len {
-                if array.is_null(i) {
-                    out.push(None);
-                } else {
-                    let res = (|| -> Result<Vec<u8>> {
-                        let data = fast_string_value(array, i)?.as_bytes();
-                        if data.len() > MAX_VAR_KEY_LEN {
-                            return Err(anyhow!("key too large"));
-                        }
-                        Ok(data.to_vec())
-                    })();
-                    match res {
-                        Ok(v) => out.push(Some(Key::Bytes(v))),
-                        Err(_) => out.push(None),
-                    }
-                }
-            }
-        }
-        EdgeKeyFastKind::BytesVar => {
-            for i in 0..len {
-                if array.is_null(i) {
-                    out.push(None);
-                } else {
-                    let res = (|| -> Result<Vec<u8>> {
-                        let data = fast_bytes_value(array, i)?;
-                        if data.len() > MAX_VAR_KEY_LEN {
-                            return Err(anyhow!("key too large"));
-                        }
-                        Ok(data.to_vec())
-                    })();
-                    match res {
-                        Ok(v) => out.push(Some(Key::Bytes(v))),
-                        Err(_) => out.push(None),
-                    }
-                }
-            }
-        }
-        EdgeKeyFastKind::StringUuid => {
-            for i in 0..len {
-                if array.is_null(i) {
-                    out.push(None);
-                } else {
-                    let res = (|| -> Result<[u8; 16]> {
-                        let text = fast_string_value(array, i)?;
-                        let uuid = parse_uuid_string(text.as_bytes())?;
-                        Ok(uuid)
-                    })();
-                    match res {
-                        Ok(v) => out.push(Some(Key::Uuid(v))),
-                        Err(_) => out.push(None),
-                    }
-                }
-            }
-        }
-        EdgeKeyFastKind::BytesUuid => {
-            for i in 0..len {
-                if array.is_null(i) {
-                    out.push(None);
-                } else {
-                    let res = (|| -> Result<[u8; 16]> {
-                        let data = fast_bytes_value(array, i)?;
-                        if data.len() != 16 {
-                            return Err(anyhow!("length mismatch"));
-                        }
-                        let mut buf = [0u8; 16];
-                        buf.copy_from_slice(data);
-                        Ok(buf)
-                    })();
-                    match res {
-                        Ok(v) => out.push(Some(Key::Uuid(v))),
-                        Err(_) => out.push(None),
-                    }
-                }
-            }
-        }
-        EdgeKeyFastKind::StringUuid256 => {
-            for i in 0..len {
-                if array.is_null(i) {
-                    out.push(None);
-                } else {
-                    let res = (|| -> Result<[u8; 32]> {
-                        let text = fast_string_value(array, i)?;
-                        let uuid = parse_uuid256_string(text.as_bytes())?;
-                        Ok(uuid)
-                    })();
-                    match res {
-                        Ok(v) => out.push(Some(Key::Uuid256(v))),
-                        Err(_) => out.push(None),
-                    }
-                }
-            }
-        }
-        EdgeKeyFastKind::BytesUuid256 => {
-            for i in 0..len {
-                if array.is_null(i) {
-                    out.push(None);
-                } else {
-                    let res = (|| -> Result<[u8; 32]> {
-                        let data = fast_bytes_value(array, i)?;
-                        if data.len() != 32 {
-                            return Err(anyhow!("length mismatch"));
-                        }
-                        let mut buf = [0u8; 32];
-                        buf.copy_from_slice(data);
-                        Ok(buf)
-                    })();
-                    match res {
-                        Ok(v) => out.push(Some(Key::Uuid256(v))),
-                        Err(_) => out.push(None),
-                    }
-                }
-            }
-        }
-        EdgeKeyFastKind::StringIp => {
-            for i in 0..len {
-                if array.is_null(i) {
-                    out.push(None);
-                } else {
-                    let res = (|| -> Result<[u8; 16]> {
-                        let text = fast_string_value(array, i)?;
-                        let ip = parse_ip_string(text.as_bytes())?;
-                        Ok(ip)
-                    })();
-                    match res {
-                        Ok(v) => out.push(Some(Key::Ip(v))),
-                        Err(_) => out.push(None),
-                    }
-                }
-            }
-        }
-        EdgeKeyFastKind::BytesIp => {
-            for i in 0..len {
-                if array.is_null(i) {
-                    out.push(None);
-                } else {
-                    let res = (|| -> Result<[u8; 16]> {
-                        let data = fast_bytes_value(array, i)?;
-                        let ip = parse_ip_bytes(data)?;
-                        Ok(ip)
-                    })();
-                    match res {
-                        Ok(v) => out.push(Some(Key::Ip(v))),
-                        Err(_) => out.push(None),
-                    }
-                }
-            }
-        }
-    }
-    Ok(out)
-}
-
-fn fast_string_value(array: &ArrayRef, row: usize) -> Result<&str, KeyParseError> {
-    if let Some(arr) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
-        Ok(arr.value(row))
-    } else if let Some(arr) = array
-        .as_any()
-        .downcast_ref::<arrow_array::LargeStringArray>()
-    {
-        Ok(arr.value(row))
-    } else {
-        Err(KeyParseError::TypeMismatch)
-    }
-}
-
-fn fast_bytes_value(array: &ArrayRef, row: usize) -> Result<&[u8], KeyParseError> {
-    if let Some(arr) = array.as_any().downcast_ref::<arrow_array::BinaryArray>() {
-        Ok(arr.value(row))
-    } else if let Some(arr) = array
-        .as_any()
-        .downcast_ref::<arrow_array::LargeBinaryArray>()
-    {
-        Ok(arr.value(row))
-    } else if let Some(arr) = array
-        .as_any()
-        .downcast_ref::<arrow_array::FixedSizeBinaryArray>()
-    {
-        Ok(arr.value(row))
-    } else {
-        Err(KeyParseError::TypeMismatch)
-    }
 }
 
 fn read_utf8(array: &ArrayRef, row: usize) -> Result<&str> {

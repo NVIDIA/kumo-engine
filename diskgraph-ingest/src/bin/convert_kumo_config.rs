@@ -189,6 +189,7 @@ fn main() -> Result<()> {
         table_data_versions: None,
         source_paths_base: None,
         source_paths: None,
+        source_specs: None,
     };
 
     let mut diskgraph_config =

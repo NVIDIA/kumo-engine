@@ -100,6 +100,7 @@ fn ingest_with_explicit_timestamp_format_parses_2digit_year() -> Result<()> {
             m.insert("Card".to_string(), data_dir.to_string_lossy().to_string());
             m
         }),
+        source_specs: None,
     };
     let cfg = convert_kumo_to_diskgraph(&kumo, &options)?;
 

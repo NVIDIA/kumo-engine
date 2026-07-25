@@ -12,15 +12,13 @@ pub const PEAK_MEM_STAGE_COUNT: usize = 6;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IngestPhase {
-    Context = 0,
-    Encode = 1,
-    PkMap = 2,
-    EdgesMap = 3,
-    Index = 4,
+    Encode = 0,
+    PkMap = 1,
+    EdgesMap = 2,
+    Index = 3,
 }
 
-pub const ALL_PHASES: [IngestPhase; 5] = [
-    IngestPhase::Context,
+pub const ALL_PHASES: [IngestPhase; 4] = [
     IngestPhase::Encode,
     IngestPhase::PkMap,
     IngestPhase::EdgesMap,
@@ -30,7 +28,6 @@ pub const ALL_PHASES: [IngestPhase; 5] = [
 impl IngestPhase {
     pub fn name(self) -> &'static str {
         match self {
-            Self::Context => "context",
             Self::Encode => "encode",
             Self::PkMap => "pk_map",
             Self::EdgesMap => "edges_map",
@@ -40,7 +37,6 @@ impl IngestPhase {
 
     pub fn from_name(s: &str) -> Option<Self> {
         match s {
-            "context" => Some(Self::Context),
             "encode" => Some(Self::Encode),
             "pk_map" => Some(Self::PkMap),
             "edges_map" => Some(Self::EdgesMap),
@@ -151,6 +147,9 @@ pub struct ResolveColumnSpec {
 #[derive(Clone)]
 pub struct IngestOptions {
     pub profile_dir: Option<PathBuf>,
+    /// Optional mode-0600 `.databrickscfg` file handed only to the Databricks
+    /// helper during Encode. Its profiles and credentials are never persisted.
+    pub databricks_config_file: Option<PathBuf>,
     pub progress: Option<ProgressCallback>,
     pub parallel: bool,
     pub index_mem_budget_bytes: Option<u64>,
@@ -166,11 +165,11 @@ pub struct IngestOptions {
     /// own outputs are wiped on entry to clear partial state from a prior crash.
     /// `None` (default) preserves today's behaviour: run all phases unconditionally.
     pub resume_from_phase: Option<IngestPhase>,
-    /// Per-phase worker pool overrides. When `Some(n)`, that phase's `make_pool`
-    /// uses `n`. `None` falls back to `default_worker_threads()`
-    /// (≈ `available_parallelism × 1.05`).
-    pub context_threads: Option<usize>,
-    pub encode_threads: Option<usize>,
+    /// Maximum concurrent source loaders/downloads during Encode. Databricks
+    /// uses this as its bounded Cloud Fetch link lookahead.
+    pub source_loader_threads: Option<usize>,
+    /// Maximum Encode workers shared by node and edge tables.
+    pub source_encoder_threads: Option<usize>,
     pub pk_map_threads: Option<usize>,
     pub edges_map_threads: Option<usize>,
     pub index_threads: Option<usize>,
@@ -188,6 +187,7 @@ impl Default for IngestOptions {
     fn default() -> Self {
         Self {
             profile_dir: None,
+            databricks_config_file: None,
             progress: None,
             parallel: true,
             index_mem_budget_bytes: None,
@@ -196,8 +196,8 @@ impl Default for IngestOptions {
             cat_count_strategy: crate::col_stats::CategoryCountStrategy::None,
             row_subsample: false,
             resume_from_phase: None,
-            context_threads: None,
-            encode_threads: None,
+            source_loader_threads: None,
+            source_encoder_threads: None,
             pk_map_threads: None,
             edges_map_threads: None,
             index_threads: None,

@@ -560,6 +560,7 @@ fn convert_multicat_string_detects_comma() -> Result<()> {
             m.insert("items".to_string(), data_dir.to_string_lossy().to_string());
             m
         }),
+        source_specs: None,
     };
     let cfg = convert_kumo_to_diskgraph(&kumo, &options)?;
     let col = cfg.tables[0]
@@ -595,6 +596,7 @@ fn convert_multicat_string_detects_sparse_comma() -> Result<()> {
             m.insert("items".to_string(), data_dir.to_string_lossy().to_string());
             m
         }),
+        source_specs: None,
     };
     let cfg = convert_kumo_to_diskgraph(&kumo, &options)?;
     let col = cfg.tables[0]
@@ -630,6 +632,7 @@ fn convert_multicat_string_detects_pipe() -> Result<()> {
             m.insert("items".to_string(), data_dir.to_string_lossy().to_string());
             m
         }),
+        source_specs: None,
     };
     let cfg = convert_kumo_to_diskgraph(&kumo, &options)?;
     let col = cfg.tables[0]
@@ -663,6 +666,7 @@ fn convert_multicat_string_scans_past_first_file() -> Result<()> {
             m.insert("items".to_string(), data_dir.to_string_lossy().to_string());
             m
         }),
+        source_specs: None,
     };
     let cfg = convert_kumo_to_diskgraph(&kumo, &options)?;
     let col = cfg.tables[0]
@@ -694,6 +698,7 @@ fn convert_multicat_string_detects_large_utf8() -> Result<()> {
             m.insert("items".to_string(), data_dir.to_string_lossy().to_string());
             m
         }),
+        source_specs: None,
     };
     let cfg = convert_kumo_to_diskgraph(&kumo, &options)?;
     let col = cfg.tables[0]
@@ -729,6 +734,7 @@ fn convert_multicat_string_picks_most_common_delimiter() -> Result<()> {
             m.insert("items".to_string(), data_dir.to_string_lossy().to_string());
             m
         }),
+        source_specs: None,
     };
     let cfg = convert_kumo_to_diskgraph(&kumo, &options)?;
     let col = cfg.tables[0]
@@ -771,6 +777,7 @@ fn convert_multicat_string_explicit_delimiter_respected() -> Result<()> {
             m.insert("items".to_string(), data_dir.to_string_lossy().to_string());
             m
         }),
+        source_specs: None,
     };
     let cfg = convert_kumo_to_diskgraph(&kumo, &options)?;
     let col = cfg.tables[0]
@@ -947,6 +954,7 @@ fn convert_normalizes_multicat_delim_string_to_stringarray() -> Result<()> {
             m.insert("items".to_string(), data_dir.to_string_lossy().to_string());
             m
         }),
+        source_specs: None,
     };
     let cfg = convert_kumo_to_diskgraph(&kumo, &opts)?;
     let col = cfg.tables[0]
@@ -1024,6 +1032,7 @@ fn convert_accepts_explicit_delim_with_mostly_single_token_rows() -> Result<()> 
             m.insert("items".to_string(), data_dir.to_string_lossy().to_string());
             m
         }),
+        source_specs: None,
     };
     // Should succeed — explicit declarations get the floor of "delim must
     // appear at least once", not the 50% auto-detect-winner threshold.
@@ -1111,8 +1120,8 @@ fn ingest_errors_on_direct_config_explicit_delim_mismatch() -> Result<()> {
         s,
     );
     assert!(
-        s.contains(';'),
-        "expected sample row containing actual `;` separator in error, got: {}",
+        s.contains("Sample row that did not contain the delimiter: \"<omitted>\""),
+        "expected mismatch diagnostics not to retain source data, got: {}",
         s,
     );
     Ok(())
@@ -1175,6 +1184,7 @@ fn convert_errors_on_explicit_delim_mismatch_with_data() -> Result<()> {
             m.insert("items".to_string(), data_dir.to_string_lossy().to_string());
             m
         }),
+        source_specs: None,
     };
     let err = convert_kumo_to_diskgraph(&kumo, &opts)
         .expect_err("convert should error on delim mismatch");

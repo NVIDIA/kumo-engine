@@ -459,6 +459,17 @@ mod tests {
         assert!(!uncapped_grad.is_aborted());
     }
 
+    #[test]
+    fn test_shared_counts_string_byte_budget() {
+        let budget = Arc::new(CategoryStringBudget::new(5_000));
+        let counts = SharedColumnCounts::new_hashed_with_string_budget(Arc::clone(&budget));
+        counts.observe_hashed(1, "first");
+        assert!(!counts.is_aborted());
+        counts.observe_hashed(2, "second");
+        assert!(counts.is_aborted());
+        assert!(budget.used_bytes() <= 5_000);
+    }
+
     // -- TDigestEstimator tests --
 
     #[test]
@@ -716,6 +727,62 @@ pub enum CategoryCountStrategy {
 
 /// Maximum number of unique categories per column before aborting collection.
 pub const MAX_CATEGORIES: u64 = 1_000_000;
+const CATEGORY_ENTRY_OVERHEAD_BYTES: u64 = 256;
+const CATEGORY_COLUMN_OVERHEAD_BYTES: u64 = 256 * 1024;
+// At output time a recovery string can coexist in the retained count map,
+// root stats, full Kumo stats, and minified Kumo stats. Only one serialized
+// buffer is live at a time: local mirrors upload from the durable file and
+// remote OutputTargets synchronously await each put. JSON escaping can grow
+// every input byte to six bytes ("\u00XX"), and Vec growth may retain up to
+// twice its final length. Charge this complete worst-case fan-out before
+// allocating the retained string or its map entry.
+const CATEGORY_RETAINED_COPY_COUNT: u64 = 4;
+const CATEGORY_JSON_ESCAPE_FACTOR: u64 = 6;
+const CATEGORY_SERIALIZED_VEC_CAPACITY_FACTOR: u64 = 2;
+const CATEGORY_MATERIALIZATION_MULTIPLIER: u64 = CATEGORY_RETAINED_COPY_COUNT
+    + CATEGORY_JSON_ESCAPE_FACTOR * CATEGORY_SERIALIZED_VEC_CAPACITY_FACTOR;
+
+/// Encode-wide conservative budget for retained category recovery strings and
+/// their count/string map entries. Reservations are monotonic: moved entries
+/// keep their charge, while dropped duplicates may conservatively retain it.
+pub struct CategoryStringBudget {
+    max_bytes: u64,
+    used_bytes: AtomicU64,
+}
+
+impl CategoryStringBudget {
+    pub fn new(max_bytes: u64) -> Self {
+        Self {
+            max_bytes,
+            used_bytes: AtomicU64::new(0),
+        }
+    }
+
+    fn try_reserve_bytes(&self, bytes: u64) -> bool {
+        self.used_bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                used.checked_add(bytes)
+                    .filter(|next| *next <= self.max_bytes)
+            })
+            .is_ok()
+    }
+
+    fn try_reserve(&self, string_bytes: usize) -> bool {
+        self.try_reserve_bytes(
+            (string_bytes as u64)
+                .saturating_add(CATEGORY_ENTRY_OVERHEAD_BYTES)
+                .saturating_mul(CATEGORY_MATERIALIZATION_MULTIPLIER),
+        )
+    }
+
+    pub fn try_reserve_column(&self) -> bool {
+        self.try_reserve_bytes(CATEGORY_COLUMN_OVERHEAD_BYTES)
+    }
+
+    pub fn used_bytes(&self) -> u64 {
+        self.used_bytes.load(Ordering::Relaxed)
+    }
+}
 
 /// Internal storage for category counts.
 pub enum CountStorage {
@@ -774,20 +841,28 @@ pub struct SharedColumnCounts {
     pub unique_count: AtomicU64,
     pub aborted: AtomicBool,
     max_categories: Option<u64>,
+    string_budget: Option<Arc<CategoryStringBudget>>,
 }
 
 impl SharedColumnCounts {
     /// Create hash-based storage (for GlobalDashMap & Hybrid).
     pub fn new_hashed() -> Self {
-        Self::new_hashed_with_cap(Some(MAX_CATEGORIES))
+        Self::new_hashed_with_cap(Some(MAX_CATEGORIES), None)
+    }
+
+    pub fn new_hashed_with_string_budget(budget: Arc<CategoryStringBudget>) -> Self {
+        Self::new_hashed_with_cap(Some(MAX_CATEGORIES), Some(budget))
     }
 
     /// Create hash-based storage without an ingestion-side unique cap.
     pub fn new_hashed_uncapped() -> Self {
-        Self::new_hashed_with_cap(None)
+        Self::new_hashed_with_cap(None, None)
     }
 
-    fn new_hashed_with_cap(max_categories: Option<u64>) -> Self {
+    fn new_hashed_with_cap(
+        max_categories: Option<u64>,
+        string_budget: Option<Arc<CategoryStringBudget>>,
+    ) -> Self {
         Self {
             storage: CountStorage::Hashed {
                 counts: DashMap::with_capacity_and_hasher_and_shard_amount(
@@ -804,20 +879,28 @@ impl SharedColumnCounts {
             unique_count: AtomicU64::new(0),
             aborted: AtomicBool::new(false),
             max_categories,
+            string_budget,
         }
     }
 
     /// Create graduation v2 storage (ArcSwap frozen set + DashMap pending + inbox).
     pub fn new_graduation() -> Self {
-        Self::new_graduation_with_cap(Some(MAX_CATEGORIES))
+        Self::new_graduation_with_cap(Some(MAX_CATEGORIES), None)
+    }
+
+    pub fn new_graduation_with_string_budget(budget: Arc<CategoryStringBudget>) -> Self {
+        Self::new_graduation_with_cap(Some(MAX_CATEGORIES), Some(budget))
     }
 
     /// Create graduation v2 storage without an ingestion-side unique cap.
     pub fn new_graduation_uncapped() -> Self {
-        Self::new_graduation_with_cap(None)
+        Self::new_graduation_with_cap(None, None)
     }
 
-    fn new_graduation_with_cap(max_categories: Option<u64>) -> Self {
+    fn new_graduation_with_cap(
+        max_categories: Option<u64>,
+        string_budget: Option<Arc<CategoryStringBudget>>,
+    ) -> Self {
         Self {
             storage: CountStorage::Graduation {
                 graduated: ArcSwap::from_pointee(HashSet::new()),
@@ -837,7 +920,26 @@ impl SharedColumnCounts {
             unique_count: AtomicU64::new(0),
             aborted: AtomicBool::new(false),
             max_categories,
+            string_budget,
         }
+    }
+
+    /// Reserve one new recovery-string/map entry before allocating it. A
+    /// failed reservation aborts collection for this column without affecting
+    /// graph ingestion.
+    pub fn reserve_string_bytes(&self, bytes: usize) -> bool {
+        if self.aborted.load(Ordering::Relaxed) {
+            return false;
+        }
+        if self
+            .string_budget
+            .as_ref()
+            .is_some_and(|budget| !budget.try_reserve(bytes))
+        {
+            self.aborted.store(true, Ordering::Relaxed);
+            return false;
+        }
+        true
     }
 
     /// Record a newly observed unique category and abort only when this counter
@@ -859,17 +961,16 @@ impl SharedColumnCounts {
             return;
         }
         if let CountStorage::Hashed { counts, strings } = &self.storage {
-            let mut is_new = false;
-            counts
-                .entry(hash)
-                .and_modify(|c| *c += 1)
-                .or_insert_with(|| {
-                    is_new = true;
-                    1
-                });
-            if is_new {
-                strings.entry(hash).or_insert_with(|| value_str.to_owned());
-                self.record_new_unique();
+            match counts.entry(hash) {
+                dashmap::mapref::entry::Entry::Occupied(mut entry) => *entry.get_mut() += 1,
+                dashmap::mapref::entry::Entry::Vacant(entry) => {
+                    if !self.reserve_string_bytes(value_str.len()) {
+                        return;
+                    }
+                    entry.insert(1);
+                    strings.entry(hash).or_insert_with(|| value_str.to_owned());
+                    self.record_new_unique();
+                }
             }
         }
     }

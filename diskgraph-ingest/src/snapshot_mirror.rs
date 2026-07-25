@@ -132,6 +132,16 @@ impl SnapshotMirror {
         }
     }
 
+    /// Remove the remote publication marker before a supervisor starts or
+    /// retries any phase that may rewrite snapshot objects. This closes the
+    /// crash window where remote `_SUCCESS` was durable but the local marker
+    /// used as the supervisor's terminal signal had not yet been renamed.
+    pub(crate) fn invalidate_success_marker(&self) -> Result<()> {
+        self.transfer
+            .delete_blocking(self.dest_path(SUCCESS_MARKER_FILENAME))
+            .context("invalidate dataplane _SUCCESS")
+    }
+
     /// Submit an upload of `bytes` to `<dest_dir>/<rel_path>`. The upload
     /// runs in parallel with subsequent ingest work; the returned ticket
     /// is captured for the end-of-ingest drain. Errors at submit time
@@ -303,13 +313,20 @@ pub fn finalize_snapshot(
             .context("finalize_snapshot: upload _MANIFEST.json")?;
     }
 
+    if let Some(m) = mirror {
+        m.upload_blocking(
+            SUCCESS_MARKER_FILENAME,
+            success_marker_content.as_bytes().to_vec(),
+        )
+        .context("finalize_snapshot: upload _SUCCESS")?;
+    }
+    // The local atomic marker is the supervisor's terminal commit signal.
+    // Publish it only after the mirror marker is durable so observing L1
+    // `_SUCCESS` proves the full L1 => L2 invariant even if the worker dies
+    // immediately after this rename.
     write_success_marker(local_root, success_marker_content)
         .with_context(|| format!("write _SUCCESS at {}", local_root.display()))?;
     let success_local = local_root.join(SUCCESS_MARKER_FILENAME);
-    if let Some(m) = mirror {
-        m.upload_blocking(SUCCESS_MARKER_FILENAME, success_marker_content.as_bytes().to_vec())
-            .context("finalize_snapshot: upload _SUCCESS")?;
-    }
 
     Ok(FinalizeResult {
         manifest,
@@ -835,6 +852,20 @@ mod tests {
             assert!(dp.exists(), "{} missing on dataplane", rel);
         }
         verify_snapshot_integrity(local_root.path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn remote_success_invalidation_is_synchronous_and_idempotent() -> anyhow::Result<()> {
+        let dataplane_root = tempfile::tempdir()?;
+        std::fs::write(
+            dataplane_root.path().join(SUCCESS_MARKER_FILENAME),
+            b"published",
+        )?;
+        let mirror = SnapshotMirror::new(dataplane_root.path().to_str().unwrap())?;
+        mirror.invalidate_success_marker()?;
+        assert!(!dataplane_root.path().join(SUCCESS_MARKER_FILENAME).exists());
+        mirror.invalidate_success_marker()?;
         Ok(())
     }
 

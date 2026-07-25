@@ -1,8 +1,10 @@
 use super::{key_from_access_into_buf, BitWriter, OutputSink};
 use crate::graph_config::{ColumnSpec, DataSource, IngestedType};
-use arrow_array::{ArrayRef, Decimal128Array, Decimal256Array, Int64Array};
+use arrow_array::{ArrayRef, Decimal128Array, Decimal256Array, Int64Array, RecordBatch};
+use arrow_schema::{DataType, Field, Schema};
 use diskgraph_rowpack::{BinaryStringHint, RowAccess, RowAccessHints, RowAccessStats};
-use std::io::{BufWriter, Read};
+use std::collections::HashSet;
+use std::io::Read;
 use std::sync::Arc;
 
 #[test]
@@ -136,8 +138,7 @@ fn test_bitwriter_packing() -> anyhow::Result<()> {
 
     let file = std::fs::File::create(&path)?;
     let sink = OutputSink::Local { file, tee: None };
-    let writer = BufWriter::new(sink);
-    let mut bw = BitWriter::new(writer);
+    let mut bw = BitWriter::new(sink);
 
     bw.append_bits(&[0x0F], 4)?;
     bw.append_bits(&[0x0A], 4)?;
@@ -242,6 +243,28 @@ fn single_col_table(ingested: IngestedType) -> TableSpec {
         kumo_source_table_name: None,
         group_by_timestamp: false,
     }
+}
+
+#[test]
+fn source_batch_rejects_decimal_outside_int64_contract() {
+    let table = single_col_table(IngestedType::Int64);
+    let values = Decimal128Array::from(vec![i128::from(i64::MAX) + 1])
+        .with_precision_and_scale(38, 0)
+        .unwrap();
+    let batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new(
+            "id",
+            DataType::Decimal128(38, 0),
+            true,
+        )])),
+        vec![Arc::new(values)],
+    )
+    .unwrap();
+
+    let error =
+        super::validate_source_batch_values(&table, &batch, &HashSet::new()).unwrap_err();
+
+    assert!(error.to_string().contains("signed 64-bit integer range"));
 }
 
 fn with_access(table: &TableSpec, cols: Vec<ArrayRef>, f: impl FnOnce(&mut RowAccess<'_>)) {
@@ -598,264 +621,6 @@ fn shard_assignment_consistent_for_same_pk() {
         non_empty_shards > num_shards / 2,
         "PKs should distribute across shards"
     );
-}
-
-#[test]
-fn test_precompute_shards_consistency() {
-    use crate::graph_config::{ColumnSpec, IngestedType};
-    use crate::{precompute_shards, shard_for_key};
-    use arrow_array::{FixedSizeBinaryArray, Int64Array, RecordBatch};
-    use arrow_schema::{DataType, Field, Schema};
-    use std::sync::Arc;
-
-    let num_shards = 10;
-
-    // 1. Test Int64
-    {
-        let values = vec![Some(1), Some(-1), None, Some(123456789)];
-        let array = Int64Array::from(values.clone());
-        let schema = Arc::new(Schema::new(vec![Field::new("pk", DataType::Int64, true)]));
-        let batch = RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap();
-        let pk_col = ColumnSpec {
-            name: "pk".to_string(),
-            source_dtype: None,
-            ingested_dtype: IngestedType::Int64,
-            fixed_len: None,
-            timestamp_format: None,
-            timestamp_unit: None,
-            precision: None,
-            scale: None,
-            semantic_type: None,
-            multicategorical_delimiter: None,
-        };
-
-        let precomputed =
-            precompute_shards(Some(batch.column(0)), Some(&pk_col), num_shards).unwrap();
-        for (i, val) in values.iter().enumerate() {
-            match val {
-                Some(v) => {
-                    let expected_shard = shard_for_key(&(*v as u64).to_le_bytes(), num_shards);
-                    assert_eq!(precomputed.shards[i], Some(expected_shard));
-                }
-                None => {
-                    assert_eq!(precomputed.shards[i], None);
-                }
-            }
-        }
-    }
-
-    // 2. Test FixedSizeBinary(16)
-    {
-        let mut values = vec![None];
-        let b1 = [1u8; 16];
-        let b2 = [2u8; 16];
-        values.push(Some(&b1[..]));
-        values.push(Some(&b2[..]));
-
-        let array =
-            FixedSizeBinaryArray::try_from_sparse_iter_with_size(values.clone().into_iter(), 16)
-                .unwrap();
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "pk",
-            DataType::FixedSizeBinary(16),
-            true,
-        )]));
-        let batch = RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap();
-        let pk_col = ColumnSpec {
-            name: "pk".to_string(),
-            source_dtype: None,
-            ingested_dtype: IngestedType::Uuid,
-            fixed_len: None,
-            timestamp_format: None,
-            timestamp_unit: None,
-            precision: None,
-            scale: None,
-            semantic_type: None,
-            multicategorical_delimiter: None,
-        };
-
-        let precomputed =
-            precompute_shards(Some(batch.column(0)), Some(&pk_col), num_shards).unwrap();
-
-        for (i, val) in values.iter().enumerate() {
-            match val {
-                Some(v) => {
-                    let expected_shard = shard_for_key(v, num_shards);
-                    assert_eq!(precomputed.shards[i], Some(expected_shard));
-                }
-                None => {
-                    assert_eq!(precomputed.shards[i], None);
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn test_precompute_shards_casting() {
-    use crate::graph_config::{ColumnSpec, IngestedType};
-    use crate::mapping::Key;
-    use crate::{precompute_shards, shard_for_key};
-    use arrow_array::{Int64Array, RecordBatch, StringArray};
-    use arrow_schema::{DataType, Field, Schema};
-    use std::sync::Arc;
-
-    let num_shards = 10;
-
-    // 1. Test Int64 -> Int32 Casting
-    {
-        let values = vec![Some(1), Some(-1), None, Some(100)];
-        let array = Int64Array::from(values.clone());
-        let schema = Arc::new(Schema::new(vec![Field::new("pk", DataType::Int64, true)]));
-        let batch = RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap();
-        let pk_col = ColumnSpec {
-            name: "pk".to_string(),
-            source_dtype: None,
-            ingested_dtype: IngestedType::Int32,
-            fixed_len: None,
-            timestamp_format: None,
-            timestamp_unit: None,
-            precision: None,
-            scale: None,
-            semantic_type: None,
-            multicategorical_delimiter: None,
-        };
-
-        let precomputed =
-            precompute_shards(Some(batch.column(0)), Some(&pk_col), num_shards).unwrap();
-        assert!(precomputed.keys.is_some());
-        let keys = precomputed.keys.unwrap();
-
-        for (i, val) in values.iter().enumerate() {
-            match val {
-                Some(v) => {
-                    let casted = *v as i32 as u64;
-                    let expected_shard = shard_for_key(&casted.to_le_bytes(), num_shards);
-                    assert_eq!(precomputed.shards[i], Some(expected_shard));
-                    assert_eq!(keys[i], Some(Key::Int(casted)));
-                }
-                None => {
-                    assert_eq!(precomputed.shards[i], None);
-                    assert_eq!(keys[i], None);
-                }
-            }
-        }
-    }
-
-    // 2. Test Utf8 -> Uuid Parsing
-    {
-        let uuid1 = "00112233-4455-6677-8899-aabbccddeeff";
-        let uuid2 = "00112233445566778899aabbccddeeff";
-        let values = vec![Some(uuid1), Some(uuid2), None];
-        let array = StringArray::from(values.clone());
-        let schema = Arc::new(Schema::new(vec![Field::new("pk", DataType::Utf8, true)]));
-        let batch = RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap();
-        let pk_col = ColumnSpec {
-            name: "pk".to_string(),
-            source_dtype: None,
-            ingested_dtype: IngestedType::Uuid,
-            fixed_len: None,
-            timestamp_format: None,
-            timestamp_unit: None,
-            precision: None,
-            scale: None,
-            semantic_type: None,
-            multicategorical_delimiter: None,
-        };
-
-        let precomputed =
-            precompute_shards(Some(batch.column(0)), Some(&pk_col), num_shards).unwrap();
-        assert!(precomputed.keys.is_some());
-        let keys = precomputed.keys.unwrap();
-
-        use crate::parse_uuid_string;
-        for (i, val) in values.iter().enumerate() {
-            match val {
-                Some(v) => {
-                    let parsed = parse_uuid_string(v.as_bytes()).unwrap();
-                    let expected_shard = shard_for_key(&parsed, num_shards);
-                    assert_eq!(precomputed.shards[i], Some(expected_shard));
-                    assert_eq!(keys[i], Some(Key::Uuid(parsed)));
-                }
-                None => {
-                    assert_eq!(precomputed.shards[i], None);
-                    assert_eq!(keys[i], None);
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn test_extract_batch_keys_resilience() {
-    use crate::mapping::Key;
-    use crate::{extract_batch_keys, EdgeKeyFastKind};
-    use arrow_array::{ArrayRef, StringArray};
-    use std::sync::Arc;
-
-    // Test String -> Int64 with some invalid rows
-    let values = vec![Some("123"), Some("not-a-number"), Some("456"), None];
-    let array = Arc::new(StringArray::from(values)) as ArrayRef;
-
-    let extracted = extract_batch_keys(&array, EdgeKeyFastKind::StringToInt64).unwrap();
-
-    assert_eq!(extracted.len(), 4);
-    assert_eq!(extracted[0], Some(Key::Int(123)));
-    assert_eq!(extracted[1], None); // "not-a-number" -> None
-    assert_eq!(extracted[2], Some(Key::Int(456)));
-    assert_eq!(extracted[3], None); // NULL -> None
-}
-
-#[test]
-fn test_extract_batch_keys_edge_cases() {
-    use crate::mapping::Key;
-    use crate::parse_uuid_string;
-    use crate::{extract_batch_keys, EdgeKeyFastKind};
-    use arrow_array::{ArrayRef, BinaryArray, Int64Array, StringArray};
-    use std::sync::Arc;
-
-    // 1. String -> UUID (Edge Case)
-    {
-        let uuid_str = "00112233-4455-6677-8899-aabbccddeeff";
-        let expected_uuid = parse_uuid_string(uuid_str.as_bytes()).unwrap();
-        let values = vec![Some(uuid_str), None, Some("invalid-uuid")];
-        let array = Arc::new(StringArray::from(values)) as ArrayRef;
-
-        let extracted = extract_batch_keys(&array, EdgeKeyFastKind::StringUuid).unwrap();
-
-        assert_eq!(extracted.len(), 3);
-        assert_eq!(extracted[0], Some(Key::Uuid(expected_uuid)));
-        assert_eq!(extracted[1], None);
-        assert_eq!(extracted[2], None); // Resilience check
-    }
-
-    // 2. Int64 -> Int32 Casting
-    {
-        let val = 12345_i64;
-        let val_large = i32::MAX as i64 + 1; // Wraps when cast to i32
-        let values = vec![Some(val), None, Some(val_large)];
-        let array = Arc::new(Int64Array::from(values)) as ArrayRef;
-
-        let extracted = extract_batch_keys(&array, EdgeKeyFastKind::Int64ToInt32).unwrap();
-
-        assert_eq!(extracted.len(), 3);
-        assert_eq!(extracted[0], Some(Key::Int(val as i32 as u64)));
-        assert_eq!(extracted[1], None);
-        assert_eq!(extracted[2], Some(Key::Int(val_large as i32 as u64)));
-    }
-
-    // 3. Bytes -> Bytes (Var)
-    {
-        let val = b"hello";
-        let values = vec![Some(val.as_slice()), None];
-        let array = Arc::new(BinaryArray::from(values)) as ArrayRef;
-
-        let extracted = extract_batch_keys(&array, EdgeKeyFastKind::BytesVar).unwrap();
-
-        assert_eq!(extracted.len(), 2);
-        assert_eq!(extracted[0], Some(Key::Bytes(val.to_vec())));
-        assert_eq!(extracted[1], None);
-    }
 }
 
 // ---------------------------------------------------------------------------

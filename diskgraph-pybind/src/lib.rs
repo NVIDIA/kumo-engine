@@ -849,7 +849,7 @@ pub fn export_tt_artifacts(py: Python<'_>, config: &ExportConfig) -> PyResult<()
 }
 
 #[pyfunction]
-#[pyo3(signature = (kumo_config_json, data_persist_dir, dataset_name, table_data_versions_json=None, source_paths_base=None, source_paths_json=None))]
+#[pyo3(signature = (kumo_config_json, data_persist_dir, dataset_name, table_data_versions_json=None, source_paths_base=None, source_paths_json=None, source_specs_json=None))]
 #[tracing::instrument(level = "info", skip_all, fields(dataset_name = %dataset_name, data_persist_dir = %data_persist_dir))]
 pub fn convert_kumo_config(
     py: Python<'_>,
@@ -859,11 +859,13 @@ pub fn convert_kumo_config(
     table_data_versions_json: Option<&str>,
     source_paths_base: Option<&str>,
     source_paths_json: Option<&str>,
+    source_specs_json: Option<&str>,
 ) -> PyResult<String> {
     info!(
         has_table_data_versions = table_data_versions_json.is_some(),
         has_source_paths_base = source_paths_base.is_some(),
         has_source_paths = source_paths_json.is_some(),
+        has_source_specs = source_specs_json.is_some(),
         "Pybind convert_kumo_config started"
     );
     let start_time = std::time::Instant::now();
@@ -873,6 +875,7 @@ pub fn convert_kumo_config(
     let table_data_versions_json = table_data_versions_json.map(str::to_string);
     let source_paths_base = source_paths_base.map(str::to_string);
     let source_paths_json = source_paths_json.map(str::to_string);
+    let source_specs_json = source_specs_json.map(str::to_string);
 
     let result = py.detach(move || -> PyResult<String> {
         use diskgraph_ingest::config_converter::{
@@ -900,12 +903,22 @@ pub fn convert_kumo_config(
                 None => None,
             };
 
+        let source_specs: Option<
+            HashMap<String, diskgraph_ingest::config_converter::DirectSourceSpec>,
+        > = match source_specs_json.as_deref() {
+            Some(json) => Some(serde_json::from_str(json).map_err(|e| {
+                DiskgraphConfigError::new_err(format!("Invalid source_specs JSON: {e}"))
+            })?),
+            None => None,
+        };
+
         let options = ConvertOptions {
             data_persist_dir,
             dataset_name,
             table_data_versions,
             source_paths_base,
             source_paths,
+            source_specs,
         };
 
         // convert_kumo_to_diskgraph handles everything: schema, timestamp detection, num_shards.
@@ -945,6 +958,7 @@ pub fn convert_kumo_config(
     edges_map_threads=None,
     index_threads=None,
     parent_index_path=None,
+    databricks_config_file=None,
 ))]
 #[tracing::instrument(
     level = "info",
@@ -970,6 +984,7 @@ pub fn ingest(
     edges_map_threads: Option<usize>,
     index_threads: Option<usize>,
     parent_index_path: Option<&str>,
+    databricks_config_file: Option<&str>,
 ) -> PyResult<String> {
     let start_time = std::time::Instant::now();
     info!(
@@ -999,7 +1014,7 @@ pub fn ingest(
         .map(|s| {
             diskgraph_ingest::IngestPhase::from_name(s).ok_or_else(|| {
                 DiskgraphConfigError::new_err(format!(
-                    "Unknown resume_from_phase: {s} (expected: context, encode, pk_map, edges_map, index)"
+                    "Unknown resume_from_phase: {s} (expected: encode, pk_map, edges_map, index)"
                 ))
             })
         })
@@ -1007,6 +1022,7 @@ pub fn ingest(
 
     let options = diskgraph_ingest::IngestOptions {
         profile_dir: None,
+        databricks_config_file: databricks_config_file.map(std::path::PathBuf::from),
         progress: diskgraph_ingest::progress::build_progress(),
         parallel: true,
         index_mem_budget_bytes: None,
@@ -1015,8 +1031,8 @@ pub fn ingest(
         cat_count_strategy: strategy,
         row_subsample: false,
         resume_from_phase: resume_phase,
-        context_threads,
-        encode_threads,
+        source_loader_threads: context_threads,
+        source_encoder_threads: encode_threads,
         pk_map_threads,
         edges_map_threads,
         index_threads,
@@ -1288,6 +1304,13 @@ fn verify_snapshot_integrity(py: Python<'_>, output_dir: &str) -> PyResult<()> {
         .map_err(|e| DiskgraphCorruptionError::new_err(e.to_string()))
 }
 
+#[pyfunction]
+fn has_resumable_ingest(output_dir: &str) -> PyResult<bool> {
+    diskgraph_ingest::initial_resume_phase(std::path::Path::new(output_dir))
+        .map(|phase| phase.is_some())
+        .map_err(|e| DiskgraphCorruptionError::new_err(e.to_string()))
+}
+
 #[pymodule]
 #[pyo3(name = "_c")]
 fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -1319,6 +1342,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(success_marker::write_success_marker, m)?)?;
     m.add_function(wrap_pyfunction!(success_marker::touch_success_marker, m)?)?;
     m.add_function(wrap_pyfunction!(verify_snapshot_integrity, m)?)?;
+    m.add_function(wrap_pyfunction!(has_resumable_ingest, m)?)?;
     m.add_function(wrap_pyfunction!(compute_col_stats_for_parquet, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_export::read_col_stats, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_export::read_edge_stats, m)?)?;

@@ -188,6 +188,7 @@ fn make_convert_options() -> ConvertOptions {
         table_data_versions: None,
         source_paths_base: None,
         source_paths: None,
+        source_specs: None,
     }
 }
 
@@ -1214,6 +1215,7 @@ fn test_table_data_versions_overrides_data_version() {
         table_data_versions: Some(versions),
         source_paths_base: None,
         source_paths: None,
+        source_specs: None,
     };
 
     let result = convert_kumo_to_diskgraph(&kumo_config, &options).unwrap();
@@ -1264,6 +1266,7 @@ fn test_table_data_versions_missing_entry_errors() {
         table_data_versions: Some(versions),
         source_paths_base: None,
         source_paths: None,
+        source_specs: None,
     };
 
     let result = convert_kumo_to_diskgraph(&kumo_config, &options);
@@ -1306,6 +1309,7 @@ fn test_table_data_versions_none_uses_inline() {
         table_data_versions: None, // Use inline data_version
         source_paths_base: None,
         source_paths: None,
+        source_specs: None,
     };
 
     let result = convert_kumo_to_diskgraph(&kumo_config, &options).unwrap();
@@ -1315,6 +1319,58 @@ fn test_table_data_versions_none_uses_inline() {
         }
         _ => panic!("Expected Parquet source"),
     }
+}
+
+#[test]
+fn test_source_spec_bypasses_file_path_expansion() {
+    let kumo_table = KumoTable {
+        table_name: "users".to_string(),
+        data_source: Some("databricks".to_string()),
+        source_name: Some("users".to_string()),
+        data_version: Some("version_1".to_string()),
+        pkey: Some(KumoPrimaryKey {
+            name: "id".to_string(),
+            dtype: Some("int64".to_string()),
+            stype: None,
+            drop_duplicates: false,
+        }),
+        fkeys: vec![],
+        cols: vec![],
+        time_col: None,
+        end_time_col: None,
+    };
+    let kumo_config = make_kumo_config(vec![kumo_table]);
+    let source = crate::graph_config::DataSource::Databricks {
+        server_hostname: "workspace.cloud.databricks.com".to_string(),
+        warehouse_id: "warehouse".to_string(),
+        catalog: "main".to_string(),
+        schema: "default".to_string(),
+        sql: "SELECT `id` FROM `main`.`default`.`users`".to_string(),
+        auth_profile: Some("kumo_connector".to_string()),
+    };
+    let source_size = 123_456;
+    let options = ConvertOptions {
+        data_persist_dir: "/path/that/does/not/exist".to_string(),
+        dataset_name: "test".to_string(),
+        table_data_versions: None,
+        source_paths_base: None,
+        source_paths: None,
+        source_specs: Some(
+            [(
+                "users".to_string(),
+                crate::config_converter::DirectSourceSpec {
+                    source: source.clone(),
+                    source_size,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        ),
+    };
+
+    let result = convert_kumo_to_diskgraph(&kumo_config, &options).unwrap();
+    assert_eq!(result.tables[0].source, source);
+    assert_eq!(result.tables[0].source_size, Some(source_size));
 }
 
 // =============================================================================

@@ -23,7 +23,7 @@ pub struct BinaryLabelIndex {
     pub true_count: u64,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct LabelCounts {
     pub false_count: u64,
     pub true_count: u64,

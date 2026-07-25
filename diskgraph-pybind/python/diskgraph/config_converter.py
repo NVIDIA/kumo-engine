@@ -44,12 +44,14 @@ class DiskgraphConfigConverter:
         table_data_versions: Dict[str, str],
         source_paths_base: str | None = None,
         source_paths: Dict[str, str] | None = None,
+        source_specs: Dict[str, dict] | None = None,
     ):
         self.kumo_config = kumo_graph_config
         self.data_persist_dir = data_persist_dir
         self.table_data_versions = table_data_versions
         self.source_paths_base = source_paths_base
         self.source_paths = source_paths
+        self.source_specs = source_specs
 
     @classmethod
     def from_file(
@@ -59,12 +61,13 @@ class DiskgraphConfigConverter:
         table_data_versions: Dict[str, str],
         source_paths_base: str | None = None,
         source_paths: Dict[str, str] | None = None,
+        source_specs: Dict[str, dict] | None = None,
     ) -> "DiskgraphConfigConverter":
         """Create a converter from a local graph_config.json file path."""
         with open(config_path) as f:
             kumo_graph_config = json.load(f)
         return cls(kumo_graph_config, data_persist_dir, table_data_versions,
-                   source_paths_base, source_paths)
+                   source_paths_base, source_paths, source_specs)
 
     def convert(self) -> dict:
         """Convert to diskgraph ingest config dict.
@@ -96,5 +99,6 @@ class DiskgraphConfigConverter:
             json.dumps(self.table_data_versions),
             self.source_paths_base,
             json.dumps(self.source_paths) if self.source_paths else None,
+            json.dumps(self.source_specs) if self.source_specs else None,
         )
         return json.loads(result_json)

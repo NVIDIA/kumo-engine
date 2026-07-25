@@ -180,6 +180,7 @@ pub struct ColumnSpec {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_dtype: Option<String>,
+    #[serde(alias = "dtype")]
     pub ingested_dtype: IngestedType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fixed_len: Option<usize>,
@@ -219,6 +220,7 @@ pub enum IngestedType {
     Float64,
     Float32,
     Bool,
+    #[serde(alias = "utf8")]
     String,
     Bytes,
     Uuid,
@@ -342,14 +344,22 @@ pub enum DataSource {
     },
     /// Databricks.
     Databricks {
-        /// Connection identifier.
-        connection_id: String,
+        /// Databricks workspace hostname, without an HTTP path.
+        server_hostname: String,
+        /// SQL warehouse identifier.
+        warehouse_id: String,
         /// Catalog name.
         catalog: String,
         /// Schema name.
         schema: String,
-        /// Table name.
-        table: String,
+        /// Final validated read-only SQL executed by the helper. Result column
+        /// names, including aliases, must match `ColumnSpec::name`.
+        sql: String,
+        /// Optional Databricks unified-authentication profile. When omitted,
+        /// the SDK uses notebook-native authentication, standard environment
+        /// variables, or the default local profile.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth_profile: Option<String>,
     },
     /// Google BigQuery.
     BigQuery {
@@ -579,8 +589,56 @@ impl GraphConfig {
             } else {
                 table_names_ci.insert(lower_name, table.name.clone());
             }
-            if table.get_paths().is_empty() {
-                errors.push(format!("table {} has no paths", table.name));
+            match &table.source {
+                DataSource::Parquet { paths } | DataSource::Csv { paths } => {
+                    if paths.is_empty() {
+                        errors.push(format!("table {} has no paths", table.name));
+                    }
+                }
+                DataSource::Databricks {
+                    server_hostname,
+                    warehouse_id,
+                    catalog,
+                    schema,
+                    sql,
+                    auth_profile,
+                } => {
+                    for (field, value) in [
+                        ("server_hostname", server_hostname),
+                        ("warehouse_id", warehouse_id),
+                        ("catalog", catalog),
+                        ("schema", schema),
+                        ("sql", sql),
+                    ] {
+                        if value.trim().is_empty() {
+                            errors.push(format!(
+                                "table {} Databricks {} cannot be empty",
+                                table.name, field
+                            ));
+                        }
+                    }
+                    if server_hostname.contains('/') || server_hostname.contains(':') {
+                        errors.push(format!(
+                            "table {} Databricks server_hostname must be a hostname without scheme or path",
+                            table.name
+                        ));
+                    }
+                    if auth_profile
+                        .as_ref()
+                        .is_some_and(|profile| profile.trim().is_empty())
+                    {
+                        errors.push(format!(
+                            "table {} Databricks auth_profile cannot be empty",
+                            table.name
+                        ));
+                    }
+                }
+                DataSource::Snowflake { .. } | DataSource::BigQuery { .. } => {
+                    errors.push(format!(
+                        "table {} uses a source that is not implemented",
+                        table.name
+                    ));
+                }
             }
             if table.columns.is_empty() {
                 errors.push(format!("table {} has no columns", table.name));

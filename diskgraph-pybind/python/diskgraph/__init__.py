@@ -32,6 +32,7 @@ from ._c import (
     write_success_marker,
     touch_success_marker,
     verify_snapshot_integrity,
+    has_resumable_ingest,
     compute_col_stats_for_parquet,
 )
 from ._exceptions import DiskgraphCorruptionError, DiskgraphTaskError

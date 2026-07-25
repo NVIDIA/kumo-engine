@@ -3,11 +3,12 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
+use serde::Deserialize;
 
 use crate::errors::ConvertError;
 use crate::graph_config::{
-    ColumnSpec, DirectionSpec, EdgeTableSpec, FKeySpec, ForeignKeySpec, GraphConfig, IngestedType,
-    SemanticType, TableSpec, TimeSpec,
+    ColumnSpec, DataSource, DirectionSpec, EdgeTableSpec, FKeySpec, ForeignKeySpec, GraphConfig,
+    IngestedType, SemanticType, TableSpec, TimeSpec,
 };
 
 use super::mapping::{map_kumo_dtype, map_kumo_stype, map_timestamp_unit};
@@ -35,9 +36,19 @@ pub struct ConvertOptions {
     /// `{source_paths_base}/{source_name}/` instead of the fpv3 pattern.
     /// Lower priority than `source_paths`.
     pub source_paths_base: Option<String>,
-    /// Per-table explicit source path overrides, keyed by table_name.
-    /// Highest priority — completely overrides path construction for matched tables.
+    /// Per-table file-path overrides, keyed by table_name.
+    /// Used when a table has no direct source override.
     pub source_paths: Option<HashMap<String, String>>,
+    /// Per-table direct source overrides, keyed by table_name.
+    /// A matched source takes priority and bypasses file-path expansion.
+    pub source_specs: Option<HashMap<String, DirectSourceSpec>>,
+}
+
+/// A direct source and the estimated logical bytes it will produce.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DirectSourceSpec {
+    pub source: DataSource,
+    pub source_size: u64,
 }
 
 /// Convert a Kumo GraphConfig to a DiskGraph GraphConfig.
@@ -165,8 +176,17 @@ fn convert_table(
     // Resolve data version (used for path building and kumo stats output)
     let data_version = resolve_data_version(kumo_table, options)?;
 
-    let dir_paths = build_table_paths(kumo_table, options)?;
-    let (source, source_size) = expand_source_paths(dir_paths, &kumo_table.table_name)?;
+    let (source, source_size) = if let Some(spec) = options
+        .source_specs
+        .as_ref()
+        .and_then(|sources| sources.get(&kumo_table.table_name))
+    {
+        (spec.source.clone(), Some(spec.source_size))
+    } else {
+        let dir_paths = build_table_paths(kumo_table, options)?;
+        let (source, source_size) = expand_source_paths(dir_paths, &kumo_table.table_name)?;
+        (source, Some(source_size))
+    };
 
     // Build columns from all sources (pkey, fkeys, cols, time_col)
     let columns = build_columns(kumo_table)?;
@@ -214,7 +234,7 @@ fn convert_table(
         edge_table,
         rowpack: None,
         source,
-        source_size: Some(source_size),
+        source_size,
         fkeys,
         data_version: Some(data_version),
         kumo_connector_id: kumo_table.data_source.clone(),

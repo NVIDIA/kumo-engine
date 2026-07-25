@@ -320,7 +320,11 @@ pub fn download_cloud_bytes(transfer: &CloudTransfer, path: &str) -> Result<Pool
 
 pub fn resolve_local_paths(source: &mut GraphConfig, base_dir: &Path) {
     for table in &mut source.tables {
-        for path in table.get_paths_mut() {
+        let paths = match &mut table.source {
+            DataSource::Parquet { paths } | DataSource::Csv { paths } => paths,
+            _ => continue,
+        };
+        for path in paths {
             if is_cloud_path(path) {
                 continue;
             }
@@ -683,6 +687,28 @@ impl OutputTarget {
         }
     }
 
+    /// Invalidate publication before any retry/fresh ingest mutates snapshot
+    /// data. Local-first preserves the L1 => L2 implication: if remote deletion
+    /// fails, the old remote snapshot remains coherent but L1 is no longer
+    /// advertised as complete.
+    pub(crate) fn invalidate_publication(&self) -> Result<()> {
+        let OutputTarget::Local { root, mirror, .. } = self else {
+            return Ok(());
+        };
+        let local_marker = root.join(crate::success_marker::SUCCESS_MARKER_FILENAME);
+        match fs::remove_file(&local_marker) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("remove {}", local_marker.display()))
+            }
+        }
+        if let Some(mirror) = mirror {
+            mirror.invalidate_success_marker()?;
+        }
+        Ok(())
+    }
+
     /// Walk the local output root and pull any not-yet-recorded files
     /// into the manifest accumulator AND submit them to the dataplane
     /// mirror.
@@ -762,10 +788,10 @@ impl OutputTarget {
                 if !is_temp_rel_path(name) {
                     manifest.record(name, len);
                     if let Some(m) = mirror {
-                        // Move the (already-written) Vec into the upload
-                        // queue. CloudTransfer owns the buffer for the
-                        // duration of the upload — no re-read from disk.
-                        m.submit(name, bytes)
+                        // Upload from the durable local file so async mirror
+                        // jobs cannot retain an unbounded series of serialized
+                        // metadata buffers while source output is finalized.
+                        m.submit_from_path(name, &path)
                             .with_context(|| format!("dataplane mirror submit {}", name))?;
                     }
                 }
@@ -1225,6 +1251,12 @@ mod tests {
         // Local snapshot passes integrity verification.
         verify_snapshot_integrity(local_root.path())
             .map_err(|e| anyhow::anyhow!("verify failed: {e}"))?;
+        target.invalidate_publication()?;
+        assert!(!local_root.path().join(SUCCESS_MARKER_FILENAME).exists());
+        assert!(!dataplane_root.path().join(SUCCESS_MARKER_FILENAME).exists());
+        assert!(local_root.path().join(sink_rel).exists());
+        assert!(dataplane_root.path().join(sink_rel).exists());
+        target.invalidate_publication()?;
         Ok(())
     }
 

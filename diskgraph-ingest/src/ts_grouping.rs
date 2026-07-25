@@ -21,17 +21,16 @@
 //!
 //! ## Merge
 //! After the index is finalized (shard offsets / min-ids known), [`merge_stage`]
-//! does a SINGLE scatter pass (counts are known up-front from the writer's
-//! per-shard count maps — no count pass, no sort, no per-ts files):
-//!   1. union per-shard count maps → global `count[ts]`; prefix-sum (ascending
+//! performs two bounded streaming passes over the timestamp spills:
+//!   1. count timestamps up to a fixed cardinality cap; prefix-sum (ascending
 //!      ts) → per-bucket `offset[ts]`.
 //!   2. preallocate `bucket_index.bin` = `total * 8` bytes; `cursor = offset`.
 //!   3. stream each shard's spill once; for record `k` with timestamp `ts`,
 //!      write `(shard.min_id + k) as u64` at `cursor[ts]++`.
 //!   4. emit the [`TsBucket`] list.
 //!
-//! RAM is O(D) (the count/offset/cursor maps, D = distinct timestamps) plus
-//! fixed IO buffers — never O(N).
+//! Encode retains no per-timestamp maps. Merge RAM is capped by
+//! [`MAX_TIMESTAMP_BUCKETS`] plus a fixed-size write-buffer cache.
 
 use std::collections::HashMap;
 use std::io::{BufReader, Read, Write};
@@ -75,9 +74,15 @@ pub struct StageGrouping {
 /// `i64`, one per node, in node order).
 pub(crate) struct ShardSpill {
     pub min_id: u64,
-    pub count_map: HashMap<i64, u64>,
     pub spill_path: PathBuf,
 }
+
+/// Bounds both grouping metadata and the returned bucket vector. A timestamp
+/// per row is not a useful sampling grouping and must fail before publication
+/// rather than turn input cardinality into unbounded memory.
+const MAX_TIMESTAMP_BUCKETS: usize = 1_000_000;
+const BUCKET_BUFFER_BYTES: usize = 64 * 1024;
+const MAX_BUFFERED_BUCKETS: usize = 64;
 
 /// Read one shard's spill into a borrowed reader. Kept tiny so the merge stays
 /// a streaming loop (no full-file slurp).
@@ -90,18 +95,61 @@ fn open_spill(path: &Path) -> Result<BufReader<std::fs::File>> {
 /// Build a stage's `bucket_index.bin` + bucket list from its per-shard spills.
 ///
 /// `bucket_index_path` is the absolute output path; `bucket_index_rel_path` is
-/// what the manifest records. Streams each spill exactly once; RAM is O(D).
+/// what the manifest records. Reads each spill in two bounded passes; RAM is
+/// O(D), where D is the number of distinct timestamps.
 pub(crate) fn merge_stage(
     shards: &[ShardSpill],
     bucket_index_path: &Path,
     bucket_index_rel_path: String,
 ) -> Result<StageGrouping> {
-    // 1. Union per-shard count maps → global counts; prefix-sum → offsets.
+    merge_stage_with_limit(
+        shards,
+        bucket_index_path,
+        bucket_index_rel_path,
+        MAX_TIMESTAMP_BUCKETS,
+    )
+}
+
+fn merge_stage_with_limit(
+    shards: &[ShardSpill],
+    bucket_index_path: &Path,
+    bucket_index_rel_path: String,
+    maximum_buckets: usize,
+) -> Result<StageGrouping> {
+    // 1. Count directly from the disk spills. Encode intentionally retains no
+    // cardinality-sized count map, so its byte budget remains authoritative.
     let mut global_counts: HashMap<i64, u64> = HashMap::new();
     for shard in shards {
-        for (ts, c) in &shard.count_map {
-            let entry = global_counts.entry(*ts).or_insert(0);
-            *entry = entry.saturating_add(*c);
+        let length = std::fs::metadata(&shard.spill_path)?.len();
+        if length % 8 != 0 {
+            return Err(anyhow!(
+                "truncated ts-group spill {}",
+                shard.spill_path.display()
+            ));
+        }
+        let mut reader = open_spill(&shard.spill_path)?;
+        let mut buf = [0u8; 8];
+        loop {
+            match reader.read_exact(&mut buf) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(error) => {
+                    return Err(anyhow!(
+                        "read ts-group spill {}: {error}",
+                        shard.spill_path.display()
+                    ))
+                }
+            }
+            let ts = i64::from_le_bytes(buf);
+            if !global_counts.contains_key(&ts) && global_counts.len() >= maximum_buckets {
+                return Err(anyhow!(
+                    "timestamp grouping exceeds the supported limit of {maximum_buckets} distinct timestamps"
+                ));
+            }
+            let entry = global_counts.entry(ts).or_insert(0);
+            *entry = entry
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("timestamp bucket row count overflowed"))?;
         }
     }
     // Deterministic bucket order: ascending timestamp.
@@ -109,18 +157,22 @@ pub(crate) fn merge_stage(
     tss.sort_unstable();
 
     let mut buckets = Vec::with_capacity(tss.len());
-    let mut offset_map: HashMap<i64, u64> = HashMap::with_capacity(tss.len());
     let mut acc: u64 = 0;
     for ts in &tss {
         let count = global_counts[ts];
-        offset_map.insert(*ts, acc);
         buckets.push(TsBucket {
             ts: *ts,
             offset: acc,
             count,
         });
-        acc = acc.saturating_add(count);
+        // Reuse the count map allocation as the byte cursor map so merge does
+        // not retain counts, offsets, and cursors simultaneously.
+        global_counts.insert(*ts, acc.saturating_mul(8));
+        acc = acc
+            .checked_add(count)
+            .ok_or_else(|| anyhow!("timestamp grouping row count overflowed"))?;
     }
+    drop(tss);
     let total = acc;
 
     // 2. Preallocate bucket_index.bin = total * 8 bytes.
@@ -138,28 +190,12 @@ pub(crate) fn merge_stage(
     out.set_len(total.saturating_mul(8))
         .with_context(|| format!("preallocate {}", bucket_index_path.display()))?;
 
-    // 3. Single scatter pass with per-bucket buffered output.
-    //
-    //    The naive scatter is one `seek` + 8-byte `write` per node — ~2
-    //    syscalls/node with random-position writes, a severe bottleneck at
-    //    1B–10B rows. Instead we keep a small in-memory buffer per bucket and,
-    //    when one fills (BUCKET_BUF_BYTES), flush it as ONE positioned
-    //    `write_at` (seek+write fused into a single syscall) at the bucket's
-    //    moving byte cursor. This amortizes syscalls to ~1 per BUFCAP nodes
-    //    while writing the exact same node-id to the exact same slot as the
-    //    naive version, so the output bytes are byte-identical.
-    //
-    //    RAM stays O(D · BUCKET_BUF_BYTES) (D = distinct timestamps), never
-    //    O(N): we never hold all node-ids in memory.
+    // 3. Scatter through a fixed-size cache. Common low-cardinality stages
+    // amortize writes in 64 KiB blocks, while adversarial cardinality can never
+    // allocate one buffer per timestamp.
     use std::os::unix::fs::FileExt;
-    // 64 KiB per bucket = 8192 node-ids before a flush.
-    const BUCKET_BUF_BYTES: usize = 64 * 1024;
-    // Per-bucket byte cursor (where this bucket's next block is written) and its
-    // pending buffer of node-id bytes. `cursor` starts at each bucket's byte
-    // offset and advances by the bytes flushed.
-    let mut cursor: HashMap<i64, u64> =
-        offset_map.iter().map(|(ts, off)| (*ts, off.saturating_mul(8))).collect();
-    let mut pending: HashMap<i64, Vec<u8>> = HashMap::with_capacity(cursor.len());
+    let mut cursor = global_counts;
+    let mut pending: HashMap<i64, Vec<u8>> = HashMap::with_capacity(MAX_BUFFERED_BUCKETS);
 
     let mut buf = [0u8; 8];
     for shard in shards {
@@ -181,11 +217,24 @@ pub(crate) fn merge_stage(
             // The cursor map mirrors the count map's key set; an absent ts means
             // a spill record with no corresponding count (an invariant break).
             if !cursor.contains_key(&ts) {
-                return Err(anyhow!("ts {ts} present in spill but absent from count map"));
+                return Err(anyhow!(
+                    "ts {ts} present in spill but absent from cursor map"
+                ));
             }
-            let block = pending.entry(ts).or_default();
+            if !pending.contains_key(&ts) && pending.len() == MAX_BUFFERED_BUCKETS {
+                let evicted_ts = *pending.keys().next().expect("non-empty buffer cache");
+                let block = pending.remove(&evicted_ts).expect("cached bucket");
+                let pos = cursor[&evicted_ts];
+                out.write_all_at(&block, pos)
+                    .with_context(|| format!("write {}", bucket_index_path.display()))?;
+                *cursor.get_mut(&evicted_ts).expect("timestamp cursor") =
+                    pos.saturating_add(block.len() as u64);
+            }
+            let block = pending
+                .entry(ts)
+                .or_insert_with(|| Vec::with_capacity(BUCKET_BUFFER_BYTES));
             block.extend_from_slice(&node_id.to_le_bytes());
-            if block.len() >= BUCKET_BUF_BYTES {
+            if block.len() >= BUCKET_BUFFER_BYTES {
                 let pos = cursor[&ts];
                 out.write_all_at(block, pos)
                     .with_context(|| format!("write {}", bucket_index_path.display()))?;
@@ -196,12 +245,12 @@ pub(crate) fn merge_stage(
         }
     }
     // Flush every remaining (non-empty) bucket buffer.
-    for (ts, block) in pending.iter() {
+    for (ts, block) in pending {
         if block.is_empty() {
             continue;
         }
-        let pos = cursor[ts];
-        out.write_all_at(block, pos)
+        let pos = cursor[&ts];
+        out.write_all_at(&block, pos)
             .with_context(|| format!("write {}", bucket_index_path.display()))?;
     }
     out.flush().ok();
@@ -220,12 +269,16 @@ pub(crate) fn merge_stage(
 /// Append a batch of timestamps (LE `i64`, in write order) to a shard's spill
 /// file, creating it on first use. Used by the node-writer worker.
 pub(crate) fn append_spill(file: &mut std::fs::File, timestamps: &[i64]) -> Result<()> {
-    // Pack to a local buffer then one write — keeps the hot path syscall-light.
-    let mut buf = Vec::with_capacity(timestamps.len() * 8);
-    for ts in timestamps {
-        buf.extend_from_slice(&ts.to_le_bytes());
+    // Pack in a fixed-size window: one large Encode batch must not allocate a
+    // second cardinality-sized timestamp buffer outside the shared budget.
+    let mut buf = Vec::with_capacity(BUCKET_BUFFER_BYTES);
+    for chunk in timestamps.chunks(BUCKET_BUFFER_BYTES / 8) {
+        buf.clear();
+        for ts in chunk {
+            buf.extend_from_slice(&ts.to_le_bytes());
+        }
+        file.write_all(&buf).context("append ts-group spill")?;
     }
-    file.write_all(&buf).context("append ts-group spill")?;
     Ok(())
 }
 
@@ -234,15 +287,13 @@ mod tests {
     use super::*;
 
     /// Helper: write a shard spill from a list of timestamps (node order).
-    fn write_spill(dir: &Path, shard: usize, tss: &[i64]) -> (PathBuf, HashMap<i64, u64>) {
+    fn write_spill(dir: &Path, shard: usize, tss: &[i64]) -> PathBuf {
         let path = dir.join(format!("shard-{shard}.ts"));
         let mut f = std::fs::File::create(&path).unwrap();
-        let mut counts: HashMap<i64, u64> = HashMap::new();
         for ts in tss {
             f.write_all(&ts.to_le_bytes()).unwrap();
-            *counts.entry(*ts).or_insert(0) += 1;
         }
-        (path, counts)
+        path
     }
 
     fn read_bin(path: &Path) -> Vec<u64> {
@@ -287,15 +338,17 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         // node-order timestamps; min_id = 0 so node_id == local position.
         let tss = vec![30i64, 10, 20, 10, 30, 10];
-        let (path, counts) = write_spill(tmp.path(), 0, &tss);
-        let expected: HashMap<u64, i64> =
-            tss.iter().enumerate().map(|(i, t)| (i as u64, *t)).collect();
+        let path = write_spill(tmp.path(), 0, &tss);
+        let expected: HashMap<u64, i64> = tss
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (i as u64, *t))
+            .collect();
 
         let out = tmp.path().join("bucket_index.bin");
         let g = merge_stage(
             &[ShardSpill {
                 min_id: 0,
-                count_map: counts,
                 spill_path: path,
             }],
             &out,
@@ -321,8 +374,8 @@ mod tests {
     fn merge_applies_shard_min_id() {
         let tmp = tempfile::tempdir().unwrap();
         // shard 0: min_id 0, 2 nodes; shard 1: min_id 100, 3 nodes.
-        let (p0, c0) = write_spill(tmp.path(), 0, &[5i64, 7]);
-        let (p1, c1) = write_spill(tmp.path(), 1, &[7i64, 5, 7]);
+        let p0 = write_spill(tmp.path(), 0, &[5i64, 7]);
+        let p1 = write_spill(tmp.path(), 1, &[7i64, 5, 7]);
         // Expected final node-ids: shard0 -> {0:5, 1:7}, shard1 -> {100:7,101:5,102:7}
         let mut expected: HashMap<u64, i64> = HashMap::new();
         expected.insert(0, 5);
@@ -334,8 +387,14 @@ mod tests {
         let out = tmp.path().join("bucket_index.bin");
         let g = merge_stage(
             &[
-                ShardSpill { min_id: 0, count_map: c0, spill_path: p0 },
-                ShardSpill { min_id: 100, count_map: c1, spill_path: p1 },
+                ShardSpill {
+                    min_id: 0,
+                    spill_path: p0,
+                },
+                ShardSpill {
+                    min_id: 100,
+                    spill_path: p1,
+                },
             ],
             &out,
             "stage/bucket_index.bin".to_string(),
@@ -358,13 +417,19 @@ mod tests {
     #[test]
     fn merge_is_complete_and_dedup() {
         let tmp = tempfile::tempdir().unwrap();
-        let (p0, c0) = write_spill(tmp.path(), 0, &[1i64, 2, 1, 3]);
-        let (p1, c1) = write_spill(tmp.path(), 1, &[2i64, 2]);
+        let p0 = write_spill(tmp.path(), 0, &[1i64, 2, 1, 3]);
+        let p1 = write_spill(tmp.path(), 1, &[2i64, 2]);
         let out = tmp.path().join("bucket_index.bin");
         let g = merge_stage(
             &[
-                ShardSpill { min_id: 0, count_map: c0, spill_path: p0 },
-                ShardSpill { min_id: 50, count_map: c1, spill_path: p1 },
+                ShardSpill {
+                    min_id: 0,
+                    spill_path: p0,
+                },
+                ShardSpill {
+                    min_id: 50,
+                    spill_path: p1,
+                },
             ],
             &out,
             "s/bucket_index.bin".to_string(),
@@ -387,13 +452,19 @@ mod tests {
     fn merge_handles_ts_missing_from_some_shards() {
         let tmp = tempfile::tempdir().unwrap();
         // ts=99 only in shard 1; ts=1 only in shard 0; ts=2 in both.
-        let (p0, c0) = write_spill(tmp.path(), 0, &[1i64, 2]);
-        let (p1, c1) = write_spill(tmp.path(), 1, &[2i64, 99]);
+        let p0 = write_spill(tmp.path(), 0, &[1i64, 2]);
+        let p1 = write_spill(tmp.path(), 1, &[2i64, 99]);
         let out = tmp.path().join("bucket_index.bin");
         let g = merge_stage(
             &[
-                ShardSpill { min_id: 0, count_map: c0, spill_path: p0 },
-                ShardSpill { min_id: 10, count_map: c1, spill_path: p1 },
+                ShardSpill {
+                    min_id: 0,
+                    spill_path: p0,
+                },
+                ShardSpill {
+                    min_id: 10,
+                    spill_path: p1,
+                },
             ],
             &out,
             "s/bucket_index.bin".to_string(),
@@ -418,11 +489,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let n = 100_000usize;
         let tss: Vec<i64> = (0..n).map(|i| (i % 3) as i64).collect();
-        let (path, counts) = write_spill(tmp.path(), 0, &tss);
-        assert_eq!(counts.len(), 3, "only 3 distinct timestamps");
+        let path = write_spill(tmp.path(), 0, &tss);
         let out = tmp.path().join("bucket_index.bin");
         let g = merge_stage(
-            &[ShardSpill { min_id: 0, count_map: counts, spill_path: path }],
+            &[ShardSpill {
+                min_id: 0,
+                spill_path: path,
+            }],
             &out,
             "s/bucket_index.bin".to_string(),
         )
@@ -437,5 +510,24 @@ mod tests {
         for i in b0.offset..b0.offset + b0.count {
             assert_eq!(bin[i as usize] % 3, 0);
         }
+    }
+
+    #[test]
+    fn merge_rejects_timestamp_cardinality_above_bound() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_spill(tmp.path(), 0, &[1, 2, 3]);
+        let out = tmp.path().join("bucket_index.bin");
+        let error = merge_stage_with_limit(
+            &[ShardSpill {
+                min_id: 0,
+                spill_path: path,
+            }],
+            &out,
+            "s/bucket_index.bin".to_string(),
+            2,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("2 distinct timestamps"));
+        assert!(!out.exists());
     }
 }

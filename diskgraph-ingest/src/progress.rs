@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ProgressPhase {
-    Context,
     Encode,
     PkMap,
     EdgesPassA,
@@ -361,7 +360,6 @@ fn build_log_progress() -> ProgressCallback {
 
 fn progress_label(event: &ProgressEvent) -> String {
     let phase = match event.phase {
-        ProgressPhase::Context => "context",
         ProgressPhase::Encode => "encode",
         ProgressPhase::PkMap => "pk_map",
         ProgressPhase::EdgesPassA => "edges_map",

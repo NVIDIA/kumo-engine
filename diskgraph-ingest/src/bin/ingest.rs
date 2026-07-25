@@ -1,8 +1,9 @@
 use std::path::PathBuf;
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
@@ -28,6 +29,12 @@ static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
     about = "Ingest raw CSV/Parquet into diskgraph index format."
 )]
 struct Args {
+    /// Internal worker mode used by the phase-aware OOM supervisor.
+    #[arg(long, hide = true)]
+    worker: bool,
+    /// Maximum worker restarts after an OOM-classified exit.
+    #[arg(long, default_value_t = 8)]
+    oom_retries: usize,
     /// Print the resolved default worker-thread count (cgroup-aware) and exit.
     /// The Kumo runner queries this so its thread default matches the binary's.
     /// Exclusive: pass on its own, no other args.
@@ -54,6 +61,9 @@ struct Args {
     /// Max bytes of index-build edge sort memory allowed across workers.
     #[arg(long, value_name = "BYTES")]
     index_mem_budget_bytes: Option<u64>,
+    /// Optional mode-0600 Databricks unified-authentication config file.
+    #[arg(long, value_name = "FILE")]
+    databricks_config_file: Option<PathBuf>,
     /// Stats destination root (s3://, gs://, az://, or local path).
     #[arg(long, value_name = "URL")]
     stats_dest: Option<String>,
@@ -80,11 +90,12 @@ struct Args {
     /// (fresh ingest, run all phases from scratch).
     #[arg(long, value_enum, value_name = "PHASE")]
     resume_from_phase: Option<PhaseArg>,
-    /// Override worker pool size for the context phase
-    /// (default: ~1.05 × available_parallelism).
+    /// Override concurrent source loaders/downloads during Encode.
+    /// By default Databricks uses four downloads per cgroup-aware worker,
+    /// capped at 512.
     #[arg(long)]
     context_threads: Option<usize>,
-    /// Override worker pool size for the encode phase
+    /// Override Encode worker concurrency
     /// (default: ~1.05 × available_parallelism).
     #[arg(long)]
     encode_threads: Option<usize>,
@@ -134,7 +145,6 @@ enum CatCountStrategyArg {
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum PhaseArg {
-    Context,
     Encode,
     PkMap,
     EdgesMap,
@@ -144,7 +154,6 @@ enum PhaseArg {
 impl From<PhaseArg> for diskgraph_ingest::IngestPhase {
     fn from(p: PhaseArg) -> Self {
         match p {
-            PhaseArg::Context => Self::Context,
             PhaseArg::Encode => Self::Encode,
             PhaseArg::PkMap => Self::PkMap,
             PhaseArg::EdgesMap => Self::EdgesMap,
@@ -198,6 +207,36 @@ fn main() -> Result<()> {
         println!("{}", diskgraph_ingest::default_worker_threads());
         return Ok(());
     }
+    if !args.worker {
+        return supervise_ingest(&args);
+    }
+    let worker_error_path = if matches!(args.dest, DestArg::Local) {
+        args.output
+            .as_deref()
+            .map(PathBuf::from)
+            .map(|output| output.join(WORKER_ERROR_FILENAME))
+    } else {
+        None
+    };
+    if let Some(path) = &worker_error_path {
+        let _ = fs::remove_file(path);
+    }
+    match run_worker(args) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            if let (Some(path), Some(message)) = (
+                worker_error_path,
+                diskgraph_ingest::public_ingest_error_message(&error),
+            ) {
+                let message = message.chars().take(16 * 1024).collect::<String>();
+                let _ = fs::write(path, message);
+            }
+            Err(error)
+        }
+    }
+}
+
+fn run_worker(args: Args) -> Result<()> {
     // `source`/`output` are required unless --print-resolved-threads (handled above).
     let source = args.source.clone().expect("source is required");
     let output = args.output.clone().expect("output is required");
@@ -235,6 +274,7 @@ fn main() -> Result<()> {
     let peak_tracker = PeakMemTracker::start();
     let options = IngestOptions {
         profile_dir: args.profile.clone(),
+        databricks_config_file: args.databricks_config_file.clone(),
         progress: build_progress(),
         parallel: args.parallel,
         index_mem_budget_bytes: args.index_mem_budget_bytes,
@@ -250,12 +290,15 @@ fn main() -> Result<()> {
             }
         },
         row_subsample: args.row_subsample,
-        resume_from_phase: args.resume_from_phase.map(Into::into),
-        context_threads: args.context_threads,
-        encode_threads: args.encode_threads,
-        pk_map_threads: args.pk_map_threads,
-        edges_map_threads: args.edges_map_threads,
-        index_threads: args.index_threads,
+        resume_from_phase: supervisor_phase_override()
+            .or_else(|| args.resume_from_phase.map(Into::into)),
+        source_loader_threads: supervisor_thread_override("SOURCE_LOADER")
+            .or(args.context_threads),
+        source_encoder_threads: supervisor_thread_override("SOURCE_ENCODER")
+            .or(args.encode_threads),
+        pk_map_threads: supervisor_thread_override("PK_MAP").or(args.pk_map_threads),
+        edges_map_threads: supervisor_thread_override("EDGES_MAP").or(args.edges_map_threads),
+        index_threads: supervisor_thread_override("INDEX").or(args.index_threads),
         parent_index_path: args.parent_index_path.clone(),
         resolve_columns: Vec::new(),
     };
@@ -589,6 +632,242 @@ fn main() -> Result<()> {
         explore_command_hint(&args.dest, &stats.output)
     );
     Ok(())
+}
+
+const SUPERVISOR_RESUME_ENV: &str = "DISKGRAPH_SUPERVISOR_RESUME_PHASE";
+const WORKER_ERROR_FILENAME: &str = ".ingest_error";
+
+fn supervisor_thread_override(phase: &str) -> Option<usize> {
+    std::env::var(format!("DISKGRAPH_SUPERVISOR_{phase}_THREADS"))
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+}
+
+fn supervisor_phase_override() -> Option<diskgraph_ingest::IngestPhase> {
+    std::env::var(SUPERVISOR_RESUME_ENV)
+        .ok()
+        .and_then(|value| diskgraph_ingest::IngestPhase::from_name(&value))
+}
+
+fn halve_threads(value: usize) -> usize {
+    value.div_ceil(2).max(1)
+}
+
+fn backoff_source_loader(configured: Option<usize>, automatic: usize) -> usize {
+    halve_threads(configured.unwrap_or(automatic))
+}
+
+fn is_oom_exit(status: ExitStatus) -> bool {
+    if status.code() == Some(137) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        status.signal() == Some(libc::SIGKILL)
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
+fn retry_phase_for_exit(
+    oom: bool,
+    phase: diskgraph_ingest::IngestPhase,
+) -> Option<diskgraph_ingest::IngestPhase> {
+    (oom || phase == diskgraph_ingest::IngestPhase::Encode).then_some(phase)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PublicationMarkerIdentity {
+    len: u64,
+    modified: Option<SystemTime>,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+fn publication_marker_identity(root: &std::path::Path) -> Option<PublicationMarkerIdentity> {
+    let metadata =
+        fs::metadata(root.join(diskgraph_ingest::success_marker::SUCCESS_MARKER_FILENAME)).ok()?;
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+
+    Some(PublicationMarkerIdentity {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+        #[cfg(unix)]
+        device: metadata.dev(),
+        #[cfg(unix)]
+        inode: metadata.ino(),
+    })
+}
+
+fn worker_committed_publication(
+    root: &std::path::Path,
+    before: Option<&PublicationMarkerIdentity>,
+) -> bool {
+    publication_marker_identity(root)
+        .as_ref()
+        .is_some_and(|after| Some(after) != before)
+}
+
+fn supervise_ingest(args: &Args) -> Result<()> {
+    let executable = std::env::current_exe()?;
+    let raw_args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    let default_threads = diskgraph_ingest::default_worker_threads().max(1);
+    let default_source_loader = diskgraph_ingest::databricks::default_download_parallelism();
+    let mut source_loader = args.context_threads.map(|threads| threads.max(1));
+    let mut source_encoder = args.encode_threads.unwrap_or(default_threads).max(1);
+    let mut pk_map = args.pk_map_threads.unwrap_or(default_threads).max(1);
+    let mut edges_map = args.edges_map_threads.unwrap_or(default_threads).max(1);
+    let mut index = args.index_threads.unwrap_or(default_threads).max(1);
+    let output = PathBuf::from(args.output.as_deref().expect("output is required"));
+    let worker_error_path = output.join(WORKER_ERROR_FILENAME);
+    let mut first_worker_error = None;
+    let mut resume_override = args.resume_from_phase.map(Into::into);
+    if resume_override.is_none() && matches!(args.dest, DestArg::Local) {
+        resume_override = diskgraph_ingest::initial_resume_phase(&output)?;
+    }
+
+    for attempt in 0..=args.oom_retries {
+        let mut command = Command::new(&executable);
+        command
+            .args(&raw_args)
+            .arg("--worker")
+            .env(
+                "DISKGRAPH_SUPERVISOR_SOURCE_ENCODER_THREADS",
+                source_encoder.to_string(),
+            )
+            .env("DISKGRAPH_SUPERVISOR_PK_MAP_THREADS", pk_map.to_string())
+            .env(
+                "DISKGRAPH_SUPERVISOR_EDGES_MAP_THREADS",
+                edges_map.to_string(),
+            )
+            .env("DISKGRAPH_SUPERVISOR_INDEX_THREADS", index.to_string())
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        if let Some(source_loader) = source_loader {
+            command.env(
+                "DISKGRAPH_SUPERVISOR_SOURCE_LOADER_THREADS",
+                source_loader.to_string(),
+            );
+        } else {
+            command.env_remove("DISKGRAPH_SUPERVISOR_SOURCE_LOADER_THREADS");
+        }
+        if let Some(phase) = resume_override {
+            command.env(SUPERVISOR_RESUME_ENV, phase.name());
+        } else {
+            command.env_remove(SUPERVISOR_RESUME_ENV);
+        }
+
+        #[cfg(unix)]
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            command.pre_exec(|| {
+                #[cfg(target_os = "linux")]
+                {
+                    let supervisor_pid = libc::getppid();
+                    if supervisor_pid == 1 {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::BrokenPipe,
+                            "ingest supervisor exited before worker startup",
+                        ));
+                    }
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::getppid() != supervisor_pid {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::BrokenPipe,
+                            "ingest supervisor exited during worker startup",
+                        ));
+                    }
+                }
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+
+        // A marker left by an earlier invocation is not evidence that this
+        // worker published its requested source/configuration. Capture its
+        // identity immediately before spawning; publication atomically
+        // replaces the marker, which gives the current attempt a new identity.
+        let publication_before = publication_marker_identity(&output);
+        let mut child = command.spawn()?;
+        let child_pid = child.id();
+        let status = child.wait()?;
+        if status.success() {
+            return Ok(());
+        }
+
+        if worker_committed_publication(&output, publication_before.as_ref()) {
+            // Publication is the terminal commit. A worker killed between
+            // that commit and process exit must never reopen Encode or mutate
+            // a graph already advertised as complete.
+            return Ok(());
+        }
+
+        #[cfg(unix)]
+        unsafe {
+            // The worker is a session/process-group leader; terminate any
+            // helper that survived the worker's OOM or abrupt exit.
+            libc::kill(-(child_pid as i32), libc::SIGKILL);
+        }
+
+        if first_worker_error.is_none() {
+            first_worker_error = fs::read_to_string(&worker_error_path).ok();
+        }
+        let oom = is_oom_exit(status);
+        let incomplete_phase = diskgraph_ingest::first_incomplete_phase(&output)?;
+        let Some(phase) = retry_phase_for_exit(oom, incomplete_phase) else {
+            if let Some(error) = &first_worker_error {
+                let _ = fs::write(&worker_error_path, error);
+            }
+            anyhow::bail!("DiskGraph ingest worker exited with {status}");
+        };
+        if attempt == args.oom_retries {
+            if phase == diskgraph_ingest::IngestPhase::Encode {
+                diskgraph_ingest::discard_provisional_encode_outputs(&output)?;
+            }
+            if let Some(error) = &first_worker_error {
+                let _ = fs::write(&worker_error_path, error);
+            }
+            anyhow::bail!(
+                "DiskGraph ingest exhausted {} worker retries",
+                args.oom_retries
+            );
+        }
+
+        match phase {
+            diskgraph_ingest::IngestPhase::Encode => {
+                source_loader = Some(backoff_source_loader(source_loader, default_source_loader));
+                source_encoder = halve_threads(source_encoder);
+            }
+            diskgraph_ingest::IngestPhase::PkMap => pk_map = halve_threads(pk_map),
+            diskgraph_ingest::IngestPhase::EdgesMap => edges_map = halve_threads(edges_map),
+            diskgraph_ingest::IngestPhase::Index => index = halve_threads(index),
+        }
+        resume_override = Some(phase);
+        tracing::warn!(
+            attempt = attempt + 1,
+            phase = phase.name(),
+            source_loader = source_loader.unwrap_or(default_source_loader),
+            source_encoder,
+            pk_map,
+            edges_map,
+            index,
+            oom,
+            "ingest worker failed; restarting from first incomplete phase"
+        );
+    }
+    unreachable!("supervisor loop always returns")
 }
 
 fn maybe_publish_stats(
@@ -1073,4 +1352,149 @@ fn download_cloud_config_bytes(url: &str) -> Result<Vec<u8>> {
     let object_path = object_path_from_cloud_url(url)?;
     let pooled = transfer.submit_download_bytes(object_path)?.wait()?;
     Ok(pooled.bytes().to_vec())
+}
+
+#[cfg(test)]
+mod supervisor_tests {
+    use super::*;
+
+    #[test]
+    fn thread_backoff_is_monotonic_and_never_zero() {
+        assert_eq!(halve_threads(64), 32);
+        assert_eq!(halve_threads(3), 2);
+        assert_eq!(halve_threads(2), 1);
+        assert_eq!(halve_threads(1), 1);
+        assert_eq!(backoff_source_loader(None, 44), 22);
+        assert_eq!(backoff_source_loader(Some(7), 44), 4);
+    }
+
+    #[test]
+    fn restart_phase_is_the_first_missing_durable_marker() {
+        let directory = tempfile::tempdir().unwrap();
+        let temp = directory.path().join("_tmp");
+        fs::create_dir_all(&temp).unwrap();
+        assert_eq!(
+            diskgraph_ingest::first_incomplete_phase(directory.path()).unwrap(),
+            diskgraph_ingest::IngestPhase::Encode
+        );
+
+        for expected in [
+            diskgraph_ingest::IngestPhase::PkMap,
+            diskgraph_ingest::IngestPhase::EdgesMap,
+            diskgraph_ingest::IngestPhase::Index,
+        ] {
+            let predecessor = expected.predecessors().last().unwrap();
+            fs::write(
+                temp.join(format!("_phase_complete_{}", predecessor.name())),
+                b"complete",
+            )
+            .unwrap();
+            assert_eq!(
+                diskgraph_ingest::first_incomplete_phase(directory.path()).unwrap(),
+                expected
+            );
+        }
+
+        fs::write(temp.join("_phase_complete_index"), b"complete").unwrap();
+        assert_eq!(
+            diskgraph_ingest::first_incomplete_phase(directory.path()).unwrap(),
+            diskgraph_ingest::IngestPhase::Index,
+            "publication failure reruns Index from its durable predecessor"
+        );
+    }
+
+    #[test]
+    fn initial_supervisor_resume_requires_a_valid_incomplete_encode_chain() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let temp = root.join("_tmp");
+        fs::create_dir_all(&temp).unwrap();
+
+        // Provisional Encode output is not resumable and will be wiped by the
+        // fresh worker path.
+        assert_eq!(diskgraph_ingest::initial_resume_phase(root).unwrap(), None);
+
+        fs::write(temp.join("_phase_complete_encode"), b"identity").unwrap();
+        assert_eq!(
+            diskgraph_ingest::initial_resume_phase(root).unwrap(),
+            Some(diskgraph_ingest::IngestPhase::PkMap)
+        );
+
+        fs::write(temp.join("_phase_complete_pk_map"), b"").unwrap();
+        assert_eq!(
+            diskgraph_ingest::initial_resume_phase(root).unwrap(),
+            Some(diskgraph_ingest::IngestPhase::EdgesMap)
+        );
+
+        fs::write(temp.join("_phase_complete_index"), b"").unwrap();
+        let error = diskgraph_ingest::initial_resume_phase(root).unwrap_err();
+        assert!(error.to_string().contains("after missing 'edges_map'"));
+
+        fs::write(temp.join("_phase_complete_edges_map"), b"").unwrap();
+        assert_eq!(
+            diskgraph_ingest::initial_resume_phase(root).unwrap(),
+            Some(diskgraph_ingest::IngestPhase::Index),
+            "a crash after Index but before publication reruns finalization",
+        );
+    }
+
+    #[test]
+    fn initial_supervisor_does_not_resume_a_published_snapshot() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let temp = root.join("_tmp");
+        fs::create_dir_all(&temp).unwrap();
+        fs::write(temp.join("_phase_complete_encode"), b"identity").unwrap();
+        fs::write(
+            root.join(diskgraph_ingest::success_marker::SUCCESS_MARKER_FILENAME),
+            b"published",
+        )
+        .unwrap();
+
+        assert_eq!(diskgraph_ingest::initial_resume_phase(root).unwrap(), None);
+    }
+
+    #[test]
+    fn ordinary_encode_failures_retry_but_later_failures_require_oom() {
+        use diskgraph_ingest::IngestPhase::{EdgesMap, Encode, Index, PkMap};
+
+        assert_eq!(retry_phase_for_exit(false, Encode), Some(Encode));
+        assert_eq!(retry_phase_for_exit(false, PkMap), None);
+        assert_eq!(retry_phase_for_exit(false, EdgesMap), None);
+        assert_eq!(retry_phase_for_exit(false, Index), None);
+        assert_eq!(retry_phase_for_exit(true, PkMap), Some(PkMap));
+    }
+
+    #[test]
+    fn only_a_marker_replaced_by_the_current_worker_counts_as_publication() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory
+            .path()
+            .join(diskgraph_ingest::success_marker::SUCCESS_MARKER_FILENAME);
+        fs::write(&marker, b"stale").unwrap();
+        let before = publication_marker_identity(directory.path()).unwrap();
+
+        assert!(!worker_committed_publication(
+            directory.path(),
+            Some(&before)
+        ));
+
+        let replacement = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
+        fs::write(replacement.path(), b"fresh").unwrap();
+        replacement.persist(&marker).unwrap();
+        assert!(worker_committed_publication(
+            directory.path(),
+            Some(&before)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn oom_exit_classification_accepts_sigkill_and_137_only() {
+        use std::os::unix::process::ExitStatusExt;
+
+        assert!(is_oom_exit(ExitStatus::from_raw(libc::SIGKILL)));
+        assert!(is_oom_exit(ExitStatus::from_raw(137 << 8)));
+        assert!(!is_oom_exit(ExitStatus::from_raw(1 << 8)));
+    }
 }

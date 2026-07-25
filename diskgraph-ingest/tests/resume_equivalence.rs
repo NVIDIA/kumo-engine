@@ -50,9 +50,16 @@ fn write_synthetic_graph(input_root: &Path, dataset_name: &str) -> Result<PathBu
     fs::create_dir_all(input_root)?;
 
     // Users
-    let user_ids: Vec<i64> = (0..10).collect();
-    let user_names: Vec<String> = (0..10).map(|i| format!("user-{i:02}")).collect();
-    let user_ts: Vec<i64> = (0..10).map(|i| 1_700_000_000_i64 + (i as i64) * 60).collect();
+    let mut user_ids: Vec<i64> = (0..10).collect();
+    let mut user_names: Vec<String> = (0..10).map(|i| format!("user-{i:02}")).collect();
+    let mut user_ts: Vec<i64> = (0..10)
+        .map(|i| 1_700_000_000_i64 + (i as i64) * 60)
+        .collect();
+    // Exercise phase-owned resume counters as well as index bytes: PkMap
+    // records this duplicate, while the first row remains the canonical PK.
+    user_ids.push(3);
+    user_names.push("user-duplicate".to_string());
+    user_ts.push(1_700_001_000);
     write_parquet(
         &input_root.join("users.parquet"),
         Schema::new(vec![
@@ -91,7 +98,8 @@ fn write_synthetic_graph(input_root: &Path, dataset_name: &str) -> Result<PathBu
     let mut order_item_ids: Vec<i64> = Vec::with_capacity(20);
     let mut order_ts: Vec<i64> = Vec::with_capacity(20);
     for i in 0..20i64 {
-        order_user_ids.push(i % 10);
+        // One orphan FK exercises EdgesMap key-failure state restoration.
+        order_user_ids.push(if i == 19 { 999 } else { i % 10 });
         order_item_ids.push(i % 5);
         order_ts.push(1_700_000_000_i64 + i * 30);
     }
@@ -206,6 +214,10 @@ fn run_partial(
     let marker = marker_path(output_root, stop_after);
 
     let mut child = Command::new(ingest_binary())
+        // The test must observe and kill the phase worker itself. Killing the
+        // outer OOM supervisor would intentionally leave its isolated worker
+        // session running long enough to race the in-process resume below.
+        .arg("--worker")
         .arg("--source")
         .arg(config_path)
         .arg("--output")
@@ -380,6 +392,31 @@ fn assert_indexes_byte_identical(baseline: &Path, split: &Path) -> Result<()> {
     Ok(())
 }
 
+fn assert_ingest_stats_equivalent(baseline: &Path, split: &Path) -> Result<()> {
+    fn comparable_report(root: &Path) -> Result<serde_json::Value> {
+        let path = root.join("ingest_stats.json");
+        let mut report: serde_json::Value = serde_json::from_slice(
+            &fs::read(&path).with_context(|| format!("read {}", path.display()))?,
+        )?;
+        let stats = report
+            .get_mut("stats")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(|| anyhow!("{} has no stats object", path.display()))?;
+        // These identify the destination and measure the individual process;
+        // every data-quality and graph-result field must remain identical.
+        stats.remove("output");
+        stats.remove("perf");
+        Ok(report)
+    }
+
+    let baseline_report = comparable_report(baseline)?;
+    let split_report = comparable_report(split)?;
+    if baseline_report != split_report {
+        bail!("ingest_stats.json differs after excluding output and perf fields");
+    }
+    Ok(())
+}
+
 fn compare_files_byte_for_byte(a: &Path, b: &Path) -> Result<()> {
     let ba = fs::read(a).with_context(|| format!("read baseline {}", a.display()))?;
     let bb = fs::read(b).with_context(|| format!("read split {}", b.display()))?;
@@ -435,8 +472,8 @@ fn run_phase_boundary_test(stop_after: IngestPhase) -> Result<()> {
         baseline_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
-            context_threads: Some(1),
-            encode_threads: Some(1),
+            source_loader_threads: Some(1),
+            source_encoder_threads: Some(1),
             pk_map_threads: Some(1),
             edges_map_threads: Some(1),
             index_threads: Some(1),
@@ -485,8 +522,8 @@ fn run_phase_boundary_test(stop_after: IngestPhase) -> Result<()> {
         Dest::Local,
         IngestOptions {
             resume_from_phase: Some(resume_from),
-            context_threads: Some(1),
-            encode_threads: Some(1),
+            source_loader_threads: Some(1),
+            source_encoder_threads: Some(1),
             pk_map_threads: Some(1),
             edges_map_threads: Some(1),
             index_threads: Some(1),
@@ -511,6 +548,7 @@ fn run_phase_boundary_test(stop_after: IngestPhase) -> Result<()> {
             leaked.join("split").display(),
         ));
     }
+    assert_ingest_stats_equivalent(&baseline_root, &split_root)?;
     Ok(())
 }
 
@@ -535,8 +573,8 @@ fn fresh_vs_fresh_is_deterministic() -> Result<()> {
             out.to_str().unwrap(),
             Dest::Local,
             IngestOptions {
-                context_threads: Some(1),
-                encode_threads: Some(1),
+                source_loader_threads: Some(1),
+                source_encoder_threads: Some(1),
                 pk_map_threads: Some(1),
                 edges_map_threads: Some(1),
                 index_threads: Some(1),
@@ -556,16 +594,16 @@ fn fresh_vs_fresh_is_deterministic() -> Result<()> {
     Ok(())
 }
 
-/// Resume from `Context` is a no-op: `Context` is the very first phase, so
-/// asking the pipeline to "resume from Context" is functionally equivalent
+/// Resume from `Encode` is a no-op: `Encode` is the very first phase, so
+/// asking the pipeline to "resume from Encode" is functionally equivalent
 /// to a fresh run except that the top-level output_dir wipe is skipped and
-/// CleanupGuard is disabled. There is no "fresh up to before Context" state
+/// CleanupGuard is disabled. There is no "fresh up to before Encode" state
 /// to construct, so this case is not testable with our partial-then-resume
 /// pattern. Instead, we assert the documented equivalence directly: a
-/// fresh run and a `resume_from_phase=Some(Context)` run on a clean output
+/// fresh run and a `resume_from_phase=Some(Encode)` run on a clean output
 /// dir must produce a byte-identical final index.
 #[test]
-fn resume_from_context_matches_fresh() -> Result<()> {
+fn resume_from_encode_matches_fresh() -> Result<()> {
     let tmp = tempdir()?;
     let input_root = tmp.path().join("input");
     let baseline_root = tmp.path().join("baseline");
@@ -577,8 +615,8 @@ fn resume_from_context_matches_fresh() -> Result<()> {
         baseline_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
-            context_threads: Some(1),
-            encode_threads: Some(1),
+            source_loader_threads: Some(1),
+            source_encoder_threads: Some(1),
             pk_map_threads: Some(1),
             edges_map_threads: Some(1),
             index_threads: Some(1),
@@ -592,9 +630,9 @@ fn resume_from_context_matches_fresh() -> Result<()> {
         split_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
-            resume_from_phase: Some(IngestPhase::Context),
-            context_threads: Some(1),
-            encode_threads: Some(1),
+            resume_from_phase: Some(IngestPhase::Encode),
+            source_loader_threads: Some(1),
+            source_encoder_threads: Some(1),
             pk_map_threads: Some(1),
             edges_map_threads: Some(1),
             index_threads: Some(1),
@@ -604,11 +642,6 @@ fn resume_from_context_matches_fresh() -> Result<()> {
     )?;
     assert_indexes_byte_identical(&baseline_root, &split_root)?;
     Ok(())
-}
-
-#[test]
-fn resume_from_encode_matches_fresh() -> Result<()> {
-    run_phase_boundary_test(IngestPhase::Context)
 }
 
 #[test]
@@ -645,8 +678,8 @@ fn resume_wipes_stale_pk_map_outputs() -> Result<()> {
         baseline_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
-            context_threads: Some(1),
-            encode_threads: Some(1),
+            source_loader_threads: Some(1),
+            source_encoder_threads: Some(1),
             pk_map_threads: Some(1),
             edges_map_threads: Some(1),
             index_threads: Some(1),
@@ -655,7 +688,7 @@ fn resume_wipes_stale_pk_map_outputs() -> Result<()> {
         },
     )?;
 
-    // Partial up through encode.
+    // Partial through Encode.
     run_partial(&config_path, &split_root, IngestPhase::Encode)?;
 
     // Plant a stale pk_hash file with canary content. This is what a
@@ -675,8 +708,8 @@ fn resume_wipes_stale_pk_map_outputs() -> Result<()> {
         Dest::Local,
         IngestOptions {
             resume_from_phase: Some(IngestPhase::PkMap),
-            context_threads: Some(1),
-            encode_threads: Some(1),
+            source_loader_threads: Some(1),
+            source_encoder_threads: Some(1),
             pk_map_threads: Some(1),
             edges_map_threads: Some(1),
             index_threads: Some(1),

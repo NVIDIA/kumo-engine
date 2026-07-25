@@ -366,12 +366,49 @@ fn flags() -> SamplingFlags {
     }
 }
 
+fn parent_node_id(
+    reader: &diskgraph_index::graph::GraphIndexReader,
+    table_name: &str,
+    pk: i64,
+) -> u64 {
+    let table = reader
+        .table(table_name)
+        .unwrap_or_else(|| panic!("{table_name} table"));
+    let key = table
+        .parse_pk_key(&pk.to_string())
+        .unwrap_or_else(|_| panic!("parse {table_name} primary key {pk}"));
+    table
+        .node_id_from_pk(&key)
+        .unwrap_or_else(|_| panic!("look up {table_name} primary key {pk}"))
+        .unwrap_or_else(|| panic!("{table_name} primary key {pk} missing"))
+}
+
+fn mapped_rows(
+    reader: &diskgraph_index::graph::GraphIndexReader,
+    entities: &[i64],
+    values: &[Vec<i64>],
+    value_table: &str,
+) -> HashMap<u64, Vec<i64>> {
+    entities
+        .iter()
+        .zip(values)
+        .map(|(&entity, values)| {
+            (
+                parent_node_id(reader, "users", entity),
+                values
+                    .iter()
+                    .map(|&pk| parent_node_id(reader, value_table, pk) as i64)
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
 /// Full S3 label-path contract: seed from `entity_node_id`, labels from
 /// `target_node_ids`, rhs never rooted, subgraph produced.
 #[test]
 fn test_resolution_runtime_batch_label_path() {
     let tmp = tempdir().unwrap();
-    // 1-shard parent → node id == PK value, so resolved ids == reference values.
     let entities: Vec<i64> = vec![0, 3, 5, 7];
     let targets: Vec<Vec<i64>> = vec![vec![1, 2], vec![4], vec![6, 0, 3], vec![]];
     let parent_root =
@@ -404,17 +441,35 @@ fn test_resolution_runtime_batch_label_path() {
         )
         .expect("sample_runtime_batch must succeed on the resolution label path");
 
-    // (a) seed set == entity_node_id column == ENTITY1 values (id == PK in a
-    //     1-shard parent). `task.seed_node_ids` carries the primary-entity ids.
-    let expected_seeds: Vec<u64> = entities.iter().map(|&e| e as u64).collect();
+    // Parallel Encode may assign parent and stage node IDs in a different
+    // order. Compare the seed set through the parent PK map, then use the
+    // emitted seed order for every row-aligned task field.
+    let expected_by_seed = mapped_rows(reader.as_ref(), &entities, &targets, "users");
+    let mut expected_seeds: Vec<u64> = expected_by_seed.keys().copied().collect();
+    expected_seeds.sort_unstable();
+    let mut actual_seeds = batch.task.seed_node_ids.clone();
+    actual_seeds.sort_unstable();
     assert_eq!(
-        batch.task.seed_node_ids, expected_seeds,
+        actual_seeds, expected_seeds,
         "(a) seed set must equal the entity_node_id column values"
     );
 
     // (b) ragged labels == per-row target list lengths + concatenated ids.
-    let expected_counts: Vec<u32> = targets.iter().map(|t| t.len() as u32).collect();
-    let expected_rhs: Vec<i64> = targets.iter().flatten().copied().collect();
+    let expected_rows: Vec<&Vec<i64>> = batch
+        .task
+        .seed_node_ids
+        .iter()
+        .map(|seed| {
+            expected_by_seed
+                .get(seed)
+                .unwrap_or_else(|| panic!("unexpected seed node ID {seed}"))
+        })
+        .collect();
+    let expected_counts: Vec<u32> = expected_rows
+        .iter()
+        .map(|targets| targets.len() as u32)
+        .collect();
+    let expected_rhs: Vec<i64> = expected_rows.into_iter().flatten().copied().collect();
     assert_eq!(
         batch.task.lp_pos_counts, expected_counts,
         "(b) lp_pos_counts must equal per-row target list lengths"
@@ -513,21 +568,47 @@ fn test_resolution_runtime_batch_orphan_dropped_at_ingest() {
         )
         .expect("clean post-drop stage must sample");
 
-    // Anchors are the member entities, in surviving order — no null slot 0.
+    let surviving_entities = vec![0, 5, 7];
+    let surviving_targets = vec![vec![1], vec![6], vec![4, 2]];
+    let expected_by_seed = mapped_rows(
+        reader.as_ref(),
+        &surviving_entities,
+        &surviving_targets,
+        "users",
+    );
+    let mut expected_seeds: Vec<u64> = expected_by_seed.keys().copied().collect();
+    expected_seeds.sort_unstable();
+    let mut actual_seeds = batch.task.seed_node_ids.clone();
+    actual_seeds.sort_unstable();
+
+    // Anchors are exactly the member entities — no orphan/null slot.
     assert_eq!(
-        batch.task.seed_node_ids,
-        vec![0u64, 5, 7],
+        actual_seeds,
+        expected_seeds,
         "seed set == surviving member anchors (orphan already dropped)"
     );
     // Each kept row keeps its own targets — the dropped orphan's [2, 3] are gone.
+    let expected_rows: Vec<&Vec<i64>> = batch
+        .task
+        .seed_node_ids
+        .iter()
+        .map(|seed| {
+            expected_by_seed
+                .get(seed)
+                .unwrap_or_else(|| panic!("unexpected seed node ID {seed}"))
+        })
+        .collect();
     assert_eq!(
         batch.task.lp_pos_counts,
-        vec![1u32, 1, 2],
+        expected_rows
+            .iter()
+            .map(|targets| targets.len() as u32)
+            .collect::<Vec<_>>(),
         "ragged label counts align with the surviving rows"
     );
     assert_eq!(
         batch.task.lp_pos_rhs_global,
-        vec![1i64, 6, 4, 2],
+        expected_rows.into_iter().flatten().copied().collect::<Vec<_>>(),
         "the orphan row's targets [2, 3] are absent"
     );
     assert_eq!(batch.task.input_ids, vec![0u32, 1, 2]);
@@ -589,24 +670,37 @@ fn test_resolution_rhs_not_rooted() {
         )
         .expect("sample_runtime_batch must succeed");
 
-    // Labels carry the positives 6, 7.
-    assert_eq!(batch.task.lp_pos_rhs_global, vec![6, 7]);
+    let expected_by_seed = mapped_rows(reader.as_ref(), &entities, &targets, "users");
+    let expected_rhs: Vec<i64> = batch
+        .task
+        .seed_node_ids
+        .iter()
+        .map(|seed| {
+            expected_by_seed
+                .get(seed)
+                .unwrap_or_else(|| panic!("unexpected seed node ID {seed}"))[0]
+        })
+        .collect();
+
+    // Labels carry the two resolved positives in the emitted seed-row order.
+    assert_eq!(batch.task.lp_pos_rhs_global, expected_rhs);
     assert_eq!(batch.task.lp_pos_counts, vec![1, 1]);
 
     // The positives are NOT rooted: node_ids[users] must contain only the
-    // entity seeds {0,1} (hop 0, fanout 0 → no neighbors), and crucially NOT
-    // the positive ids {6,7}.
+    // entity seeds (hop 0, fanout 0 → no neighbors), and crucially NOT the
+    // positive ids.
     let main = batch.graphs.get("main").expect("main channel");
     let users_nodes = main.node_ids.get("users").expect("users node set");
-    assert!(
-        users_nodes.contains(&0) && users_nodes.contains(&1),
-        "entity seeds must be present"
-    );
-    assert!(
-        !users_nodes.contains(&6) && !users_nodes.contains(&7),
-        "positives must NOT be rooted into node_ids[users] (leak-free label path); got {:?}",
-        users_nodes
-    );
+    for seed in expected_by_seed.keys() {
+        assert!(users_nodes.contains(seed), "entity seed {seed} must be present");
+    }
+    for positive in expected_by_seed.values().flatten() {
+        assert!(
+            !users_nodes.contains(&(*positive as u64)),
+            "positive {positive} must NOT be rooted into node_ids[users] \
+             (leak-free label path); got {users_nodes:?}"
+        );
+    }
 }
 
 // ── STATIC LP past-visit exclude hydration ───────────────────────────────────
@@ -727,7 +821,6 @@ fn build_fixture_with_exclude(
 #[test]
 fn test_resolution_exclude_hydrate() {
     let tmp = tempdir().unwrap();
-    // 1-shard parent → node id == PK value.
     let entities: Vec<i64> = vec![0, 1, 2, 3];
     let targets: Vec<Vec<i64>> = vec![vec![5], vec![6], vec![7], vec![4]];
     // Past-visit excludes: row0 empty, row1 one, row2 multi, row3 empty.
@@ -762,9 +855,29 @@ fn test_resolution_exclude_hydrate() {
         )
         .expect("sample_runtime_batch on the exclude path");
 
-    // Ragged exclude == per-row exclude list lengths + concatenated ids (order).
-    let expected_counts: Vec<u32> = excludes.iter().map(|e| e.len() as u32).collect();
-    let expected_rhs: Vec<i64> = excludes.iter().flatten().copied().collect();
+    // Parallel Encode may reorder stage rows and parent node IDs. Reassociate
+    // both ragged columns through the resolved entity seed.
+    let expected_excludes = mapped_rows(reader.as_ref(), &entities, &excludes, "users");
+    let expected_targets = mapped_rows(reader.as_ref(), &entities, &targets, "users");
+    let expected_exclude_rows: Vec<&Vec<i64>> = batch
+        .task
+        .seed_node_ids
+        .iter()
+        .map(|seed| {
+            expected_excludes
+                .get(seed)
+                .unwrap_or_else(|| panic!("unexpected seed node ID {seed}"))
+        })
+        .collect();
+    let expected_counts: Vec<u32> = expected_exclude_rows
+        .iter()
+        .map(|excludes| excludes.len() as u32)
+        .collect();
+    let expected_rhs: Vec<i64> = expected_exclude_rows
+        .into_iter()
+        .flatten()
+        .copied()
+        .collect();
     assert_eq!(
         batch.task.lp_exclude_counts, expected_counts,
         "lp_exclude_counts must equal per-row exclude list lengths"
@@ -774,9 +887,21 @@ fn test_resolution_exclude_hydrate() {
         "lp_exclude_rhs_global must equal the concatenated exclude_node_ids in order"
     );
     // Sanity: positives unaffected by exclude hydration.
+    let expected_positive_rhs: Vec<i64> = batch
+        .task
+        .seed_node_ids
+        .iter()
+        .flat_map(|seed| {
+            expected_targets
+                .get(seed)
+                .unwrap_or_else(|| panic!("unexpected seed node ID {seed}"))
+                .iter()
+                .copied()
+        })
+        .collect();
     assert_eq!(
         batch.task.lp_pos_rhs_global,
-        targets.iter().flatten().copied().collect::<Vec<i64>>()
+        expected_positive_rhs
     );
 }
 
@@ -850,8 +975,7 @@ const TWO_TOWER_M: usize = 3;
 /// resulting batch. `n_users = 8` → orders id-space is 0..=31.
 fn run_two_tower(tmp: &tempfile::TempDir, tt_id: &str, neg_rnd_seed: u64) -> crate::OwnedBatch {
     let entities: Vec<i64> = vec![0, 1, 2, 3];
-    // order_id == node-id in a 1-shard parent (orders written user-major: user u
-    // owns orders [4u, 4u+3]). Multi-positive rows so the inner pick has choices.
+    // Multi-positive rows so the inner pick has choices.
     let targets: Vec<Vec<i64>> = vec![
         vec![0, 1, 2, 3],   // row 0: 4 positives
         vec![5, 6],         // row 1: 2 positives
@@ -896,8 +1020,50 @@ fn run_two_tower(tmp: &tempfile::TempDir, tt_id: &str, neg_rnd_seed: u64) -> cra
         )
         .expect("two-tower sample_runtime_batch must succeed");
 
+    let targets_by_seed = mapped_rows(reader.as_ref(), &entities, &targets, "orders");
+    let mapped_targets = batch
+        .task
+        .seed_node_ids
+        .iter()
+        .map(|seed| {
+            targets_by_seed
+                .get(seed)
+                .unwrap_or_else(|| panic!("unexpected seed node ID {seed}"))
+                .clone()
+        })
+        .collect();
+    let entity_pk_by_seed: HashMap<u64, i64> = entities
+        .iter()
+        .map(|&pk| (parent_node_id(reader.as_ref(), "users", pk), pk))
+        .collect();
+    let chosen_target_pks_by_entity: HashMap<i64, i64> = batch
+        .task
+        .seed_node_ids
+        .iter()
+        .zip(batch.task.lp_pos_rhs_global.iter())
+        .map(|(&seed, &chosen)| {
+            let entity_pk = *entity_pk_by_seed
+                .get(&seed)
+                .unwrap_or_else(|| panic!("unexpected seed node ID {seed}"));
+            let target_pk = targets
+                .iter()
+                .flatten()
+                .copied()
+                .find(|&pk| parent_node_id(reader.as_ref(), "orders", pk) as i64 == chosen)
+                .unwrap_or_else(|| panic!("chosen order node ID {chosen} has no fixture PK"));
+            (entity_pk, target_pk)
+        })
+        .collect();
+    let mut expected_seed_node_ids: Vec<u64> = entities
+        .iter()
+        .map(|&pk| parent_node_id(reader.as_ref(), "users", pk))
+        .collect();
+    expected_seed_node_ids.sort_unstable();
+
     OwnedBatch {
-        targets: targets.clone(),
+        targets: mapped_targets,
+        chosen_target_pks_by_entity,
+        expected_seed_node_ids,
         lp_pos_counts: batch.task.lp_pos_counts.clone(),
         lp_pos_rhs_global: batch.task.lp_pos_rhs_global.clone(),
         lp_pos_mask: batch.task.lp_pos_mask.clone(),
@@ -918,6 +1084,8 @@ fn run_two_tower(tmp: &tempfile::TempDir, tt_id: &str, neg_rnd_seed: u64) -> cra
 /// holding the full RuntimeBatch across helper boundaries).
 struct OwnedBatch {
     targets: Vec<Vec<i64>>,
+    chosen_target_pks_by_entity: HashMap<i64, i64>,
+    expected_seed_node_ids: Vec<u64>,
     lp_pos_counts: Vec<u32>,
     lp_pos_rhs_global: Vec<i64>,
     lp_pos_mask: Vec<bool>,
@@ -985,9 +1153,11 @@ fn test_resolution_two_tower_roots_one_positive_then_negatives() {
         "(d) lp_pos_mask length B, all chosen positives resolved"
     );
     // seed_node_ids stays the lhs primary entity ids (NOT polluted by rooting).
+    let mut actual_seed_node_ids = b.seed_node_ids.clone();
+    actual_seed_node_ids.sort_unstable();
     assert_eq!(
-        b.seed_node_ids,
-        vec![0u64, 1, 2, 3],
+        actual_seed_node_ids,
+        b.expected_seed_node_ids,
         "lhs seed_node_ids must be the entity ids, snapshot before rooting"
     );
 }
@@ -1011,15 +1181,14 @@ fn test_resolution_two_tower_epoch_seed_changes_chosen_positive() {
     // the two seeds (rows 0/1/2 have >1 positive; row 3 has exactly 1 so it can't
     // change). This proves epoch coverage is already delivered by the seed flow.
     let changed = ep0
-        .lp_pos_rhs_global
+        .chosen_target_pks_by_entity
         .iter()
-        .zip(ep1.lp_pos_rhs_global.iter())
-        .any(|(a, c)| a != c);
+        .any(|(entity, target)| ep1.chosen_target_pks_by_entity.get(entity) != Some(target));
     assert!(
         changed,
         "different negatives seeds (= epochs) must pick different positives for at \
          least one multi-positive anchor (epoch coverage); ep0={:?} ep1={:?}",
-        ep0.lp_pos_rhs_global, ep1.lp_pos_rhs_global
+        ep0.chosen_target_pks_by_entity, ep1.chosen_target_pks_by_entity
     );
 }
 

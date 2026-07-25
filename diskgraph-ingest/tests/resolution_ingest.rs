@@ -18,12 +18,15 @@ use anyhow::Result;
 use arrow_array::{ArrayRef, Int64Array, ListArray, RecordBatch, TimestampSecondArray};
 use arrow_buffer::OffsetBuffer;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use diskgraph_ingest::graph_config::{ColumnSpec, DataSource, GraphConfig, IngestedType, TableSpec};
+use diskgraph_ingest::graph_config::{
+    ColumnSpec, DataSource, GraphConfig, IngestedType, TableSpec,
+};
 use diskgraph_ingest::{
     ingest_with_stats_from_source, Dest, IngestOptions, ResolveColumnSpec, ResolveKind,
 };
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -113,11 +116,7 @@ fn ingest_tiny_parent_index(parent_root: &Path, num_rows: i64) -> Result<()> {
 /// Write a stage parquet: `ENTITY1 Int64` (scalar PK ref), `TIMESTAMP`,
 /// `TARGET1 List<Int64>` (list of PK refs). One row per `entity`, with the
 /// matching `targets` list.
-fn write_stage_parquet(
-    path: &Path,
-    entities: &[i64],
-    targets: &[Vec<i64>],
-) -> Result<()> {
+fn write_stage_parquet(path: &Path, entities: &[i64], targets: &[Vec<i64>]) -> Result<()> {
     assert_eq!(entities.len(), targets.len());
     let n = entities.len();
     let schema = Schema::new(vec![
@@ -326,36 +325,57 @@ fn train_seeds_node_count(output: &Path) -> u64 {
     stage_node_count(output, "train_seeds")
 }
 
-/// Read one `train_seeds` node's rowpack columns back as JSON.
-fn read_node_json(output: &Path, node_id: u64) -> serde_json::Value {
+fn parent_node_id(tmp: &tempfile::TempDir, pk: i64) -> u64 {
+    let parent_root = tmp.path().join("parent_idx");
+    let metadata_path = parent_root.join("index_metadata.json");
+    let reader = diskgraph_index::graph::GraphIndexReader::open(&metadata_path, &parent_root)
+        .expect("open parent index");
+    let table = reader.table("users").expect("users table");
+    let key = table
+        .parse_pk_key(&pk.to_string())
+        .expect("parse parent primary key");
+    table
+        .node_id_from_pk(&key)
+        .expect("look up parent primary key")
+        .unwrap_or_else(|| panic!("parent primary key {pk} missing"))
+}
+
+fn resolved_rows_by_entity(output: &Path, table_name: &str) -> HashMap<u64, serde_json::Value> {
     let metadata_path = output.join("index_metadata.json");
     let reader = diskgraph_index::graph::GraphIndexReader::open(&metadata_path, output)
         .expect("open produced extension");
-    let table = reader.table("train_seeds").expect("train_seeds table");
-    let view = table.edges_for_node(node_id).expect("edges_for_node");
-    table
-        .decode_node_data_json(&view)
-        .expect("decode_node_data_json")
-        .expect("node data present")
+    let table = reader
+        .table(table_name)
+        .unwrap_or_else(|| panic!("{table_name} table"));
+    (0..table.node_count())
+        .map(|node_id| {
+            let view = table.edges_for_node(node_id).expect("edges_for_node");
+            let json = table
+                .decode_node_data_json(&view)
+                .expect("decode node data")
+                .expect("node data present");
+            let entity_node_id = json
+                .get("entity_node_id")
+                .and_then(|value| value.as_u64())
+                .unwrap_or_else(|| panic!("entity_node_id missing/not u64 in {json}"));
+            (entity_node_id, json)
+        })
+        .collect()
 }
 
 #[test]
 fn test_resolution_scalar_entity_node_id() {
     let tmp = tempdir().unwrap();
-    // ENTITY1 = parent PK i → node id i (single shard, contiguous).
     let entities: Vec<i64> = vec![0, 3, 7, 15];
     let targets: Vec<Vec<i64>> = vec![vec![1], vec![2], vec![4], vec![8]];
     let output = ingest_resolution(&tmp, &entities, &targets).expect("resolution ingest");
+    let rows = resolved_rows_by_entity(&output, "train_seeds");
 
-    for (row, &ent) in entities.iter().enumerate() {
-        let json = read_node_json(&output, row as u64);
-        let got = json
-            .get("entity_node_id")
-            .and_then(|v| v.as_u64())
-            .unwrap_or_else(|| panic!("row {row}: entity_node_id missing/not u64 in {json}"));
-        assert_eq!(
-            got, ent as u64,
-            "row {row}: entity_node_id must resolve ENTITY1={ent} to node id {ent}"
+    for ent in entities {
+        let expected_node_id = parent_node_id(&tmp, ent);
+        assert!(
+            rows.contains_key(&expected_node_id),
+            "entity_node_id must resolve ENTITY1={ent} to parent node id {expected_node_id}: {rows:?}"
         );
     }
 }
@@ -384,10 +404,13 @@ fn test_resolution_orphan_anchor_row_dropped_partial_list_kept_and_counted() {
         "orphan-anchor row dropped at encode, member-anchor row survives"
     );
 
-    let row0 = read_node_json(&output, 0);
+    let rows = resolved_rows_by_entity(&output, "train_seeds");
+    let row0 = rows
+        .get(&parent_node_id(&tmp, 0))
+        .expect("member entity row survives");
     assert_eq!(
         row0.get("entity_node_id").and_then(|v| v.as_u64()),
-        Some(0),
+        Some(parent_node_id(&tmp, 0)),
         "member entity resolves: {row0}"
     );
     let row0_targets: Vec<i64> = row0
@@ -399,7 +422,10 @@ fn test_resolution_orphan_anchor_row_dropped_partial_list_kept_and_counted() {
         .collect();
     assert_eq!(
         row0_targets,
-        vec![1, 2],
+        vec![
+            parent_node_id(&tmp, 1) as i64,
+            parent_node_id(&tmp, 2) as i64
+        ],
         "orphan list element dropped, member order preserved"
     );
 
@@ -443,18 +469,16 @@ fn test_resolution_scalar_orphan_anchor_drops_row() {
         2,
         "two orphan-anchor rows dropped, two member-anchor rows survive"
     );
-    // Surviving nodes carry the member anchors, in input order.
+    // Parallel Encode may change output node order; compare by semantic
+    // parent-primary-key resolution instead.
+    let rows = resolved_rows_by_entity(&output, "train_seeds");
+    let mut got: Vec<_> = rows.keys().copied().collect();
+    got.sort_unstable();
+    let mut expected = vec![parent_node_id(&tmp, 0), parent_node_id(&tmp, 7)];
+    expected.sort_unstable();
     assert_eq!(
-        read_node_json(&output, 0)
-            .get("entity_node_id")
-            .and_then(|v| v.as_u64()),
-        Some(0)
-    );
-    assert_eq!(
-        read_node_json(&output, 1)
-            .get("entity_node_id")
-            .and_then(|v| v.as_u64()),
-        Some(7)
+        got, expected,
+        "surviving rows must resolve the two member anchors"
     );
 }
 
@@ -473,10 +497,13 @@ fn test_resolution_all_orphan_positives_drops_row() {
         1,
         "all-orphan-positives row dropped, ≥1-target row survives"
     );
-    let survivor = read_node_json(&output, 0);
+    let rows = resolved_rows_by_entity(&output, "train_seeds");
+    let survivor = rows
+        .get(&parent_node_id(&tmp, 3))
+        .expect("resolvable-target row survives");
     assert_eq!(
         survivor.get("entity_node_id").and_then(|v| v.as_u64()),
-        Some(3),
+        Some(parent_node_id(&tmp, 3)),
         "the surviving row is the one with a resolvable target: {survivor}"
     );
 }
@@ -500,21 +527,28 @@ fn test_resolution_list_target_node_ids() {
     // Lists of varying length, including order-sensitivity.
     let targets: Vec<Vec<i64>> = vec![vec![5, 2, 9], vec![10], vec![0, 15, 7, 3]];
     let output = ingest_resolution(&tmp, &entities, &targets).expect("resolution ingest");
+    let rows = resolved_rows_by_entity(&output, "train_seeds");
 
-    for (row, expected) in targets.iter().enumerate() {
-        let json = read_node_json(&output, row as u64);
+    for (&entity, expected) in entities.iter().zip(&targets) {
+        let entity_node_id = parent_node_id(&tmp, entity);
+        let json = rows
+            .get(&entity_node_id)
+            .unwrap_or_else(|| panic!("resolved row for entity {entity} missing"));
         let arr = json
             .get("target_node_ids")
             .and_then(|v| v.as_array())
-            .unwrap_or_else(|| panic!("row {row}: target_node_ids missing/not array in {json}"));
+            .unwrap_or_else(|| panic!("target_node_ids missing/not array in {json}"));
         let got: Vec<i64> = arr
             .iter()
             .map(|v| v.as_i64().expect("list element must be int"))
             .collect();
-        // In a 1-shard parent, node id == PK value, so resolved == reference.
+        let expected: Vec<i64> = expected
+            .iter()
+            .map(|&pk| parent_node_id(&tmp, pk) as i64)
+            .collect();
         assert_eq!(
-            &got, expected,
-            "row {row}: target_node_ids must resolve TARGET1 list in order"
+            got, expected,
+            "target_node_ids must resolve TARGET1 list in order for entity {entity}"
         );
     }
 }
@@ -555,7 +589,11 @@ fn write_stage_parquet_with_exclude(
     };
     let schema = Schema::new(vec![
         Field::new("ENTITY1", DataType::Int64, false),
-        Field::new("TIMESTAMP", DataType::Timestamp(TimeUnit::Second, None), false),
+        Field::new(
+            "TIMESTAMP",
+            DataType::Timestamp(TimeUnit::Second, None),
+            false,
+        ),
         Field::new(
             "TARGET1",
             DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
@@ -675,20 +713,10 @@ fn ingest_exclude_resolution(
     output
 }
 
-/// Read a `val_seeds` node's resolved `exclude_node_ids` back as a Vec.
-fn read_exclude_node_ids(output: &Path, node_id: u64) -> Vec<i64> {
-    let metadata_path = output.join("index_metadata.json");
-    let reader = diskgraph_index::graph::GraphIndexReader::open(&metadata_path, output)
-        .expect("open produced extension");
-    let table = reader.table("val_seeds").expect("val_seeds table");
-    let view = table.edges_for_node(node_id).expect("edges_for_node");
-    let json = table
-        .decode_node_data_json(&view)
-        .expect("decode")
-        .expect("node data present");
+fn exclude_node_ids(json: &serde_json::Value) -> Vec<i64> {
     json.get("exclude_node_ids")
         .and_then(|v| v.as_array())
-        .unwrap_or_else(|| panic!("node {node_id}: exclude_node_ids missing/not array in {json}"))
+        .unwrap_or_else(|| panic!("exclude_node_ids missing/not array in {json}"))
         .iter()
         .map(|v| v.as_i64().expect("int"))
         .collect()
@@ -699,17 +727,24 @@ fn test_resolution_exclude_node_ids() {
     let tmp = tempdir().unwrap();
     let entities: Vec<i64> = vec![0, 1, 2];
     let targets: Vec<Vec<i64>> = vec![vec![5], vec![6], vec![7]];
-    // val-style exclude lists: row0 empty, row1 one prior, row2 multi (order
-    // preserved; node id == PK in 1-shard parent).
+    // val-style exclude lists: row0 empty, row1 one prior, row2 multi.
     let excludes: Vec<Vec<i64>> = vec![vec![], vec![3], vec![1, 8, 4]];
     let output = ingest_exclude_resolution(&tmp, &entities, &targets, &excludes);
+    let rows = resolved_rows_by_entity(&output, "val_seeds");
 
-    for (row, expected) in excludes.iter().enumerate() {
-        // 1-shard parent → node id == PK, so resolved == reference (order kept).
+    for (&entity, expected) in entities.iter().zip(&excludes) {
+        let entity_node_id = parent_node_id(&tmp, entity);
+        let json = rows
+            .get(&entity_node_id)
+            .unwrap_or_else(|| panic!("resolved row for entity {entity} missing"));
+        let expected: Vec<i64> = expected
+            .iter()
+            .map(|&pk| parent_node_id(&tmp, pk) as i64)
+            .collect();
         assert_eq!(
-            &read_exclude_node_ids(&output, row as u64),
+            exclude_node_ids(json),
             expected,
-            "row {row}: exclude_node_ids must resolve exclude_target_keys in order"
+            "exclude_node_ids must resolve exclude_target_keys in order for entity {entity}"
         );
     }
 }
@@ -732,12 +767,22 @@ fn test_resolution_all_orphan_exclude_keeps_row() {
         2,
         "all-orphan-exclude row is kept (exclude empties never drop)"
     );
+    let rows = resolved_rows_by_entity(&output, "val_seeds");
     assert_eq!(
-        read_exclude_node_ids(&output, 0),
+        exclude_node_ids(
+            rows.get(&parent_node_id(&tmp, 0))
+                .expect("row for entity 0"),
+        ),
         Vec::<i64>::new(),
         "all-orphan exclude resolves to empty"
     );
-    assert_eq!(read_exclude_node_ids(&output, 1), vec![3]);
+    assert_eq!(
+        exclude_node_ids(
+            rows.get(&parent_node_id(&tmp, 1))
+                .expect("row for entity 1"),
+        ),
+        vec![parent_node_id(&tmp, 3) as i64]
+    );
 }
 
 #[test]

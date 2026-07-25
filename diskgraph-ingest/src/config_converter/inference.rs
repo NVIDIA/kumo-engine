@@ -680,6 +680,122 @@ fn multicat_string_value(array: &dyn Array, row: usize) -> Option<&str> {
     }
 }
 
+struct ExplicitMulticatCandidate {
+    name: String,
+    declared: String,
+    total: usize,
+    hits: usize,
+}
+
+/// Bounded, transport-independent validation folded into the normal Encode
+/// pass. Once each candidate has 1,000 non-empty values, observation is a
+/// no-op, so this never grows with result size.
+pub(crate) struct ExplicitMulticatDelimiterValidator {
+    table: String,
+    candidates: Vec<ExplicitMulticatCandidate>,
+}
+
+impl ExplicitMulticatDelimiterValidator {
+    pub(crate) fn new(table: &crate::graph_config::TableSpec) -> Self {
+        let candidates = table
+            .columns
+            .iter()
+            .filter_map(|column| {
+                let scalar_string_source = matches!(
+                    column.ingested_dtype,
+                    IngestedType::String | IngestedType::StringArray | IngestedType::Int64Array,
+                );
+                (scalar_string_source
+                    && column.semantic_type == Some(SemanticType::Multicategorical))
+                .then(|| {
+                    column
+                        .multicategorical_delimiter
+                        .as_deref()
+                        .map(|declared| ExplicitMulticatCandidate {
+                            name: column.name.clone(),
+                            declared: declared.to_string(),
+                            total: 0,
+                            hits: 0,
+                        })
+                })
+                .flatten()
+            })
+            .collect();
+        Self {
+            table: table.name.clone(),
+            candidates,
+        }
+    }
+
+    pub(crate) fn observe(&mut self, batch: &arrow_array::RecordBatch) {
+        for candidate in &mut self.candidates {
+            if candidate.total >= MULTICAT_MAX_SAMPLES {
+                continue;
+            }
+            let Ok(array_index) = batch.schema().index_of(&candidate.name) else {
+                continue;
+            };
+            let array = batch.column(array_index);
+            for row in 0..batch.num_rows() {
+                if candidate.total >= MULTICAT_MAX_SAMPLES {
+                    break;
+                }
+                if array.is_null(row) {
+                    continue;
+                }
+                let Some(text) = multicat_string_value(array.as_ref(), row) else {
+                    continue;
+                };
+                if text.is_empty() {
+                    continue;
+                }
+                candidate.total += 1;
+                if text.contains(&candidate.declared) {
+                    candidate.hits += 1;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn finish(self) -> Result<(), ConvertError> {
+        for candidate in self.candidates {
+            if candidate.total == 0 {
+                tracing::warn!(
+                    table = %self.table,
+                    column = %candidate.name,
+                    "explicit multicategorical_delimiter could not be validated: \
+                     no non-empty sample rows in the bounded Encode pass",
+                );
+                continue;
+            }
+            if candidate.hits == 0 {
+                return Err(ConvertError::MulticategoricalDelimiterMismatch {
+                    table: self.table.clone(),
+                    column: candidate.name,
+                    declared: candidate.declared,
+                    hits: 0,
+                    total: candidate.total,
+                    required: 1,
+                    sample: "<omitted>".to_string(),
+                });
+            }
+            let suspicious_floor =
+                (MULTICAT_EXPLICIT_SUSPICIOUS_FRACTION * candidate.total as f64).ceil() as usize;
+            if candidate.hits < suspicious_floor {
+                tracing::warn!(
+                    table = %self.table,
+                    column = %candidate.name,
+                    declared = %candidate.declared,
+                    hits = candidate.hits,
+                    total = candidate.total,
+                    "explicit multicategorical_delimiter appears in fewer rows than expected",
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Detect the per-column `multicategorical_delimiter` for every
 /// `String + Multicategorical` column that didn't come with an explicit
 /// value on the upstream Kumo config.

@@ -1730,6 +1730,8 @@ dependencies = [
  "arrow-array",
  "arrow-buffer",
  "arrow-csv",
+ "arrow-data",
+ "arrow-ipc",
  "arrow-schema",
  "base64 0.22.1",
  "bytes",

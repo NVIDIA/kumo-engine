@@ -35,6 +35,12 @@ pub struct IngestStats {
     pub pk_duplicate_total: u64,
     pub pk_duplicate_samples: HashMap<String, Vec<String>>,
     pub dropped_rows_counts: HashMap<String, u64>,
+    /// Logical Arrow rows consumed from each input table.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub source_rows_by_table: HashMap<String, u64>,
+    /// Logical Arrow bytes consumed from each input table.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub source_bytes_by_table: HashMap<String, u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trimmed_strings: Option<u64>,
     pub perf: PerfStats,
@@ -102,6 +108,14 @@ impl KeyFailureState {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PerfStats {
     pub wall_time_ms: u64,
+    #[serde(default)]
+    pub encode_wall_nanos: u64,
+    /// Time the Encode consumer spent waiting for its source transport to
+    /// produce the next Arrow batch. Subtracting this from Encode wall time is
+    /// a bounded encode-ceiling measurement; it does not require retaining or
+    /// rewriting the input dataset.
+    #[serde(default)]
+    pub source_input_wait_nanos: u64,
     pub context_wall_ms: u64,
     pub encode_wall_ms: u64,
     pub pk_map_wall_ms: u64,
@@ -112,6 +126,16 @@ pub struct PerfStats {
     pub bytes_written: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_total_bytes: Option<u64>,
+    #[serde(default)]
+    pub databricks_wire_bytes: u64,
+    #[serde(default)]
+    pub databricks_decoded_ipc_bytes: u64,
+    #[serde(default)]
+    pub databricks_query_startup_nanos: u64,
+    #[serde(default)]
+    pub encode_memory_high_water_bytes: u64,
+    #[serde(default)]
+    pub source_rows: u64,
     pub temp_edges_src_bytes: u64,
     pub temp_fkeys_bytes: u64,
     pub temp_edges_map_bytes: u64,

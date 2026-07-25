@@ -265,6 +265,7 @@ fn sort_key_alignment_multi_file_edge_table() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
+            databricks_config_file: None,
             profile_dir: None,
             progress: None,
             parallel: true, // essential: the bug requires parallel file processing
@@ -274,8 +275,8 @@ fn sort_key_alignment_multi_file_edge_table() -> Result<()> {
             cat_count_strategy: diskgraph_ingest::col_stats::CategoryCountStrategy::None,
             row_subsample: false,
             resume_from_phase: None,
-            context_threads: None,
-            encode_threads: None,
+            source_loader_threads: None,
+            source_encoder_threads: None,
             pk_map_threads: None,
             edges_map_threads: None,
             index_threads: None,
@@ -836,6 +837,7 @@ fn sort_key_alignment_node_table_fk() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
+            databricks_config_file: None,
             profile_dir: None,
             progress: None,
             parallel: true, // essential: the bug requires parallel file processing
@@ -845,8 +847,8 @@ fn sort_key_alignment_node_table_fk() -> Result<()> {
             cat_count_strategy: diskgraph_ingest::col_stats::CategoryCountStrategy::None,
             row_subsample: false,
             resume_from_phase: None,
-            context_threads: None,
-            encode_threads: None,
+            source_loader_threads: None,
+            source_encoder_threads: None,
             pk_map_threads: None,
             edges_map_threads: None,
             index_threads: None,
