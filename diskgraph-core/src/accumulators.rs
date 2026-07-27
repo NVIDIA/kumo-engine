@@ -470,6 +470,37 @@ mod tests {
         assert!(budget.used_bytes() <= 5_000);
     }
 
+    #[test]
+    fn test_batched_counts_honor_string_byte_budget() {
+        for graduation in [false, true] {
+            let budget = Arc::new(CategoryStringBudget::new(5_000));
+            let counts = if graduation {
+                SharedColumnCounts::new_graduation_with_string_budget(Arc::clone(&budget))
+            } else {
+                SharedColumnCounts::new_hashed_with_string_budget(Arc::clone(&budget))
+            };
+            let mut first = LocalColumnCounts::with_capacity(1);
+            first.observe(1, "first");
+            if graduation {
+                counts.merge_local_batch_graduation(&mut first);
+            } else {
+                counts.merge_local_batch(&mut first);
+            }
+            assert!(!counts.is_aborted());
+
+            let mut second = LocalColumnCounts::with_capacity(1);
+            second.observe(2, "second");
+            if graduation {
+                counts.merge_local_batch_graduation(&mut second);
+            } else {
+                counts.merge_local_batch(&mut second);
+            }
+            assert!(counts.is_aborted());
+            assert!(counts.drain_to_map().is_none());
+            assert!(budget.used_bytes() <= 5_000);
+        }
+    }
+
     // -- TDigestEstimator tests --
 
     #[test]
@@ -727,6 +758,8 @@ pub enum CategoryCountStrategy {
 
 /// Maximum number of unique categories per column before aborting collection.
 pub const MAX_CATEGORIES: u64 = 1_000_000;
+/// Encode-wide budget for retained category strings and their serialized copies.
+pub const CATEGORY_MEMORY_BUDGET_BYTES: u64 = 128 * 1024 * 1024;
 const CATEGORY_ENTRY_OVERHEAD_BYTES: u64 = 256;
 const CATEGORY_COLUMN_OVERHEAD_BYTES: u64 = 256 * 1024;
 // At output time a recovery string can coexist in the retained count map,
@@ -982,21 +1015,23 @@ impl SharedColumnCounts {
         }
         if let CountStorage::Hashed { counts, strings } = &self.storage {
             for (&hash, &count) in &local.counts {
-                let mut is_new = false;
-                counts
-                    .entry(hash)
-                    .and_modify(|c| *c += count)
-                    .or_insert_with(|| {
-                        is_new = true;
-                        count
-                    });
-                if is_new {
-                    if let Some(s) = local.strings.remove(&hash) {
-                        strings.entry(hash).or_insert(s);
+                match counts.entry(hash) {
+                    dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+                        *entry.get_mut() += count;
                     }
-                    self.record_new_unique();
-                    if self.aborted.load(Ordering::Relaxed) {
-                        return;
+                    dashmap::mapref::entry::Entry::Vacant(entry) => {
+                        let Some(value) = local.strings.remove(&hash) else {
+                            continue;
+                        };
+                        if !self.reserve_string_bytes(value.len()) {
+                            return;
+                        }
+                        entry.insert(count);
+                        strings.entry(hash).or_insert(value);
+                        self.record_new_unique();
+                        if self.aborted.load(Ordering::Relaxed) {
+                            return;
+                        }
                     }
                 }
             }
@@ -1029,8 +1064,13 @@ impl SharedColumnCounts {
                 // Must check before inserting the string below.
                 let is_truly_new = !strings.contains_key(&hash);
                 // Write-once string recovery
-                if let Some(s) = local.strings.remove(&hash) {
-                    strings.entry(hash).or_insert(s);
+                if is_truly_new {
+                    if let Some(value) = local.strings.remove(&hash) {
+                        if !self.reserve_string_bytes(value.len()) {
+                            return grad_snapshot;
+                        }
+                        strings.entry(hash).or_insert(value);
+                    }
                 }
                 // Merge count into pending
                 let total = {

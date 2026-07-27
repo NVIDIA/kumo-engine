@@ -24,4 +24,22 @@ impl From<parquet::errors::ParquetError> for TTGenError {
     }
 }
 
+impl TTGenError {
+    /// Add worker context without changing whether the failure is caused by
+    /// user data, configuration, or the system.
+    pub fn with_context(self, context: impl AsRef<str>) -> Self {
+        let context = context.as_ref();
+        match self {
+            Self::SchemaError(message) => Self::SchemaError(format!("{context}: {message}")),
+            Self::InvalidPlan(message) => Self::InvalidPlan(format!("{context}: {message}")),
+            Self::Io(error) => Self::Io(std::io::Error::new(
+                error.kind(),
+                format!("{context}: {error}"),
+            )),
+            Self::Parquet(message) => Self::Parquet(format!("{context}: {message}")),
+            Self::SystemError(message) => Self::SystemError(format!("{context}: {message}")),
+        }
+    }
+}
+
 pub type TTGenResult<T> = std::result::Result<T, TTGenError>;

@@ -152,6 +152,8 @@ def build_train_table_artifacts_for_existing_table(
     target_entity_table: Optional[str] = None,
     task_type: Optional[str] = None,
     lp_rhs_is_temporal: bool = False,
+    databricks_source: Optional[dict] = None,
+    databricks_config_file: Optional[str] = None,
 ) -> dict:
     """Rebuild TT artifacts (manifest + sidecars) for an existing
     training-table parquet.
@@ -234,6 +236,10 @@ def build_train_table_artifacts_for_existing_table(
         target_entity_table=target_entity_table,
         task_type=task_type,
         lp_rhs_is_temporal=bool(lp_rhs_is_temporal),
+        databricks_source_json=(
+            json.dumps(databricks_source)
+            if databricks_source is not None else None),
+        databricks_config_file=databricks_config_file,
     )
 
 
@@ -249,6 +255,8 @@ def build_prediction_table_artifacts_for_existing_table(
     producer_summary_json: Optional[str] = None,
     target_entity_table: Optional[str] = None,
     task_type: Optional[str] = None,
+    databricks_source: Optional[dict] = None,
+    databricks_config_file: Optional[str] = None,
 ) -> dict:
     """Rebuild TT artifacts (manifest + sidecars) for a customer PREDICTION
     parquet (ENTITY + TIMESTAMP, NO target).
@@ -305,6 +313,10 @@ def build_prediction_table_artifacts_for_existing_table(
         weight_col=weight_col,
         target_entity_table=target_entity_table,
         task_type=task_type,
+        databricks_source_json=(
+            json.dumps(databricks_source)
+            if databricks_source is not None else None),
+        databricks_config_file=databricks_config_file,
     )
 
 

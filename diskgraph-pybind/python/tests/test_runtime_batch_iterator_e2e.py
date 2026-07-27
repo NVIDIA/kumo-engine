@@ -1724,7 +1724,10 @@ def test_negative_sampling_temporal_exhaustion_masks(tmp_path):
 
 
 def test_custom_tt_weight_column_reaches_runtime_iterator(tmp_path):
-    from diskgraph._c import build_train_table_artifacts_for_existing_table
+    from diskgraph._c import (
+        DiskgraphDataError,
+        build_train_table_artifacts_for_existing_table,
+    )
     from diskgraph import execute_tt_ingest
 
     data_dir = tmp_path / "data"
@@ -1776,6 +1779,35 @@ def test_custom_tt_weight_column_reaches_runtime_iterator(tmp_path):
         split_spec_json=None,
         weight_col="WEIGHT",
     )
+
+    # Worker context must not turn user-data failures into opaque system
+    # failures. Exercise both validation branches through the same public entry.
+    for name, values, message in (
+        ("null_weight", [None, 2.0, 4.0], "weight is null"),
+        ("infinite_weight", [float("inf"), 2.0, 4.0], "weight is not finite"),
+    ):
+        invalid_path = data_dir / f"{name}.parquet"
+        pq.write_table(
+            pa.table({
+                "ENTITY1": pa.array([0, 1, 2], type=pa.int64()),
+                "TIMESTAMP": pa.array([1000, 2000, 3000], type=pa.int64()),
+                "TARGET1": pa.array([1, 0, 1], type=pa.int64()),
+                "WEIGHT": pa.array(values, type=pa.float64()),
+            }),
+            invalid_path,
+        )
+        with pytest.raises(DiskgraphDataError, match=message):
+            build_train_table_artifacts_for_existing_table(
+                output_path=str(invalid_path),
+                index_path=str(parent_root),
+                tt_id=name,
+                entity_table_name="users",
+                entity_pk_column="user_id",
+                target_stype="categorical",
+                input_timestamp_unit="seconds",
+                split_spec_json=None,
+                weight_col="WEIGHT",
+            )
 
     stage_index_path = parent_root / "train_tables" / tt_id
     assert not stage_index_path.exists()

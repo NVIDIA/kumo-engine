@@ -16,6 +16,7 @@ use lz4_flex::frame::FrameDecoder;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::ffi::OsStr;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, BufWriter, Cursor, Read, Write};
 use std::path::Path;
@@ -318,7 +319,15 @@ pub struct DatabricksHelper {
 impl DatabricksHelper {
     pub fn spawn() -> Result<Self> {
         let python = std::env::var_os("DISKGRAPH_PYTHON").unwrap_or_else(|| "python3".into());
+        Self::spawn_with_python(python)
+    }
+
+    pub fn spawn_with_python(python: impl AsRef<OsStr>) -> Result<Self> {
         let mut command = Command::new(python);
+        // The helper installs PR_SET_PDEATHSIG itself. Pass the expected
+        // parent explicitly so it can distinguish a real orphan reparented to
+        // PID 1 from a healthy container whose ingest process is PID 1.
+        command.env("DISKGRAPH_PARENT_PID", std::process::id().to_string());
         if let Some(script) = std::env::var_os("DISKGRAPH_DATABRICKS_HELPER_SCRIPT") {
             command.arg(script);
         } else {

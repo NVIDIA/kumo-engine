@@ -37,6 +37,7 @@
 //! The Python wrapper layer (`tt_artifacts.py`) marshals the SplitSpec
 //! object and the kwargs into the JSON-shaped inputs this function takes.
 
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use diskgraph_core::time::{Seconds, TimeUnit};
@@ -44,12 +45,19 @@ use diskgraph_core::tt_builder::{
     DiskGraphTTPlan, EntitySpec, PredictionType, RefResolveKind, RefResolveSpec,
     SplitSpec as PlanSplitSpec,
 };
-use diskgraph_train_table::ttgen_output::{PRIMARY_ENTITY_COL, PRIMARY_TARGET_COL};
+use diskgraph_ingest::databricks::{
+    DatabricksBatch, DatabricksHelper, DatabricksQueryStream, QueryStreamOptions,
+};
+use diskgraph_ingest::graph_config::DataSource;
 use diskgraph_train_table::ttgen_executor::CustomTtSource;
+use diskgraph_train_table::ttgen_output::{PRIMARY_ENTITY_COL, PRIMARY_TARGET_COL};
+use parquet::arrow::ArrowWriter;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::tt_executor::{run_gen_bundle, validate_tt_id};
+
+type DatabricksBatchPart = (u64, DatabricksBatch);
 
 fn custom_tt_artifact_base(parquet_path: &Path) -> PathBuf {
     // Multi-part contract (kumo Phase 2): kumo passes the train-table
@@ -120,6 +128,8 @@ fn path_with_suffix(base: &Path, suffix: &str) -> PathBuf {
     target_entity_table = None,
     task_type = None,
     lp_rhs_is_temporal = false,
+    databricks_source_json = None,
+    databricks_config_file = None,
 ))]
 pub fn build_train_table_artifacts_for_existing_table(
     py: Python<'_>,
@@ -135,6 +145,8 @@ pub fn build_train_table_artifacts_for_existing_table(
     target_entity_table: Option<&str>,
     task_type: Option<&str>,
     lp_rhs_is_temporal: bool,
+    databricks_source_json: Option<&str>,
+    databricks_config_file: Option<&str>,
 ) -> PyResult<Py<PyAny>> {
     build_bundle_for_existing_table(
         py,
@@ -151,6 +163,8 @@ pub fn build_train_table_artifacts_for_existing_table(
         task_type,
         lp_rhs_is_temporal,
         /* is_prediction */ false,
+        databricks_source_json,
+        databricks_config_file,
     )
 }
 
@@ -181,6 +195,8 @@ pub fn build_train_table_artifacts_for_existing_table(
     weight_col = None,
     target_entity_table = None,
     task_type = None,
+    databricks_source_json = None,
+    databricks_config_file = None,
 ))]
 pub fn build_prediction_table_artifacts_for_existing_table(
     py: Python<'_>,
@@ -194,6 +210,8 @@ pub fn build_prediction_table_artifacts_for_existing_table(
     weight_col: Option<&str>,
     target_entity_table: Option<&str>,
     task_type: Option<&str>,
+    databricks_source_json: Option<&str>,
+    databricks_config_file: Option<&str>,
 ) -> PyResult<Py<PyAny>> {
     build_bundle_for_existing_table(
         py,
@@ -205,14 +223,125 @@ pub fn build_prediction_table_artifacts_for_existing_table(
         target_stype,
         input_timestamp_unit,
         // Predict has no split: force SplitMode::None → single `predict` stage.
-        /* split_spec_json */ None,
+        /* split_spec_json */
+        None,
         weight_col,
         target_entity_table,
         task_type,
         // Predict has no split/grouping, so RHS temporality is irrelevant here.
-        /* lp_rhs_is_temporal */ false,
+        /* lp_rhs_is_temporal */
+        false,
         /* is_prediction */ true,
+        databricks_source_json,
+        databricks_config_file,
     )
+}
+
+fn materialize_databricks_source(
+    output_path: &Path,
+    source_json: &str,
+    config_file: Option<&Path>,
+    python_executable: &str,
+) -> diskgraph_train_table::errors::TTGenResult<u64> {
+    let source: DataSource = serde_json::from_str(source_json).map_err(|error| {
+        diskgraph_train_table::errors::TTGenError::InvalidPlan(format!(
+            "invalid Databricks custom-table source: {error}"
+        ))
+    })?;
+    if !matches!(source, DataSource::Databricks { .. }) {
+        return Err(diskgraph_train_table::errors::TTGenError::InvalidPlan(
+            "custom-table source must be Databricks".to_string(),
+        ));
+    }
+    std::fs::create_dir_all(output_path)?;
+
+    let mut helper = DatabricksHelper::spawn_with_python(python_executable).map_err(|error| {
+        diskgraph_train_table::errors::TTGenError::SystemError(format!(
+            "starting Databricks custom-table query: {error:#}"
+        ))
+    })?;
+    let mut stream = DatabricksQueryStream::open(
+        &mut helper,
+        &source,
+        config_file,
+        QueryStreamOptions::default(),
+    )
+    .map_err(|error| {
+        diskgraph_train_table::errors::TTGenError::SystemError(format!(
+            "opening Databricks custom-table query: {error:#}"
+        ))
+    })?;
+
+    let num_workers = rayon::current_num_threads().max(1);
+    let (sender, receiver) =
+        crossbeam_channel::bounded::<DatabricksBatchPart>(num_workers.saturating_mul(2).max(1));
+    let row_count = std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(num_workers);
+        for _ in 0..num_workers {
+            let receiver = receiver.clone();
+            handles.push(scope.spawn(
+                move || -> diskgraph_train_table::errors::TTGenResult<u64> {
+                    let mut rows = 0_u64;
+                    for (part_id, batch) in receiver {
+                        let part_path = output_path.join(format!("part-{part_id:05}.parquet"));
+                        let file = File::create(part_path)?;
+                        let mut writer = ArrowWriter::try_new(file, batch.schema(), None)?;
+                        writer.write(&batch)?;
+                        writer.close()?;
+                        rows += batch.num_rows() as u64;
+                    }
+                    Ok(rows)
+                },
+            ));
+        }
+        // Only workers may keep the channel connected. If every worker exits
+        // after a disk or Parquet write error, the producer must observe
+        // disconnection instead of blocking forever once the bounded queue
+        // fills.
+        drop(receiver);
+
+        let mut next_part_id = 0_u64;
+        let mut read_error = None;
+        for item in &mut stream {
+            match item {
+                Ok(batch) => {
+                    if sender.send((next_part_id, batch)).is_err() {
+                        read_error = Some(diskgraph_train_table::errors::TTGenError::SystemError(
+                            "Databricks custom-table encode workers stopped".to_string(),
+                        ));
+                        break;
+                    }
+                    next_part_id += 1;
+                }
+                Err(error) => {
+                    read_error = Some(diskgraph_train_table::errors::TTGenError::SystemError(
+                        format!("reading Databricks custom-table query: {error:#}"),
+                    ));
+                    break;
+                }
+            }
+        }
+        drop(sender);
+
+        let mut rows = 0_u64;
+        for handle in handles {
+            rows += handle.join().map_err(|_| {
+                diskgraph_train_table::errors::TTGenError::SystemError(
+                    "Databricks custom-table encode worker panicked".to_string(),
+                )
+            })??;
+        }
+        if let Some(error) = read_error {
+            return Err(error);
+        }
+        Ok(rows)
+    })?;
+    if row_count == 0 {
+        return Err(diskgraph_train_table::errors::TTGenError::SchemaError(
+            "Databricks custom table is empty".to_string(),
+        ));
+    }
+    Ok(row_count)
 }
 
 /// Build the plan's `fkey_mapping`: always the LHS `ENTITY1 → entity_table`
@@ -291,6 +420,8 @@ fn build_bundle_for_existing_table(
     task_type: Option<&str>,
     lp_rhs_is_temporal: bool,
     is_prediction: bool,
+    databricks_source_json: Option<&str>,
+    databricks_config_file: Option<&str>,
 ) -> PyResult<Py<PyAny>> {
     validate_tt_id(tt_id)?;
     // The bridge MUST declare the unit for any Int64 TIMESTAMP column in
@@ -312,9 +443,7 @@ fn build_bundle_for_existing_table(
     // SplitSpec and routes via the column deciders — there is no split.bin.
     let split: Option<PlanSplitSpec<Seconds>> = match split_spec_json {
         Some(s) if !s.is_empty() => Some(serde_json::from_str(s).map_err(|e| {
-            crate::DiskgraphConfigError::new_err(format!(
-                "invalid split_spec_json: {e}"
-            ))
+            crate::DiskgraphConfigError::new_err(format!("invalid split_spec_json: {e}"))
         })?),
         _ => None,
     };
@@ -360,11 +489,7 @@ fn build_bundle_for_existing_table(
             target_entity_table,
             is_prediction,
         )),
-        lp_resolution: build_lp_resolution(
-            entity_table_name,
-            target_entity_table,
-            is_prediction,
-        ),
+        lp_resolution: build_lp_resolution(entity_table_name, target_entity_table, is_prediction),
         // Same grouping gate as the native PQL path: Kumo computes RHS
         // temporality from graph metadata and passes it through this bridge.
         lp_rhs_is_temporal,
@@ -378,6 +503,19 @@ fn build_bundle_for_existing_table(
     // `custom_source.parquet_path` (dir or file) flows into Pass A, which
     // enumerates all parts via `enumerate_custom_tt_parts`.
     let parquet_path = Path::new(output_path);
+    if let Some(source_json) = databricks_source_json {
+        let config_file = databricks_config_file.map(Path::new);
+        let python_executable: String = py.import("sys")?.getattr("executable")?.extract()?;
+        py.detach(|| {
+            materialize_databricks_source(
+                parquet_path,
+                source_json,
+                config_file,
+                &python_executable,
+            )
+        })
+        .map_err(crate::map_ttgen_err)?;
+    }
     let artifact_base = custom_tt_artifact_base(parquet_path);
     let artifacts_dir_path = path_with_suffix(&artifact_base, ".artifacts")
         .to_string_lossy()
@@ -428,12 +566,7 @@ fn build_bundle_for_existing_table(
             let split_counts_vec: Vec<(String, u64)> = pass_output
                 .stage_gen_infos
                 .as_ref()
-                .map(|infos| {
-                    infos
-                        .iter()
-                        .map(|i| (i.key.clone(), i.row_count))
-                        .collect()
-                })
+                .map(|infos| infos.iter().map(|i| (i.key.clone(), i.row_count)).collect())
                 .unwrap_or_default();
             Ok((
                 pass_output.tt_parquet_path.to_string_lossy().into_owned(),
@@ -609,5 +742,4 @@ mod tests {
 
         assert_eq!(base, PathBuf::from("part-00000"));
     }
-
 }

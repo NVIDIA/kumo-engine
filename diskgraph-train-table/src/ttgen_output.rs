@@ -125,7 +125,7 @@ pub struct ChannelBatchWriter<U: UnitSystem> {
     /// processor then calls `push_weight` once per emitted row. `flush_batch`
     /// drains it into the reserved `WEIGHT` column (no sidecar). PQ path leaves
     /// it `None` — invariant: `weight_col implies chunk processor`.
-    weight_buf: Option<Vec<f32>>,
+    weight_buf: Option<Vec<f64>>,
 
     _unit: PhantomData<U>,
 }
@@ -365,7 +365,7 @@ impl<U: UnitSystem> ChannelBatchWriter<U> {
     /// Push one weight, called per emitted output row by the chunk
     /// processor. No-op if `enable_weight_buf` was not called (PQ path).
     #[inline]
-    pub fn push_weight(&mut self, weight: f32) {
+    pub fn push_weight(&mut self, weight: f64) {
         if let Some(buf) = self.weight_buf.as_mut() {
             buf.push(weight);
         }
@@ -879,8 +879,7 @@ impl<U: UnitSystem> ChannelBatchWriter<U> {
             );
             let rest = buf.split_off(n);
             let head = std::mem::replace(buf, rest);
-            let weights_f64: Vec<f64> = head.into_iter().map(|w| w as f64).collect();
-            columns.push(Arc::new(Float64Array::from(weights_f64)));
+            columns.push(Arc::new(Float64Array::from(head)));
         }
 
         let batch = RecordBatch::try_new(self.schema.clone(), columns)
@@ -1485,16 +1484,34 @@ mod tests {
     }
 
     /// The legit case: a writer with NO column named `WEIGHT` builds fine,
-    /// and `enable_weight_buf` then appends the reserved column successfully.
+    /// and preserves a Float64 weight without narrowing it through Float32.
     #[test]
     fn test_weight_buf_legit_case_still_works() -> TTGenResult<()> {
-        let (mut writer, _receiver) = test_writer(
+        let (mut writer, receiver) = test_writer(
             OutputMode::Node { target_dtypes: vec![DataType::Float64] },
             false,
             DataType::Int64,
         );
         writer.enable_weight_buf()?;
         assert!(writer.schema.fields().iter().any(|f| f.name() == WEIGHT_COL));
+        let weight = f64::from(f32::MAX) * 2.0;
+        writer.push_weight(weight);
+        writer.write_row(
+            Value::Int(1),
+            Abs::from_raw(0),
+            &Value::Float(1.0),
+            ExtraValueRef::Scalar(None),
+            true,
+        )?;
+        writer.finish()?;
+        let batches = collect_batches(receiver);
+        let weights = batches[0]
+            .column_by_name(WEIGHT_COL)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+        assert_eq!(weights.value(0), weight);
         Ok(())
     }
 }

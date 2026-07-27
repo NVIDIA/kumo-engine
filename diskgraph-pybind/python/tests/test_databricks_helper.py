@@ -4,7 +4,9 @@ import base64
 import io
 import json
 import os
+import signal
 import stat
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -12,7 +14,9 @@ import pytest
 from diskgraph.databricks_helper import (
     CONTROL_SOCKET_TIMEOUT_SECONDS,
     DatabricksControl,
+    PARENT_PID_ENV,
     ProtocolError,
+    _set_parent_death_signal,
     create_sdk_config,
     serve,
 )
@@ -35,6 +39,45 @@ def default_unified_auth(monkeypatch):
 def _write_config(path, *, profile="db", host="https://adb.example.net"):
     path.write_text(f"[{profile}]\nhost = {host}\ntoken = secret\n")
     path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+
+def test_parent_death_signal_accepts_container_parent_pid_one(monkeypatch):
+    class Libc:
+        @staticmethod
+        def prctl(*args):
+            assert args == (1, signal.SIGKILL, 0, 0, 0)
+            return 0
+
+    killed = []
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv(PARENT_PID_ENV, "1")
+    monkeypatch.setattr(os, "getppid", lambda: 1)
+    monkeypatch.setattr(os, "kill", lambda *args: killed.append(args))
+    monkeypatch.setattr("ctypes.CDLL", lambda *args, **kwargs: Libc())
+
+    _set_parent_death_signal()
+
+    assert killed == []
+
+
+def test_parent_death_signal_kills_reparented_helper(monkeypatch):
+    class Libc:
+        @staticmethod
+        def prctl(*args):
+            assert args == (1, signal.SIGKILL, 0, 0, 0)
+            return 0
+
+    killed = []
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv(PARENT_PID_ENV, "42")
+    monkeypatch.setattr(os, "getppid", lambda: 1)
+    monkeypatch.setattr(os, "getpid", lambda: 43)
+    monkeypatch.setattr(os, "kill", lambda *args: killed.append(args))
+    monkeypatch.setattr("ctypes.CDLL", lambda *args, **kwargs: Libc())
+
+    _set_parent_death_signal()
+
+    assert killed == [(43, signal.SIGKILL)]
 
 
 def test_default_unified_auth_uses_environment():

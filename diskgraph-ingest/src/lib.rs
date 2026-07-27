@@ -4592,7 +4592,6 @@ impl IngestContext {
         fs::create_dir_all(&temp_root)?;
         let mut table_rows: HashMap<String, u64> = HashMap::new();
         const ENCODE_MAX_OVERSIZED_CHUNK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-        const CATEGORY_MEMORY_BUDGET_BYTES: u64 = 128 * 1024 * 1024;
         let mut tables = self.source.tables.clone();
         let encode_memory_budget_bytes = encode_memory_budget_bytes(
             tables.iter().any(|table| {
@@ -4617,7 +4616,7 @@ impl IngestContext {
         let category_memory_bytes = if self.col_stats
             && self.cat_count_strategy != crate::col_stats::CategoryCountStrategy::None
         {
-            CATEGORY_MEMORY_BUDGET_BYTES
+            diskgraph_core::accumulators::CATEGORY_MEMORY_BUDGET_BYTES
         } else {
             0
         };

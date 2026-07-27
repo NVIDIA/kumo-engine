@@ -14,8 +14,8 @@ use crate::errors::{TTGenError, TTGenResult};
 use arrow_schema::DataType;
 use crossbeam_channel::{bounded, Sender};
 use diskgraph_core::accumulators::{
-    for_each_split_ascii_byte, HyperLogLog, LocalColumnCounts, SharedColumnCounts,
-    TDigestEstimator, WelfordAccumulator,
+    for_each_split_ascii_byte, CategoryStringBudget, HyperLogLog, LocalColumnCounts,
+    SharedColumnCounts, TDigestEstimator, WelfordAccumulator, CATEGORY_MEMORY_BUDGET_BYTES,
 };
 use diskgraph_core::time::{add_calendar_months, dur_from_unit, Abs, Dur, TimeUnit, UnitSystem};
 use diskgraph_core::tt_builder::*;
@@ -28,8 +28,8 @@ use crate::manifest::{
     SPLIT_STATS_FORMAT, STATS_FORMAT, TT_PARQUET_FORMAT,
 };
 use crate::pass_b::{
-    run_pass_b_per_anchor, run_pass_b_per_link, StagePartsOut,
-    STAGE_TABLE_NAMES,
+    run_pass_b_per_anchor, run_pass_b_per_link, write_bounded_parquet_batch, StagePartsOut,
+    MAX_PARQUET_ROW_GROUP_DECODE_BYTES, STAGE_TABLE_NAMES,
 };
 use crate::route::{per_link_output_schema, LinkAssigner};
 use crate::split_decider::{
@@ -60,6 +60,23 @@ type PassAOutputs<U> = (
     StatsMerger<U>,
     Option<[StagePartsOut; 3]>,
 );
+
+fn category_count_accumulators(
+    target_is_categorical: bool,
+    budget_bytes: u64,
+) -> (
+    Option<Arc<SharedColumnCounts>>,
+    Arc<SharedColumnCounts>,
+) {
+    let budget = Arc::new(CategoryStringBudget::new(budget_bytes));
+    let target = target_is_categorical.then(|| {
+        Arc::new(SharedColumnCounts::new_hashed_with_string_budget(
+            Arc::clone(&budget),
+        ))
+    });
+    let entity = Arc::new(SharedColumnCounts::new_hashed_with_string_budget(budget));
+    (target, entity)
+}
 
 /// Build `[StageGenInfo; 3]` for train/val/test from the fused pass-B output.
 fn stage_gen_infos_from_parts(parts: &[StagePartsOut; 3]) -> Vec<StageGenInfo> {
@@ -415,15 +432,13 @@ where
         "categorical" | "boolean" | "ID" | "multicategorical"
     );
 
-    // Shared concurrent category counts for categorical targets
-    let shared_target_counts: Option<Arc<SharedColumnCounts>> = if target_is_categorical {
-        Some(Arc::new(SharedColumnCounts::new_hashed()))
-    } else {
-        None
-    };
-
-    // Shared concurrent category counts for ENTITY (always needed for CATEGORY_COUNTS)
-    let shared_entity_counts: Arc<SharedColumnCounts> = Arc::new(SharedColumnCounts::new_hashed());
+    // Bound recovery strings across entity and categorical-target counts.
+    // Without this, high-cardinality long IDs can make the JSON stats sidecars
+    // larger than the source table and exceed Arrow/serde's practical limits.
+    let (shared_target_counts, shared_entity_counts) = category_count_accumulators(
+        target_is_categorical,
+        CATEGORY_MEMORY_BUDGET_BYTES,
+    );
 
     // ── Writer thread ────────────────────────────────────────────────────
     // Reads from the bounded(16) channel and writes to tt.parquet on disk.
@@ -439,6 +454,7 @@ where
         std::thread::spawn(move || {
             let file = File::create(&writer_path)?;
             let mut arrow_writer: Option<ArrowWriter<File>> = None;
+            let mut in_progress_decode_bytes = 0usize;
             let mut total_rows: u64 = 0;
             for batch in receiver.iter() {
                 if arrow_writer.is_none() {
@@ -449,7 +465,12 @@ where
                     )?);
                 }
                 if let Some(w) = arrow_writer.as_mut() {
-                    w.write(&batch)?;
+                    write_bounded_parquet_batch(
+                        w,
+                        &mut in_progress_decode_bytes,
+                        &batch,
+                        MAX_PARQUET_ROW_GROUP_DECODE_BYTES,
+                    )?;
                 }
                 total_rows += batch.num_rows() as u64;
             }
@@ -1255,10 +1276,7 @@ fn run_pass_a<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
                 decider_merger.merge(&decider);
             }
             Err(e) => {
-                return Err(TTGenError::SystemError(format!(
-                    "thread {} failed: {}",
-                    i, e
-                )));
+                return Err(e.with_context(format!("thread {i} failed")));
             }
         }
     }
@@ -1382,10 +1400,7 @@ fn run_pass_a_custom_tt<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
                 decider_merger.merge(&decider);
             }
             Err(e) => {
-                return Err(TTGenError::SystemError(format!(
-                    "custom-TT row-group worker {} failed: {}",
-                    i, e
-                )));
+                return Err(e.with_context(format!("custom-TT row-group worker {i} failed")));
             }
         }
     }
@@ -3037,6 +3052,22 @@ fn execute_aggregate<U: UnitSystem>(
 mod tests {
     use super::*;
     use diskgraph_core::time::Seconds;
+
+    #[test]
+    fn train_table_category_counts_share_a_bounded_string_budget() {
+        let (target, entity) = category_count_accumulators(true, 5_000);
+        let target = target.expect("categorical target accumulator");
+
+        let mut entity_local = LocalColumnCounts::with_capacity(1);
+        entity_local.observe(1, "first");
+        entity.merge_local_batch(&mut entity_local);
+        assert!(!entity.is_aborted());
+        let mut target_local = LocalColumnCounts::with_capacity(1);
+        target_local.observe(2, "second");
+        target.merge_local_batch(&mut target_local);
+        assert!(target.is_aborted());
+        assert!(target.drain_to_map().is_none());
+    }
 
     // ─── HLL hash-basis consistency (LP train-table stat over-count fix) ─────
 

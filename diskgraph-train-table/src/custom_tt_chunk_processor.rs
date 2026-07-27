@@ -37,9 +37,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::{
-    Array, Float32Array, Float64Array, Int32Array, Int64Array, ListArray, RecordBatch, StringArray,
-    TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
-    TimestampSecondArray,
+    Array, Decimal128Array, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array,
+    Int64Array, ListArray, RecordBatch, StringArray, TimestampMicrosecondArray,
+    TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray,
 };
 use arrow_schema::DataType;
 use crossbeam_channel::Sender;
@@ -61,6 +61,51 @@ use crate::ttgen_resolve::{
     ResolvedPlan, AUTOREGRESSION_OUTPUT_ALIAS, FUTURE_LABELS_OUTPUT_ALIAS, YOY_OUTPUT_ALIAS,
 };
 use crate::ttgen_stats::{ChunkStats, RowProcessor, TTRowRef};
+
+/// Read a declared custom-training weight without narrowing precision.
+///
+/// Databricks scalar numeric columns arrive through Arrow as one of these
+/// signed integer, floating-point, or Decimal128 arrays. A declared weight is
+/// required to be present, non-null, finite, and scalar; silently replacing a
+/// bad value with `1.0` would change training semantics.
+fn read_weight_f64(arr: &dyn Array, idx: usize) -> TTGenResult<f64> {
+    if arr.is_null(idx) {
+        return Err(TTGenError::SchemaError(format!(
+            "custom-TT weight is null at source row {idx}"
+        )));
+    }
+
+    let weight = if let Some(a) = arr.as_any().downcast_ref::<Float64Array>() {
+        a.value(idx)
+    } else if let Some(a) = arr.as_any().downcast_ref::<Float32Array>() {
+        f64::from(a.value(idx))
+    } else if let Some(a) = arr.as_any().downcast_ref::<Int64Array>() {
+        a.value(idx) as f64
+    } else if let Some(a) = arr.as_any().downcast_ref::<Int32Array>() {
+        f64::from(a.value(idx))
+    } else if let Some(a) = arr.as_any().downcast_ref::<Int16Array>() {
+        f64::from(a.value(idx))
+    } else if let Some(a) = arr.as_any().downcast_ref::<Int8Array>() {
+        f64::from(a.value(idx))
+    } else if let Some(a) = arr.as_any().downcast_ref::<Decimal128Array>() {
+        let DataType::Decimal128(_, scale) = arr.data_type() else {
+            unreachable!("Decimal128Array must report Decimal128 data type");
+        };
+        (a.value(idx) as f64) / 10_f64.powi(i32::from(*scale))
+    } else {
+        return Err(TTGenError::SchemaError(format!(
+            "custom-TT weight must be a scalar numeric value; found Arrow type {}",
+            arr.data_type()
+        )));
+    };
+
+    if !weight.is_finite() {
+        return Err(TTGenError::SchemaError(format!(
+            "custom-TT weight is not finite at source row {idx}"
+        )));
+    }
+    Ok(weight)
+}
 
 /// Determine the `OutputMode` for a custom-TT job by peeking at the
 /// customer parquet's schema. For Forecasting, this picks up
@@ -675,14 +720,19 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
     let future_labels_col_idx = schema.index_of(FUTURE_LABELS_OUTPUT_ALIAS).ok();
     let yoy_col_idx = schema.index_of(YOY_OUTPUT_ALIAS).ok();
 
-    // Pre-resolve the weight column index when the plan declares one.
-    // Missing column when `weight_col` is set is a soft fallback: emit
-    // 1.0 for every row (no error). Hard fail would be over-strict for
-    // a feature that's optional in the customer's parquet schema.
+    // A declared weight is part of the training contract. Fail instead of
+    // silently changing training semantics when the projected column is absent.
     let weight_col_idx: Option<usize> = plan
         .weight_col
         .as_deref()
-        .and_then(|name| schema.index_of(name).ok());
+        .map(|name| {
+            schema.index_of(name).map_err(|_| {
+                TTGenError::SchemaError(format!(
+                    "custom-TT parquet declares weight column '{name}' but it is missing"
+                ))
+            })
+        })
+        .transpose()?;
 
     // Pre-resolve the custom-TT split column (e.g. ManualSplit on a
     // customer-provided `split_col`). When the plan declares a split projection
@@ -706,28 +756,6 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
     let read_split_value = |row_idx: usize| -> Option<Value> {
         split_col_idx.and_then(|c| cell_to_value(batch.column(c).as_ref(), row_idx))
     };
-
-    // Read one row's weight as f32. Returns 1.0 when the column is absent
-    // or the cell is null/unsupported dtype. Supports Float32, Float64,
-    // Int64, Int32 — the dtypes we expect in customer weight columns.
-    fn read_weight_f32(arr: &dyn Array, idx: usize) -> f32 {
-        if arr.is_null(idx) {
-            return 1.0;
-        }
-        if let Some(a) = arr.as_any().downcast_ref::<Float32Array>() {
-            return a.value(idx);
-        }
-        if let Some(a) = arr.as_any().downcast_ref::<Float64Array>() {
-            return a.value(idx) as f32;
-        }
-        if let Some(a) = arr.as_any().downcast_ref::<Int64Array>() {
-            return a.value(idx) as f32;
-        }
-        if let Some(a) = arr.as_any().downcast_ref::<Int32Array>() {
-            return a.value(idx) as f32;
-        }
-        1.0
-    }
 
     for row_idx in 0..batch.num_rows() {
         // Reset alias slots for this row (paranoia — keeps the alias array
@@ -802,9 +830,10 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                 // buffer whose length matches the about-to-be-flushed
                 // batch's row count.
                 if let Some(c) = weight_col_idx {
-                    writer.push_weight(read_weight_f32(batch.column(c).as_ref(), row_idx));
-                } else if plan.weight_col.is_some() {
-                    writer.push_weight(1.0);
+                    writer.push_weight(read_weight_f64(
+                        batch.column(c).as_ref(),
+                        row_idx,
+                    )?);
                 }
                 let split_value = read_split_value(row_idx);
                 writer.write_row_pass_through_wide(
@@ -884,9 +913,10 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                 };
 
                 if let Some(c) = weight_col_idx {
-                    writer.push_weight(read_weight_f32(batch.column(c).as_ref(), row_idx));
-                } else if plan.weight_col.is_some() {
-                    writer.push_weight(1.0);
+                    writer.push_weight(read_weight_f64(
+                        batch.column(c).as_ref(),
+                        row_idx,
+                    )?);
                 }
                 let split_value = read_split_value(row_idx);
                 writer.write_row_forecasting_wide(
@@ -970,9 +1000,10 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                 }
 
                 if let Some(c) = weight_col_idx {
-                    writer.push_weight(read_weight_f32(batch.column(c).as_ref(), row_idx));
-                } else if plan.weight_col.is_some() {
-                    writer.push_weight(1.0);
+                    writer.push_weight(read_weight_f64(
+                        batch.column(c).as_ref(),
+                        row_idx,
+                    )?);
                 }
                 let split_value = read_split_value(row_idx);
                 writer.write_row_wide(
@@ -1073,9 +1104,10 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                 }
 
                 if let Some(c) = weight_col_idx {
-                    writer.push_weight(read_weight_f32(batch.column(c).as_ref(), row_idx));
-                } else if plan.weight_col.is_some() {
-                    writer.push_weight(1.0);
+                    writer.push_weight(read_weight_f64(
+                        batch.column(c).as_ref(),
+                        row_idx,
+                    )?);
                 }
                 let split_value = read_split_value(row_idx);
                 writer.write_row_array(
@@ -1166,6 +1198,7 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow_array::BooleanArray;
 
     /// Typed `Timestamp(unit)` arrays self-describe their unit; the
     /// `declared` arg is ignored for them.
@@ -1227,5 +1260,46 @@ mod tests {
         assert_eq!(read_timestamp_secs(&int_arr, 0, TimeUnit::Minutes), None);
         assert_eq!(read_timestamp_secs(&int_arr, 0, TimeUnit::Hours), None);
         assert_eq!(read_timestamp_secs(&int_arr, 0, TimeUnit::Days), None);
+    }
+
+    #[test]
+    fn read_weight_preserves_float64_precision_and_numeric_types() {
+        let large = Float64Array::from(vec![f64::from(f32::MAX) * 2.0]);
+        assert_eq!(
+            read_weight_f64(&large, 0).unwrap(),
+            f64::from(f32::MAX) * 2.0
+        );
+
+        let int8 = Int8Array::from(vec![7_i8]);
+        assert_eq!(read_weight_f64(&int8, 0).unwrap(), 7.0);
+
+        let int16 = Int16Array::from(vec![32_000_i16]);
+        assert_eq!(read_weight_f64(&int16, 0).unwrap(), 32_000.0);
+
+        let decimal = Decimal128Array::from(vec![12_345_i128])
+            .with_precision_and_scale(10, 2)
+            .unwrap();
+        assert_eq!(read_weight_f64(&decimal, 0).unwrap(), 123.45);
+    }
+
+    #[test]
+    fn read_weight_rejects_null_nonfinite_and_nonnumeric_values() {
+        let null = Float64Array::from(vec![None]);
+        assert!(read_weight_f64(&null, 0)
+            .unwrap_err()
+            .to_string()
+            .contains("weight is null"));
+
+        let infinite = Float64Array::from(vec![f64::INFINITY]);
+        assert!(read_weight_f64(&infinite, 0)
+            .unwrap_err()
+            .to_string()
+            .contains("weight is not finite"));
+
+        let boolean = BooleanArray::from(vec![true]);
+        assert!(read_weight_f64(&boolean, 0)
+            .unwrap_err()
+            .to_string()
+            .contains("scalar numeric"));
     }
 }

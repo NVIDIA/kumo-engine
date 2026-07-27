@@ -1306,6 +1306,8 @@
                     None,
                     None,
                     false,
+                    None,
+                    None,
                 )
                 .unwrap();
                 let d = d.bind(py);
@@ -1504,6 +1506,8 @@
                 None,
                 None,
                 false,
+                None,
+                None,
             )
             .expect("custom gen build should succeed");
         });
@@ -1575,6 +1579,8 @@
                 None,
                 None,
                 false,
+                None,
+                None,
             )
             .expect("custom gen build (split) should succeed");
         });
@@ -1646,6 +1652,8 @@
                 Some("orders"), // target_entity_table ⇒ LP mode
                 None,           // task_type
                 false,
+                None,
+                None,
             )
         });
 
@@ -1729,6 +1737,8 @@
                 None,
                 None,
                 false,
+                None,
+                None,
             )
             .expect("custom gen build should succeed");
         });
@@ -1823,6 +1833,8 @@
                 None,
                 None,
                 false,
+                None,
+                None,
             )
             .expect("gen build should succeed");
         });
@@ -1927,6 +1939,8 @@
                     "user_id",
                     "numerical",
                     "nanoseconds",
+                    None,
+                    None,
                     None,
                     None,
                     None,

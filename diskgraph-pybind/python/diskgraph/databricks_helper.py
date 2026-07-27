@@ -26,6 +26,7 @@ SUPPORTED_CONNECTOR_VERSION = "4.3.0"
 SUPPORTED_THRIFT_VERSION = "0.22.0"
 PROTOCOL_VERSION = 1
 CONTROL_SOCKET_TIMEOUT_SECONDS = 300
+PARENT_PID_ENV = "DISKGRAPH_PARENT_PID"
 
 logger = logging.getLogger("diskgraph.databricks_helper")
 
@@ -460,12 +461,18 @@ def _disable_unsafe_logging() -> None:
 def _set_parent_death_signal() -> None:
     if sys.platform != "linux":
         return
+    try:
+        expected_parent_pid = int(os.environ[PARENT_PID_ENV])
+    except (KeyError, ValueError) as error:
+        raise RuntimeError("expected Databricks helper parent PID is unavailable") from error
+    if expected_parent_pid <= 0:
+        raise RuntimeError("expected Databricks helper parent PID is invalid")
     libc = ctypes.CDLL("libc.so.6", use_errno=True)
-    parent_pid = os.getppid()
     if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0:  # PR_SET_PDEATHSIG
         raise OSError(ctypes.get_errno(), "prctl(PR_SET_PDEATHSIG) failed")
     # The parent may have exited between fork/exec and PR_SET_PDEATHSIG.
-    if os.getppid() != parent_pid or parent_pid == 1:
+    # PID 1 is valid when DiskGraph is the container's entrypoint.
+    if os.getppid() != expected_parent_pid:
         os.kill(os.getpid(), signal.SIGKILL)
 
 
