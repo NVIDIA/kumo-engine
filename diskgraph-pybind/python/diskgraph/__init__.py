@@ -35,7 +35,7 @@ from ._c import (
     has_resumable_ingest,
     compute_col_stats_for_parquet,
 )
-from ._exceptions import DiskgraphCorruptionError, DiskgraphTaskError
+from ._exceptions import DiskgraphTaskError
 
 # Lazy imports for modules that have external dependencies (kumoapi)
 def __getattr__(name):
