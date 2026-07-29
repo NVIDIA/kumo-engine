@@ -349,10 +349,14 @@ pub fn build_adls_client(cfg: AdlsConfig) -> Result<AdlsClient> {
     {
         builder = builder.with_endpoint(ep);
     }
+    // AZURE_STORAGE_* are the names the Azure SDKs and azcopy use; deployments
+    // that set them expect a shared key rather than a managed identity.
     if let Some(access_key) = cfg
         .access_key
         .clone()
         .or_else(|| std::env::var("AZURE_ACCESS_KEY").ok())
+        .or_else(|| std::env::var("AZURE_STORAGE_ACCOUNT_KEY").ok())
+        .or_else(|| std::env::var("AZURE_STORAGE_ACCESS_KEY").ok())
     {
         builder = builder.with_access_key(access_key);
     }
@@ -390,6 +394,26 @@ pub fn build_adls_client(cfg: AdlsConfig) -> Result<AdlsClient> {
         .or_else(|| std::env::var("AZURE_TENANT_ID").ok())
     {
         builder = builder.with_tenant_id(tenant_id);
+    }
+    // Azure AD Workload Identity. object_store only selects the federated
+    // provider when the token file joins the client and tenant ids; with no
+    // credential at all it falls back to IMDS managed identity, which pods
+    // cannot reach on clusters that expose no instance metadata endpoint (such
+    // as ARO). An empty value would be treated as set and then fail on read.
+    if let Some(token_file) = std::env::var("AZURE_FEDERATED_TOKEN_FILE")
+        .ok()
+        .filter(|token_file| !token_file.is_empty())
+    {
+        builder = builder.with_federated_token_file(token_file);
+    }
+    // object_store joins the authority host to the tenant id without
+    // normalizing, so a trailing slash would yield a double slash.
+    if let Some(authority_host) = std::env::var("AZURE_AUTHORITY_HOST")
+        .ok()
+        .map(|host| host.trim_end_matches('/').to_string())
+        .filter(|host| !host.is_empty())
+    {
+        builder = builder.with_authority_host(authority_host);
     }
     Ok(AdlsClient {
         store: Arc::new(builder.build()?),
@@ -704,6 +728,77 @@ mod tests {
             .block_on(async { store.get(&path).await?.bytes().await })
             .map_err(|e| anyhow!(e.to_string()))?;
         assert_eq!(data.as_ref(), b"abcdefghijklmnop");
+        Ok(())
+    }
+
+    /// `AdlsClient` erases the store to `Arc<dyn ObjectStore>`, so its Debug
+    /// rendering is the only way to observe which credential provider
+    /// object_store selected. The cases share process-global env vars, so they
+    /// run in one test.
+    #[test]
+    fn adls_client_credential_selection() -> Result<()> {
+        // Anything here would outrank or alter the credential under test.
+        const OVERRIDING_VARS: &[&str] = &[
+            "AZURE_ACCESS_KEY",
+            "AZURE_AUTHORITY_HOST",
+            "AZURE_BEARER_TOKEN",
+            "AZURE_CLIENT_SECRET",
+            "AZURE_FEDERATED_TOKEN_FILE",
+            "AZURE_SAS_KEY",
+            "AZURE_STORAGE_ACCESS_KEY",
+            "AZURE_STORAGE_ACCOUNT_KEY",
+        ];
+        let cfg = AdlsConfig {
+            account: "acct".to_string(),
+            container: "cont".to_string(),
+            endpoint: None,
+            allow_http: None,
+            access_key: None,
+            sas_key: None,
+            bearer_token: None,
+            client_id: Some("client".to_string()),
+            client_secret: None,
+            tenant_id: Some("tenant".to_string()),
+        };
+        // The rendering carries credential material, so callers assert on it
+        // without printing it.
+        let describe = |vars: &[(&str, &str)]| -> Result<String> {
+            for key in OVERRIDING_VARS {
+                std::env::remove_var(key);
+            }
+            for (key, value) in vars {
+                std::env::set_var(key, value);
+            }
+            Ok(format!("{:?}", build_adls_client(cfg.clone())?.store))
+        };
+
+        assert!(
+            describe(&[("AZURE_FEDERATED_TOKEN_FILE", "/run/azure/token")])?
+                .contains("WorkloadIdentityOAuthProvider"),
+            "a federated token file should select workload identity"
+        );
+        // "a2V5" is base64 for "key"; AzureAccessKey rejects anything else.
+        assert!(
+            describe(&[("AZURE_STORAGE_ACCOUNT_KEY", "a2V5")])?.contains("AccessKey"),
+            "AZURE_STORAGE_ACCOUNT_KEY should select a shared key"
+        );
+        assert!(
+            describe(&[])?.contains("ImdsManagedIdentityProvider"),
+            "no credential should fall back to managed identity"
+        );
+        // A sovereign authority host must reach the token URL, and its trailing
+        // slash must not.
+        assert!(
+            describe(&[
+                ("AZURE_FEDERATED_TOKEN_FILE", "/run/azure/token"),
+                ("AZURE_AUTHORITY_HOST", "https://login.microsoftonline.us/"),
+            ])?
+            .contains("https://login.microsoftonline.us/tenant/oauth2/v2.0/token"),
+            "the authority host should be joined to the tenant id with one slash"
+        );
+        for key in OVERRIDING_VARS {
+            std::env::remove_var(key);
+        }
         Ok(())
     }
 }

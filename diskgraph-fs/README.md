@@ -123,12 +123,21 @@ GCP env configuration (for example, `GOOGLE_APPLICATION_CREDENTIALS`).
 
 - `AZURE_ALLOW_HTTP`
 - `AZURE_ENDPOINT`
-- `AZURE_ACCESS_KEY`
+- `AZURE_ACCESS_KEY`, `AZURE_STORAGE_ACCOUNT_KEY`, `AZURE_STORAGE_ACCESS_KEY`
 - `AZURE_SAS_KEY`
 - `AZURE_BEARER_TOKEN`
 - `AZURE_CLIENT_ID`
 - `AZURE_CLIENT_SECRET`
 - `AZURE_TENANT_ID`
+- `AZURE_FEDERATED_TOKEN_FILE` (env only)
+- `AZURE_AUTHORITY_HOST` (env only)
+
+Only these are read; the builder is not populated from the wider environment.
+Credential selection is `object_store`'s: a bearer token wins, then an account
+key, then workload identity (`AZURE_CLIENT_ID` + `AZURE_TENANT_ID` +
+`AZURE_FEDERATED_TOKEN_FILE`), then a client secret, then SAS. With none of
+those it falls back to IMDS managed identity, which requires the pod to reach
+the instance metadata endpoint — unavailable on clusters such as ARO.
 
 ## Notes
 
