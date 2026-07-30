@@ -103,6 +103,21 @@ impl ByteBudget {
         })
     }
 
+    /// Bound complete compressed source objects independently from the
+    /// decoded Encode working set by using a separate `ByteBudget` instance.
+    pub(crate) fn acquire_resident_object(
+        self: &Arc<Self>,
+        bytes: u64,
+    ) -> Result<BytePermit> {
+        if bytes > self.max_bytes {
+            bail!(
+                "resident Parquet object requires {bytes} bytes, exceeding the {} byte cloud input budget; raise DISKGRAPH_CLOUD_MAX_BYTES or repartition the source",
+                self.max_bytes
+            );
+        }
+        self.acquire_dispatched_batch(bytes)
+    }
+
     /// Reserve one input batch. The caller releases its prior file-batch permit
     /// before requesting the next, so waiting here can only be on another input
     /// lane. The explicit oversized escape is capped at one maximum chunk plus
@@ -434,5 +449,16 @@ mod tests {
         assert!(budget.acquire(20).is_ok());
         assert!(budget.issue_ticket(11).is_err());
         assert!(budget.acquire_input_chunk(11).is_err());
+    }
+
+    #[test]
+    fn resident_object_uses_an_independent_bounded_budget() {
+        let resident_budget = ByteBudget::new(10).unwrap();
+        let encode_budget = ByteBudget::with_oversized_limit(4, 4).unwrap();
+        let _resident = resident_budget.acquire_resident_object(6).unwrap();
+        let _decode = encode_budget.acquire_input_chunk(4).unwrap();
+        assert_eq!(resident_budget.high_water_bytes(), 6);
+        assert_eq!(encode_budget.high_water_bytes(), 4);
+        assert!(resident_budget.acquire_resident_object(11).is_err());
     }
 }

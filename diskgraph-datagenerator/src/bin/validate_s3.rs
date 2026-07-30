@@ -350,7 +350,7 @@ async fn validate_job(
             }
 
             parquet_files.sort(); // Consistent ordering
-            *table.get_paths_mut() = parquet_files;
+            table.replace_with_local_parquet(parquet_files);
         }
 
         fs::write(

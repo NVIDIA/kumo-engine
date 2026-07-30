@@ -107,45 +107,6 @@ fn s3_list_first(bucket: &str, prefix: &str, profile: Option<&str>) -> Result<St
     bail!("No directories found in {}", s3_path)
 }
 
-/// List parquet files under an S3 prefix, returning (full S3 URL, size_bytes).
-fn s3_list_parquet(s3_url: &str, profile: Option<&str>) -> Result<Vec<(String, u64)>> {
-    let url = s3_url.trim_end_matches('/');
-    let url_slash = format!("{}/", url);
-    let mut args = vec!["s3", "ls", url_slash.as_str()];
-    if let Some(p) = profile {
-        args.extend_from_slice(&["--profile", p]);
-    }
-    let output = Command::new("aws")
-        .args(&args)
-        .output()
-        .with_context(|| format!("Failed to run aws s3 ls for {}", url))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("Failed to list {}: {}", url, stderr);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut files: Vec<(String, u64)> = stdout
-        .lines()
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 4 {
-                return None;
-            }
-            let size = parts[2].parse::<u64>().ok()?;
-            let filename = parts[3];
-            if filename.ends_with(".parquet") {
-                Some((format!("{}/{}", url, filename), size))
-            } else {
-                None
-            }
-        })
-        .collect();
-    files.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(files)
-}
-
 fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -192,40 +153,8 @@ fn main() -> Result<()> {
         source_specs: None,
     };
 
-    let mut diskgraph_config =
+    let diskgraph_config =
         convert_kumo_to_diskgraph(&kumo_config, &options).context("Failed to convert config")?;
-
-    // Expand S3 directory prefixes to individual parquet file paths.
-    // The converter outputs fpv3 directory paths but the ingest binary
-    // expects individual file paths (it does HEAD per path, not prefix listing).
-    for table in &mut diskgraph_config.tables {
-        let dir_paths: Vec<String> = table.get_paths().to_vec();
-        let mut expanded: Vec<String> = Vec::new();
-        for dir_path in &dir_paths {
-            if dir_path.starts_with("s3://") {
-                let parquet_files = s3_list_parquet(dir_path, args.profile.as_deref())
-                    .with_context(|| format!("Failed to list parquet files in {}", dir_path))?;
-                if parquet_files.is_empty() {
-                    bail!(
-                        "No parquet files found for table {} in {}",
-                        table.name,
-                        dir_path
-                    );
-                }
-                eprintln!(
-                    "  {}: {} parquet files",
-                    table.name,
-                    parquet_files.len()
-                );
-                for (path, _size) in parquet_files {
-                    expanded.push(path);
-                }
-            } else {
-                expanded.push(dir_path.clone());
-            }
-        }
-        *table.get_paths_mut() = expanded;
-    }
 
     // Serialize output
     let output_json =

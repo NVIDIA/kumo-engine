@@ -10,7 +10,7 @@ use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use futures_util::TryStreamExt;
 use object_store::path::Path as ObjectPath;
-use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
+use object_store::{GetOptions, ObjectStore, ObjectStoreExt, PutPayload};
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot, Semaphore};
 use tokio::task::JoinSet;
@@ -54,6 +54,51 @@ impl CloudTransferConfig {
             buffer_count: buffer_count.max(1),
             max_bytes,
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CloudObjectCondition {
+    pub size: u64,
+    pub e_tag: Option<String>,
+    pub version: Option<String>,
+}
+
+impl CloudObjectCondition {
+    /// Return the known size only when GETs are pinned to an immutable object.
+    pub fn pinned_size(&self) -> Option<u64> {
+        (self.e_tag.is_some() || self.version.is_some()).then_some(self.size)
+    }
+
+    fn get_options(&self) -> GetOptions {
+        GetOptions::new()
+            .with_if_match(self.e_tag.clone())
+            .with_version(self.version.clone())
+    }
+
+    fn validate_meta(&self, meta: &object_store::ObjectMeta) -> Result<()> {
+        if meta.size != self.size {
+            return Err(anyhow!(
+                "source object changed size: expected {}, observed {}",
+                self.size,
+                meta.size
+            ));
+        }
+        if self
+            .e_tag
+            .as_ref()
+            .is_some_and(|expected| meta.e_tag.as_ref() != Some(expected))
+        {
+            return Err(anyhow!("source object changed ETag"));
+        }
+        if self
+            .version
+            .as_ref()
+            .is_some_and(|expected| meta.version.as_ref() != Some(expected))
+        {
+            return Err(anyhow!("source object changed version"));
+        }
+        Ok(())
     }
 }
 
@@ -313,29 +358,54 @@ impl BufferPool {
         }
     }
 
+    fn reserve_with_idle_reclaim(&self, bytes: u64) -> Result<()> {
+        if self.inner.budget.reserve(bytes).is_ok() {
+            return Ok(());
+        }
+        let mut guard = self.inner.buffers.lock().expect("cloud buffer pool lock");
+        let reclaimed = guard
+            .iter_mut()
+            .map(|buffer| {
+                let capacity = buffer.capacity() as u64;
+                *buffer = Vec::new();
+                capacity
+            })
+            .sum();
+        self.inner.budget.release(reclaimed);
+        drop(guard);
+        self.inner.budget.reserve(bytes)
+    }
+
     pub fn acquire_raw_sized(&self, len: usize) -> Result<Vec<u8>> {
         let mut buffer = self.acquire_raw();
         let old_cap = buffer.capacity();
         let mut reserved = 0usize;
         if len > old_cap {
             reserved = len - old_cap;
-            if let Err(err) = self.inner.budget.reserve(reserved as u64) {
+            if let Err(err) = self.reserve_with_idle_reclaim(reserved as u64) {
                 self.release(buffer);
                 return Err(err);
             }
+            // Avoid retaining Vec's amortized 2x growth in an idle pool slot.
+            buffer.reserve_exact(len);
         }
-        buffer.resize(len, 0);
         let new_cap = buffer.capacity();
         if new_cap > old_cap + reserved {
             let extra = new_cap - (old_cap + reserved);
-            if let Err(err) = self.inner.budget.reserve(extra as u64) {
-                self.release(buffer);
+            if let Err(err) = self.reserve_with_idle_reclaim(extra as u64) {
+                // Discard the grown allocation and undo its accounting.
+                self.inner
+                    .budget
+                    .release(old_cap.saturating_add(reserved) as u64);
+                drop(buffer);
+                self.release(Vec::new());
                 return Err(err);
             }
         } else if new_cap < old_cap + reserved {
             let give_back = old_cap + reserved - new_cap;
             self.inner.budget.release(give_back as u64);
         }
+        buffer.resize(len, 0);
         Ok(buffer)
     }
 
@@ -660,10 +730,19 @@ impl CloudTransfer {
     }
 
     pub fn submit_download(&self, path: ObjectPath) -> Result<CloudTransferDownloadTicket> {
+        self.submit_download_condition(path, None)
+    }
+
+    pub fn submit_download_condition(
+        &self,
+        path: ObjectPath,
+        condition: Option<CloudObjectCondition>,
+    ) -> Result<CloudTransferDownloadTicket> {
         let path_str = path.to_string();
         let (tx, rx) = oneshot::channel();
         let job = DownloadJob {
             path,
+            condition,
             attempt: 0,
             response: tx,
         };
@@ -683,8 +762,16 @@ impl CloudTransfer {
     }
 
     pub fn submit_download_bytes(&self, path: ObjectPath) -> Result<CloudTransferBytesTicket> {
+        self.submit_download_bytes_condition(path, None)
+    }
+
+    pub fn submit_download_bytes_condition(
+        &self,
+        path: ObjectPath,
+        condition: Option<CloudObjectCondition>,
+    ) -> Result<CloudTransferBytesTicket> {
         Ok(CloudTransferBytesTicket {
-            ticket: self.submit_download(path)?,
+            ticket: self.submit_download_condition(path, condition)?,
         })
     }
 
@@ -694,6 +781,7 @@ impl CloudTransfer {
         &self,
         path: ObjectPath,
         range: std::ops::Range<u64>,
+        condition: Option<CloudObjectCondition>,
     ) -> Result<CloudTransferRangeTicket> {
         if range.start > range.end {
             return Err(anyhow!("invalid object byte range"));
@@ -703,6 +791,7 @@ impl CloudTransfer {
         let job = RangeJob {
             path,
             range,
+            condition,
             attempt: 0,
             response: tx,
         };
@@ -725,7 +814,16 @@ impl CloudTransfer {
         path: ObjectPath,
         range: std::ops::Range<u64>,
     ) -> Result<PooledBytes> {
-        self.submit_range(path, range)?.wait()
+        self.get_range_blocking_condition(path, range, None)
+    }
+
+    pub fn get_range_blocking_condition(
+        &self,
+        path: ObjectPath,
+        range: std::ops::Range<u64>,
+        condition: Option<CloudObjectCondition>,
+    ) -> Result<PooledBytes> {
+        self.submit_range(path, range, condition)?.wait()
     }
 
     /// Queue an object metadata request so synchronous readers reuse the
@@ -878,6 +976,7 @@ struct UploadFromPathJob {
 
 struct DownloadJob {
     path: ObjectPath,
+    condition: Option<CloudObjectCondition>,
     attempt: usize,
     response: oneshot::Sender<Result<PooledBuffer>>,
 }
@@ -885,6 +984,7 @@ struct DownloadJob {
 struct RangeJob {
     path: ObjectPath,
     range: std::ops::Range<u64>,
+    condition: Option<CloudObjectCondition>,
     attempt: usize,
     response: oneshot::Sender<Result<PooledBuffer>>,
 }
@@ -1227,6 +1327,7 @@ async fn handle_transfer_job(
         TransferJob::Download(job) => {
             let DownloadJob {
                 path,
+                condition,
                 attempt,
                 response,
             } = job;
@@ -1237,11 +1338,13 @@ async fn handle_transfer_job(
                 Arc::clone(&stats),
                 download_part_size,
                 &path,
+                condition.clone(),
             )
             .await;
             TransferResult::Download {
                 job: DownloadJob {
                     path,
+                    condition,
                     attempt,
                     response,
                 },
@@ -1252,6 +1355,7 @@ async fn handle_transfer_job(
             let RangeJob {
                 path,
                 range,
+                condition,
                 attempt,
                 response,
             } = job;
@@ -1262,12 +1366,14 @@ async fn handle_transfer_job(
                 Arc::clone(&stats),
                 &path,
                 range.clone(),
+                condition.clone(),
             )
             .await;
             TransferResult::Range {
                 job: RangeJob {
                     path,
                     range,
+                    condition,
                     attempt,
                     response,
                 },
@@ -1329,6 +1435,33 @@ async fn handle_transfer_job(
     }
 }
 
+async fn get_exact_range_once(
+    store: &Arc<dyn ObjectStore>,
+    path: &ObjectPath,
+    range: std::ops::Range<u64>,
+    condition: Option<&CloudObjectCondition>,
+) -> Result<Bytes> {
+    let expected = usize::try_from(range.end - range.start)
+        .map_err(|_| anyhow!("download range length exceeds addressable space"))?;
+    let options = condition
+        .map(CloudObjectCondition::get_options)
+        .unwrap_or_default()
+        .with_range(Some(range));
+    let result = store.get_opts(path, options).await?;
+    if let Some(condition) = condition {
+        condition.validate_meta(&result.meta)?;
+    }
+    let bytes = result.bytes().await?;
+    let actual = bytes.len();
+    (actual == expected).then_some(bytes).ok_or_else(|| {
+        anyhow!(
+            "download range returned {} bytes, expected {}",
+            actual,
+            expected
+        )
+    })
+}
+
 async fn download_range_once(
     store: Arc<dyn ObjectStore>,
     part_sema: Arc<Semaphore>,
@@ -1336,13 +1469,8 @@ async fn download_range_once(
     stats: Arc<CloudTransferStatsInner>,
     path: &ObjectPath,
     range: std::ops::Range<u64>,
+    condition: Option<CloudObjectCondition>,
 ) -> Result<PooledBuffer> {
-    let expected = range
-        .end
-        .checked_sub(range.start)
-        .ok_or_else(|| anyhow!("invalid object byte range"))?;
-    let expected = usize::try_from(expected)
-        .map_err(|_| anyhow!("range length exceeds addressable space for {}", path))?;
     stats.parts_started.fetch_add(1, Ordering::Relaxed);
     stats.inflight_parts.fetch_add(1, Ordering::Relaxed);
     let permit = part_sema
@@ -1350,23 +1478,14 @@ async fn download_range_once(
         .await
         .map_err(|_| anyhow!("range semaphore closed for {}", path));
     let bytes = match permit {
-        Ok(_permit) => store
-            .get_range(path, range.clone())
+        Ok(_permit) => get_exact_range_once(&store, path, range, condition.as_ref())
             .await
             .map_err(|err| anyhow!("range download failed for {}: {}", path, err)),
         Err(err) => Err(err),
     };
     stats.inflight_parts.fetch_sub(1, Ordering::Relaxed);
     let bytes = bytes?;
-    if bytes.len() != expected {
-        return Err(anyhow!(
-            "range download for {} returned {} bytes, expected {}",
-            path,
-            bytes.len(),
-            expected
-        ));
-    }
-    let mut buffer = pool.acquire_raw_sized(expected)?;
+    let mut buffer = pool.acquire_raw_sized(bytes.len())?;
     buffer.copy_from_slice(&bytes);
     Ok(pool.wrap_accounted(buffer))
 }
@@ -1378,15 +1497,28 @@ async fn download_file_once(
     stats: Arc<CloudTransferStatsInner>,
     part_size: usize,
     path: &ObjectPath,
+    condition: Option<CloudObjectCondition>,
 ) -> Result<PooledBuffer> {
-    let meta = store
-        .head(path)
-        .await
-        .map_err(|err| anyhow!("download head failed for {}: {}", path, err))?;
-    let size = usize::try_from(meta.size).map_err(|_| {
+    let object_size = match condition
+        .as_ref()
+        .and_then(CloudObjectCondition::pinned_size)
+    {
+        Some(size) => size,
+        None => {
+            let meta = store
+                .head(path)
+                .await
+                .map_err(|err| anyhow!("download head failed for {}: {}", path, err))?;
+            if let Some(condition) = &condition {
+                condition.validate_meta(&meta)?;
+            }
+            meta.size
+        }
+    };
+    let size = usize::try_from(object_size).map_err(|_| {
         anyhow!(
             "download size {} exceeds addressable space for {}",
-            meta.size,
+            object_size,
             path
         )
     })?;
@@ -1395,9 +1527,9 @@ async fn download_file_once(
         return Ok(pool.wrap_accounted(buffer));
     }
     let buffer = Arc::new(tokio::sync::Mutex::new(buffer));
-    let mut tasks: JoinSet<object_store::Result<()>> = JoinSet::new();
+    let mut tasks: JoinSet<Result<()>> = JoinSet::new();
     let mut offset = 0u64;
-    let size_u64 = size as u64;
+    let size_u64 = object_size;
 
     while offset < size_u64 {
         let end = std::cmp::min(offset + part_size as u64, size_u64);
@@ -1405,22 +1537,17 @@ async fn download_file_once(
         let store = Arc::clone(&store);
         let buffer = Arc::clone(&buffer);
         let part_sema = Arc::clone(&part_sema);
+        let condition = condition.clone();
         let start_usize = offset as usize;
         stats.parts_started.fetch_add(1, Ordering::Relaxed);
         stats.inflight_parts.fetch_add(1, Ordering::Relaxed);
         tasks.spawn(async move {
-            let _permit =
-                part_sema
-                    .acquire_owned()
-                    .await
-                    .map_err(|_| object_store::Error::Generic {
-                        store: "multipart",
-                        source: Box::new(io::Error::new(
-                            io::ErrorKind::Other,
-                            "download semaphore closed",
-                        )),
-                    })?;
-            let bytes = store.get_range(&path, offset..end).await?;
+            let _permit = part_sema
+                .acquire_owned()
+                .await
+                .map_err(|_| anyhow!("download semaphore closed"))?;
+            let bytes =
+                get_exact_range_once(&store, &path, offset..end, condition.as_ref()).await?;
             let mut guard = buffer.lock().await;
             let dest = &mut guard[start_usize..start_usize + bytes.len()];
             dest.copy_from_slice(&bytes);
@@ -1669,9 +1796,11 @@ async fn upload_file_once_from_path(
         return Err(err);
     }
 
-    upload.complete().await.map(|_| ()).map_err(|err| {
-        anyhow!("upload (from path) complete failed for {}: {}", path, err)
-    })
+    upload
+        .complete()
+        .await
+        .map(|_| ())
+        .map_err(|err| anyhow!("upload (from path) complete failed for {}: {}", path, err))
 }
 
 fn env_usize(name: &str, default: usize) -> usize {
@@ -1741,7 +1870,9 @@ fn resolve_tightest_mem_limit(
 ) -> Option<u64> {
     let parse = |value: &str| {
         let value = value.trim();
-        (value != "max").then(|| value.parse::<u64>().ok()).flatten()
+        (value != "max")
+            .then(|| value.parse::<u64>().ok())
+            .flatten()
     };
     let mut tightest = None;
 
@@ -1765,11 +1896,9 @@ fn resolve_tightest_mem_limit(
         return tightest;
     }
 
-    read(Path::new(
-        "/sys/fs/cgroup/memory/memory.limit_in_bytes",
-    ))
-    .and_then(|value| value.trim().parse::<u64>().ok())
-    .filter(|limit| *limit < u64::MAX / 2)
+    read(Path::new("/sys/fs/cgroup/memory/memory.limit_in_bytes"))
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|limit| *limit < u64::MAX / 2)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1796,6 +1925,19 @@ mod tests {
         });
     }
 
+    fn test_config(part_size: usize, max_file_retries: usize) -> CloudTransferConfig {
+        CloudTransferConfig {
+            part_size,
+            download_part_size: part_size,
+            max_queue: 4,
+            max_files_in_flight: 2,
+            max_part_requests: 2,
+            max_file_retries,
+            buffer_count: 2,
+            max_bytes: 1024 * 1024,
+        }
+    }
+
     #[test]
     fn cgroup_memory_uses_tightest_ancestor_limit() {
         let files = HashMap::from([
@@ -1807,10 +1949,7 @@ mod tests {
                 "/sys/fs/cgroup/slice/memory.max".to_string(),
                 "4294967296\n".to_string(),
             ),
-            (
-                "/sys/fs/cgroup/memory.max".to_string(),
-                "max\n".to_string(),
-            ),
+            ("/sys/fs/cgroup/memory.max".to_string(), "max\n".to_string()),
         ]);
         let read = |path: &Path| files.get(&path.to_string_lossy().into_owned()).cloned();
         assert_eq!(
@@ -1820,20 +1959,51 @@ mod tests {
     }
 
     #[test]
+    fn manifest_size_is_trusted_only_with_immutable_identity() {
+        let mut condition = CloudObjectCondition {
+            size: 123,
+            e_tag: None,
+            version: None,
+        };
+        assert_eq!(condition.pinned_size(), None);
+        condition.e_tag = Some("etag".into());
+        assert_eq!(condition.pinned_size(), Some(123));
+        condition.e_tag = None;
+        condition.version = Some("version".into());
+        assert_eq!(condition.pinned_size(), Some(123));
+    }
+
+    #[test]
+    fn pooled_file_buffer_budget_handles_growth_and_fragmentation() -> Result<()> {
+        let budget = Arc::new(ByteBudget::new(150));
+        let pool = BufferPool::new(1, Arc::clone(&budget));
+        let first = pool.acquire_raw_sized(100)?;
+        pool.release(first);
+        let second = pool.acquire_raw_sized(101)?;
+        assert_eq!(second.len(), 101);
+        assert!(budget.used_bytes() <= 150);
+        pool.release(second);
+
+        let budget = Arc::new(ByteBudget::new(100));
+        let pool = BufferPool::new(3, Arc::clone(&budget));
+        let large = pool.acquire_raw_sized(60)?;
+        let medium = pool.acquire_raw_sized(30)?;
+        let small = pool.acquire_raw_sized(10)?;
+        pool.release(large);
+        pool.release(medium);
+        pool.release(small);
+        let consolidated = pool.acquire_raw_sized(90)?;
+        assert_eq!(consolidated.len(), 90);
+        assert!(budget.used_bytes() <= budget.max_bytes());
+        pool.release(consolidated);
+        Ok(())
+    }
+
+    #[test]
     fn cloud_transfer_writes_object() -> Result<()> {
         init_tracing();
         let store = Arc::new(InMemory::new()) as Arc<dyn ObjectStore>;
-        let config = CloudTransferConfig {
-            part_size: 5,
-            download_part_size: 5,
-            max_queue: 4,
-            max_files_in_flight: 2,
-            max_part_requests: 2,
-            max_file_retries: 1,
-            buffer_count: 2,
-            max_bytes: 1024 * 1024,
-        };
-        let transfer = CloudTransfer::new(store.clone(), config);
+        let transfer = CloudTransfer::new(store.clone(), test_config(5, 1));
         let mut buffer = transfer.acquire_buffer();
         buffer.write_all(b"hello world")?;
         let path = ObjectPath::from("test/part.parquet");
@@ -1849,17 +2019,7 @@ mod tests {
     #[test]
     fn cloud_transfer_reads_object() -> Result<()> {
         let store = Arc::new(InMemory::new()) as Arc<dyn ObjectStore>;
-        let config = CloudTransferConfig {
-            part_size: 5,
-            download_part_size: 5,
-            max_queue: 4,
-            max_files_in_flight: 2,
-            max_part_requests: 2,
-            max_file_retries: 1,
-            buffer_count: 2,
-            max_bytes: 1024 * 1024,
-        };
-        let transfer = CloudTransfer::new(store.clone(), config);
+        let transfer = CloudTransfer::new(store.clone(), test_config(5, 1));
         let path = ObjectPath::from("test/read.parquet");
         let rt = Runtime::new()?;
         rt.block_on(async {
@@ -1869,6 +2029,62 @@ mod tests {
         })?;
         let buffer = transfer.submit_download(path)?.wait()?;
         assert_eq!(buffer.as_slice(), b"read-back");
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_condition_rejects_mutated_object() -> Result<()> {
+        let store = Arc::new(InMemory::new()) as Arc<dyn ObjectStore>;
+        let transfer = CloudTransfer::new(store.clone(), test_config(3, 0));
+        let path = ObjectPath::from("test/condition.parquet");
+        let rt = Runtime::new()?;
+        rt.block_on(async {
+            store
+                .put(&path, Bytes::from_static(b"original").into())
+                .await
+        })?;
+        let original = rt.block_on(store.head(&path))?;
+        let condition = CloudObjectCondition {
+            size: original.size,
+            e_tag: original.e_tag.clone(),
+            version: original.version.clone(),
+        };
+
+        let wrong_size = CloudObjectCondition {
+            size: original.size - 1,
+            ..condition.clone()
+        };
+        assert!(transfer
+            .submit_download_bytes_condition(path.clone(), Some(wrong_size.clone()))?
+            .wait()
+            .is_err());
+        let err = transfer
+            .get_range_blocking_condition(path.clone(), 1..5, Some(wrong_size))
+            .unwrap_err();
+        assert!(err.to_string().contains("changed size"), "{err:#}");
+
+        let complete = transfer
+            .submit_download_bytes_condition(path.clone(), Some(condition.clone()))?
+            .wait()?;
+        assert_eq!(complete.bytes().as_ref(), b"original");
+        drop(complete);
+        let range =
+            transfer.get_range_blocking_condition(path.clone(), 1..5, Some(condition.clone()))?;
+        assert_eq!(range.bytes().as_ref(), b"rigi");
+        drop(range);
+
+        rt.block_on(async {
+            store
+                .put(&path, Bytes::from_static(b"changed!").into())
+                .await
+        })?;
+        assert!(transfer
+            .submit_download_bytes_condition(path.clone(), Some(condition.clone()))?
+            .wait()
+            .is_err());
+        assert!(transfer
+            .get_range_blocking_condition(path.clone(), 0..3, Some(condition))
+            .is_err());
         Ok(())
     }
 
@@ -1893,17 +2109,7 @@ mod tests {
     #[test]
     fn cloud_transfer_lists_prefixes() -> Result<()> {
         let store = Arc::new(InMemory::new()) as Arc<dyn ObjectStore>;
-        let config = CloudTransferConfig {
-            part_size: 5,
-            download_part_size: 5,
-            max_queue: 4,
-            max_files_in_flight: 2,
-            max_part_requests: 2,
-            max_file_retries: 1,
-            buffer_count: 2,
-            max_bytes: 1024 * 1024,
-        };
-        let transfer = CloudTransfer::new(store.clone(), config);
+        let transfer = CloudTransfer::new(store.clone(), test_config(5, 1));
         let rt = Runtime::new()?;
         rt.block_on(async {
             store

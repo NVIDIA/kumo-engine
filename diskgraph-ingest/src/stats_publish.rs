@@ -469,12 +469,12 @@ fn data_source_path_from_report(ingest_stats: &Option<Vec<u8>>) -> Option<String
 fn data_source_path_from_config(source: &GraphConfig) -> Option<String> {
     let mut first_local: Option<String> = None;
     for table in &source.tables {
-        for path in table.get_paths() {
+        for path in table.source_paths() {
             if is_cloud_path(path) {
-                return Some(path.clone());
+                return Some(path.to_string());
             }
             if first_local.is_none() {
-                first_local = Some(path.clone());
+                first_local = Some(path.to_string());
             }
         }
     }

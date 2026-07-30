@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use diskgraph_core::metadata::EdgeStorageFormat;
 use diskgraph_rowpack::RowPackConfig;
 use serde::{Deserialize, Serialize};
@@ -111,29 +111,123 @@ pub struct TableSpec {
 }
 
 impl TableSpec {
-    /// Get file paths for this table (only valid for file-based sources).
+    /// Get local Parquet/CSV paths. Kept slice-based for API compatibility.
     pub fn get_paths(&self) -> &[String] {
         match &self.source {
-            DataSource::Parquet { paths } => paths.as_slice(),
-            DataSource::Csv { paths } => paths.as_slice(),
+            DataSource::Parquet { paths } | DataSource::Csv { paths } => paths,
             _ => &[],
         }
     }
 
-    /// Get mutable file paths for this table (only valid for file-based sources).
-    /// Panics if source is not a file-based source.
+    /// Get mutable local Parquet/CSV paths.
     pub fn get_paths_mut(&mut self) -> &mut Vec<String> {
         match &mut self.source {
-            DataSource::Parquet { paths } => paths,
-            DataSource::Csv { paths } => paths,
+            DataSource::Parquet { paths } | DataSource::Csv { paths } => paths,
             _ => panic!("get_paths_mut called on non-file source"),
         }
+    }
+
+    /// Iterate local or manifest paths without discarding identity.
+    pub fn source_paths(&self) -> Box<dyn ExactSizeIterator<Item = &str> + '_> {
+        Box::new(self.source_objects().map(|object| object.path))
+    }
+
+    pub(crate) fn source_objects(
+        &self,
+    ) -> Box<dyn ExactSizeIterator<Item = SourceObjectRef<'_>> + '_> {
+        match &self.source {
+            DataSource::Parquet { paths } | DataSource::Csv { paths } => {
+                Box::new(paths.iter().map(|path| SourceObjectRef {
+                    path,
+                    manifest: None,
+                }))
+            }
+            DataSource::ObjectStoreParquet { objects, .. } => {
+                Box::new(objects.iter().map(|object| SourceObjectRef {
+                    path: &object.path,
+                    manifest: Some(object),
+                }))
+            }
+            _ => Box::new(std::iter::empty()),
+        }
+    }
+
+    /// Explicitly replace a remote source with staged local Parquet files.
+    pub fn replace_with_local_parquet(&mut self, paths: Vec<String>) {
+        self.source = DataSource::Parquet { paths };
+    }
+
+    pub(crate) fn validate_object_store_manifest(&self) -> Result<&ObjectStoreObject> {
+        let DataSource::ObjectStoreParquet {
+            objects,
+            auth_profile,
+        } = &self.source
+        else {
+            return Err(anyhow!("table {} is not an object-store source", self.name));
+        };
+        ensure!(
+            auth_profile == "ambient",
+            "table {} object-store auth_profile {auth_profile:?} is unsupported; only explicit ambient mode is available",
+            self.name
+        );
+        let first = objects
+            .first()
+            .ok_or_else(|| anyhow!("table {} has no manifest objects", self.name))?;
+        let mut paths = HashSet::new();
+        let mut authority = None;
+        let mut total = 0u64;
+        for object in objects {
+            ensure!(
+                object.size > 0,
+                "table {} object-store manifest path {} has zero size",
+                self.name,
+                object.path
+            );
+            ensure!(
+                paths.insert(object.path.as_str()),
+                "table {} object-store manifest repeats {}",
+                self.name,
+                object.path
+            );
+            let valid_identity = [object.e_tag.as_deref(), object.version.as_deref()]
+                .into_iter()
+                .flatten()
+                .any(|value| !value.trim().is_empty());
+            ensure!(
+                valid_identity,
+                "table {} object-store manifest path {} has no valid immutable identity",
+                self.name,
+                object.path
+            );
+            let current = parse_cloud_object_authority(&object.path)?;
+            ensure!(
+                authority.as_ref().is_none_or(|first| first == &current),
+                "all cloud paths must share the same bucket/container"
+            );
+            authority = Some(current);
+            total = total.checked_add(object.size).ok_or_else(|| {
+                anyhow!(
+                    "table {} object-store manifest size overflows u64",
+                    self.name
+                )
+            })?;
+        }
+        if let Some(size) = self.source_size {
+            ensure!(
+                size == total,
+                "table {} source_size {size} does not match object-store manifest size {total}",
+                self.name
+            );
+        }
+        Ok(first)
     }
 
     /// Get the table format based on the source type.
     pub fn format(&self) -> TableFormat {
         match &self.source {
-            DataSource::Parquet { .. } => TableFormat::Parquet,
+            DataSource::Parquet { .. } | DataSource::ObjectStoreParquet { .. } => {
+                TableFormat::Parquet
+            }
             DataSource::Csv { .. } => TableFormat::Csv,
             _ => TableFormat::Parquet, // Default for non-file sources
         }
@@ -321,14 +415,53 @@ pub enum TableFormat {
     Parquet,
 }
 
+/// One exact object captured in a direct object-store source manifest.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ObjectStoreObject {
+    pub path: String,
+    pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub e_tag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+impl ObjectStoreObject {
+    pub(crate) fn condition(&self) -> diskgraph_fs::CloudObjectCondition {
+        diskgraph_fs::CloudObjectCondition {
+            size: self.size,
+            e_tag: self.e_tag.clone(),
+            version: self.version.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct SourceObjectRef<'a> {
+    pub(crate) path: &'a str,
+    pub(crate) manifest: Option<&'a ObjectStoreObject>,
+}
+
+impl SourceObjectRef<'_> {
+    pub(crate) fn condition(&self) -> Option<diskgraph_fs::CloudObjectCondition> {
+        self.manifest.map(ObjectStoreObject::condition)
+    }
+}
+
 /// Data source configuration - abstracts where table data comes from.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DataSource {
-    /// Parquet files (local or cloud storage).
-    Parquet {
-        /// List of file paths (local, s3://, gs://, az://).
-        paths: Vec<String>,
+    /// Parquet files (local, s3://, gs://, or az://).
+    ///
+    /// Cloud paths are retained for backwards compatibility and are promoted
+    /// to an in-memory exact manifest before schema inspection or ingest. New
+    /// callers should prefer `ObjectStoreParquet` when they already have one.
+    Parquet { paths: Vec<String> },
+    /// Exact cloud Parquet manifest with explicit authentication.
+    ObjectStoreParquet {
+        objects: Vec<ObjectStoreObject>,
+        auth_profile: String,
     },
     /// CSV files (local or cloud storage).
     Csv {
@@ -434,12 +567,19 @@ pub struct FKeySpec {
     /// behavior). False emits forward edges only — no reverse RelationDef,
     /// no reverse temp files, no reverse_batcher. Default true preserves
     /// legacy bidirectional behavior.
-    #[serde(default = "default_bidirectional", skip_serializing_if = "is_default_bidirectional")]
+    #[serde(
+        default = "default_bidirectional",
+        skip_serializing_if = "is_default_bidirectional"
+    )]
     pub bidirectional: bool,
 }
 
-fn default_bidirectional() -> bool { true }
-fn is_default_bidirectional(v: &bool) -> bool { *v }
+fn default_bidirectional() -> bool {
+    true
+}
+fn is_default_bidirectional(v: &bool) -> bool {
+    *v
+}
 
 impl Default for FKeySpec {
     fn default() -> Self {
@@ -477,13 +617,13 @@ pub struct ForeignKeySpec {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum CloudSource {
+pub(crate) enum CloudSource {
     S3 { bucket: String },
     Gcs { bucket: String },
     Adls { account: String, container: String },
 }
 
-fn parse_cloud_source(path: &str) -> Result<Option<CloudSource>> {
+pub(crate) fn parse_cloud_source(path: &str) -> Result<Option<CloudSource>> {
     if let Some(rest) = path.strip_prefix("s3://") {
         let mut parts = rest.splitn(2, '/');
         let bucket = parts.next().unwrap_or("").trim().to_string();
@@ -510,6 +650,29 @@ fn parse_cloud_source(path: &str) -> Result<Option<CloudSource>> {
         return Ok(Some(CloudSource::Adls { account, container }));
     }
     Ok(None)
+}
+
+pub(crate) fn parse_cloud_object_authority(path: &str) -> Result<CloudSource> {
+    let authority = parse_cloud_source(path)?
+        .ok_or_else(|| anyhow!("object-store manifest path {path} is not a cloud URL"))?;
+    let rest = path.split_once("://").unwrap().1;
+    let index = if matches!(&authority, CloudSource::Adls { .. }) {
+        2
+    } else {
+        1
+    };
+    let key = rest
+        .split('/')
+        .nth(index)
+        .unwrap_or("")
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("");
+    ensure!(
+        !key.is_empty(),
+        "object-store manifest path {path} has no object key"
+    );
+    Ok(authority)
 }
 
 impl GraphConfig {
@@ -569,8 +732,8 @@ impl GraphConfig {
         // case-insensitive collisions up front (e.g. User vs user).
         let mut table_names_ci: HashMap<String, String> = HashMap::new();
         let mut table_map: HashMap<&str, &TableSpec> = HashMap::new();
-        let mut cloud_source: Option<CloudSource> = None;
         for table in &self.tables {
+            let mut cloud_source: Option<CloudSource> = None;
             if table.name.trim().is_empty() {
                 errors.push("table name cannot be empty".to_string());
                 continue;
@@ -593,6 +756,11 @@ impl GraphConfig {
                 DataSource::Parquet { paths } | DataSource::Csv { paths } => {
                     if paths.is_empty() {
                         errors.push(format!("table {} has no paths", table.name));
+                    }
+                }
+                DataSource::ObjectStoreParquet { .. } => {
+                    if let Err(error) = table.validate_object_store_manifest() {
+                        errors.push(error.to_string());
                     }
                 }
                 DataSource::Databricks {
@@ -1314,9 +1482,18 @@ mod tests {
 
     #[test]
     fn timestamp_unit_scale_to_secs() {
-        assert_eq!(TimestampUnit::Millis.scale_to_secs(1_659_304_801_388), 1_659_304_802);
-        assert_eq!(TimestampUnit::Seconds.scale_to_secs(1_659_304_801), 1_659_304_801);
-        assert_eq!(TimestampUnit::Micros.scale_to_secs(1_659_304_801_000_000), 1_659_304_801);
+        assert_eq!(
+            TimestampUnit::Millis.scale_to_secs(1_659_304_801_388),
+            1_659_304_802
+        );
+        assert_eq!(
+            TimestampUnit::Seconds.scale_to_secs(1_659_304_801),
+            1_659_304_801
+        );
+        assert_eq!(
+            TimestampUnit::Micros.scale_to_secs(1_659_304_801_000_000),
+            1_659_304_801
+        );
         assert_eq!(
             TimestampUnit::Nanos.scale_to_secs(1_659_304_801_000_000_000),
             1_659_304_801
@@ -1392,6 +1569,62 @@ mod tests {
             kumo_source_table_name: None,
             group_by_timestamp: false,
         }
+    }
+
+    fn manifest_config() -> GraphConfig {
+        serde_json::from_str(r#"{"dataset_name":"manifest","tables":[{"name":"first","columns":[{"name":"id","ingested_dtype":"int64"}],"primary_key":"id","source":{"type":"object_store_parquet","objects":[{"path":"s3://first/data.parquet","size":123,"e_tag":"etag"}],"auth_profile":"ambient"}},{"name":"second","columns":[{"name":"id","ingested_dtype":"int64"}],"primary_key":"id","source":{"type":"object_store_parquet","objects":[{"path":"gs://second/data.parquet","size":456,"version":"generation"}],"auth_profile":"ambient"}}]}"#).unwrap()
+    }
+
+    #[test]
+    fn object_store_manifest_contract_fails_closed() {
+        let mut config = manifest_config();
+        config.validate().unwrap();
+        let mut json = serde_json::to_value(&config).unwrap();
+        let decoded: GraphConfig = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), json);
+
+        json["tables"][0]["source"]
+            .as_object_mut()
+            .unwrap()
+            .remove("auth_profile");
+        assert!(serde_json::from_value::<GraphConfig>(json).is_err());
+
+        if let DataSource::ObjectStoreParquet { objects, .. } = &mut config.tables[0].source {
+            objects[0].path = "s3://first".to_string();
+        }
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("no object key"));
+        if let DataSource::ObjectStoreParquet { objects, .. } = &mut config.tables[0].source {
+            objects[0].path = "s3://first/data.parquet".to_string();
+        }
+        config.tables[0].source_size = Some(1);
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("manifest size"));
+        config.tables[0].source_size = None;
+        if let DataSource::ObjectStoreParquet { auth_profile, .. } = &mut config.tables[0].source {
+            *auth_profile = "role".to_string();
+        }
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("explicit ambient"));
+
+        config.tables[0].replace_with_local_parquet(vec!["/staged.parquet".to_string()]);
+        assert!(matches!(
+            config.tables[0].source,
+            DataSource::Parquet { .. }
+        ));
+        if let DataSource::Parquet { paths } = &mut config.tables[0].source {
+            paths[0] = "s3://bucket/data.parquet".to_string();
+        }
+        config.validate().unwrap();
     }
 
     // Note: Coercion kind tests (Same, Safe, Conditional, Lossy, Incompatible) are in

@@ -104,22 +104,14 @@ pub fn convert_kumo_to_diskgraph(
     let inference_err: Option<ConvertError> = std::thread::scope(|s| {
         let cfg = &mut config;
         s.spawn(move || -> Option<ConvertError> {
-            let transfer = match crate::io::build_input_transfer(cfg) {
-                Ok(t) => t,
-                Err(e) => {
-                    tracing::warn!("could not build cloud transfer: {e}");
-                    return None;
-                }
-            };
-
             // Hard errors (e.g. time_col format detection failure) are
             // propagated. Soft warnings for non-critical columns are
             // logged via tracing::warn! inside detect_timestamp_formats.
-            if let Err(e) = super::inference::detect_timestamp_formats(cfg, &transfer) {
+            if let Err(e) = super::inference::detect_timestamp_formats(cfg, &None) {
                 return Some(ConvertError::InferenceError(format!("{e:#}")));
             }
 
-            if let Err(e) = super::inference::detect_multicategorical_delimiters(cfg, &transfer) {
+            if let Err(e) = super::inference::detect_multicategorical_delimiters(cfg, &None) {
                 return Some(e);
             }
 
@@ -129,7 +121,7 @@ pub fn convert_kumo_to_diskgraph(
             // irreversible without re-ingest. Surface mismatches loudly with
             // column + sample-row context. The check piggybacks on the same
             // bounded sampling budget the auto-detect path uses.
-            if let Err(e) = super::inference::validate_explicit_multicat_delimiters(cfg, &transfer)
+            if let Err(e) = super::inference::validate_explicit_multicat_delimiters(cfg, &None)
             {
                 return Some(e);
             }

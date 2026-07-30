@@ -1,6 +1,8 @@
 use crate::consts::TEMP_DIR_NAME;
 use crate::errors::ConvertError;
-use crate::graph_config::{DataSource, GraphConfig};
+use crate::graph_config::{
+    parse_cloud_source, CloudSource, DataSource, GraphConfig, ObjectStoreObject, TableSpec,
+};
 use crate::snapshot_mirror::{ManifestAccumulator, SnapshotMirror};
 
 /// True when a snapshot-relative path is under the per-ingest temp tree
@@ -13,8 +15,7 @@ use crate::snapshot_mirror::{ManifestAccumulator, SnapshotMirror};
 /// The check is rel-path based — the per-shard parallel write paths
 /// already construct rel paths like `_tmp/nodes/<table>/shard-XX/...`.
 fn is_temp_rel_path(rel: &str) -> bool {
-    rel == TEMP_DIR_NAME
-        || rel.starts_with(&format!("{}/", TEMP_DIR_NAME))
+    rel == TEMP_DIR_NAME || rel.starts_with(&format!("{}/", TEMP_DIR_NAME))
 }
 
 /// Recursive directory walker used by
@@ -29,9 +30,7 @@ fn walk_local_files(
     known: &std::collections::HashSet<String>,
     out: &mut Vec<(String, PathBuf, u64)>,
 ) -> Result<()> {
-    for entry in fs::read_dir(dir)
-        .with_context(|| format!("read_dir {}", dir.display()))?
-    {
+    for entry in fs::read_dir(dir).with_context(|| format!("read_dir {}", dir.display()))? {
         let entry = entry?;
         let path = entry.path();
         let file_type = entry.file_type()?;
@@ -59,7 +58,7 @@ fn walk_local_files(
     Ok(())
 }
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use bytes::Bytes;
 use diskgraph_fs::{
     build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, CloudTransfer,
@@ -120,17 +119,48 @@ pub fn parse_az_url(raw: &str) -> Result<(String, String, String)> {
     Ok((account, container, key))
 }
 
+pub(crate) fn build_input_transfer_for_table(table: &TableSpec) -> Result<Option<CloudTransfer>> {
+    match &table.source {
+        DataSource::ObjectStoreParquet { .. } => {
+            let first = table.validate_object_store_manifest()?;
+            Ok(Some(build_transfer_for_cloud_path(&first.path)?))
+        }
+        DataSource::Parquet { paths } => build_input_transfer_for_cloud_paths(table, paths),
+        DataSource::Csv { paths } => build_input_transfer_for_cloud_paths(table, paths),
+        DataSource::Snowflake { .. }
+        | DataSource::Databricks { .. }
+        | DataSource::BigQuery { .. } => Ok(None),
+    }
+}
+
+/// Compatibility wrapper for callers that still request one graph-level transfer.
 pub fn build_input_transfer(source: &GraphConfig) -> Result<Option<CloudTransfer>> {
     for table in &source.tables {
-        for path in table.get_paths() {
-            if is_cloud_path(path) {
-                let store = build_store_for_cloud_path(path)?;
-                let transfer = CloudTransfer::new(store, CloudTransferConfig::from_env());
-                return Ok(Some(transfer));
-            }
+        if let Some(transfer) = build_input_transfer_for_table(table)? {
+            return Ok(Some(transfer));
         }
     }
     Ok(None)
+}
+
+fn build_input_transfer_for_cloud_paths(
+    table: &TableSpec,
+    paths: &[String],
+) -> Result<Option<CloudTransfer>> {
+    let mut cloud_paths = paths.iter().filter(|path| is_cloud_path(path));
+    let Some(first) = cloud_paths.next() else {
+        return Ok(None);
+    };
+    let first_authority =
+        parse_cloud_source(first)?.ok_or_else(|| anyhow!("invalid cloud URL {first}"))?;
+    for path in cloud_paths {
+        ensure!(
+            parse_cloud_source(path)? == Some(first_authority.clone()),
+            "table {} object paths must share one provider authority",
+            table.name
+        );
+    }
+    Ok(Some(build_transfer_for_cloud_path(first)?))
 }
 
 pub fn build_transfer_for_cloud_path(path: &str) -> Result<CloudTransfer> {
@@ -214,9 +244,7 @@ fn unsupported_path_reason(path: &str) -> Option<&'static str> {
         );
     }
     if lower.starts_with("file://") {
-        return Some(
-            "use a bare local filesystem path instead of `file://...`",
-        );
+        return Some("use a bare local filesystem path instead of `file://...`");
     }
     if lower.starts_with("hdfs://") {
         return Some("HDFS is not a supported dataplane backend");
@@ -237,10 +265,7 @@ fn unsupported_path_reason(path: &str) -> Option<&'static str> {
 }
 
 fn is_cloud_scheme(scheme: &str) -> bool {
-    matches!(
-        scheme.to_ascii_lowercase().as_str(),
-        "s3" | "gs" | "az"
-    )
+    matches!(scheme.to_ascii_lowercase().as_str(), "s3" | "gs" | "az")
 }
 
 /// Companion to [`build_object_store_for_path`]. Returns the dest
@@ -314,8 +339,17 @@ pub fn object_path_from_cloud_url(path: &str) -> Result<ObjectPath> {
 }
 
 pub fn download_cloud_bytes(transfer: &CloudTransfer, path: &str) -> Result<PooledBytes> {
-    let object_path = object_path_from_cloud_url(path)?;
-    transfer.submit_download_bytes(object_path)?.wait()
+    download_cloud_bytes_condition(transfer, path, None)
+}
+
+pub fn download_cloud_bytes_condition(
+    transfer: &CloudTransfer,
+    path: &str,
+    condition: Option<diskgraph_fs::CloudObjectCondition>,
+) -> Result<PooledBytes> {
+    transfer
+        .submit_download_bytes_condition(object_path_from_cloud_url(path)?, condition)?
+        .wait()
 }
 
 pub fn resolve_local_paths(source: &mut GraphConfig, base_dir: &Path) {
@@ -341,7 +375,6 @@ pub fn resolve_local_paths(source: &mut GraphConfig, base_dir: &Path) {
 pub fn is_cloud_path(path: &str) -> bool {
     path.starts_with("s3://") || path.starts_with("gs://") || path.starts_with("az://")
 }
-
 
 /// Expand a cloud directory prefix to individual data file URLs.
 ///
@@ -372,36 +405,53 @@ fn expand_cloud_data_paths(dir_url: &str) -> Result<(DataSource, u64)> {
             })?
     })?;
 
-    // Reconstruct full cloud URLs from object locations.
-    let base_url = dir_url.trim_end_matches('/');
-    let bucket_root = base_url
-        .find("://")
-        .and_then(|i| base_url[i + 3..].find('/').map(|j| &base_url[..i + 3 + j]))
-        .unwrap_or(base_url);
+    let cloud_root = match parse_cloud_source(dir_url)? {
+        Some(CloudSource::S3 { bucket }) => format!("s3://{bucket}"),
+        Some(CloudSource::Gcs { bucket }) => format!("gs://{bucket}"),
+        Some(CloudSource::Adls { account, container }) => {
+            format!("az://{account}/{container}")
+        }
+        None => return Err(anyhow!("invalid cloud source URL {dir_url}")),
+    };
 
-    let mut parquet_files: Vec<String> = Vec::new();
+    let mut parquet_objects = Vec::new();
     let mut csv_files: Vec<String> = Vec::new();
     let mut total_bytes: u64 = 0;
-    for obj in &objects {
-        let loc = obj.location.as_ref();
-        let full = format!("{}/{}", bucket_root, loc);
+    for object in objects {
+        let loc = object.location.as_ref();
+        let full = format!("{cloud_root}/{loc}");
         if loc.ends_with(".parquet") {
-            parquet_files.push(full);
-            total_bytes += obj.size;
+            ensure!(
+                object.e_tag.is_some() || object.version.is_some(),
+                "cloud Parquet object {full} has no immutable identity"
+            );
+            total_bytes = total_bytes.saturating_add(object.size);
+            parquet_objects.push(ObjectStoreObject {
+                path: full,
+                size: object.size,
+                e_tag: object.e_tag,
+                version: object.version,
+            });
         } else if loc.ends_with(".csv") {
             csv_files.push(full);
-            total_bytes += obj.size;
+            total_bytes = total_bytes.saturating_add(object.size);
         }
     }
-    if !parquet_files.is_empty() && !csv_files.is_empty() {
+    if !parquet_objects.is_empty() && !csv_files.is_empty() {
         return Err(anyhow!(
             "Cloud path {} contains both .parquet and .csv files; must be one or the other",
             dir_url
         ));
     }
-    if !parquet_files.is_empty() {
-        parquet_files.sort();
-        Ok((DataSource::Parquet { paths: parquet_files }, total_bytes))
+    if !parquet_objects.is_empty() {
+        parquet_objects.sort_unstable_by(|left, right| left.path.cmp(&right.path));
+        Ok((
+            DataSource::ObjectStoreParquet {
+                objects: parquet_objects,
+                auth_profile: "ambient".to_string(),
+            },
+            total_bytes,
+        ))
     } else {
         csv_files.sort();
         Ok((DataSource::Csv { paths: csv_files }, total_bytes))
@@ -417,21 +467,26 @@ fn expand_local_data_paths(dir_path: &str) -> Result<(DataSource, u64)> {
         let path_str = path.to_string_lossy().into_owned();
         let size = fs::metadata(&path_str).map(|m| m.len()).unwrap_or(0);
         return Ok(if path_str.ends_with(".csv") {
-            (DataSource::Csv { paths: vec![path_str] }, size)
+            (
+                DataSource::Csv {
+                    paths: vec![path_str],
+                },
+                size,
+            )
         } else {
-            (DataSource::Parquet { paths: vec![path_str] }, size)
+            (
+                DataSource::Parquet {
+                    paths: vec![path_str],
+                },
+                size,
+            )
         });
     }
     let mut parquet_files: Vec<String> = Vec::new();
     let mut csv_files: Vec<String> = Vec::new();
     let mut total_bytes: u64 = 0;
     let mut files = Vec::new();
-    walk_local_files(
-        path,
-        path,
-        &std::collections::HashSet::new(),
-        &mut files,
-    )?;
+    walk_local_files(path, path, &std::collections::HashSet::new(), &mut files)?;
     for (_, file_path, size) in files {
         let file_path = file_path.to_string_lossy().into_owned();
         if file_path.ends_with(".parquet") {
@@ -450,7 +505,12 @@ fn expand_local_data_paths(dir_path: &str) -> Result<(DataSource, u64)> {
     }
     if !parquet_files.is_empty() {
         parquet_files.sort();
-        Ok((DataSource::Parquet { paths: parquet_files }, total_bytes))
+        Ok((
+            DataSource::Parquet {
+                paths: parquet_files,
+            },
+            total_bytes,
+        ))
     } else {
         csv_files.sort();
         Ok((DataSource::Csv { paths: csv_files }, total_bytes))
@@ -482,6 +542,7 @@ pub(crate) fn expand_source_paths(
 
         let is_empty = match &source {
             DataSource::Parquet { paths } | DataSource::Csv { paths } => paths.is_empty(),
+            DataSource::ObjectStoreParquet { objects, .. } => objects.is_empty(),
             _ => true,
         };
         if is_empty {
@@ -497,6 +558,22 @@ pub(crate) fn expand_source_paths(
                 paths.extend(new);
                 DataSource::Parquet { paths }
             }
+            (
+                Some(DataSource::ObjectStoreParquet {
+                    mut objects,
+                    auth_profile,
+                }),
+                DataSource::ObjectStoreParquet {
+                    objects: new,
+                    auth_profile: new_auth_profile,
+                },
+            ) if auth_profile == new_auth_profile => {
+                objects.extend(new);
+                DataSource::ObjectStoreParquet {
+                    objects,
+                    auth_profile,
+                }
+            }
             (Some(DataSource::Csv { mut paths }), DataSource::Csv { paths: new }) => {
                 paths.extend(new);
                 DataSource::Csv { paths }
@@ -504,13 +581,15 @@ pub(crate) fn expand_source_paths(
             _ => {
                 return Err(ConvertError::SourcePaths {
                     table: table_name.to_string(),
-                    message: "mixed .parquet and .csv inputs across source directories"
-                        .to_string(),
+                    message: "mixed .parquet and .csv inputs across source directories".to_string(),
                 })
             }
         });
     }
-    Ok((merged.unwrap_or(DataSource::Parquet { paths: vec![] }), total_bytes))
+    Ok((
+        merged.unwrap_or(DataSource::Parquet { paths: vec![] }),
+        total_bytes,
+    ))
 }
 
 pub fn require_local_output(target: &OutputTarget) -> Result<&Path> {
@@ -576,9 +655,11 @@ impl OutputTarget {
         match dest {
             Dest::Local => {
                 let mirror = match dataplane_dir {
-                    Some(dir) => Some(Arc::new(SnapshotMirror::new(dir).with_context(
-                        || format!("attach dataplane mirror at {dir}"),
-                    )?)),
+                    Some(dir) => {
+                        Some(Arc::new(SnapshotMirror::new(dir).with_context(|| {
+                            format!("attach dataplane mirror at {dir}")
+                        })?))
+                    }
                     None => None,
                 };
                 Ok(OutputTarget::Local {
@@ -596,8 +677,8 @@ impl OutputTarget {
                     allow_http: None,
                     virtual_hosted: None,
                     profile: std::env::var("S3_PROFILE")
-                .or_else(|_| std::env::var("AWS_PROFILE"))
-                .ok(),
+                        .or_else(|_| std::env::var("AWS_PROFILE"))
+                        .ok(),
                     access_key_id: None,
                     secret_access_key: None,
                     session_token: None,
@@ -758,9 +839,8 @@ impl OutputTarget {
         for (rel, local_path, size) in to_submit {
             manifest.record(&rel, size);
             if let Some(m) = mirror {
-                m.submit_from_path(&rel, &local_path).with_context(|| {
-                    format!("dataplane mirror submit (reconciled) {rel}")
-                })?;
+                m.submit_from_path(&rel, &local_path)
+                    .with_context(|| format!("dataplane mirror submit (reconciled) {rel}"))?;
             }
         }
         Ok(())
@@ -829,9 +909,9 @@ impl OutputTarget {
                 // the upload destination + manifest entry compose correctly.
                 // Callers historically pass an absolute (root-prefixed)
                 // path; recover the rel by stripping `root`.
-                let rel_path = path.strip_prefix(root).map(|p| {
-                    p.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/")
-                });
+                let rel_path = path
+                    .strip_prefix(root)
+                    .map(|p| p.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/"));
                 let tee = match rel_path {
                     // ``_tmp/*`` sinks bypass tee entirely — those files are
                     // deleted by ``cleanup_temp`` before ingest returns, so
@@ -1152,7 +1232,9 @@ mod tests {
         let payload: &[u8] = b"hello dataplane mirror";
         let mut buf = transfer.acquire_buffer();
         buf.write_all(payload)?;
-        transfer.submit_upload(rel.clone(), buf.into_inner())?.wait()?;
+        transfer
+            .submit_upload(rel.clone(), buf.into_inner())?
+            .wait()?;
 
         // Verify on-disk side: file landed at <prefix>/<rel>.
         let on_disk = tmp.path().join("nested").join("file.bin");
@@ -1185,7 +1267,9 @@ mod tests {
     /// resulting local snapshot.
     #[test]
     fn output_target_mirror_round_trip() -> Result<()> {
-        use crate::snapshot_mirror::{finalize_snapshot, verify_snapshot_integrity, MANIFEST_FILENAME};
+        use crate::snapshot_mirror::{
+            finalize_snapshot, verify_snapshot_integrity, MANIFEST_FILENAME,
+        };
         use crate::success_marker::SUCCESS_MARKER_FILENAME;
         use std::io::Write as _;
 
@@ -1334,10 +1418,7 @@ mod tests {
         // Local always has every write — temp or not — because temp files
         // are real ingest intermediates that get cleaned up later.
         assert!(local_root.path().join("_tmp/scratch.json").exists());
-        assert!(local_root
-            .path()
-            .join("_tmp/nodes/users/pkey.bin")
-            .exists());
+        assert!(local_root.path().join("_tmp/nodes/users/pkey.bin").exists());
         assert!(local_root.path().join("col_stats.json").exists());
         assert!(local_root.path().join("nodes/users/real.bin").exists());
         Ok(())
@@ -1514,7 +1595,11 @@ mod tests {
     fn test_expand_local_concrete_file_passthrough() {
         let dir = tempdir().unwrap();
         touch(dir.path(), "data.parquet");
-        let file_path = dir.path().join("data.parquet").to_string_lossy().into_owned();
+        let file_path = dir
+            .path()
+            .join("data.parquet")
+            .to_string_lossy()
+            .into_owned();
         let result = expand_local_data_paths(&file_path).unwrap();
         assert!(matches!(result.0, DataSource::Parquet { .. }));
         assert_eq!(paths_from(result), vec![file_path]);

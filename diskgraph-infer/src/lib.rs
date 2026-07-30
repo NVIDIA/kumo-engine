@@ -11,18 +11,18 @@ use arrow_schema::{ArrowError, DataType, Schema};
 use bytes::Bytes;
 use chrono::{NaiveDate, NaiveDateTime};
 use diskgraph_fs::{
-    build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, CloudTransfer,
-    CloudTransferConfig, GcsConfig, S3Config,
+    build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, CloudObjectCondition,
+    CloudTransfer, CloudTransferConfig, GcsConfig, S3Config,
 };
 use diskgraph_ingest::coercion::CoercionMode;
 use diskgraph_ingest::config_converter::map_kumo_dtype;
 use diskgraph_ingest::graph_config::{
     ColumnSpec, DataSource, EdgeTableSpec, FKeySpec, ForeignKeySpec, GraphConfig, IngestedType,
-    TableFormat, TableSpec, TimestampUnit,
+    ObjectStoreObject, TableFormat, TableSpec, TimestampUnit,
 };
 use diskgraph_ingest::utils::is_edge_table_compatible;
 use futures::StreamExt;
-use object_store::{path::Path as ObjectPath, ObjectStore};
+use object_store::{path::Path as ObjectPath, ObjectMeta, ObjectStore};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde::Deserialize;
 use tokio::runtime::Runtime;
@@ -165,6 +165,7 @@ struct TableInput {
     name: String,
     format: TableFormat,
     paths: Vec<String>,
+    objects: Vec<ObjectStoreObject>,
     columns: Vec<ColumnSpec>,
     total_bytes: u64,
 }
@@ -311,8 +312,17 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
             weight: None,
             edge_table: None,
             rowpack: None,
-            source: DataSource::Parquet {
-                paths: table.paths.clone(),
+            source: match (&table.format, table.objects.is_empty()) {
+                (TableFormat::Parquet, true) => DataSource::Parquet {
+                    paths: table.paths.clone(),
+                },
+                (TableFormat::Parquet, false) => DataSource::ObjectStoreParquet {
+                    objects: table.objects.clone(),
+                    auth_profile: "ambient".to_string(),
+                },
+                (TableFormat::Csv, _) => DataSource::Csv {
+                    paths: table.paths.clone(),
+                },
             },
             source_size: None,
             fkeys: Vec::new(),
@@ -500,6 +510,7 @@ fn infer_file_table(
                 name: name.trim_end_matches(".csv").to_string(),
                 format: TableFormat::Csv,
                 paths: vec![rel_path.to_string_lossy().to_string()],
+                objects: Vec::new(),
                 columns,
                 total_bytes: size,
             }))
@@ -516,6 +527,7 @@ fn infer_file_table(
                 name: name.trim_end_matches(".parquet").to_string(),
                 format: TableFormat::Parquet,
                 paths: vec![rel_path.to_string_lossy().to_string()],
+                objects: Vec::new(),
                 columns,
                 total_bytes: size,
             }))
@@ -606,6 +618,7 @@ fn infer_dir_table(
                     name: name.to_string(),
                     format,
                     paths: vec![rel_path.to_string_lossy().to_string()],
+                    objects: Vec::new(),
                     columns,
                     total_bytes: size,
                 });
@@ -655,28 +668,18 @@ fn infer_remote_tables(
                 let format_clone = format.clone();
                 if let Some(entry) = tables.get_mut(table_name) {
                     if !options.validate_dir_schemas {
-                        entry.paths.push(format!(
-                            "{}://{}/{}",
-                            root_scheme(root),
-                            bucket,
-                            path_str
-                        ));
-                        entry.total_bytes = entry.total_bytes.saturating_add(obj.size);
+                        push_remote_file(entry, root, bucket, &path_str, &format, &obj);
                         continue;
                     }
                 }
                 eprintln!("infer_config: reading {}", path_str);
                 let columns = match format {
-                    TableFormat::Parquet => infer_parquet_schema_remote(
-                        &transfer,
-                        &obj.location,
-                        obj.size,
-                        options,
-                        allowed_cols,
-                    )
-                    .with_context(|| {
-                        format!("infer schema for table {} at {}", table_name, path_str)
-                    })?,
+                    TableFormat::Parquet => {
+                        infer_parquet_schema_remote(&transfer, &obj, options, allowed_cols)
+                            .with_context(|| {
+                                format!("infer schema for table {} at {}", table_name, path_str)
+                            })?
+                    }
                     TableFormat::Csv => infer_csv_schema_remote(
                         &transfer,
                         &obj.location,
@@ -694,6 +697,7 @@ fn infer_remote_tables(
                         name: table_name.to_string(),
                         format: format_clone,
                         paths: Vec::new(),
+                        objects: Vec::new(),
                         columns: columns.clone(),
                         total_bytes: 0,
                     });
@@ -706,10 +710,7 @@ fn infer_remote_tables(
                     });
                     warnings.ignored_files.push(path_str);
                 } else {
-                    entry
-                        .paths
-                        .push(format!("{}://{}/{}", root_scheme(root), bucket, path_str));
-                    entry.total_bytes = entry.total_bytes.saturating_add(obj.size);
+                    push_remote_file(entry, root, bucket, &path_str, &format, &obj);
                 }
             }
         } else {
@@ -721,28 +722,18 @@ fn infer_remote_tables(
                 let format_clone = format.clone();
                 if let Some(entry) = tables.get_mut(table_name) {
                     if !options.validate_dir_schemas {
-                        entry.paths.push(format!(
-                            "{}://{}/{}",
-                            root_scheme(root),
-                            bucket,
-                            path_str
-                        ));
-                        entry.total_bytes = entry.total_bytes.saturating_add(obj.size);
+                        push_remote_file(entry, root, bucket, &path_str, &format, &obj);
                         continue;
                     }
                 }
                 eprintln!("infer_config: reading {}", path_str);
                 let columns = match format {
-                    TableFormat::Parquet => infer_parquet_schema_remote(
-                        &transfer,
-                        &obj.location,
-                        obj.size,
-                        options,
-                        allowed_cols,
-                    )
-                    .with_context(|| {
-                        format!("infer schema for table {} at {}", table_name, path_str)
-                    })?,
+                    TableFormat::Parquet => {
+                        infer_parquet_schema_remote(&transfer, &obj, options, allowed_cols)
+                            .with_context(|| {
+                                format!("infer schema for table {} at {}", table_name, path_str)
+                            })?
+                    }
                     TableFormat::Csv => infer_csv_schema_remote(
                         &transfer,
                         &obj.location,
@@ -760,6 +751,7 @@ fn infer_remote_tables(
                         name: table_name.to_string(),
                         format: format_clone,
                         paths: Vec::new(),
+                        objects: Vec::new(),
                         columns: columns.clone(),
                         total_bytes: 0,
                     });
@@ -772,10 +764,7 @@ fn infer_remote_tables(
                     });
                     warnings.ignored_files.push(path_str);
                 } else {
-                    entry
-                        .paths
-                        .push(format!("{}://{}/{}", root_scheme(root), bucket, path_str));
-                    entry.total_bytes = entry.total_bytes.saturating_add(obj.size);
+                    push_remote_file(entry, root, bucket, &path_str, &format, &obj);
                 }
             }
         }
@@ -783,7 +772,36 @@ fn infer_remote_tables(
     if tables.is_empty() {
         return Err(anyhow!("no tables found under {}", prefix));
     }
-    Ok(tables.into_values().collect())
+    let mut tables = tables.into_values().collect::<Vec<_>>();
+    for table in &mut tables {
+        table.paths.sort();
+        table
+            .objects
+            .sort_by(|left, right| left.path.cmp(&right.path));
+    }
+    tables.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(tables)
+}
+
+fn push_remote_file(
+    table: &mut TableInput,
+    root: &RootSource,
+    bucket: &str,
+    path: &str,
+    format: &TableFormat,
+    object: &ObjectMeta,
+) {
+    let url = format!("{}://{}/{}", root_scheme(root), bucket, path);
+    match format {
+        TableFormat::Csv => table.paths.push(url),
+        TableFormat::Parquet => table.objects.push(ObjectStoreObject {
+            path: url,
+            size: object.size,
+            e_tag: object.e_tag.clone(),
+            version: object.version.clone(),
+        }),
+    }
+    table.total_bytes = table.total_bytes.saturating_add(object.size);
 }
 
 fn root_scheme(root: &RootSource) -> &'static str {
@@ -934,12 +952,18 @@ fn infer_parquet_schema_local(
 
 fn infer_parquet_schema_remote(
     transfer: &CloudTransfer,
-    path: &ObjectPath,
-    _size: u64,
+    object: &ObjectMeta,
     options: &InferOptions,
     allowed_cols: Option<&HashSet<String>>,
 ) -> Result<Vec<ColumnSpec>> {
-    let pooled = transfer.submit_download_bytes(path.clone())?.wait()?;
+    let condition = CloudObjectCondition {
+        size: object.size,
+        e_tag: object.e_tag.clone(),
+        version: object.version.clone(),
+    };
+    let pooled = transfer
+        .submit_download_bytes_condition(object.location.clone(), Some(condition))?
+        .wait()?;
     let bytes = pooled.bytes();
     let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
     let schema = builder.schema();
@@ -988,9 +1012,7 @@ pub(crate) fn infer_parquet_schema_from_arrow(
                 DataType::Int8 => IngestedType::Int8Array,
                 DataType::Int16 | DataType::UInt8 => IngestedType::Int16Array,
                 DataType::Int32 | DataType::UInt16 => IngestedType::Int32Array,
-                DataType::Int64 | DataType::UInt32 | DataType::UInt64 => {
-                    IngestedType::Int64Array
-                }
+                DataType::Int64 | DataType::UInt32 | DataType::UInt64 => IngestedType::Int64Array,
                 DataType::Utf8 | DataType::LargeUtf8 => IngestedType::StringArray,
                 _ => return Err(anyhow!("unsupported list type {}", field.data_type())),
             },

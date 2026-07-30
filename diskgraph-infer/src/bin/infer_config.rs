@@ -67,7 +67,7 @@ fn main() -> Result<()> {
         println!(
             "  {} (files={}, primary_key={}, create_time={})",
             table.name,
-            table.get_paths().len(),
+            table.source_paths().len(),
             pk,
             create_time
         );

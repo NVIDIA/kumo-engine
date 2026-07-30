@@ -37,13 +37,13 @@ pub use crate::errors::{
     CoercionError, CoercionWarning, ConvertError, KeyParseError, KeyParseResult,
 };
 use crate::graph_config::{
-    ColumnSpec, DirectionSpec, IngestedType, SemanticType, TableFormat, TableSpec, TimeSpec,
-    WeightSpec,
+    ColumnSpec, DirectionSpec, IngestedType, ObjectStoreObject, SemanticType, TableFormat,
+    TableSpec, TimeSpec, WeightSpec,
 };
 pub use crate::io::Dest;
 use crate::io::{
-    build_input_transfer, is_cloud_path, require_local_output, resolve_local_paths, OutputSink,
-    OutputTarget,
+    build_input_transfer_for_table, download_cloud_bytes_condition, is_cloud_path,
+    require_local_output, resolve_local_paths, OutputSink, OutputTarget,
 };
 pub use crate::io::{build_transfer_for_cloud_path, object_path_from_cloud_url};
 use crate::mapping::{
@@ -64,7 +64,7 @@ pub use crate::stage_extension::{
     ResolveSpec, StageExtensionResult, StageSidecarColumns, StageSpec,
 };
 pub use crate::stats::{IngestReport, IngestStats, KeyFailureCounts, KeyFailureState, PerfStats};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use arrow_array::{make_array, Array, ArrayRef, RecordBatch};
 use arrow_data::transform::MutableArrayData;
 use arrow_schema::{DataType, Field, Schema};
@@ -77,7 +77,7 @@ use diskgraph_core::metadata::{
     EdgeSortKeyWeightEncoding, EdgeSortKeyWeightKind, EdgeSortKeyWeightMetadata, EdgeStorageFormat,
     NodeDataCompression, NodeShardMetadata, NodeTypeMetadata, PrimaryKeyMap,
 };
-use diskgraph_fs::CloudTransfer;
+use diskgraph_fs::{CloudObjectCondition, CloudTransfer, PooledBytes};
 use diskgraph_index::builder::{EdgeBufferPool as IndexEdgeBufferPool, MemoryBudget};
 use diskgraph_index::graph::{GraphDataSource, GraphIndexBuilder, GraphProgressSink};
 use diskgraph_rowpack::{
@@ -92,6 +92,7 @@ use lz4_flex::frame::{BlockSize, FrameDecoder, FrameEncoder, FrameInfo};
 use memmap2::Mmap;
 use num_traits::{Signed, ToPrimitive};
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ParquetRecordBatchReaderBuilder};
+use parquet::basic::Encoding;
 use parquet::file::reader::{ChunkReader, Length};
 use pprof::protos::Message;
 use pprof::ProfilerGuard;
@@ -229,23 +230,158 @@ fn start_databricks_helper(
     Ok(Some(helper))
 }
 
+struct ParquetInput {
+    path: String,
+    condition: Option<CloudObjectCondition>,
+}
+
+fn parquet_inputs(table: &TableSpec) -> Vec<ParquetInput> {
+    table
+        .source_objects()
+        .map(|object| ParquetInput {
+            path: object.path.to_owned(),
+            condition: object.condition(),
+        })
+        .collect()
+}
+
+/// Preserve the legacy `parquet.paths` cloud contract without preserving a
+/// second Parquet reader. Capture one exact identity per path, in caller order,
+/// then route schema inspection and Encode through the manifest-aware resident
+/// loader. The normalized source also makes retry markers detect mutations.
+fn promote_legacy_cloud_parquet_sources(source: &mut GraphConfig) -> Result<()> {
+    for table in &mut source.tables {
+        let should_promote = matches!(
+            &table.source,
+            graph_config::DataSource::Parquet { paths }
+                if !paths.is_empty() && paths.iter().all(|path| is_cloud_path(path))
+        );
+        if !should_promote {
+            continue;
+        }
+        let transfer = build_input_transfer_for_table(table)?
+            .ok_or_else(|| anyhow!("cloud input transfer unavailable for table {}", table.name))?;
+        promote_legacy_cloud_parquet_table(table, &transfer)?;
+    }
+    Ok(())
+}
+
+fn promote_legacy_cloud_parquet_table(
+    table: &mut TableSpec,
+    transfer: &CloudTransfer,
+) -> Result<()> {
+    let graph_config::DataSource::Parquet { paths } = &table.source else {
+        return Ok(());
+    };
+    let mut objects = Vec::with_capacity(paths.len());
+    let mut source_size = 0u64;
+    for path in paths {
+        let metadata = transfer
+            .head_blocking(object_path_from_cloud_url(path)?)
+            .with_context(|| format!("pin legacy cloud Parquet object {path}"))?;
+        ensure!(
+            metadata.size > 0,
+            "cloud Parquet object {path} has zero size"
+        );
+        ensure!(
+            metadata.e_tag.is_some() || metadata.version.is_some(),
+            "cloud Parquet object {path} has no immutable identity"
+        );
+        source_size = source_size
+            .checked_add(metadata.size)
+            .ok_or_else(|| anyhow!("table {} source size overflows u64", table.name))?;
+        objects.push(ObjectStoreObject {
+            path: path.clone(),
+            size: metadata.size,
+            e_tag: metadata.e_tag,
+            version: metadata.version,
+        });
+    }
+    table.source = graph_config::DataSource::ObjectStoreParquet {
+        objects,
+        auth_profile: "ambient".to_string(),
+    };
+    table.source_size = Some(source_size);
+    Ok(())
+}
+
+fn source_schema_threads(file_count: usize) -> usize {
+    effective_parallelism()
+        .saturating_mul(2)
+        .clamp(2, 32)
+        .min(file_count.max(1))
+}
+
+fn load_parquet_source_schemas(
+    table: &TableSpec,
+    inputs: Vec<ParquetInput>,
+) -> Result<Vec<Arc<Schema>>> {
+    if inputs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let transfer = build_input_transfer_for_table(table)?;
+    let slots = Arc::new(std::sync::Mutex::new(vec![None; inputs.len()]));
+    let tasks = inputs
+        .into_iter()
+        .enumerate()
+        .map(|(index, input)| {
+            let transfer = transfer.clone();
+            let slots = Arc::clone(&slots);
+            WorkItem {
+                bucket: None,
+                run: Box::new(move |_| {
+                    let resident = ResidentFile::load(
+                        &input.path,
+                        TableFormat::Parquet,
+                        transfer.as_ref(),
+                        None,
+                        input.condition,
+                    )
+                    .with_context(|| format!("prepare Parquet schema for {}", input.path))?;
+                    let schema = Arc::clone(
+                        resident
+                            .parquet_metadata
+                            .as_ref()
+                            .ok_or_else(|| {
+                                anyhow!("missing prepared Parquet metadata for {}", input.path)
+                            })?
+                            .schema(),
+                    );
+                    slots
+                        .lock()
+                        .map_err(|_| anyhow!("Parquet schema result lock poisoned"))?[index] =
+                        Some(schema);
+                    Ok(())
+                }),
+            }
+        })
+        .collect::<Vec<_>>();
+    let pool = TaskPool::<()>::new(source_schema_threads(tasks.len()));
+    pool.run_tasks(tasks)?;
+    drop(pool);
+    Arc::try_unwrap(slots)
+        .map_err(|_| anyhow!("Parquet schema results remained shared"))?
+        .into_inner()
+        .map_err(|_| anyhow!("Parquet schema result lock poisoned"))?
+        .into_iter()
+        .enumerate()
+        .map(|(index, schema)| {
+            schema.ok_or_else(|| anyhow!("missing prepared Parquet schema at index {index}"))
+        })
+        .collect()
+}
+
 fn visit_source_schemas(
     source: &GraphConfig,
-    transfer: Option<&CloudTransfer>,
     databricks_config_file: Option<&Path>,
     helper: &mut Option<crate::databricks::DatabricksHelper>,
     mut visit: impl FnMut(&TableSpec, &Schema) -> Result<()>,
 ) -> Result<()> {
     for table in &source.tables {
         match &table.source {
-            graph_config::DataSource::Parquet { paths } => {
-                for path in paths {
-                    let resident = ResidentFile::load(path, TableFormat::Parquet, transfer)?;
-                    let schema = resident
-                        .parquet_metadata
-                        .as_ref()
-                        .ok_or_else(|| anyhow!("missing prepared Parquet metadata for {path}"))?
-                        .schema();
+            graph_config::DataSource::Parquet { .. }
+            | graph_config::DataSource::ObjectStoreParquet { .. } => {
+                for schema in load_parquet_source_schemas(table, parquet_inputs(table))? {
                     visit(table, schema.as_ref())?;
                 }
             }
@@ -275,7 +411,7 @@ pub fn inspect_source_schema(
         resolve_local_paths(&mut source, base_dir);
     }
     source.normalize_multicat_pseudo_list();
-    let transfer = build_input_transfer(&source)?;
+    promote_legacy_cloud_parquet_sources(&mut source)?;
     let mut helper = start_databricks_helper(&source)?;
     let mut tables = BTreeMap::new();
     for table in &source.tables {
@@ -285,7 +421,6 @@ pub fn inspect_source_schema(
     }
     visit_source_schemas(
         &source,
-        transfer.as_ref(),
         databricks_config_file,
         &mut helper,
         |table, schema| {
@@ -331,8 +466,7 @@ pub struct FkEdgeTarget {
 }
 
 const DEFAULT_INDEX_MEM_BUDGET_FRAC: f64 = 0.7;
-const EPHEMERAL_DATABRICKS_CONFIG_ENV: &str =
-    "DISKGRAPH_EPHEMERAL_DATABRICKS_CONFIG";
+const EPHEMERAL_DATABRICKS_CONFIG_ENV: &str = "DISKGRAPH_EPHEMERAL_DATABRICKS_CONFIG";
 
 pub fn ingest(
     graph_config_path: &Path,
@@ -462,6 +596,8 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     // same pass) or was loaded directly from JSON. Idempotent. See
     // kumo-ai/kumo#28478.
     source.normalize_multicat_pseudo_list();
+    source.validate()?;
+    promote_legacy_cloud_parquet_sources(&mut source)?;
     // Size num_shards in the process that spends the per-shard PK-map/MPHF
     // memory. An upstream conversion may have pinned a host-sized value in a
     // different cgroup, so the ingest process takes the maximum of that pin
@@ -472,10 +608,9 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
         .map(|table| {
             table_sized_bytes(table.source_size, || {
                 table
-                    .get_paths()
-                    .iter()
+                    .source_paths()
                     .filter(|path| !path.contains("://"))
-                    .map(|path| crate::config_converter::inference::compute_local_dir_bytes(path))
+                    .map(crate::config_converter::inference::compute_local_dir_bytes)
                     .sum()
             })
         })
@@ -508,7 +643,6 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
         );
     }
     source.num_shards = Some(chosen);
-    source.validate()?;
     let encode_marker_payload = serde_json::to_vec(&source)?;
 
     // NOTE: We no longer call resolve_fk_types() here.
@@ -1277,7 +1411,7 @@ mod tests_repopulate_helpers {
 
     // -- minimal fixtures --------------------------------------------------
 
-    fn node_table(name: &str, primary_key: Option<&str>) -> TableSpec {
+    pub(super) fn node_table(name: &str, primary_key: Option<&str>) -> TableSpec {
         TableSpec {
             name: name.to_string(),
             columns: vec![ColumnSpec {
@@ -1400,7 +1534,6 @@ mod tests_repopulate_helpers {
             pk_map_peak_rss: Arc::new(AtomicU64::new(0)),
             index_mem_budget: None,
             num_shards,
-            input_transfer: None,
             table_rows: HashMap::new(),
             table_contexts: HashMap::new(),
             shard_rows: HashMap::new(),
@@ -1481,14 +1614,13 @@ mod tests_repopulate_helpers {
         .into_iter()
         .collect();
         for table in &tables {
-            for (shard, &n) in counts[table.name.as_str()].iter().enumerate().take(num_shards) {
-                write_temp_meta(
-                    &target,
-                    &temp_node_data_meta_path(&table.name, shard),
-                    n,
-                    0,
-                )
-                .unwrap();
+            for (shard, &n) in counts[table.name.as_str()]
+                .iter()
+                .enumerate()
+                .take(num_shards)
+            {
+                write_temp_meta(&target, &temp_node_data_meta_path(&table.name, shard), n, 0)
+                    .unwrap();
             }
         }
         let mut ctx = make_ctx(graph_config(tables.clone()), target, num_shards);
@@ -2096,7 +2228,6 @@ struct IngestContext {
     pk_map_peak_rss: std::sync::Arc<std::sync::atomic::AtomicU64>,
     index_mem_budget: Option<std::sync::Arc<MemoryBudget>>,
     num_shards: usize,
-    input_transfer: Option<CloudTransfer>,
     table_rows: HashMap<String, u64>,
     table_contexts: HashMap<String, String>,
     shard_rows: HashMap<String, Vec<u64>>,
@@ -2457,11 +2588,15 @@ enum SourceBatchRetention {
     Databricks {
         _lease: crate::databricks::DatabricksBatchLease,
     },
+    ResidentParquet {
+        _permit: Arc<crate::source_memory::BytePermit>,
+    },
 }
 
 struct SourceBatch {
     batch: RecordBatch,
     _retention: SourceBatchRetention,
+    observed: bool,
 }
 
 impl SourceBatch {
@@ -2469,6 +2604,7 @@ impl SourceBatch {
         Self {
             batch,
             _retention: SourceBatchRetention::Budget { _permit: permit },
+            observed: false,
         }
     }
 
@@ -2477,87 +2613,282 @@ impl SourceBatch {
         Self {
             batch,
             _retention: SourceBatchRetention::Databricks { _lease: lease },
+            observed: false,
         }
+    }
+
+    fn resident_parquet(batch: RecordBatch, permit: Arc<crate::source_memory::BytePermit>) -> Self {
+        Self {
+            batch,
+            _retention: SourceBatchRetention::ResidentParquet { _permit: permit },
+            observed: false,
+        }
+    }
+
+    fn observed(mut self) -> Self {
+        self.observed = true;
+        self
     }
 
     fn slice(self, offset: usize, length: usize) -> Self {
         Self {
             batch: self.batch.slice(offset, length),
             _retention: self._retention,
+            observed: self.observed,
         }
     }
 }
 
+struct SourceValidationState {
+    table: TableSpec,
+    synthetic_columns: HashSet<String>,
+    schema_validated: std::sync::Mutex<bool>,
+    multicat_validator: std::sync::Mutex<
+        Option<crate::config_converter::inference::ExplicitMulticatDelimiterValidator>,
+    >,
+    rows_seen: AtomicU64,
+    logical_arrow_bytes: AtomicU64,
+}
+
+impl SourceValidationState {
+    fn new(table: &TableSpec, synthetic_columns: HashSet<String>) -> Arc<Self> {
+        Arc::new(Self {
+            table: table.clone(),
+            synthetic_columns,
+            schema_validated: std::sync::Mutex::new(false),
+            multicat_validator: std::sync::Mutex::new(Some(
+                crate::config_converter::inference::ExplicitMulticatDelimiterValidator::new(table),
+            )),
+            rows_seen: AtomicU64::new(0),
+            logical_arrow_bytes: AtomicU64::new(0),
+        })
+    }
+
+    fn observe(&self, batch: &RecordBatch) -> Result<()> {
+        {
+            let mut validated = self
+                .schema_validated
+                .lock()
+                .map_err(|_| anyhow!("source schema validation lock was poisoned"))?;
+            if !*validated {
+                validate_source_schema(
+                    &self.table,
+                    batch.schema().as_ref(),
+                    &self.synthetic_columns,
+                )?;
+                *validated = true;
+            }
+        }
+        validate_source_batch_values(&self.table, batch, &self.synthetic_columns)?;
+        self.rows_seen
+            .fetch_add(batch.num_rows() as u64, Ordering::Relaxed);
+        let batch_bytes = batch
+            .columns()
+            .iter()
+            .try_fold(0u64, |total, array| {
+                array
+                    .to_data()
+                    .get_slice_memory_size()
+                    .ok()
+                    .and_then(|bytes| total.checked_add(bytes as u64))
+            })
+            .unwrap_or(u64::MAX);
+        self.logical_arrow_bytes
+            .fetch_add(batch_bytes, Ordering::Relaxed);
+        let mut validator = self
+            .multicat_validator
+            .lock()
+            .map_err(|_| anyhow!("multicategorical validation lock was poisoned"))?;
+        if let Some(validator) = validator.as_mut() {
+            validator.observe(batch);
+        }
+        Ok(())
+    }
+
+    fn finish(&self) -> Result<()> {
+        let validator = self
+            .multicat_validator
+            .lock()
+            .map_err(|_| anyhow!("multicategorical validation lock was poisoned"))?
+            .take();
+        if let Some(validator) = validator {
+            validator.finish().map_err(|error| anyhow!("{error}"))?;
+        }
+        Ok(())
+    }
+
+    fn rows_seen(&self) -> u64 {
+        self.rows_seen.load(Ordering::Relaxed)
+    }
+
+    fn logical_arrow_bytes(&self) -> u64 {
+        self.logical_arrow_bytes.load(Ordering::Relaxed)
+    }
+}
+
+enum SourceWork {
+    Batch(SourceBatch),
+    Parquet(ParquetPartition),
+    ParquetReader {
+        reader: BoundedParquetBatchReader,
+        permit: Arc<crate::source_memory::BytePermit>,
+        first_batch: Option<SourceBatch>,
+    },
+}
+
 struct EncodeBatchIter {
-    receiver: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<SourceBatch>>>,
+    receiver: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<SourceWork>>>,
+    source_budget: Arc<crate::source_memory::ByteBudget>,
+    validation: Arc<SourceValidationState>,
     active_retention: Option<SourceBatchRetention>,
+    active_parquet: Option<(
+        BoundedParquetBatchReader,
+        Arc<crate::source_memory::BytePermit>,
+        Option<SourceBatch>,
+    )>,
 }
 
 impl Iterator for EncodeBatchIter {
     type Item = Result<RecordBatch>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.active_retention = None;
-        let next = match self.receiver.lock() {
-            Ok(receiver) => receiver.recv().ok(),
-            Err(_) => return Some(Err(anyhow!("Encode batch queue lock was poisoned"))),
-        }?;
-        let SourceBatch {
-            batch,
-            _retention,
-        } = next;
-        self.active_retention = Some(_retention);
-        Some(Ok(batch))
+        loop {
+            self.active_retention = None;
+            if let Some((reader, permit, first_batch)) = &mut self.active_parquet {
+                if let Some(SourceBatch {
+                    batch,
+                    _retention,
+                    observed,
+                }) = first_batch.take()
+                {
+                    if !observed {
+                        if let Err(error) = self.validation.observe(&batch) {
+                            return Some(Err(error));
+                        }
+                    }
+                    self.active_retention = Some(_retention);
+                    return Some(Ok(batch));
+                }
+                match reader.next() {
+                    Some(Ok(batch)) => {
+                        if let Err(error) = self.validation.observe(&batch) {
+                            return Some(Err(error));
+                        }
+                        self.active_retention = Some(SourceBatchRetention::ResidentParquet {
+                            _permit: Arc::clone(permit),
+                        });
+                        return Some(Ok(batch));
+                    }
+                    Some(Err(error)) => return Some(Err(error)),
+                    None => self.active_parquet = None,
+                }
+            }
+            let work = match self.receiver.lock() {
+                Ok(receiver) => receiver.recv().ok(),
+                Err(_) => return Some(Err(anyhow!("Encode work queue lock was poisoned"))),
+            }?;
+            match work {
+                SourceWork::Batch(SourceBatch {
+                    batch,
+                    _retention,
+                    observed,
+                }) => {
+                    if !observed {
+                        if let Err(error) = self.validation.observe(&batch) {
+                            return Some(Err(error));
+                        }
+                    }
+                    self.active_retention = Some(_retention);
+                    return Some(Ok(batch));
+                }
+                SourceWork::Parquet(partition) => {
+                    let permit = match self
+                        .source_budget
+                        .acquire_input_chunk(partition.max_decode_bytes)
+                    {
+                        Ok(permit) => permit,
+                        Err(error) => return Some(Err(error)),
+                    };
+                    let permit = Arc::new(permit);
+                    self.active_parquet = Some((
+                        BoundedParquetBatchReader::partition(
+                            partition.resident,
+                            partition.row_groups,
+                            partition.max_decode_bytes,
+                        ),
+                        permit,
+                        None,
+                    ));
+                }
+                SourceWork::ParquetReader {
+                    reader,
+                    permit,
+                    first_batch,
+                } => {
+                    self.active_parquet = Some((reader, permit, first_batch));
+                }
+            }
+        }
     }
 }
 
-fn run_encode_batch_workers<I, R, F>(batches: I, workers: usize, encode: F) -> Result<Vec<R>>
+fn run_encode_batch_workers<I, R, F>(
+    works: I,
+    workers: usize,
+    source_budget: Arc<crate::source_memory::ByteBudget>,
+    validation: Arc<SourceValidationState>,
+    encode: F,
+) -> Result<Vec<R>>
 where
-    I: IntoIterator<Item = Result<SourceBatch>>,
+    I: IntoIterator<Item = Result<SourceWork>>,
     R: Send,
     F: Fn(EncodeBatchIter) -> Result<R> + Sync,
 {
-    let mut batches = batches.into_iter();
-    // Reserve the first source batch before workers allocate their retained
-    // scratch. This guarantees that at least one worker can make progress even
-    // when the Encode working-memory budget is tight.
-    let first_batch = batches.next().transpose()?;
-    let workers = if first_batch.is_some() {
+    let mut works = works.into_iter();
+    // Reserve the first source work before workers allocate retained scratch.
+    // This guarantees progress when the shared working-memory budget is tight.
+    let first_work = works.next().transpose()?;
+    let workers = if first_work.is_some() {
         workers.max(1)
     } else {
         1
     };
     std::thread::scope(|scope| {
         let (sender, receiver) =
-            std::sync::mpsc::sync_channel::<SourceBatch>(workers.saturating_mul(2).max(1));
+            std::sync::mpsc::sync_channel::<SourceWork>(workers.saturating_mul(2).max(1));
         let receiver = Arc::new(std::sync::Mutex::new(receiver));
         let mut handles = Vec::with_capacity(workers);
         for _ in 0..workers {
             let receiver = Arc::clone(&receiver);
+            let source_budget = Arc::clone(&source_budget);
+            let validation = Arc::clone(&validation);
             let encode = &encode;
             handles.push(scope.spawn(move || {
                 encode(EncodeBatchIter {
                     receiver,
+                    source_budget,
+                    validation,
                     active_retention: None,
+                    active_parquet: None,
                 })
             }));
         }
         drop(receiver);
 
         let mut source_error = None;
-        if let Some(batch) = first_batch {
-            if sender.send(batch).is_err() {
-                source_error = Some(anyhow!("all Encode batch workers stopped"));
+        if let Some(work) = first_work {
+            if sender.send(work).is_err() {
+                source_error = Some(anyhow!("all Encode workers stopped"));
             }
         }
-        for batch in batches {
+        for work in works {
             if source_error.is_some() {
                 break;
             }
-            match batch {
-                Ok(batch) => {
-                    if sender.send(batch).is_err() {
-                        source_error = Some(anyhow!("all Encode batch workers stopped"));
+            match work {
+                Ok(work) => {
+                    if sender.send(work).is_err() {
+                        source_error = Some(anyhow!("all Encode workers stopped"));
                         break;
                     }
                 }
@@ -2570,11 +2901,24 @@ where
         drop(sender);
 
         let mut results = Vec::with_capacity(workers);
+        let mut worker_error = None;
         for handle in handles {
             match handle.join() {
-                Ok(result) => results.push(result?),
-                Err(_) => return Err(anyhow!("Encode batch worker panicked")),
+                Ok(Ok(result)) => results.push(result),
+                Ok(Err(error)) => {
+                    if worker_error.is_none() {
+                        worker_error = Some(error);
+                    }
+                }
+                Err(_) => {
+                    if worker_error.is_none() {
+                        worker_error = Some(anyhow!("Encode worker panicked"));
+                    }
+                }
             }
+        }
+        if let Some(error) = worker_error {
+            return Err(error);
         }
         if let Some(error) = source_error {
             return Err(error);
@@ -2629,8 +2973,11 @@ fn node_encode_worker_limit(
     let per_worker = scratch_bytes
         .checked_add(output_bytes)
         .ok_or_else(|| anyhow!("node Encode worker memory size overflowed"))?;
-    let prefix_reserve = (SOURCE_PREFIX_MAX_BYTES as u64)
-        .min(source_budget.normal_limit_bytes().saturating_sub(scratch_bytes));
+    let prefix_reserve = (SOURCE_PREFIX_MAX_BYTES as u64).min(
+        source_budget
+            .normal_limit_bytes()
+            .saturating_sub(scratch_bytes),
+    );
     let available = source_budget
         .normal_limit_bytes()
         .saturating_sub(prefix_reserve);
@@ -2643,29 +2990,267 @@ fn node_encode_worker_limit(
 fn encode_batch_dispatcher_runs_workers_in_parallel() {
     let workers = 4;
     let budget = crate::source_memory::ByteBudget::new(1024).unwrap();
-    let batches = (0..workers)
+    let works = (0..workers)
         .map(|_| {
             let batch = RecordBatch::new_empty(Arc::new(Schema::empty()));
-            Ok(SourceBatch::budgeted(batch, budget.acquire(1).unwrap()))
+            Ok(SourceWork::Batch(SourceBatch::budgeted(
+                batch,
+                budget.acquire(1).unwrap(),
+            )))
         })
         .collect::<Vec<_>>();
+    let table: TableSpec = serde_json::from_value(serde_json::json!({
+        "name": "dispatcher", "columns": [], "source": {"type": "parquet", "paths": []}
+    }))
+    .unwrap();
+    let validation = SourceValidationState::new(&table, HashSet::new());
     let rendezvous = Arc::new(std::sync::Barrier::new(workers));
-    let results = run_encode_batch_workers(batches, workers, |mut batches| {
-        let batch = batches.next().expect("worker did not receive a batch")?;
-        rendezvous.wait();
-        Ok(batch.num_rows())
-    })
+    let results = run_encode_batch_workers(
+        works,
+        workers,
+        Arc::clone(&budget),
+        validation,
+        |mut batches| {
+            let batch = batches.next().expect("worker did not receive a batch")?;
+            rendezvous.wait();
+            Ok(batch.num_rows())
+        },
+    )
     .unwrap();
     assert_eq!(results, vec![0; workers]);
 }
 
 #[cfg(test)]
+mod resident_parquet_tests {
+    use super::*;
+    use arrow_array::Int64Array;
+    use diskgraph_fs::CloudTransferConfig;
+    use object_store::{memory::InMemory, ObjectStoreExt, PutPayload};
+    use parquet::arrow::arrow_writer::ArrowWriter;
+
+    pub(super) fn int_batch(name: &str, values: impl IntoIterator<Item = i64>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new(name, DataType::Int64, false)]));
+        RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from_iter_values(values))]).unwrap()
+    }
+
+    pub(super) fn write_parquet(
+        path: &Path,
+        batch: &RecordBatch,
+        properties: Option<parquet::file::properties::WriterProperties>,
+    ) {
+        let mut writer =
+            ArrowWriter::try_new(fs::File::create(path).unwrap(), batch.schema(), properties)
+                .unwrap();
+        writer.write(batch).unwrap();
+        writer.close().unwrap();
+    }
+
+    pub(super) fn resident(path: &Path) -> Arc<ResidentFile> {
+        Arc::new(
+            ResidentFile::load(
+                path.to_str().unwrap(),
+                TableFormat::Parquet,
+                None,
+                None,
+                None,
+            )
+            .unwrap(),
+        )
+    }
+
+    fn cloud_parquet_fixture(
+        object_path: &object_store::path::Path,
+        values: [i64; 3],
+    ) -> (Arc<InMemory>, object_store::ObjectMeta) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("fixture.parquet");
+        write_parquet(&path, &int_batch("id", values), None);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let store = Arc::new(InMemory::new());
+        let payload = PutPayload::from(Bytes::from(fs::read(path).unwrap()));
+        runtime.block_on(store.put(object_path, payload)).unwrap();
+        let metadata = runtime.block_on(store.head(object_path)).unwrap();
+        (store, metadata)
+    }
+
+    fn test_cloud_transfer(store: Arc<InMemory>) -> CloudTransfer {
+        let max_bytes = 64 * 1024 * 1024;
+        let mut config = CloudTransferConfig::from_env();
+        config.max_bytes = max_bytes;
+        config.buffer_count = 2;
+        CloudTransfer::new(store, config)
+    }
+
+    fn read_resident_cloud_values(table: &TableSpec, transfer: &CloudTransfer) -> Result<Vec<i64>> {
+        let max_bytes = 64 * 1024 * 1024;
+        let budget = crate::source_memory::ByteBudget::new(max_bytes)?;
+        let mut stream = ResidentParquetWorkStream::open(table, Some(transfer), Some(budget), 2)?;
+        let mut values = Vec::new();
+        while let Some(partition) = stream.next_partition(max_bytes, true) {
+            let partition = partition?;
+            for batch in BoundedParquetBatchReader::partition(
+                partition.resident,
+                partition.row_groups,
+                partition.max_decode_bytes,
+            ) {
+                let batch = batch?;
+                values.extend(
+                    batch
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .values(),
+                );
+            }
+        }
+        Ok(values)
+    }
+
+    #[test]
+    fn parallel_parquet_schema_preparation_preserves_source_order() {
+        let directory = tempfile::tempdir().unwrap();
+        let names = ["first", "second", "third"];
+        let paths = names.map(|name| {
+            let path = directory.path().join(format!("{name}.parquet"));
+            write_parquet(&path, &int_batch(name, []), None);
+            path.to_string_lossy().into_owned()
+        });
+        let mut table = super::tests_repopulate_helpers::node_table("ordered-schemas", None);
+        table.source = graph_config::DataSource::Parquet {
+            paths: paths.into(),
+        };
+        let schemas = load_parquet_source_schemas(&table, parquet_inputs(&table)).unwrap();
+        assert!(schemas
+            .iter()
+            .zip(names)
+            .all(|(schema, name)| schema.field(0).name() == name));
+    }
+
+    #[test]
+    fn inspect_source_schema_accepts_a_partial_config() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("partial.parquet");
+        write_parquet(&path, &int_batch("physical_id", [1, 2, 3]), None);
+        let source = serde_json::from_value(serde_json::json!({
+            "dataset_name": "partial",
+            "tables": [{
+                "name": "nodes",
+                "columns": [],
+                "source": {
+                    "type": "parquet",
+                    "paths": [path.to_string_lossy()]
+                }
+            }]
+        }))
+        .unwrap();
+        let signature = inspect_source_schema(source, None, None).unwrap();
+        assert_eq!(signature.tables["nodes"][0].name, "physical_id");
+    }
+
+    #[test]
+    #[ignore = "requires AWS credentials for kumo-public-datasets"]
+    fn legacy_cloud_schema_inspection_uses_the_public_small_dataset() {
+        let source = serde_json::from_value(serde_json::json!({
+            "dataset_name": "hnm_tiny_legacy",
+            "tables": [{
+                "name": "articles",
+                "columns": [],
+                "source": {
+                    "type": "parquet",
+                    "paths": [
+                        "s3://kumo-public-datasets/hnm_tiny/articles/part-00000-0005aa7e-18d0-4272-b52b-76a64f3e5a57-c000.snappy.parquet"
+                    ]
+                }
+            }]
+        }))
+        .unwrap();
+        let signature = inspect_source_schema(source, None, None).unwrap();
+        assert!(!signature.tables["articles"].is_empty());
+    }
+
+    #[test]
+    fn resident_parquet_partitions_decode_inside_encode_worker() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("parallel.parquet");
+        write_parquet(&path, &int_batch("id", 0..4), None);
+        let resident = resident(&path);
+        let works = [Ok(SourceWork::Parquet(ParquetPartition {
+            resident,
+            row_groups: vec![0],
+            max_decode_bytes: 4 * 1024 * 1024,
+        }))];
+        let table = super::tests_repopulate_helpers::node_table("parallel", Some("id"));
+        let budget = crate::source_memory::ByteBudget::new(4 * 1024 * 1024).unwrap();
+        let validation = SourceValidationState::new(&table, HashSet::new());
+        let rows =
+            run_encode_batch_workers(works, 1, budget, Arc::clone(&validation), |mut batches| {
+                batches.try_fold(0, |rows, batch| Ok(rows + batch?.num_rows()))
+            })
+            .unwrap();
+        assert_eq!(rows, [4]);
+        assert_eq!(validation.rows_seen(), 4);
+    }
+
+    #[test]
+    fn object_store_manifest_drives_the_resident_parquet_loader() {
+        let object_path = object_store::path::Path::from("data/manifest.parquet");
+        let (store, metadata) = cloud_parquet_fixture(&object_path, [1, 2, 3]);
+        let mut table = super::tests_repopulate_helpers::node_table("manifest", Some("id"));
+        table.source = graph_config::DataSource::ObjectStoreParquet {
+            objects: vec![graph_config::ObjectStoreObject {
+                path: "s3://bucket/data/manifest.parquet".to_string(),
+                size: metadata.size,
+                e_tag: metadata.e_tag,
+                version: metadata.version,
+            }],
+            auth_profile: "ambient".to_string(),
+        };
+        let transfer = test_cloud_transfer(store);
+        assert_eq!(
+            read_resident_cloud_values(&table, &transfer).unwrap(),
+            [1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn legacy_cloud_parquet_paths_are_promoted_into_the_resident_loader() {
+        let object_path = object_store::path::Path::from("data/legacy.parquet");
+        let (store, metadata) = cloud_parquet_fixture(&object_path, [4, 5, 6]);
+        let transfer = test_cloud_transfer(Arc::clone(&store));
+        let mut table = super::tests_repopulate_helpers::node_table("legacy", Some("id"));
+        table.source = graph_config::DataSource::Parquet {
+            paths: vec!["s3://bucket/data/legacy.parquet".to_string()],
+        };
+        promote_legacy_cloud_parquet_table(&mut table, &transfer).unwrap();
+        let graph_config::DataSource::ObjectStoreParquet { objects, .. } = &table.source else {
+            panic!("legacy source was not promoted");
+        };
+        assert_eq!(objects[0].size, metadata.size);
+        assert_eq!(objects[0].e_tag, metadata.e_tag);
+        assert_eq!(objects[0].version, metadata.version);
+        assert_eq!(
+            read_resident_cloud_values(&table, &transfer).unwrap(),
+            [4, 5, 6]
+        );
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime
+            .block_on(store.put(
+                &object_path,
+                PutPayload::from(Bytes::from_static(b"mutated")),
+            ))
+            .unwrap();
+        assert!(read_resident_cloud_values(&table, &transfer).is_err());
+    }
+}
+
+#[cfg(test)]
 #[test]
 fn only_explicit_public_ingest_errors_are_publishable() {
-    let public_error = anyhow::Error::new(PublicIngestError::new(
-        "safe validation detail".to_string(),
-    ))
-    .context("internal worker context");
+    let public_error =
+        anyhow::Error::new(PublicIngestError::new("safe validation detail".to_string()))
+            .context("internal worker context");
     assert_eq!(
         public_ingest_error_message(&public_error).as_deref(),
         Some("safe validation detail")
@@ -2691,11 +3276,7 @@ struct BoundedCsvBatchReader {
 }
 
 impl BoundedCsvBatchReader {
-    fn new(
-        reader: Box<dyn Read + Send>,
-        schema: Schema,
-        max_decode_bytes: u64,
-    ) -> Result<Self> {
+    fn new(reader: Box<dyn Read + Send>, schema: Schema, max_decode_bytes: u64) -> Result<Self> {
         // The decoder retains raw fields while Arrow arrays are built. Limit
         // raw CSV to one quarter of the permit, leaving space for the copied
         // Arrow values, offsets/validity, and parser/read buffers.
@@ -2707,14 +3288,11 @@ impl BoundedCsvBatchReader {
         let estimated_per_row = columns
             .checked_mul(32)
             .ok_or_else(|| anyhow!("CSV decode row estimate overflowed"))?;
-        let batch_rows = usize::try_from(
-            (max_decode_bytes / 16 / estimated_per_row)
-                .clamp(1, 1024),
-        )
-        .unwrap_or(1);
-        let buffer_bytes = FILE_DECODE_READ_BUFFER_BYTES.min(
-            usize::try_from((max_decode_bytes / 16).max(1024)).unwrap_or(usize::MAX),
-        );
+        let batch_rows =
+            usize::try_from((max_decode_bytes / 16 / estimated_per_row).clamp(1, 1024))
+                .unwrap_or(1);
+        let buffer_bytes = FILE_DECODE_READ_BUFFER_BYTES
+            .min(usize::try_from((max_decode_bytes / 16).max(1024)).unwrap_or(usize::MAX));
         Ok(Self {
             reader,
             decoder: arrow_csv::ReaderBuilder::new(Arc::new(schema))
@@ -2805,9 +3383,8 @@ impl Iterator for BoundedCsvBatchReader {
                 }
                 Ok(decoded) => {
                     self.buffer_start += decoded;
-                    self.decoded_since_flush = self
-                        .decoded_since_flush
-                        .saturating_add(decoded as u64);
+                    self.decoded_since_flush =
+                        self.decoded_since_flush.saturating_add(decoded as u64);
                 }
                 Err(error) => {
                     self.finished = true;
@@ -2843,11 +3420,11 @@ fn fixed_arrow_row_bytes(data_type: &DataType) -> Option<u64> {
         | DataType::Decimal128(_, _) => 17,
         DataType::Decimal256(_, _) => 33,
         DataType::FixedSizeBinary(width) if *width >= 0 => (*width as u64).saturating_add(1),
-        DataType::FixedSizeList(field, count) if *count >= 0 => fixed_arrow_row_bytes(
-            field.data_type(),
-        )?
-        .checked_mul(*count as u64)?
-        .saturating_add(1),
+        DataType::FixedSizeList(field, count) if *count >= 0 => {
+            fixed_arrow_row_bytes(field.data_type())?
+                .checked_mul(*count as u64)?
+                .saturating_add(1)
+        }
         DataType::Struct(fields) => fields.iter().try_fold(1u64, |total, field| {
             fixed_arrow_row_bytes(field.data_type()).and_then(|bytes| total.checked_add(bytes))
         })?,
@@ -2871,98 +3448,199 @@ fn variable_values_can_repeat_within_row(data_type: &DataType) -> bool {
     }
 }
 
+fn is_flat_variable_width(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Utf8
+        | DataType::LargeUtf8
+        | DataType::Utf8View
+        | DataType::Binary
+        | DataType::LargeBinary
+        | DataType::BinaryView => true,
+        DataType::Dictionary(_, values) => is_flat_variable_width(values),
+        _ => false,
+    }
+}
+
+fn flat_parquet_output_bound(
+    metadata: &ArrowReaderMetadata,
+    row_group_index: usize,
+) -> Option<(u64, u64)> {
+    let row_group = metadata.metadata().row_group(row_group_index);
+    if metadata.schema().fields().len() != row_group.num_columns() {
+        return None;
+    }
+    let mut fixed_bytes_per_row = 0u64;
+    let mut variable_payload_bytes = 0u64;
+    for (field, column) in metadata.schema().fields().iter().zip(row_group.columns()) {
+        if let Some(bytes) = fixed_arrow_row_bytes(field.data_type()) {
+            fixed_bytes_per_row = fixed_bytes_per_row.checked_add(bytes)?;
+            continue;
+        }
+        if !is_flat_variable_width(field.data_type()) {
+            return None;
+        }
+        let decoded_bytes = match column.unencoded_byte_array_data_bytes() {
+            Some(bytes) => u64::try_from(bytes).ok()?,
+            None if column.dictionary_page_offset().is_none()
+                && !column.encodings().any(|encoding| {
+                    matches!(
+                        encoding,
+                        Encoding::PLAIN_DICTIONARY | Encoding::RLE_DICTIONARY
+                    )
+                }) =>
+            {
+                u64::try_from(column.uncompressed_size()).ok()?
+            }
+            None => return None,
+        };
+        variable_payload_bytes = variable_payload_bytes.checked_add(decoded_bytes)?;
+    }
+    let variable_payload_bound = variable_payload_bytes
+        .checked_mul(2)?
+        .checked_add((row_group.num_columns() as u64).checked_mul(256)?)?;
+    Some((fixed_bytes_per_row, variable_payload_bound))
+}
+
+struct ParquetRowGroupMemoryPlan {
+    total_bytes: u64,
+    batch_size: usize,
+}
+
+fn parquet_row_group_memory_plan(
+    metadata: &ArrowReaderMetadata,
+    row_group_index: usize,
+    max_decode_bytes: u64,
+) -> Result<ParquetRowGroupMemoryPlan> {
+    let row_group = metadata.metadata().row_group(row_group_index);
+    let uncompressed = u64::try_from(row_group.total_byte_size())
+        .map_err(|_| anyhow!("Parquet row group has a negative decoded size"))?;
+    let compressed = u64::try_from(row_group.compressed_size())
+        .map_err(|_| anyhow!("Parquet row group has a negative compressed size"))?;
+    let rows = u64::try_from(row_group.num_rows())
+        .map_err(|_| anyhow!("Parquet row group has a negative row count"))?;
+    let leaf_columns = row_group.num_columns() as u64;
+    let structural = rows
+        .checked_mul(leaf_columns)
+        .and_then(|value| value.checked_mul(16))
+        .ok_or_else(|| anyhow!("Parquet row group structural size overflowed"))?;
+    let decoder_bound = uncompressed
+        .checked_mul(2)
+        .and_then(|value| value.checked_add(compressed))
+        .and_then(|value| value.checked_add(structural))
+        .ok_or_else(|| anyhow!("Parquet row group decode bound overflowed"))?;
+    let fixed_row_bytes = metadata
+        .schema()
+        .fields()
+        .iter()
+        .try_fold(0u64, |total, field| {
+            fixed_arrow_row_bytes(field.data_type()).and_then(|bytes| total.checked_add(bytes))
+        });
+    let batch_cap = usize::try_from(rows.min(NODE_BATCH_SIZE as u64))
+        .unwrap_or(NODE_BATCH_SIZE)
+        .max(1);
+    let (constant_output_bytes, bytes_per_row, batch_cap) = if let Some(row_bytes) = fixed_row_bytes
+    {
+        (0, row_bytes.max(1), batch_cap)
+    } else if let Some((fixed_bytes_per_row, variable_payload_bound)) =
+        flat_parquet_output_bound(metadata, row_group_index)
+    {
+        let bytes_per_row = fixed_bytes_per_row
+            .checked_add(leaf_columns.saturating_mul(16))
+            .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?
+            .max(1);
+        (variable_payload_bound, bytes_per_row, batch_cap)
+    } else {
+        // Older writers may omit decoded BYTE_ARRAY sizes. Dictionary and
+        // nested/repeated data then retain the conservative worst case:
+        // one output row may reference the complete encoded row group.
+        let can_repeat = metadata
+            .schema()
+            .fields()
+            .iter()
+            .any(|field| variable_values_can_repeat_within_row(field.data_type()));
+        let multiplier = if can_repeat {
+            row_group
+                .columns()
+                .iter()
+                .map(|column| u64::try_from(column.num_values()).unwrap_or(u64::MAX))
+                .max()
+                .unwrap_or(1)
+                .max(1)
+        } else {
+            1
+        };
+        let bytes_per_row = uncompressed
+            .max(1)
+            .checked_mul(multiplier)
+            // Arrow buffers may reserve nearly twice their logical size.
+            .and_then(|bytes| bytes.checked_mul(2))
+            .and_then(|bytes| bytes.checked_add(leaf_columns.saturating_mul(256)))
+            .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?;
+        (
+            0,
+            bytes_per_row.max(1),
+            if can_repeat { 1 } else { batch_cap },
+        )
+    };
+    let output_budget = max_decode_bytes
+        .saturating_sub(decoder_bound)
+        .saturating_sub(constant_output_bytes);
+    let batch_size = usize::try_from((output_budget / bytes_per_row).min(batch_cap as u64).max(1))
+        .unwrap_or(batch_cap);
+    let output_bound = constant_output_bytes
+        .checked_add(
+            bytes_per_row
+                .checked_mul(batch_size as u64)
+                .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?,
+        )
+        .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?;
+    let total_bytes = decoder_bound
+        .checked_add(output_bound)
+        .ok_or_else(|| anyhow!("Parquet row group memory bound overflowed"))?;
+    if total_bytes > max_decode_bytes {
+        return Err(anyhow!(
+            "Parquet row group memory bound {total_bytes} exceeds the Encode oversized chunk limit {max_decode_bytes}"
+                ));
+    }
+    Ok(ParquetRowGroupMemoryPlan {
+        total_bytes,
+        batch_size,
+    })
+}
+
 struct BoundedParquetBatchReader {
     resident: Arc<ResidentFile>,
-    next_row_group: usize,
-    current: Option<Box<dyn Iterator<Item = Result<RecordBatch>>>>,
+    row_groups: VecDeque<usize>,
+    current: Option<Box<dyn Iterator<Item = Result<RecordBatch>> + Send>>,
     max_decode_bytes: u64,
 }
 
 impl BoundedParquetBatchReader {
+    fn partition(
+        resident: Arc<ResidentFile>,
+        row_groups: Vec<usize>,
+        max_decode_bytes: u64,
+    ) -> Self {
+        Self {
+            resident,
+            row_groups: row_groups.into(),
+            current: None,
+            max_decode_bytes,
+        }
+    }
+
     fn open_next_row_group(&mut self) -> Result<bool> {
+        let Some(row_group_index) = self.row_groups.pop_front() else {
+            return Ok(false);
+        };
         let metadata = self
             .resident
             .parquet_metadata
             .as_ref()
             .ok_or_else(|| anyhow!("missing Parquet metadata"))?;
-        if self.next_row_group >= metadata.metadata().num_row_groups() {
-            return Ok(false);
-        }
-        let row_group_index = self.next_row_group;
-        self.next_row_group += 1;
-        let row_group = metadata.metadata().row_group(row_group_index);
-        let uncompressed = u64::try_from(row_group.total_byte_size())
-            .map_err(|_| anyhow!("Parquet row group has a negative decoded size"))?;
-        let compressed = u64::try_from(row_group.compressed_size())
-            .map_err(|_| anyhow!("Parquet row group has a negative compressed size"))?;
-        let rows = u64::try_from(row_group.num_rows())
-            .map_err(|_| anyhow!("Parquet row group has a negative row count"))?;
-        let leaf_columns = row_group.num_columns() as u64;
-        let structural = rows
-            .checked_mul(leaf_columns)
-            .and_then(|value| value.checked_mul(16))
-            .ok_or_else(|| anyhow!("Parquet row group structural size overflowed"))?;
-        let decoder_bound = uncompressed
-            .checked_mul(2)
-            .and_then(|value| value.checked_add(compressed))
-            .and_then(|value| value.checked_add(structural))
-            .ok_or_else(|| anyhow!("Parquet row group decode bound overflowed"))?;
-        if decoder_bound > self.max_decode_bytes {
-            return Err(anyhow!(
-                "Parquet row group decode bound {decoder_bound} exceeds the Encode oversized chunk limit {}",
-                self.max_decode_bytes
-            ));
-        }
-        let fixed_row_bytes = metadata
-            .schema()
-            .fields()
-            .iter()
-            .try_fold(0u64, |total, field| {
-                fixed_arrow_row_bytes(field.data_type())
-                    .and_then(|bytes| total.checked_add(bytes))
-            });
-        let output_budget = self.max_decode_bytes - decoder_bound;
-        // Size fixed-width output before decode; dictionary encoding may make
-        // the Parquet bytes far smaller than the materialized Arrow array.
-        let batch_size = if let Some(row_bytes) = fixed_row_bytes {
-            let admitted_rows = output_budget
-                .checked_div(row_bytes)
-                .unwrap_or(NODE_BATCH_SIZE as u64);
-            if admitted_rows == 0 {
-                return Err(anyhow!(
-                    "one Parquet row exceeds the Encode oversized chunk limit"
-                ));
-            }
-            usize::try_from(admitted_rows.min(NODE_BATCH_SIZE as u64)).unwrap_or(NODE_BATCH_SIZE)
-        } else {
-            // For simple top-level variable values, one row's values are
-            // bounded by the row group's uncompressed data. Nested repeated
-            // values can expand a dictionary value once per leaf value, so
-            // use the metadata value count as a conservative multiplier.
-            let can_repeat = metadata.schema().fields().iter().any(|field| {
-                variable_values_can_repeat_within_row(field.data_type())
-            });
-            let value_multiplier = if can_repeat {
-                row_group
-                    .columns()
-                    .iter()
-                    .map(|column| u64::try_from(column.num_values()).unwrap_or(u64::MAX))
-                    .max()
-                    .unwrap_or(1)
-                    .max(1)
-            } else {
-                1
-            };
-            let output_bound = uncompressed
-                .checked_mul(value_multiplier)
-                .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?;
-            if output_bound > output_budget {
-                return Err(anyhow!(
-                    "Parquet Arrow output bound {output_bound} exceeds the Encode oversized chunk limit"
-                ));
-            }
-            1
-        };
+        let memory =
+            parquet_row_group_memory_plan(metadata, row_group_index, self.max_decode_bytes)?;
+        let batch_size = memory.batch_size;
         let reader = ParquetRecordBatchReaderBuilder::new_with_metadata(
             self.resident.source.reader(false)?,
             metadata.clone(),
@@ -2996,31 +3674,18 @@ impl Iterator for BoundedParquetBatchReader {
     }
 }
 
-struct ResidentBatchReader {
-    _resident: Arc<ResidentFile>,
-    batches: Box<dyn Iterator<Item = Result<RecordBatch>>>,
-}
-
-impl Iterator for ResidentBatchReader {
-    type Item = Result<RecordBatch>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.batches.next()
-    }
-}
-
-struct FileBatchStream {
-    table: TableSpec,
+struct CsvBatchStream {
+    schema: Schema,
     paths: VecDeque<String>,
     transfer: Option<CloudTransfer>,
     max_decode_bytes: u64,
-    current: Option<ResidentBatchReader>,
+    current: Option<BoundedCsvBatchReader>,
+    source_budget: Arc<crate::source_memory::ByteBudget>,
+    active_decode_permit: Option<crate::source_memory::BytePermit>,
 }
 
-impl Iterator for FileBatchStream {
-    type Item = Result<RecordBatch>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+impl CsvBatchStream {
+    fn next_record_batch(&mut self) -> Option<Result<RecordBatch>> {
         loop {
             if let Some(reader) = &mut self.current {
                 if let Some(batch) = reader.next() {
@@ -3029,10 +3694,10 @@ impl Iterator for FileBatchStream {
                 self.current = None;
             }
             let path = self.paths.pop_front()?;
-            match open_resident_batch_reader(
-                &self.table,
+            match open_resident_csv_batch_reader(
                 &path,
                 self.transfer.as_ref(),
+                self.schema.clone(),
                 self.max_decode_bytes,
             ) {
                 Ok(reader) => self.current = Some(reader),
@@ -3045,186 +3710,43 @@ impl Iterator for FileBatchStream {
     }
 }
 
-enum TableBatchStreamInner<'a> {
-    File(Box<FileBatchStream>),
-    Databricks(Box<crate::databricks::DatabricksQueryStream<'a>>),
-}
-
-struct TableBatchStream<'a> {
-    inner: TableBatchStreamInner<'a>,
-    rows_seen: u64,
-    logical_arrow_bytes: u64,
-    input_wait_nanos: u64,
-    source_budget: Arc<crate::source_memory::ByteBudget>,
-    budget_file_batches: bool,
-    active_file_permit: Option<crate::source_memory::BytePermit>,
-    table: TableSpec,
-    synthetic_columns: HashSet<String>,
-    schema_validated: bool,
-    multicat_validator:
-        Option<crate::config_converter::inference::ExplicitMulticatDelimiterValidator>,
-}
-
-impl TableBatchStream<'_> {
-    fn file(
-        stream: FileBatchStream,
-        source_budget: Arc<crate::source_memory::ByteBudget>,
-        synthetic_columns: HashSet<String>,
-    ) -> Self {
-        let multicat_validator = Some(
-            crate::config_converter::inference::ExplicitMulticatDelimiterValidator::new(
-                &stream.table,
-            ),
-        );
-        let table = stream.table.clone();
-        Self {
-            inner: TableBatchStreamInner::File(Box::new(stream)),
-            rows_seen: 0,
-            logical_arrow_bytes: 0,
-            input_wait_nanos: 0,
-            source_budget,
-            budget_file_batches: true,
-            active_file_permit: None,
-            table,
-            synthetic_columns,
-            schema_validated: false,
-            multicat_validator,
-        }
-    }
-
-    fn databricks<'a>(
-        stream: crate::databricks::DatabricksQueryStream<'a>,
-        table: &TableSpec,
-        source_budget: Arc<crate::source_memory::ByteBudget>,
-        synthetic_columns: HashSet<String>,
-    ) -> TableBatchStream<'a> {
-        TableBatchStream {
-            inner: TableBatchStreamInner::Databricks(Box::new(stream)),
-            rows_seen: 0,
-            logical_arrow_bytes: 0,
-            input_wait_nanos: 0,
-            source_budget,
-            budget_file_batches: false,
-            active_file_permit: None,
-            table: table.clone(),
-            synthetic_columns,
-            schema_validated: false,
-            multicat_validator: Some(
-                crate::config_converter::inference::ExplicitMulticatDelimiterValidator::new(table),
-            ),
-        }
-    }
-
-    fn databricks_metrics(&self) -> Option<crate::databricks::QueryMetrics> {
-        match &self.inner {
-            TableBatchStreamInner::File(_) => None,
-            TableBatchStreamInner::Databricks(stream) => Some(stream.metrics()),
-        }
-    }
-
-    fn rows_seen(&self) -> u64 {
-        self.rows_seen
-    }
-
-    fn logical_arrow_bytes(&self) -> u64 {
-        self.logical_arrow_bytes
-    }
-
-    fn input_wait_nanos(&self) -> u64 {
-        self.input_wait_nanos
-    }
-
-    fn finish_validation(&mut self) -> Result<()> {
-        if let Some(validator) = self.multicat_validator.take() {
-            validator.finish().map_err(|error| anyhow!("{error}"))?;
-        }
-        Ok(())
-    }
-}
-
-impl Iterator for TableBatchStream<'_> {
+impl Iterator for CsvBatchStream {
     type Item = Result<SourceBatch>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let input_start = std::time::Instant::now();
-        // File decoders retain input/parser buffers across batches. Keep one
-        // full single-chunk permit for the decoder's lifetime; the bounded
-        // CSV and Parquet adapters below reject before they can exceed it.
-        if self.budget_file_batches && self.active_file_permit.is_none() {
+        // CSV decoders retain input/parser buffers across batches. Keep one
+        // full single-chunk permit for the decoder's lifetime; the bounded CSV
+        // adapter rejects before it can exceed this ceiling. Parquet decoding
+        // is performed by Encode workers through resident partition work.
+        if self.active_decode_permit.is_none() {
             match self
                 .source_budget
                 .acquire_input_chunk(self.source_budget.max_input_chunk_bytes())
             {
-                Ok(permit) => self.active_file_permit = Some(permit),
+                Ok(permit) => self.active_decode_permit = Some(permit),
                 Err(error) => return Some(Err(error)),
             }
         }
-        let next = match &mut self.inner {
-            TableBatchStreamInner::File(stream) => stream.next().map(|result| {
-                result.and_then(|batch| {
-                    let batch_bytes = batch.get_array_memory_size() as u64;
-                    if batch_bytes > self.source_budget.max_input_chunk_bytes() {
-                        return Err(anyhow!(
-                            "Encode input chunk exceeds the oversized chunk limit"
-                        ));
-                    }
-                    let permit = if batch_bytes <= self.source_budget.normal_limit_bytes() {
-                        self.source_budget.acquire_dispatched_batch(batch_bytes)?
-                    } else {
-                        self.active_file_permit.take().ok_or_else(|| {
-                            anyhow!("Encode oversized file batch is missing its input reservation")
-                        })?
-                    };
-                    Ok(SourceBatch::budgeted(batch, permit))
-                })
-            }),
-            TableBatchStreamInner::Databricks(stream) => {
-                stream.next().map(|result| result.map(SourceBatch::databricks))
-            }
-        };
-        self.input_wait_nanos = self
-            .input_wait_nanos
-            .saturating_add(input_start.elapsed().as_nanos().min(u64::MAX as u128) as u64);
-        if let Some(Ok(batch)) = &next {
-            if !self.schema_validated {
-                if let Err(error) = validate_source_schema(
-                    &self.table,
-                    batch.batch.schema().as_ref(),
-                    &self.synthetic_columns,
-                ) {
-                    return Some(Err(error));
+        let next = self.next_record_batch().map(|result| {
+            result.and_then(|batch| {
+                let batch_bytes = batch.get_array_memory_size() as u64;
+                if batch_bytes > self.source_budget.max_input_chunk_bytes() {
+                    return Err(anyhow!(
+                        "Encode input chunk exceeds the oversized chunk limit"
+                    ));
                 }
-                self.schema_validated = true;
-            }
-            if let Err(error) = validate_source_batch_values(
-                &self.table,
-                &batch.batch,
-                &self.synthetic_columns,
-            ) {
-                return Some(Err(error));
-            }
-            self.rows_seen = self
-                .rows_seen
-                .saturating_add(batch.batch.num_rows() as u64);
-            let batch_bytes = batch
-                .batch
-                .columns()
-                .iter()
-                .try_fold(0u64, |total, array| {
-                    array
-                        .to_data()
-                        .get_slice_memory_size()
-                        .ok()
-                        .and_then(|bytes| total.checked_add(bytes as u64))
-                })
-                .unwrap_or(u64::MAX);
-            self.logical_arrow_bytes = self.logical_arrow_bytes.saturating_add(batch_bytes);
-            if let Some(validator) = &mut self.multicat_validator {
-                validator.observe(&batch.batch);
-            }
-        }
+                let permit = if batch_bytes <= self.source_budget.normal_limit_bytes() {
+                    self.source_budget.acquire_dispatched_batch(batch_bytes)?
+                } else {
+                    self.active_decode_permit.take().ok_or_else(|| {
+                        anyhow!("Encode oversized CSV batch is missing its input reservation")
+                    })?
+                };
+                Ok(SourceBatch::budgeted(batch, permit))
+            })
+        });
         if next.is_none() {
-            self.active_file_permit = None;
+            self.active_decode_permit = None;
         }
         next
     }
@@ -3233,21 +3755,29 @@ impl Iterator for TableBatchStream<'_> {
 const REMOTE_READ_CHUNK_BYTES: u64 = 8 * 1024 * 1024;
 const REMOTE_METADATA_RANGE_MAX_BYTES: usize = 256 * 1024 * 1024;
 
-/// A local file or a bounded-range cloud object.
+/// A local file, a complete pooled cloud download, or a metadata-only remote
+/// object. Parquet Encode uses only `Local` and `Cloud`; `Remote` is retained
+/// for schema inspection and the independently supported CSV reader.
 enum ResidentSource {
     Local(PathBuf),
-    Cloud(Arc<RemoteObject>),
+    Cloud {
+        bytes: PooledBytes,
+        _permit: crate::source_memory::BytePermit,
+    },
+    Remote(Arc<RemoteObject>),
 }
 
 enum ResidentReader {
     Local(fs::File),
-    Cloud(Arc<RemoteObject>),
+    Cloud(Bytes),
+    Remote(Arc<RemoteObject>),
 }
 
 struct RemoteObject {
     transfer: CloudTransfer,
     path: object_store::path::Path,
     size: u64,
+    condition: Option<CloudObjectCondition>,
 }
 
 impl RemoteObject {
@@ -3257,7 +3787,7 @@ impl RemoteObject {
         }
         let pooled = self
             .transfer
-            .get_range_blocking(self.path.clone(), start..end)
+            .get_range_blocking_condition(self.path.clone(), start..end, self.condition.clone())
             .context("remote object range read failed")?;
         Ok(pooled.bytes())
     }
@@ -3350,6 +3880,7 @@ mod remote_range_reader_tests {
             transfer,
             path,
             size: payload.len() as u64,
+            condition: None,
         });
         let mut forward = RemoteRangeReader::new(Arc::clone(&object), 17);
         let mut decoded = Vec::new();
@@ -3357,7 +3888,7 @@ mod remote_range_reader_tests {
         assert_eq!(decoded, payload.slice(17..));
         drop(forward);
 
-        let reader = ResidentReader::Cloud(object);
+        let reader = ResidentReader::Remote(object);
         assert_eq!(reader.get_bytes(100, 33).unwrap(), payload.slice(100..133));
     }
 }
@@ -3366,7 +3897,8 @@ impl Length for ResidentReader {
     fn len(&self) -> u64 {
         match self {
             Self::Local(file) => file.metadata().map(|meta| meta.len()).unwrap_or(0),
-            Self::Cloud(object) => object.size,
+            Self::Cloud(bytes) => bytes.len() as u64,
+            Self::Remote(object) => object.size,
         }
     }
 }
@@ -3377,7 +3909,8 @@ impl ChunkReader for ResidentReader {
     fn get_read(&self, start: u64) -> parquet::errors::Result<Self::T> {
         match self {
             Self::Local(file) => Ok(Box::new(ChunkReader::get_read(file, start)?)),
-            Self::Cloud(object) => {
+            Self::Cloud(bytes) => Ok(Box::new(ChunkReader::get_read(bytes, start)?)),
+            Self::Remote(object) => {
                 if start > object.size {
                     return Err(parquet::errors::ParquetError::General(
                         "remote Parquet read starts beyond the object".to_string(),
@@ -3391,7 +3924,8 @@ impl ChunkReader for ResidentReader {
     fn get_bytes(&self, start: u64, length: usize) -> parquet::errors::Result<Bytes> {
         match self {
             Self::Local(file) => ChunkReader::get_bytes(file, start, length),
-            Self::Cloud(object) => {
+            Self::Cloud(bytes) => ChunkReader::get_bytes(bytes, start, length),
+            Self::Remote(object) => {
                 if length > REMOTE_METADATA_RANGE_MAX_BYTES {
                     return Err(parquet::errors::ParquetError::General(
                         "remote Parquet metadata range exceeds the limit".to_string(),
@@ -3423,7 +3957,8 @@ impl ResidentSource {
                 }
                 Ok(ResidentReader::Local(file))
             }
-            Self::Cloud(object) => Ok(ResidentReader::Cloud(Arc::clone(object))),
+            Self::Cloud { bytes, .. } => Ok(ResidentReader::Cloud(bytes.bytes())),
+            Self::Remote(object) => Ok(ResidentReader::Remote(Arc::clone(object))),
         }
     }
 }
@@ -3434,17 +3969,52 @@ struct ResidentFile {
 }
 
 impl ResidentFile {
-    fn load(path: &str, format: TableFormat, transfer: Option<&CloudTransfer>) -> Result<Self> {
+    fn load(
+        path: &str,
+        format: TableFormat,
+        transfer: Option<&CloudTransfer>,
+        resident_budget: Option<&Arc<crate::source_memory::ByteBudget>>,
+        condition: Option<CloudObjectCondition>,
+    ) -> Result<Self> {
         let source = if is_cloud_path(path) {
             let transfer =
                 transfer.ok_or_else(|| anyhow!("cloud input transfer unavailable for {path}"))?;
             let object_path = object_path_from_cloud_url(path)?;
-            let size = transfer.head_blocking(object_path.clone())?.size;
-            ResidentSource::Cloud(Arc::new(RemoteObject {
-                transfer: transfer.clone(),
-                path: object_path,
-                size,
-            }))
+            ensure!(
+                format != TableFormat::Parquet || condition.is_some(),
+                "cloud Parquet object {path} was not pinned before loading"
+            );
+            let size = match condition
+                .as_ref()
+                .and_then(CloudObjectCondition::pinned_size)
+            {
+                Some(size) => size,
+                None => transfer.head_blocking(object_path.clone())?.size,
+            };
+            match (&format, resident_budget) {
+                (TableFormat::Parquet, Some(resident_budget)) => {
+                    let permit = resident_budget.acquire_resident_object(size)?;
+                    let bytes =
+                        download_cloud_bytes_condition(transfer, path, condition.clone())
+                            .with_context(|| format!("download resident Parquet object {path}"))?;
+                    let received_size = bytes.bytes().len() as u64;
+                    if received_size != size {
+                        return Err(anyhow!(
+                            "resident Parquet object {path} changed size while downloading: expected {size} bytes, received {received_size}"
+                        ));
+                    }
+                    ResidentSource::Cloud {
+                        bytes,
+                        _permit: permit,
+                    }
+                }
+                _ => ResidentSource::Remote(Arc::new(RemoteObject {
+                    transfer: transfer.clone(),
+                    path: object_path,
+                    size,
+                    condition,
+                })),
+            }
         } else {
             fs::metadata(path).with_context(|| format!("stat {path}"))?;
             ResidentSource::Local(PathBuf::from(path))
@@ -3464,58 +4034,486 @@ impl ResidentFile {
     }
 }
 
-fn open_file_batch_stream(
+struct ParquetPartition {
+    resident: Arc<ResidentFile>,
+    row_groups: Vec<usize>,
+    max_decode_bytes: u64,
+}
+
+const PARQUET_PARTITION_TARGET_BYTES: u64 = 256 * 1024 * 1024;
+
+fn plan_resident_parquet_partitions(resident: &ResidentFile) -> Result<Vec<Vec<usize>>> {
+    let metadata = resident
+        .parquet_metadata
+        .as_ref()
+        .ok_or_else(|| anyhow!("missing resident Parquet metadata"))?;
+    let row_groups = metadata.metadata().row_groups();
+    if row_groups.is_empty() {
+        return Ok(vec![Vec::new()]);
+    }
+    let mut partitions = Vec::new();
+    let mut current = Vec::new();
+    let mut current_bytes = 0u64;
+    for (index, row_group) in row_groups.iter().enumerate() {
+        current.push(index);
+        current_bytes = current_bytes.saturating_add(row_group.compressed_size().max(0) as u64);
+        if current_bytes >= PARQUET_PARTITION_TARGET_BYTES {
+            partitions.push(std::mem::take(&mut current));
+            current_bytes = 0;
+        }
+    }
+    if !current.is_empty() {
+        partitions.push(current);
+    }
+    Ok(partitions)
+}
+
+fn resident_partition_memory_bound(
+    resident: &ResidentFile,
+    row_groups: &[usize],
+    max_decode_bytes: u64,
+) -> Result<u64> {
+    let metadata = resident
+        .parquet_metadata
+        .as_ref()
+        .ok_or_else(|| anyhow!("missing resident Parquet metadata"))?;
+    row_groups.iter().try_fold(0u64, |bound, row_group| {
+        Ok(bound.max(
+            parquet_row_group_memory_plan(metadata, *row_group, max_decode_bytes)?.total_bytes,
+        ))
+    })
+}
+
+fn catch_source_worker_panic<T>(run: impl FnOnce() -> Result<T>) -> Result<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).unwrap_or_else(|payload| {
+        let detail = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("unknown panic");
+        Err(anyhow!("resident Parquet loader panicked: {detail}"))
+    })
+}
+
+struct ResidentParquetWorkStream {
+    inputs: VecDeque<ParquetInput>,
+    transfer: Option<CloudTransfer>,
+    resident_budget: Option<Arc<crate::source_memory::ByteBudget>>,
+    receiver: Option<std::sync::mpsc::Receiver<Result<VecDeque<ParquetPartition>>>>,
+    active_file: Option<Result<VecDeque<ParquetPartition>>>,
+    loaders: Vec<std::thread::JoinHandle<()>>,
+    loader_threads: usize,
+    failed: bool,
+}
+
+impl ResidentParquetWorkStream {
+    fn open(
+        table: &TableSpec,
+        transfer: Option<&CloudTransfer>,
+        resident_budget: Option<Arc<crate::source_memory::ByteBudget>>,
+        loader_threads: usize,
+    ) -> Result<Self> {
+        let inputs = VecDeque::from(parquet_inputs(table));
+        if inputs.is_empty() {
+            return Err(anyhow!("no input files for table {}", table.name));
+        }
+        Ok(Self {
+            loader_threads: loader_threads.max(1).min(inputs.len()),
+            inputs,
+            transfer: transfer.cloned(),
+            resident_budget,
+            receiver: None,
+            active_file: None,
+            loaders: Vec::new(),
+            failed: false,
+        })
+    }
+
+    fn load(
+        input: ParquetInput,
+        transfer: Option<&CloudTransfer>,
+        resident_budget: Option<&Arc<crate::source_memory::ByteBudget>>,
+    ) -> Result<VecDeque<ParquetPartition>> {
+        let resident = Arc::new(ResidentFile::load(
+            &input.path,
+            TableFormat::Parquet,
+            transfer,
+            resident_budget,
+            input.condition,
+        )?);
+        Ok(plan_resident_parquet_partitions(&resident)?
+            .into_iter()
+            .map(|row_groups| ParquetPartition {
+                resident: Arc::clone(&resident),
+                row_groups,
+                // Filled immediately before dispatch from the ingest-wide
+                // oversized decode ceiling.
+                max_decode_bytes: 0,
+            })
+            .collect())
+    }
+
+    fn enable_unordered(&mut self) -> Result<()> {
+        if self.receiver.is_some() || self.inputs.is_empty() {
+            return Ok(());
+        }
+        let worker_count = self.loader_threads.min(self.inputs.len());
+        let inputs = Arc::new(std::sync::Mutex::new(std::mem::take(&mut self.inputs)));
+        // A rendezvous keeps at most one loaded file per worker outside the
+        // consumer, bounding metadata and resident objects by loader threads.
+        let (sender, receiver) = std::sync::mpsc::sync_channel(0);
+        for worker in 0..worker_count {
+            let inputs = Arc::clone(&inputs);
+            let transfer = self.transfer.clone();
+            let resident_budget = self.resident_budget.clone();
+            let worker_sender = sender.clone();
+            let loader = std::thread::Builder::new()
+                .name(format!("resident-parquet-loader-{worker}"))
+                .spawn(move || loop {
+                    let input = match inputs.lock() {
+                        Ok(mut inputs) => inputs.pop_front(),
+                        Err(_) => return,
+                    };
+                    let Some(input) = input else {
+                        return;
+                    };
+                    let loaded = catch_source_worker_panic(|| {
+                        Self::load(input, transfer.as_ref(), resident_budget.as_ref())
+                    });
+                    let failed = loaded.is_err();
+                    if worker_sender.send(loaded).is_err() || failed {
+                        return;
+                    }
+                })
+                .with_context(|| format!("start resident Parquet loader {worker}"));
+            match loader {
+                Ok(loader) => self.loaders.push(loader),
+                Err(error) => {
+                    drop(receiver);
+                    drop(sender);
+                    for loader in self.loaders.drain(..) {
+                        let _ = loader.join();
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        drop(sender);
+        self.receiver = Some(receiver);
+        Ok(())
+    }
+
+    fn finish_loaders(&mut self) -> Result<()> {
+        self.receiver = None;
+        let mut panicked = false;
+        for loader in self.loaders.drain(..) {
+            panicked |= loader.join().is_err();
+        }
+        if panicked {
+            Err(anyhow!("resident Parquet loader panicked"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn next_partition(
+        &mut self,
+        max_decode_bytes: u64,
+        ordered: bool,
+    ) -> Option<Result<ParquetPartition>> {
+        if self.failed {
+            return None;
+        }
+        loop {
+            if let Some(active) = &mut self.active_file {
+                let partition = match active {
+                    Ok(partitions) => partitions.pop_front().map(Ok),
+                    Err(_) => None,
+                };
+                let partition = match partition {
+                    Some(partition) => partition,
+                    None => {
+                        let pending = self.active_file.take().expect("active resident file");
+                        match pending {
+                            Ok(_) => continue,
+                            Err(error) => {
+                                self.failed = true;
+                                return Some(Err(error));
+                            }
+                        }
+                    }
+                };
+                let mut partition = match partition {
+                    Ok(partition) => partition,
+                    Err(error) => return Some(Err(error)),
+                };
+                let required_bytes = match resident_partition_memory_bound(
+                    &partition.resident,
+                    &partition.row_groups,
+                    max_decode_bytes,
+                ) {
+                    Ok(required_bytes) => required_bytes,
+                    Err(error) => return Some(Err(error)),
+                };
+                partition.max_decode_bytes = required_bytes;
+                return Some(Ok(partition));
+            }
+
+            if ordered && self.receiver.is_none() {
+                let input = self.inputs.pop_front()?;
+                let loaded = catch_source_worker_panic(|| {
+                    Self::load(input, self.transfer.as_ref(), self.resident_budget.as_ref())
+                });
+                self.active_file = Some(loaded);
+                continue;
+            }
+            if let Err(error) = self.enable_unordered() {
+                self.failed = true;
+                return Some(Err(error));
+            }
+            let receiver = self.receiver.as_ref()?;
+            let event = match receiver.recv() {
+                Ok(event) => event,
+                Err(_) => {
+                    if let Err(error) = self.finish_loaders() {
+                        self.failed = true;
+                        return Some(Err(error));
+                    }
+                    return None;
+                }
+            };
+            self.active_file = Some(event);
+        }
+    }
+}
+
+impl Drop for ResidentParquetWorkStream {
+    fn drop(&mut self) {
+        self.receiver = None;
+        self.active_file = None;
+        let _ = self.finish_loaders();
+    }
+}
+
+enum TableSourceStreamInner<'a> {
+    Csv(Box<CsvBatchStream>),
+    Databricks(Box<crate::databricks::DatabricksQueryStream<'a>>),
+    Parquet(ResidentParquetWorkStream),
+}
+
+struct TableSourceStream<'a> {
+    inner: TableSourceStreamInner<'a>,
+    source_budget: Arc<crate::source_memory::ByteBudget>,
+    validation: Arc<SourceValidationState>,
+    max_decode_bytes: u64,
+    active_context_reader: Option<(
+        BoundedParquetBatchReader,
+        Arc<crate::source_memory::BytePermit>,
+        Option<SourceBatch>,
+    )>,
+    input_wait_nanos: u64,
+}
+
+impl<'a> TableSourceStream<'a> {
+    fn new(
+        inner: TableSourceStreamInner<'a>,
+        source_budget: Arc<crate::source_memory::ByteBudget>,
+        validation: Arc<SourceValidationState>,
+    ) -> Self {
+        let max_decode_bytes = source_budget.max_input_chunk_bytes();
+        Self {
+            inner,
+            source_budget,
+            validation,
+            max_decode_bytes,
+            active_context_reader: None,
+            input_wait_nanos: 0,
+        }
+    }
+
+    fn next_batch(&mut self) -> Option<Result<SourceBatch>> {
+        let input_start = std::time::Instant::now();
+        let next = match &mut self.inner {
+            TableSourceStreamInner::Csv(stream) => stream.next(),
+            TableSourceStreamInner::Databricks(stream) => stream
+                .next()
+                .map(|result| result.map(SourceBatch::databricks)),
+            TableSourceStreamInner::Parquet(_) => {
+                return Some(Err(anyhow!(
+                    "Parquet source requested as a materialized batch"
+                )))
+            }
+        };
+        self.input_wait_nanos = self
+            .input_wait_nanos
+            .saturating_add(input_start.elapsed().as_nanos().min(u64::MAX as u128) as u64);
+        next
+    }
+
+    fn next_parquet_partition(&mut self, ordered: bool) -> Option<Result<ParquetPartition>> {
+        let TableSourceStreamInner::Parquet(stream) = &mut self.inner else {
+            return Some(Err(anyhow!(
+                "non-Parquet source requested as a resident partition"
+            )));
+        };
+        let input_start = std::time::Instant::now();
+        let next = stream.next_partition(self.max_decode_bytes, ordered);
+        self.input_wait_nanos = self
+            .input_wait_nanos
+            .saturating_add(input_start.elapsed().as_nanos().min(u64::MAX as u128) as u64);
+        next
+    }
+
+    fn next_context_batch(&mut self) -> Option<Result<SourceBatch>> {
+        loop {
+            if let Some((reader, permit, _)) = &mut self.active_context_reader {
+                match reader.next() {
+                    Some(Ok(batch)) => {
+                        if let Err(error) = self.validation.observe(&batch) {
+                            return Some(Err(error));
+                        }
+                        return Some(Ok(
+                            SourceBatch::resident_parquet(batch, Arc::clone(permit)).observed()
+                        ));
+                    }
+                    Some(Err(error)) => return Some(Err(error)),
+                    None => self.active_context_reader = None,
+                }
+            }
+            if !matches!(&self.inner, TableSourceStreamInner::Parquet(_)) {
+                return self.next_batch().map(|result| {
+                    result.and_then(|batch| {
+                        self.validation.observe(&batch.batch)?;
+                        Ok(batch.observed())
+                    })
+                });
+            }
+            let partition = match self.next_parquet_partition(true)? {
+                Ok(partition) => partition,
+                Err(error) => return Some(Err(error)),
+            };
+            let permit = match self
+                .source_budget
+                .acquire_input_chunk(partition.max_decode_bytes)
+            {
+                Ok(permit) => permit,
+                Err(error) => return Some(Err(error)),
+            };
+            let permit = Arc::new(permit);
+            self.active_context_reader = Some((
+                BoundedParquetBatchReader::partition(
+                    partition.resident,
+                    partition.row_groups,
+                    partition.max_decode_bytes,
+                ),
+                permit,
+                None,
+            ));
+        }
+    }
+
+    fn defer_context_remainder(&mut self, batch: SourceBatch) -> Option<SourceBatch> {
+        match &mut self.active_context_reader {
+            Some((_, _, remainder)) => {
+                debug_assert!(remainder.is_none());
+                *remainder = Some(batch);
+                None
+            }
+            None => Some(batch),
+        }
+    }
+
+    fn databricks_metrics(&self) -> Option<crate::databricks::QueryMetrics> {
+        match &self.inner {
+            TableSourceStreamInner::Databricks(stream) => Some(stream.metrics()),
+            TableSourceStreamInner::Csv(_) | TableSourceStreamInner::Parquet(_) => None,
+        }
+    }
+
+    fn input_wait_nanos(&self) -> u64 {
+        self.input_wait_nanos
+    }
+}
+
+impl Iterator for TableSourceStream<'_> {
+    type Item = Result<SourceWork>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some((reader, permit, first_batch)) = self.active_context_reader.take() {
+            return Some(Ok(SourceWork::ParquetReader {
+                reader,
+                permit,
+                first_batch,
+            }));
+        }
+        if !matches!(&self.inner, TableSourceStreamInner::Parquet(_)) {
+            return self
+                .next_batch()
+                .map(|result| result.map(SourceWork::Batch));
+        }
+        self.next_parquet_partition(false)
+            .map(|result| result.map(SourceWork::Parquet))
+    }
+}
+
+fn open_csv_batch_stream(
     table: &TableSpec,
     transfer: Option<&CloudTransfer>,
-    max_decode_bytes: u64,
-) -> Result<FileBatchStream> {
+    source_budget: Arc<crate::source_memory::ByteBudget>,
+) -> Result<CsvBatchStream> {
     if table.get_paths().is_empty() {
         return Err(anyhow!("no input files for table {}", table.name));
     }
-    Ok(FileBatchStream {
-        table: table.clone(),
+    let max_decode_bytes = source_budget.max_input_chunk_bytes();
+    Ok(CsvBatchStream {
+        schema: table_schema(table)?,
         paths: table.get_paths().iter().cloned().collect(),
         transfer: transfer.cloned(),
         max_decode_bytes,
         current: None,
+        source_budget,
+        active_decode_permit: None,
     })
 }
 
-fn open_resident_batch_reader(
-    table: &TableSpec,
+fn open_resident_csv_batch_reader(
     path: &str,
     transfer: Option<&CloudTransfer>,
+    schema: Schema,
     max_decode_bytes: u64,
-) -> Result<ResidentBatchReader> {
-    let resident = Arc::new(ResidentFile::load(path, table.format(), transfer)?);
-    let batches: Box<dyn Iterator<Item = Result<RecordBatch>>> = match table.format() {
-        TableFormat::Parquet => Box::new(BoundedParquetBatchReader {
-            resident: Arc::clone(&resident),
-            next_row_group: 0,
-            current: None,
-            max_decode_bytes,
-        }),
-        TableFormat::Csv => {
-            let schema = table_schema(table)?;
-            Box::new(BoundedCsvBatchReader::new(
-                resident.source.reader(true)?.get_read(0)?,
-                schema,
-                max_decode_bytes,
-            )?)
-        }
-    };
-    Ok(ResidentBatchReader {
-        _resident: resident,
-        batches,
-    })
+) -> Result<BoundedCsvBatchReader> {
+    let resident = ResidentFile::load(path, TableFormat::Csv, transfer, None, None)?;
+    BoundedCsvBatchReader::new(
+        resident.source.reader(true)?.get_read(0)?,
+        schema,
+        max_decode_bytes,
+    )
 }
 
 #[cfg(test)]
 mod bounded_file_decoder_tests {
     use super::*;
-    use arrow_array::{FixedSizeBinaryArray, Int64Array};
-    use parquet::arrow::arrow_writer::ArrowWriter;
+    use arrow_array::{FixedSizeBinaryArray, StringArray};
+    use parquet::file::properties::{EnabledStatistics, WriterProperties};
     use std::io::Cursor;
+
+    fn resident_parquet(
+        batch: &RecordBatch,
+        properties: Option<WriterProperties>,
+    ) -> (tempfile::TempDir, Arc<ResidentFile>) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("input.parquet");
+        super::resident_parquet_tests::write_parquet(&path, batch, properties);
+        (directory, super::resident_parquet_tests::resident(&path))
+    }
+
+    fn read_parquet(reader: BoundedParquetBatchReader, max_batch_bytes: u64) -> (usize, usize) {
+        reader.fold((0, 0), |(rows, batches), batch| {
+            let batch = batch.unwrap();
+            assert!(batch.get_array_memory_size() as u64 <= max_batch_bytes);
+            (rows + batch.num_rows(), batches + 1)
+        })
+    }
 
     #[test]
     fn csv_rejects_a_record_before_crossing_the_decode_ceiling() {
@@ -3524,12 +4522,9 @@ mod bounded_file_decoder_tests {
         csv.extend(std::iter::repeat_n(b'x', max_decode_bytes as usize / 4 + 1));
         csv.push(b'\n');
         let schema = Schema::new(vec![Field::new("value", DataType::Utf8, true)]);
-        let mut reader = BoundedCsvBatchReader::new(
-            Box::new(Cursor::new(csv)),
-            schema,
-            max_decode_bytes,
-        )
-        .unwrap();
+        let mut reader =
+            BoundedCsvBatchReader::new(Box::new(Cursor::new(csv)), schema, max_decode_bytes)
+                .unwrap();
         let error = reader.next().unwrap().unwrap_err();
         assert!(error
             .to_string()
@@ -3539,36 +4534,15 @@ mod bounded_file_decoder_tests {
 
     #[test]
     fn parquet_rejects_an_unadmitted_row_group_before_arrow_decode() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("input.parquet");
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-        let batch = RecordBatch::try_new(
-            Arc::clone(&schema),
-            vec![Arc::new(Int64Array::from_iter_values(0..1024))],
-        )
-        .unwrap();
-        let mut writer = ArrowWriter::try_new(fs::File::create(&path).unwrap(), schema, None)
-            .unwrap();
-        writer.write(&batch).unwrap();
-        writer.close().unwrap();
-
-        let resident = Arc::new(
-            ResidentFile::load(path.to_str().unwrap(), TableFormat::Parquet, None).unwrap(),
-        );
-        let mut reader = BoundedParquetBatchReader {
-            resident,
-            next_row_group: 0,
-            current: None,
-            max_decode_bytes: 1024,
-        };
+        let batch = super::resident_parquet_tests::int_batch("id", 0..1024);
+        let (_directory, resident) = resident_parquet(&batch, None);
+        let mut reader = BoundedParquetBatchReader::partition(resident, vec![0], 1024);
         let error = reader.next().unwrap().unwrap_err();
-        assert!(error.to_string().contains("Parquet row group decode bound"));
+        assert!(error.to_string().contains("Parquet row group memory bound"));
     }
 
     #[test]
-    fn parquet_caps_dictionary_expanded_fixed_width_batches_before_decode() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("fixed.parquet");
+    fn parquet_accounts_for_dictionary_expanded_fixed_width_output() {
         let value = vec![7u8; 3000];
         let values = std::iter::repeat_n(value.as_slice(), 100);
         let array = FixedSizeBinaryArray::try_from_iter(values).unwrap();
@@ -3578,31 +4552,99 @@ mod bounded_file_decoder_tests {
             false,
         )]));
         let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)]).unwrap();
-        let mut writer = ArrowWriter::try_new(fs::File::create(&path).unwrap(), schema, None)
-            .unwrap();
-        writer.write(&batch).unwrap();
-        writer.close().unwrap();
-
-        let max_decode_bytes = 1024 * 1024;
-        let resident = Arc::new(
-            ResidentFile::load(path.to_str().unwrap(), TableFormat::Parquet, None).unwrap(),
-        );
-        let mut reader = BoundedParquetBatchReader {
-            resident,
-            next_row_group: 0,
-            current: None,
-            max_decode_bytes,
-        };
-        let mut rows = 0;
-        let mut batches = 0;
-        for batch in &mut reader {
-            let batch = batch.unwrap();
-            assert!(batch.get_array_memory_size() as u64 <= max_decode_bytes);
-            rows += batch.num_rows();
-            batches += 1;
-        }
+        let (_directory, resident) = resident_parquet(&batch, None);
+        let metadata = resident.parquet_metadata.as_ref().unwrap();
+        let memory_plan = parquet_row_group_memory_plan(metadata, 0, 1024 * 1024).unwrap();
+        assert!(memory_plan.total_bytes > batch.get_array_memory_size() as u64);
+        let max_decode_bytes = memory_plan.total_bytes;
+        let reader = BoundedParquetBatchReader::partition(resident, vec![0], max_decode_bytes);
+        let (rows, batches) = read_parquet(reader, max_decode_bytes);
         assert_eq!(rows, 100);
-        assert!(batches > 1, "dictionary expansion must reduce batch rows");
+        assert!(batches > 1);
+    }
+
+    #[test]
+    fn parquet_keeps_plain_variable_width_batches_large() {
+        let array = StringArray::from_iter_values((0..100_000).map(|value| value.to_string()));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            DataType::Utf8,
+            false,
+        )]));
+        let source = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)]).unwrap();
+        let properties = WriterProperties::builder()
+            .set_dictionary_enabled(false)
+            .set_statistics_enabled(EnabledStatistics::None)
+            .build();
+        let (_directory, resident) = resident_parquet(&source, Some(properties));
+        let metadata = resident.parquet_metadata.as_ref().unwrap();
+        assert!(metadata
+            .metadata()
+            .row_group(0)
+            .column(0)
+            .unencoded_byte_array_data_bytes()
+            .is_none());
+        let memory_plan = parquet_row_group_memory_plan(metadata, 0, 16 * 1024 * 1024).unwrap();
+        assert_eq!(memory_plan.batch_size, NODE_BATCH_SIZE);
+    }
+
+    #[test]
+    fn parquet_bounds_skewed_plain_variable_width_output() {
+        let large = "x".repeat(2 * 1024 * 1024);
+        let array = StringArray::from_iter_values(
+            std::iter::repeat_n("", NODE_BATCH_SIZE).chain(std::iter::once(large.as_str())),
+        );
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            DataType::Utf8,
+            false,
+        )]));
+        let source = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)]).unwrap();
+        let properties = WriterProperties::builder()
+            .set_dictionary_enabled(false)
+            .set_statistics_enabled(EnabledStatistics::None)
+            .build();
+        let (_directory, resident) = resident_parquet(&source, Some(properties));
+        let max_decode_bytes = 32 * 1024 * 1024;
+        let metadata = resident.parquet_metadata.as_ref().unwrap();
+        let memory_plan = parquet_row_group_memory_plan(metadata, 0, max_decode_bytes).unwrap();
+        assert_eq!(memory_plan.batch_size, NODE_BATCH_SIZE);
+
+        let reader = BoundedParquetBatchReader::partition(resident, vec![0], max_decode_bytes);
+        let (rows, batches) = read_parquet(reader, memory_plan.total_bytes);
+        assert_eq!(rows, source.num_rows());
+        assert_eq!(batches, 2);
+    }
+
+    #[test]
+    fn parquet_limits_dictionary_expanded_variable_width_batches() {
+        let value = "x".repeat(16 * 1024);
+        let array = StringArray::from_iter_values(std::iter::repeat_n(value.as_str(), 1_000));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            DataType::Utf8,
+            false,
+        )]));
+        let source = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)]).unwrap();
+        let properties = WriterProperties::builder()
+            .set_dictionary_enabled(true)
+            .build();
+        let (_directory, resident) = resident_parquet(&source, Some(properties));
+        let metadata = resident.parquet_metadata.as_ref().unwrap();
+        let error = parquet_row_group_memory_plan(metadata, 0, 2 * 1024 * 1024)
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("Parquet row group memory bound"));
+
+        let max_decode_bytes = 64 * 1024 * 1024;
+        let memory_plan = parquet_row_group_memory_plan(metadata, 0, max_decode_bytes).unwrap();
+        assert_eq!(memory_plan.batch_size, source.num_rows());
+        assert!(memory_plan.total_bytes <= max_decode_bytes);
+
+        let reader = BoundedParquetBatchReader::partition(resident, vec![0], max_decode_bytes);
+        let (rows, batches) = read_parquet(reader, memory_plan.total_bytes);
+        assert_eq!(rows, source.num_rows());
+        assert_eq!(batches, 1);
     }
 }
 
@@ -4188,47 +5230,81 @@ fn build_sort_key_batchers_for_edge_table(
 
 const BASE_ENCODE_MEMORY_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_DATABRICKS_ENCODE_MEMORY_BUDGET_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+const MAX_RESIDENT_PARQUET_ENCODE_MEMORY_BUDGET_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
-fn encode_memory_budget_bytes(has_databricks: bool, total_memory: Option<u64>) -> u64 {
-    if !has_databricks {
-        return BASE_ENCODE_MEMORY_BUDGET_BYTES;
+fn encode_memory_budget_bytes(
+    has_databricks: bool,
+    has_resident_parquet: bool,
+    total_memory: Option<u64>,
+) -> u64 {
+    let mut budget = BASE_ENCODE_MEMORY_BUDGET_BYTES;
+    if has_databricks {
+        budget = budget.max(
+            total_memory
+                .map(|bytes| bytes / 64)
+                .unwrap_or(BASE_ENCODE_MEMORY_BUDGET_BYTES)
+                .clamp(
+                    BASE_ENCODE_MEMORY_BUDGET_BYTES,
+                    MAX_DATABRICKS_ENCODE_MEMORY_BUDGET_BYTES,
+                ),
+        );
     }
-    total_memory
-        .map(|bytes| bytes / 64)
-        .unwrap_or(BASE_ENCODE_MEMORY_BUDGET_BYTES)
-        .clamp(
-            BASE_ENCODE_MEMORY_BUDGET_BYTES,
-            MAX_DATABRICKS_ENCODE_MEMORY_BUDGET_BYTES,
-        )
+    if has_resident_parquet {
+        // Resident Parquet decodes row groups in the shared Encode pool. Give
+        // each CPU enough bounded decoder/output memory while CloudTransfer
+        // independently caps complete compressed objects at one quarter of RAM.
+        budget = budget.max(
+            total_memory
+                .map(|bytes| bytes / 16)
+                .unwrap_or(BASE_ENCODE_MEMORY_BUDGET_BYTES)
+                .clamp(
+                    BASE_ENCODE_MEMORY_BUDGET_BYTES,
+                    MAX_RESIDENT_PARQUET_ENCODE_MEMORY_BUDGET_BYTES,
+                ),
+        );
+    }
+    budget
 }
 
 #[cfg(test)]
 mod encode_memory_budget_tests {
     use super::{
         encode_memory_budget_bytes, BASE_ENCODE_MEMORY_BUDGET_BYTES,
-        MAX_DATABRICKS_ENCODE_MEMORY_BUDGET_BYTES,
+        MAX_DATABRICKS_ENCODE_MEMORY_BUDGET_BYTES, MAX_RESIDENT_PARQUET_ENCODE_MEMORY_BUDGET_BYTES,
     };
 
     #[test]
     fn non_databricks_budget_does_not_scale() {
         assert_eq!(
-            encode_memory_budget_bytes(false, Some(1024 * 1024 * 1024 * 1024)),
+            encode_memory_budget_bytes(false, false, Some(1024 * 1024 * 1024 * 1024)),
             BASE_ENCODE_MEMORY_BUDGET_BYTES
+        );
+    }
+
+    #[test]
+    fn resident_parquet_budget_scales_for_parallel_row_group_decode() {
+        assert_eq!(
+            encode_memory_budget_bytes(false, true, Some(64 * 1024 * 1024 * 1024)),
+            4 * 1024 * 1024 * 1024
+        );
+        assert_eq!(
+            encode_memory_budget_bytes(false, true, Some(512 * 1024 * 1024 * 1024)),
+            MAX_RESIDENT_PARQUET_ENCODE_MEMORY_BUDGET_BYTES
         );
     }
 
     #[test]
     fn databricks_budget_scales_between_laptop_floor_and_vm_cap() {
         assert_eq!(
-            encode_memory_budget_bytes(true, Some(24 * 1024 * 1024 * 1024)),
+            encode_memory_budget_bytes(true, false, Some(24 * 1024 * 1024 * 1024)),
             BASE_ENCODE_MEMORY_BUDGET_BYTES
         );
         assert_eq!(
-            encode_memory_budget_bytes(true, Some(512 * 1024 * 1024 * 1024)),
+            encode_memory_budget_bytes(true, false, Some(512 * 1024 * 1024 * 1024)),
             8 * 1024 * 1024 * 1024
         );
         assert_eq!(
-            encode_memory_budget_bytes(true, Some(4 * 1024 * 1024 * 1024 * 1024)),
+            encode_memory_budget_bytes(true, false, Some(4 * 1024 * 1024 * 1024 * 1024)),
             MAX_DATABRICKS_ENCODE_MEMORY_BUDGET_BYTES
         );
     }
@@ -4487,7 +5563,6 @@ impl IngestContext {
                 relation_defs.push(dst_rel);
             }
         }
-        let input_transfer = build_input_transfer(&source)?;
         Ok(Self {
             source,
             target,
@@ -4504,7 +5579,6 @@ impl IngestContext {
             pk_map_peak_rss: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             index_mem_budget,
             num_shards,
-            input_transfer,
             table_rows: HashMap::new(),
             table_contexts: HashMap::new(),
             shard_rows: HashMap::new(),
@@ -4569,7 +5643,6 @@ impl IngestContext {
         let mut helper = start_databricks_helper(&self.source)?;
         visit_source_schemas(
             &self.source,
-            self.input_transfer.as_ref(),
             self.databricks_config_file.as_deref(),
             &mut helper,
             |table, schema| {
@@ -4594,10 +5667,14 @@ impl IngestContext {
         const ENCODE_MAX_OVERSIZED_CHUNK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
         let mut tables = self.source.tables.clone();
         let encode_memory_budget_bytes = encode_memory_budget_bytes(
+            tables
+                .iter()
+                .any(|table| matches!(table.source, graph_config::DataSource::Databricks { .. })),
             tables.iter().any(|table| {
                 matches!(
                     table.source,
-                    graph_config::DataSource::Databricks { .. }
+                    graph_config::DataSource::Parquet { .. }
+                        | graph_config::DataSource::ObjectStoreParquet { .. }
                 )
             }),
             total_memory_bytes(),
@@ -4670,7 +5747,6 @@ impl IngestContext {
         let edge_errors = edge_pool.error();
         let dest_key_senders = dest_key_pool.senders();
         let dest_key_errors = dest_key_pool.error();
-        let input_transfer = self.input_transfer.clone();
         let trimmed_strings = std::sync::Arc::clone(&self.trimmed_strings);
         let col_stats_enabled = self.col_stats;
         let cat_count_strategy = self.cat_count_strategy;
@@ -4734,26 +5810,47 @@ impl IngestContext {
                     .get(&table.name)
                     .cloned()
                     .unwrap_or_default();
-                let mut stream = match &table.source {
+                let validation = SourceValidationState::new(table, synthetic_columns.clone());
+                let input_transfer = build_input_transfer_for_table(table)?;
+                let stream_inner = match &table.source {
                     graph_config::DataSource::Parquet { .. }
-                    | graph_config::DataSource::Csv { .. } => TableBatchStream::file(
-                        open_file_batch_stream(
+                    | graph_config::DataSource::ObjectStoreParquet { .. } => {
+                        let loader_threads = if self.parallel {
+                            self.source_loader_threads.unwrap_or_else(|| {
+                                effective_parallelism().saturating_mul(2).clamp(2, 64)
+                            })
+                        } else {
+                            1
+                        };
+                        let resident_budget = input_transfer
+                            .as_ref()
+                            .map(|transfer| {
+                                crate::source_memory::ByteBudget::new(
+                                    transfer.stats_handle().snapshot().budget_max_bytes,
+                                )
+                            })
+                            .transpose()?;
+                        TableSourceStreamInner::Parquet(ResidentParquetWorkStream::open(
                             table,
                             input_transfer.as_ref(),
-                            source_budget.max_input_chunk_bytes(),
-                        )?,
-                        Arc::clone(&source_budget),
-                        synthetic_columns.clone(),
-                    ),
+                            resident_budget,
+                            loader_threads,
+                        )?)
+                    }
+                    graph_config::DataSource::Csv { .. } => {
+                        TableSourceStreamInner::Csv(Box::new(open_csv_batch_stream(
+                            table,
+                            input_transfer.as_ref(),
+                            Arc::clone(&source_budget),
+                        )?))
+                    }
                     graph_config::DataSource::Databricks { .. } => {
                         let mut query_options = crate::databricks::QueryStreamOptions::default();
                         if let Some(loaders) = self.source_loader_threads {
                             query_options.max_concurrent_downloads = loaders.max(1);
                         }
-                        if std::env::var_os(
-                            "DISKGRAPH_DATABRICKS_BENCHMARK_ALLOW_HTTP_LOOPBACK",
-                        )
-                        .is_some_and(|value| value == "1")
+                        if std::env::var_os("DISKGRAPH_DATABRICKS_BENCHMARK_ALLOW_HTTP_LOOPBACK")
+                            .is_some_and(|value| value == "1")
                         {
                             query_options.allow_loopback_http_for_benchmark();
                         }
@@ -4763,7 +5860,7 @@ impl IngestContext {
                             query_options.max_concurrent_downloads = 1;
                             query_options.pause_download_while_batch_active();
                         }
-                        TableBatchStream::databricks(
+                        TableSourceStreamInner::Databricks(Box::new(
                             crate::databricks::DatabricksQueryStream::open_with_shared_budget(
                                 helper.as_mut().ok_or_else(|| {
                                     anyhow!("Databricks helper was not initialized")
@@ -4773,18 +5870,22 @@ impl IngestContext {
                                 query_options,
                                 Arc::clone(&source_budget),
                             )?,
-                            table,
-                            Arc::clone(&source_budget),
-                            synthetic_columns,
-                        )
+                        ))
                     }
                     _ => return Err(anyhow!("table {} source is not implemented", table.name)),
                 };
+                let mut stream = TableSourceStream::new(
+                    stream_inner,
+                    Arc::clone(&source_budget),
+                    Arc::clone(&validation),
+                );
                 if table.edge_table.is_some() {
                     let encode_table: &TableSpec = table;
                     let results = run_encode_batch_workers(
                         &mut stream,
                         source_encoder_workers,
+                        Arc::clone(&source_budget),
+                        Arc::clone(&validation),
                         |batches| {
                             let mut key_failures = KeyFailureState::default();
                             let dropped = Self::build_temp_edge_batches(
@@ -4830,7 +5931,7 @@ impl IngestContext {
                     let mut prefix_bytes = 0usize;
                     let mut remainder = None;
                     while prefix_rows < sample_limit && prefix_bytes < SOURCE_PREFIX_MAX_BYTES {
-                        let batch = match stream.next() {
+                        let batch = match stream.next_context_batch() {
                             Some(batch) => batch?,
                             None => break,
                         };
@@ -4862,10 +5963,12 @@ impl IngestContext {
                         access.set_cols(&[]);
                         prefix_rows += sampled_rows;
                         prefix_bytes = prefix_bytes.saturating_add(compact.get_array_memory_size());
-                        prefix.push(SourceBatch::budgeted(compact, prefix_permit));
+                        prefix.push(SourceBatch::budgeted(compact, prefix_permit).observed());
                         if sampled_rows < batch.batch.num_rows() {
-                            let remaining_rows = batch.batch.num_rows().saturating_sub(sampled_rows);
-                            remainder = Some(batch.slice(sampled_rows, remaining_rows));
+                            let remaining_rows =
+                                batch.batch.num_rows().saturating_sub(sampled_rows);
+                            remainder = stream
+                                .defer_context_remainder(batch.slice(sampled_rows, remaining_rows));
                             break;
                         }
                     }
@@ -4960,8 +6063,12 @@ impl IngestContext {
                     }
                     let replay = prefix
                         .into_iter()
-                        .map(Ok)
-                        .chain(remainder.into_iter().map(Ok))
+                        .map(|batch| Ok(SourceWork::Batch(batch)))
+                        .chain(
+                            remainder
+                                .into_iter()
+                                .map(|batch| Ok(SourceWork::Batch(batch))),
+                        )
                         .chain(&mut stream);
                     let table_cat = table_cat_counts.get(&table.name).cloned();
                     let encode_table: &TableSpec = table;
@@ -4974,6 +6081,8 @@ impl IngestContext {
                     let results = run_encode_batch_workers(
                         replay,
                         node_encode_workers,
+                        Arc::clone(&source_budget),
+                        Arc::clone(&validation),
                         |batches| {
                             let mut key_failures = KeyFailureState::default();
                             if col_stats_enabled {
@@ -5057,19 +6166,17 @@ impl IngestContext {
                         table_col_stats.insert(table.name.clone(), stats);
                     }
                 }
-                stream.finish_validation()?;
-                let source_rows = stream.rows_seen();
-                let source_bytes = stream.logical_arrow_bytes();
-                self.logical_source_rows =
-                    self.logical_source_rows.saturating_add(source_rows);
+                validation.finish()?;
+                let source_rows = validation.rows_seen();
+                let source_bytes = validation.logical_arrow_bytes();
+                self.logical_source_rows = self.logical_source_rows.saturating_add(source_rows);
                 self.logical_source_rows_by_table
                     .insert(table.name.clone(), source_rows);
                 self.source_input_wait_nanos = self
                     .source_input_wait_nanos
                     .saturating_add(stream.input_wait_nanos());
-                self.logical_arrow_source_bytes = self
-                    .logical_arrow_source_bytes
-                    .saturating_add(source_bytes);
+                self.logical_arrow_source_bytes =
+                    self.logical_arrow_source_bytes.saturating_add(source_bytes);
                 self.logical_arrow_source_bytes_by_table
                     .insert(table.name.clone(), source_bytes);
                 if let Some(metrics) = stream.databricks_metrics() {
@@ -9619,8 +10726,7 @@ fn wipe_phase_outputs(root: &Path, phase: &str) -> Result<()> {
         "edges_map" => {
             let state = root.join(EDGES_MAP_STATE_PATH);
             if state.exists() {
-                fs::remove_file(&state)
-                    .with_context(|| format!("remove {}", state.display()))?;
+                fs::remove_file(&state).with_context(|| format!("remove {}", state.display()))?;
             }
             let p = root.join("_tmp/edges_map");
             if p.exists() {
@@ -13340,36 +14446,35 @@ fn resolve_overrides_for_row(
                 spec.dst_table
             )
         })?;
-        let record_failure = |key_failures: &mut KeyFailureState,
-                                  outcome: ResolveVerified,
-                                  key: &Key| {
-            let context = format!(
-                "resolve:{}.{}_to_{}",
-                table.name, table.columns[spec.src_idx].name, spec.dst_table
-            );
-            let sample = if key_failures.samples.len() < 10 {
-                sample_key(key)
-            } else {
-                None
+        let record_failure =
+            |key_failures: &mut KeyFailureState, outcome: ResolveVerified, key: &Key| {
+                let context = format!(
+                    "resolve:{}.{}_to_{}",
+                    table.name, table.columns[spec.src_idx].name, spec.dst_table
+                );
+                let sample = if key_failures.samples.len() < 10 {
+                    sample_key(key)
+                } else {
+                    None
+                };
+                match outcome {
+                    ResolveVerified::Miss => record_key_lookup_failure(
+                        &mut key_failures.lookup_failures,
+                        &mut key_failures.samples,
+                        &mut key_failures.by_context,
+                        &context,
+                        sample,
+                    ),
+                    ResolveVerified::Orphan => record_key_membership_failure(
+                        &mut key_failures.membership_failures,
+                        &mut key_failures.samples,
+                        &mut key_failures.by_context,
+                        &context,
+                        sample,
+                    ),
+                    ResolveVerified::Resolved(_) => {}
+                }
             };
-            match outcome {
-                ResolveVerified::Miss => record_key_lookup_failure(
-                    &mut key_failures.lookup_failures,
-                    &mut key_failures.samples,
-                    &mut key_failures.by_context,
-                    &context,
-                    sample,
-                ),
-                ResolveVerified::Orphan => record_key_membership_failure(
-                    &mut key_failures.membership_failures,
-                    &mut key_failures.samples,
-                    &mut key_failures.by_context,
-                    &context,
-                    sample,
-                ),
-                ResolveVerified::Resolved(_) => {}
-            }
-        };
         match spec.kind {
             crate::config::ResolveKind::Scalar => {
                 let col = &table.columns[spec.src_idx];
@@ -13411,10 +14516,7 @@ fn resolve_overrides_for_row(
                 }
                 // All positives orphaned (had keys, none resolved) → drop the row.
                 // A source-empty list is kept (not an orphan); exclude never drops.
-                if !keys.is_empty()
-                    && ids.is_empty()
-                    && spec.role == ResolveRole::Positives
-                {
+                if !keys.is_empty() && ids.is_empty() && spec.role == ResolveRole::Positives {
                     drop_row = true;
                 }
                 overrides[spec.node_id_idx] = diskgraph_rowpack::ResolveOverride::List(ids);
@@ -14220,7 +15322,8 @@ fn validate_source_schema(
         let field_index = schema.index_of(&column.name).map_err(|_| {
             anyhow!(
                 "table {} source schema is missing column '{}'",
-                table.name, column.name
+                table.name,
+                column.name
             )
         })?;
         let actual = schema.field(field_index).data_type();
@@ -14241,8 +15344,7 @@ fn validate_source_batch_values(
     synthetic_columns: &HashSet<String>,
 ) -> Result<()> {
     for column in &table.columns {
-        if synthetic_columns.contains(&column.name)
-            || column.ingested_dtype != IngestedType::Int64
+        if synthetic_columns.contains(&column.name) || column.ingested_dtype != IngestedType::Int64
         {
             continue;
         }

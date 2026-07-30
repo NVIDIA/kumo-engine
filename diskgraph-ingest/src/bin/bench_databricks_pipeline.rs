@@ -391,9 +391,10 @@ fn semantic_stats(stats: &IngestStats) -> Result<serde_json::Value> {
         .get_mut("perf")
         .and_then(serde_json::Value::as_object_mut)
         .ok_or_else(|| anyhow!("benchmark stats perf did not serialize as an object"))?;
-    // Retain logical SOURCE_SIZE (`bytes_read`/`source_total_bytes`), source
-    // rows, and semantic temp/output byte counts. Remove only observations
-    // that legitimately differ across runs and transports.
+    // Retain logical SOURCE_SIZE (`bytes_read`/`source_total_bytes`) and
+    // source rows. Temporary/output byte counts describe non-canonical
+    // physical artifacts and can legitimately differ when equivalent source
+    // work completes out of order; compare graph semantics below instead.
     for field in [
         "wall_time_ms",
         "encode_wall_nanos",
@@ -405,9 +406,14 @@ fn semantic_stats(stats: &IngestStats) -> Result<serde_json::Value> {
         "index_wall_ms",
         "finalize_wall_ms",
         // PtrHash serialization is intentionally non-canonical across
-        // equivalent parallel builds, so aggregate physical output bytes are
-        // a resource observation rather than a semantic source statistic.
+        // equivalent parallel builds, so physical temp/output bytes are
+        // resource observations rather than semantic source statistics.
         "bytes_written",
+        "temp_bytes_total",
+        "temp_edges_map_bytes",
+        "temp_edges_src_bytes",
+        "temp_fkeys_bytes",
+        "temp_node_data_bytes",
         "databricks_wire_bytes",
         "databricks_decoded_ipc_bytes",
         "databricks_query_startup_nanos",

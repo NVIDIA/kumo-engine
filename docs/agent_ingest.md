@@ -63,8 +63,9 @@ TableSpec {
 ### DataSource Types
 
 ```rust
-DataSource::Parquet { paths }     // Local or cloud (s3://, gs://, az://)
-DataSource::Csv { paths }
+DataSource::Parquet { paths }     // Local, including staged/normalized inputs
+DataSource::ObjectStoreParquet { objects, auth_profile } // Exact cloud manifest
+DataSource::Csv { paths }         // Local or cloud compatibility path
 DataSource::Snowflake { connection_id, table_or_view }
 DataSource::Databricks { connection_id, catalog, schema, table }
 DataSource::BigQuery { connection_id, ... }

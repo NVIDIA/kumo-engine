@@ -1,9 +1,12 @@
 use anyhow::Result;
+use arrow_array::RecordBatchReader;
+use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
+use parquet::file::reader::ChunkReader;
 use std::collections::{HashMap, HashSet};
 
 use crate::graph_config::{GraphConfig, IngestedType, TableFormat, TimestampUnit};
-use crate::io::{download_cloud_bytes, is_cloud_path};
-use diskgraph_fs::CloudTransfer;
+use crate::io::{build_input_transfer_for_table, download_cloud_bytes_condition, is_cloud_path};
+use diskgraph_fs::{CloudObjectCondition, CloudTransfer};
 
 /// Detection result for a single timestamp column.
 enum TimestampDetection {
@@ -11,6 +14,55 @@ enum TimestampDetection {
     Format(String),
     /// Epoch unit detected from integer magnitude.
     Unit(TimestampUnit),
+}
+
+fn build_parquet_sample_reader<T, E>(
+    source: T,
+    path: &str,
+    map_build_error: impl FnOnce(parquet::errors::ParquetError) -> E,
+) -> std::result::Result<Option<ParquetRecordBatchReader>, E>
+where
+    T: ChunkReader + 'static,
+{
+    let builder = match ParquetRecordBatchReaderBuilder::try_new(source) {
+        Ok(builder) => builder,
+        Err(error) => {
+            tracing::warn!("Skipping {}: failed to read parquet: {error}", path);
+            return Ok(None);
+        }
+    };
+    let reader = builder
+        .with_batch_size(1024)
+        .build()
+        .map_err(map_build_error)?;
+    Ok(Some(reader))
+}
+
+fn open_parquet_sample_reader<E>(
+    transfer: Option<&CloudTransfer>,
+    path: &str,
+    condition: Option<CloudObjectCondition>,
+    map_build_error: impl FnOnce(parquet::errors::ParquetError) -> E,
+) -> std::result::Result<Option<ParquetRecordBatchReader>, E> {
+    if let Some(transfer) = transfer.filter(|_| is_cloud_path(path)) {
+        let pooled = match download_cloud_bytes_condition(transfer, path, condition) {
+            Ok(pooled) => pooled,
+            Err(error) => {
+                tracing::warn!("Skipping {}: download failed: {error}", path);
+                return Ok(None);
+            }
+        };
+        return build_parquet_sample_reader(pooled.bytes(), path, map_build_error);
+    }
+
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) => {
+            tracing::warn!("Skipping {}: failed to open: {error}", path);
+            return Ok(None);
+        }
+    };
+    build_parquet_sample_reader(file, path, map_build_error)
 }
 
 /// Detect timestamp format strings and epoch units for timestamp/date columns.
@@ -58,12 +110,18 @@ pub fn detect_timestamp_formats(
             continue;
         }
 
-        let all_paths = table.get_paths();
-        if all_paths.is_empty() {
+        let owned_transfer = if input_transfer.is_none() {
+            build_input_transfer_for_table(table)?
+        } else {
+            None
+        };
+        let table_transfer = input_transfer.as_ref().or(owned_transfer.as_ref());
+        let parquet_files = table.source_objects();
+        let parquet_file_count = parquet_files.len().min(MAX_FILES);
+        if parquet_file_count == 0 {
             continue;
         }
 
-        let parquet_files = all_paths;
         // Accumulated state across files.
         let mut votes: HashMap<usize, Vec<String>> = HashMap::new();
         let mut sample_counts: HashMap<usize, usize> = HashMap::new();
@@ -208,60 +266,19 @@ pub fn detect_timestamp_formats(
         // A candidate is resolved when it has: a vote, a native temporal type,
         // or a non-null value we couldn't classify (more files won't help).
         // Cap at MAX_FILES to avoid downloading hundreds of files for all-null columns.
-        for path in parquet_files.iter().take(MAX_FILES) {
-            let pooled = if let Some(transfer) = input_transfer {
-                if is_cloud_path(path) {
-                    match download_cloud_bytes(transfer, path) {
-                        Ok(p) => Some(p),
-                        Err(e) => {
-                            tracing::warn!("Skipping {}: download failed: {e}", path);
-                            continue;
-                        }
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
+        for object in parquet_files.take(MAX_FILES) {
+            let path = object.path;
+            let Some(reader) = open_parquet_sample_reader(
+                table_transfer,
+                path,
+                object.condition(),
+                anyhow::Error::from,
+            )?
+            else {
+                continue;
             };
-
-            if let Some(pooled) = pooled {
-                let bytes = pooled.bytes();
-                let builder =
-                    match parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
-                        bytes,
-                    ) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            tracing::warn!("Skipping {}: failed to read parquet: {e}", path);
-                            continue;
-                        }
-                    };
-                let schema = builder.schema().clone();
-                let reader = builder.with_batch_size(1024).build()?;
-                sample_from_reader!(reader, schema);
-            } else {
-                let file = match std::fs::File::open(path) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        tracing::warn!("Skipping {}: failed to open: {e}", path);
-                        continue;
-                    }
-                };
-                let builder =
-                    match parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
-                        file,
-                    ) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            tracing::warn!("Skipping {}: failed to read parquet: {e}", path);
-                            continue;
-                        }
-                    };
-                let schema = builder.schema().clone();
-                let reader = builder.with_batch_size(1024).build()?;
-                sample_from_reader!(reader, schema);
-            }
+            let schema = reader.schema();
+            sample_from_reader!(reader, schema);
 
             let all_resolved = candidates.iter().all(|(col_idx, _)| {
                 votes.contains_key(col_idx)
@@ -308,21 +325,21 @@ pub fn detect_timestamp_formats(
                          A time column must contain parseable timestamp values.",
                         table.name,
                         col_name,
-                        parquet_files.len().min(MAX_FILES),
+                        parquet_file_count,
                     ));
                 }
                 if is_end_time_col {
                     tracing::warn!(
                         table = %table.name, column = %col_name, role = "end_time",
                         "column is entirely null across {} file(s); treating null end times as open-ended intervals",
-                        parquet_files.len().min(MAX_FILES),
+                        parquet_file_count,
                     );
                     continue;
                 }
                 tracing::warn!(
                     table = %table.name, column = %col_name,
                     "column is entirely null across {} file(s)",
-                    parquet_files.len().min(MAX_FILES),
+                    parquet_file_count,
                 );
             }
         }
@@ -460,7 +477,7 @@ pub fn compute_total_bytes(
 ) -> Result<u64> {
     let mut total: u64 = 0;
     for table in &config.tables {
-        for path in table.get_paths() {
+        for path in table.source_paths() {
             if is_cloud_path(path) {
                 if let Some(transfer) = input_transfer {
                     total += compute_cloud_dir_bytes(transfer, path)?;
@@ -544,17 +561,15 @@ pub fn estimate_num_shards(total_bytes: u64) -> usize {
 /// cgroup limit these reduce to the host values.
 fn shard_target_bytes(total_bytes: u64) -> u64 {
     const FALLBACK_SHARD_BYTES: u64 = 1024 * 1024 * 1024; // 1 GB
-    // total_memory_bytes() = min(host MemTotal, memory.max on this process's
-    // own cgroup path). cpu_capacity_parallelism() honors CPU affinity/cpuset
-    // while intentionally ignoring cpu.max bandwidth quota for shard sizing.
+                                                          // total_memory_bytes() = min(host MemTotal, memory.max on this process's
+                                                          // own cgroup path). cpu_capacity_parallelism() honors CPU affinity/cpuset
+                                                          // while intentionally ignoring cpu.max bandwidth quota for shard sizing.
     let mem_total = crate::total_memory_bytes().or_else(read_system_memory_bytes);
     let capacity_parallelism = crate::cpu_capacity_parallelism() as u64;
     match mem_total {
-        Some(mem_total) => shard_target_bytes_for_capacity(
-            mem_total,
-            capacity_parallelism,
-            total_bytes,
-        ),
+        Some(mem_total) => {
+            shard_target_bytes_for_capacity(mem_total, capacity_parallelism, total_bytes)
+        }
         None => FALLBACK_SHARD_BYTES,
     }
 }
@@ -685,6 +700,7 @@ struct ExplicitMulticatCandidate {
     declared: String,
     total: usize,
     hits: usize,
+    miss_sample: Option<String>,
 }
 
 /// Bounded, transport-independent validation folded into the normal Encode
@@ -693,10 +709,15 @@ struct ExplicitMulticatCandidate {
 pub(crate) struct ExplicitMulticatDelimiterValidator {
     table: String,
     candidates: Vec<ExplicitMulticatCandidate>,
+    capture_samples: bool,
 }
 
 impl ExplicitMulticatDelimiterValidator {
     pub(crate) fn new(table: &crate::graph_config::TableSpec) -> Self {
+        Self::with_sample_capture(table, false)
+    }
+
+    fn with_sample_capture(table: &crate::graph_config::TableSpec, capture_samples: bool) -> Self {
         let candidates = table
             .columns
             .iter()
@@ -716,6 +737,7 @@ impl ExplicitMulticatDelimiterValidator {
                             declared: declared.to_string(),
                             total: 0,
                             hits: 0,
+                            miss_sample: None,
                         })
                 })
                 .flatten()
@@ -724,7 +746,18 @@ impl ExplicitMulticatDelimiterValidator {
         Self {
             table: table.name.clone(),
             candidates,
+            capture_samples,
         }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.candidates.is_empty()
+    }
+
+    fn is_complete(&self) -> bool {
+        self.candidates
+            .iter()
+            .all(|candidate| candidate.total >= MULTICAT_MAX_SAMPLES)
     }
 
     pub(crate) fn observe(&mut self, batch: &arrow_array::RecordBatch) {
@@ -752,6 +785,8 @@ impl ExplicitMulticatDelimiterValidator {
                 candidate.total += 1;
                 if text.contains(&candidate.declared) {
                     candidate.hits += 1;
+                } else if self.capture_samples && candidate.miss_sample.is_none() {
+                    candidate.miss_sample = Some(text.to_string());
                 }
             }
         }
@@ -764,7 +799,7 @@ impl ExplicitMulticatDelimiterValidator {
                     table = %self.table,
                     column = %candidate.name,
                     "explicit multicategorical_delimiter could not be validated: \
-                     no non-empty sample rows in the bounded Encode pass",
+                     no non-empty sample rows in the bounded validation pass",
                 );
                 continue;
             }
@@ -776,7 +811,9 @@ impl ExplicitMulticatDelimiterValidator {
                     hits: 0,
                     total: candidate.total,
                     required: 1,
-                    sample: "<omitted>".to_string(),
+                    sample: candidate
+                        .miss_sample
+                        .unwrap_or_else(|| "<omitted>".to_string()),
                 });
             }
             let suspicious_floor =
@@ -834,11 +871,17 @@ pub fn detect_multicategorical_delimiters(
         if table.format() != TableFormat::Parquet {
             continue;
         }
-        let all_paths = table.get_paths();
-        if all_paths.is_empty() {
+        let owned_transfer = if input_transfer.is_none() {
+            build_input_transfer_for_table(table)
+                .map_err(|error| ConvertError::InferenceError(format!("{error:#}")))?
+        } else {
+            None
+        };
+        let table_transfer = input_transfer.as_ref().or(owned_transfer.as_ref());
+        let parquet_files = table.source_objects();
+        if parquet_files.len() == 0 {
             continue;
         }
-        let parquet_files = all_paths;
 
         // Per-column per-candidate occurrence counts, and total non-null
         // sample rows for that column.
@@ -848,22 +891,8 @@ pub fn detect_multicategorical_delimiters(
         // Sample multiple parquet files. Early files can be empty, all-null,
         // or non-representative partitions, so continue until each candidate
         // has enough non-null samples or the bounded file budget is exhausted.
-        for path in parquet_files.iter().take(MULTICAT_MAX_FILES) {
-            let pooled = if let Some(transfer) = input_transfer {
-                if is_cloud_path(path) {
-                    match download_cloud_bytes(transfer, path) {
-                        Ok(p) => Some(p),
-                        Err(e) => {
-                            tracing::warn!("Skipping {}: download failed: {e}", path);
-                            continue;
-                        }
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+        for object in parquet_files.take(MULTICAT_MAX_FILES) {
+            let path = object.path;
 
             macro_rules! scan_reader {
                 ($reader:expr, $schema:expr) => {{
@@ -906,49 +935,15 @@ pub fn detect_multicategorical_delimiters(
                 }};
             }
 
-            if let Some(pooled) = pooled {
-                let bytes = pooled.bytes();
-                let builder =
-                    match parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
-                        bytes,
-                    ) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            tracing::warn!("Skipping {}: failed to read parquet: {e}", path);
-                            continue;
-                        }
-                    };
-                let schema = builder.schema().clone();
-                let reader = builder
-                    .with_batch_size(1024)
-                    .build()
-                    .map_err(|e| ConvertError::InferenceError(format!("{e:#}")))?;
-                scan_reader!(reader, schema);
-            } else {
-                let file = match std::fs::File::open(path) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        tracing::warn!("Skipping {}: failed to open: {e}", path);
-                        continue;
-                    }
-                };
-                let builder =
-                    match parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
-                        file,
-                    ) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            tracing::warn!("Skipping {}: failed to read parquet: {e}", path);
-                            continue;
-                        }
-                    };
-                let schema = builder.schema().clone();
-                let reader = builder
-                    .with_batch_size(1024)
-                    .build()
-                    .map_err(|e| ConvertError::InferenceError(format!("{e:#}")))?;
-                scan_reader!(reader, schema);
-            }
+            let Some(reader) =
+                open_parquet_sample_reader(table_transfer, path, object.condition(), |error| {
+                    ConvertError::InferenceError(format!("{error:#}"))
+                })?
+            else {
+                continue;
+            };
+            let schema = reader.schema();
+            scan_reader!(reader, schema);
 
             // Stop as soon as we have enough samples for every candidate.
             let all_done = candidates.iter().all(|(col_idx, _)| {
@@ -1005,214 +1000,45 @@ pub fn validate_explicit_multicat_delimiters(
     input_transfer: &Option<CloudTransfer>,
 ) -> Result<(), ConvertError> {
     for table in &config.tables {
-        // Validate any multicat column whose source comes off parquet as a
-        // scalar string with a declared delimiter — whether the rowpack
-        // logical type is `String` (delimited string of string tokens),
-        // `StringArray` (delim-string post-normalize), or `Int64Array`
-        // (delim-string of int tokens). Native `List<...>` source columns
-        // never carry a delimiter and don't need this check; the access
-        // layer reads their elements directly without splitting.
-        let candidates: Vec<(usize, String, String)> = table
-            .columns
-            .iter()
-            .enumerate()
-            .filter_map(|(i, c)| {
-                let scalar_string_source = matches!(
-                    c.ingested_dtype,
-                    IngestedType::String | IngestedType::StringArray | IngestedType::Int64Array,
-                );
-                if scalar_string_source && c.semantic_type == Some(SemanticType::Multicategorical) {
-                    c.multicategorical_delimiter
-                        .as_deref()
-                        .map(|d| (i, c.name.clone(), d.to_string()))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        if candidates.is_empty() {
+        let mut validator = ExplicitMulticatDelimiterValidator::with_sample_capture(table, true);
+        if validator.is_empty() {
             continue;
         }
         if table.format() != TableFormat::Parquet {
             continue;
         }
-        let all_paths = table.get_paths();
-        if all_paths.is_empty() {
+        let owned_transfer = if input_transfer.is_none() {
+            build_input_transfer_for_table(table)
+                .map_err(|error| ConvertError::InferenceError(format!("{error:#}")))?
+        } else {
+            None
+        };
+        let table_transfer = input_transfer.as_ref().or(owned_transfer.as_ref());
+        let parquet_files = table.source_objects();
+        if parquet_files.len() == 0 {
             continue;
         }
-        let parquet_files = all_paths;
 
-        // Per-column occurrence counts + the first sample row that didn't
-        // contain the declared delimiter. The first miss is plenty for the
-        // error message — diagnostic, not exhaustive.
-        let mut totals: HashMap<usize, usize> = HashMap::new();
-        let mut hits: HashMap<usize, usize> = HashMap::new();
-        let mut miss_sample: HashMap<usize, String> = HashMap::new();
-
-        for path in parquet_files.iter().take(MULTICAT_MAX_FILES) {
-            let pooled = if let Some(transfer) = input_transfer {
-                if is_cloud_path(path) {
-                    match download_cloud_bytes(transfer, path) {
-                        Ok(p) => Some(p),
-                        Err(e) => {
-                            tracing::warn!("Skipping {}: download failed: {e}", path);
-                            continue;
-                        }
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
+        for object in parquet_files.take(MULTICAT_MAX_FILES) {
+            let path = object.path;
+            let Some(reader) =
+                open_parquet_sample_reader(table_transfer, path, object.condition(), |error| {
+                    ConvertError::InferenceError(format!("{error:#}"))
+                })?
+            else {
+                continue;
             };
-
-            macro_rules! scan_reader {
-                ($reader:expr, $schema:expr) => {{
-                    let col_info: Vec<Option<usize>> = candidates
-                        .iter()
-                        .map(|(_, name, _)| $schema.index_of(name).ok())
-                        .collect();
-                    for batch in $reader {
-                        let batch =
-                            batch.map_err(|e| ConvertError::InferenceError(format!("{e:#}")))?;
-                        for (cand_idx, info) in col_info.iter().enumerate() {
-                            let Some(arr_idx) = info else { continue };
-                            let (col_key, _, declared) = &candidates[cand_idx];
-                            if *totals.get(col_key).unwrap_or(&0) >= MULTICAT_MAX_SAMPLES {
-                                continue;
-                            }
-                            let array = batch.column(*arr_idx);
-                            for row in 0..batch.num_rows() {
-                                if *totals.get(col_key).unwrap_or(&0) >= MULTICAT_MAX_SAMPLES {
-                                    break;
-                                }
-                                if array.is_null(row) {
-                                    continue;
-                                }
-                                let Some(text) = multicat_string_value(array.as_ref(), row) else {
-                                    continue;
-                                };
-                                if text.is_empty() {
-                                    continue;
-                                }
-                                *totals.entry(*col_key).or_insert(0) += 1;
-                                if text.contains(declared.as_str()) {
-                                    *hits.entry(*col_key).or_insert(0) += 1;
-                                } else {
-                                    miss_sample
-                                        .entry(*col_key)
-                                        .or_insert_with(|| text.to_string());
-                                }
-                            }
-                        }
-                    }
-                }};
+            for batch in reader {
+                validator.observe(
+                    &batch.map_err(|error| ConvertError::InferenceError(format!("{error:#}")))?,
+                );
             }
 
-            if let Some(pooled) = pooled {
-                let bytes = pooled.bytes();
-                let builder =
-                    match parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
-                        bytes,
-                    ) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            tracing::warn!("Skipping {}: failed to read parquet: {e}", path);
-                            continue;
-                        }
-                    };
-                let schema = builder.schema().clone();
-                let reader = builder
-                    .with_batch_size(1024)
-                    .build()
-                    .map_err(|e| ConvertError::InferenceError(format!("{e:#}")))?;
-                scan_reader!(reader, schema);
-            } else {
-                let file = match std::fs::File::open(path) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        tracing::warn!("Skipping {}: failed to open: {e}", path);
-                        continue;
-                    }
-                };
-                let builder =
-                    match parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
-                        file,
-                    ) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            tracing::warn!("Skipping {}: failed to read parquet: {e}", path);
-                            continue;
-                        }
-                    };
-                let schema = builder.schema().clone();
-                let reader = builder
-                    .with_batch_size(1024)
-                    .build()
-                    .map_err(|e| ConvertError::InferenceError(format!("{e:#}")))?;
-                scan_reader!(reader, schema);
-            }
-
-            let all_done = candidates
-                .iter()
-                .all(|(col_idx, _, _)| *totals.get(col_idx).unwrap_or(&0) >= MULTICAT_MAX_SAMPLES);
-            if all_done {
+            if validator.is_complete() {
                 break;
             }
         }
-
-        for (col_idx, col_name, declared) in &candidates {
-            let total = *totals.get(col_idx).unwrap_or(&0);
-            let hit = *hits.get(col_idx).unwrap_or(&0);
-            // Empty column / all-null sample → can't validate, skip silently.
-            // The auto-detect path also tolerates this with a tracing warn.
-            if total == 0 {
-                tracing::warn!(
-                    table = %table.name, column = %col_name,
-                    "explicit multicategorical_delimiter could not be validated: \
-                     no non-empty sample rows in the bounded scan",
-                );
-                continue;
-            }
-            // The hit threshold for explicit-delim validation is intentionally
-            // loose. The user has already committed to a specific delimiter,
-            // so the only failure mode we need to catch is total mismatch
-            // (typo, wrong column). A column
-            // where most rows have a single tag and only a few rows are
-            // multi-token is valid: each single-token row tokenizes correctly
-            // as a one-element list under GE-parity drop-empty. Reject only
-            // when `hits == 0` — i.e. the declared delimiter NEVER appears in
-            // any sampled non-empty row. Anything else gets a tracing warn so
-            // a sparse-but-real configuration is preserved while still
-            // surfacing suspiciously low rates.
-            if hit == 0 {
-                let sample = miss_sample
-                    .remove(col_idx)
-                    .unwrap_or_else(|| "<no sample>".to_string());
-                return Err(ConvertError::MulticategoricalDelimiterMismatch {
-                    table: table.name.clone(),
-                    column: col_name.clone(),
-                    declared: declared.clone(),
-                    hits: hit,
-                    total,
-                    required: 1,
-                    sample,
-                });
-            }
-            let suspicious_floor =
-                (MULTICAT_EXPLICIT_SUSPICIOUS_FRACTION * total as f64).ceil() as usize;
-            if hit < suspicious_floor {
-                tracing::warn!(
-                    table = %table.name, column = %col_name,
-                    declared = %declared,
-                    hits = hit,
-                    total = total,
-                    "explicit multicategorical_delimiter appears in fewer rows than \
-                     expected; data may be mostly single-token, but verify the \
-                     declared delimiter is correct",
-                );
-            }
-        }
+        validator.finish()?;
     }
     Ok(())
 }
@@ -1268,8 +1094,7 @@ mod tests {
     fn test_effective_memory_never_exceeds_host() {
         // total_memory_bytes() = min(host, cgroup) and must be <= host MemTotal. This
         // guards the primary cgroup fix that feeds shard sizing.
-        if let (Some(eff), Some(host)) = (crate::total_memory_bytes(), read_system_memory_bytes())
-        {
+        if let (Some(eff), Some(host)) = (crate::total_memory_bytes(), read_system_memory_bytes()) {
             assert!(
                 eff <= host,
                 "effective mem {eff} must not exceed host mem {host}"
@@ -1322,11 +1147,7 @@ mod tests {
         let total = 182 * GB;
         let memory = 128 * GB;
         let capacity_parallelism = 64;
-        let target = shard_target_bytes_for_capacity(
-            memory,
-            capacity_parallelism,
-            total,
-        );
+        let target = shard_target_bytes_for_capacity(memory, capacity_parallelism, total);
         let expected_shards = total.div_ceil(target);
 
         // Worker quotas affect effective_parallelism(), not the memory-driven
@@ -1343,11 +1164,7 @@ mod tests {
 
         // Guard the exact old failure mode: substituting an 8-core cpu.max
         // quota for capacity would plan fewer, larger shards.
-        let quota_sized = total.div_ceil(shard_target_bytes_for_capacity(
-            memory,
-            8,
-            total,
-        ));
+        let quota_sized = total.div_ceil(shard_target_bytes_for_capacity(memory, 8, total));
         assert!(quota_sized < expected_shards);
     }
 
@@ -1694,10 +1511,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_file(&dir.path().join("a.parquet"), 100);
         write_file(&dir.path().join("b.parquet"), 250);
-        assert_eq!(
-            compute_local_dir_bytes(dir.path().to_str().unwrap()),
-            350
-        );
+        assert_eq!(compute_local_dir_bytes(dir.path().to_str().unwrap()), 350);
     }
 
     #[test]
@@ -1712,10 +1526,7 @@ mod tests {
         write_file(&p1.join("part-1.parquet"), 200);
         write_file(&p2.join("part-0.parquet"), 300);
         // Sum of all nested files, not just the top-level file.
-        assert_eq!(
-            compute_local_dir_bytes(dir.path().to_str().unwrap()),
-            610
-        );
+        assert_eq!(compute_local_dir_bytes(dir.path().to_str().unwrap()), 610);
     }
 
     #[test]

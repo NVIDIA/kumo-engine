@@ -58,7 +58,7 @@ pub struct S3Client {
 
 pub mod cloud_transfer;
 pub use cloud_transfer::{
-    BufferPool, CloudTransfer, CloudTransferBytesTicket, CloudTransferConfig,
+    BufferPool, CloudObjectCondition, CloudTransfer, CloudTransferBytesTicket, CloudTransferConfig,
     CloudTransferDownloadTicket, CloudTransferStatsHandle, CloudTransferStatsSnapshot,
     CloudTransferTicket, PooledBuffer, PooledBytes,
 };

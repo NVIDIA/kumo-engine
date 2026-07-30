@@ -1,6 +1,6 @@
 use diskgraph_ingest::graph_config::{
-    ColumnSpec, DataSource, DirectionSpec, EdgeTableSpec, FKeySpec, ForeignKeySpec,
-    GraphConfig, IngestedType, SemanticType, TableSpec, TimeSpec, WeightSpec,
+    ColumnSpec, DataSource, DirectionSpec, EdgeTableSpec, FKeySpec, ForeignKeySpec, GraphConfig,
+    IngestedType, SemanticType, TableSpec, TimeSpec, WeightSpec,
 };
 
 fn base_table(name: &str) -> TableSpec {
@@ -182,7 +182,7 @@ fn validate_case_colliding_table_names() {
 #[test]
 fn validate_table_no_paths() {
     let mut meta = base_metadata();
-    meta.tables[0].get_paths_mut().clear();
+    meta.tables[0].replace_with_local_parquet(Vec::new());
     assert_err_contains(meta, "table User has no paths");
 }
 
