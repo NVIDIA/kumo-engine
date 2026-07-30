@@ -325,6 +325,17 @@ fn train_seeds_node_count(output: &Path) -> u64 {
     stage_node_count(output, "train_seeds")
 }
 
+#[test]
+fn test_resolution_mode_allows_an_empty_source_table() -> Result<()> {
+    let tmp = tempdir()?;
+    let (output, stats) = ingest_resolution_with_stats(&tmp, &[], &[])?;
+
+    assert_eq!(stats.perf.source_rows, 0);
+    assert_eq!(stats.source_rows_by_table["train_seeds"], 0);
+    assert_eq!(train_seeds_node_count(&output), 0);
+    Ok(())
+}
+
 fn parent_node_id(tmp: &tempfile::TempDir, pk: i64) -> u64 {
     let parent_root = tmp.path().join("parent_idx");
     let metadata_path = parent_root.join("index_metadata.json");

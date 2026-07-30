@@ -200,6 +200,64 @@ fn encode_ts_i32(value: i64, anchor: i64, step: i64) -> u64 {
 }
 
 #[test]
+fn ingest_rejects_each_empty_table_even_when_another_table_has_rows() -> Result<()> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let output_root = dir.path().join("output");
+    let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+    write_parquet(
+        &input_root.join("populated.parquet"),
+        schema.clone(),
+        vec![Arc::new(Int64Array::from(vec![1])) as ArrayRef],
+    )?;
+    write_parquet(
+        &input_root.join("empty.parquet"),
+        schema,
+        vec![Arc::new(Int64Array::from(Vec::<i64>::new())) as ArrayRef],
+    )?;
+    let source = serde_json::json!({
+        "dataset_name": "empty_table",
+        "tables": [
+            {
+                "name": "Populated",
+                "source": {
+                    "type": "parquet",
+                    "paths": [input_root.join("populated.parquet").to_string_lossy()]
+                },
+                "primary_key": "id",
+                "columns": [{"name": "id", "ingested_dtype": "int64"}]
+            },
+            {
+                "name": "Empty",
+                "source": {
+                    "type": "parquet",
+                    "paths": [input_root.join("empty.parquet").to_string_lossy()]
+                },
+                "primary_key": "id",
+                "columns": [{"name": "id", "ingested_dtype": "int64"}]
+            }
+        ]
+    });
+    let source_path = dir.path().join("diskgraph_config.json");
+    fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
+
+    let error = ingest(
+        &source_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("graph source returned zero rows for table Empty"),
+        "unexpected error: {error:#}"
+    );
+    Ok(())
+}
+
+#[test]
 fn ingest_parquet_with_edges_and_rowpack() -> Result<()> {
     init_tracing();
     let dir = tempdir()?;

@@ -6168,6 +6168,12 @@ impl IngestContext {
                 }
                 validation.finish()?;
                 let source_rows = validation.rows_seen();
+                if source_rows == 0 && self.parent_index_path.is_none() {
+                    return Err(anyhow!(
+                        "graph source returned zero rows for table {}",
+                        table.name
+                    ));
+                }
                 let source_bytes = validation.logical_arrow_bytes();
                 self.logical_source_rows = self.logical_source_rows.saturating_add(source_rows);
                 self.logical_source_rows_by_table
@@ -6202,9 +6208,6 @@ impl IngestContext {
                     });
                 }
             }
-        }
-        if self.logical_source_rows == 0 && self.parent_index_path.is_none() {
-            return Err(anyhow!("graph source returned zero rows"));
         }
         if let Some(cb) = &self.progress {
             for table in &tables {
