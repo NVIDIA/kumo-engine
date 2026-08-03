@@ -84,7 +84,7 @@ def __getattr__(name):
         "TASK_DATASET_IMPLEMENTATION_KIND",             # mock/dev implementation marker
     }
     _TD_REOPEN = {
-        "make_runtime_batch_iterator",  # native worker-sharded iterator factory (merged-reader path)
+        "RuntimeIndex",  # reusable opened index; iterate many epochs/shards from one open
         "task_stage_size",              # stage-size query from runtime manifest
     }
     if name in _TD_ARTIFACTS:
@@ -151,7 +151,7 @@ __all__ = [
     "task_dataset_artifact_root",
     "TASK_DATASET_SCHEMA_VERSION",
     "TASK_DATASET_IMPLEMENTATION_KIND",
-    "make_runtime_batch_iterator",
+    "RuntimeIndex",
     "task_stage_size",
     "DiskgraphTaskError",
     "DiskgraphCorruptionError",
