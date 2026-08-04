@@ -3464,19 +3464,43 @@ fn fixed_arrow_row_bytes(data_type: &DataType) -> Option<u64> {
     })
 }
 
-fn variable_values_can_repeat_within_row(data_type: &DataType) -> bool {
+fn fixed_repeated_arrow_value_bytes(data_type: &DataType) -> Option<u64> {
     match data_type {
         DataType::Utf8
         | DataType::LargeUtf8
         | DataType::Utf8View
         | DataType::Binary
         | DataType::LargeBinary
-        | DataType::BinaryView => false,
+        | DataType::BinaryView => None,
+        DataType::List(field)
+        | DataType::LargeList(field)
+        | DataType::ListView(field)
+        | DataType::LargeListView(field)
+        | DataType::Map(field, _) => fixed_arrow_row_bytes(field.data_type()),
+        DataType::Struct(fields) => fields.iter().try_fold(0u64, |total, field| {
+            fixed_repeated_arrow_value_bytes(field.data_type())
+                .and_then(|bytes| total.checked_add(bytes))
+        }),
+        DataType::Dictionary(_, values) => fixed_repeated_arrow_value_bytes(values),
+        _ => fixed_arrow_row_bytes(data_type).map(|_| 0),
+    }
+}
+
+// True when a decoded row of `data_type` may reference more than one
+// variable-width value — the only shape where per-value output can grow
+// with the encoded row-group value count.
+fn variable_values_can_repeat_within_row(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::List(_)
+        | DataType::LargeList(_)
+        | DataType::ListView(_)
+        | DataType::LargeListView(_)
+        | DataType::Map(_, _) => true,
         DataType::Struct(fields) => fields
             .iter()
             .any(|field| variable_values_can_repeat_within_row(field.data_type())),
         DataType::Dictionary(_, values) => variable_values_can_repeat_within_row(values),
-        _ => fixed_arrow_row_bytes(data_type).is_none(),
+        _ => false,
     }
 }
 
@@ -3582,37 +3606,70 @@ fn parquet_row_group_memory_plan(
             .max(1);
         (variable_payload_bound, bytes_per_row, batch_cap)
     } else {
-        // Older writers may omit decoded BYTE_ARRAY sizes. Dictionary and
-        // nested/repeated data then retain the conservative worst case:
-        // one output row may reference the complete encoded row group.
-        let can_repeat = metadata
-            .schema()
-            .fields()
-            .iter()
-            .any(|field| variable_values_can_repeat_within_row(field.data_type()));
-        let multiplier = if can_repeat {
-            row_group
+        let fixed_repeated_value_bytes =
+            metadata
+                .schema()
+                .fields()
+                .iter()
+                .try_fold(0u64, |total, field| {
+                    fixed_repeated_arrow_value_bytes(field.data_type())
+                        .and_then(|bytes| total.checked_add(bytes))
+                });
+        if let Some(value_bytes) = fixed_repeated_value_bytes {
+            let max_values = row_group
                 .columns()
                 .iter()
                 .map(|column| u64::try_from(column.num_values()).unwrap_or(u64::MAX))
                 .max()
                 .unwrap_or(1)
-                .max(1)
+                .max(1);
+            // Match the flat variable-width path: 2x accounts for Arrow buffer
+            // reservation exceeding logical size; leaf * 256 covers per-column
+            // structural allocations.
+            let value_payload = max_values
+                .checked_mul(value_bytes)
+                .and_then(|bytes| bytes.checked_mul(2))
+                .and_then(|bytes| bytes.checked_add(leaf_columns.saturating_mul(256)))
+                .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?;
+            let constant_output_bytes = uncompressed
+                .checked_add(value_payload)
+                .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?;
+            (
+                constant_output_bytes,
+                leaf_columns.saturating_mul(16).max(1),
+                batch_cap,
+            )
         } else {
-            1
-        };
-        let bytes_per_row = uncompressed
-            .max(1)
-            .checked_mul(multiplier)
-            // Arrow buffers may reserve nearly twice their logical size.
-            .and_then(|bytes| bytes.checked_mul(2))
-            .and_then(|bytes| bytes.checked_add(leaf_columns.saturating_mul(256)))
-            .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?;
-        (
-            0,
-            bytes_per_row.max(1),
-            if can_repeat { 1 } else { batch_cap },
-        )
+            // Only schemas with a List/Map wrapper can pack unbounded variable
+            // data into a single row. Flat variable-width types that reach the
+            // fallback (e.g. Dict<Utf8> without decoded-size metadata, or a
+            // Struct wrapping Utf8) keep the old multiplier=1 / batch_cap
+            // pairing so their throughput is not needlessly capped at one row.
+            let can_repeat = metadata
+                .schema()
+                .fields()
+                .iter()
+                .any(|field| variable_values_can_repeat_within_row(field.data_type()));
+            let multiplier = if can_repeat {
+                row_group
+                    .columns()
+                    .iter()
+                    .map(|column| u64::try_from(column.num_values()).unwrap_or(u64::MAX))
+                    .max()
+                    .unwrap_or(1)
+                    .max(1)
+            } else {
+                1
+            };
+            let bytes_per_row = uncompressed
+                .max(1)
+                .checked_mul(multiplier)
+                .and_then(|bytes| bytes.checked_mul(2))
+                .and_then(|bytes| bytes.checked_add(leaf_columns.saturating_mul(256)))
+                .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?;
+            let fallback_cap = if can_repeat { 1 } else { batch_cap };
+            (0, bytes_per_row.max(1), fallback_cap)
+        }
     };
     let output_budget = max_decode_bytes
         .saturating_sub(decoder_bound)
@@ -4525,6 +4582,7 @@ fn open_resident_csv_batch_reader(
 #[cfg(test)]
 mod bounded_file_decoder_tests {
     use super::*;
+    use arrow_array::builder::{Float64Builder, ListBuilder};
     use arrow_array::{FixedSizeBinaryArray, StringArray};
     use parquet::file::properties::{EnabledStatistics, WriterProperties};
     use std::io::Cursor;
@@ -4677,6 +4735,89 @@ mod bounded_file_decoder_tests {
         let (rows, batches) = read_parquet(reader, memory_plan.total_bytes);
         assert_eq!(rows, source.num_rows());
         assert_eq!(batches, 1);
+    }
+
+    #[test]
+    fn parquet_admits_bounded_fixed_width_lists_without_leaf_count_product() {
+        let mut values = ListBuilder::new(Float64Builder::new());
+        for row in 0..1024 {
+            for offset in 0..6 {
+                values.values().append_value((row + offset) as f64);
+            }
+            values.append(true);
+        }
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "values",
+            DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
+            false,
+        )]));
+        let batch =
+            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(values.finish())]).unwrap();
+        let (_directory, resident) = resident_parquet(&batch, None);
+        let max_decode_bytes = 1024 * 1024;
+        let metadata = resident.parquet_metadata.as_ref().unwrap();
+        let memory_plan = parquet_row_group_memory_plan(metadata, 0, max_decode_bytes).unwrap();
+        assert!(memory_plan.total_bytes <= max_decode_bytes);
+
+        let reader = BoundedParquetBatchReader::partition(resident, vec![0], max_decode_bytes);
+        let (rows, _) = read_parquet(reader, max_decode_bytes);
+        assert_eq!(rows, 1024);
+    }
+
+    #[test]
+    fn nested_variable_values_keep_conservative_fallback() {
+        let strings = DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)));
+        assert_eq!(fixed_repeated_arrow_value_bytes(&strings), None);
+    }
+
+    #[test]
+    fn fixed_width_list_bound_reserves_arrow_buffer_headroom() {
+        let mut values = ListBuilder::new(Float64Builder::new());
+        for row in 0..1024 {
+            for offset in 0..6 {
+                values.values().append_value((row + offset) as f64);
+            }
+            values.append(true);
+        }
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "values",
+            DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
+            false,
+        )]));
+        let batch =
+            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(values.finish())]).unwrap();
+        let (_directory, resident) = resident_parquet(&batch, None);
+        let metadata = resident.parquet_metadata.as_ref().unwrap();
+        let memory_plan =
+            parquet_row_group_memory_plan(metadata, 0, 16 * 1024 * 1024).unwrap();
+        // 1024 rows x 6 floats x 8 bytes = 49_152 bytes of leaf payload; a 2x
+        // Arrow-buffer safety factor requires the plan to reserve at least
+        // ~98_304 bytes of output before decode.
+        assert!(memory_plan.total_bytes >= 2 * 1024 * 6 * 8);
+        assert!(memory_plan.total_bytes >= batch.get_array_memory_size() as u64 * 2);
+    }
+
+    #[test]
+    fn variable_values_can_repeat_within_row_detects_wrappers() {
+        assert!(!variable_values_can_repeat_within_row(&DataType::Utf8));
+        assert!(!variable_values_can_repeat_within_row(&DataType::Dictionary(
+            Box::new(DataType::Int32),
+            Box::new(DataType::Utf8),
+        )));
+        assert!(!variable_values_can_repeat_within_row(&DataType::Struct(
+            vec![Field::new("s", DataType::Utf8, true)].into(),
+        )));
+        assert!(variable_values_can_repeat_within_row(&DataType::List(Arc::new(
+            Field::new("item", DataType::Utf8, true),
+        ))));
+        assert!(variable_values_can_repeat_within_row(&DataType::Struct(
+            vec![Field::new(
+                "list",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+                true,
+            )]
+            .into(),
+        )));
     }
 }
 
