@@ -300,6 +300,7 @@ fn promote_legacy_cloud_parquet_table(
     table.source = graph_config::DataSource::ObjectStoreParquet {
         objects,
         auth_profile: "ambient".to_string(),
+        authority: None,
     };
     table.source_size = Some(source_size);
     Ok(())
@@ -3170,6 +3171,36 @@ mod resident_parquet_tests {
     }
 
     #[test]
+    #[ignore = "requires AWS credentials for kumo-public-datasets"]
+    fn source_authority_reads_the_public_small_dataset() {
+        let source = serde_json::from_value(serde_json::json!({
+            "dataset_name": "hnm_tiny_authority",
+            "tables": [{
+                "name": "articles",
+                "columns": [],
+                "source": {
+                    "type": "object_store_parquet",
+                    "objects": [{
+                        "path": "s3://kumo-public-datasets/hnm_tiny/articles/part-00000-0005aa7e-18d0-4272-b52b-76a64f3e5a57-c000.snappy.parquet",
+                        "size": 65701,
+                        "e_tag": "\"557711dc7d7a4500a8c2ec030570dd6e-1\"",
+                        "version": null
+                    }],
+                    "auth_profile": "ambient",
+                    "authority": {
+                        "type": "s3",
+                        "region": "us-west-2"
+                    }
+                },
+                "source_size": 65701
+            }]
+        }))
+        .unwrap();
+        let signature = inspect_source_schema(source, None, None).unwrap();
+        assert!(!signature.tables["articles"].is_empty());
+    }
+
+    #[test]
     fn resident_parquet_partitions_decode_inside_encode_worker() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("parallel.parquet");
@@ -3205,6 +3236,7 @@ mod resident_parquet_tests {
                 version: metadata.version,
             }],
             auth_profile: "ambient".to_string(),
+            authority: None,
         };
         let transfer = test_cloud_transfer(store);
         assert_eq!(

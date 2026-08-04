@@ -161,6 +161,7 @@ impl TableSpec {
         let DataSource::ObjectStoreParquet {
             objects,
             auth_profile,
+            authority: source_authority,
         } = &self.source
         else {
             return Err(anyhow!("table {} is not an object-store source", self.name));
@@ -174,7 +175,7 @@ impl TableSpec {
             .first()
             .ok_or_else(|| anyhow!("table {} has no manifest objects", self.name))?;
         let mut paths = HashSet::new();
-        let mut authority = None;
+        let mut manifest_authority = None;
         let mut total = 0u64;
         for object in objects {
             ensure!(
@@ -201,10 +202,12 @@ impl TableSpec {
             );
             let current = parse_cloud_object_authority(&object.path)?;
             ensure!(
-                authority.as_ref().is_none_or(|first| first == &current),
+                manifest_authority
+                    .as_ref()
+                    .is_none_or(|first| first == &current),
                 "all cloud paths must share the same bucket/container"
             );
-            authority = Some(current);
+            manifest_authority = Some(current);
             total = total.checked_add(object.size).ok_or_else(|| {
                 anyhow!(
                     "table {} object-store manifest size overflows u64",
@@ -218,6 +221,13 @@ impl TableSpec {
                 "table {} source_size {size} does not match object-store manifest size {total}",
                 self.name
             );
+        }
+        if let Some(source_authority) = source_authority {
+            source_authority.validate_for(
+                manifest_authority
+                    .as_ref()
+                    .expect("a non-empty manifest has one provider authority"),
+            )?;
         }
         Ok(first)
     }
@@ -436,6 +446,26 @@ impl ObjectStoreObject {
     }
 }
 
+/// Non-secret provider routing selected while the source manifest is captured.
+///
+/// Credentials remain process-local. This block only prevents DiskGraph from
+/// silently rebuilding a client with a different provider authority.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ObjectStoreAuthority {
+    S3 { region: String },
+    Gcs,
+    Adls { cloud: AzureCloud },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AzureCloud {
+    Public,
+    UsGovernment,
+    China,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct SourceObjectRef<'a> {
     pub(crate) path: &'a str,
@@ -462,6 +492,8 @@ pub enum DataSource {
     ObjectStoreParquet {
         objects: Vec<ObjectStoreObject>,
         auth_profile: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        authority: Option<ObjectStoreAuthority>,
     },
     /// CSV files (local or cloud storage).
     Csv {
@@ -621,6 +653,36 @@ pub(crate) enum CloudSource {
     S3 { bucket: String },
     Gcs { bucket: String },
     Adls { account: String, container: String },
+}
+
+impl ObjectStoreAuthority {
+    fn validate_for(&self, source: &CloudSource) -> Result<()> {
+        match (self, source) {
+            (Self::S3 { region }, CloudSource::S3 { .. }) => {
+                let valid_region = !region.is_empty()
+                    && region.len() <= 64
+                    && !region.starts_with('-')
+                    && !region.ends_with('-')
+                    && region.bytes().all(|byte| {
+                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
+                    });
+                ensure!(valid_region, "invalid S3 source region {region:?}");
+            }
+            (Self::Gcs, CloudSource::Gcs { .. }) => {}
+            (Self::Adls { cloud }, CloudSource::Adls { .. }) => {
+                ensure!(
+                    *cloud == AzureCloud::Public,
+                    "ADLS source cloud {cloud:?} is not supported by the current object-store client"
+                );
+            }
+            _ => {
+                return Err(anyhow!(
+                    "object-store source authority does not match manifest provider"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn parse_cloud_source(path: &str) -> Result<Option<CloudSource>> {
@@ -1625,6 +1687,86 @@ mod tests {
             paths[0] = "s3://bucket/data.parquet".to_string();
         }
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn object_store_authority_is_provider_scoped_and_backward_compatible() {
+        let mut config = manifest_config();
+        config.validate().unwrap();
+        let legacy = serde_json::to_value(&config).unwrap();
+        assert!(
+            legacy["tables"][0]["source"].get("authority").is_none(),
+            "legacy manifests must keep their existing serialized shape"
+        );
+
+        let DataSource::ObjectStoreParquet { authority, .. } = &mut config.tables[0].source else {
+            panic!("expected object-store source");
+        };
+        *authority = Some(ObjectStoreAuthority::S3 {
+            region: "us-west-2".to_string(),
+        });
+        config.validate().unwrap();
+        let serialized = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            serialized["tables"][0]["source"]["authority"]["region"],
+            "us-west-2"
+        );
+        let decoded = serde_json::from_value::<GraphConfig>(serialized.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), serialized);
+
+        let mut unknown_field = serialized.clone();
+        unknown_field["tables"][0]["source"]["authority"]["endpoint"] =
+            serde_json::json!("https://wrong.invalid");
+        assert!(serde_json::from_value::<GraphConfig>(unknown_field)
+            .unwrap_err()
+            .to_string()
+            .contains("unknown field `endpoint`"));
+
+        let DataSource::ObjectStoreParquet { authority, .. } = &mut config.tables[0].source else {
+            unreachable!();
+        };
+        *authority = Some(ObjectStoreAuthority::Gcs);
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("does not match manifest provider"));
+
+        let DataSource::ObjectStoreParquet { authority, .. } = &mut config.tables[0].source else {
+            unreachable!();
+        };
+        *authority = Some(ObjectStoreAuthority::S3 {
+            region: "us.west-2".to_string(),
+        });
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("invalid S3 source region"));
+
+        let DataSource::ObjectStoreParquet {
+            objects, authority, ..
+        } = &mut config.tables[0].source
+        else {
+            unreachable!();
+        };
+        objects[0].path = "az://account/container/data.parquet".to_string();
+        *authority = Some(ObjectStoreAuthority::Adls {
+            cloud: AzureCloud::Public,
+        });
+        config.validate().unwrap();
+
+        let DataSource::ObjectStoreParquet { authority, .. } = &mut config.tables[0].source else {
+            unreachable!();
+        };
+        *authority = Some(ObjectStoreAuthority::Adls {
+            cloud: AzureCloud::UsGovernment,
+        });
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("not supported by the current object-store client"));
     }
 
     // Note: Coercion kind tests (Same, Safe, Conditional, Lossy, Incompatible) are in

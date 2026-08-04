@@ -1,7 +1,8 @@
 use crate::consts::TEMP_DIR_NAME;
 use crate::errors::ConvertError;
 use crate::graph_config::{
-    parse_cloud_source, CloudSource, DataSource, GraphConfig, ObjectStoreObject, TableSpec,
+    parse_cloud_source, AzureCloud, CloudSource, DataSource, GraphConfig, ObjectStoreAuthority,
+    ObjectStoreObject, TableSpec,
 };
 use crate::snapshot_mirror::{ManifestAccumulator, SnapshotMirror};
 
@@ -61,8 +62,9 @@ fn walk_local_files(
 use anyhow::{anyhow, ensure, Context, Result};
 use bytes::Bytes;
 use diskgraph_fs::{
-    build_adls_client, build_gcs_client, build_s3_client, AdlsConfig, CloudTransfer,
-    CloudTransferConfig, GcsConfig, PooledBytes, S3Config,
+    build_adls_client, build_adls_client_with_authority, build_gcs_client,
+    build_gcs_client_with_base_url, build_s3_client, build_s3_client_without_env_endpoint,
+    AdlsConfig, CloudTransfer, CloudTransferConfig, GcsConfig, PooledBytes, S3Config,
 };
 use object_store::{path::Path as ObjectPath, ObjectStore, ObjectStoreExt, WriteMultipart};
 use std::fs;
@@ -121,9 +123,12 @@ pub fn parse_az_url(raw: &str) -> Result<(String, String, String)> {
 
 pub(crate) fn build_input_transfer_for_table(table: &TableSpec) -> Result<Option<CloudTransfer>> {
     match &table.source {
-        DataSource::ObjectStoreParquet { .. } => {
+        DataSource::ObjectStoreParquet { authority, .. } => {
             let first = table.validate_object_store_manifest()?;
-            Ok(Some(build_transfer_for_cloud_path(&first.path)?))
+            Ok(Some(build_transfer_for_object_store_source(
+                &first.path,
+                authority.as_ref(),
+            )?))
         }
         DataSource::Parquet { paths } => build_input_transfer_for_cloud_paths(table, paths),
         DataSource::Csv { paths } => build_input_transfer_for_cloud_paths(table, paths),
@@ -165,6 +170,14 @@ fn build_input_transfer_for_cloud_paths(
 
 pub fn build_transfer_for_cloud_path(path: &str) -> Result<CloudTransfer> {
     let store = build_store_for_cloud_path(path)?;
+    Ok(CloudTransfer::new(store, CloudTransferConfig::from_env()))
+}
+
+fn build_transfer_for_object_store_source(
+    path: &str,
+    authority: Option<&ObjectStoreAuthority>,
+) -> Result<CloudTransfer> {
+    let store = build_store_for_cloud_path_with_authority(path, authority)?;
     Ok(CloudTransfer::new(store, CloudTransferConfig::from_env()))
 }
 
@@ -281,42 +294,108 @@ pub fn object_path_for_path(path: &str) -> Result<ObjectPath> {
 }
 
 pub fn build_store_for_cloud_path(path: &str) -> Result<Arc<dyn ObjectStore>> {
+    build_store_for_cloud_path_with_authority(path, None)
+}
+
+fn source_s3_settings(
+    bucket: &str,
+    authority: Option<&ObjectStoreAuthority>,
+    worker_region: Option<String>,
+) -> Result<(Option<String>, Option<bool>, bool)> {
+    match authority {
+        Some(ObjectStoreAuthority::S3 { region }) => Ok((
+            Some(region.clone()),
+            // AWS wildcard certificates do not cover dotted bucket labels.
+            Some(!bucket.contains('.')),
+            false,
+        )),
+        None => Ok((worker_region, None, true)),
+        Some(_) => Err(anyhow!("S3 path has non-S3 source authority")),
+    }
+}
+
+const GCS_PUBLIC_BASE_URL: &str = "https://storage.googleapis.com";
+
+fn source_adls_settings(
+    account: &str,
+    authority: Option<&ObjectStoreAuthority>,
+    worker_endpoint: Option<String>,
+) -> Result<(Option<String>, Option<String>)> {
+    match authority {
+        Some(ObjectStoreAuthority::Adls {
+            cloud: AzureCloud::Public,
+        }) => Ok((
+            Some(format!("https://{account}.blob.core.windows.net")),
+            Some(object_store::azure::authority_hosts::AZURE_PUBLIC_CLOUD.to_string()),
+        )),
+        None => Ok((worker_endpoint, None)),
+        Some(ObjectStoreAuthority::Adls { cloud }) => Err(anyhow!(
+            "ADLS source cloud {cloud:?} is not supported by the current object-store client"
+        )),
+        Some(_) => Err(anyhow!("ADLS path has non-ADLS source authority")),
+    }
+}
+
+fn build_store_for_cloud_path_with_authority(
+    path: &str,
+    authority: Option<&ObjectStoreAuthority>,
+) -> Result<Arc<dyn ObjectStore>> {
     if path.starts_with("s3://") {
         let (bucket, _key) = parse_s3_url(path)?;
-        let s3 = build_s3_client(S3Config {
+        let (region, virtual_hosted, inherit_worker_endpoint) =
+            source_s3_settings(&bucket, authority, std::env::var("S3_REGION").ok())?;
+        let config = S3Config {
             bucket: bucket.clone(),
-            region: std::env::var("S3_REGION").ok(),
-            endpoint: std::env::var("S3_ENDPOINT").ok(),
+            region,
+            endpoint: None,
             allow_http: None,
-            virtual_hosted: None,
+            virtual_hosted,
             profile: std::env::var("S3_PROFILE")
                 .or_else(|_| std::env::var("AWS_PROFILE"))
                 .ok(),
             access_key_id: None,
             secret_access_key: None,
             session_token: None,
-        })?;
+        };
+        let s3 = if inherit_worker_endpoint {
+            build_s3_client(config)?
+        } else {
+            build_s3_client_without_env_endpoint(config)?
+        };
         Ok(s3.store)
     } else if path.starts_with("gs://") {
+        let base_url = match authority {
+            Some(ObjectStoreAuthority::Gcs) => Some(GCS_PUBLIC_BASE_URL),
+            None => None,
+            Some(_) => return Err(anyhow!("GCS path has non-GCS source authority")),
+        };
         let (bucket, _key) = parse_gs_url(path)?;
-        let gcs = build_gcs_client(GcsConfig {
-            bucket: bucket.clone(),
-        })?;
+        let gcs = build_gcs_client_with_base_url(
+            GcsConfig {
+                bucket: bucket.clone(),
+            },
+            base_url,
+        )?;
         Ok(gcs.store)
     } else if path.starts_with("az://") {
         let (account, container, _key) = parse_az_url(path)?;
-        let adls = build_adls_client(AdlsConfig {
-            account: account.clone(),
-            container: container.clone(),
-            endpoint: std::env::var("AZURE_ENDPOINT").ok(),
-            allow_http: None,
-            access_key: std::env::var("AZURE_ACCESS_KEY").ok(),
-            sas_key: std::env::var("AZURE_SAS_KEY").ok(),
-            bearer_token: std::env::var("AZURE_BEARER_TOKEN").ok(),
-            client_id: std::env::var("AZURE_CLIENT_ID").ok(),
-            client_secret: std::env::var("AZURE_CLIENT_SECRET").ok(),
-            tenant_id: std::env::var("AZURE_TENANT_ID").ok(),
-        })?;
+        let (endpoint, authority_host) =
+            source_adls_settings(&account, authority, std::env::var("AZURE_ENDPOINT").ok())?;
+        let adls = build_adls_client_with_authority(
+            AdlsConfig {
+                account: account.clone(),
+                container: container.clone(),
+                endpoint,
+                allow_http: None,
+                access_key: std::env::var("AZURE_ACCESS_KEY").ok(),
+                sas_key: std::env::var("AZURE_SAS_KEY").ok(),
+                bearer_token: std::env::var("AZURE_BEARER_TOKEN").ok(),
+                client_id: std::env::var("AZURE_CLIENT_ID").ok(),
+                client_secret: std::env::var("AZURE_CLIENT_SECRET").ok(),
+                tenant_id: std::env::var("AZURE_TENANT_ID").ok(),
+            },
+            authority_host,
+        )?;
         Ok(adls.store)
     } else {
         Err(anyhow!("unsupported source path {}", path))
@@ -449,6 +528,7 @@ fn expand_cloud_data_paths(dir_url: &str) -> Result<(DataSource, u64)> {
             DataSource::ObjectStoreParquet {
                 objects: parquet_objects,
                 auth_profile: "ambient".to_string(),
+                authority: None,
             },
             total_bytes,
         ))
@@ -562,16 +642,19 @@ pub(crate) fn expand_source_paths(
                 Some(DataSource::ObjectStoreParquet {
                     mut objects,
                     auth_profile,
+                    authority,
                 }),
                 DataSource::ObjectStoreParquet {
                     objects: new,
                     auth_profile: new_auth_profile,
+                    authority: new_authority,
                 },
-            ) if auth_profile == new_auth_profile => {
+            ) if auth_profile == new_auth_profile && authority == new_authority => {
                 objects.extend(new);
                 DataSource::ObjectStoreParquet {
                     objects,
                     auth_profile,
+                    authority,
                 }
             }
             (Some(DataSource::Csv { mut paths }), DataSource::Csv { paths: new }) => {
@@ -1157,6 +1240,58 @@ fn to_io_err(err: object_store::Error) -> io::Error {
 mod tests {
     use super::*;
     use diskgraph_fs::CloudTransfer;
+
+    #[test]
+    fn source_authority_overrides_worker_routing_defaults() {
+        assert_eq!(
+            source_s3_settings("legacy-bucket", None, Some("us-east-1".to_string()),).unwrap(),
+            (Some("us-east-1".to_string()), None, true),
+            "legacy sources must retain worker routing"
+        );
+        let s3 = ObjectStoreAuthority::S3 {
+            region: "us-west-2".to_string(),
+        };
+        assert_eq!(
+            source_s3_settings("customer-bucket", Some(&s3), Some("us-east-1".to_string()),)
+                .unwrap(),
+            (Some("us-west-2".to_string()), Some(true), false),
+        );
+        assert_eq!(
+            source_s3_settings("customer.bucket", Some(&s3), None,)
+                .unwrap()
+                .1,
+            Some(false)
+        );
+        assert!(
+            source_s3_settings("customer-bucket", Some(&ObjectStoreAuthority::Gcs), None,).is_err()
+        );
+
+        let adls = ObjectStoreAuthority::Adls {
+            cloud: AzureCloud::Public,
+        };
+        assert_eq!(
+            source_adls_settings(
+                "customer",
+                Some(&adls),
+                Some("https://wrong.invalid".to_string()),
+            )
+            .unwrap(),
+            (
+                Some("https://customer.blob.core.windows.net".to_string()),
+                Some("https://login.microsoftonline.com".to_string()),
+            )
+        );
+        assert_eq!(
+            source_adls_settings(
+                "customer",
+                None,
+                Some("https://worker.invalid".to_string()),
+            )
+            .unwrap(),
+            (Some("https://worker.invalid".to_string()), None),
+            "legacy sources must retain worker routing"
+        );
+    }
 
     /// Locked-down dataplane scheme matrix: anything that isn't `s3://`,
     /// `gs://`, `az://`, or a bare local path must be rejected at the

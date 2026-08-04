@@ -319,6 +319,7 @@ pub fn infer_source_metadata(root: &RootSource, options: InferOptions) -> Result
                 (TableFormat::Parquet, false) => DataSource::ObjectStoreParquet {
                     objects: table.objects.clone(),
                     auth_profile: "ambient".to_string(),
+                    authority: None,
                 },
                 (TableFormat::Csv, _) => DataSource::Csv {
                     paths: table.paths.clone(),

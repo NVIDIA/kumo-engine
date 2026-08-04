@@ -1146,8 +1146,8 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
     py.detach(move || -> PyResult<u64> {
         let config: diskgraph_ingest::GraphConfig = serde_json::from_str(&config_json)
             .map_err(|e| DiskgraphConfigError::new_err(format!("invalid config JSON: {e}")))?;
-        // Pass None for cloud transfer — source paths should already be local
-        // when called from the Python workflow (resolved by resolve_diskgraph_source_paths)
+        // This estimator counts local paths from the already-converted config;
+        // without a CloudTransfer, compute_total_bytes ignores cloud paths.
         let total =
             diskgraph_ingest::config_converter::inference::compute_total_bytes(&config, &None)
                 .map_err(|e| {

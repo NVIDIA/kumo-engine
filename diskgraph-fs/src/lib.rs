@@ -74,15 +74,24 @@ pub fn cloud_client_options() -> ClientOptions {
 }
 
 pub fn build_s3_client(cfg: S3Config) -> Result<S3Client> {
+    build_s3_client_inner(cfg, true)
+}
+
+pub fn build_s3_client_without_env_endpoint(cfg: S3Config) -> Result<S3Client> {
+    build_s3_client_inner(cfg, false)
+}
+
+fn build_s3_client_inner(cfg: S3Config, inherit_env_endpoint: bool) -> Result<S3Client> {
     let allow_http = cfg
         .allow_http
         .or_else(|| env_flag("S3_ALLOW_HTTP"))
         .or_else(|| env_flag("AWS_ALLOW_HTTP"))
         .unwrap_or(false);
-    let endpoint = cfg
-        .endpoint
-        .clone()
-        .or_else(|| std::env::var("S3_ENDPOINT").ok());
+    let endpoint = cfg.endpoint.clone().or_else(|| {
+        inherit_env_endpoint
+            .then(|| std::env::var("S3_ENDPOINT").ok())
+            .flatten()
+    });
     let profile = cfg
         .profile
         .clone()
@@ -284,12 +293,25 @@ pub struct GcsClient {
 }
 
 pub fn build_gcs_client(cfg: GcsConfig) -> Result<GcsClient> {
+    build_gcs_client_with_base_url(cfg, None)
+}
+
+/// Build a GCS client while overriding any worker or credential-provided base
+/// URL. An explicit source authority uses this to pin the public provider
+/// endpoint without changing how ambient credentials are resolved.
+pub fn build_gcs_client_with_base_url(
+    cfg: GcsConfig,
+    source_base_url: Option<&str>,
+) -> Result<GcsClient> {
     // with_client_options replaces the entire ClientOptions struct.
     // Calling it after from_env() wipes any env-sourced client
     // settings (e.g. GOOGLE_ALLOW_HTTP), but those are rarely used.
-    let builder = GoogleCloudStorageBuilder::from_env()
+    let mut builder = GoogleCloudStorageBuilder::from_env()
         .with_client_options(cloud_client_options())
         .with_bucket_name(&cfg.bucket);
+    if let Some(base_url) = source_base_url {
+        builder = builder.with_base_url(base_url);
+    }
     Ok(GcsClient {
         store: Arc::new(builder.build()?),
         bucket: cfg.bucket,
@@ -331,6 +353,17 @@ pub struct AdlsClient {
 }
 
 pub fn build_adls_client(cfg: AdlsConfig) -> Result<AdlsClient> {
+    build_adls_client_with_authority(cfg, None)
+}
+
+/// Build an ADLS client while overriding the worker's Azure authority host.
+///
+/// This is used when a source manifest carries provider routing captured by
+/// the control plane. Credentials still come from the worker environment.
+pub fn build_adls_client_with_authority(
+    cfg: AdlsConfig,
+    source_authority_host: Option<String>,
+) -> Result<AdlsClient> {
     let allow_http = cfg
         .allow_http
         .or_else(|| env_flag("AZURE_ALLOW_HTTP"))
@@ -408,8 +441,8 @@ pub fn build_adls_client(cfg: AdlsConfig) -> Result<AdlsClient> {
     }
     // object_store joins the authority host to the tenant id without
     // normalizing, so a trailing slash would yield a double slash.
-    if let Some(authority_host) = std::env::var("AZURE_AUTHORITY_HOST")
-        .ok()
+    if let Some(authority_host) = source_authority_host
+        .or_else(|| std::env::var("AZURE_AUTHORITY_HOST").ok())
         .map(|host| host.trim_end_matches('/').to_string())
         .filter(|host| !host.is_empty())
     {
@@ -795,6 +828,23 @@ mod tests {
             ])?
             .contains("https://login.microsoftonline.us/tenant/oauth2/v2.0/token"),
             "the authority host should be joined to the tenant id with one slash"
+        );
+        for key in OVERRIDING_VARS {
+            std::env::remove_var(key);
+        }
+        std::env::set_var("AZURE_FEDERATED_TOKEN_FILE", "/run/azure/token");
+        std::env::set_var("AZURE_AUTHORITY_HOST", "https://worker-authority.invalid");
+        assert!(
+            format!(
+                "{:?}",
+                build_adls_client_with_authority(
+                    cfg.clone(),
+                    Some("https://login.microsoftonline.com".to_string()),
+                )?
+                .store
+            )
+                .contains("https://login.microsoftonline.com/tenant/oauth2/v2.0/token"),
+            "source-scoped authority should override the worker environment"
         );
         for key in OVERRIDING_VARS {
             std::env::remove_var(key);
