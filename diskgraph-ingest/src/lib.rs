@@ -91,8 +91,10 @@ use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 use memmap2::Mmap;
 use num_traits::{Signed, ToPrimitive};
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ParquetRecordBatchReaderBuilder};
-use parquet::basic::Encoding;
-use parquet::file::reader::{ChunkReader, Length};
+use parquet::basic::{Encoding, PageType, Type as PhysicalType};
+use parquet::column::page::{Page, PageReader};
+use parquet::file::metadata::ColumnChunkMetaData;
+use parquet::file::reader::{ChunkReader, Length, SerializedPageReader};
 use pprof::protos::Message;
 use pprof::ProfilerGuard;
 use ptr_hash::DefaultPtrHash;
@@ -2814,7 +2816,6 @@ impl Iterator for EncodeBatchIter {
                         BoundedParquetBatchReader::partition(
                             partition.resident,
                             partition.row_groups,
-                            partition.max_decode_bytes,
                         ),
                         permit,
                         None,
@@ -3026,15 +3027,14 @@ mod resident_parquet_tests {
     fn read_resident_cloud_values(table: &TableSpec, transfer: &CloudTransfer) -> Result<Vec<i64>> {
         let max_bytes = 64 * 1024 * 1024;
         let budget = crate::source_memory::ByteBudget::new(max_bytes)?;
-        let mut stream = ResidentParquetWorkStream::open(table, Some(transfer), Some(budget), 2)?;
+        let mut stream =
+            ResidentParquetWorkStream::open(table, Some(transfer), Some(Arc::clone(&budget)), 2)?;
         let mut values = Vec::new();
-        while let Some(partition) = stream.next_partition(max_bytes, true) {
+        while let Some(partition) = stream.next_partition(&budget, true) {
             let partition = partition?;
-            for batch in BoundedParquetBatchReader::partition(
-                partition.resident,
-                partition.row_groups,
-                partition.max_decode_bytes,
-            ) {
+            for batch in
+                BoundedParquetBatchReader::partition(partition.resident, partition.row_groups)
+            {
                 let batch = batch?;
                 values.extend(
                     batch
@@ -3147,10 +3147,17 @@ mod resident_parquet_tests {
         let path = directory.path().join("parallel.parquet");
         write_parquet(&path, &int_batch("id", 0..4), None);
         let resident = resident(&path);
+        let plan = parquet_row_group_memory_plan(
+            resident.parquet_metadata.as_ref().unwrap(),
+            0,
+            4 * 1024 * 1024,
+            None,
+        )
+        .unwrap();
         let works = [Ok(SourceWork::Parquet(ParquetPartition {
             resident,
-            row_groups: vec![0],
-            max_decode_bytes: 4 * 1024 * 1024,
+            max_decode_bytes: plan.total_bytes,
+            row_groups: vec![plan],
         }))];
         let table = super::tests_repopulate_helpers::node_table("parallel", Some("id"));
         let budget = crate::source_memory::ByteBudget::new(4 * 1024 * 1024).unwrap();
@@ -3368,7 +3375,65 @@ impl Iterator for BoundedCsvBatchReader {
     }
 }
 
-fn fixed_arrow_row_bytes(data_type: &DataType) -> Option<u64> {
+#[derive(Clone, Copy, Default)]
+struct MemoryTerms {
+    constant_bytes: u64,
+    bytes_per_row: u64,
+}
+
+impl MemoryTerms {
+    fn add_constant(&mut self, bytes: u64, kind: &str) -> Result<()> {
+        self.constant_bytes = self
+            .constant_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| anyhow!("Parquet {kind} bound overflowed"))?;
+        Ok(())
+    }
+
+    fn add_per_row(&mut self, bytes: u64, kind: &str) -> Result<()> {
+        self.bytes_per_row = self
+            .bytes_per_row
+            .checked_add(bytes)
+            .ok_or_else(|| anyhow!("Parquet {kind} bound overflowed"))?;
+        Ok(())
+    }
+
+    fn double(&mut self, kind: &str) -> Result<()> {
+        self.constant_bytes = self
+            .constant_bytes
+            .checked_mul(2)
+            .ok_or_else(|| anyhow!("Parquet {kind} bound overflowed"))?;
+        self.bytes_per_row = self
+            .bytes_per_row
+            .checked_mul(2)
+            .ok_or_else(|| anyhow!("Parquet {kind} bound overflowed"))?;
+        Ok(())
+    }
+
+    fn bound(self, rows: u64, kind: &str) -> Result<u64> {
+        self.bytes_per_row
+            .checked_mul(rows)
+            .and_then(|bytes| self.constant_bytes.checked_add(bytes))
+            .ok_or_else(|| anyhow!("Parquet {kind} bound overflowed"))
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ArrowLeafValue {
+    Fixed(u64),
+    Variable(u64),
+}
+
+#[derive(Clone, Copy)]
+struct ArrowLeafShape {
+    value: ArrowLeafValue,
+    wrapper_bytes: u64,
+    terminal_bytes: u64,
+    fixed_multiplicity: u64,
+    variable_ancestor: bool,
+}
+
+fn fixed_arrow_leaf_bytes(data_type: &DataType) -> Option<u64> {
     Some(match data_type {
         DataType::Null => 0,
         DataType::Boolean | DataType::Int8 | DataType::UInt8 => 2,
@@ -3392,121 +3457,381 @@ fn fixed_arrow_row_bytes(data_type: &DataType) -> Option<u64> {
         DataType::Interval(arrow_schema::IntervalUnit::MonthDayNano)
         | DataType::Decimal128(_, _) => 17,
         DataType::Decimal256(_, _) => 33,
-        DataType::FixedSizeBinary(width) if *width >= 0 => (*width as u64).saturating_add(1),
-        DataType::FixedSizeList(field, count) if *count >= 0 => {
-            fixed_arrow_row_bytes(field.data_type())?
-                .checked_mul(*count as u64)?
-                .saturating_add(1)
-        }
-        DataType::Struct(fields) => fields.iter().try_fold(1u64, |total, field| {
-            fixed_arrow_row_bytes(field.data_type()).and_then(|bytes| total.checked_add(bytes))
-        })?,
+        DataType::FixedSizeBinary(width) if *width >= 0 => (*width as u64).checked_add(1)?,
         _ => return None,
     })
 }
 
-fn fixed_repeated_arrow_value_bytes(data_type: &DataType) -> Option<u64> {
+fn variable_arrow_slot_bytes(data_type: &DataType) -> Option<u64> {
     match data_type {
-        DataType::Utf8
-        | DataType::LargeUtf8
-        | DataType::Utf8View
-        | DataType::Binary
-        | DataType::LargeBinary
-        | DataType::BinaryView => None,
+        DataType::Utf8 | DataType::Binary => Some(5),
+        DataType::LargeUtf8 | DataType::LargeBinary => Some(9),
+        DataType::Utf8View | DataType::BinaryView => Some(17),
+        _ => None,
+    }
+}
+
+fn collect_arrow_leaf_shapes(
+    data_type: &DataType,
+    wrapper_bytes: u64,
+    terminal_bytes: u64,
+    fixed_multiplicity: u64,
+    variable_ancestor: bool,
+    leaves: &mut Vec<ArrowLeafShape>,
+) -> Option<()> {
+    let recurse = |field: &Field,
+                   wrapper_delta,
+                   terminal_delta,
+                   fixed_factor,
+                   has_variable_ancestor,
+                   leaves: &mut Vec<_>| {
+        collect_arrow_leaf_shapes(
+            field.data_type(),
+            wrapper_bytes.checked_add(wrapper_delta)?,
+            terminal_bytes.checked_add(terminal_delta)?,
+            fixed_multiplicity.checked_mul(fixed_factor)?,
+            variable_ancestor || has_variable_ancestor,
+            leaves,
+        )
+    };
+    match data_type {
+        DataType::Struct(fields) => {
+            for field in fields {
+                recurse(field, 1, 0, 1, false, leaves)?;
+            }
+        }
+        DataType::List(field) => recurse(field, 5, 4, 1, true, leaves)?,
+        DataType::LargeList(field) => recurse(field, 9, 8, 1, true, leaves)?,
+        DataType::ListView(field) => recurse(field, 9, 0, 1, true, leaves)?,
+        DataType::LargeListView(field) => recurse(field, 17, 0, 1, true, leaves)?,
+        DataType::FixedSizeList(field, count) if *count > 0 => {
+            recurse(field, 1, 0, *count as u64, false, leaves)?
+        }
+        DataType::Map(field, _) => recurse(field, 5, 4, 1, true, leaves)?,
+        DataType::Dictionary(keys, values) => collect_arrow_leaf_shapes(
+            values,
+            wrapper_bytes.checked_add(fixed_arrow_leaf_bytes(keys)?)?,
+            terminal_bytes,
+            fixed_multiplicity,
+            variable_ancestor,
+            leaves,
+        )?,
+        _ => {
+            let value = fixed_arrow_leaf_bytes(data_type)
+                .map(ArrowLeafValue::Fixed)
+                .or_else(|| variable_arrow_slot_bytes(data_type).map(ArrowLeafValue::Variable))?;
+            leaves.push(ArrowLeafShape {
+                value,
+                wrapper_bytes,
+                terminal_bytes,
+                fixed_multiplicity,
+                variable_ancestor,
+            });
+        }
+    }
+    Some(())
+}
+
+fn max_fixed_multiplicity(data_type: &DataType, multiplicity: u64) -> Option<u64> {
+    match data_type {
+        DataType::Struct(fields) => fields.iter().try_fold(0u64, |max, field| {
+            max_fixed_multiplicity(field.data_type(), multiplicity).map(|value| max.max(value))
+        }),
         DataType::List(field)
         | DataType::LargeList(field)
         | DataType::ListView(field)
         | DataType::LargeListView(field)
-        | DataType::Map(field, _) => fixed_arrow_row_bytes(field.data_type()),
-        DataType::Struct(fields) => fields.iter().try_fold(0u64, |total, field| {
-            fixed_repeated_arrow_value_bytes(field.data_type())
-                .and_then(|bytes| total.checked_add(bytes))
-        }),
-        DataType::Dictionary(_, values) => fixed_repeated_arrow_value_bytes(values),
-        _ => fixed_arrow_row_bytes(data_type).map(|_| 0),
+        | DataType::Map(field, _) => max_fixed_multiplicity(field.data_type(), multiplicity),
+        DataType::FixedSizeList(field, count) if *count > 0 => {
+            max_fixed_multiplicity(field.data_type(), multiplicity.checked_mul(*count as u64)?)
+        }
+        DataType::Dictionary(_, values) => max_fixed_multiplicity(values, multiplicity),
+        _ => Some(multiplicity),
     }
 }
 
-// True when a decoded row of `data_type` may reference more than one
-// variable-width value — the only shape where per-value output can grow
-// with the encoded row-group value count.
-fn variable_values_can_repeat_within_row(data_type: &DataType) -> bool {
-    match data_type {
-        DataType::List(_)
-        | DataType::LargeList(_)
-        | DataType::ListView(_)
-        | DataType::LargeListView(_)
-        | DataType::Map(_, _) => true,
-        DataType::Struct(fields) => fields
-            .iter()
-            .any(|field| variable_values_can_repeat_within_row(field.data_type())),
-        DataType::Dictionary(_, values) => variable_values_can_repeat_within_row(values),
-        _ => false,
+fn is_parquet_dictionary_encoded(column: &ColumnChunkMetaData) -> bool {
+    column.dictionary_page_offset().is_some()
+        || column.encodings().any(|encoding| {
+            matches!(
+                encoding,
+                Encoding::PLAIN_DICTIONARY | Encoding::RLE_DICTIONARY
+            )
+        })
+}
+
+fn max_plain_byte_array_entry(buf: &[u8], entries: usize) -> Result<u64> {
+    let mut offset = 0usize;
+    let mut widest = 0u64;
+    for _ in 0..entries {
+        let length_end = offset
+            .checked_add(4)
+            .ok_or_else(|| anyhow!("Parquet dictionary page offset overflowed"))?;
+        let length = u32::from_le_bytes(
+            buf.get(offset..length_end)
+                .ok_or_else(|| anyhow!("truncated Parquet dictionary page"))?
+                .try_into()
+                .map_err(|_| anyhow!("invalid Parquet dictionary entry length"))?,
+        ) as usize;
+        offset = length_end
+            .checked_add(length)
+            .ok_or_else(|| anyhow!("Parquet dictionary page offset overflowed"))?;
+        if offset > buf.len() {
+            return Err(anyhow!("truncated Parquet dictionary page"));
+        }
+        widest = widest.max(length as u64);
+    }
+    Ok(widest)
+}
+
+struct ParquetDictionaryPages<'a> {
+    resident: &'a ResidentFile,
+    budget: &'a Arc<crate::source_memory::ByteBudget>,
+}
+
+impl ParquetDictionaryPages<'_> {
+    fn max_entry_bytes(&self, column: &ColumnChunkMetaData) -> Result<u64> {
+        if column.column_type() != PhysicalType::BYTE_ARRAY {
+            return Err(anyhow!(
+                "dictionary-encoded variable Parquet column is not BYTE_ARRAY"
+            ));
+        }
+        if column.dictionary_page_offset().is_none() {
+            return Err(anyhow!(
+                "dictionary-encoded Parquet column has no dictionary page"
+            ));
+        }
+        let compressed = u64::try_from(column.compressed_size())
+            .map_err(|_| anyhow!("Parquet column has a negative compressed size"))?;
+        let uncompressed = u64::try_from(column.uncompressed_size())
+            .map_err(|_| anyhow!("Parquet column has a negative decoded size"))?;
+        let remote_buffer = if matches!(&self.resident.source, ResidentSource::Remote(_)) {
+            REMOTE_READ_CHUNK_BYTES
+        } else {
+            0
+        };
+        // Page decode may retain both the compressed input and decoded buffer.
+        let scratch_bytes = compressed
+            .checked_add(uncompressed)
+            .and_then(|bytes| bytes.checked_add(remote_buffer))
+            .ok_or_else(|| anyhow!("Parquet dictionary planning bound overflowed"))?;
+        let _permit = self.budget.acquire_input_chunk(scratch_bytes)?;
+        let reader = Arc::new(self.resident.source.reader(false)?);
+        let total_values = usize::try_from(column.num_values())
+            .map_err(|_| anyhow!("Parquet column value count does not fit in memory"))?;
+        let mut pages = SerializedPageReader::new(reader, column, total_values, None)?;
+        match pages.get_next_page()? {
+            Some(Page::DictionaryPage {
+                buf,
+                num_values,
+                encoding: Encoding::PLAIN | Encoding::PLAIN_DICTIONARY,
+                ..
+            }) => max_plain_byte_array_entry(&buf, num_values as usize),
+            Some(Page::DictionaryPage { encoding, .. }) => Err(anyhow!(
+                "unsupported Parquet dictionary page encoding {encoding}"
+            )),
+            Some(_) => Err(anyhow!("Parquet dictionary page is missing")),
+            None => Err(anyhow!("Parquet dictionary column contains no pages")),
+        }
     }
 }
 
-fn is_flat_variable_width(data_type: &DataType) -> bool {
-    match data_type {
-        DataType::Utf8
-        | DataType::LargeUtf8
-        | DataType::Utf8View
-        | DataType::Binary
-        | DataType::LargeBinary
-        | DataType::BinaryView => true,
-        DataType::Dictionary(_, values) => is_flat_variable_width(values),
-        _ => false,
+fn ceil_div(value: u64, divisor: u64) -> Result<u64> {
+    if divisor == 0 {
+        return Err(anyhow!("cannot bound Parquet values across zero rows"));
     }
+    Ok(value / divisor + u64::from(!value.is_multiple_of(divisor)))
 }
 
-fn flat_parquet_output_bound(
+fn column_num_values(column: &ColumnChunkMetaData) -> Result<u64> {
+    u64::try_from(column.num_values())
+        .map_err(|_| anyhow!("Parquet column has a negative value count"))
+}
+
+fn add_variable_payload_bound(
+    terms: &mut MemoryTerms,
+    column: &ColumnChunkMetaData,
+    rows: u64,
+    shape: ArrowLeafShape,
+    dictionary_pages: Option<&ParquetDictionaryPages<'_>>,
+) -> Result<()> {
+    if let Some(bytes) = column.unencoded_byte_array_data_bytes() {
+        return terms.add_constant(
+            u64::try_from(bytes)
+                .map_err(|_| anyhow!("Parquet variable payload has a negative size"))?,
+            "Arrow output",
+        );
+    }
+    let chunk_bytes = u64::try_from(column.uncompressed_size())
+        .map_err(|_| anyhow!("Parquet column has a negative decoded size"))?;
+    if !is_parquet_dictionary_encoded(column) {
+        return terms.add_constant(chunk_bytes, "Arrow output");
+    }
+    let widest = dictionary_pages
+        .ok_or_else(|| anyhow!("Parquet dictionary page reader is unavailable"))?
+        .max_entry_bytes(column)?;
+    let values = column_num_values(column)?;
+    let encoded_dictionary_payload = widest
+        .checked_mul(values)
+        .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?;
+    let fixed_dictionary_payload = encoded_dictionary_payload
+        .checked_mul(shape.fixed_multiplicity)
+        .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?;
+    if shape.variable_ancestor || rows == 0 {
+        terms.add_constant(fixed_dictionary_payload, "Arrow output")?;
+    } else {
+        let fixed_bytes_per_row = widest
+            .checked_mul(shape.fixed_multiplicity)
+            .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?;
+        terms.add_per_row(
+            fixed_bytes_per_row.max(ceil_div(encoded_dictionary_payload, rows)?),
+            "Arrow output",
+        )?;
+    }
+    let has_plain_data = column.page_encoding_stats().is_none_or(|stats| {
+        stats.iter().any(|page| {
+            page.page_type != PageType::DICTIONARY_PAGE
+                && !matches!(
+                    page.encoding,
+                    Encoding::PLAIN_DICTIONARY | Encoding::RLE_DICTIONARY
+                )
+        })
+    });
+    if has_plain_data {
+        terms.add_constant(chunk_bytes, "Arrow output")?;
+    }
+    Ok(())
+}
+
+fn add_arrow_leaf_bound(
+    terms: &mut MemoryTerms,
+    shape: ArrowLeafShape,
+    column: &ColumnChunkMetaData,
+    rows: u64,
+    dictionary_pages: Option<&ParquetDictionaryPages<'_>>,
+) -> Result<()> {
+    let values = column_num_values(column)?;
+    let value_bytes = match shape.value {
+        ArrowLeafValue::Fixed(bytes) | ArrowLeafValue::Variable(bytes) => bytes,
+    };
+    let slot_bytes = value_bytes
+        .checked_add(shape.wrapper_bytes)
+        .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?;
+    // Fixed lists pad every parent slot; variable ancestors can pack every
+    // row-group value into one decoded row.
+    if shape.variable_ancestor {
+        terms.add_constant(
+            slot_bytes
+                .checked_mul(values)
+                .and_then(|bytes| bytes.checked_mul(shape.fixed_multiplicity))
+                .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?,
+            "Arrow output",
+        )?;
+    } else {
+        terms.add_per_row(
+            slot_bytes
+                .checked_mul(shape.fixed_multiplicity)
+                .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?,
+            "Arrow output",
+        )?;
+    }
+    terms.add_constant(shape.terminal_bytes, "Arrow output")?;
+    if matches!(shape.value, ArrowLeafValue::Variable(_)) {
+        if column.column_type() != PhysicalType::BYTE_ARRAY {
+            return Err(anyhow!(
+                "variable Arrow column does not map to a BYTE_ARRAY Parquet leaf"
+            ));
+        }
+        add_variable_payload_bound(terms, column, rows, shape, dictionary_pages)?;
+    }
+    terms.add_constant(256, "Arrow output")
+}
+
+fn add_conservative_arrow_leaf_bound(
+    terms: &mut MemoryTerms,
+    column: &ColumnChunkMetaData,
+    fixed_multiplicity: u64,
+) -> Result<()> {
+    let values = column_num_values(column)?;
+    let chunk_bytes = u64::try_from(column.uncompressed_size())
+        .map_err(|_| anyhow!("Parquet column has a negative decoded size"))?;
+    terms.add_constant(
+        values
+            .checked_mul(chunk_bytes.max(1))
+            .and_then(|bytes| bytes.checked_mul(fixed_multiplicity))
+            .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?,
+        "Arrow output",
+    )?;
+    terms.add_constant(256, "Arrow output")
+}
+
+fn parquet_arrow_output_terms(
     metadata: &ArrowReaderMetadata,
     row_group_index: usize,
-) -> Option<(u64, u64)> {
+    dictionary_pages: Option<&ParquetDictionaryPages<'_>>,
+) -> Result<MemoryTerms> {
     let row_group = metadata.metadata().row_group(row_group_index);
-    if metadata.schema().fields().len() != row_group.num_columns() {
-        return None;
+    let rows = u64::try_from(row_group.num_rows())
+        .map_err(|_| anyhow!("Parquet row group has a negative row count"))?;
+    let schema = metadata.metadata().file_metadata().schema_descr();
+    if schema.num_columns() != row_group.num_columns() {
+        return Err(anyhow!(
+            "Parquet row group leaf count does not match its schema"
+        ));
     }
-    let mut fixed_bytes_per_row = 0u64;
-    let mut variable_payload_bytes = 0u64;
-    for (field, column) in metadata.schema().fields().iter().zip(row_group.columns()) {
-        if let Some(bytes) = fixed_arrow_row_bytes(field.data_type()) {
-            fixed_bytes_per_row = fixed_bytes_per_row.checked_add(bytes)?;
-            continue;
+    let fields = metadata.schema().fields();
+    if fields.len() != schema.root_schema().get_fields().len() {
+        return Err(anyhow!("Arrow and Parquet root column counts do not match"));
+    }
+
+    let mut terms = MemoryTerms::default();
+    let mut leaf_index = 0usize;
+    for (root_index, field) in fields.iter().enumerate() {
+        let start = leaf_index;
+        while leaf_index < schema.num_columns()
+            && schema.get_column_root_idx(leaf_index) == root_index
+        {
+            leaf_index += 1;
         }
-        if !is_flat_variable_width(field.data_type()) {
-            return None;
+        if start == leaf_index {
+            return Err(anyhow!("Parquet root column contains no leaves"));
         }
-        let decoded_bytes = match column.unencoded_byte_array_data_bytes() {
-            Some(bytes) => u64::try_from(bytes).ok()?,
-            None if column.dictionary_page_offset().is_none()
-                && !column.encodings().any(|encoding| {
-                    matches!(
-                        encoding,
-                        Encoding::PLAIN_DICTIONARY | Encoding::RLE_DICTIONARY
-                    )
-                }) =>
-            {
-                u64::try_from(column.uncompressed_size()).ok()?
+        let mut shapes = Vec::new();
+        let mapped = collect_arrow_leaf_shapes(field.data_type(), 0, 0, 1, false, &mut shapes)
+            .is_some()
+            && shapes.len() == leaf_index - start;
+        let fallback_multiplicity = max_fixed_multiplicity(field.data_type(), 1)
+            .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?;
+        for (offset, column) in row_group.columns()[start..leaf_index].iter().enumerate() {
+            if mapped {
+                add_arrow_leaf_bound(&mut terms, shapes[offset], column, rows, dictionary_pages)?;
+            } else {
+                add_conservative_arrow_leaf_bound(&mut terms, column, fallback_multiplicity)?;
             }
-            None => return None,
-        };
-        variable_payload_bytes = variable_payload_bytes.checked_add(decoded_bytes)?;
+        }
     }
-    let variable_payload_bound = variable_payload_bytes
-        .checked_mul(2)?
-        .checked_add((row_group.num_columns() as u64).checked_mul(256)?)?;
-    Some((fixed_bytes_per_row, variable_payload_bound))
+    if leaf_index != schema.num_columns() {
+        return Err(anyhow!(
+            "Parquet leaf ownership does not match its root columns"
+        ));
+    }
+    terms.double("Arrow output")?;
+    Ok(terms)
 }
 
+#[derive(Clone, Debug)]
 struct ParquetRowGroupMemoryPlan {
+    row_group_index: usize,
     total_bytes: u64,
     batch_size: usize,
+    arrow_output_bytes: u64,
 }
 
 fn parquet_row_group_memory_plan(
     metadata: &ArrowReaderMetadata,
     row_group_index: usize,
     max_decode_bytes: u64,
+    dictionary_pages: Option<&ParquetDictionaryPages<'_>>,
 ) -> Result<ParquetRowGroupMemoryPlan> {
     let row_group = metadata.metadata().row_group(row_group_index);
     let uncompressed = u64::try_from(row_group.total_byte_size())
@@ -3515,152 +3840,91 @@ fn parquet_row_group_memory_plan(
         .map_err(|_| anyhow!("Parquet row group has a negative compressed size"))?;
     let rows = u64::try_from(row_group.num_rows())
         .map_err(|_| anyhow!("Parquet row group has a negative row count"))?;
-    let leaf_columns = row_group.num_columns() as u64;
-    let structural = rows
-        .checked_mul(leaf_columns)
-        .and_then(|value| value.checked_mul(16))
-        .ok_or_else(|| anyhow!("Parquet row group structural size overflowed"))?;
-    let decoder_bound = uncompressed
+    let decoder_constant = uncompressed
         .checked_mul(2)
-        .and_then(|value| value.checked_add(compressed))
-        .and_then(|value| value.checked_add(structural))
+        .and_then(|bytes| bytes.checked_add(compressed))
         .ok_or_else(|| anyhow!("Parquet row group decode bound overflowed"))?;
-    let fixed_row_bytes = metadata
-        .schema()
-        .fields()
-        .iter()
-        .try_fold(0u64, |total, field| {
-            fixed_arrow_row_bytes(field.data_type()).and_then(|bytes| total.checked_add(bytes))
-        });
+    let mut decoder_terms = MemoryTerms::default();
+    // Level decoders retain one structural slot per decoded leaf value.
+    for column in row_group.columns() {
+        if column.column_descr().max_rep_level() == 0 {
+            decoder_terms.add_per_row(16, "row group structural size")?;
+        } else {
+            decoder_terms.add_constant(
+                column_num_values(column)?
+                    .checked_mul(16)
+                    .ok_or_else(|| anyhow!("Parquet row group structural size overflowed"))?,
+                "row group structural size",
+            )?;
+        }
+    }
+    let minimum_decode = decoder_constant
+        .checked_add(decoder_terms.bound(1, "row group decode")?)
+        .ok_or_else(|| anyhow!("Parquet row group decode bound overflowed"))?;
+    if minimum_decode > max_decode_bytes {
+        return Err(anyhow!(
+            "Parquet row group memory bound {minimum_decode} exceeds the Encode oversized chunk limit {max_decode_bytes}"
+        ));
+    }
+
+    let output_terms = parquet_arrow_output_terms(metadata, row_group_index, dictionary_pages)?;
+    let constant_bytes = decoder_constant
+        .checked_add(decoder_terms.constant_bytes)
+        .and_then(|bytes| bytes.checked_add(output_terms.constant_bytes))
+        .ok_or_else(|| anyhow!("Parquet row group memory bound overflowed"))?;
+    let bytes_per_row = decoder_terms
+        .bytes_per_row
+        .checked_add(output_terms.bytes_per_row)
+        .ok_or_else(|| anyhow!("Parquet row group memory bound overflowed"))?
+        .max(1);
     let batch_cap = usize::try_from(rows.min(NODE_BATCH_SIZE as u64))
         .unwrap_or(NODE_BATCH_SIZE)
         .max(1);
-    let (constant_output_bytes, bytes_per_row, batch_cap) = if let Some(row_bytes) = fixed_row_bytes
-    {
-        (0, row_bytes.max(1), batch_cap)
-    } else if let Some((fixed_bytes_per_row, variable_payload_bound)) =
-        flat_parquet_output_bound(metadata, row_group_index)
-    {
-        let bytes_per_row = fixed_bytes_per_row
-            .checked_add(leaf_columns.saturating_mul(16))
-            .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?
-            .max(1);
-        (variable_payload_bound, bytes_per_row, batch_cap)
-    } else {
-        let fixed_repeated_value_bytes =
-            metadata
-                .schema()
-                .fields()
-                .iter()
-                .try_fold(0u64, |total, field| {
-                    fixed_repeated_arrow_value_bytes(field.data_type())
-                        .and_then(|bytes| total.checked_add(bytes))
-                });
-        if let Some(value_bytes) = fixed_repeated_value_bytes {
-            let max_values = row_group
-                .columns()
-                .iter()
-                .map(|column| u64::try_from(column.num_values()).unwrap_or(u64::MAX))
-                .max()
-                .unwrap_or(1)
-                .max(1);
-            // Match the flat variable-width path: 2x accounts for Arrow buffer
-            // reservation exceeding logical size; leaf * 256 covers per-column
-            // structural allocations.
-            let value_payload = max_values
-                .checked_mul(value_bytes)
-                .and_then(|bytes| bytes.checked_mul(2))
-                .and_then(|bytes| bytes.checked_add(leaf_columns.saturating_mul(256)))
-                .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?;
-            let constant_output_bytes = uncompressed
-                .checked_add(value_payload)
-                .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?;
-            (
-                constant_output_bytes,
-                leaf_columns.saturating_mul(16).max(1),
-                batch_cap,
-            )
-        } else {
-            // Only schemas with a List/Map wrapper can pack unbounded variable
-            // data into a single row. Flat variable-width types that reach the
-            // fallback (e.g. Dict<Utf8> without decoded-size metadata, or a
-            // Struct wrapping Utf8) keep the old multiplier=1 / batch_cap
-            // pairing so their throughput is not needlessly capped at one row.
-            let can_repeat = metadata
-                .schema()
-                .fields()
-                .iter()
-                .any(|field| variable_values_can_repeat_within_row(field.data_type()));
-            let multiplier = if can_repeat {
-                row_group
-                    .columns()
-                    .iter()
-                    .map(|column| u64::try_from(column.num_values()).unwrap_or(u64::MAX))
-                    .max()
-                    .unwrap_or(1)
-                    .max(1)
-            } else {
-                1
-            };
-            let bytes_per_row = uncompressed
-                .max(1)
-                .checked_mul(multiplier)
-                .and_then(|bytes| bytes.checked_mul(2))
-                .and_then(|bytes| bytes.checked_add(leaf_columns.saturating_mul(256)))
-                .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?;
-            let fallback_cap = if can_repeat { 1 } else { batch_cap };
-            (0, bytes_per_row.max(1), fallback_cap)
-        }
-    };
-    let output_budget = max_decode_bytes
-        .saturating_sub(decoder_bound)
-        .saturating_sub(constant_output_bytes);
-    let batch_size = usize::try_from((output_budget / bytes_per_row).min(batch_cap as u64).max(1))
-        .unwrap_or(batch_cap);
-    let output_bound = constant_output_bytes
+    let batch_size = usize::try_from(
+        (max_decode_bytes.saturating_sub(constant_bytes) / bytes_per_row)
+            .min(batch_cap as u64)
+            .max(1),
+    )
+    .unwrap_or(batch_cap);
+    let total_bytes = constant_bytes
         .checked_add(
             bytes_per_row
                 .checked_mul(batch_size as u64)
-                .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?,
+                .ok_or_else(|| anyhow!("Parquet row group memory bound overflowed"))?,
         )
-        .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?;
-    let total_bytes = decoder_bound
-        .checked_add(output_bound)
         .ok_or_else(|| anyhow!("Parquet row group memory bound overflowed"))?;
     if total_bytes > max_decode_bytes {
         return Err(anyhow!(
             "Parquet row group memory bound {total_bytes} exceeds the Encode oversized chunk limit {max_decode_bytes}"
-                ));
+        ));
     }
     Ok(ParquetRowGroupMemoryPlan {
+        row_group_index,
         total_bytes,
         batch_size,
+        arrow_output_bytes: output_terms.bound(batch_size as u64, "Arrow output")?,
     })
 }
 
 struct BoundedParquetBatchReader {
     resident: Arc<ResidentFile>,
-    row_groups: VecDeque<usize>,
+    row_groups: VecDeque<ParquetRowGroupMemoryPlan>,
     current: Option<Box<dyn Iterator<Item = Result<RecordBatch>> + Send>>,
-    max_decode_bytes: u64,
+    current_output_bound: u64,
 }
 
 impl BoundedParquetBatchReader {
-    fn partition(
-        resident: Arc<ResidentFile>,
-        row_groups: Vec<usize>,
-        max_decode_bytes: u64,
-    ) -> Self {
+    fn partition(resident: Arc<ResidentFile>, row_groups: Vec<ParquetRowGroupMemoryPlan>) -> Self {
         Self {
             resident,
             row_groups: row_groups.into(),
             current: None,
-            max_decode_bytes,
+            current_output_bound: 0,
         }
     }
 
     fn open_next_row_group(&mut self) -> Result<bool> {
-        let Some(row_group_index) = self.row_groups.pop_front() else {
+        let Some(memory) = self.row_groups.pop_front() else {
             return Ok(false);
         };
         let metadata = self
@@ -3668,17 +3932,15 @@ impl BoundedParquetBatchReader {
             .parquet_metadata
             .as_ref()
             .ok_or_else(|| anyhow!("missing Parquet metadata"))?;
-        let memory =
-            parquet_row_group_memory_plan(metadata, row_group_index, self.max_decode_bytes)?;
-        let batch_size = memory.batch_size;
         let reader = ParquetRecordBatchReaderBuilder::new_with_metadata(
             self.resident.source.reader(false)?,
             metadata.clone(),
         )
-        .with_row_groups(vec![row_group_index])
-        .with_batch_size(batch_size)
+        .with_row_groups(vec![memory.row_group_index])
+        .with_batch_size(memory.batch_size)
         .build()?
         .map(|batch| batch.map_err(anyhow::Error::from));
+        self.current_output_bound = memory.arrow_output_bytes;
         self.current = Some(Box::new(reader));
         Ok(true)
     }
@@ -3691,7 +3953,16 @@ impl Iterator for BoundedParquetBatchReader {
         loop {
             if let Some(reader) = &mut self.current {
                 if let Some(batch) = reader.next() {
-                    return Some(batch);
+                    return Some(batch.and_then(|batch| {
+                        let output_bytes = batch.get_array_memory_size() as u64;
+                        if output_bytes > self.current_output_bound {
+                            return Err(anyhow!(
+                                "Parquet Arrow output {output_bytes} exceeds its planned bound {}",
+                                self.current_output_bound
+                            ));
+                        }
+                        Ok(batch)
+                    }));
                 }
                 self.current = None;
             }
@@ -4066,8 +4337,13 @@ impl ResidentFile {
 
 struct ParquetPartition {
     resident: Arc<ResidentFile>,
-    row_groups: Vec<usize>,
+    row_groups: Vec<ParquetRowGroupMemoryPlan>,
     max_decode_bytes: u64,
+}
+
+struct PendingParquetPartition {
+    resident: Arc<ResidentFile>,
+    row_groups: Vec<usize>,
 }
 
 const PARQUET_PARTITION_TARGET_BYTES: u64 = 256 * 1024 * 1024;
@@ -4098,20 +4374,33 @@ fn plan_resident_parquet_partitions(resident: &ResidentFile) -> Result<Vec<Vec<u
     Ok(partitions)
 }
 
-fn resident_partition_memory_bound(
+fn resident_partition_memory_plans(
     resident: &ResidentFile,
     row_groups: &[usize],
     max_decode_bytes: u64,
-) -> Result<u64> {
+    source_budget: &Arc<crate::source_memory::ByteBudget>,
+) -> Result<(Vec<ParquetRowGroupMemoryPlan>, u64)> {
     let metadata = resident
         .parquet_metadata
         .as_ref()
         .ok_or_else(|| anyhow!("missing resident Parquet metadata"))?;
-    row_groups.iter().try_fold(0u64, |bound, row_group| {
-        Ok(bound.max(
-            parquet_row_group_memory_plan(metadata, *row_group, max_decode_bytes)?.total_bytes,
-        ))
-    })
+    let dictionary_pages = ParquetDictionaryPages {
+        resident,
+        budget: source_budget,
+    };
+    let mut plans = Vec::with_capacity(row_groups.len());
+    let mut bound = 0u64;
+    for row_group in row_groups {
+        let plan = parquet_row_group_memory_plan(
+            metadata,
+            *row_group,
+            max_decode_bytes,
+            Some(&dictionary_pages),
+        )?;
+        bound = bound.max(plan.total_bytes);
+        plans.push(plan);
+    }
+    Ok((plans, bound))
 }
 
 fn catch_source_worker_panic<T>(run: impl FnOnce() -> Result<T>) -> Result<T> {
@@ -4129,8 +4418,8 @@ struct ResidentParquetWorkStream {
     inputs: VecDeque<ParquetInput>,
     transfer: Option<CloudTransfer>,
     resident_budget: Option<Arc<crate::source_memory::ByteBudget>>,
-    receiver: Option<std::sync::mpsc::Receiver<Result<VecDeque<ParquetPartition>>>>,
-    active_file: Option<Result<VecDeque<ParquetPartition>>>,
+    receiver: Option<std::sync::mpsc::Receiver<Result<VecDeque<PendingParquetPartition>>>>,
+    active_file: Option<Result<VecDeque<PendingParquetPartition>>>,
     loaders: Vec<std::thread::JoinHandle<()>>,
     loader_threads: usize,
     failed: bool,
@@ -4163,7 +4452,7 @@ impl ResidentParquetWorkStream {
         input: ParquetInput,
         transfer: Option<&CloudTransfer>,
         resident_budget: Option<&Arc<crate::source_memory::ByteBudget>>,
-    ) -> Result<VecDeque<ParquetPartition>> {
+    ) -> Result<VecDeque<PendingParquetPartition>> {
         let resident = Arc::new(ResidentFile::load(
             &input.path,
             TableFormat::Parquet,
@@ -4173,12 +4462,9 @@ impl ResidentParquetWorkStream {
         )?);
         Ok(plan_resident_parquet_partitions(&resident)?
             .into_iter()
-            .map(|row_groups| ParquetPartition {
+            .map(|row_groups| PendingParquetPartition {
                 resident: Arc::clone(&resident),
                 row_groups,
-                // Filled immediately before dispatch from the ingest-wide
-                // oversized decode ceiling.
-                max_decode_bytes: 0,
             })
             .collect())
     }
@@ -4248,7 +4534,7 @@ impl ResidentParquetWorkStream {
 
     fn next_partition(
         &mut self,
-        max_decode_bytes: u64,
+        source_budget: &Arc<crate::source_memory::ByteBudget>,
         ordered: bool,
     ) -> Option<Result<ParquetPartition>> {
         if self.failed {
@@ -4273,20 +4559,25 @@ impl ResidentParquetWorkStream {
                         }
                     }
                 };
-                let mut partition = match partition {
+                let partition = match partition {
                     Ok(partition) => partition,
                     Err(error) => return Some(Err(error)),
                 };
-                let required_bytes = match resident_partition_memory_bound(
+                let max_decode_bytes = source_budget.max_input_chunk_bytes();
+                let (row_groups, required_bytes) = match resident_partition_memory_plans(
                     &partition.resident,
                     &partition.row_groups,
                     max_decode_bytes,
+                    source_budget,
                 ) {
-                    Ok(required_bytes) => required_bytes,
+                    Ok(plans) => plans,
                     Err(error) => return Some(Err(error)),
                 };
-                partition.max_decode_bytes = required_bytes;
-                return Some(Ok(partition));
+                return Some(Ok(ParquetPartition {
+                    resident: partition.resident,
+                    row_groups,
+                    max_decode_bytes: required_bytes,
+                }));
             }
 
             if ordered && self.receiver.is_none() {
@@ -4335,7 +4626,6 @@ struct TableSourceStream<'a> {
     inner: TableSourceStreamInner<'a>,
     source_budget: Arc<crate::source_memory::ByteBudget>,
     validation: Arc<SourceValidationState>,
-    max_decode_bytes: u64,
     active_context_reader: Option<(
         BoundedParquetBatchReader,
         Arc<crate::source_memory::BytePermit>,
@@ -4350,12 +4640,10 @@ impl<'a> TableSourceStream<'a> {
         source_budget: Arc<crate::source_memory::ByteBudget>,
         validation: Arc<SourceValidationState>,
     ) -> Self {
-        let max_decode_bytes = source_budget.max_input_chunk_bytes();
         Self {
             inner,
             source_budget,
             validation,
-            max_decode_bytes,
             active_context_reader: None,
             input_wait_nanos: 0,
         }
@@ -4387,7 +4675,7 @@ impl<'a> TableSourceStream<'a> {
             )));
         };
         let input_start = std::time::Instant::now();
-        let next = stream.next_partition(self.max_decode_bytes, ordered);
+        let next = stream.next_partition(&self.source_budget, ordered);
         self.input_wait_nanos = self
             .input_wait_nanos
             .saturating_add(input_start.elapsed().as_nanos().min(u64::MAX as u128) as u64);
@@ -4431,11 +4719,7 @@ impl<'a> TableSourceStream<'a> {
             };
             let permit = Arc::new(permit);
             self.active_context_reader = Some((
-                BoundedParquetBatchReader::partition(
-                    partition.resident,
-                    partition.row_groups,
-                    partition.max_decode_bytes,
-                ),
+                BoundedParquetBatchReader::partition(partition.resident, partition.row_groups),
                 permit,
                 None,
             ));
@@ -4523,8 +4807,8 @@ fn open_resident_csv_batch_reader(
 #[cfg(test)]
 mod bounded_file_decoder_tests {
     use super::*;
-    use arrow_array::builder::{Float64Builder, ListBuilder};
-    use arrow_array::{FixedSizeBinaryArray, StringArray};
+    use arrow_array::builder::{FixedSizeListBuilder, Float64Builder, Int64Builder, ListBuilder};
+    use arrow_array::{BooleanArray, FixedSizeBinaryArray, StringArray};
     use parquet::file::properties::{EnabledStatistics, WriterProperties};
     use std::io::Cursor;
 
@@ -4544,6 +4828,35 @@ mod bounded_file_decoder_tests {
             assert!(batch.get_array_memory_size() as u64 <= max_batch_bytes);
             (rows + batch.num_rows(), batches + 1)
         })
+    }
+
+    fn parquet_plan(
+        resident: &Arc<ResidentFile>,
+        max_decode_bytes: u64,
+    ) -> Result<ParquetRowGroupMemoryPlan> {
+        let budget = crate::source_memory::ByteBudget::with_oversized_limit(
+            max_decode_bytes,
+            max_decode_bytes,
+        )?;
+        let pages = ParquetDictionaryPages {
+            resident,
+            budget: &budget,
+        };
+        parquet_row_group_memory_plan(
+            resident.parquet_metadata.as_ref().unwrap(),
+            0,
+            max_decode_bytes,
+            Some(&pages),
+        )
+    }
+
+    fn planned_reader(
+        resident: Arc<ResidentFile>,
+        max_decode_bytes: u64,
+    ) -> Result<(ParquetRowGroupMemoryPlan, BoundedParquetBatchReader)> {
+        let plan = parquet_plan(&resident, max_decode_bytes)?;
+        let reader = BoundedParquetBatchReader::partition(resident, vec![plan.clone()]);
+        Ok((plan, reader))
     }
 
     #[test]
@@ -4567,8 +4880,7 @@ mod bounded_file_decoder_tests {
     fn parquet_rejects_an_unadmitted_row_group_before_arrow_decode() {
         let batch = super::resident_parquet_tests::int_batch("id", 0..1024);
         let (_directory, resident) = resident_parquet(&batch, None);
-        let mut reader = BoundedParquetBatchReader::partition(resident, vec![0], 1024);
-        let error = reader.next().unwrap().unwrap_err();
+        let error = parquet_plan(&resident, 1024).unwrap_err();
         assert!(error.to_string().contains("Parquet row group memory bound"));
     }
 
@@ -4584,11 +4896,10 @@ mod bounded_file_decoder_tests {
         )]));
         let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)]).unwrap();
         let (_directory, resident) = resident_parquet(&batch, None);
-        let metadata = resident.parquet_metadata.as_ref().unwrap();
-        let memory_plan = parquet_row_group_memory_plan(metadata, 0, 1024 * 1024).unwrap();
+        let memory_plan = parquet_plan(&resident, 1024 * 1024).unwrap();
         assert!(memory_plan.total_bytes > batch.get_array_memory_size() as u64);
         let max_decode_bytes = memory_plan.total_bytes;
-        let reader = BoundedParquetBatchReader::partition(resident, vec![0], max_decode_bytes);
+        let reader = BoundedParquetBatchReader::partition(resident, vec![memory_plan]);
         let (rows, batches) = read_parquet(reader, max_decode_bytes);
         assert_eq!(rows, 100);
         assert!(batches > 1);
@@ -4615,8 +4926,7 @@ mod bounded_file_decoder_tests {
             .column(0)
             .unencoded_byte_array_data_bytes()
             .is_none());
-        let memory_plan =
-            parquet_row_group_memory_plan(metadata, 0, 16 * 1024 * 1024).unwrap();
+        let memory_plan = parquet_plan(&resident, 16 * 1024 * 1024).unwrap();
         assert_eq!(memory_plan.batch_size, NODE_BATCH_SIZE);
     }
 
@@ -4638,11 +4948,10 @@ mod bounded_file_decoder_tests {
             .build();
         let (_directory, resident) = resident_parquet(&source, Some(properties));
         let max_decode_bytes = 32 * 1024 * 1024;
-        let metadata = resident.parquet_metadata.as_ref().unwrap();
-        let memory_plan = parquet_row_group_memory_plan(metadata, 0, max_decode_bytes).unwrap();
+        let memory_plan = parquet_plan(&resident, max_decode_bytes).unwrap();
         assert_eq!(memory_plan.batch_size, NODE_BATCH_SIZE);
 
-        let reader = BoundedParquetBatchReader::partition(resident, vec![0], max_decode_bytes);
+        let reader = BoundedParquetBatchReader::partition(resident, vec![memory_plan.clone()]);
         let (rows, batches) = read_parquet(reader, memory_plan.total_bytes);
         assert_eq!(rows, source.num_rows());
         assert_eq!(batches, 2);
@@ -4660,20 +4969,15 @@ mod bounded_file_decoder_tests {
         let source = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(array)]).unwrap();
         let properties = WriterProperties::builder()
             .set_dictionary_enabled(true)
+            .set_statistics_enabled(EnabledStatistics::None)
             .build();
         let (_directory, resident) = resident_parquet(&source, Some(properties));
-        let metadata = resident.parquet_metadata.as_ref().unwrap();
-        let error = parquet_row_group_memory_plan(metadata, 0, 2 * 1024 * 1024)
-            .err()
-            .unwrap();
-        assert!(error.to_string().contains("Parquet row group memory bound"));
-
         let max_decode_bytes = 64 * 1024 * 1024;
-        let memory_plan = parquet_row_group_memory_plan(metadata, 0, max_decode_bytes).unwrap();
+        let memory_plan = parquet_plan(&resident, max_decode_bytes).unwrap();
         assert_eq!(memory_plan.batch_size, source.num_rows());
         assert!(memory_plan.total_bytes <= max_decode_bytes);
 
-        let reader = BoundedParquetBatchReader::partition(resident, vec![0], max_decode_bytes);
+        let reader = BoundedParquetBatchReader::partition(resident, vec![memory_plan.clone()]);
         let (rows, batches) = read_parquet(reader, memory_plan.total_bytes);
         assert_eq!(rows, source.num_rows());
         assert_eq!(batches, 1);
@@ -4697,19 +5001,128 @@ mod bounded_file_decoder_tests {
             RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(values.finish())]).unwrap();
         let (_directory, resident) = resident_parquet(&batch, None);
         let max_decode_bytes = 1024 * 1024;
-        let metadata = resident.parquet_metadata.as_ref().unwrap();
-        let memory_plan = parquet_row_group_memory_plan(metadata, 0, max_decode_bytes).unwrap();
+        let memory_plan = parquet_plan(&resident, max_decode_bytes).unwrap();
         assert!(memory_plan.total_bytes <= max_decode_bytes);
 
-        let reader = BoundedParquetBatchReader::partition(resident, vec![0], max_decode_bytes);
+        let reader = BoundedParquetBatchReader::partition(resident, vec![memory_plan]);
         let (rows, _) = read_parquet(reader, max_decode_bytes);
         assert_eq!(rows, 1024);
     }
 
     #[test]
-    fn nested_variable_values_keep_conservative_fallback() {
-        let strings = DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)));
-        assert_eq!(fixed_repeated_arrow_value_bytes(&strings), None);
+    fn parquet_batches_wide_scalar_row_groups_under_the_decode_ceiling() {
+        let rows = 20_000;
+        let columns = 20;
+        let fields = (0..columns)
+            .map(|index| Field::new(format!("flag_{index}"), DataType::Boolean, false))
+            .collect::<Vec<_>>();
+        let arrays = (0..columns)
+            .map(|index| {
+                Arc::new(BooleanArray::from(
+                    (0..rows)
+                        .map(|row| (row + index) % 2 == 0)
+                        .collect::<Vec<_>>(),
+                )) as ArrayRef
+            })
+            .collect();
+        let source = RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays).unwrap();
+        let (_directory, resident) = resident_parquet(&source, None);
+        let max_decode_bytes = 2 * 1024 * 1024;
+        let old_structural = rows as u64 * columns as u64 * 16;
+        assert!(old_structural > max_decode_bytes);
+
+        let (plan, reader) = planned_reader(resident, max_decode_bytes).unwrap();
+        assert!(plan.batch_size < rows);
+        let (decoded_rows, batches) = read_parquet(reader, plan.arrow_output_bytes);
+        assert_eq!(decoded_rows, rows);
+        assert!(batches > 1);
+    }
+
+    #[test]
+    fn parquet_bounds_nested_lists_per_leaf_value() {
+        let rows = 1_000;
+        let mut outer = ListBuilder::new(ListBuilder::new(Int64Builder::new()));
+        for row in 0..rows {
+            for inner in 0..10 {
+                for value in 0..10 {
+                    outer
+                        .values()
+                        .values()
+                        .append_value((row + inner + value) as i64);
+                }
+                outer.values().append(true);
+            }
+            outer.append(true);
+        }
+        let values = outer.finish();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "values",
+            values.data_type().clone(),
+            false,
+        )]));
+        let source = RecordBatch::try_new(schema, vec![Arc::new(values)]).unwrap();
+        let (_directory, resident) = resident_parquet(&source, None);
+        let max_decode_bytes = 8 * 1024 * 1024;
+        let row_group = resident
+            .parquet_metadata
+            .as_ref()
+            .unwrap()
+            .metadata()
+            .row_group(0);
+        let leaf_values = column_num_values(row_group.column(0)).unwrap();
+        let old_fallback = u64::try_from(row_group.total_byte_size())
+            .unwrap()
+            .checked_mul(leaf_values)
+            .and_then(|bytes| bytes.checked_mul(2))
+            .unwrap();
+        assert!(old_fallback > max_decode_bytes);
+
+        let (plan, reader) = planned_reader(resident, max_decode_bytes).unwrap();
+        let (decoded_rows, _) = read_parquet(reader, plan.arrow_output_bytes);
+        assert_eq!(decoded_rows, rows);
+    }
+
+    #[test]
+    fn parquet_bounds_null_nested_fixed_size_list_padding() {
+        const ROWS: usize = 32;
+        const OUTER: i32 = 64;
+        const INNER: i32 = 64;
+        let inner = FixedSizeListBuilder::new(Int64Builder::new(), INNER);
+        let mut outer = FixedSizeListBuilder::new(inner, OUTER);
+        for _ in 0..ROWS {
+            for _ in 0..OUTER {
+                for _ in 0..INNER {
+                    outer.values().values().append_null();
+                }
+                outer.values().append(false);
+            }
+            outer.append(false);
+        }
+        let values = outer.finish();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "values",
+            values.data_type().clone(),
+            true,
+        )]));
+        let source = RecordBatch::try_new(schema, vec![Arc::new(values)]).unwrap();
+        let (_directory, resident) = resident_parquet(&source, None);
+        let leaf_values = column_num_values(
+            resident
+                .parquet_metadata
+                .as_ref()
+                .unwrap()
+                .metadata()
+                .row_group(0)
+                .column(0),
+        )
+        .unwrap();
+        let fixed_slots = ROWS as u64 * OUTER as u64 * INNER as u64;
+        assert!(leaf_values < fixed_slots);
+
+        let max_decode_bytes = 4 * 1024 * 1024;
+        let (plan, reader) = planned_reader(resident, max_decode_bytes).unwrap();
+        let (decoded_rows, _) = read_parquet(reader, plan.arrow_output_bytes);
+        assert_eq!(decoded_rows, ROWS);
     }
 
     #[test]
@@ -4729,36 +5142,128 @@ mod bounded_file_decoder_tests {
         let batch =
             RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(values.finish())]).unwrap();
         let (_directory, resident) = resident_parquet(&batch, None);
-        let metadata = resident.parquet_metadata.as_ref().unwrap();
-        let memory_plan = parquet_row_group_memory_plan(metadata, 0, 16 * 1024 * 1024).unwrap();
-        // 1024 rows x 6 floats x 8 bytes = 49_152 bytes of leaf payload; a 2x
-        // Arrow-buffer safety factor requires the plan to reserve at least
-        // ~98_304 bytes of output before decode.
+        let memory_plan = parquet_plan(&resident, 16 * 1024 * 1024).unwrap();
         assert!(memory_plan.total_bytes >= 2 * 1024 * 6 * 8);
         assert!(memory_plan.total_bytes >= batch.get_array_memory_size() as u64 * 2);
     }
 
     #[test]
-    fn variable_values_can_repeat_within_row_detects_wrappers() {
-        assert!(!variable_values_can_repeat_within_row(&DataType::Utf8));
-        assert!(!variable_values_can_repeat_within_row(&DataType::Dictionary(
-            Box::new(DataType::Int32),
-            Box::new(DataType::Utf8),
-        )));
-        assert!(!variable_values_can_repeat_within_row(&DataType::Struct(
-            vec![Field::new("s", DataType::Utf8, true)].into(),
-        )));
-        assert!(variable_values_can_repeat_within_row(&DataType::List(Arc::new(
-            Field::new("item", DataType::Utf8, true),
-        ))));
-        assert!(variable_values_can_repeat_within_row(&DataType::Struct(
-            vec![Field::new(
-                "list",
-                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
-                true,
-            )]
-            .into(),
-        )));
+    fn parquet_bounds_legacy_dictionary_strings_next_to_repeated_values() {
+        let rows = 1_000;
+        let mut values = ListBuilder::new(Float64Builder::new());
+        for row in 0..rows {
+            for offset in 0..6 {
+                values.values().append_value((row + offset) as f64);
+            }
+            values.append(true);
+        }
+        let labels = (0..rows)
+            .map(|row| format!("label-{:03}-{}", row % 16, "x".repeat(128)))
+            .collect::<Vec<_>>();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "values",
+                DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
+                false,
+            ),
+            Field::new("label", DataType::Utf8, false),
+        ]));
+        let source = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(values.finish()),
+                Arc::new(StringArray::from_iter_values(labels.iter())),
+            ],
+        )
+        .unwrap();
+        let properties = WriterProperties::builder()
+            .set_dictionary_enabled(true)
+            .set_statistics_enabled(EnabledStatistics::None)
+            .build();
+        let (_directory, resident) = resident_parquet(&source, Some(properties));
+        let row_group = resident
+            .parquet_metadata
+            .as_ref()
+            .unwrap()
+            .metadata()
+            .row_group(0);
+        let label = row_group.column(1);
+        assert!(is_parquet_dictionary_encoded(label));
+        assert!(label.unencoded_byte_array_data_bytes().is_none());
+
+        let max_decode_bytes = 4 * 1024 * 1024;
+        let (plan, reader) = planned_reader(resident, max_decode_bytes).unwrap();
+        let (decoded_rows, _) = read_parquet(reader, plan.arrow_output_bytes);
+        assert_eq!(decoded_rows, rows);
+    }
+
+    #[test]
+    fn parquet_bounds_plain_pages_after_dictionary_fallback() {
+        let long = "x".repeat(400);
+        let values = (0..4_000)
+            .map(|entry| format!("{entry:08}"))
+            .chain(std::iter::repeat_n(long, 20_000))
+            .collect::<Vec<_>>();
+        let decoded_payload = values.iter().map(|value| value.len() as u64).sum::<u64>();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "label",
+            DataType::Utf8,
+            false,
+        )]));
+        let source =
+            RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(values.clone()))])
+                .unwrap();
+        let properties = WriterProperties::builder()
+            .set_dictionary_enabled(true)
+            .set_statistics_enabled(EnabledStatistics::None)
+            .set_dictionary_page_size_limit(4 * 1024)
+            .set_data_page_size_limit(4 * 1024)
+            .build();
+        let (_directory, resident) = resident_parquet(&source, Some(properties));
+        let chunk = resident
+            .parquet_metadata
+            .as_ref()
+            .unwrap()
+            .metadata()
+            .row_group(0)
+            .column(0);
+        assert!(chunk.page_encoding_stats().unwrap().iter().any(|page| {
+            page.page_type != PageType::DICTIONARY_PAGE && page.encoding == Encoding::PLAIN
+        }));
+
+        let max_decode_bytes = 64 * 1024 * 1024;
+        let (plan, reader) = planned_reader(resident, max_decode_bytes).unwrap();
+        assert!(plan.arrow_output_bytes >= decoded_payload);
+        let (decoded_rows, _) = read_parquet(reader, plan.arrow_output_bytes);
+        assert_eq!(decoded_rows, values.len());
+    }
+
+    #[test]
+    fn parquet_rejects_a_single_oversized_repeated_row() {
+        let mut values = ListBuilder::new(Int64Builder::new());
+        for _ in 0..200_000 {
+            values.values().append_value(7);
+        }
+        values.append(true);
+        let values = values.finish();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "values",
+            values.data_type().clone(),
+            false,
+        )]));
+        let source = RecordBatch::try_new(schema, vec![Arc::new(values)]).unwrap();
+        let (_directory, resident) = resident_parquet(&source, None);
+        let max_decode_bytes = 1024 * 1024;
+        let row_group = resident
+            .parquet_metadata
+            .as_ref()
+            .unwrap()
+            .metadata()
+            .row_group(0);
+        assert!(u64::try_from(row_group.total_byte_size()).unwrap() < max_decode_bytes);
+
+        let error = parquet_plan(&resident, max_decode_bytes).unwrap_err();
+        assert!(error.to_string().contains("Parquet row group memory bound"));
     }
 }
 
