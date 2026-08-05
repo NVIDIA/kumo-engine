@@ -95,6 +95,8 @@ enum CloudKind {
     Adls,
 }
 
+const IMDS_TIMEOUT: Duration = Duration::from_millis(800);
+
 pub fn publish_stats(stats: &IngestStats, config: PublishConfig) -> Result<Option<PublishOutcome>> {
     let stats_root = resolve_stats_root(&config)?;
     let Some(stats_root) = stats_root else {
@@ -594,27 +596,17 @@ fn disk_stats_for_path(path: &Path) -> (Option<u64>, Option<u64>) {
 
 fn instance_info(source: &str, dest: Dest) -> Result<(Option<String>, Option<String>)> {
     let cloud = detect_cloud_kind(source, dest)?;
-    let info = if let Some(cloud) = cloud {
-        (Some(cloud), fetch_instance_type(cloud))
-    } else {
-        match fetch_any_instance_type() {
-            Some((cloud, itype)) => (Some(cloud), Some(itype)),
-            None => (None, None),
+    Ok(match cloud {
+        Some(cloud) => {
+            let name = match cloud {
+                CloudKind::Aws => "aws",
+                CloudKind::Gcp => "gcp",
+                CloudKind::Adls => "adls",
+            };
+            (Some(name.to_string()), fetch_instance_type(cloud))
         }
-    };
-    let cloud_name = info.0.map(|c| match c {
-        CloudKind::Aws => "aws".to_string(),
-        CloudKind::Gcp => "gcp".to_string(),
-        CloudKind::Adls => "adls".to_string(),
-    });
-    Ok((cloud_name, info.1))
-}
-
-fn fetch_any_instance_type() -> Option<(CloudKind, String)> {
-    fetch_instance_type(CloudKind::Aws)
-        .map(|t| (CloudKind::Aws, t))
-        .or_else(|| fetch_instance_type(CloudKind::Gcp).map(|t| (CloudKind::Gcp, t)))
-        .or_else(|| fetch_instance_type(CloudKind::Adls).map(|t| (CloudKind::Adls, t)))
+        None => (None, None),
+    })
 }
 
 fn fetch_instance_type(cloud: CloudKind) -> Option<String> {
@@ -626,15 +618,16 @@ fn fetch_instance_type(cloud: CloudKind) -> Option<String> {
 }
 
 fn fetch_aws_instance_type() -> Option<String> {
-    let token = ureq::put("http://169.254.169.254/latest/api/token")
-        .timeout(Duration::from_millis(800))
+    let agent = imds_agent();
+    let token = agent
+        .put("http://169.254.169.254/latest/api/token")
         .set("X-aws-ec2-metadata-token-ttl-seconds", "300")
         .call()
         .ok()?
         .into_string()
         .ok()?;
-    let resp = ureq::get("http://169.254.169.254/latest/meta-data/instance-type")
-        .timeout(Duration::from_millis(800))
+    let resp = agent
+        .get("http://169.254.169.254/latest/meta-data/instance-type")
         .set("X-aws-ec2-metadata-token", &token)
         .call()
         .ok()?;
@@ -642,12 +635,11 @@ fn fetch_aws_instance_type() -> Option<String> {
 }
 
 fn fetch_gcp_instance_type() -> Option<String> {
-    let resp =
-        ureq::get("http://metadata.google.internal/computeMetadata/v1/instance/machine-type")
-            .timeout(Duration::from_millis(800))
-            .set("Metadata-Flavor", "Google")
-            .call()
-            .ok()?;
+    let resp = imds_agent()
+        .get("http://metadata.google.internal/computeMetadata/v1/instance/machine-type")
+        .set("Metadata-Flavor", "Google")
+        .call()
+        .ok()?;
     let raw = resp.into_string().ok()?;
     Some(
         raw.trim()
@@ -659,13 +651,20 @@ fn fetch_gcp_instance_type() -> Option<String> {
 }
 
 fn fetch_azure_instance_type() -> Option<String> {
-    let resp =
-        ureq::get("http://169.254.169.254/metadata/instance/compute/vmSize?api-version=2021-02-01")
-            .timeout(Duration::from_millis(800))
-            .set("Metadata", "true")
-            .call()
-            .ok()?;
+    let resp = imds_agent()
+        .get("http://169.254.169.254/metadata/instance/compute/vmSize?api-version=2021-02-01")
+        .set("Metadata", "true")
+        .call()
+        .ok()?;
     resp.into_string().ok().map(|s| s.trim().to_string())
+}
+
+fn imds_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(IMDS_TIMEOUT)
+        .timeout(IMDS_TIMEOUT)
+        .try_proxy_from_env(false)
+        .build()
 }
 
 fn profile_files(profile_dir: &Option<PathBuf>) -> Option<Vec<PathBuf>> {

@@ -58,7 +58,6 @@ pub use crate::scratch::{
     estimate_pk_map_bytes, estimate_varbytes_avg_len_multi, new_pk_map, reserve_map,
     EdgeMapScratch, PkMapHashMap, PkMapHasher, PkMapScratch,
 };
-use crate::source_memory::BudgetedVec;
 pub use crate::stage_extension::{
     ingest_stage_extension_with_resolution, ingest_stage_extension_with_resolution_and_sidecars,
     ResolveSpec, StageExtensionResult, StageSidecarColumns, StageSpec,
@@ -88,7 +87,7 @@ use epserde::prelude::Serialize as EpSerialize;
 use fasteval::{eval_compiled_ref, Compiler, Evaler, Parser, Slab};
 use gxhash::GxHasher;
 use half::f16;
-use lz4_flex::frame::{BlockSize, FrameDecoder, FrameEncoder, FrameInfo};
+use lz4_flex::frame::{FrameDecoder, FrameEncoder};
 use memmap2::Mmap;
 use num_traits::{Signed, ToPrimitive};
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ParquetRecordBatchReaderBuilder};
@@ -2928,64 +2927,6 @@ where
     })
 }
 
-fn node_row_scratch_bytes(table: &TableSpec) -> Result<u64> {
-    (MAX_NODE_DATA_LEN as u64)
-        .checked_mul(4)
-        .and_then(|bytes| {
-            (table.columns.len() as u64)
-                .checked_mul(MAX_VAR_KEY_LEN as u64)
-                .and_then(|keys| keys.checked_mul(2))
-                .and_then(|keys| bytes.checked_add(keys))
-        })
-        .and_then(|bytes| bytes.checked_add((MAX_VAR_KEY_LEN as u64) * 4))
-        .ok_or_else(|| anyhow!("node row scratch memory size overflowed"))
-}
-
-fn node_encode_worker_limit(
-    table: &TableSpec,
-    relation_defs: &[RelationDef],
-    requested: usize,
-    source_budget: &crate::source_memory::ByteBudget,
-) -> Result<usize> {
-    let scratch_bytes = node_row_scratch_bytes(table)?;
-    let sort_key_buffers = relation_defs
-        .iter()
-        .filter_map(|relation| relation.sort_key.as_ref())
-        .map(|sort_key| {
-            usize::from(
-                sort_key
-                    .timestamp
-                    .as_ref()
-                    .is_some_and(|timestamp| timestamp.table == table.name),
-            ) + usize::from(
-                sort_key
-                    .weight
-                    .as_ref()
-                    .is_some_and(|weight| weight.table == table.name),
-            )
-        })
-        .sum::<usize>();
-    // Node and destination-key batchers each retain up to one target-sized
-    // set, as does every active sort-key component.
-    let output_bytes = (2u64)
-        .checked_add(sort_key_buffers as u64)
-        .and_then(|sets| sets.checked_mul(EDGE_BATCH_TARGET_BYTES as u64))
-        .ok_or_else(|| anyhow!("node Encode worker memory size overflowed"))?;
-    let per_worker = scratch_bytes
-        .checked_add(output_bytes)
-        .ok_or_else(|| anyhow!("node Encode worker memory size overflowed"))?;
-    let prefix_reserve = (SOURCE_PREFIX_MAX_BYTES as u64).min(
-        source_budget
-            .normal_limit_bytes()
-            .saturating_sub(scratch_bytes),
-    );
-    let available = source_budget
-        .normal_limit_bytes()
-        .saturating_sub(prefix_reserve);
-    let memory_workers = (available / per_worker).max(1) as usize;
-    Ok(requested.max(1).min(memory_workers))
-}
-
 #[cfg(test)]
 #[test]
 fn encode_batch_dispatcher_runs_workers_in_parallel() {
@@ -4674,7 +4615,8 @@ mod bounded_file_decoder_tests {
             .column(0)
             .unencoded_byte_array_data_bytes()
             .is_none());
-        let memory_plan = parquet_row_group_memory_plan(metadata, 0, 16 * 1024 * 1024).unwrap();
+        let memory_plan =
+            parquet_row_group_memory_plan(metadata, 0, 16 * 1024 * 1024).unwrap();
         assert_eq!(memory_plan.batch_size, NODE_BATCH_SIZE);
     }
 
@@ -4788,8 +4730,7 @@ mod bounded_file_decoder_tests {
             RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(values.finish())]).unwrap();
         let (_directory, resident) = resident_parquet(&batch, None);
         let metadata = resident.parquet_metadata.as_ref().unwrap();
-        let memory_plan =
-            parquet_row_group_memory_plan(metadata, 0, 16 * 1024 * 1024).unwrap();
+        let memory_plan = parquet_row_group_memory_plan(metadata, 0, 16 * 1024 * 1024).unwrap();
         // 1024 rows x 6 floats x 8 bytes = 49_152 bytes of leaf payload; a 2x
         // Arrow-buffer safety factor requires the plan to reserve at least
         // ~98_304 bytes of output before decode.
@@ -5305,7 +5246,6 @@ fn build_sort_key_batchers_for_node_table(
     table: &TableSpec,
     relation_defs: &[RelationDef],
     num_shards: usize,
-    source_budget: &Arc<crate::source_memory::ByteBudget>,
 ) -> Result<Vec<SortKeyComponentBatcher>> {
     let mut batchers = Vec::new();
     for rel in relation_defs {
@@ -5326,7 +5266,6 @@ fn build_sort_key_batchers_for_node_table(
                         encoding: ts.encoding.clone(),
                     },
                     num_shards,
-                    Arc::clone(source_budget),
                 ));
             }
         }
@@ -5343,7 +5282,6 @@ fn build_sort_key_batchers_for_node_table(
                         encoding: weight.encoding.clone(),
                     },
                     num_shards,
-                    Arc::clone(source_budget),
                 ));
             }
         }
@@ -5355,7 +5293,6 @@ fn build_sort_key_batchers_for_edge_table(
     table: &TableSpec,
     relation_defs: &[RelationDef],
     num_shards: usize,
-    source_budget: &Arc<crate::source_memory::ByteBudget>,
 ) -> Result<Vec<SortKeyComponentBatcher>> {
     let mut batchers = Vec::new();
     for rel in relation_defs {
@@ -5376,7 +5313,6 @@ fn build_sort_key_batchers_for_edge_table(
                         encoding: ts.encoding.clone(),
                     },
                     num_shards,
-                    Arc::clone(source_budget),
                 ));
             }
         }
@@ -5393,7 +5329,6 @@ fn build_sort_key_batchers_for_edge_table(
                         encoding: weight.encoding.clone(),
                     },
                     num_shards,
-                    Arc::clone(source_budget),
                 ));
             }
         }
@@ -5857,12 +5792,6 @@ impl IngestContext {
         let relation_defs = std::sync::Arc::new(self.relation_defs.clone());
         let fk_edge_targets = std::sync::Arc::new(self.fk_edge_targets.clone());
         let num_shards = self.num_shards;
-        let source_writer_reserved_bytes = source_writer_resource_reservation(
-            &tables,
-            &relationships,
-            &relation_defs,
-            num_shards,
-        )?;
         let category_memory_bytes = if self.col_stats
             && self.cat_count_strategy != crate::col_stats::CategoryCountStrategy::None
         {
@@ -5871,13 +5800,12 @@ impl IngestContext {
             0
         };
         let source_working_budget = encode_memory_budget_bytes
-            .checked_sub(source_writer_reserved_bytes)
-            .and_then(|bytes| bytes.checked_sub(category_memory_bytes))
+            .checked_sub(category_memory_bytes)
             .filter(|bytes| *bytes > 0)
             .ok_or_else(|| {
                 anyhow!(
-                    "Encode persistent state requires {} bytes, exhausting the {} byte working budget",
-                    source_writer_reserved_bytes.saturating_add(category_memory_bytes),
+                    "Encode category state requires {} bytes, exhausting the {} byte working budget",
+                    category_memory_bytes,
                     encode_memory_budget_bytes
                 )
             })?;
@@ -5898,22 +5826,11 @@ impl IngestContext {
         } else {
             1
         };
-        let source_encoder_limit = EncodeConcurrency::new(source_encoder_workers);
-        let node_pool = NodeWritePool::new(
-            std::sync::Arc::clone(&target),
-            source_encoder_workers,
-            Arc::clone(&source_encoder_limit),
-        );
-        let edge_pool = EdgeSrcWritePool::new(
-            std::sync::Arc::clone(&target),
-            source_encoder_workers,
-            Arc::clone(&source_encoder_limit),
-        );
-        let dest_key_pool = DestKeyWritePool::new(
-            std::sync::Arc::clone(&target),
-            source_encoder_workers,
-            source_encoder_limit,
-        );
+        let node_pool = NodeWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
+        let edge_pool =
+            EdgeSrcWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
+        let dest_key_pool =
+            DestKeyWritePool::new(std::sync::Arc::clone(&target), edge_writer_workers());
         let node_senders = node_pool.senders();
         let node_errors = node_pool.error();
         let edge_senders = edge_pool.senders();
@@ -5962,6 +5879,8 @@ impl IngestContext {
         {
             let mut helper = self.databricks_helper.take();
             for table in &mut tables {
+                let table_encode_start = std::time::Instant::now();
+                tracing::info!(phase = "encode", table = %table.name, "table started");
                 let synthetic_columns = resolve_columns
                     .iter()
                     .filter(|resolution| resolution.table == table.name)
@@ -6073,7 +5992,6 @@ impl IngestContext {
                                 &dest_key_errors,
                                 &relation_defs,
                                 &fk_edge_targets,
-                                &source_budget,
                             )?;
                             Ok((dropped, key_failures))
                         },
@@ -6245,15 +6163,9 @@ impl IngestContext {
                         .chain(&mut stream);
                     let table_cat = table_cat_counts.get(&table.name).cloned();
                     let encode_table: &TableSpec = table;
-                    let node_encode_workers = node_encode_worker_limit(
-                        encode_table,
-                        &relation_defs,
-                        source_encoder_workers,
-                        &source_budget,
-                    )?;
                     let results = run_encode_batch_workers(
                         replay,
-                        node_encode_workers,
+                        source_encoder_workers,
                         Arc::clone(&source_budget),
                         Arc::clone(&validation),
                         |batches| {
@@ -6284,7 +6196,6 @@ impl IngestContext {
                                     &resolve_columns,
                                     ref_resolver.as_deref(),
                                     &sidecars,
-                                    &source_budget,
                                     &mut observer,
                                 )?;
                                 observer.flush_categories();
@@ -6307,7 +6218,6 @@ impl IngestContext {
                                     &resolve_columns,
                                     ref_resolver.as_deref(),
                                     &sidecars,
-                                    &source_budget,
                                     &mut diskgraph_rowpack::NoOpObserver,
                                 )?;
                                 Ok((node, key_failures, None))
@@ -6358,6 +6268,13 @@ impl IngestContext {
                     self.logical_arrow_source_bytes.saturating_add(source_bytes);
                 self.logical_arrow_source_bytes_by_table
                     .insert(table.name.clone(), source_bytes);
+                tracing::info!(
+                    phase = "encode",
+                    table = %table.name,
+                    rows = source_rows,
+                    elapsed_ms = table_encode_start.elapsed().as_millis(),
+                    "table producers complete"
+                );
                 if let Some(metrics) = stream.databricks_metrics() {
                     self.databricks_wire_bytes = self
                         .databricks_wire_bytes
@@ -6463,20 +6380,19 @@ impl IngestContext {
         drop(node_senders);
         drop(edge_senders);
         drop(dest_key_senders);
+        tracing::info!(phase = "encode", "output writer drain started");
         let node_stats = node_pool.finish()?;
         let edge_stats = edge_pool.finish()?;
         let dest_key_stats = dest_key_pool.finish()?;
+        tracing::info!(phase = "encode", "output writer drain complete");
         self.write_consolidated_meta(&node_stats, &edge_stats, &dest_key_stats)?;
         self.refresh_shard_rows_from_stats(&node_stats);
         self.table_rows = table_rows;
-        self.encode_memory_high_water_bytes = source_budget
-            .high_water_bytes()
-            .saturating_add(source_writer_reserved_bytes)
-            .saturating_add(
-                category_memory_budget
-                    .as_ref()
-                    .map_or(0, |budget| budget.used_bytes()),
-            );
+        self.encode_memory_high_water_bytes = source_budget.high_water_bytes().saturating_add(
+            category_memory_budget
+                .as_ref()
+                .map_or(0, |budget| budget.used_bytes()),
+        );
         self.persist_encode_state()?;
         Ok(())
     }
@@ -6946,7 +6862,6 @@ impl IngestContext {
         resolve_columns: &[crate::config::ResolveColumnSpec],
         ref_resolver: Option<&crate::mapping::RefResolver>,
         sidecars: &StageSidecarColumns,
-        source_budget: &Arc<crate::source_memory::ByteBudget>,
         observer: &mut O,
     ) -> Result<TempNodeFileResult>
     where
@@ -6996,13 +6911,6 @@ impl IngestContext {
         let mut access = RowAccess::new(row_access_hints, stats);
         let mut key_bufs: Vec<Vec<u8>> = vec![Vec::new(); table.columns.len()];
         let mut f16_buf: Vec<f16> = Vec::new();
-        // RowPack's three output Vecs and f16 conversion buffer can each keep
-        // allocator-rounded capacity between rows. Reserve a conservative
-        // upper bound for those allocations plus every reusable key buffer.
-        // Input batches use the separate oversized-chunk allowance, so this
-        // retained consumer working set cannot deadlock its own next batch.
-        let row_scratch_bytes = node_row_scratch_bytes(table)?;
-        let _row_scratch_permit = source_budget.acquire(row_scratch_bytes)?;
         let mut node_tags = Vec::new();
         let mut node_bools = Vec::new();
         let mut node_data = Vec::new();
@@ -7031,7 +6939,6 @@ impl IngestContext {
             buffer_limit,
             std::sync::Arc::clone(senders),
             std::sync::Arc::clone(node_errors),
-            Arc::clone(source_budget),
             table.group_by_timestamp,
             binary_label_idx.is_some(),
             sample_weight_idx.is_some(),
@@ -7043,14 +6950,9 @@ impl IngestContext {
             buffer_limit,
             std::sync::Arc::clone(dest_key_senders),
             std::sync::Arc::clone(dest_key_errors),
-            Arc::clone(source_budget),
         );
-        let mut sort_key_batchers = build_sort_key_batchers_for_node_table(
-            table,
-            relation_defs,
-            num_shards,
-            source_budget,
-        )?;
+        let mut sort_key_batchers =
+            build_sort_key_batchers_for_node_table(table, relation_defs, num_shards)?;
 
         let create_time_info = table.create_time.as_ref().and_then(|ct| {
             let idx = column_index(table, ct).ok()?;
@@ -7532,7 +7434,6 @@ impl IngestContext {
         dest_key_errors: &std::sync::Arc<std::sync::Mutex<Option<String>>>,
         relation_defs: &[RelationDef],
         fk_edge_targets: &HashMap<String, FkEdgeTarget>,
-        source_budget: &Arc<crate::source_memory::ByteBudget>,
     ) -> Result<u64>
     where
         I: IntoIterator<Item = Result<arrow_array::RecordBatch>>,
@@ -7564,7 +7465,6 @@ impl IngestContext {
             buffer_limit,
             std::sync::Arc::clone(senders),
             std::sync::Arc::clone(error),
-            Arc::clone(source_budget),
         );
         let mut edge_key_batcher = EdgeKeyBatcher::new(
             std::sync::Arc::<str>::from(table.name.clone()),
@@ -7572,14 +7472,9 @@ impl IngestContext {
             buffer_limit,
             std::sync::Arc::clone(dest_key_senders),
             std::sync::Arc::clone(dest_key_errors),
-            Arc::clone(source_budget),
         );
-        let mut sort_key_batchers = build_sort_key_batchers_for_edge_table(
-            table,
-            relation_defs,
-            num_shards,
-            source_budget,
-        )?;
+        let mut sort_key_batchers =
+            build_sort_key_batchers_for_edge_table(table, relation_defs, num_shards)?;
 
         let create_time_info = table.create_time.as_ref().and_then(|ct| {
             let idx = column_index(table, ct).ok()?;
@@ -7592,14 +7487,6 @@ impl IngestContext {
         let row_access_hints = build_row_access_hints(table);
         let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
         let mut access = RowAccess::new(row_access_hints, stats);
-        // Two variable-width key buffers plus their combined framed row retain
-        // at most allocator-rounded capacities across batches.
-        let edge_scratch_bytes = (MAX_VAR_KEY_LEN as u64)
-            .checked_mul(8)
-            .and_then(|bytes| bytes.checked_add(8))
-            .ok_or_else(|| anyhow!("edge row scratch memory size overflowed"))?;
-        let _edge_scratch_permit = source_budget.acquire(edge_scratch_bytes)?;
-
         macro_rules! process_edge_batch {
             ($batch:expr, $src_key_buf:expr, $dst_key_buf:expr, $forward_row:expr) => {
                 let timestamp_idx = create_time_info.as_ref().map(|(idx, _)| *idx);
@@ -11038,9 +10925,6 @@ fn run_phase_with_marker_payload(
     } else {
         f()?;
     }
-    if name == "encode" {
-        sync_output_tree(root)?;
-    }
     write_phase_marker_payload(root, name, marker_payload)?;
     if name == "encode" {
         remove_ephemeral_databricks_config()?;
@@ -11062,24 +10946,6 @@ fn remove_ephemeral_databricks_config_path(path: &Path) -> Result<()> {
         Err(error) => Err(error)
             .with_context(|| format!("remove ephemeral Databricks config: {}", path.display())),
     }
-}
-
-fn sync_output_tree(path: &Path) -> Result<()> {
-    if path.is_dir() {
-        for entry in fs::read_dir(path).with_context(|| format!("read_dir {}", path.display()))? {
-            let entry = entry?;
-            let file_type = entry.file_type()?;
-            if file_type.is_dir() {
-                sync_output_tree(&entry.path())?;
-            } else if file_type.is_file() {
-                fs::File::open(entry.path())?.sync_all()?;
-            }
-        }
-        fs::File::open(path)?.sync_all()?;
-    } else if path.is_file() {
-        fs::File::open(path)?.sync_all()?;
-    }
-    Ok(())
 }
 
 fn edge_id_width(max_id: u64) -> u8 {
@@ -11333,25 +11199,22 @@ fn open_temp_row_writer(target: &OutputTarget, rel_path: &str) -> Result<TempRow
     }
     let sink = target.sink(&path)?;
     Ok(TempRowWriter {
-        // Temp writers remain open per active shard. The default frame block
-        // can retain multi-megabyte src/dst buffers per writer, so use the
-        // smallest frame block to keep aggregate writer state bounded.
-        writer: FrameEncoder::with_frame_info(
-            FrameInfo::new().block_size(BlockSize::Max64KB),
-            sink,
-        ),
+        writer: FrameEncoder::new(sink),
         row_count: 0,
     })
 }
 
-fn open_sort_key_writer(target: &OutputTarget, rel_path: &str) -> Result<OutputSink> {
+fn open_sort_key_writer(target: &OutputTarget, rel_path: &str) -> Result<BufWriter<OutputSink>> {
     let path = target.join(rel_path);
     if let OutputTarget::Local { .. } = target {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
     }
-    target.sink(&path)
+    Ok(BufWriter::with_capacity(
+        4 * 1024 * 1024,
+        target.sink(&path)?,
+    ))
 }
 
 fn ensure_sort_key_file(target: &OutputTarget, rel_path: &str) -> Result<()> {
@@ -11363,7 +11226,10 @@ fn ensure_sort_key_file(target: &OutputTarget, rel_path: &str) -> Result<()> {
     }
     let mut writer = open_sort_key_writer(target, rel_path)?;
     writer.flush()?;
-    writer.finish()?;
+    let sink = writer
+        .into_inner()
+        .map_err(|_| anyhow!("sort key flush failed"))?;
+    sink.finish()?;
     Ok(())
 }
 
@@ -11698,127 +11564,10 @@ const EDGE_BATCH_MIN_BYTES: usize = 64 * 1024;
 const EDGE_BATCH_TARGET_BYTES: usize = 8 * 1024 * 1024;
 const EDGE_BATCH_MAX_BYTES: usize = 2 * 1024 * 1024;
 
-struct EncodeConcurrency {
-    maximum: usize,
-    active: std::sync::Mutex<usize>,
-    available: std::sync::Condvar,
-}
-
-struct EncodeConcurrencyPermit<'a>(&'a EncodeConcurrency);
-
-impl EncodeConcurrency {
-    fn new(maximum: usize) -> Arc<Self> {
-        Arc::new(Self {
-            maximum: maximum.max(1),
-            active: std::sync::Mutex::new(0),
-            available: std::sync::Condvar::new(),
-        })
-    }
-
-    fn acquire(&self) -> EncodeConcurrencyPermit<'_> {
-        let mut active = self
-            .active
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        while *active >= self.maximum {
-            active = self
-                .available
-                .wait(active)
-                .unwrap_or_else(|error| error.into_inner());
-        }
-        *active += 1;
-        EncodeConcurrencyPermit(self)
-    }
-}
-
-impl Drop for EncodeConcurrencyPermit<'_> {
-    fn drop(&mut self) {
-        let mut active = self
-            .0
-            .active
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        *active = active.saturating_sub(1);
-        self.0.available.notify_one();
-    }
-}
-
 fn edge_batch_buffer_limit(num_shards: usize) -> usize {
     let per = EDGE_BATCH_TARGET_BYTES / num_shards.max(1);
     let per = per.max(EDGE_BATCH_MIN_BYTES);
     per.min(EDGE_BATCH_MAX_BYTES)
-}
-
-/// Conservatively reserve memory for persistent Encode writer state and cap
-/// the number of simultaneously retained output handles. Temp LZ4 writers use
-/// 64 KiB blocks; 160 KiB covers their src/dst/hash state and map overhead.
-fn source_writer_resource_reservation(
-    tables: &[TableSpec],
-    relationships: &[RelationshipRuntime],
-    relation_defs: &[RelationDef],
-    num_shards: usize,
-) -> Result<u64> {
-    const COMPRESSED_WRITER_STATE_BYTES: u64 = 160 * 1024;
-    const MAX_ENCODE_WRITER_HANDLES: u64 = 65_536;
-
-    let mut compressed_per_shard = 0u64;
-    let mut handles_per_shard = 0u64;
-    for table in tables {
-        let sort_components = relation_defs
-            .iter()
-            .filter_map(|relation| relation.sort_key.as_ref())
-            .map(|sort_key| {
-                u64::from(
-                    sort_key
-                        .timestamp
-                        .as_ref()
-                        .is_some_and(|component| component.table == table.name),
-                ) + u64::from(
-                    sort_key
-                        .weight
-                        .as_ref()
-                        .is_some_and(|component| component.table == table.name),
-                )
-            })
-            .sum::<u64>();
-        if table.edge_table.is_some() {
-            // Forward edge rows plus source/destination key streams.
-            compressed_per_shard = compressed_per_shard
-                .checked_add(3)
-                .ok_or_else(|| anyhow!("Encode writer count overflowed"))?;
-            handles_per_shard = handles_per_shard
-                .checked_add(3 + sort_components)
-                .ok_or_else(|| anyhow!("Encode writer handle count overflowed"))?;
-        } else {
-            let relation_count = relationships
-                .iter()
-                .filter(|relationship| relationship.src_table == table.name)
-                .count() as u64;
-            // Node + optional PK + forward FK and destination-key streams.
-            let compressed = 1 + u64::from(table.primary_key.is_some()) + 2 * relation_count;
-            compressed_per_shard = compressed_per_shard
-                .checked_add(compressed)
-                .ok_or_else(|| anyhow!("Encode writer count overflowed"))?;
-            // Add one FK bitmap handle per relationship and conservatively
-            // allow all three optional sidecar spill handles.
-            handles_per_shard = handles_per_shard
-                .checked_add(compressed + relation_count + sort_components + 3)
-                .ok_or_else(|| anyhow!("Encode writer handle count overflowed"))?;
-        }
-    }
-    let shard_count = num_shards as u64;
-    let handles = handles_per_shard
-        .checked_mul(shard_count)
-        .ok_or_else(|| anyhow!("Encode writer handle count overflowed"))?;
-    if handles > MAX_ENCODE_WRITER_HANDLES {
-        return Err(anyhow!(
-            "Encode requires {handles} persistent writer handles, exceeding the bounded limit of {MAX_ENCODE_WRITER_HANDLES}"
-        ));
-    }
-    compressed_per_shard
-        .checked_mul(shard_count)
-        .and_then(|writers| writers.checked_mul(COMPRESSED_WRITER_STATE_BYTES))
-        .ok_or_else(|| anyhow!("Encode writer memory reservation overflowed"))
 }
 
 fn edge_writer_workers() -> usize {
@@ -12066,6 +11815,12 @@ fn hash_name(name: &str) -> u64 {
     hasher.finish()
 }
 
+fn take_with_capacity<T>(source: &mut Vec<T>) -> Vec<T> {
+    let mut data = Vec::with_capacity(source.capacity());
+    std::mem::swap(&mut data, source);
+    data
+}
+
 struct NodeWriteBatch {
     table: std::sync::Arc<str>,
     rel_names: std::sync::Arc<Vec<std::sync::Arc<str>>>,
@@ -12094,10 +11849,7 @@ struct RowPackSegmentBatch {
 }
 
 enum NodeWriteMessage {
-    Batch {
-        batch: NodeWriteBatch,
-        _permits: Vec<crate::source_memory::BytePermit>,
-    },
+    Batch(NodeWriteBatch),
 }
 
 #[derive(Default)]
@@ -12248,11 +12000,7 @@ struct NodeWritePool {
 }
 
 impl NodeWritePool {
-    fn new(
-        target: std::sync::Arc<OutputTarget>,
-        workers: usize,
-        concurrency: Arc<EncodeConcurrency>,
-    ) -> Self {
+    fn new(target: std::sync::Arc<OutputTarget>, workers: usize) -> Self {
         let mut senders = Vec::with_capacity(workers);
         let mut handles = Vec::with_capacity(workers);
         let error = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -12261,9 +12009,8 @@ impl NodeWritePool {
                 std::sync::mpsc::sync_channel::<NodeWriteMessage>(EDGE_WRITE_QUEUE_DEPTH);
             let target = std::sync::Arc::clone(&target);
             let error = std::sync::Arc::clone(&error);
-            let concurrency = Arc::clone(&concurrency);
             handles.push(std::thread::spawn(move || {
-                match node_writer_worker(target, rx, concurrency) {
+                match node_writer_worker(target, rx) {
                     Ok(stats) => Ok(stats),
                     Err(err) => {
                         let mut guard = error.lock().unwrap_or_else(|e| e.into_inner());
@@ -12325,7 +12072,6 @@ impl Drop for NodeWritePool {
 fn node_writer_worker(
     target: std::sync::Arc<OutputTarget>,
     rx: std::sync::mpsc::Receiver<NodeWriteMessage>,
-    concurrency: Arc<EncodeConcurrency>,
 ) -> Result<NodeWriterStats> {
     let mut writers: HashMap<(std::sync::Arc<str>, usize), NodeShardWriter> = HashMap::new();
     let mut sort_key_writers: HashMap<
@@ -12341,9 +12087,8 @@ fn node_writer_worker(
         HashMap::new();
     let mut stats = NodeWriterStats::default();
     while let Ok(msg) = rx.recv() {
-        let _concurrency = concurrency.acquire();
         match msg {
-            NodeWriteMessage::Batch { batch, .. } => {
+            NodeWriteMessage::Batch(batch) => {
                 let key = (std::sync::Arc::clone(&batch.table), batch.shard);
                 let writer = match writers.get_mut(&key) {
                     Some(writer) => writer,
@@ -12553,7 +12298,11 @@ fn node_writer_worker(
     }
     for (_, mut writer) in sort_key_writers {
         writer.writer.flush()?;
-        writer.writer.finish()?;
+        let sink = writer
+            .writer
+            .into_inner()
+            .map_err(|_| anyhow!("sort key flush failed"))?;
+        sink.finish()?;
     }
     for (_, mut spill) in group_spills {
         spill.flush()?;
@@ -12568,28 +12317,21 @@ fn node_writer_worker(
 }
 
 struct NodeShardBuffer {
-    node: BudgetedRowPackSegment,
-    pkey: Option<BudgetedVec<u8>>,
+    node: RowPackSegmentBatch,
+    pkey: Option<Vec<u8>>,
     pkey_rows: u64,
-    fkeys: Vec<BudgetedVec<u8>>,
-    fkey_bits: Vec<BudgetedVec<u8>>,
+    fkeys: Vec<Vec<u8>>,
+    fkey_bits: Vec<Vec<u8>>,
     fkey_rows: Vec<u64>,
     bytes: usize,
     // TT-NG timestamp grouping: when `Some`, holds this shard's per-node
     // TIMESTAMP value, pushed 1:1 with `push_node_row`/`push_empty_node`, in
     // node-write order. `None` (default) = grouping disabled, zero overhead.
-    group_ts: Option<BudgetedVec<i64>>,
+    group_ts: Option<Vec<i64>>,
     // TT-NG binary label sidecars: one label byte per node row in write order.
-    binary_labels: Option<BudgetedVec<u8>>,
+    binary_labels: Option<Vec<u8>>,
     // TT-NG row-weight sidecars: one f64 per node row in write order.
-    sample_weights: Option<BudgetedVec<f64>>,
-}
-
-struct BudgetedRowPackSegment {
-    tags: BudgetedVec<u8>,
-    bools: BudgetedVec<u8>,
-    data: BudgetedVec<u8>,
-    rows: BudgetedVec<RowPackRowLens>,
+    sample_weights: Option<Vec<f64>>,
 }
 
 struct NodeBatcher {
@@ -12616,7 +12358,6 @@ impl NodeBatcher {
         buffer_limit: usize,
         senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<NodeWriteMessage>>>,
         error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-        source_budget: Arc<crate::source_memory::ByteBudget>,
         group_by_timestamp: bool,
         binary_label_enabled: bool,
         sample_weight_enabled: bool,
@@ -12624,38 +12365,30 @@ impl NodeBatcher {
         let table_hash = hash_name(&table);
         let buffers = (0..num_shards)
             .map(|_| NodeShardBuffer {
-                node: BudgetedRowPackSegment {
-                    tags: BudgetedVec::new(Arc::clone(&source_budget)),
-                    bools: BudgetedVec::new(Arc::clone(&source_budget)),
-                    data: BudgetedVec::new(Arc::clone(&source_budget)),
-                    rows: BudgetedVec::new(Arc::clone(&source_budget)),
+                node: RowPackSegmentBatch {
+                    tags: Vec::new(),
+                    bools: Vec::new(),
+                    data: Vec::new(),
+                    rows: Vec::new(),
                 },
-                pkey: if has_pkey {
-                    Some(BudgetedVec::new(Arc::clone(&source_budget)))
-                } else {
-                    None
-                },
+                pkey: if has_pkey { Some(Vec::new()) } else { None },
                 pkey_rows: 0,
-                fkeys: (0..rel_names.len())
-                    .map(|_| BudgetedVec::new(Arc::clone(&source_budget)))
-                    .collect(),
-                fkey_bits: (0..rel_names.len())
-                    .map(|_| BudgetedVec::new(Arc::clone(&source_budget)))
-                    .collect(),
+                fkeys: vec![Vec::new(); rel_names.len()],
+                fkey_bits: vec![Vec::new(); rel_names.len()],
                 fkey_rows: vec![0; rel_names.len()],
                 bytes: 0,
                 group_ts: if group_by_timestamp {
-                    Some(BudgetedVec::new(Arc::clone(&source_budget)))
+                    Some(Vec::new())
                 } else {
                     None
                 },
                 binary_labels: if binary_label_enabled {
-                    Some(BudgetedVec::new(Arc::clone(&source_budget)))
+                    Some(Vec::new())
                 } else {
                     None
                 },
                 sample_weights: if sample_weight_enabled {
-                    Some(BudgetedVec::new(Arc::clone(&source_budget)))
+                    Some(Vec::new())
                 } else {
                     None
                 },
@@ -12688,7 +12421,7 @@ impl NodeBatcher {
             .get_mut(shard)
             .ok_or_else(|| anyhow!("node buffer shard {} out of bounds", shard))?;
         if let Some(group_ts) = buffer.group_ts.as_mut() {
-            group_ts.push(ts)?;
+            group_ts.push(ts);
         }
         Ok(())
     }
@@ -12702,7 +12435,7 @@ impl NodeBatcher {
             .get_mut(shard)
             .ok_or_else(|| anyhow!("node buffer shard {} out of bounds", shard))?;
         if let Some(labels) = buffer.binary_labels.as_mut() {
-            labels.push(label)?;
+            labels.push(label);
         }
         Ok(())
     }
@@ -12716,7 +12449,7 @@ impl NodeBatcher {
             .get_mut(shard)
             .ok_or_else(|| anyhow!("node buffer shard {} out of bounds", shard))?;
         if let Some(weights) = buffer.sample_weights.as_mut() {
-            weights.push(weight)?;
+            weights.push(weight);
         }
         Ok(())
     }
@@ -12746,10 +12479,10 @@ impl NodeBatcher {
                 "rowpack encoded buffer lengths do not match row metadata"
             ));
         }
-        buffer.node.tags.extend_from_slice(tags)?;
-        buffer.node.bools.extend_from_slice(bools)?;
-        buffer.node.data.extend_from_slice(data)?;
-        buffer.node.rows.push(lens)?;
+        buffer.node.tags.extend_from_slice(tags);
+        buffer.node.bools.extend_from_slice(bools);
+        buffer.node.data.extend_from_slice(data);
+        buffer.node.rows.push(lens);
         buffer.bytes = buffer.bytes.saturating_add(2 + row_len);
         Ok(())
     }
@@ -12775,9 +12508,9 @@ impl NodeBatcher {
             .ok_or_else(|| anyhow!("pkey buffer shard {} out of bounds", shard))?;
         if let Some(pkey) = buffer.pkey.as_mut() {
             let total_len = (row.len() + 1) as u32;
-            pkey.extend_from_slice(&total_len.to_le_bytes())?;
-            pkey.extend_from_slice(row)?;
-            pkey.push(if timestamp_valid { 1 } else { 0 })?;
+            pkey.extend_from_slice(&total_len.to_le_bytes());
+            pkey.extend_from_slice(row);
+            pkey.push(if timestamp_valid { 1 } else { 0 });
             buffer.pkey_rows = buffer.pkey_rows.saturating_add(1);
             buffer.bytes = buffer.bytes.saturating_add(4 + row.len() + 1);
         }
@@ -12798,8 +12531,8 @@ impl NodeBatcher {
         if let Some(fkey) = buffer.fkeys.get_mut(rel_idx) {
             let row_idx = buffer.fkey_rows.get(rel_idx).copied().unwrap_or(0);
             let len = u32::try_from(row.len()).map_err(|_| anyhow!("temp row too large"))?;
-            fkey.extend_from_slice(&len.to_le_bytes())?;
-            fkey.extend_from_slice(row)?;
+            fkey.extend_from_slice(&len.to_le_bytes());
+            fkey.extend_from_slice(row);
             if let Some(count) = buffer.fkey_rows.get_mut(rel_idx) {
                 *count = count.saturating_add(1);
             }
@@ -12808,7 +12541,7 @@ impl NodeBatcher {
                 let bit = (row_idx % 8) as u8;
                 let mut added = 0usize;
                 if bits.len() <= byte_idx {
-                    bits.push(0)?;
+                    bits.push(0);
                     added = 1;
                 }
                 if timestamp_valid {
@@ -12830,7 +12563,7 @@ impl NodeBatcher {
             .ok_or_else(|| anyhow!("fkey buffer shard {} out of bounds", shard))?;
         if let Some(fkey) = buffer.fkeys.get_mut(rel_idx) {
             let row_idx = buffer.fkey_rows.get(rel_idx).copied().unwrap_or(0);
-            fkey.extend_from_slice(&0u32.to_le_bytes())?;
+            fkey.extend_from_slice(&0u32.to_le_bytes());
             if let Some(count) = buffer.fkey_rows.get_mut(rel_idx) {
                 *count = count.saturating_add(1);
             }
@@ -12838,7 +12571,7 @@ impl NodeBatcher {
                 let byte_idx = (row_idx / 8) as usize;
                 let mut added = 0usize;
                 if bits.len() <= byte_idx {
-                    bits.push(0)?;
+                    bits.push(0);
                     added = 1;
                 }
                 buffer.bytes = buffer.bytes.saturating_add(added);
@@ -12887,58 +12620,27 @@ impl NodeBatcher {
         {
             return Ok(());
         }
-        let (tags, mut permits) = buffer.node.tags.take();
-        let (bools, bool_permits) = buffer.node.bools.take();
-        permits.extend(bool_permits);
-        let (data, data_permits) = buffer.node.data.take();
-        permits.extend(data_permits);
-        let (rows, row_permits) = buffer.node.rows.take();
-        permits.extend(row_permits);
         let node = RowPackSegmentBatch {
-            tags,
-            bools,
-            data,
-            rows,
+            tags: take_with_capacity(&mut buffer.node.tags),
+            bools: take_with_capacity(&mut buffer.node.bools),
+            data: take_with_capacity(&mut buffer.node.data),
+            rows: take_with_capacity(&mut buffer.node.rows),
         };
-        let pkey = if let Some(src) = buffer.pkey.as_mut() {
-            let (data, pkey_permits) = src.take();
-            permits.extend(pkey_permits);
-            Some(data)
-        } else {
-            None
-        };
+        let pkey = buffer.pkey.as_mut().map(take_with_capacity);
         let pkey_rows = buffer.pkey_rows;
-        let mut fkeys = Vec::with_capacity(buffer.fkeys.len());
-        for entry in &mut buffer.fkeys {
-            let (data, entry_permits) = entry.take();
-            permits.extend(entry_permits);
-            fkeys.push(data);
-        }
-        let mut fkey_bits = Vec::with_capacity(buffer.fkey_bits.len());
-        for entry in &mut buffer.fkey_bits {
-            let (data, entry_permits) = entry.take();
-            permits.extend(entry_permits);
-            fkey_bits.push(data);
-        }
+        let fkeys = buffer.fkeys.iter_mut().map(take_with_capacity).collect();
+        let fkey_bits = buffer
+            .fkey_bits
+            .iter_mut()
+            .map(take_with_capacity)
+            .collect();
         let fkey_rows = buffer.fkey_rows.clone();
         // Drain this shard's grouping timestamps (node-write order) into the
         // batch, leaving an empty Vec to keep accumulating. `None` when
         // grouping is disabled.
-        let group_ts = buffer.group_ts.as_mut().map(|values| {
-            let (data, value_permits) = values.take();
-            permits.extend(value_permits);
-            data
-        });
-        let binary_labels = buffer.binary_labels.as_mut().map(|values| {
-            let (data, value_permits) = values.take();
-            permits.extend(value_permits);
-            data
-        });
-        let sample_weights = buffer.sample_weights.as_mut().map(|values| {
-            let (data, value_permits) = values.take();
-            permits.extend(value_permits);
-            data
-        });
+        let group_ts = buffer.group_ts.as_mut().map(take_with_capacity);
+        let binary_labels = buffer.binary_labels.as_mut().map(take_with_capacity);
+        let sample_weights = buffer.sample_weights.as_mut().map(take_with_capacity);
         // Drain sort key data for this shard and bundle into the batch.
         let mut sort_keys = Vec::new();
         for sk in sort_key_batchers.iter_mut() {
@@ -12966,10 +12668,7 @@ impl NodeBatcher {
         buffer.bytes = 0;
         let idx = edge_writer_index(self.table_hash, shard, self.senders.len());
         self.senders[idx]
-            .send(NodeWriteMessage::Batch {
-                batch,
-                _permits: permits,
-            })
+            .send(NodeWriteMessage::Batch(batch))
             .map_err(|e| {
                 if let Ok(guard) = self.error.lock() {
                     if let Some(message) = guard.as_ref() {
@@ -12997,7 +12696,6 @@ struct SortKeyWriteBatch {
     data: Vec<u8>,
     row_count: u64,
     width_bytes: usize,
-    _permits: Vec<crate::source_memory::BytePermit>,
 }
 
 /// Write a single sort key batch to the appropriate shard writer, creating it
@@ -13036,7 +12734,7 @@ fn write_sort_key_batch(
 }
 
 struct SortKeyShardWriter {
-    writer: OutputSink,
+    writer: BufWriter<OutputSink>,
     width_bytes: usize,
 }
 
@@ -13045,7 +12743,7 @@ struct SortKeyComponentBatcher {
     kind: SortKeyComponentKind,
     width_bytes: u8,
     encoder: SortKeyComponentEncoder,
-    buffers: Vec<BudgetedVec<u8>>,
+    buffers: Vec<Vec<u8>>,
     rows: Vec<u64>,
 }
 
@@ -13056,16 +12754,13 @@ impl SortKeyComponentBatcher {
         width_bytes: u8,
         encoder: SortKeyComponentEncoder,
         num_shards: usize,
-        source_budget: Arc<crate::source_memory::ByteBudget>,
     ) -> Self {
         Self {
             rel,
             kind,
             width_bytes,
             encoder,
-            buffers: (0..num_shards)
-                .map(|_| BudgetedVec::new(Arc::clone(&source_budget)))
-                .collect(),
+            buffers: vec![Vec::new(); num_shards],
             rows: vec![0; num_shards],
         }
     }
@@ -13098,7 +12793,7 @@ impl SortKeyComponentBatcher {
             .get_mut(shard)
             .ok_or_else(|| anyhow!("sort key buffer shard {} out of bounds", shard))?;
         let bytes = value.to_le_bytes();
-        buffer.extend_from_slice(&bytes[..self.width_bytes as usize])?;
+        buffer.extend_from_slice(&bytes[..self.width_bytes as usize]);
         if let Some(row_count) = self.rows.get_mut(shard) {
             *row_count = row_count.saturating_add(1);
         }
@@ -13106,7 +12801,7 @@ impl SortKeyComponentBatcher {
     }
 
     fn buffered_bytes(&self, shard: usize) -> usize {
-        self.buffers.get(shard).map(BudgetedVec::len).unwrap_or(0)
+        self.buffers.get(shard).map(Vec::len).unwrap_or(0)
     }
 
     /// Drain the buffer for a shard, returning a `SortKeyWriteBatch` if there
@@ -13124,15 +12819,13 @@ impl SortKeyComponentBatcher {
         if *rows == 0 {
             return Ok(None);
         }
-        let (data, permits) = buffer.take();
         let batch = SortKeyWriteBatch {
             rel: std::sync::Arc::clone(&self.rel),
             kind: self.kind,
             shard,
-            data,
+            data: take_with_capacity(buffer),
             row_count: *rows,
             width_bytes: self.width_bytes as usize,
-            _permits: permits,
         };
         *rows = 0;
         Ok(Some(batch))
@@ -13148,10 +12841,7 @@ struct EdgeSrcWriteBatch {
 }
 
 enum EdgeSrcWriteMessage {
-    Batch {
-        batch: EdgeSrcWriteBatch,
-        _permits: Vec<crate::source_memory::BytePermit>,
-    },
+    Batch(EdgeSrcWriteBatch),
 }
 
 #[derive(Default)]
@@ -13175,11 +12865,7 @@ struct EdgeSrcWritePool {
 }
 
 impl EdgeSrcWritePool {
-    fn new(
-        target: std::sync::Arc<OutputTarget>,
-        workers: usize,
-        concurrency: Arc<EncodeConcurrency>,
-    ) -> Self {
+    fn new(target: std::sync::Arc<OutputTarget>, workers: usize) -> Self {
         let mut senders = Vec::with_capacity(workers);
         let mut handles = Vec::with_capacity(workers);
         let error = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -13188,9 +12874,8 @@ impl EdgeSrcWritePool {
                 std::sync::mpsc::sync_channel::<EdgeSrcWriteMessage>(EDGE_WRITE_QUEUE_DEPTH);
             let target = std::sync::Arc::clone(&target);
             let error = std::sync::Arc::clone(&error);
-            let concurrency = Arc::clone(&concurrency);
             handles.push(std::thread::spawn(move || {
-                match edge_src_writer_worker(target, rx, concurrency) {
+                match edge_src_writer_worker(target, rx) {
                     Ok(stats) => Ok(stats),
                     Err(err) => {
                         let mut guard = error.lock().unwrap_or_else(|e| e.into_inner());
@@ -13252,7 +12937,6 @@ impl Drop for EdgeSrcWritePool {
 fn edge_src_writer_worker(
     target: std::sync::Arc<OutputTarget>,
     rx: std::sync::mpsc::Receiver<EdgeSrcWriteMessage>,
-    concurrency: Arc<EncodeConcurrency>,
 ) -> Result<EdgeSrcWriterStats> {
     let mut writers: HashMap<(std::sync::Arc<str>, usize), TempRowWriter> = HashMap::new();
     let mut sort_key_writers: HashMap<
@@ -13261,9 +12945,8 @@ fn edge_src_writer_worker(
     > = HashMap::new();
     let mut stats = EdgeSrcWriterStats::default();
     while let Ok(msg) = rx.recv() {
-        let _concurrency = concurrency.acquire();
         match msg {
-            EdgeSrcWriteMessage::Batch { batch, .. } => {
+            EdgeSrcWriteMessage::Batch(batch) => {
                 let key = (std::sync::Arc::clone(&batch.rel), batch.shard);
                 let writer = match writers.get_mut(&key) {
                     Some(writer) => writer,
@@ -13296,7 +12979,11 @@ fn edge_src_writer_worker(
     }
     for (_, mut writer) in sort_key_writers {
         writer.writer.flush()?;
-        writer.writer.finish()?;
+        let sink = writer
+            .writer
+            .into_inner()
+            .map_err(|_| anyhow!("sort key flush failed"))?;
+        sink.finish()?;
     }
     Ok(stats)
 }
@@ -13308,7 +12995,6 @@ enum DestKeyWriteMessage {
         shard: usize,
         data: Vec<u8>,
         row_count: u64,
-        _permits: Vec<crate::source_memory::BytePermit>,
     },
     EdgeKey {
         edge_table: std::sync::Arc<str>,
@@ -13316,7 +13002,6 @@ enum DestKeyWriteMessage {
         shard: usize,
         data: Vec<u8>,
         row_count: u64,
-        _permits: Vec<crate::source_memory::BytePermit>,
     },
 }
 
@@ -13346,11 +13031,7 @@ struct DestKeyWritePool {
 }
 
 impl DestKeyWritePool {
-    fn new(
-        target: std::sync::Arc<OutputTarget>,
-        workers: usize,
-        concurrency: Arc<EncodeConcurrency>,
-    ) -> Self {
+    fn new(target: std::sync::Arc<OutputTarget>, workers: usize) -> Self {
         let mut senders = Vec::with_capacity(workers);
         let mut handles = Vec::with_capacity(workers);
         let error = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -13359,9 +13040,8 @@ impl DestKeyWritePool {
                 std::sync::mpsc::sync_channel::<DestKeyWriteMessage>(EDGE_WRITE_QUEUE_DEPTH);
             let target = std::sync::Arc::clone(&target);
             let error = std::sync::Arc::clone(&error);
-            let concurrency = Arc::clone(&concurrency);
             handles.push(std::thread::spawn(move || {
-                match dest_key_writer_worker(target, rx, concurrency) {
+                match dest_key_writer_worker(target, rx) {
                     Ok(stats) => Ok(stats),
                     Err(err) => {
                         let mut guard = error.lock().unwrap_or_else(|e| e.into_inner());
@@ -13423,7 +13103,6 @@ impl Drop for DestKeyWritePool {
 fn dest_key_writer_worker(
     target: std::sync::Arc<OutputTarget>,
     rx: std::sync::mpsc::Receiver<DestKeyWriteMessage>,
-    concurrency: Arc<EncodeConcurrency>,
 ) -> Result<DestKeyWriterStats> {
     let mut node_writers: HashMap<
         (std::sync::Arc<str>, std::sync::Arc<str>, usize),
@@ -13433,7 +13112,6 @@ fn dest_key_writer_worker(
         HashMap::new();
     let mut stats = DestKeyWriterStats::default();
     while let Ok(msg) = rx.recv() {
-        let _concurrency = concurrency.acquire();
         match msg {
             DestKeyWriteMessage::NodeFkey {
                 table,
@@ -13441,7 +13119,6 @@ fn dest_key_writer_worker(
                 shard,
                 data,
                 row_count,
-                ..
             } => {
                 let key = (
                     std::sync::Arc::clone(&table),
@@ -13474,7 +13151,6 @@ fn dest_key_writer_worker(
                 shard,
                 data,
                 row_count,
-                ..
             } => {
                 let key = (std::sync::Arc::clone(&edge_table), kind, shard);
                 let writer = match edge_writers.get_mut(&key) {
@@ -13509,7 +13185,7 @@ fn dest_key_writer_worker(
 }
 
 struct EdgeSrcBuffer {
-    data: BudgetedVec<u8>,
+    data: Vec<u8>,
     row_count: u64,
 }
 
@@ -13529,12 +13205,11 @@ impl EdgeSrcBatcher {
         buffer_limit: usize,
         senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<EdgeSrcWriteMessage>>>,
         error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-        source_budget: Arc<crate::source_memory::ByteBudget>,
     ) -> Self {
         let rel_hash = hash_name(&rel);
         let buffers = (0..num_shards)
             .map(|_| EdgeSrcBuffer {
-                data: BudgetedVec::new(Arc::clone(&source_budget)),
+                data: Vec::new(),
                 row_count: 0,
             })
             .collect();
@@ -13560,9 +13235,9 @@ impl EdgeSrcBatcher {
             .get_mut(shard)
             .ok_or_else(|| anyhow!("edge src buffer shard {} out of bounds", shard))?;
         let total_len = (row.len() + 1) as u32;
-        buffer.data.extend_from_slice(&total_len.to_le_bytes())?;
-        buffer.data.extend_from_slice(row)?;
-        buffer.data.push(if timestamp_valid { 1 } else { 0 })?;
+        buffer.data.extend_from_slice(&total_len.to_le_bytes());
+        buffer.data.extend_from_slice(row);
+        buffer.data.push(if timestamp_valid { 1 } else { 0 });
         buffer.row_count = buffer.row_count.saturating_add(1);
         let sort_key_bytes = sort_key_batchers
             .iter()
@@ -13591,7 +13266,7 @@ impl EdgeSrcBatcher {
         if buffer.row_count == 0 {
             return Ok(());
         }
-        let (data, permits) = buffer.data.take();
+        let data = take_with_capacity(&mut buffer.data);
         // Drain sort key data for this shard and bundle into the batch.
         let mut sort_keys = Vec::new();
         for sk in sort_key_batchers.iter_mut() {
@@ -13609,10 +13284,7 @@ impl EdgeSrcBatcher {
         buffer.row_count = 0;
         let idx = edge_writer_index(self.rel_hash, shard, self.senders.len());
         self.senders[idx]
-            .send(EdgeSrcWriteMessage::Batch {
-                batch,
-                _permits: permits,
-            })
+            .send(EdgeSrcWriteMessage::Batch(batch))
             .map_err(|e| {
                 if let Ok(guard) = self.error.lock() {
                     if let Some(message) = guard.as_ref() {
@@ -13633,7 +13305,7 @@ impl EdgeSrcBatcher {
 }
 
 struct DestFkeyBuffer {
-    data: BudgetedVec<u8>,
+    data: Vec<u8>,
     row_count: u64,
 }
 
@@ -13660,7 +13332,6 @@ impl DestFkeyBatcher {
         buffer_limit: usize,
         senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<DestKeyWriteMessage>>>,
         error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-        source_budget: Arc<crate::source_memory::ByteBudget>,
     ) -> Self {
         let table_hash = hash_name(&table);
         let buffers = (0..num_shards)
@@ -13668,7 +13339,7 @@ impl DestFkeyBatcher {
                 fkeys: rel_names
                     .iter()
                     .map(|_| DestFkeyBuffer {
-                        data: BudgetedVec::new(Arc::clone(&source_budget)),
+                        data: Vec::new(),
                         row_count: 0,
                     })
                     .collect(),
@@ -13696,8 +13367,8 @@ impl DestFkeyBatcher {
             .get_mut(rel_idx)
             .ok_or_else(|| anyhow!("dest fkey rel {} out of bounds", rel_idx))?;
         let len = u32::try_from(row.len()).map_err(|_| anyhow!("temp row too large"))?;
-        fkey.data.extend_from_slice(&len.to_le_bytes())?;
-        fkey.data.extend_from_slice(row)?;
+        fkey.data.extend_from_slice(&len.to_le_bytes());
+        fkey.data.extend_from_slice(row);
         fkey.row_count = fkey.row_count.saturating_add(1);
         buffer.bytes = buffer.bytes.saturating_add(4 + row.len());
         if buffer.bytes >= self.buffer_limit {
@@ -13723,7 +13394,7 @@ impl DestFkeyBatcher {
             if entry.row_count == 0 {
                 continue;
             }
-            let (data, permits) = entry.data.take();
+            let data = take_with_capacity(&mut entry.data);
             let rel = self
                 .rel_names
                 .get(rel_idx)
@@ -13735,7 +13406,6 @@ impl DestFkeyBatcher {
                 shard,
                 data,
                 row_count: entry.row_count,
-                _permits: permits,
             };
             entry.row_count = 0;
             let idx = edge_writer_index(self.table_hash, shard, self.senders.len());
@@ -13756,7 +13426,7 @@ impl DestFkeyBatcher {
 }
 
 struct EdgeKeyBuffer {
-    data: BudgetedVec<u8>,
+    data: Vec<u8>,
     row_count: u64,
 }
 
@@ -13777,18 +13447,17 @@ impl EdgeKeyBatcher {
         buffer_limit: usize,
         senders: std::sync::Arc<Vec<std::sync::mpsc::SyncSender<DestKeyWriteMessage>>>,
         error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-        source_budget: Arc<crate::source_memory::ByteBudget>,
     ) -> Self {
         let edge_hash = hash_name(&edge_table);
         let buffers_src = (0..num_shards)
             .map(|_| EdgeKeyBuffer {
-                data: BudgetedVec::new(Arc::clone(&source_budget)),
+                data: Vec::new(),
                 row_count: 0,
             })
             .collect();
         let buffers_dst = (0..num_shards)
             .map(|_| EdgeKeyBuffer {
-                data: BudgetedVec::new(Arc::clone(&source_budget)),
+                data: Vec::new(),
                 row_count: 0,
             })
             .collect();
@@ -13820,8 +13489,8 @@ impl EdgeKeyBatcher {
             .get_mut(shard)
             .ok_or_else(|| anyhow!("edge key buffer shard {} out of bounds", shard))?;
         let len = u32::try_from(row.len()).map_err(|_| anyhow!("temp row too large"))?;
-        buffer.data.extend_from_slice(&len.to_le_bytes())?;
-        buffer.data.extend_from_slice(row)?;
+        buffer.data.extend_from_slice(&len.to_le_bytes());
+        buffer.data.extend_from_slice(row);
         buffer.row_count = buffer.row_count.saturating_add(1);
         if buffer.data.len() >= self.buffer_limit {
             self.flush_shard(kind, shard)?;
@@ -13845,14 +13514,13 @@ impl EdgeKeyBatcher {
         if buffer.row_count == 0 {
             return Ok(());
         }
-        let (data, permits) = buffer.data.take();
+        let data = take_with_capacity(&mut buffer.data);
         let batch = DestKeyWriteMessage::EdgeKey {
             edge_table: std::sync::Arc::clone(&self.edge_table),
             kind,
             shard,
             data,
             row_count: buffer.row_count,
-            _permits: permits,
         };
         buffer.row_count = 0;
         let idx = edge_writer_index(self.edge_hash, shard, self.senders.len());

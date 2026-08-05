@@ -1,5 +1,4 @@
-use anyhow::{anyhow, bail, Context, Result};
-use std::mem::size_of;
+use anyhow::{anyhow, bail, Result};
 use std::sync::{Arc, Condvar, Mutex};
 
 #[derive(Debug)]
@@ -16,8 +15,6 @@ struct ByteBudgetState {
     used_bytes: u64,
     input_bytes: u64,
     working_bytes: u64,
-    producer_bytes: u64,
-    writer_bytes: u64,
     high_water_bytes: u64,
     next_ticket: u64,
     serving_ticket: u64,
@@ -52,24 +49,16 @@ impl ByteBudget {
             .state
             .lock()
             .map_err(|_| anyhow!("Encode memory budget lock was poisoned"))?;
-        if state.producer_bytes > self.max_bytes.saturating_sub(bytes) {
-            bail!("Encode producer working set exceeds the normal memory budget");
-        }
-        while state.working_bytes > self.max_bytes.saturating_sub(bytes) {
-            state = self
-                .available
-                .wait(state)
-                .map_err(|_| anyhow!("Encode memory budget lock was poisoned"))?;
+        if state.working_bytes > self.max_bytes.saturating_sub(bytes) {
+            bail!("Encode working set exceeds the normal memory budget");
         }
         state.used_bytes += bytes;
         state.working_bytes += bytes;
-        state.producer_bytes += bytes;
         state.high_water_bytes = state.high_water_bytes.max(state.used_bytes);
         Ok(BytePermit {
             budget: Arc::clone(self),
             bytes,
             input: false,
-            writer: false,
         })
     }
 
@@ -93,22 +82,17 @@ impl ByteBudget {
         }
         state.used_bytes += bytes;
         state.working_bytes += bytes;
-        state.producer_bytes += bytes;
         state.high_water_bytes = state.high_water_bytes.max(state.used_bytes);
         Ok(BytePermit {
             budget: Arc::clone(self),
             bytes,
             input: false,
-            writer: false,
         })
     }
 
     /// Bound complete compressed source objects independently from the
     /// decoded Encode working set by using a separate `ByteBudget` instance.
-    pub(crate) fn acquire_resident_object(
-        self: &Arc<Self>,
-        bytes: u64,
-    ) -> Result<BytePermit> {
+    pub(crate) fn acquire_resident_object(self: &Arc<Self>, bytes: u64) -> Result<BytePermit> {
         if bytes > self.max_bytes {
             bail!(
                 "resident Parquet object requires {bytes} bytes, exceeding the {} byte cloud input budget; raise DISKGRAPH_CLOUD_MAX_BYTES or repartition the source",
@@ -159,7 +143,6 @@ impl ByteBudget {
             budget: Arc::clone(self),
             bytes,
             input: true,
-            writer: false,
         })
     }
 
@@ -215,7 +198,6 @@ impl ByteBudget {
             budget: Arc::clone(self),
             bytes,
             input: true,
-            writer: false,
         })
     }
 
@@ -240,7 +222,6 @@ pub(crate) struct BytePermit {
     budget: Arc<ByteBudget>,
     bytes: u64,
     input: bool,
-    writer: bool,
 }
 
 impl BytePermit {
@@ -259,25 +240,9 @@ impl BytePermit {
             state.used_bytes = state.used_bytes.saturating_sub(released);
             if self.input {
                 state.input_bytes = state.input_bytes.saturating_sub(released);
-            } else if self.writer {
-                state.working_bytes = state.working_bytes.saturating_sub(released);
-                state.writer_bytes = state.writer_bytes.saturating_sub(released);
             } else {
                 state.working_bytes = state.working_bytes.saturating_sub(released);
-                state.producer_bytes = state.producer_bytes.saturating_sub(released);
             }
-            self.budget.available.notify_all();
-        }
-    }
-
-    fn transfer_to_writer(&mut self) {
-        if self.input || self.writer || self.bytes == 0 {
-            return;
-        }
-        if let Ok(mut state) = self.budget.state.lock() {
-            state.producer_bytes = state.producer_bytes.saturating_sub(self.bytes);
-            state.writer_bytes = state.writer_bytes.saturating_add(self.bytes);
-            self.writer = true;
             self.budget.available.notify_all();
         }
     }
@@ -289,135 +254,17 @@ impl Drop for BytePermit {
             state.used_bytes = state.used_bytes.saturating_sub(self.bytes);
             if self.input {
                 state.input_bytes = state.input_bytes.saturating_sub(self.bytes);
-            } else if self.writer {
-                state.working_bytes = state.working_bytes.saturating_sub(self.bytes);
-                state.writer_bytes = state.writer_bytes.saturating_sub(self.bytes);
             } else {
                 state.working_bytes = state.working_bytes.saturating_sub(self.bytes);
-                state.producer_bytes = state.producer_bytes.saturating_sub(self.bytes);
             }
             self.budget.available.notify_all();
         }
     }
 }
 
-/// A Vec whose reported capacity is reserved from the shared Encode budget
-/// before the allocator is allowed to grow. `take` moves both the allocation
-/// and its permits into an asynchronous writer message.
-pub(crate) struct BudgetedVec<T> {
-    data: Vec<T>,
-    budget: Arc<ByteBudget>,
-    permits: Vec<BytePermit>,
-}
-
-impl<T> BudgetedVec<T> {
-    pub(crate) fn new(budget: Arc<ByteBudget>) -> Self {
-        Self {
-            data: Vec::new(),
-            budget,
-            permits: Vec::new(),
-        }
-    }
-
-    fn ensure_additional(&mut self, additional: usize) -> Result<()> {
-        let required = self
-            .data
-            .len()
-            .checked_add(additional)
-            .ok_or_else(|| anyhow!("Encode buffer length overflowed"))?;
-        if required <= self.data.capacity() || size_of::<T>() == 0 {
-            return Ok(());
-        }
-        let old_capacity = self.data.capacity();
-        let target_capacity = required.max(old_capacity.saturating_mul(2)).max(8);
-        // Reserve conservatively before allocation. `Vec::try_reserve_exact`
-        // may round for allocator alignment; twice the requested capacity is
-        // an upper guard, then the permit is shrunk to the capacity Rust
-        // actually reports.
-        let guarded_capacity = target_capacity
-            .checked_mul(2)
-            .ok_or_else(|| anyhow!("Encode buffer capacity overflowed"))?;
-        let guarded_elements = guarded_capacity.saturating_sub(old_capacity);
-        let guarded_bytes = guarded_elements
-            .checked_mul(size_of::<T>())
-            .ok_or_else(|| anyhow!("Encode buffer byte size overflowed"))?
-            as u64;
-        let mut permit = self.budget.acquire(guarded_bytes)?;
-        self.data
-            .try_reserve_exact(target_capacity.saturating_sub(self.data.len()))
-            .context("allocate Encode buffer")?;
-        let actual_elements = self.data.capacity().saturating_sub(old_capacity);
-        let actual_bytes = actual_elements
-            .checked_mul(size_of::<T>())
-            .ok_or_else(|| anyhow!("Encode buffer byte size overflowed"))?
-            as u64;
-        if actual_bytes > guarded_bytes {
-            bail!("allocator exceeded the guarded Encode buffer capacity");
-        }
-        permit.shrink_to(actual_bytes);
-        self.permits.push(permit);
-        Ok(())
-    }
-
-    pub(crate) fn push(&mut self, value: T) -> Result<()> {
-        self.ensure_additional(1)?;
-        self.data.push(value);
-        Ok(())
-    }
-
-    pub(crate) fn extend_from_slice(&mut self, values: &[T]) -> Result<()>
-    where
-        T: Clone,
-    {
-        self.ensure_additional(values.len())?;
-        self.data.extend_from_slice(values);
-        Ok(())
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.data.len()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn capacity(&self) -> usize {
-        self.data.capacity()
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.data.is_empty()
-    }
-
-    pub(crate) fn get_mut(&mut self, index: usize) -> Option<&mut T> {
-        self.data.get_mut(index)
-    }
-
-    pub(crate) fn take(&mut self) -> (Vec<T>, Vec<BytePermit>) {
-        let replacement = Self::new(Arc::clone(&self.budget));
-        let mut allocation = std::mem::replace(self, replacement);
-        for permit in &mut allocation.permits {
-            permit.transfer_to_writer();
-        }
-        (allocation.data, allocation.permits)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn budgeted_vec_reserves_before_growth_and_transfers_permits() {
-        let budget = ByteBudget::new(1024).unwrap();
-        let mut values = BudgetedVec::new(Arc::clone(&budget));
-        values.extend_from_slice(&[1u64, 2, 3]).unwrap();
-        assert!(budget.high_water_bytes() >= values.capacity() as u64 * 8);
-        let (data, permits) = values.take();
-        assert_eq!(data, vec![1, 2, 3]);
-        assert!(!permits.is_empty());
-        assert!(values.is_empty());
-        drop(permits);
-        assert!(budget.acquire(1024).is_ok());
-    }
 
     #[test]
     fn oversized_input_includes_retained_consumer_working_set() {
@@ -434,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn downstream_growth_does_not_wait_on_its_own_oversized_input() {
+    fn working_set_can_coexist_with_oversized_input() {
         let budget = ByteBudget::with_oversized_limit(10, 20).unwrap();
         let input = budget.acquire_input_chunk(20).unwrap();
         let working = budget.acquire(10).unwrap();

@@ -82,6 +82,13 @@ We have a server running 24/7 for ingest benchmarks. To add a dataset to the ben
 ./diskgraph-ingest/scripts/perf_explorer.sh
 ```
 
+Monitor live disk throughput, latency, request sizes, queue depth, and
+utilization during a run:
+
+```bash
+./scripts/diskstats.sh -d '^nvme'
+```
+
 ## Generate a synthetic dataset
 
 Use the JSON-driven datagenerator to write Parquet shards under `/mnt/localssd/datasets/<config-name>/`.
