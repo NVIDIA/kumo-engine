@@ -29,6 +29,280 @@ fn epoch_shuffle_seed(base_seed: u64, epoch: u64, stage_key: &str) -> u64 {
     h
 }
 
+/// Rounds only affect how well-mixed the output is. Every round is a
+/// bijection, so the ordering is a valid permutation at any count -- nothing
+/// about correctness depends on this number.
+///
+/// More rounds mix better and each is a few XORs, so there is no reason to
+/// skimp; the format-preserving-encryption standards built on this
+/// construction use 8 (FF3-1) and 10 (FF1). We take 10 and check the result
+/// directly: see `a_shard_is_spread_evenly_across_the_table` and
+/// `consecutive_rows_of_a_shard_are_far_apart`.
+const FEISTEL_ROUNDS: usize = 10;
+
+/// Below this many rows, shuffle by materialising the order instead.
+///
+/// This is a COMPATIBILITY boundary, not a correctness or quality one. The
+/// generator is a valid permutation at any size, and the mixing tests run
+/// well above this.
+///
+/// Below a million rows the problem being solved does not exist: a million
+/// u64 offsets is 8 MB. Keeping Fisher-Yates there means every table under
+/// that size produces a BYTE-IDENTICAL ordering, which confines the
+/// behaviour change to the tables actually large enough to need it.
+const MATERIALISE_BELOW: u64 = 1_000_000;
+
+/// A seeded pseudorandom permutation of `[0, n)`, evaluable POINTWISE in
+/// constant time and constant memory.
+///
+/// # Why this exists
+///
+/// The ordering it replaces was materialised: `(0..n).collect()` followed by a
+/// Fisher-Yates shuffle -- 334 MB and ~1.6 s for a 41.8M-row stage table --
+/// then read exactly once, front to back, and dropped. It was a stream stored
+/// as an array, and it cost O(all rows) however few rows the caller wanted.
+///
+/// # What is needed
+///
+/// To avoid the array we need to answer "which row ends up at position p?" on
+/// demand. That function must be:
+///
+///   1. a BIJECTION on `[0, n)` -- non-negotiable. If two inputs mapped to one
+///      output, some rows would be trained on twice and others never, with
+///      correct shapes, correct counts and nothing to notice.
+///   2. pointwise -- computable for any `p` without computing the rest.
+///   3. seeded -- so shards stay reproducible and disjoint.
+///
+/// A hash fails (1): hashes collide by design. A linear map `(a*p + b) % n`
+/// satisfies (1) but is a fixed-stride rotation -- it reorders without mixing,
+/// so any structure in the input order survives.
+///
+/// # How Feistel gets both
+///
+/// Split a value into halves `(l, r)` and apply `l' = r`, `r' = l ^ F(r)`.
+/// This is invertible for ANY `F`, because `r = l'` and `l = r' ^ F(l')` --
+/// undoing it only ever EVALUATES `F`, never inverts it. The XOR carries the
+/// invertibility; `F` supplies only the mixing, which is why `F` can be chosen
+/// purely for speed.
+///
+/// Each round is a bijection, so any number of rounds composed is one too.
+/// Round count affects only how well mixed the output is, never whether it is
+/// a permutation -- correctness and quality stay cleanly separated. See
+/// `FEISTEL_ROUNDS` for why the count is 10 and not the textbook 3-4.
+///
+/// # Cycle walking, for domains that are not powers of two
+///
+/// Feistel works on a fixed bit width, so take the smallest `2^(2*half_bits)`
+/// covering `n` and re-apply until the result lands back inside `[0, n)`.
+///
+/// That is still a bijection: the permutation partitions the padded space into
+/// disjoint cycles, so stepping along a cycle from a point inside `[0, n)`
+/// must return to `[0, n)` -- it is a closed loop containing that point. Taking
+/// each cycle to its next in-range element is thus a bijection of the in-range
+/// subset onto itself.
+///
+/// It is also fast: the in-range fraction is `n / 2^(2*half_bits)`, never below
+/// one half, so the expected number of steps is under 2 for any `n`. This is
+/// how NIST's format-preserving encryption (FF1, FF3) handles arbitrary
+/// domains.
+#[derive(Clone)]
+struct FeistelPerm {
+    keys: [u64; FEISTEL_ROUNDS],
+    n: u64,
+    /// Widths of the two halves. UNBALANCED when `ceil(log2 n)` is odd, so
+    /// the block is always the true minimal power of two >= n. A balanced
+    /// split would force an even block width, rounding the domain up by two
+    /// bits instead of one whenever the ideal width is odd -- which drops the
+    /// in-range fraction from >= 0.5 to ~0.25 and doubles the expected
+    /// cycle-walk cost for roughly half of all table sizes. FF1 and FF3 split
+    /// unevenly for the same reason.
+    left_bits: u32,
+    right_bits: u32,
+}
+
+impl FeistelPerm {
+    fn new(n: u64, seed: u64) -> Self {
+        // The true minimal block: ceil(log2 n) bits, floored at 2 so neither
+        // half is zero-width (a zero-width half is not invertible).
+        let total_bits = if n <= 2 {
+            2
+        } else {
+            (64 - (n - 1).leading_zeros()).max(2)
+        };
+        let left_bits = total_bits / 2;
+        let right_bits = total_bits - left_bits;
+        let mut keys = [0u64; FEISTEL_ROUNDS];
+        let mut h = splitmix64(seed);
+        for k in keys.iter_mut() {
+            h = splitmix64(h);
+            *k = h;
+        }
+        Self { keys, n, left_bits, right_bits }
+    }
+
+    #[inline]
+    fn mask(bits: u32) -> u64 {
+        if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 }
+    }
+
+    #[inline]
+    fn permute_block(&self, x: u64) -> u64 {
+        // With unequal halves the two swap WIDTHS as well as roles each
+        // round, so the widths are tracked alongside the values. FEISTEL_ROUNDS
+        // is even, which returns them to the original layout for reassembly.
+        let (mut a, mut b) = (self.left_bits, self.right_bits);
+        let mut l = x >> b;
+        let mut r = x & Self::mask(b);
+        for i in 0..FEISTEL_ROUNDS {
+            let nl = r;
+            r = (l ^ (splitmix64(r ^ self.keys[i]) & Self::mask(a))) & Self::mask(a);
+            l = nl;
+            std::mem::swap(&mut a, &mut b);
+        }
+        (l << self.right_bits) | r
+    }
+
+    /// The image of `i` under the permutation.
+    ///
+    /// `i` MUST be `< n`. Out of range the cycle walk still terminates and
+    /// returns a value in `[0, n)`, so an over-read would look entirely
+    /// plausible while being wrong -- unlike the materialised path, which
+    /// panics on the same mistake. Assert so both fail identically and
+    /// loudly rather than one of them silently.
+    #[inline]
+    fn at(&self, i: u64) -> u64 {
+        debug_assert!(
+            i < self.n,
+            "FeistelPerm::at({i}) out of range for domain {}",
+            self.n
+        );
+        if self.n <= 1 {
+            return i;
+        }
+        let mut x = i;
+        loop {
+            x = self.permute_block(x);
+            if x < self.n {
+                return x;
+            }
+        }
+    }
+}
+
+/// One worker's slice of the epoch, generated on demand.
+///
+/// Replaces the materialised `Vec<u64>` of row offsets. The contract is
+/// deliberately identical to what it replaces: worker `w` of `k` receives the
+/// elements of the (possibly shuffled) order at positions `w, w+k, w+2k, ...`,
+/// so coverage and disjointness hold for exactly the same reason they did
+/// before -- every position belongs to exactly one worker.
+/// How this epoch's ordering is obtained. Both variants describe the SAME
+/// kind of object -- a permutation of `[0, n)` -- and differ only in whether
+/// it is stored or computed.
+#[derive(Clone)]
+enum Order {
+    /// `shuffle=false`: position p holds row p.
+    Identity,
+    /// Small domains: the classic Fisher-Yates array, shared between the
+    /// stream's clones so it is stored once.
+    Materialised(Arc<Vec<u64>>),
+    /// Large domains: computed pointwise, no allocation.
+    Generated(FeistelPerm),
+}
+
+#[derive(Clone)]
+struct ShardStream {
+    order: Order,
+    stride: u64,
+    start: u64,
+    /// Added to every emitted value. Non-zero only in NodeRange mode, where
+    /// the values ARE global node ids rather than stage-table offsets.
+    base: u64,
+    len: usize,
+}
+
+impl ShardStream {
+    fn empty() -> Self {
+        Self { order: Order::Identity, stride: 1, start: 0, base: 0, len: 0 }
+    }
+
+    fn new(
+        input_count: u64,
+        num_workers: u64,
+        worker_id: u64,
+        shuffle: bool,
+        rnd_seed: Option<u64>,
+        epoch: u64,
+        stage_key: &str,
+        base: u64,
+    ) -> PyResult<Self> {
+        if num_workers == 0 {
+            return Err(DiskgraphConfigError::new_err("num_workers must be >= 1"));
+        }
+        if worker_id >= num_workers {
+            return Err(DiskgraphConfigError::new_err(format!(
+                "worker_id {worker_id} out of range for num_workers {num_workers}"
+            )));
+        }
+        if shuffle && rnd_seed.is_none() {
+            return Err(DiskgraphConfigError::new_err(
+                "rnd_seed is required when shuffle=True",
+            ));
+        }
+        // Count of positions p < input_count with p % num_workers == worker_id.
+        // Closed form, so `len()` costs nothing even for billions of rows.
+        let len = if worker_id >= input_count {
+            0usize
+        } else {
+            (input_count - worker_id).div_ceil(num_workers) as usize
+        };
+        let seed = epoch_shuffle_seed(rnd_seed.unwrap_or(0), epoch, stage_key);
+        let order = if !shuffle {
+            Order::Identity
+        } else if input_count < MATERIALISE_BELOW {
+            // Small domain: materialise, both because Feistel is weakest here
+            // and because 8 MB is not worth avoiding. Byte-identical to the
+            // ordering this replaces.
+            let mut v: Vec<u64> = (0..input_count).collect();
+            v.shuffle(&mut StdRng::seed_from_u64(seed));
+            Order::Materialised(Arc::new(v))
+        } else {
+            Order::Generated(FeistelPerm::new(input_count, seed))
+        };
+        Ok(Self { order, stride: num_workers, start: worker_id, base, len })
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    /// The `j`-th element of this worker's shard.
+    #[inline]
+    fn at(&self, j: usize) -> u64 {
+        debug_assert!(
+            j < self.len,
+            "ShardStream::at({j}) past the end of a {}-element shard",
+            self.len
+        );
+        let pos = self.start + (j as u64) * self.stride;
+        let v = match &self.order {
+            Order::Identity => pos,
+            Order::Materialised(v) => v[pos as usize],
+            Order::Generated(p) => p.at(pos),
+        };
+        v + self.base
+    }
+
+    fn take(&self, from: usize, count: usize) -> Vec<u64> {
+        (from..from + count).map(|j| self.at(j)).collect()
+    }
+}
+
+/// The materialised ordering `ShardStream` replaces. Kept, test-only, as the
+/// reference the unshuffled path is asserted byte-identical against -- the
+/// clearest statement that this refactor changes only the shuffled order.
+#[cfg(test)]
 fn make_worker_offsets(
     input_count: u64,
     num_workers: u64,
@@ -940,7 +1214,9 @@ pub struct RuntimeBatchIterator {
     stage_table: Arc<TableReader>,
     plan: SamplingPlan,
     flags: SamplingFlags,
-    offsets: Vec<u64>,
+    /// This worker's slice of the epoch, generated on demand rather
+    /// than materialised. See `ShardStream`.
+    stream: ShardStream,
     /// Worker-local explicit stage-table node ids to emit in caller order.
     /// These are final stage node ids (`task.tt_stage_node_ids`), not dense
     /// offsets.
@@ -1363,33 +1639,23 @@ impl RuntimeBatchIterator {
         // ingest guarantee), NOT stage-table row offsets. Build the offsets over
         // the dense range and add `lo` so each offset IS the global node-id. The
         // stage table is ignored for seeding in this mode.
-        let offsets = if selected_stage_node_ids.is_some() || weighted_stage_node_ids.is_some() {
-            Vec::new()
+        let stream = if selected_stage_node_ids.is_some() || weighted_stage_node_ids.is_some() {
+            ShardStream::empty()
         } else if group_by_timestamp {
-            // Grouped path drives iteration from `bucket_schedule`, not offsets.
-            Vec::new()
+            // Grouped path drives iteration from `bucket_schedule`, not the stream.
+            ShardStream::empty()
         } else if let Some(rhs_type) = rhs_seed_node_type.as_deref() {
             let (lo, hi) = engine
                 .node_type_id_range(rhs_type)
                 .map_err(map_engine_err)?;
             let num_rhs = hi - lo + 1;
-            let mut offs = make_worker_offsets(
-                num_rhs,
-                num_workers,
-                worker_id,
-                shuffle,
-                rnd_seed,
-                epoch,
-                rhs_type,
-            )?;
-            if lo != 0 {
-                for o in offs.iter_mut() {
-                    *o += lo;
-                }
-            }
-            offs
+            // `base = lo` so each emitted value IS the global node id, which is
+            // what the materialised path achieved with a post-pass over the Vec.
+            ShardStream::new(
+                num_rhs, num_workers, worker_id, shuffle, rnd_seed, epoch, rhs_type, lo,
+            )?
         } else {
-            make_worker_offsets(
+            ShardStream::new(
                 stage_table_arc.node_count(),
                 num_workers,
                 worker_id,
@@ -1397,6 +1663,7 @@ impl RuntimeBatchIterator {
                 rnd_seed,
                 epoch,
                 &stage_catalog_key,
+                0,
             )?
         };
         // `fused=None` → DG picks via heuristic. Explicit override wins.
@@ -1433,7 +1700,7 @@ impl RuntimeBatchIterator {
                 fused_feature_fetching: chosen_fused,
                 swap_edge_direction,
             },
-            offsets,
+            stream,
             selected_stage_node_ids,
             weighted_stage_node_ids,
             cursor: 0,
@@ -1563,7 +1830,7 @@ impl RuntimeBatchIterator {
         // Grouped path: report the worker's batch count (offsets is empty).
         match &self.bucket_schedule {
             Some(sched) => sched.worker_batch_count() as usize,
-            None => self.offsets.len(),
+            None => self.stream.len(),
         }
     }
 
@@ -1579,7 +1846,7 @@ impl RuntimeBatchIterator {
         match &self.bucket_schedule {
             Some(sched) => sched.worker_batch_count() as usize,
             None => {
-                let remaining = self.offsets.len();
+                let remaining = self.stream.len();
                 if self.drop_last {
                     remaining / self.batch_size
                 } else {
@@ -1742,7 +2009,7 @@ impl RuntimeBatchIterator {
             return Ok(Some(dict.into()));
         }
 
-        let remaining = self.offsets.len().saturating_sub(self.cursor);
+        let remaining = self.stream.len().saturating_sub(self.cursor);
         if remaining == 0 {
             return Ok(None);
         }
@@ -1750,7 +2017,7 @@ impl RuntimeBatchIterator {
         if take < self.batch_size && self.drop_last {
             return Ok(None);
         }
-        let batch_offsets = self.offsets[self.cursor..self.cursor + take].to_vec();
+        let batch_offsets = self.stream.take(self.cursor, take);
         self.cursor += take;
 
         // NodeRange mode: the offsets ARE the rhs global node-ids (built over the
@@ -2324,6 +2591,325 @@ mod tests {
         let (bin_path, raw) = read_bucket_index(tmp.path(), "stage").unwrap();
         assert_eq!(bin_path, tmp.path().join("stage/bucket_index.bin"));
         assert_eq!(raw, vec![(10, 0, 2), (20, 2, 1)]);
+    }
+
+    // ---- ShardStream / Feistel -------------------------------------------
+    //
+    // The catastrophic failure for a pointwise permutation is silent: if it is
+    // not a bijection, some seeds are trained on twice and others never, with
+    // nothing to notice. So bijectivity is tested EXHAUSTIVELY over every small
+    // domain rather than sampled.
+
+    use super::{FeistelPerm, ShardStream, MATERIALISE_BELOW};
+
+    #[test]
+    fn feistel_is_a_bijection_for_every_small_domain() {
+        for n in 1u64..=512 {
+            let perm = FeistelPerm::new(n, 0xC0FFEE ^ n);
+            let mut seen = HashSet::new();
+            for i in 0..n {
+                let v = perm.at(i);
+                assert!(v < n, "n={n} i={i} produced {v}, outside [0,n)");
+                assert!(seen.insert(v), "n={n} produced {v} twice: not a bijection");
+            }
+            assert_eq!(seen.len() as u64, n);
+        }
+    }
+
+    #[test]
+    fn feistel_is_a_bijection_for_awkward_domains() {
+        // Just above and just below powers of two, where cycle walking works
+        // hardest (the padded domain is nearly twice the real one).
+        for n in [1u64, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 63, 64, 65, 1023, 1024,
+                  1025, 4095, 4096, 4097, 65535, 65536, 65537] {
+            let perm = FeistelPerm::new(n, 42);
+            let mut seen = HashSet::new();
+            for i in 0..n {
+                let v = perm.at(i);
+                assert!(v < n, "n={n}: {v} out of range");
+                assert!(seen.insert(v), "n={n}: {v} repeated");
+            }
+        }
+    }
+
+    #[test]
+    fn feistel_actually_shuffles() {
+        // A bijection that is the identity would pass every test above.
+        let n = 10_000u64;
+        let perm = FeistelPerm::new(n, 7);
+        let fixed = (0..n).filter(|i| perm.at(*i) == *i).count();
+        // Fixed points of a random permutation are Poisson(1); 50 would mean
+        // the permutation is barely moving anything.
+        assert!(fixed < 50, "{fixed} fixed points: this is not shuffling");
+    }
+
+    #[test]
+    fn shards_cover_every_row_exactly_once() {
+        // The property the loader actually depends on.
+        for (n, k) in [(100u64, 7u64), (1000, 16), (41, 41), (41, 64), (1, 8),
+                       (9973, 13)] {
+            let mut seen: Vec<u64> = Vec::new();
+            for w in 0..k {
+                let st = ShardStream::new(n, k, w, true, Some(5), 3, "train", 0)
+                    .unwrap();
+                for j in 0..st.len() {
+                    seen.push(st.at(j));
+                }
+            }
+            seen.sort_unstable();
+            let expect: Vec<u64> = (0..n).collect();
+            assert_eq!(seen, expect, "n={n} k={k}: shards are not a partition");
+        }
+    }
+
+    #[test]
+    fn len_matches_what_the_stream_yields() {
+        // `len()` is a closed form and feeds Lightning's val_check_batch
+        // scheduling, so an off-by-one is a scheduling bug, not an error.
+        for n in 0u64..200 {
+            for k in 1u64..=17 {
+                for w in 0..k {
+                    let st =
+                        ShardStream::new(n, k, w, false, None, 0, "s", 0).unwrap();
+                    let counted =
+                        (0..n).filter(|p| p % k == w).count();
+                    assert_eq!(st.len(), counted, "n={n} k={k} w={w}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unshuffled_stream_matches_the_materialised_path_exactly() {
+        // With shuffle=false the new path must be byte-identical to the old
+        // one; only the shuffled ordering is allowed to differ.
+        for (n, k) in [(10u64, 3u64), (100, 7), (64, 8), (5, 9)] {
+            for w in 0..k {
+                let old = make_worker_offsets(n, k, w, false, None, 0, "train").unwrap();
+                let st = ShardStream::new(n, k, w, false, None, 0, "train", 0).unwrap();
+                let new: Vec<u64> = (0..st.len()).map(|j| st.at(j)).collect();
+                assert_eq!(old, new, "n={n} k={k} w={w}");
+            }
+        }
+    }
+
+    #[test]
+    fn small_domains_match_the_materialised_shuffle_exactly() {
+        // Below the threshold the ordering must be byte-identical to what it
+        // replaces, so tasks with modest train tables see no change at all.
+        for (n, k) in [(10u64, 3u64), (1000, 8), (99_999, 16)] {
+            for w in 0..k {
+                let old = make_worker_offsets(n, k, w, true, Some(7), 2, "train")
+                    .unwrap();
+                let st =
+                    ShardStream::new(n, k, w, true, Some(7), 2, "train", 0).unwrap();
+                let new: Vec<u64> = (0..st.len()).map(|j| st.at(j)).collect();
+                assert_eq!(old, new, "n={n} k={k} w={w} diverged below threshold");
+            }
+        }
+    }
+
+    #[test]
+    fn large_domains_still_partition_exactly() {
+        // Above the threshold the generator takes over; coverage must survive
+        // the switch.
+        let n = MATERIALISE_BELOW + 12_345;
+        let k = 8u64;
+        let mut seen: Vec<u64> = Vec::new();
+        for w in 0..k {
+            let st = ShardStream::new(n, k, w, true, Some(3), 1, "train", 0).unwrap();
+            for j in 0..st.len() {
+                seen.push(st.at(j));
+            }
+        }
+        seen.sort_unstable();
+        assert_eq!(seen, (0..n).collect::<Vec<u64>>());
+    }
+
+    /// Positions sampled per scale. 1M gives ~100k per decile, so one
+    /// standard deviation is ~316 and the 5% tolerance below is ~15 sigma --
+    /// enough to catch any bias worth caring about, while still running in
+    /// well under a second.
+    const MIXING_SAMPLES: u64 = 1_000_000;
+
+    /// Sizes the mixing tests sweep. Chosen so BOTH block layouts are
+    /// covered: an even `ceil(log2 n)` gives balanced halves, an odd one
+    /// gives the unbalanced split. An all-even list would leave the
+    /// unbalanced path with correctness coverage (exhaustive bijectivity)
+    /// but no evidence it actually mixes -- and unbalanced Feistel is a
+    /// known source of subtle non-mixing.
+    ///
+    ///   10_000_000      ceil(log2) = 24  even
+    ///   67_108_865      ceil(log2) = 27  ODD   (2^26 + 1)
+    ///   1_000_000_000   ceil(log2) = 30  even
+    ///   5_000_000_000   ceil(log2) = 33  ODD
+    ///   10_000_000_000  ceil(log2) = 34  even
+    const MIXING_SIZES: [u64; 5] = [
+        10_000_000,
+        67_108_865,
+        1_000_000_000,
+        5_000_000_000,
+        10_000_000_000,
+    ];
+
+    #[test]
+    fn a_shard_is_spread_evenly_across_the_table() {
+        // Does a worker's shard come from all over the table, or does it
+        // clump? Train tables are typically written in timestamp order, so a
+        // shard drawn from one region would give temporally correlated
+        // batches -- precisely what shuffling exists to prevent.
+        //
+        // Sampled ACROSS the whole shard rather than from its prefix: a
+        // permutation that behaved well early and degraded later would
+        // otherwise pass. Run at 10B as well as 10M, which costs the same
+        // because the domain is never materialised.
+        for n in MIXING_SIZES {
+            let st = ShardStream::new(n, 16, 3, true, Some(99), 0, "train", 0)
+                .unwrap();
+            let len = st.len() as u64;
+            let samples = MIXING_SAMPLES.min(len);
+            let mut deciles = [0u64; 10];
+            for i in 0..samples {
+                let j = (i * len / samples) as usize;
+                deciles[((st.at(j) / (n / 10)).min(9)) as usize] += 1;
+            }
+            let expected = samples as f64 / 10.0;
+            for (d, count) in deciles.iter().enumerate() {
+                let off = (*count as f64 - expected).abs() / expected;
+                assert!(
+                    off < 0.05,
+                    "n={n}: decile {d} holds {count} of {samples}, expected \
+                     ~{expected:.0} ({:.2}% off): shard is not spread evenly",
+                    off * 100.0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn consecutive_rows_of_a_shard_are_far_apart() {
+        // Catches what a bijection test cannot: a linear map (a*p + b) % n is
+        // a perfect permutation that emits a fixed stride, so it reorders
+        // without mixing. For unrelated pairs from [0, n) the mean absolute
+        // gap is n/3.
+        //
+        // Measured over consecutive positions (which is the property in
+        // question) but from blocks spread across the shard, so late regions
+        // are covered too.
+        for n in MIXING_SIZES {
+            let st = ShardStream::new(n, 8, 1, true, Some(4), 0, "train", 0)
+                .unwrap();
+            let len = st.len() as u64;
+            let blocks = 100u64;
+            let per_block = (MIXING_SAMPLES / blocks).min(len / blocks.max(1));
+            let (mut total_gap, mut pairs) = (0u128, 0u128);
+            for b in 0..blocks {
+                let start = b * len / blocks;
+                for j in start + 1..(start + per_block).min(len) {
+                    total_gap +=
+                        u128::from(st.at(j as usize - 1).abs_diff(st.at(j as usize)));
+                    pairs += 1;
+                }
+            }
+            let mean_gap = (total_gap / pairs.max(1)) as f64;
+            let expected = n as f64 / 3.0;
+            let off = (mean_gap - expected).abs() / expected;
+            assert!(
+                off < 0.05,
+                "n={n}: mean gap over {pairs} pairs is {mean_gap:.0}, expected \
+                 ~{expected:.0} ({:.2}% off): the ordering carries structure",
+                off * 100.0
+            );
+        }
+    }
+
+    #[test]
+    fn the_padded_domain_is_never_more_than_twice_the_real_one() {
+        // Cycle walking costs `domain / n` evaluations per row on average, so
+        // this ratio IS the cost. A balanced split forces an even block width,
+        // which for odd ideal widths rounds the domain up two bits instead of
+        // one -- ratio 4 rather than 2, for roughly half of all table sizes.
+        // The unbalanced split keeps it under 2 everywhere.
+        let mut worst = (0u64, 0.0f64);
+        for n in (2u64..2000).chain([
+            (1 << 20) + 1,
+            (1 << 26) + 1,   // odd ideal width: the band that used to cost 4x
+            100_000_000,     // likewise
+            41_756_131,      // even ideal width: was already fine
+            1_000_000_000,
+            10_000_000_000,
+        ]) {
+            let p = FeistelPerm::new(n, 1);
+            let domain = 1u128 << (p.left_bits + p.right_bits);
+            let ratio = domain as f64 / n as f64;
+            // <= rather than <, for one degenerate case: n = 2 wants a
+            // 1-bit block, but a zero-width half is not invertible, so it is
+            // floored at 2 bits and lands exactly on 2.0. Academic -- anything
+            // under MATERIALISE_BELOW never reaches this path.
+            assert!(
+                ratio <= 2.0,
+                "n={n}: padded domain {domain} is {ratio:.2}x the real one; \
+                 cycle walking would cost that many evaluations per row"
+            );
+            if ratio > worst.1 {
+                worst = (n, ratio);
+            }
+        }
+        assert!(worst.1 <= 2.0, "worst ratio {:.2} at n={}", worst.1, worst.0);
+    }
+
+    #[test]
+    fn epoch_changes_the_generated_order_too() {
+        // The existing epoch test runs below MATERIALISE_BELOW, so it only
+        // covers Fisher-Yates. If the generated path keyed on the base seed
+        // alone, every epoch would replay the identical order -- silent,
+        // plausible, and bad for convergence. Check it where the generator
+        // is actually in use, and on both block layouts.
+        for n in [10_000_000u64, 67_108_865] {
+            let a = ShardStream::new(n, 4, 1, true, Some(11), 0, "train", 0).unwrap();
+            let b = ShardStream::new(n, 4, 1, true, Some(11), 1, "train", 0).unwrap();
+            let take = 10_000usize.min(a.len());
+            let va: Vec<u64> = (0..take).map(|j| a.at(j)).collect();
+            let vb: Vec<u64> = (0..take).map(|j| b.at(j)).collect();
+            assert_ne!(va, vb, "n={n}: epoch did not change the generated order");
+            let same = va.iter().zip(&vb).filter(|(x, y)| x == y).count();
+            assert!(
+                same * 100 < take,
+                "n={n}: {same}/{take} positions unchanged across epochs -- \
+                 the epoch is barely affecting the key"
+            );
+        }
+    }
+
+    #[test]
+    fn stream_is_deterministic_across_instances() {
+        let a = ShardStream::new(5000, 4, 1, true, Some(11), 2, "train", 0).unwrap();
+        let b = ShardStream::new(5000, 4, 1, true, Some(11), 2, "train", 0).unwrap();
+        let va: Vec<u64> = (0..a.len()).map(|j| a.at(j)).collect();
+        let vb: Vec<u64> = (0..b.len()).map(|j| b.at(j)).collect();
+        assert_eq!(va, vb);
+    }
+
+    #[test]
+    fn epoch_changes_the_order_but_not_the_coverage() {
+        let e0 = ShardStream::new(1000, 1, 0, true, Some(1), 0, "train", 0).unwrap();
+        let e1 = ShardStream::new(1000, 1, 0, true, Some(1), 1, "train", 0).unwrap();
+        let v0: Vec<u64> = (0..e0.len()).map(|j| e0.at(j)).collect();
+        let v1: Vec<u64> = (0..e1.len()).map(|j| e1.at(j)).collect();
+        assert_ne!(v0, v1, "epoch did not change the shuffle");
+        let (mut s0, mut s1) = (v0.clone(), v1.clone());
+        s0.sort_unstable();
+        s1.sort_unstable();
+        assert_eq!(s0, s1, "epochs must cover the same rows");
+    }
+
+    #[test]
+    fn base_offsets_every_value_for_node_range_mode() {
+        let st = ShardStream::new(50, 4, 2, true, Some(3), 0, "rhs", 1_000).unwrap();
+        for j in 0..st.len() {
+            let v = st.at(j);
+            assert!((1_000..1_050).contains(&v), "{v} outside the shifted range");
+        }
     }
 
     #[test]
