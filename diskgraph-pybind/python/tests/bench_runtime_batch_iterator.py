@@ -27,7 +27,28 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 import diskgraph
-from diskgraph import make_runtime_batch_iterator
+from diskgraph import RuntimeIndex
+
+
+def make_runtime_batch_iterator(dataset_ref, **kwargs):
+    """One-shot open-and-iterate, for tests that use an index exactly once.
+
+    Deliberately NOT part of the public API. Production callers hold a
+    :class:`diskgraph.RuntimeIndex` and call ``iter()`` per epoch -- that
+    separation is the whole point, since opening the index is ~1.6 s and
+    choosing rows is microseconds. These tests genuinely do open once and
+    iterate once, so they keep a local convenience instead of repeating the
+    two-step at every call site.
+    """
+    from diskgraph import RuntimeIndex
+
+    index = RuntimeIndex(
+        dataset_ref,
+        rnd_seed=kwargs.get("rnd_seed"),
+        num_threads=kwargs.pop("num_threads", None),
+    )
+    return index.iter(**kwargs)
+
 
 
 def _peak_rss_mb() -> float:

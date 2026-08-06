@@ -236,6 +236,9 @@ def _weighted_seed_sampling_json(
     return json.dumps(payload, sort_keys=True)
 
 
+_UNSET: Any = object()
+
+
 def _validate_worker_iterator_inputs(
     *,
     batch_size: int,
@@ -265,177 +268,155 @@ def task_stage_size(dataset_ref: TaskDatasetRef, stage: str) -> int:
     return int((split_info.get("stage_counts") or {}).get(stage, 0))
 
 
-def make_runtime_batch_iterator(
-    dataset_ref: TaskDatasetRef,
-    stage: str,
-    sampling_plan: Any,
-    num_workers: int,
-    worker_id: int,
-    shuffle: bool,
-    rnd_seed: Optional[int],
-    epoch: int,
-    batch_size: int,
-    drop_last: bool = False,
-    num_threads: Optional[int] = None,
-    fused: Optional[bool] = None,
-    swap_edge_direction: bool = True,
-    neg_rhs_node_type: Optional[str] = None,
-    neg_amount_m: Optional[int] = None,
-    neg_rnd_seed: Optional[int] = None,
-    replace: bool = False,
-    disjoint: bool = True,
-    adaptive: bool = False,
-    entity_node_type: Optional[str] = None,
-    target_node_type: Optional[str] = None,
-    rhs_seed_node_type: Optional[str] = None,
-    rhs_seed_time: Optional[int] = None,
-    group_by_timestamp: bool = False,
-    weighted_seed_sampling: Any = None,
-    selected_stage_node_ids: Any = None,
-) -> tuple[Any, int]:
-    """Create a Rust-backed iterator over a stage table in the merged catalog.
+class RuntimeIndex:
+    """An opened graph index, reusable across epochs and shards.
 
-    Args:
-        dataset_ref: Runtime task-dataset manifest path.
-        stage: ``train`` / ``val`` / ``test``.
-        sampling_plan: Existing DiskGraph ``SamplingPlan`` as JSON or dict.
-        num_workers: Total independent consumers across ranks/workers.
-        worker_id: Current global worker id.
-        shuffle: Whether to shuffle TT row offsets before sharding.
-        rnd_seed: Required when ``shuffle=True``.
-        epoch: Trainer epoch for per-pass deterministic shuffle variation.
-        batch_size: Number of TT rows per emitted sampled batch.
-        drop_last: Whether to drop this worker's final partial batch.
-        num_threads: rayon pool size per worker; ``None`` (default) ⇒ engine
-            default (1).
-        fused: ``None`` (default) lets DG pick via the
-            ``engine::choose_fused_mode`` heuristic over (reader, plan,
-            batch_size). Explicit ``True`` / ``False`` overrides the
-            heuristic for callers that have profiled their workload.
-        swap_edge_direction: PyG CSC convention. Defaults to ``True``.
-        neg_rhs_node_type: RHS (target) node type to draw engine-side global
-            negatives from (LP training). ``None`` (default) disables negative
-            sampling. When set, ``neg_amount_m`` is required.
-        neg_amount_m: Negatives drawn per positive (M). Required when
-            ``neg_rhs_node_type`` is set; the rhs node set becomes
-            ``[B positives, B*M negatives]`` anchor-major.
-        neg_rnd_seed: RNG base for the negative draw, independent of the
-            shuffle seed. ``None`` (default) ⇒ ``thread_rng`` (random negatives,
-            the training/prod default — fresh each epoch); an int ⇒ deterministic
-            replay-safe draw (tests).
-        replace: Sample neighbors with replacement.
-        disjoint: Keep per-seed sampled neighborhoods disjoint.
-        adaptive: Enable DiskGraph adaptive sampling.
-        entity_node_type: FK-free LP resolution (§S5) — when set, the seed
-            set is read from the ``entity_node_id`` rowpack column instead of
-            walking ``seed.edges.bin``. ``None`` keeps the legacy FK path.
-        target_node_type: FK-free LP resolution (§S5) — when set, the LP
-            positive LABELS are read from the ``target_node_ids`` rowpack
-            column and emitted as ragged ``lp_pos_*`` fields (labels only,
-            never rooted). ``None`` keeps the legacy raw-target path.
-        rhs_seed_node_type: NodeRange seed mode (two-tower MIPS RHS pass) —
-            when set, the iterator seeds the FULL ``[0, num_rhs)`` catalog of
-            this node type directly at the fixed ``rhs_seed_time`` (required),
-            bypassing stage-table seeding / entity-target resolution /
-            negatives. Across all batches the seeds cover ``[0, num_rhs)``
-            exactly once, in order. ``None`` keeps the stage-table path.
-        rhs_seed_time: Fixed anchor timestamp applied to every NodeRange seed.
-            Required when ``rhs_seed_node_type`` is set.
-        group_by_timestamp: TT-NG temporal-LP timestamp grouping (LOAD side).
-            When ``True``, every emitted batch holds node-ids of a single
-            timestamp, scheduled from the per-stage ``bucket_index.bin`` the
-            ingest side recorded; FAILS LOUD if that artifact is missing (no
-            silent fallback). ``False`` (default) keeps the flat worker-sharded
-            path byte-for-byte. Incompatible with ``rhs_seed_node_type``.
-        weighted_seed_sampling: Optional binary replacement-sampling config
-            for ``WeightMode.SAMPLE``. The caller supplies class weights and
-            ``num_samples``; this wrapper resolves the per-stage
-            ``binary_label_index`` sidecar paths from the runtime manifest.
-        selected_stage_node_ids: Optional explicit stage-table node ids to
-            emit, in caller order. These are ``task.tt_stage_node_ids`` values,
-            not batch-local ``task.input_ids`` or business primary keys. When
-            ``num_workers > 1``, each worker emits the ids whose caller-order
-            position satisfies ``position % num_workers == worker_id``.
+    Opening an index is expensive -- it mmaps every shard, builds every
+    row-pack and sort-key decoder, and spawns a rayon pool (~1.6 s on a
+    large graph). Selecting *which rows* to iterate is not. They used to
+    happen together in :func:`make_runtime_batch_iterator`, so a training
+    run paid the open once per epoch in every DataLoader worker, and again
+    on every intra-epoch replay.
 
-    Returns:
-        ``(RuntimeBatchIterator, num_worker_samples)``.
+    Hold one of these for as long as the process serves the same dataset,
+    and call :meth:`iter` per epoch (or per chunk, when work is handed out
+    dynamically). Measured on a 343 GB graph: the first construction still
+    costs ~1.55 s, every one after costs ~0.1 ms.
+
+    ``rnd_seed`` and ``num_threads`` are fixed at open time because the
+    engine is built from them. ``num_threads`` especially is not a
+    performance-only knob -- the engine's parallel neighbour sampling
+    produces different (individually reproducible) batches for different
+    thread counts, so two iterators that disagree on it are not sampling
+    the same graph.
     """
-    if neg_rhs_node_type is not None and neg_amount_m is None:
-        raise DiskgraphConfigError(
-            "neg_amount_m is required when neg_rhs_node_type is set"
+
+    def __init__(
+        self,
+        dataset_ref: TaskDatasetRef,
+        rnd_seed: Optional[int] = None,
+        num_threads: Optional[int] = None,
+    ) -> None:
+        # Resolved lazily, on first iter(). Reading the manifest in the
+        # constructor would put file I/O ahead of argument validation, and a
+        # caller who passes an out-of-range worker_id should get a config
+        # error rather than a FileNotFoundError for a path that was never the
+        # problem. test_task_dataset_mock pins that ordering.
+        self._dataset_ref = dataset_ref
+        self._resolved: Any = None
+        self._rnd_seed = int(rnd_seed) if rnd_seed is not None else None
+        self._num_threads = int(num_threads) if num_threads is not None else None
+        # Stages normally share one train-table extension, but nothing
+        # guarantees it, and a Rust RuntimeIndex is bound to a single one.
+        # Keyed here so a dataset whose stages differ still works, and still
+        # opens each extension only once.
+        self._indexes: dict = {}
+
+    def _resolve(self) -> None:
+        if self._resolved is not None:
+            return
+        manifest, split_info = _manifest_view(self._dataset_ref)
+        self._manifest = manifest
+        self._split_info = split_info
+        self._tables = _stage_tables(manifest)
+        self._parent_root = _graph_index_path(manifest)
+        self._resolved = True
+
+    def _index_for(self, extension_ref: str):
+        idx = self._indexes.get(extension_ref)
+        if idx is None:
+            from ._c import RuntimeIndex as _RuntimeIndex
+            idx = _RuntimeIndex(
+                self._parent_root,
+                extension_ref,
+                self._rnd_seed,
+                self._num_threads,
+            )
+            self._indexes[extension_ref] = idx
+        return idx
+
+    def stage_size(self, stage: str) -> int:
+        self._resolve()
+        return int((self._split_info.get("stage_counts") or {}).get(stage, 0))
+
+    def iter(
+        self,
+        stage: str,
+        sampling_plan: Any,
+        num_workers: int,
+        worker_id: int,
+        shuffle: bool,
+        epoch: int,
+        batch_size: int,
+        rnd_seed: Optional[int] = _UNSET,
+        drop_last: bool = False,
+        fused: Optional[bool] = None,
+        swap_edge_direction: bool = True,
+        neg_rhs_node_type: Optional[str] = None,
+        neg_amount_m: Optional[int] = None,
+        neg_rnd_seed: Optional[int] = None,
+        replace: bool = False,
+        disjoint: bool = True,
+        adaptive: bool = False,
+        entity_node_type: Optional[str] = None,
+        target_node_type: Optional[str] = None,
+        rhs_seed_node_type: Optional[str] = None,
+        rhs_seed_time: Optional[int] = None,
+        group_by_timestamp: bool = False,
+        weighted_seed_sampling: Any = None,
+        selected_stage_node_ids: Any = None,
+    ) -> tuple[Any, int]:
+        """Iterate one (stage, epoch, shard) of this index.
+
+        Arguments match :func:`make_runtime_batch_iterator` except that
+        ``dataset_ref`` and ``num_threads`` are fixed by the index. ``rnd_seed``
+        defaults to the one the index was opened with, which is what callers
+        almost always want; pass it explicitly only to vary the shuffle
+        independently of the engine seed.
+        """
+        seed = self._rnd_seed if rnd_seed is _UNSET else rnd_seed
+        _validate_worker_iterator_inputs(
+            batch_size=batch_size, num_workers=num_workers, worker_id=worker_id,
+            shuffle=shuffle, rnd_seed=seed, epoch=epoch,
         )
-    if rhs_seed_node_type is not None and rhs_seed_time is None:
-        raise DiskgraphConfigError(
-            "rhs_seed_time is required when rhs_seed_node_type is set (NodeRange mode)"
+        self._resolve()
+        ref = self._tables.get(stage)
+        if ref is None:
+            raise DiskgraphConfigError(
+                f"stage {stage!r} not present in manifest.stages")
+        if self.stage_size(stage) == 0:
+            raise DiskgraphConfigError(
+                f"stage {stage!r} not available on this dataset")
+
+        extension_ref = _extension_ref_from_stage_path(
+            self._parent_root, ref["index_path"])
+        iterator = self._index_for(extension_ref).iter(
+            ref["table_name"],
+            _sampling_plan_json(sampling_plan),
+            int(num_workers),
+            int(worker_id),
+            bool(shuffle),
+            int(seed) if seed is not None else None,
+            int(epoch),
+            int(batch_size),
+            bool(drop_last),
+            fused if fused is None else bool(fused),
+            bool(swap_edge_direction),
+            neg_rhs_node_type,
+            int(neg_amount_m) if neg_amount_m is not None else None,
+            int(neg_rnd_seed) if neg_rnd_seed is not None else None,
+            bool(replace),
+            bool(disjoint),
+            bool(adaptive),
+            entity_node_type,
+            target_node_type,
+            rhs_seed_node_type,
+            int(rhs_seed_time) if rhs_seed_time is not None else None,
+            bool(group_by_timestamp),
+            _weighted_seed_sampling_json(ref, stage, weighted_seed_sampling),
+            selected_stage_node_ids,
+            _use_seed_timestamps(self._manifest),
         )
-    _validate_worker_iterator_inputs(
-        batch_size=batch_size,
-        num_workers=num_workers,
-        worker_id=worker_id,
-        shuffle=shuffle,
-        rnd_seed=rnd_seed,
-        epoch=epoch,
-    )
-
-    manifest, split_info = _manifest_view(dataset_ref)
-    tables = _stage_tables(manifest)
-    ref = tables.get(stage)
-    if ref is None:
-        raise DiskgraphConfigError(f"stage {stage!r} not present in manifest.stages")
-
-    stage_count = int((split_info.get("stage_counts") or {}).get(stage, 0))
-    if stage_count == 0:
-        raise DiskgraphConfigError(f"stage {stage!r} not available on this dataset")
-
-    parent_root = _graph_index_path(manifest)
-    extension_ref = _extension_ref_from_stage_path(parent_root, ref["index_path"])
-
-    from ._c import RuntimeBatchIterator
-
-    iterator = RuntimeBatchIterator(
-        parent_root,
-        extension_ref,
-        ref["table_name"],
-        _sampling_plan_json(sampling_plan),
-        int(num_workers),
-        int(worker_id),
-        bool(shuffle),
-        int(rnd_seed) if rnd_seed is not None else None,
-        int(epoch),
-        int(batch_size),
-        bool(drop_last),
-        int(num_threads) if num_threads is not None else None,  # num_threads — engine default when None
-        # fused: None means "DG, decide via heuristic"; bool forces.
-        fused if fused is None else bool(fused),
-        bool(swap_edge_direction),
-        neg_rhs_node_type,
-        int(neg_amount_m) if neg_amount_m is not None else None,
-        int(neg_rnd_seed) if neg_rnd_seed is not None else None,
-        bool(replace),
-        bool(disjoint),
-        bool(adaptive),
-        # FK-free LP resolution (design §S5): read the seed set from the
-        # ``entity_node_id`` rowpack column (no ``seed.edges.bin`` walk) and
-        # emit ragged ``lp_pos_*`` labels from ``target_node_ids``. Both
-        # ``None`` preserves the legacy FK-edge / raw-target path.
-        entity_node_type,
-        target_node_type,
-        # NodeRange seed mode (two-tower MIPS RHS pass): seed the full
-        # ``[0, num_rhs)`` catalog of ``rhs_seed_node_type`` directly at the
-        # fixed ``rhs_seed_time``, bypassing stage-table seeding / resolution /
-        # negatives. Both ``None`` preserves the stage-table seeding path.
-        rhs_seed_node_type,
-        int(rhs_seed_time) if rhs_seed_time is not None else None,
-        bool(group_by_timestamp),  # see docstring: single-ts grouped batches.
-        _weighted_seed_sampling_json(ref, stage, weighted_seed_sampling),
-        selected_stage_node_ids,
-        _use_seed_timestamps(manifest),
-    )
-    return iterator, iterator.num_samples()
+        return iterator, iterator.num_samples()
 
 
-__all__ = [
-    "TaskDatasetRef",
-    "make_runtime_batch_iterator",
-    "task_stage_size",
-]
