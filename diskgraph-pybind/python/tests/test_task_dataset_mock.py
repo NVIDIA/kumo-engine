@@ -12,30 +12,9 @@ from diskgraph import (
     TaskDatasetMetadataInputs,
     TrainTableColumnMappingInputs,
     build_node_prediction_task_dataset_bundle,
-    RuntimeIndex,
+    make_runtime_batch_iterator,
     task_stage_size,
 )
-
-
-def make_runtime_batch_iterator(dataset_ref, **kwargs):
-    """One-shot open-and-iterate, for tests that use an index exactly once.
-
-    Deliberately NOT part of the public API. Production callers hold a
-    :class:`diskgraph.RuntimeIndex` and call ``iter()`` per epoch -- that
-    separation is the whole point, since opening the index is ~1.6 s and
-    choosing rows is microseconds. These tests genuinely do open once and
-    iterate once, so they keep a local convenience instead of repeating the
-    two-step at every call site.
-    """
-    from diskgraph import RuntimeIndex
-
-    index = RuntimeIndex(
-        dataset_ref,
-        rnd_seed=kwargs.get("rnd_seed"),
-        num_threads=kwargs.pop("num_threads", None),
-    )
-    return index.iter(**kwargs)
-
 
 
 def _metadata(**kwargs):
@@ -244,21 +223,16 @@ def test_native_iterator_surface_forwards_epoch_to_native_iterator(tmp_path, mon
             }
         },
     }))
-    captured = SimpleNamespace(args=None, index_args=None)
+    captured = SimpleNamespace(args=None)
 
-    class FakeIterator:
+    class FakeRuntimeBatchIterator:
+        def __init__(self, *args):
+            captured.args = args
+
         def num_samples(self):
             return 2
 
-    class FakeRuntimeIndex:
-        def __init__(self, *args):
-            captured.index_args = args
-
-        def iter(self, *args):
-            captured.args = args
-            return FakeIterator()
-
-    monkeypatch.setattr(diskgraph._c, "RuntimeIndex", FakeRuntimeIndex)
+    monkeypatch.setattr(diskgraph._c, "RuntimeBatchIterator", FakeRuntimeBatchIterator)
 
     iterator, num_samples = make_runtime_batch_iterator(
         str(manifest_path),
@@ -273,18 +247,17 @@ def test_native_iterator_surface_forwards_epoch_to_native_iterator(tmp_path, mon
         drop_last=True,
     )
 
-    # RuntimeIndex ctor args: 0=parent_root, 1=tt_ref, 2=rnd_seed,
-    #   3=num_threads.
-    # RuntimeIndex.iter args: 0=stage_table, 1=plan_json, 2=num_workers,
-    #   3=worker_id, 4=shuffle, 5=rnd_seed, 6=epoch, 7=batch_size,
-    #   8=drop_last
-    assert isinstance(iterator, FakeIterator)
+    # RuntimeBatchIterator positional args:
+    #   0=parent_root, 1=tt_ref, 2=stage_table, 3=plan_json,
+    #   4=num_workers, 5=worker_id, 6=shuffle, 7=rnd_seed,
+    #   8=epoch, 9=batch_size, 10=drop_last
+    assert isinstance(iterator, FakeRuntimeBatchIterator)
     assert num_samples == 2
-    assert captured.index_args[0] == "/idx"
-    assert captured.index_args[1] == "train_tables/tt_user"
-    assert captured.args[0] == "tt_user__train"
-    assert captured.args[4:8] == (True, 123, 7, 4)
-    assert captured.args[8] is True
+    assert captured.args[0] == "/idx"
+    assert captured.args[1] == "train_tables/tt_user"
+    assert captured.args[2] == "tt_user__train"
+    assert captured.args[6:10] == (True, 123, 7, 4)
+    assert captured.args[10] is True
 
 
 def test_native_iterator_surface_forwards_selected_stage_node_ids(tmp_path, monkeypatch):
@@ -300,21 +273,16 @@ def test_native_iterator_surface_forwards_selected_stage_node_ids(tmp_path, monk
             }
         },
     }))
-    captured = SimpleNamespace(args=None, index_args=None)
+    captured = SimpleNamespace(args=None)
 
-    class FakeIterator:
+    class FakeRuntimeBatchIterator:
+        def __init__(self, *args):
+            captured.args = args
+
         def num_samples(self):
             return len(captured.args[-2])
 
-    class FakeRuntimeIndex:
-        def __init__(self, *args):
-            captured.index_args = args
-
-        def iter(self, *args):
-            captured.args = args
-            return FakeIterator()
-
-    monkeypatch.setattr(diskgraph._c, "RuntimeIndex", FakeRuntimeIndex)
+    monkeypatch.setattr(diskgraph._c, "RuntimeBatchIterator", FakeRuntimeBatchIterator)
 
     selected_stage_node_ids = [4, 1, 3]
     _, num_samples = make_runtime_batch_iterator(
@@ -360,21 +328,16 @@ def test_native_iterator_surface_resolves_weighted_seed_sampling(tmp_path, monke
             }
         },
     }))
-    captured = SimpleNamespace(args=None, index_args=None)
+    captured = SimpleNamespace(args=None)
 
-    class FakeIterator:
+    class FakeRuntimeBatchIterator:
+        def __init__(self, *args):
+            captured.args = args
+
         def num_samples(self):
             return 6
 
-    class FakeRuntimeIndex:
-        def __init__(self, *args):
-            captured.index_args = args
-
-        def iter(self, *args):
-            captured.args = args
-            return FakeIterator()
-
-    monkeypatch.setattr(diskgraph._c, "RuntimeIndex", FakeRuntimeIndex)
+    monkeypatch.setattr(diskgraph._c, "RuntimeBatchIterator", FakeRuntimeBatchIterator)
 
     _, num_samples = make_runtime_batch_iterator(
         str(manifest_path),
@@ -439,21 +402,16 @@ def test_native_iterator_surface_resolves_row_weight_sampling(tmp_path, monkeypa
             }
         },
     }))
-    captured = SimpleNamespace(args=None, index_args=None)
+    captured = SimpleNamespace(args=None)
 
-    class FakeIterator:
+    class FakeRuntimeBatchIterator:
+        def __init__(self, *args):
+            captured.args = args
+
         def num_samples(self):
             return 12
 
-    class FakeRuntimeIndex:
-        def __init__(self, *args):
-            captured.index_args = args
-
-        def iter(self, *args):
-            captured.args = args
-            return FakeIterator()
-
-    monkeypatch.setattr(diskgraph._c, "RuntimeIndex", FakeRuntimeIndex)
+    monkeypatch.setattr(diskgraph._c, "RuntimeBatchIterator", FakeRuntimeBatchIterator)
 
     _, num_samples = make_runtime_batch_iterator(
         str(manifest_path),
@@ -507,21 +465,16 @@ def test_native_iterator_surface_disables_seed_timestamps_for_static_task(
             }
         },
     }))
-    captured = SimpleNamespace(args=None, index_args=None)
+    captured = SimpleNamespace(args=None)
 
-    class FakeIterator:
+    class FakeRuntimeBatchIterator:
+        def __init__(self, *args):
+            captured.args = args
+
         def num_samples(self):
             return 7
 
-    class FakeRuntimeIndex:
-        def __init__(self, *args):
-            captured.index_args = args
-
-        def iter(self, *args):
-            captured.args = args
-            return FakeIterator()
-
-    monkeypatch.setattr(diskgraph._c, "RuntimeIndex", FakeRuntimeIndex)
+    monkeypatch.setattr(diskgraph._c, "RuntimeBatchIterator", FakeRuntimeBatchIterator)
 
     make_runtime_batch_iterator(
         str(manifest_path),
@@ -551,21 +504,16 @@ def test_native_iterator_surface_forwards_pred_table_extension(tmp_path, monkeyp
             }
         },
     }))
-    captured = SimpleNamespace(args=None, index_args=None)
+    captured = SimpleNamespace(args=None)
 
-    class FakeIterator:
+    class FakeRuntimeBatchIterator:
+        def __init__(self, *args):
+            captured.args = args
+
         def num_samples(self):
             return 7
 
-    class FakeRuntimeIndex:
-        def __init__(self, *args):
-            captured.index_args = args
-
-        def iter(self, *args):
-            captured.args = args
-            return FakeIterator()
-
-    monkeypatch.setattr(diskgraph._c, "RuntimeIndex", FakeRuntimeIndex)
+    monkeypatch.setattr(diskgraph._c, "RuntimeBatchIterator", FakeRuntimeBatchIterator)
 
     _, num_samples = make_runtime_batch_iterator(
         str(manifest_path),
@@ -580,9 +528,9 @@ def test_native_iterator_surface_forwards_pred_table_extension(tmp_path, monkeyp
     )
 
     assert num_samples == 7
-    assert captured.index_args[0] == "/idx"
-    assert captured.index_args[1] == "pred_tables/job1"
-    assert captured.args[0] == "predict"
+    assert captured.args[0] == "/idx"
+    assert captured.args[1] == "pred_tables/job1"
+    assert captured.args[2] == "predict"
 
 
 # Behavioral epoch determinism (PR 268 placeholder) — fully covered now by
@@ -598,7 +546,7 @@ def test_task_dataset_exports_are_minimal():
     assert diskgraph.TASK_DATASET_SCHEMA_VERSION == "v1"
     assert diskgraph.TASK_DATASET_IMPLEMENTATION_KIND == "python_mock"
     assert callable(diskgraph.task_stage_size)
-    assert callable(diskgraph.RuntimeIndex)
+    assert callable(diskgraph.make_runtime_batch_iterator)
     assert diskgraph.RuntimeBatchIterator is not None
     with pytest.raises(AttributeError):
         getattr(diskgraph, "DiskgraphTaskDataset")

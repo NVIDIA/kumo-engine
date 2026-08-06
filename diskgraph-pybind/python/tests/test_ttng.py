@@ -199,9 +199,9 @@ def test_wheel_is_tt_ng():
     )
 
 
-def test_wheel_has_runtime_index():
-    """TT-NG wheel must expose RuntimeIndex, the runtime iteration entry point."""
-    from diskgraph import RuntimeIndex  # noqa: F401
+def test_wheel_has_runtime_batch_iterator():
+    """TT-NG wheel must expose make_runtime_batch_iterator."""
+    from diskgraph import make_runtime_batch_iterator  # noqa: F401
 
 
 def test_wheel_lacks_legacy_symbols():
@@ -338,7 +338,7 @@ def test_runtime_batch_iterator_dict_contract(tmp_path):
       batch["graphs"]["main"]["node_ids"] — parent entities (users, orders)
       seed namespace NOT in topology
     """
-    from diskgraph import execute_tt_plan
+    from diskgraph import execute_tt_plan, make_runtime_batch_iterator
 
     parent_root = _build_parent_index(tmp_path)
     plan_json = _build_tt_plan()
@@ -401,7 +401,7 @@ def test_runtime_batch_iterator_dict_contract(tmp_path):
 
 def test_multi_worker_yields_disjoint_shards(tmp_path):
     """Two workers must partition the stage without overlap."""
-    from diskgraph import execute_tt_plan
+    from diskgraph import execute_tt_plan, make_runtime_batch_iterator
 
     parent_root = _build_parent_index(tmp_path)
     plan_json = _build_tt_plan()
@@ -560,21 +560,3 @@ def test_materialize_task_dataset_placeholder_manifest(tmp_path):
     )
     print(f"\nmanifest written to {result_mat.manifest_path}")
     print(json.dumps(manifest, indent=2))
-
-
-def make_runtime_batch_iterator(dataset_ref, **kwargs):
-    """One-shot open-and-iterate, for tests that use an index exactly once.
-
-    Deliberately NOT part of the public API. Production callers hold a
-    :class:`diskgraph.RuntimeIndex` and call ``iter()`` per epoch -- that
-    separation is the point, since opening the index is ~1.6 s and choosing
-    rows is microseconds. These tests genuinely open once and iterate once.
-    """
-    from diskgraph import RuntimeIndex
-
-    index = RuntimeIndex(
-        dataset_ref,
-        rnd_seed=kwargs.get("rnd_seed"),
-        num_threads=kwargs.pop("num_threads", None),
-    )
-    return index.iter(**kwargs)

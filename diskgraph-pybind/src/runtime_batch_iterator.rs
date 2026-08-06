@@ -1260,65 +1260,12 @@ pub struct RuntimeBatchIterator {
     use_seed_timestamps: bool,
 }
 
-/// An opened graph index, reusable across epochs and shards.
-///
-/// WHY THIS EXISTS. Constructing an iterator used to fuse two things with very
-/// different costs and lifetimes:
-///
-///   * WHICH INDEX -- mmap every shard, build every row-pack and sort-key
-///     decoder, spawn a rayon pool. ~1.6 s on DoorDash. Depends only on
-///     `(parent_root, tt_id, rnd_seed, num_threads)`.
-///   * WHICH ROWS -- the epoch and the shard identity. Microseconds.
-///
-/// Because both happened in one constructor, changing the cheap thing forced
-/// redoing the expensive one. A training run therefore paid the full index
-/// open once per epoch in every DataLoader worker, and again on every
-/// intra-epoch replay -- which is why `persistent_workers` alone never helped:
-/// the processes survive, but `__iter__` rebuilds inside them.
-///
-/// Holding a `RuntimeIndex` and calling `iter()` per epoch pays the open once.
-/// Measured on DoorDash: 3218.8 ms per construction becomes ~1.55 s for the
-/// first and 0.1 ms for every one after.
-///
-/// `rnd_seed` and `num_threads` belong here rather than on `iter()` because the
-/// engine is built from them -- and `num_threads` in particular is not a
-/// performance-only knob: the engine's parallel neighbour sampling produces
-/// different (individually reproducible) batches for different thread counts,
-/// so two iterators that disagree on it are not sampling the same graph.
-#[pyclass]
-pub struct RuntimeIndex {
-    reader: Arc<diskgraph_index::graph::GraphIndexReader>,
-    engine: Arc<DiskGraphEngine>,
-    namespace: String,
-}
-
 #[pymethods]
-impl RuntimeIndex {
+impl RuntimeBatchIterator {
     #[new]
-    #[pyo3(signature = (parent_root, tt_id, rnd_seed=None, num_threads=None))]
-    pub fn new(
-        parent_root: String,
-        tt_id: String,
-        rnd_seed: Option<u64>,
-        num_threads: Option<usize>,
-    ) -> PyResult<Self> {
-        let parent_path = std::path::Path::new(&parent_root);
-        let reader = diskgraph_index::graph::GraphIndexReader::open_with_tt(parent_path, &tt_id)
-            .map_err(|e| DiskgraphSystemError::new_err(e.to_string()))?;
-        let namespace = tt_id.rsplit('/').next().unwrap_or(&tt_id).to_string();
-        let reader = Arc::new(reader);
-        let engine = Arc::new(
-            DiskGraphEngine::from_reader(reader.clone(), rnd_seed, num_threads)
-                .map_err(map_engine_err)?,
-        );
-        Ok(Self { reader, engine, namespace })
-    }
-
-    /// Build an iterator over one (stage, epoch, shard) of this index.
-    ///
-    /// Cheap: no mmap, no decoders, no thread pool. Call it once per epoch, or
-    /// once per chunk when work is handed out dynamically.
     #[pyo3(signature = (
+        parent_root,
+        tt_id,
         stage_table,
         sampling_plan_json,
         num_workers,
@@ -1328,6 +1275,7 @@ impl RuntimeIndex {
         epoch,
         batch_size,
         drop_last=false,
+        num_threads=None,
         fused=None,
         swap_edge_direction=true,
         neg_rhs_node_type=None,
@@ -1346,8 +1294,9 @@ impl RuntimeIndex {
         use_seed_timestamps=true,
     ))]
     #[allow(clippy::too_many_arguments)]
-    pub fn iter(
-        &self,
+    pub fn new(
+        parent_root: String,
+        tt_id: String,
         stage_table: String,
         sampling_plan_json: String,
         num_workers: u64,
@@ -1357,71 +1306,7 @@ impl RuntimeIndex {
         epoch: u64,
         batch_size: usize,
         drop_last: bool,
-        fused: Option<bool>,
-        swap_edge_direction: bool,
-        neg_rhs_node_type: Option<String>,
-        neg_amount_m: Option<usize>,
-        neg_rnd_seed: Option<u64>,
-        replace: bool,
-        disjoint: bool,
-        adaptive: bool,
-        entity_node_type: Option<String>,
-        target_node_type: Option<String>,
-        rhs_seed_node_type: Option<String>,
-        rhs_seed_time: Option<i64>,
-        group_by_timestamp: bool,
-        weighted_seed_sampling_json: Option<String>,
-        selected_stage_node_ids: Option<Vec<u64>>,
-        use_seed_timestamps: bool,
-    ) -> PyResult<RuntimeBatchIterator> {
-        RuntimeBatchIterator::build(
-            Arc::clone(&self.reader),
-            Arc::clone(&self.engine),
-            self.namespace.clone(),
-            stage_table,
-            sampling_plan_json,
-            num_workers,
-            worker_id,
-            shuffle,
-            rnd_seed,
-            epoch,
-            batch_size,
-            drop_last,
-            fused,
-            swap_edge_direction,
-            neg_rhs_node_type,
-            neg_amount_m,
-            neg_rnd_seed,
-            replace,
-            disjoint,
-            adaptive,
-            entity_node_type,
-            target_node_type,
-            rhs_seed_node_type,
-            rhs_seed_time,
-            group_by_timestamp,
-            weighted_seed_sampling_json,
-            selected_stage_node_ids,
-            use_seed_timestamps,
-        )
-    }
-}
-
-impl RuntimeBatchIterator {
-    #[allow(clippy::too_many_arguments)]
-    fn build(
-        reader: Arc<diskgraph_index::graph::GraphIndexReader>,
-        engine: Arc<DiskGraphEngine>,
-        namespace: String,
-        stage_table: String,
-        sampling_plan_json: String,
-        num_workers: u64,
-        worker_id: u64,
-        shuffle: bool,
-        rnd_seed: Option<u64>,
-        epoch: u64,
-        batch_size: usize,
-        drop_last: bool,
+        num_threads: Option<usize>,
         // Sampler dispatch: fused interleaves feature fetching with the edge
         // walk (cache-locality win for small per-batch feature working sets);
         // non-fused walks first + fetches features in a parallel map-reduce
@@ -1565,6 +1450,15 @@ impl RuntimeBatchIterator {
             }
             None => None,
         };
+        let parent_path = std::path::Path::new(&parent_root);
+        let reader = diskgraph_index::graph::GraphIndexReader::open_with_tt(parent_path, &tt_id)
+            .map_err(|e| DiskgraphSystemError::new_err(e.to_string()))?;
+        let namespace = tt_id.rsplit('/').next().unwrap_or(&tt_id).to_string();
+        let reader = Arc::new(reader);
+        let engine = Arc::new(
+            DiskGraphEngine::from_reader(reader.clone(), rnd_seed, num_threads)
+                .map_err(map_engine_err)?,
+        );
         // Stage table in the merged catalog is namespaced as `<namespace>/<bare>`;
         // accept either form from the caller.
         let stage_catalog_key = if stage_table.contains('/') {
@@ -1714,110 +1608,6 @@ impl RuntimeBatchIterator {
             bucket_schedule,
             use_seed_timestamps,
         })
-    }
-
-}
-
-#[pymethods]
-impl RuntimeBatchIterator {
-    /// Backwards-compatible constructor: open an index and immediately
-    /// iterate it. Equivalent to `RuntimeIndex(...).iter(...)`, and kept so
-    /// existing callers need no change. Callers that build many iterators
-    /// over one index should hold a `RuntimeIndex` instead -- that is the
-    /// whole point of the split, and this shim cannot do it for them.
-    #[new]
-    #[pyo3(signature = (
-        parent_root,
-        tt_id,
-        stage_table,
-        sampling_plan_json,
-        num_workers,
-        worker_id,
-        shuffle,
-        rnd_seed,
-        epoch,
-        batch_size,
-        drop_last=false,
-        num_threads=None,
-        fused=None,
-        swap_edge_direction=true,
-        neg_rhs_node_type=None,
-        neg_amount_m=None,
-        neg_rnd_seed=None,
-        replace=false,
-        disjoint=true,
-        adaptive=false,
-        entity_node_type=None,
-        target_node_type=None,
-        rhs_seed_node_type=None,
-        rhs_seed_time=None,
-        group_by_timestamp=false,
-        weighted_seed_sampling_json=None,
-        selected_stage_node_ids=None,
-        use_seed_timestamps=true,
-    ))]
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        parent_root: String,
-        tt_id: String,
-        stage_table: String,
-        sampling_plan_json: String,
-        num_workers: u64,
-        worker_id: u64,
-        shuffle: bool,
-        rnd_seed: Option<u64>,
-        epoch: u64,
-        batch_size: usize,
-        drop_last: bool,
-        num_threads: Option<usize>,
-        fused: Option<bool>,
-        swap_edge_direction: bool,
-        neg_rhs_node_type: Option<String>,
-        neg_amount_m: Option<usize>,
-        neg_rnd_seed: Option<u64>,
-        replace: bool,
-        disjoint: bool,
-        adaptive: bool,
-        entity_node_type: Option<String>,
-        target_node_type: Option<String>,
-        rhs_seed_node_type: Option<String>,
-        rhs_seed_time: Option<i64>,
-        group_by_timestamp: bool,
-        weighted_seed_sampling_json: Option<String>,
-        selected_stage_node_ids: Option<Vec<u64>>,
-        use_seed_timestamps: bool,
-    ) -> PyResult<Self> {
-        let index = RuntimeIndex::new(parent_root, tt_id, rnd_seed, num_threads)?;
-        Self::build(
-            Arc::clone(&index.reader),
-            Arc::clone(&index.engine),
-            index.namespace.clone(),
-            stage_table,
-            sampling_plan_json,
-            num_workers,
-            worker_id,
-            shuffle,
-            rnd_seed,
-            epoch,
-            batch_size,
-            drop_last,
-            fused,
-            swap_edge_direction,
-            neg_rhs_node_type,
-            neg_amount_m,
-            neg_rnd_seed,
-            replace,
-            disjoint,
-            adaptive,
-            entity_node_type,
-            target_node_type,
-            rhs_seed_node_type,
-            rhs_seed_time,
-            group_by_timestamp,
-            weighted_seed_sampling_json,
-            selected_stage_node_ids,
-            use_seed_timestamps,
-        )
     }
 
     pub fn num_samples(&self) -> usize {
@@ -2140,7 +1930,6 @@ fn discover_tts(parent_root: String) -> PyResult<Vec<String>> {
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<RuntimeIndex>()?;
     m.add_class::<RuntimeBatchIterator>()?;
     m.add_function(wrap_pyfunction!(discover_tts, m)?)?;
     Ok(())

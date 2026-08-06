@@ -29,28 +29,7 @@ import pyarrow.parquet as pq
 import pytest
 
 import diskgraph
-from diskgraph import RuntimeIndex, task_stage_size
-
-
-def make_runtime_batch_iterator(dataset_ref, **kwargs):
-    """One-shot open-and-iterate, for tests that use an index exactly once.
-
-    Deliberately NOT part of the public API. Production callers hold a
-    :class:`diskgraph.RuntimeIndex` and call ``iter()`` per epoch -- that
-    separation is the whole point, since opening the index is ~1.6 s and
-    choosing rows is microseconds. These tests genuinely do open once and
-    iterate once, so they keep a local convenience instead of repeating the
-    two-step at every call site.
-    """
-    from diskgraph import RuntimeIndex
-
-    index = RuntimeIndex(
-        dataset_ref,
-        rnd_seed=kwargs.get("rnd_seed"),
-        num_threads=kwargs.pop("num_threads", None),
-    )
-    return index.iter(**kwargs)
-
+from diskgraph import make_runtime_batch_iterator, task_stage_size
 
 
 # ---------------------------------------------------------------------------
@@ -718,21 +697,13 @@ def test_iterator_accepts_sampler_flag_kwargs(seed_table_fixture):
     assert list(iterator)
 
 
-def test_runtime_index_exposes_num_threads_kwarg():
-    """`num_threads` must be settable so the TT-NG datamodule can pass a
-    per-worker rayon thread budget through to the Rust ctor.
-
-    It lives on the INDEX rather than on iter(): the engine is built from it,
-    and it is not a performance-only knob -- parallel neighbour sampling
-    yields different (individually reproducible) batches per thread count, so
-    two iterators over one index must not be able to disagree about it.
-    """
-    params = inspect.signature(RuntimeIndex.__init__).parameters
+def test_make_runtime_batch_iterator_exposes_num_threads_kwarg():
+    """The wrapper signature must surface `num_threads` so the TT-NG datamodule
+    can pass a per-worker rayon thread budget through to the Rust ctor."""
+    params = inspect.signature(make_runtime_batch_iterator).parameters
     assert "num_threads" in params, (
-        f"RuntimeIndex must accept num_threads; got {list(params)}")
-    assert "num_threads" not in inspect.signature(RuntimeIndex.iter).parameters, (
-        "num_threads must not be settable per iterator: it is a property of "
-        "the opened engine")
+        f"make_runtime_batch_iterator must accept num_threads; got {list(params)}"
+    )
 
 
 def test_iterator_accepts_num_threads_kwarg(seed_table_fixture):
@@ -1083,7 +1054,7 @@ def test_execute_tt_plan_end_to_end_multi_fk_custom_tt(tmp_path):
     import pyarrow.parquet as pq
     import diskgraph
     from diskgraph._c import build_train_table_artifacts_for_existing_table
-    from diskgraph import execute_tt_ingest
+    from diskgraph import execute_tt_ingest, make_runtime_batch_iterator
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()
