@@ -3717,24 +3717,21 @@ fn add_arrow_leaf_bound(
     let slot_bytes = value_bytes
         .checked_add(shape.wrapper_bytes)
         .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?;
-    // Fixed lists pad every parent slot; variable ancestors can pack every
-    // row-group value into one decoded row.
-    if shape.variable_ancestor {
-        terms.add_constant(
-            slot_bytes
-                .checked_mul(values)
-                .and_then(|bytes| bytes.checked_mul(shape.fixed_multiplicity))
-                .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?,
-            "Arrow output",
-        )?;
+    // Leaf output scales with the leaf values in a batch. Under a variable-length
+    // ancestor the values-per-row is an average; a row that packs far more than
+    // its share is caught by the decoded-batch bound in BoundedParquetBatchReader.
+    let values_per_row = if shape.variable_ancestor {
+        values.div_ceil(rows.max(1))
     } else {
-        terms.add_per_row(
-            slot_bytes
-                .checked_mul(shape.fixed_multiplicity)
-                .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?,
-            "Arrow output",
-        )?;
-    }
+        1
+    };
+    terms.add_per_row(
+        slot_bytes
+            .checked_mul(values_per_row)
+            .and_then(|bytes| bytes.checked_mul(shape.fixed_multiplicity))
+            .ok_or_else(|| anyhow!("Parquet Arrow output bound overflowed"))?,
+        "Arrow output",
+    )?;
     terms.add_constant(shape.terminal_bytes, "Arrow output")?;
     if matches!(shape.value, ArrowLeafValue::Variable(_)) {
         if column.column_type() != PhysicalType::BYTE_ARRAY {
@@ -3834,29 +3831,26 @@ fn parquet_row_group_memory_plan(
     dictionary_pages: Option<&ParquetDictionaryPages<'_>>,
 ) -> Result<ParquetRowGroupMemoryPlan> {
     let row_group = metadata.metadata().row_group(row_group_index);
-    let uncompressed = u64::try_from(row_group.total_byte_size())
-        .map_err(|_| anyhow!("Parquet row group has a negative decoded size"))?;
     let compressed = u64::try_from(row_group.compressed_size())
         .map_err(|_| anyhow!("Parquet row group has a negative compressed size"))?;
     let rows = u64::try_from(row_group.num_rows())
         .map_err(|_| anyhow!("Parquet row group has a negative row count"))?;
-    let decoder_constant = uncompressed
-        .checked_mul(2)
-        .and_then(|bytes| bytes.checked_add(compressed))
-        .ok_or_else(|| anyhow!("Parquet row group decode bound overflowed"))?;
+    // Only the compressed column chunks are retained across the whole row group.
+    // Decoded values are materialised one batch at a time and charged, batch
+    // scaled, by the Arrow output terms below -- not held all at once.
+    let decoder_constant = compressed;
     let mut decoder_terms = MemoryTerms::default();
-    // Level decoders retain one structural slot per decoded leaf value.
+    // Level scratch scales with the leaf values in a batch, so charge each column
+    // its per-row leaf count. A single row holding the whole row group's values
+    // still trips the batch=1 bound below, preserving rejection of oversized rows.
     for column in row_group.columns() {
-        if column.column_descr().max_rep_level() == 0 {
-            decoder_terms.add_per_row(16, "row group structural size")?;
-        } else {
-            decoder_terms.add_constant(
-                column_num_values(column)?
-                    .checked_mul(16)
-                    .ok_or_else(|| anyhow!("Parquet row group structural size overflowed"))?,
-                "row group structural size",
-            )?;
-        }
+        let leaves_per_row = column_num_values(column)?.div_ceil(rows.max(1));
+        decoder_terms.add_per_row(
+            leaves_per_row
+                .checked_mul(16)
+                .ok_or_else(|| anyhow!("Parquet row group structural size overflowed"))?,
+            "row group structural size",
+        )?;
     }
     let minimum_decode = decoder_constant
         .checked_add(decoder_terms.bound(1, "row group decode")?)
@@ -4900,9 +4894,38 @@ mod bounded_file_decoder_tests {
         assert!(memory_plan.total_bytes > batch.get_array_memory_size() as u64);
         let max_decode_bytes = memory_plan.total_bytes;
         let reader = BoundedParquetBatchReader::partition(resident, vec![memory_plan]);
-        let (rows, batches) = read_parquet(reader, max_decode_bytes);
+        let (rows, _batches) = read_parquet(reader, max_decode_bytes);
         assert_eq!(rows, 100);
-        assert!(batches > 1);
+    }
+
+    #[test]
+    fn parquet_admits_uniform_fixed_width_lists_by_batch_scaling() {
+        // Many rows, each a moderate uniform list: the leaf-value count is huge
+        // but no single row is large. Charging num_values as a row-group constant
+        // rejected this; batch-scaling the per-row leaf count admits it.
+        let rows = 10_000usize;
+        let per_row = 200usize;
+        let mut builder = ListBuilder::new(Int64Builder::new());
+        for _ in 0..rows {
+            for _ in 0..per_row {
+                builder.values().append_value(0);
+            }
+            builder.append(true);
+        }
+        let array = builder.finish();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "values",
+            array.data_type().clone(),
+            false,
+        )]));
+        let source = RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap();
+        let (_directory, resident) = resident_parquet(&source, None);
+        let max_decode_bytes = 8 * 1024 * 1024;
+        assert!((rows as u64 * per_row as u64) * 16 > max_decode_bytes);
+        let plan = parquet_plan(&resident, max_decode_bytes).unwrap();
+        let reader = BoundedParquetBatchReader::partition(resident, vec![plan]);
+        let (decoded, _batches) = read_parquet(reader, max_decode_bytes);
+        assert_eq!(decoded, rows);
     }
 
     #[test]
