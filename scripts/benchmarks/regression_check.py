@@ -7,6 +7,13 @@ import sys
 
 METRICS = ["encode_wall_ms", "pk_map_wall_ms", "edges_map_wall_ms", "index_wall_ms"]
 
+# Only end-to-end wall time fails the build. A stage percentage is a noisy
+# signal on datasets where that stage is short -- a few seconds of machine
+# variance on a 50s encode is several percent -- and a stage moving while the
+# total holds is usually work shifting between phases, not a regression worth
+# blocking on. Stage regressions still print and still warn.
+WALL_METRIC = "wall_time_ms"
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -34,11 +41,7 @@ def main():
             continue
         delta_pct = ((cur - bas) / bas) * 100
         status = "OK"
-        if delta_pct > args.fail_threshold:
-            status = "FAIL"
-            failed = True
-            print(f"::error::{args.dataset}: {m} is {delta_pct:+.1f}% vs baseline ({cur}ms vs {bas}ms)")
-        elif delta_pct > args.warn_threshold:
+        if delta_pct > args.warn_threshold:
             status = "WARN"
             warned = True
             print(f"::warning::{args.dataset}: {m} is {delta_pct:+.1f}% vs baseline ({cur}ms vs {bas}ms)")
@@ -49,12 +52,21 @@ def main():
     if bas_total > 0:
         total_delta = ((cur_total - bas_total) / bas_total) * 100
         print(f"  TOTAL: {bas_total}ms -> {cur_total}ms ({total_delta:+.1f}%)")
+
+    # End-to-end wall time is the only thing that fails the build. Fall back to
+    # the summed stages when a run predates the metric.
+    cur_wall = current.get(WALL_METRIC)
+    bas_wall = base.get(WALL_METRIC)
+    if cur_wall and bas_wall:
+        total_delta = ((cur_wall - bas_wall) / bas_wall) * 100
+        print(f"  {WALL_METRIC}: {bas_wall}ms -> {cur_wall}ms ({total_delta:+.1f}%)")
+    if bas_total > 0 or (cur_wall and bas_wall):
         if total_delta > args.fail_threshold:
             failed = True
-            print(f"::error::{args.dataset}: overall {total_delta:+.1f}% vs baseline")
+            print(f"::error::{args.dataset}: wall time {total_delta:+.1f}% vs baseline")
         elif total_delta > args.warn_threshold:
             warned = True
-            print(f"::warning::{args.dataset}: overall {total_delta:+.1f}% vs baseline")
+            print(f"::warning::{args.dataset}: wall time {total_delta:+.1f}% vs baseline")
     else:
         total_delta = 0.0
 
