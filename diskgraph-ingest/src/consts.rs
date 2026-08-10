@@ -4,6 +4,11 @@ pub const TEMP_DIR_NAME: &str = "_tmp";
 pub const TEMP_META_MAGIC: [u8; 4] = *b"DGTP";
 pub const TEMP_META_VERSION: u8 = 2;
 pub const SAMPLE_ROW_LIMIT: usize = 100_000;
+
+/// Partitions the context sample is spread across. Value vocabularies are
+/// partitioned across files, so sampling one partition's head sees a fraction
+/// of a column's distinct values however many rows it reads.
+pub const CONTEXT_STRIDE_PARTITIONS: usize = 64;
 pub const MAX_NODE_DATA_LEN: usize = 64 * 1024 * 1024;
 pub const PROGRESS_ROW_BATCH: u64 = 1_000_000;
 pub const MAX_VAR_KEY_LEN: usize = u16::MAX as usize;

@@ -236,6 +236,91 @@ struct ParquetInput {
     condition: Option<CloudObjectCondition>,
 }
 
+/// Rows for the encoding context, taken as a stride across the table's files.
+///
+/// Every encoding decision is made from this sample, and value vocabularies are
+/// partitioned across files, so the head of one file shows a fraction of a
+/// column's distinct values however many rows it reads. On doordash `orders`,
+/// 10k head rows find 1,029 of 9,279 `ALL_TAGS` values; the same budget spread
+/// over six files finds 2,085.
+///
+/// This reads through its own readers and consumes nothing from the encode
+/// stream, so encode still reads every file whole. These rows are therefore
+/// read twice, which for `sample_limit` rows out of a whole table is cheaper
+/// than any coupling that would avoid it. Loading without a resident budget
+/// takes the ranged-read path rather than downloading whole cloud objects.
+fn sample_context_batches(
+    table: &TableSpec,
+    transfer: Option<&CloudTransfer>,
+    source_budget: &Arc<crate::source_memory::ByteBudget>,
+    sample_limit: usize,
+) -> Result<Vec<RecordBatch>> {
+    if !matches!(
+        table.source,
+        graph_config::DataSource::Parquet { .. }
+            | graph_config::DataSource::ObjectStoreParquet { .. }
+    ) {
+        return Ok(Vec::new());
+    }
+    let inputs = parquet_inputs(table);
+    if inputs.is_empty() || sample_limit == 0 {
+        return Ok(Vec::new());
+    }
+    let files = inputs.len().min(CONTEXT_STRIDE_PARTITIONS);
+    let per_file = sample_limit.div_ceil(files).max(1);
+    // Floor, with `take(files)` below: `step_by` visits `ceil(N/step)` files, so
+    // a ceiling step visits fewer than `files` and the sample comes up short --
+    // 200 files at a 100k budget collected 78k rows.
+    let step = (inputs.len() / files).max(1);
+
+    let mut batches = Vec::new();
+    let mut rows = 0usize;
+    for input in inputs.iter().step_by(step).take(files) {
+        if rows >= sample_limit {
+            break;
+        }
+        let resident = ResidentFile::load(
+            &input.path,
+            TableFormat::Parquet,
+            transfer,
+            None,
+            input.condition.clone(),
+        )?;
+        let Some(row_groups) = plan_resident_parquet_partitions(&resident)?
+            .into_iter()
+            .next()
+        else {
+            continue;
+        };
+        let resident = Arc::new(resident);
+        let (plans, _) = resident_partition_memory_plans(
+            &resident,
+            &row_groups,
+            source_budget.max_input_chunk_bytes(),
+            source_budget,
+        )?;
+        let mut reader = BoundedParquetBatchReader::partition(resident, plans);
+        let mut taken = 0usize;
+        let want = per_file.min(sample_limit - rows);
+        while taken < want {
+            let Some(batch) = reader.next() else {
+                break;
+            };
+            let batch = batch?;
+            if batch.num_rows() == 0 {
+                continue;
+            }
+            let take = (want - taken).min(batch.num_rows());
+            // A slice is a view that pins the parent's full column buffers, and
+            // these are held until the context and text stats are built.
+            batches.push(compact_record_batch_prefix(&batch, take)?);
+            taken += take;
+        }
+        rows += taken;
+    }
+    Ok(batches)
+}
+
 fn parquet_inputs(table: &TableSpec) -> Vec<ParquetInput> {
     table
         .source_objects()
@@ -6549,7 +6634,31 @@ impl IngestContext {
                     let mut prefix_rows = 0usize;
                     let mut prefix_bytes = 0usize;
                     let mut remainder = None;
-                    while prefix_rows < sample_limit && prefix_bytes < SOURCE_PREFIX_MAX_BYTES {
+
+                    // Parquet builds the context from its own strided pass and
+                    // leaves the encode stream untouched. Other sources consume
+                    // their input destructively, so they still learn from the
+                    // prefix they are about to encode.
+                    let strided = sample_context_batches(
+                        table,
+                        input_transfer.as_ref(),
+                        &source_budget,
+                        sample_limit,
+                    )?;
+                    for batch in &strided {
+                        let cols = build_access_cols(batch, table, &resolve_node_ids)?;
+                        access.set_cols(&cols);
+                        for row in 0..batch.num_rows() {
+                            access.set_row(row);
+                            context_builder.observe_row_from_access(&mut access)?;
+                        }
+                        access.set_cols(&[]);
+                    }
+
+                    while strided.is_empty()
+                        && prefix_rows < sample_limit
+                        && prefix_bytes < SOURCE_PREFIX_MAX_BYTES
+                    {
                         let batch = match stream.next_context_batch() {
                             Some(batch) => batch?,
                             None => break,
@@ -6620,7 +6729,15 @@ impl IngestContext {
                         })
                         .collect();
                     if col_stats_enabled {
-                        let text_stats = text_stats_from_prefix(table, &semantic_types, &prefix)?;
+                        // Whichever pass produced the sample feeds the text
+                        // stats; with striding `prefix` is empty by design.
+                        let text_sample: Vec<RecordBatch> = if strided.is_empty() {
+                            prefix.iter().map(|batch| batch.batch.clone()).collect()
+                        } else {
+                            strided.clone()
+                        };
+                        let text_stats =
+                            text_stats_from_prefix(table, &semantic_types, &text_sample)?;
                         if !text_stats.is_empty() {
                             self.text_sample_stats
                                 .insert(table.name.clone(), text_stats);
@@ -11132,7 +11249,7 @@ fn compact_prefix_with_budget(
 fn text_stats_from_prefix(
     table: &TableSpec,
     semantic_types: &[SemanticType],
-    batches: &[SourceBatch],
+    batches: &[RecordBatch],
 ) -> Result<HashMap<String, crate::col_stats::TextSampleStats>> {
     let text_cols: Vec<(usize, &str)> = table
         .columns
@@ -11143,8 +11260,7 @@ fn text_stats_from_prefix(
         .map(|(index, (column, _))| (index, column.name.as_str()))
         .collect();
     let mut samples: Vec<Vec<String>> = vec![Vec::new(); text_cols.len()];
-    for source_batch in batches {
-        let batch = &source_batch.batch;
+    for batch in batches {
         for (sample_index, &(column_index, _)) in text_cols.iter().enumerate() {
             if samples[sample_index].len() >= TEXT_SAMPLE_LIMIT {
                 continue;

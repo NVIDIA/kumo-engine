@@ -663,8 +663,18 @@ fn alphabet_encoding_selected_at_long_threshold() {
         }],
         config,
     );
-    let value = "ABCD".repeat(max_len.div_ceil(4))[..max_len].to_string();
+    // Distinct and incompressible, so neither a dictionary nor lz4 can pay for
+    // itself and the choice under test is alphabet against raw.
+    let mut state = 1u64;
     for _ in 0..50 {
+        let value: String = (0..max_len)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                char::from(b'a' + ((state >> 33) % 26) as u8)
+            })
+            .collect();
         builder.observe_row(&[ValueRef::String(&value)]).unwrap();
     }
     let ctx = builder.finish().unwrap();
@@ -673,6 +683,87 @@ fn alphabet_encoding_selected_at_long_threshold() {
             encoding: StringEncoding::Alphabet { .. },
         } => {}
         other => panic!("unexpected encoding: {:?}", other),
+    }
+}
+
+#[test]
+fn dict_beats_alphabet_on_low_cardinality_tags() {
+    let mut builder = RowPackContextBuilder::new(
+        vec![RowPackColumn {
+            name: "tag".to_string(),
+            logical_type: IngestedType::String,
+            fixed_len: None,
+            precision: None,
+            scale: None,
+        }],
+        RowPackConfig::default(),
+    );
+    // Lowercase-and-dash tags satisfy the alphabet test, but at 60 distinct
+    // values an index costs 1 byte where 5-bit packing costs 10.
+    let tags: Vec<String> = (0..60).map(|i| format!("comfort-food-{i:02}")).collect();
+    for _ in 0..20 {
+        for tag in &tags {
+            builder.observe_row(&[ValueRef::String(tag)]).unwrap();
+        }
+    }
+    let ctx = builder.finish().unwrap();
+    match &ctx.columns[0].encoding {
+        ColumnEncoding::String {
+            encoding: StringEncoding::Dict { values },
+        } => assert_eq!(values.len(), tags.len()),
+        other => panic!("unexpected encoding: {other:?}"),
+    }
+}
+
+#[test]
+fn alphabet_beats_a_partially_covering_dictionary() {
+    let mut config = RowPackConfig::default();
+    // Room for 30 entries of 64 bytes, so the cold tail cannot fit the
+    // dictionary and has to take the miss path.
+    config.max_dict_bytes_per_col = Some(1920);
+    // BPE would win outright on a four-letter alphabet; the comparison under
+    // test is dictionary against alphabet.
+    config.bpe_max_dict_entries = Some(0);
+    let mut builder = RowPackContextBuilder::new(
+        vec![RowPackColumn {
+            name: "seq".to_string(),
+            logical_type: IngestedType::String,
+            fixed_len: None,
+            precision: None,
+            scale: None,
+        }],
+        config,
+    );
+    let mut state = 7u64;
+    let next = |state: &mut u64| -> String {
+        (0..64)
+            .map(|_| {
+                *state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                char::from(b"ACGT"[((*state >> 33) % 4) as usize])
+            })
+            .collect()
+    };
+    let hot: Vec<String> = (0..30).map(|_| next(&mut state)).collect();
+    for value in &hot {
+        for _ in 0..24 {
+            builder.observe_row(&[ValueRef::String(value)]).unwrap();
+        }
+    }
+    for _ in 0..280 {
+        let cold = next(&mut state);
+        builder.observe_row(&[ValueRef::String(&cold)]).unwrap();
+    }
+    // The dictionary covers 72% of rows at one byte each, but every one of the
+    // 280 misses costs a full raw value, which 2-bit packing beats. Selecting
+    // the dictionary here means the miss path is not being priced.
+    let ctx = builder.finish().unwrap();
+    match &ctx.columns[0].encoding {
+        ColumnEncoding::String {
+            encoding: StringEncoding::Alphabet { .. },
+        } => {}
+        other => panic!("unexpected encoding: {other:?}"),
     }
 }
 
@@ -709,6 +800,9 @@ fn bpe_encoding_roundtrip() {
 fn bpe_selected_over_alphabet() {
     let mut config = RowPackConfig::default();
     config.bpe_min_gain_ratio = Some(1.0);
+    // Without this the fixture is cheapest as a dictionary and the comparison
+    // under test never happens.
+    config.max_dict_entries = Some(0);
     config.bpe_max_dict_entries = Some(64);
     config.bpe_max_dict_bytes = Some(1024);
     let mut builder = RowPackContextBuilder::new(
@@ -818,7 +912,6 @@ fn alphabet_beats_bpe_on_structured_strings() {
         "2024-10-31T23:59:59Z",
     ];
     let mut alpha_config = RowPackConfig::default();
-    alpha_config.max_dict_entries = Some(0);
     alpha_config.bpe_max_dict_entries = Some(0);
     alpha_config.bpe_max_dict_bytes = Some(0);
     let alphabet_encoding = build_string_encoding(&samples, alpha_config);
@@ -879,7 +972,6 @@ fn bpe_beats_alphabet_on_english_sentences() {
             "The museum tour ended with a restored mural that had been hidden behind the wall.",
         ];
     let mut alpha_config = RowPackConfig::default();
-    alpha_config.max_dict_entries = Some(0);
     alpha_config.bpe_max_dict_entries = Some(0);
     alpha_config.bpe_max_dict_bytes = Some(0);
     let alphabet_encoding = build_string_encoding(&samples, alpha_config);
@@ -1379,7 +1471,6 @@ fn lz4_encoding_selected() {
     let mut config = RowPackConfig::default();
     config.string_long_min_len = Some(8);
     config.string_long_min_ratio = Some(0.9);
-    config.max_dict_entries = Some(0);
     let mut builder = RowPackContextBuilder::new(
         vec![RowPackColumn {
             name: "text".to_string(),
@@ -1412,7 +1503,6 @@ fn lz4_falls_back_to_raw() {
     let mut config = RowPackConfig::default();
     config.string_long_min_len = Some(8);
     config.string_long_min_ratio = Some(0.5);
-    config.max_dict_entries = Some(0);
     let mut builder = RowPackContextBuilder::new(
         vec![RowPackColumn {
             name: "text".to_string(),
@@ -1697,9 +1787,7 @@ fn time64_microsecond_as_timestamp() {
     // offset instead of treating it as an unreadable timestamp and dropping the
     // row as null.
     let arr: ArrayRef = Arc::new(Time64MicrosecondArray::from(vec![1_000_000_i64]));
-    let secs = get_timestamp_from_array(arr, None, None)
-        .unwrap()
-        .unwrap();
+    let secs = get_timestamp_from_array(arr, None, None).unwrap().unwrap();
     assert_eq!(secs, 1);
 }
 
@@ -1718,9 +1806,7 @@ fn arrow_time_units_as_timestamp() {
         ),
     ];
     for (arr, expected) in cases {
-        let secs = get_timestamp_from_array(arr, None, None)
-            .unwrap()
-            .unwrap();
+        let secs = get_timestamp_from_array(arr, None, None).unwrap().unwrap();
         assert_eq!(secs, expected);
     }
 }
@@ -1960,3 +2046,323 @@ fn test_parse_timestamp_text_tz_format_no_tz_value() {
         .timestamp();
     assert_eq!(result.unwrap(), expected);
 }
+
+fn int_dict_ctx(values: &[i64]) -> RowPackContext {
+    let mut builder = RowPackContextBuilder::new(
+        vec![RowPackColumn {
+            name: "v".to_string(),
+            logical_type: IngestedType::Int64,
+            fixed_len: None,
+            precision: None,
+            scale: None,
+        }],
+        RowPackConfig::default(),
+    );
+    for v in values {
+        builder.observe_row(&[ValueRef::Int64(*v)]).unwrap();
+    }
+    builder.finish().unwrap()
+}
+
+#[test]
+fn int_dict_selection() {
+    let wide = |i: usize| 4_000_000_000_000_000_000i64 + i as i64;
+
+    // Wide magnitudes, tiny cardinality: the shape the encoding exists for.
+    let ctx = int_dict_ctx(&(0..7000).map(|i| wide(i % 7)).collect::<Vec<_>>());
+    match &ctx.columns[0].encoding {
+        ColumnEncoding::IntDict { values, .. } => {
+            assert_eq!(values.len(), 7);
+            // Frequency-sorted, ties by value, so the context is reproducible.
+            assert_eq!(values[0], wide(0));
+        }
+        other => panic!("expected IntDict, got {other:?}"),
+    }
+
+    // All distinct: the dictionary would be as large as the column it replaces.
+    let ctx = int_dict_ctx(&(0..5000).map(|i| wide(i + 100)).collect::<Vec<_>>());
+    assert!(
+        matches!(ctx.columns[0].encoding, ColumnEncoding::Int { .. }),
+        "unique values must stay on the plain encoding"
+    );
+
+    // Coverage just under 2: the cost model alone would take the dictionary
+    // here (dict+ctx 999 < plain 1592), so only the repeat guard rejects it.
+    // Without that guard nearly every row would take the fallback.
+    let mut sample: Vec<i64> = (0..100).map(wide).collect();
+    sample.extend((0..99).map(wide));
+    let ctx = int_dict_ctx(&sample);
+    assert!(
+        matches!(ctx.columns[0].encoding, ColumnEncoding::Int { .. }),
+        "coverage below the repeat threshold must reject the dictionary"
+    );
+}
+
+#[test]
+fn int_dict_round_trips_hits_and_misses() {
+    let distinct: Vec<i64> = (0..5)
+        .map(|i| -3_000_000_000_000_000_000i64 + i * 17)
+        .collect();
+    let sample: Vec<i64> = (0..5000).map(|i| distinct[i % 5]).collect();
+    let ctx = int_dict_ctx(&sample);
+    assert!(matches!(
+        ctx.columns[0].encoding,
+        ColumnEncoding::IntDict { .. }
+    ));
+
+    let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+    let decoder = RowPackDecoder::new(ctx).unwrap();
+
+    // Hits, an unsampled value (fallback), and the extremes.
+    let mut cases = distinct.clone();
+    cases.push(999_999_999i64); // miss
+    cases.push(i64::MIN);
+    cases.push(i64::MAX);
+    cases.push(0);
+
+    for v in cases {
+        let row = encode_row(&encoder, &[ValueRef::Int64(v)]);
+        let mut dscratch = RowPackDecodeScratch::default();
+        let decoded = decoder.decode_column_value(&row, 0, &mut dscratch).unwrap();
+        match decoded {
+            ValueRef::Int64(got) => assert_eq!(got, v, "round-trip failed for {v}"),
+            other => panic!("expected Int64, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn int_dict_fallback_never_costs_more_than_plain() {
+    // A locally-clustered but globally-unique column can be selected and then
+    // miss on nearly every row. The fallback has to be written with the
+    // column's own varint/bits: anything wider costs more than not having a
+    // dictionary at all, and it still round-trips, so only size catches it.
+    // Values stay inside 32 bits so the column is varint, which is the case
+    // that can regress.
+    let distinct: Vec<i64> = (0..200).map(|i| 250_000_000i64 + i).collect();
+    let sample: Vec<i64> = (0..10_000).map(|i| distinct[i % 200]).collect();
+    let ctx = int_dict_ctx(&sample);
+    let (varint, bits) = match &ctx.columns[0].encoding {
+        ColumnEncoding::IntDict { varint, bits, .. } => (*varint, *bits),
+        other => panic!("expected IntDict, got {other:?}"),
+    };
+    assert!(varint, "fixture must exercise a varint column");
+
+    let plain = ColumnContext {
+        name: "v".to_string(),
+        logical_type: IngestedType::Int64,
+        encoding: ColumnEncoding::Int {
+            signed: true,
+            varint,
+            bits,
+        },
+    };
+    let plain_ctx = RowPackContext {
+        version: ROWPACK_VERSION,
+        columns: vec![plain],
+        estimated_row_bytes: 0,
+    };
+    let plain_encoder = RowPackEncoder::new(plain_ctx).unwrap();
+    let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+    let decoder = RowPackDecoder::new(ctx).unwrap();
+
+    let miss = 260_000_000i64;
+    let row = encode_row(&encoder, &[ValueRef::Int64(miss)]);
+    let mut scratch = RowPackDecodeScratch::default();
+    match decoder.decode_column_value(&row, 0, &mut scratch).unwrap() {
+        ValueRef::Int64(got) => assert_eq!(got, miss),
+        other => panic!("expected Int64, got {other:?}"),
+    }
+    let plain_row = encode_row(&plain_encoder, &[ValueRef::Int64(miss)]);
+    assert!(
+        row.len() <= plain_row.len(),
+        "miss cost {} bytes where plain spent {}",
+        row.len(),
+        plain_row.len()
+    );
+}
+
+#[test]
+fn int_dict_skipped_column_does_not_corrupt_later_columns() {
+    // A skip that mis-advances silently corrupts every later column.
+    let mut builder = RowPackContextBuilder::new(
+        vec![
+            RowPackColumn {
+                name: "d".to_string(),
+                logical_type: IngestedType::Int64,
+                fixed_len: None,
+                precision: None,
+                scale: None,
+            },
+            RowPackColumn {
+                name: "after".to_string(),
+                logical_type: IngestedType::Int64,
+                fixed_len: None,
+                precision: None,
+                scale: None,
+            },
+        ],
+        RowPackConfig::default(),
+    );
+    let distinct: Vec<i64> = (0..6).map(|i| 6_000_000_000_000_000_000i64 + i).collect();
+    for i in 0..6000 {
+        builder
+            .observe_row(&[ValueRef::Int64(distinct[i % 6]), ValueRef::Int64(i as i64)])
+            .unwrap();
+    }
+    let ctx = builder.finish().unwrap();
+    assert!(matches!(
+        ctx.columns[0].encoding,
+        ColumnEncoding::IntDict { .. }
+    ));
+
+    let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+    let decoder = RowPackDecoder::new(ctx).unwrap();
+    for first in [distinct[0], 424_242_424_242i64] {
+        let row = encode_row(
+            &encoder,
+            &[ValueRef::Int64(first), ValueRef::Int64(987_654_321)],
+        );
+        let mut scratch = RowPackDecodeScratch::default();
+        match decoder.decode_column_value(&row, 1, &mut scratch).unwrap() {
+            ValueRef::Int64(got) => {
+                assert_eq!(got, 987_654_321, "skip mis-advanced past first={first}")
+            }
+            other => panic!("expected Int64, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn int_dict_hit_never_costs_more_than_plain() {
+    // Index widths are frozen from the sample, so a value that is rare in the
+    // prefix but common later must not end up on a wider index than the plain
+    // encoding would have used. 200 small values would otherwise put indices
+    // 128..199 at two bytes where plain zigzag spends one.
+    let mut sample: Vec<i64> = Vec::new();
+    for i in 0..128 {
+        sample.extend(std::iter::repeat_n(100_000i64 + i, 70));
+    }
+    for i in 0..72 {
+        sample.extend(std::iter::repeat_n(i as i64, 13));
+    }
+    let ctx = int_dict_ctx(&sample);
+    if let ColumnEncoding::IntDict { values, .. } = &ctx.columns[0].encoding {
+        assert!(
+            values.len() <= 128,
+            "dictionary must not extend past one-byte indices, got {}",
+            values.len()
+        );
+    }
+}
+
+#[test]
+fn int_dict_round_trips_through_the_access_encode_path() {
+    // Ingest encodes via encode_row_from_access, not encode_row_into, so the
+    // per-type fast paths need their own coverage.
+    use arrow_array::{ArrayRef, Int64Array};
+    use std::sync::Arc;
+
+    let distinct: Vec<i64> = (0..5).map(|i| 3_000_000_000_000_000_000i64 + i).collect();
+    let sample: Vec<i64> = (0..5000).map(|i| distinct[i % 5]).collect();
+    let ctx = int_dict_ctx(&sample);
+    assert!(matches!(
+        ctx.columns[0].encoding,
+        ColumnEncoding::IntDict { .. }
+    ));
+
+    let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+    let decoder = RowPackDecoder::new(ctx.clone()).unwrap();
+    let values = vec![distinct[2], 777_777_777_777i64]; // a hit and a miss
+    let array: ArrayRef = Arc::new(Int64Array::from(values.clone()));
+    let cols = vec![array];
+    let mut access = RowAccess::new(vec![RowAccessHints::default()], RowAccessStats::default());
+    access.set_cols(&cols);
+
+    let mut scratch = RowPackScratch::new(encoder.context());
+    for (row, expected) in values.iter().enumerate() {
+        access.set_row(row);
+        let mut out = Vec::new();
+        encoder
+            .encode_row_from_access(&mut access, &mut out, &mut scratch)
+            .unwrap();
+        let mut dscratch = RowPackDecodeScratch::default();
+        match decoder.decode_column_value(&out, 0, &mut dscratch).unwrap() {
+            ValueRef::Int64(got) => assert_eq!(got, *expected),
+            other => panic!("expected Int64, got {other:?}"),
+        }
+    }
+}
+
+fn float_dict_ctx(values: &[f64]) -> RowPackContext {
+    let mut builder = RowPackContextBuilder::new(
+        vec![RowPackColumn {
+            name: "v".to_string(),
+            logical_type: IngestedType::Float64,
+            fixed_len: None,
+            precision: None,
+            scale: None,
+        }],
+        RowPackConfig::default(),
+    );
+    for v in values {
+        builder.observe_row(&[ValueRef::Float64(*v)]).unwrap();
+    }
+    builder.finish().unwrap()
+}
+
+#[test]
+fn float_dict_skipped_when_values_do_not_repeat() {
+    let sample: Vec<f64> = (0..5000).map(|i| i as f64 * 1.5).collect();
+    assert!(matches!(
+        float_dict_ctx(&sample).columns[0].encoding,
+        ColumnEncoding::Float { .. }
+    ));
+}
+
+#[test]
+fn float_dict_round_trips_hits_and_misses() {
+    let distinct: Vec<f64> = (0..5).map(|i| 1234.5 + i as f64).collect();
+    let sample: Vec<f64> = (0..5000).map(|i| distinct[i % 5]).collect();
+    let ctx = float_dict_ctx(&sample);
+    assert!(matches!(
+        ctx.columns[0].encoding,
+        ColumnEncoding::FloatDict { .. }
+    ));
+
+    let encoder = RowPackEncoder::new(ctx.clone()).unwrap();
+    let decoder = RowPackDecoder::new(ctx).unwrap();
+
+    // Hits, an unsampled value, and the values that make float equality awkward.
+    let mut cases = distinct.clone();
+    cases.extend([
+        9_876.5,
+        0.0,
+        -0.0,
+        f64::MIN,
+        f64::MAX,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    ]);
+
+    for v in cases {
+        let row = encode_row(&encoder, &[ValueRef::Float64(v)]);
+        let mut dscratch = RowPackDecodeScratch::default();
+        match decoder.decode_column_value(&row, 0, &mut dscratch).unwrap() {
+            ValueRef::Float64(got) => {
+                assert_eq!(got.to_bits(), v.to_bits(), "round-trip failed for {v}")
+            }
+            other => panic!("expected Float64, got {other:?}"),
+        }
+    }
+
+    // NaN separately: it is never bit-equal to itself through a comparison.
+    let row = encode_row(&encoder, &[ValueRef::Float64(f64::NAN)]);
+    let mut dscratch = RowPackDecodeScratch::default();
+    match decoder.decode_column_value(&row, 0, &mut dscratch).unwrap() {
+        ValueRef::Float64(got) => assert!(got.is_nan()),
+        other => panic!("expected Float64, got {other:?}"),
+    }
+}
+
+

@@ -1489,6 +1489,22 @@ fn format_rowpack_encoding(encoding: &ColumnEncoding) -> String {
         } => {
             format!("int(signed={}, varint={}, bits={})", signed, varint, bits)
         }
+        ColumnEncoding::FloatDict { values, storage } => {
+            format!("float dict (entries={}, storage={:?})", values.len(), storage)
+        }
+        ColumnEncoding::IntDict {
+            values,
+            signed,
+            bits,
+            ..
+        } => {
+            format!(
+                "int_dict(entries={}, signed={}, bits={})",
+                values.len(),
+                signed,
+                bits
+            )
+        }
         ColumnEncoding::Float { storage } => format!("float({})", format_float_storage(*storage)),
         ColumnEncoding::Bool => "bool".to_string(),
         ColumnEncoding::String { encoding } => format_string_encoding(encoding),

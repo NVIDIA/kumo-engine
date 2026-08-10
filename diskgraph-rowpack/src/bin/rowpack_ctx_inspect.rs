@@ -45,6 +45,29 @@ fn print_encoding(encoding: &ColumnEncoding) -> Result<()> {
                 signed, varint, bits
             );
         }
+        ColumnEncoding::FloatDict { values, storage } => {
+            println!(
+                "  Encoding: float dict (entries={}, storage={:?})",
+                values.len(),
+                storage
+            );
+        }
+        ColumnEncoding::IntDict {
+            values,
+            signed,
+            bits,
+            ..
+        } => {
+            println!(
+                "  Encoding: int dict (entries={}, signed={}, bits={})",
+                values.len(),
+                signed,
+                bits
+            );
+            for (idx, value) in values.iter().take(10).enumerate() {
+                println!("    [{idx}] {value}");
+            }
+        }
         ColumnEncoding::Float { storage } => {
             println!("  Encoding: float ({})", format_float_storage(*storage));
         }

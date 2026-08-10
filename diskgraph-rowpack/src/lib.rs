@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use arrow_array::{Array, RecordBatch};
 use base64::Engine;
 use chrono::{DateTime, Utc};
-use gxhash::{HashMap, HashMapExt, HashSet, HashSetExt};
+use gxhash::{HashMap, HashMapExt};
 use half::f16;
 use half::slice::HalfFloatSliceExt;
 use num_bigint::BigInt;
@@ -139,7 +139,7 @@ pub struct RowPackConfig {
 impl Default for RowPackConfig {
     fn default() -> Self {
         Self {
-            sample_rows: Some(10_000),
+            sample_rows: Some(100_000),
             max_dict_bytes_per_col: Some(1_000_000),
             max_dict_entries: Some(50_000),
             bpe_max_dict_bytes: Some(1_000_000),
@@ -179,7 +179,7 @@ impl RowPackConfig {
     }
 
     pub fn sample_rows(&self) -> usize {
-        self.sample_rows.unwrap_or(10_000)
+        self.sample_rows.unwrap_or(100_000)
     }
 
     fn max_dict_bytes(&self) -> usize {
@@ -353,6 +353,20 @@ pub enum ColumnEncoding {
     },
     FixedIntArray {
         len: usize,
+    },
+    /// Tag 1: varint index into frequency-sorted `values`.
+    /// Tag 2: miss, written with `varint`/`bits` so it is break-even with plain.
+    IntDict {
+        values: Vec<i64>,
+        signed: bool,
+        varint: bool,
+        bits: u8,
+    },
+    /// Tag 1: varint index into frequency-sorted `values`.
+    /// Tag 2: miss, written at `storage` width so it is break-even with plain.
+    FloatDict {
+        values: Vec<f64>,
+        storage: FloatStorage,
     },
 }
 
@@ -912,7 +926,7 @@ impl RowPackContextBuilder {
 
     /// Returns per-column `(num_unique, count)` from the context-phase sample.
     ///
-    /// For integer columns: uses `int_uniques.len()` (capped at 1M).
+    /// For integer columns: uses `int_counts.len()` (capped at 1M).
     /// For string columns: uses `string_counts.len()` (capped at 1M).
     /// For other types: `num_unique` is 0 (stype is unambiguous from dtype).
     pub fn sample_unique_counts(&self) -> Vec<(usize, usize)> {
@@ -928,7 +942,7 @@ impl RowPackContextBuilder {
                     | IngestedType::UInt8
                     | IngestedType::UInt16
                     | IngestedType::UInt32
-                    | IngestedType::UInt64 => s.int_uniques.len(),
+                    | IngestedType::UInt64 => s.int_counts.len(),
                     IngestedType::String => s.string_counts.len(),
                     _ => 0,
                 };
@@ -1007,6 +1021,10 @@ fn estimate_column_bytes(encoding: &ColumnEncoding, stats: &ColumnStats) -> usiz
                 (*bits).div_ceil(8) as usize
             }
         }
+        ColumnEncoding::IntDict { values, .. } => {
+            // Frequency-sorted, so most rows hit a shorter index than the last.
+            varint_bytes_u64(values.len().saturating_sub(1) as u64 / 2)
+        }
         ColumnEncoding::Date { varint, bits } => {
             if *varint {
                 varint_bytes(*bits)
@@ -1021,6 +1039,10 @@ fn estimate_column_bytes(encoding: &ColumnEncoding, stats: &ColumnStats) -> usiz
                 64
             };
             varint_bytes(secs_bits)
+        }
+        ColumnEncoding::FloatDict { values, .. } => {
+            // Frequency-sorted, so most rows hit a shorter index than the last.
+            varint_bytes_u64(values.len().saturating_sub(1) as u64 / 2)
         }
         ColumnEncoding::Float { storage } => match storage {
             FloatStorage::F16 => 2,
@@ -1162,7 +1184,9 @@ struct ColumnStats {
     nulls: usize,
     int_min: i64,
     int_max: i64,
-    int_uniques: HashSet<i64>,
+    int_counts: FastHashMap<i64, u32>,
+    /// Keyed on the bit pattern so every distinct value stays distinct.
+    float_counts: FastHashMap<u64, u32>,
     uint_max: u64,
     float_min: f64,
     float_max: f64,
@@ -1198,7 +1222,8 @@ impl ColumnStats {
             nulls: 0,
             int_min: i64::MAX,
             int_max: i64::MIN,
-            int_uniques: HashSet::new(),
+            int_counts: FastHashMap::new(),
+            float_counts: FastHashMap::new(),
             uint_max: 0,
             float_min: f64::INFINITY,
             float_max: f64::NEG_INFINITY,
@@ -1228,6 +1253,160 @@ impl ColumnStats {
         }
     }
 
+    /// `varint` is the incumbent decision the dictionary has to beat.
+    fn int_encoding(
+        &self,
+        signed: bool,
+        bits: u8,
+        varint: bool,
+        config: &RowPackConfig,
+    ) -> ColumnEncoding {
+        let plain = ColumnEncoding::Int {
+            signed,
+            varint,
+            bits,
+        };
+        let observed: u64 = self.int_counts.values().map(|c| *c as u64).sum();
+        if self.int_counts.is_empty() {
+            return plain;
+        }
+        let unique = self.int_counts.len();
+        if unique > config.max_dict_entries() {
+            return plain;
+        }
+
+        // Tie-break by value: keeps the context deterministic across runs.
+        let mut entries: Vec<(i64, u32)> = self
+            .int_counts
+            .iter()
+            .map(|(value, count)| (*value, *count))
+            .collect();
+        entries.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+        let value_bytes = |v: i64| -> usize {
+            if varint {
+                varint_bytes_u64(zigzag_encode(v))
+            } else {
+                bits as usize / 8
+            }
+        };
+        let plain_bytes: u64 = entries
+            .iter()
+            .map(|(v, c)| value_bytes(*v) as u64 * *c as u64)
+            .sum();
+
+        // Cap the dictionary so the widest index costs no more than the cheapest
+        // value would have cost plain. Index widths are frozen from the sample
+        // but the distribution beyond it is not, so without this a column whose
+        // rare values become common later pays a 2-byte index where plain spent
+        // 1. Entries past the cap fall back, which is already break-even.
+        let cheapest_plain = entries
+            .iter()
+            .map(|(v, _)| value_bytes(*v))
+            .min()
+            .unwrap_or(1);
+        let max_entries = 1usize << (7 * cheapest_plain.min(8));
+        let kept = entries.len().min(max_entries).max(1);
+
+        let mut dict_bytes: u64 = 0;
+        for (idx, (v, count)) in entries.iter().enumerate() {
+            let per_row = if idx < kept {
+                varint_bytes_u64(idx as u64)
+            } else {
+                value_bytes(*v)
+            };
+            dict_bytes += per_row as u64 * *count as u64;
+        }
+        entries.truncate(kept);
+        let ctx_bytes: u64 = entries.len() as u64 * 8;
+
+        // Values must repeat, or nearly every row takes the fallback.
+        let coverage = observed as f64 / unique as f64;
+        if coverage < 2.0 {
+            return plain;
+        }
+
+        if dict_bytes + ctx_bytes < plain_bytes {
+            ColumnEncoding::IntDict {
+                values: entries.into_iter().map(|(value, _)| value).collect(),
+                signed,
+                varint,
+                bits,
+            }
+        } else {
+            plain
+        }
+    }
+
+    /// Floats are picked by width alone -- `choose_float_storage` takes only
+    /// whether the source was f64 and never looks at the data. A column of 212
+    /// distinct item counts therefore pays 8 bytes a row. Price a dictionary
+    /// against plain storage the same way `int_encoding` does.
+    fn float_encoding(&self, storage: FloatStorage, config: &RowPackConfig) -> ColumnEncoding {
+        let plain = ColumnEncoding::Float { storage };
+        if self.float_counts.is_empty() {
+            return plain;
+        }
+        let observed: u64 = self.float_counts.values().map(|c| *c as u64).sum();
+        let unique = self.float_counts.len();
+        if unique > config.max_dict_entries() {
+            return plain;
+        }
+        let width = match storage {
+            // A 3-byte index can exceed a 2-byte value, so F16 cannot hold the
+            // never-worse-than-plain bound the cap-free cost model relies on.
+            // No scalar float selects F16 today; this keeps that assumption
+            // from silently breaking if one ever does.
+            FloatStorage::F16 => return plain,
+            FloatStorage::F32 => 4usize,
+            FloatStorage::F64 => 8,
+        };
+
+        // Tie-break by value: keeps the context deterministic across runs.
+        let mut entries: Vec<(u64, u32)> = self
+            .float_counts
+            .iter()
+            .map(|(bits, count)| (*bits, *count))
+            .collect();
+        entries.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+        // No index cap here, unlike the integer path: a plain float is 4 or 8
+        // bytes, so a varint index would need 2^28 entries to cost more, and
+        // `max_dict_entries` binds long before that.
+        let mut dict_bytes = 0u64;
+        for (idx, (_, count)) in entries.iter().enumerate() {
+            dict_bytes += varint_bytes_u64(idx as u64) as u64 * *count as u64;
+        }
+        let ctx_bytes = entries.len() as u64 * 8;
+
+        // Values must repeat, or nearly every row takes the fallback.
+        if (observed as f64 / unique as f64) < 2.0 {
+            return plain;
+        }
+        if dict_bytes + ctx_bytes < observed * width as u64 {
+            ColumnEncoding::FloatDict {
+                values: entries
+                    .into_iter()
+                    .map(|(bits, _)| f64::from_bits(bits))
+                    .collect(),
+                storage,
+            }
+        } else {
+            plain
+        }
+    }
+
+    fn observe_int_key(&mut self, v: i64) {
+        match self.int_counts.get_mut(&v) {
+            Some(count) => *count = count.saturating_add(1),
+            None => {
+                if self.int_counts.len() < MAX_SAMPLE_UNIQUES {
+                    self.int_counts.insert(v, 1);
+                }
+            }
+        }
+    }
+
     fn observe<'a>(&mut self, value: &ValueRef<'a>, config: &RowPackConfig) -> Result<()> {
         self.count += 1;
         match value {
@@ -1237,51 +1416,24 @@ impl ColumnStats {
             ValueRef::Int64(v) => {
                 self.int_min = self.int_min.min(*v);
                 self.int_max = self.int_max.max(*v);
-                if self.int_uniques.len() < MAX_SAMPLE_UNIQUES {
-                    self.int_uniques.insert(*v);
-                }
+                self.observe_int_key(*v);
             }
             ValueRef::Int32(v) => {
                 let v = *v as i64;
                 self.int_min = self.int_min.min(v);
                 self.int_max = self.int_max.max(v);
-                if self.int_uniques.len() < MAX_SAMPLE_UNIQUES {
-                    self.int_uniques.insert(v);
-                }
+                self.observe_int_key(v);
             }
             ValueRef::UInt64(v) => {
                 self.uint_max = self.uint_max.max(*v);
-                if self.int_uniques.len() < MAX_SAMPLE_UNIQUES {
-                    self.int_uniques.insert(*v as i64);
-                }
+                self.observe_int_key(*v as i64);
             }
             ValueRef::UInt32(v) => {
                 self.uint_max = self.uint_max.max(*v as u64);
-                if self.int_uniques.len() < MAX_SAMPLE_UNIQUES {
-                    self.int_uniques.insert(*v as i64);
-                }
+                self.observe_int_key(*v as i64);
             }
-            ValueRef::Float64(v) => {
-                if v.is_nan() {
-                    self.float_has_nan = true;
-                } else if v.is_infinite() {
-                    self.float_has_inf = true;
-                } else {
-                    self.float_min = self.float_min.min(*v);
-                    self.float_max = self.float_max.max(*v);
-                }
-            }
-            ValueRef::Float32(v) => {
-                let v = *v as f64;
-                if v.is_nan() {
-                    self.float_has_nan = true;
-                } else if v.is_infinite() {
-                    self.float_has_inf = true;
-                } else {
-                    self.float_min = self.float_min.min(v);
-                    self.float_max = self.float_max.max(v);
-                }
-            }
+            ValueRef::Float64(v) => self.observe_float_stats(*v),
+            ValueRef::Float32(v) => self.observe_float_stats(*v as f64),
             ValueRef::Bool(_) => {
                 self.bool_seen = true;
             }
@@ -1441,9 +1593,7 @@ impl ColumnStats {
         self.count += 1;
         self.int_min = self.int_min.min(v);
         self.int_max = self.int_max.max(v);
-        if self.int_uniques.len() < MAX_SAMPLE_UNIQUES {
-            self.int_uniques.insert(v);
-        }
+        self.observe_int_key(v);
     }
 
     fn observe_int32(&mut self, v: i32) {
@@ -1453,9 +1603,7 @@ impl ColumnStats {
     fn observe_uint64(&mut self, v: u64) {
         self.count += 1;
         self.uint_max = self.uint_max.max(v);
-        if self.int_uniques.len() < MAX_SAMPLE_UNIQUES {
-            self.int_uniques.insert(v as i64);
-        }
+        self.observe_int_key(v as i64);
     }
 
     fn observe_uint32(&mut self, v: u32) {
@@ -1574,7 +1722,22 @@ impl ColumnStats {
         }
     }
 
+    /// Every float observation funnels here so the dictionary sees the same
+    /// values the encoder will. Keyed on bits, so -0.0 and 0.0 stay distinct.
+    fn observe_float_key(&mut self, v: f64) {
+        let key = v.to_bits();
+        match self.float_counts.get_mut(&key) {
+            Some(count) => *count = count.saturating_add(1),
+            None => {
+                if self.float_counts.len() < MAX_SAMPLE_UNIQUES {
+                    self.float_counts.insert(key, 1);
+                }
+            }
+        }
+    }
+
     fn observe_float_stats(&mut self, v: f64) {
+        self.observe_float_key(v);
         if v.is_nan() {
             self.float_has_nan = true;
         } else if v.is_infinite() {
@@ -1592,21 +1755,15 @@ impl ColumnStats {
         fixed_len: Option<usize>,
     ) -> Result<ColumnEncoding> {
         match logical {
-            IngestedType::Int64 => Ok(ColumnEncoding::Int {
-                signed: true,
-                varint: int_use_varint(self.int_min, self.int_max),
-                bits: 64,
-            }),
-            IngestedType::Int32 => Ok(ColumnEncoding::Int {
-                signed: true,
-                varint: int_use_varint(self.int_min, self.int_max),
-                bits: 32,
-            }),
-            IngestedType::Int16 => Ok(ColumnEncoding::Int {
-                signed: true,
-                varint: int_use_varint(self.int_min, self.int_max),
-                bits: 16,
-            }),
+            IngestedType::Int64 => {
+                Ok(self.int_encoding(true, 64, int_use_varint(self.int_min, self.int_max), config))
+            }
+            IngestedType::Int32 => {
+                Ok(self.int_encoding(true, 32, int_use_varint(self.int_min, self.int_max), config))
+            }
+            IngestedType::Int16 => {
+                Ok(self.int_encoding(true, 16, int_use_varint(self.int_min, self.int_max), config))
+            }
             IngestedType::Int8 => Ok(ColumnEncoding::Int {
                 signed: true,
                 varint: false,
@@ -1632,12 +1789,8 @@ impl ColumnStats {
                 varint: false,
                 bits: 8,
             }),
-            IngestedType::Float64 => Ok(ColumnEncoding::Float {
-                storage: choose_float_storage(true),
-            }),
-            IngestedType::Float32 => Ok(ColumnEncoding::Float {
-                storage: choose_float_storage(false),
-            }),
+            IngestedType::Float64 => Ok(self.float_encoding(choose_float_storage(true), config)),
+            IngestedType::Float32 => Ok(self.float_encoding(choose_float_storage(false), config)),
             IngestedType::Bool => Ok(ColumnEncoding::Bool),
             IngestedType::String => Ok(ColumnEncoding::String {
                 encoding: choose_string_encoding(self, config)?,
@@ -1723,91 +1876,116 @@ fn choose_float_storage(is_f64: bool) -> FloatStorage {
     }
 }
 
+/// Eligibility alone is not a reason to pick an encoding: alphabet only shrinks
+/// a value by `log2(charset)/8` per character, while a dictionary replaces the
+/// whole value with a varint index, so a low-cardinality column from a small
+/// charset is far cheaper as a dictionary even though both apply.
 fn choose_string_encoding(stats: &ColumnStats, config: &RowPackConfig) -> Result<StringEncoding> {
     let total = stats.string_total.max(1) as f32;
     let avg_len = stats
         .string_bytes
         .checked_div(stats.string_total)
         .unwrap_or(0);
-    let bpe_allowed = avg_len >= config.bpe_min_avg_len() && avg_len < config.string_long_min_len();
-    if stats.alphabet_ok && stats.alphabet_len > 1 {
-        let coverage_ratio = stats.alphabet_hits as f32 / total;
-        if coverage_ratio >= ALPHABET_MIN_COVERAGE {
-            let mut alphabet = Vec::with_capacity(stats.alphabet_len);
-            for (idx, seen) in stats.alphabet_bytes.iter().enumerate() {
-                if *seen {
-                    alphabet.push(idx as u8);
-                }
+    let samples = &stats.string_samples;
+
+    // Pushed in the historical preference order, which is what ties and the
+    // no-sample fallback below resolve to.
+    let mut candidates: Vec<StringEncoding> = Vec::new();
+
+    if stats.alphabet_ok
+        && stats.alphabet_len > 1
+        && stats.alphabet_hits as f32 / total >= ALPHABET_MIN_COVERAGE
+    {
+        let mut alphabet = Vec::with_capacity(stats.alphabet_len);
+        for (idx, seen) in stats.alphabet_bytes.iter().enumerate() {
+            if *seen {
+                alphabet.push(idx as u8);
             }
-            let mut best = StringEncoding::Alphabet { alphabet };
-            if bpe_allowed && !stats.string_samples.is_empty() {
-                let bpe_dict = train_bpe_dict(
-                    &stats.string_samples,
-                    config.bpe_max_dict_entries(),
-                    config.bpe_max_dict_bytes(),
-                );
-                if !bpe_dict.is_empty() {
-                    let bpe_bytes = estimate_bpe_bytes(&stats.string_samples, &bpe_dict);
-                    let alpha_bytes =
-                        estimate_alphabet_bytes(&stats.string_samples, stats.alphabet_len);
-                    if bpe_bytes < (alpha_bytes as f64 * config.bpe_min_gain_ratio() as f64) as u64
-                    {
-                        best = StringEncoding::Bpe { dict: bpe_dict };
-                    }
-                }
-            }
-            return Ok(best);
         }
+        candidates.push(StringEncoding::Alphabet { alphabet });
     }
-    if bpe_allowed && !stats.string_samples.is_empty() {
-        let bpe_dict = train_bpe_dict(
-            &stats.string_samples,
+
+    if let Some(values) = string_dict_values(stats, config, total) {
+        candidates.push(StringEncoding::Dict { values });
+    }
+
+    if stats.string_long_bytes > 0
+        && stats.string_long_compressed as f32 / stats.string_long_raw as f32
+            <= config.string_long_min_ratio()
+    {
+        candidates.push(StringEncoding::Lz4);
+    }
+
+    candidates.push(StringEncoding::Raw);
+
+    if samples.is_empty() {
+        return Ok(candidates.swap_remove(0));
+    }
+    let (best_bytes, best) = candidates
+        .into_iter()
+        .map(|enc| (estimate_string_bytes(samples, &enc), enc))
+        .min_by_key(|(bytes, _)| *bytes)
+        .expect("raw is always a candidate");
+
+    // BPE carries a trained dictionary and a slower decode, so it has to be
+    // meaningfully cheaper than the best alternative rather than merely cheaper.
+    if avg_len >= config.bpe_min_avg_len() && avg_len < config.string_long_min_len() {
+        let dict = train_bpe_dict(
+            samples,
             config.bpe_max_dict_entries(),
             config.bpe_max_dict_bytes(),
         );
-        if !bpe_dict.is_empty() {
-            let bpe_bytes = estimate_bpe_bytes(&stats.string_samples, &bpe_dict);
-            let raw_bytes = estimate_raw_bytes(&stats.string_samples);
-            if bpe_bytes < (raw_bytes as f64 * config.bpe_min_gain_ratio() as f64) as u64 {
-                return Ok(StringEncoding::Bpe { dict: bpe_dict });
+        if !dict.is_empty() {
+            let bpe_bytes = estimate_bpe_bytes(samples, &dict);
+            if bpe_bytes < (best_bytes as f64 * config.bpe_min_gain_ratio() as f64) as u64 {
+                return Ok(StringEncoding::Bpe { dict });
             }
         }
     }
-    if !stats.string_counts.is_empty() {
-        let mut entries: Vec<(Vec<u8>, usize)> = stats
-            .string_counts
-            .iter()
-            .map(|(k, v)| (k.clone(), *v))
-            .collect();
-        entries.sort_by_key(|entry| std::cmp::Reverse(entry.1));
-        let mut values = Vec::new();
-        let mut bytes = 0usize;
-        let mut coverage = 0usize;
-        let max_bytes = config.max_dict_bytes();
-        let max_entries = config.max_dict_entries();
-        for (value, count) in entries {
-            let next_bytes = bytes + value.len();
-            if next_bytes > max_bytes || values.len() >= max_entries {
-                break;
-            }
-            bytes = next_bytes;
-            coverage += count;
-            values.push(value);
-        }
-        let coverage_ratio = coverage as f32 / total;
-        let avg_hits = coverage as f32 / values.len().max(1) as f32;
-        if coverage_ratio >= config.string_dict_coverage() && avg_hits >= 2.0 && !values.is_empty()
-        {
-            return Ok(StringEncoding::Dict { values });
-        }
+    Ok(best)
+}
+
+/// The most frequent values that fit the dictionary budget, or `None` when a
+/// dictionary would not pay for itself. `avg_hits` is what bounds the context:
+/// the *average* entry is repeated at least twice, so the dictionary as a whole
+/// holds its values for less than they would cost inline. That is why the cost
+/// model prices payloads only.
+fn string_dict_values(
+    stats: &ColumnStats,
+    config: &RowPackConfig,
+    total: f32,
+) -> Option<Vec<Vec<u8>>> {
+    if stats.string_counts.is_empty() {
+        return None;
     }
-    if stats.string_long_bytes > 0 {
-        let ratio = stats.string_long_compressed as f32 / stats.string_long_raw as f32;
-        if ratio <= config.string_long_min_ratio() {
-            return Ok(StringEncoding::Lz4);
+    let mut entries: Vec<(&Vec<u8>, usize)> = stats
+        .string_counts
+        .iter()
+        .map(|(k, v)| (k, *v))
+        .collect();
+    // Break ties on the value itself: `string_counts` is a randomly-seeded hash
+    // map, and a stable sort would otherwise leave equally-frequent values in
+    // its iteration order. Indices are priced as varints below, so that would
+    // make the chosen encoding differ between runs over identical input.
+    entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    let mut values = Vec::new();
+    let mut bytes = 0usize;
+    let mut coverage = 0usize;
+    for (value, count) in entries {
+        let next_bytes = bytes + value.len();
+        if next_bytes > config.max_dict_bytes() || values.len() >= config.max_dict_entries() {
+            break;
         }
+        bytes = next_bytes;
+        coverage += count;
+        values.push(value.clone());
     }
-    Ok(StringEncoding::Raw)
+    let avg_hits = coverage as f32 / values.len().max(1) as f32;
+    if values.is_empty() || coverage as f32 / total < config.string_dict_coverage() || avg_hits < 2.0
+    {
+        return None;
+    }
+    Some(values)
 }
 
 pub(crate) fn train_bpe_dict(
@@ -2087,6 +2265,21 @@ impl RowPackEncoder {
                     }
                     dict_maps.push(Some(map));
                 }
+                // LE-byte keys reuse the existing byte-keyed dict plumbing.
+                ColumnEncoding::IntDict { values, .. } => {
+                    let mut map = FastHashMap::with_capacity(values.len());
+                    for (idx, value) in values.iter().enumerate() {
+                        map.insert(value.to_le_bytes().to_vec(), idx as u32);
+                    }
+                    dict_maps.push(Some(map));
+                }
+                ColumnEncoding::FloatDict { values, .. } => {
+                    let mut map = FastHashMap::with_capacity(values.len());
+                    for (idx, value) in values.iter().enumerate() {
+                        map.insert(value.to_le_bytes().to_vec(), idx as u32);
+                    }
+                    dict_maps.push(Some(map));
+                }
                 _ => dict_maps.push(None),
             }
             match &col.encoding {
@@ -2212,154 +2405,201 @@ impl RowPackEncoder {
                 },
                 IngestedType::Int64 => match access_or_null(access.get_int64(idx)) {
                     None => 0u8,
-                    Some(v) => {
-                        if let ColumnEncoding::Int {
+                    Some(v) => match &col.encoding {
+                        ColumnEncoding::Int {
                             signed,
                             varint,
                             bits,
-                        } = &col.encoding
-                        {
+                        } => {
                             encode_int(&mut scratch.data, *signed, *varint, *bits, v as i128)?;
                             1u8
-                        } else {
-                            return Err(anyhow!("rowpack int64 encoding mismatch"));
                         }
-                    }
+                        ColumnEncoding::IntDict { .. } => encode_int_dict(
+                            &mut scratch.data,
+                            col,
+                            self.dict_maps[idx].as_ref(),
+                            (v as i128) as i64,
+                        )?,
+                        _ => return Err(anyhow!("rowpack int64 encoding mismatch")),
+                    },
                 },
                 IngestedType::Int16 => match access_or_null(access.get_int32(idx)) {
                     None => 0u8,
-                    Some(v) => {
-                        if let ColumnEncoding::Int {
+                    Some(v) => match &col.encoding {
+                        ColumnEncoding::Int {
                             signed,
                             varint,
                             bits,
-                        } = &col.encoding
-                        {
+                        } => {
                             encode_int(&mut scratch.data, *signed, *varint, *bits, v as i128)?;
                             1u8
-                        } else {
-                            return Err(anyhow!("rowpack int16 encoding mismatch"));
                         }
-                    }
+                        ColumnEncoding::IntDict { .. } => encode_int_dict(
+                            &mut scratch.data,
+                            col,
+                            self.dict_maps[idx].as_ref(),
+                            (v as i128) as i64,
+                        )?,
+                        _ => return Err(anyhow!("rowpack int16 encoding mismatch")),
+                    },
                 },
                 IngestedType::Int8 => match access_or_null(access.get_int32(idx)) {
                     None => 0u8,
-                    Some(v) => {
-                        if let ColumnEncoding::Int {
+                    Some(v) => match &col.encoding {
+                        ColumnEncoding::Int {
                             signed,
                             varint,
                             bits,
-                        } = &col.encoding
-                        {
+                        } => {
                             encode_int(&mut scratch.data, *signed, *varint, *bits, v as i128)?;
                             1u8
-                        } else {
-                            return Err(anyhow!("rowpack int8 encoding mismatch"));
                         }
-                    }
+                        ColumnEncoding::IntDict { .. } => encode_int_dict(
+                            &mut scratch.data,
+                            col,
+                            self.dict_maps[idx].as_ref(),
+                            (v as i128) as i64,
+                        )?,
+                        _ => return Err(anyhow!("rowpack int8 encoding mismatch")),
+                    },
                 },
                 IngestedType::Int32 => match access_or_null(access.get_int32(idx)) {
                     None => 0u8,
-                    Some(v) => {
-                        if let ColumnEncoding::Int {
+                    Some(v) => match &col.encoding {
+                        ColumnEncoding::Int {
                             signed,
                             varint,
                             bits,
-                        } = &col.encoding
-                        {
+                        } => {
                             encode_int(&mut scratch.data, *signed, *varint, *bits, v as i128)?;
                             1u8
-                        } else {
-                            return Err(anyhow!("rowpack int32 encoding mismatch"));
                         }
-                    }
+                        ColumnEncoding::IntDict { .. } => encode_int_dict(
+                            &mut scratch.data,
+                            col,
+                            self.dict_maps[idx].as_ref(),
+                            (v as i128) as i64,
+                        )?,
+                        _ => return Err(anyhow!("rowpack int32 encoding mismatch")),
+                    },
                 },
                 IngestedType::UInt64 => match access_or_null(access.get_uint64(idx)) {
                     None => 0u8,
-                    Some(v) => {
-                        if let ColumnEncoding::Int {
+                    Some(v) => match &col.encoding {
+                        ColumnEncoding::Int {
                             signed,
                             varint,
                             bits,
-                        } = &col.encoding
-                        {
+                        } => {
                             encode_uint(&mut scratch.data, *signed, *varint, *bits, v)?;
                             1u8
-                        } else {
-                            return Err(anyhow!("rowpack uint64 encoding mismatch"));
                         }
-                    }
+                        ColumnEncoding::IntDict { .. } => encode_int_dict(
+                            &mut scratch.data,
+                            col,
+                            self.dict_maps[idx].as_ref(),
+                            (v) as i64,
+                        )?,
+                        _ => return Err(anyhow!("rowpack uint64 encoding mismatch")),
+                    },
                 },
                 IngestedType::UInt16 => match access_or_null(access.get_uint32(idx)) {
                     None => 0u8,
-                    Some(v) => {
-                        if let ColumnEncoding::Int {
+                    Some(v) => match &col.encoding {
+                        ColumnEncoding::Int {
                             signed,
                             varint,
                             bits,
-                        } = &col.encoding
-                        {
+                        } => {
                             encode_uint(&mut scratch.data, *signed, *varint, *bits, v as u64)?;
                             1u8
-                        } else {
-                            return Err(anyhow!("rowpack uint16 encoding mismatch"));
                         }
-                    }
+                        ColumnEncoding::IntDict { .. } => encode_int_dict(
+                            &mut scratch.data,
+                            col,
+                            self.dict_maps[idx].as_ref(),
+                            (v as u64) as i64,
+                        )?,
+                        _ => return Err(anyhow!("rowpack uint16 encoding mismatch")),
+                    },
                 },
                 IngestedType::UInt8 => match access_or_null(access.get_uint32(idx)) {
                     None => 0u8,
-                    Some(v) => {
-                        if let ColumnEncoding::Int {
+                    Some(v) => match &col.encoding {
+                        ColumnEncoding::Int {
                             signed,
                             varint,
                             bits,
-                        } = &col.encoding
-                        {
+                        } => {
                             encode_uint(&mut scratch.data, *signed, *varint, *bits, v as u64)?;
                             1u8
-                        } else {
-                            return Err(anyhow!("rowpack uint8 encoding mismatch"));
                         }
-                    }
+                        ColumnEncoding::IntDict { .. } => encode_int_dict(
+                            &mut scratch.data,
+                            col,
+                            self.dict_maps[idx].as_ref(),
+                            (v as u64) as i64,
+                        )?,
+                        _ => return Err(anyhow!("rowpack uint8 encoding mismatch")),
+                    },
                 },
                 IngestedType::UInt32 => match access_or_null(access.get_uint32(idx)) {
                     None => 0u8,
-                    Some(v) => {
-                        if let ColumnEncoding::Int {
+                    Some(v) => match &col.encoding {
+                        ColumnEncoding::Int {
                             signed,
                             varint,
                             bits,
-                        } = &col.encoding
-                        {
+                        } => {
                             encode_uint(&mut scratch.data, *signed, *varint, *bits, v as u64)?;
                             1u8
-                        } else {
-                            return Err(anyhow!("rowpack uint32 encoding mismatch"));
                         }
-                    }
+                        ColumnEncoding::IntDict { .. } => encode_int_dict(
+                            &mut scratch.data,
+                            col,
+                            self.dict_maps[idx].as_ref(),
+                            (v as u64) as i64,
+                        )?,
+                        _ => return Err(anyhow!("rowpack uint32 encoding mismatch")),
+                    },
                 },
                 IngestedType::Float64 => match access_or_null(access.get_float64(idx)) {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::Float { storage } = &col.encoding {
-                            encode_float_with_tag(&mut scratch.data, col.logical_type, *storage, v)?
-                        } else {
-                            return Err(anyhow!("rowpack float64 encoding mismatch"));
+                        match &col.encoding {
+                            ColumnEncoding::Float { storage } => encode_float_with_tag(
+                                &mut scratch.data,
+                                col.logical_type,
+                                *storage,
+                                v,
+                            )?,
+                            ColumnEncoding::FloatDict { .. } => encode_float_dict(
+                                &mut scratch.data,
+                                col,
+                                self.dict_maps[idx].as_ref(),
+                                v,
+                            )?,
+                            _ => return Err(anyhow!("rowpack float64 encoding mismatch")),
                         }
                     }
                 },
                 IngestedType::Float32 => match access_or_null(access.get_float32(idx)) {
                     None => 0u8,
                     Some(v) => {
-                        if let ColumnEncoding::Float { storage } = &col.encoding {
-                            encode_float_with_tag(
+                        match &col.encoding {
+                            ColumnEncoding::Float { storage } => encode_float_with_tag(
                                 &mut scratch.data,
                                 col.logical_type,
                                 *storage,
                                 v as f64,
-                            )?
-                        } else {
-                            return Err(anyhow!("rowpack float32 encoding mismatch"));
+                            )?,
+                            ColumnEncoding::FloatDict { .. } => encode_float_dict(
+                                &mut scratch.data,
+                                col,
+                                self.dict_maps[idx].as_ref(),
+                                v as f64,
+                            )?,
+                            _ => return Err(anyhow!("rowpack float32 encoding mismatch")),
                         }
                     }
                 },
@@ -2694,16 +2934,22 @@ impl RowPackEncoder {
                         None => 0u8,
                         Some(v) => {
                             observer.observe_i64(idx, v);
-                            if let ColumnEncoding::Int {
-                                signed,
-                                varint,
-                                bits,
-                            } = &col.encoding
-                            {
-                                encode_int(data, *signed, *varint, *bits, v as i128)?;
-                                1u8
-                            } else {
-                                return Err(anyhow!("rowpack int64 encoding mismatch"));
+                            match &col.encoding {
+                                ColumnEncoding::Int {
+                                    signed,
+                                    varint,
+                                    bits,
+                                } => {
+                                    encode_int(data, *signed, *varint, *bits, v as i128)?;
+                                    1u8
+                                }
+                                ColumnEncoding::IntDict { .. } => encode_int_dict(
+                                    data,
+                                    col,
+                                    self.dict_maps[idx].as_ref(),
+                                    (v as i128) as i64,
+                                )?,
+                                _ => return Err(anyhow!("rowpack int64 encoding mismatch")),
                             }
                         }
                     }
@@ -2713,16 +2959,22 @@ impl RowPackEncoder {
                         None => 0u8,
                         Some(v) => {
                             observer.observe_i64(idx, v as i64);
-                            if let ColumnEncoding::Int {
-                                signed,
-                                varint,
-                                bits,
-                            } = &col.encoding
-                            {
-                                encode_int(data, *signed, *varint, *bits, v as i128)?;
-                                1u8
-                            } else {
-                                return Err(anyhow!("rowpack int16 encoding mismatch"));
+                            match &col.encoding {
+                                ColumnEncoding::Int {
+                                    signed,
+                                    varint,
+                                    bits,
+                                } => {
+                                    encode_int(data, *signed, *varint, *bits, v as i128)?;
+                                    1u8
+                                }
+                                ColumnEncoding::IntDict { .. } => encode_int_dict(
+                                    data,
+                                    col,
+                                    self.dict_maps[idx].as_ref(),
+                                    (v as i128) as i64,
+                                )?,
+                                _ => return Err(anyhow!("rowpack int16 encoding mismatch")),
                             }
                         }
                     }
@@ -2732,16 +2984,22 @@ impl RowPackEncoder {
                         None => 0u8,
                         Some(v) => {
                             observer.observe_i64(idx, v as i64);
-                            if let ColumnEncoding::Int {
-                                signed,
-                                varint,
-                                bits,
-                            } = &col.encoding
-                            {
-                                encode_int(data, *signed, *varint, *bits, v as i128)?;
-                                1u8
-                            } else {
-                                return Err(anyhow!("rowpack int8 encoding mismatch"));
+                            match &col.encoding {
+                                ColumnEncoding::Int {
+                                    signed,
+                                    varint,
+                                    bits,
+                                } => {
+                                    encode_int(data, *signed, *varint, *bits, v as i128)?;
+                                    1u8
+                                }
+                                ColumnEncoding::IntDict { .. } => encode_int_dict(
+                                    data,
+                                    col,
+                                    self.dict_maps[idx].as_ref(),
+                                    (v as i128) as i64,
+                                )?,
+                                _ => return Err(anyhow!("rowpack int8 encoding mismatch")),
                             }
                         }
                     }
@@ -2751,16 +3009,22 @@ impl RowPackEncoder {
                         None => 0u8,
                         Some(v) => {
                             observer.observe_i64(idx, v as i64);
-                            if let ColumnEncoding::Int {
-                                signed,
-                                varint,
-                                bits,
-                            } = &col.encoding
-                            {
-                                encode_int(data, *signed, *varint, *bits, v as i128)?;
-                                1u8
-                            } else {
-                                return Err(anyhow!("rowpack int32 encoding mismatch"));
+                            match &col.encoding {
+                                ColumnEncoding::Int {
+                                    signed,
+                                    varint,
+                                    bits,
+                                } => {
+                                    encode_int(data, *signed, *varint, *bits, v as i128)?;
+                                    1u8
+                                }
+                                ColumnEncoding::IntDict { .. } => encode_int_dict(
+                                    data,
+                                    col,
+                                    self.dict_maps[idx].as_ref(),
+                                    (v as i128) as i64,
+                                )?,
+                                _ => return Err(anyhow!("rowpack int32 encoding mismatch")),
                             }
                         }
                     }
@@ -2784,16 +3048,22 @@ impl RowPackEncoder {
                         None => 0u8,
                         Some(v) => {
                             observer.observe_i64(idx, v as i64);
-                            if let ColumnEncoding::Int {
-                                signed,
-                                varint,
-                                bits,
-                            } = &col.encoding
-                            {
-                                encode_uint(data, *signed, *varint, *bits, v)?;
-                                1u8
-                            } else {
-                                return Err(anyhow!("rowpack uint64 encoding mismatch"));
+                            match &col.encoding {
+                                ColumnEncoding::Int {
+                                    signed,
+                                    varint,
+                                    bits,
+                                } => {
+                                    encode_uint(data, *signed, *varint, *bits, v)?;
+                                    1u8
+                                }
+                                ColumnEncoding::IntDict { .. } => encode_int_dict(
+                                    data,
+                                    col,
+                                    self.dict_maps[idx].as_ref(),
+                                    (v) as i64,
+                                )?,
+                                _ => return Err(anyhow!("rowpack uint64 encoding mismatch")),
                             }
                         }
                     }
@@ -2803,16 +3073,22 @@ impl RowPackEncoder {
                         None => 0u8,
                         Some(v) => {
                             observer.observe_i64(idx, v as i64);
-                            if let ColumnEncoding::Int {
-                                signed,
-                                varint,
-                                bits,
-                            } = &col.encoding
-                            {
-                                encode_uint(data, *signed, *varint, *bits, v as u64)?;
-                                1u8
-                            } else {
-                                return Err(anyhow!("rowpack uint16 encoding mismatch"));
+                            match &col.encoding {
+                                ColumnEncoding::Int {
+                                    signed,
+                                    varint,
+                                    bits,
+                                } => {
+                                    encode_uint(data, *signed, *varint, *bits, v as u64)?;
+                                    1u8
+                                }
+                                ColumnEncoding::IntDict { .. } => encode_int_dict(
+                                    data,
+                                    col,
+                                    self.dict_maps[idx].as_ref(),
+                                    (v as u64) as i64,
+                                )?,
+                                _ => return Err(anyhow!("rowpack uint16 encoding mismatch")),
                             }
                         }
                     }
@@ -2822,16 +3098,22 @@ impl RowPackEncoder {
                         None => 0u8,
                         Some(v) => {
                             observer.observe_i64(idx, v as i64);
-                            if let ColumnEncoding::Int {
-                                signed,
-                                varint,
-                                bits,
-                            } = &col.encoding
-                            {
-                                encode_uint(data, *signed, *varint, *bits, v as u64)?;
-                                1u8
-                            } else {
-                                return Err(anyhow!("rowpack uint8 encoding mismatch"));
+                            match &col.encoding {
+                                ColumnEncoding::Int {
+                                    signed,
+                                    varint,
+                                    bits,
+                                } => {
+                                    encode_uint(data, *signed, *varint, *bits, v as u64)?;
+                                    1u8
+                                }
+                                ColumnEncoding::IntDict { .. } => encode_int_dict(
+                                    data,
+                                    col,
+                                    self.dict_maps[idx].as_ref(),
+                                    (v as u64) as i64,
+                                )?,
+                                _ => return Err(anyhow!("rowpack uint8 encoding mismatch")),
                             }
                         }
                     }
@@ -2841,16 +3123,22 @@ impl RowPackEncoder {
                         None => 0u8,
                         Some(v) => {
                             observer.observe_i64(idx, v as i64);
-                            if let ColumnEncoding::Int {
-                                signed,
-                                varint,
-                                bits,
-                            } = &col.encoding
-                            {
-                                encode_uint(data, *signed, *varint, *bits, v as u64)?;
-                                1u8
-                            } else {
-                                return Err(anyhow!("rowpack uint32 encoding mismatch"));
+                            match &col.encoding {
+                                ColumnEncoding::Int {
+                                    signed,
+                                    varint,
+                                    bits,
+                                } => {
+                                    encode_uint(data, *signed, *varint, *bits, v as u64)?;
+                                    1u8
+                                }
+                                ColumnEncoding::IntDict { .. } => encode_int_dict(
+                                    data,
+                                    col,
+                                    self.dict_maps[idx].as_ref(),
+                                    (v as u64) as i64,
+                                )?,
+                                _ => return Err(anyhow!("rowpack uint32 encoding mismatch")),
                             }
                         }
                     }
@@ -2860,10 +3148,14 @@ impl RowPackEncoder {
                         None => 0u8,
                         Some(v) => {
                             observer.observe_f64(idx, v);
-                            if let ColumnEncoding::Float { storage } = &col.encoding {
-                                encode_float_with_tag(data, col.logical_type, *storage, v)?
-                            } else {
-                                return Err(anyhow!("rowpack float64 encoding mismatch"));
+                            match &col.encoding {
+                                ColumnEncoding::Float { storage } => {
+                                    encode_float_with_tag(data, col.logical_type, *storage, v)?
+                                }
+                                ColumnEncoding::FloatDict { .. } => {
+                                    encode_float_dict(data, col, self.dict_maps[idx].as_ref(), v)?
+                                }
+                                _ => return Err(anyhow!("rowpack float64 encoding mismatch")),
                             }
                         }
                     }
@@ -2873,10 +3165,20 @@ impl RowPackEncoder {
                         None => 0u8,
                         Some(v) => {
                             observer.observe_f64(idx, v as f64);
-                            if let ColumnEncoding::Float { storage } = &col.encoding {
-                                encode_float_with_tag(data, col.logical_type, *storage, v as f64)?
-                            } else {
-                                return Err(anyhow!("rowpack float32 encoding mismatch"));
+                            match &col.encoding {
+                                ColumnEncoding::Float { storage } => encode_float_with_tag(
+                                    data,
+                                    col.logical_type,
+                                    *storage,
+                                    v as f64,
+                                )?,
+                                ColumnEncoding::FloatDict { .. } => encode_float_dict(
+                                    data,
+                                    col,
+                                    self.dict_maps[idx].as_ref(),
+                                    v as f64,
+                                )?,
+                                _ => return Err(anyhow!("rowpack float32 encoding mismatch")),
                             }
                         }
                     }
@@ -3362,6 +3664,34 @@ fn encode_string_lz4(out: &mut Vec<u8>, value: &str, lz4_buf: Option<&mut Vec<u8
     }
 }
 
+fn encode_int_dict(
+    out: &mut Vec<u8>,
+    col: &ColumnContext,
+    dict: Option<&FastHashMap<Vec<u8>, u32>>,
+    v: i64,
+) -> Result<u8> {
+    let ColumnEncoding::IntDict {
+        signed,
+        varint,
+        bits,
+        ..
+    } = &col.encoding
+    else {
+        return Err(anyhow!("rowpack int dict encoding mismatch"));
+    };
+    let map = dict.ok_or_else(|| anyhow!("rowpack missing int dict"))?;
+    match map.get(v.to_le_bytes().as_slice()) {
+        Some(idx) => {
+            write_varint(*idx as u64, out);
+            Ok(1)
+        }
+        None => {
+            encode_int(out, *signed, *varint, *bits, v as i128)?;
+            Ok(2)
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn encode_value_with_tag<'a>(
     out: &mut Vec<u8>,
@@ -3374,6 +3704,20 @@ fn encode_value_with_tag<'a>(
     lz4_buf: Option<&mut Vec<u8>>,
 ) -> Result<u8> {
     match (&col.encoding, value) {
+        // `ValueRef` only carries 32/64-bit ints; narrower widths arrive widened.
+        (
+            ColumnEncoding::IntDict { .. },
+            ValueRef::Int64(_) | ValueRef::Int32(_) | ValueRef::UInt64(_) | ValueRef::UInt32(_),
+        ) => {
+            let v = match value {
+                ValueRef::Int64(v) => *v,
+                ValueRef::Int32(v) => *v as i64,
+                ValueRef::UInt64(v) => *v as i64,
+                ValueRef::UInt32(v) => *v as i64,
+                _ => unreachable!("guarded by the pattern above"),
+            };
+            encode_int_dict(out, col, dict, v)
+        }
         (
             ColumnEncoding::Int {
                 signed,
@@ -3417,6 +3761,12 @@ fn encode_value_with_tag<'a>(
         ) => {
             encode_uint(out, *signed, *varint, *bits, *v as u64)?;
             Ok(1)
+        }
+        (ColumnEncoding::FloatDict { .. }, ValueRef::Float64(v)) => {
+            encode_float_dict(out, col, dict, *v)
+        }
+        (ColumnEncoding::FloatDict { .. }, ValueRef::Float32(v)) => {
+            encode_float_dict(out, col, dict, *v as f64)
         }
         (ColumnEncoding::Float { storage }, ValueRef::Float64(v)) => {
             let tag = encode_float_with_tag(out, col.logical_type, *storage, *v)?;
@@ -3581,6 +3931,44 @@ fn encode_float_with_tag(
     let _ = logical;
     encode_float(out, storage, v)?;
     Ok(1)
+}
+
+fn encode_float_dict(
+    out: &mut Vec<u8>,
+    col: &ColumnContext,
+    dict: Option<&FastHashMap<Vec<u8>, u32>>,
+    v: f64,
+) -> Result<u8> {
+    let ColumnEncoding::FloatDict { storage, .. } = &col.encoding else {
+        return Err(anyhow!("rowpack float dict encoding mismatch"));
+    };
+    let map = dict.ok_or_else(|| anyhow!("rowpack missing float dict"))?;
+    match map.get(v.to_le_bytes().as_slice()) {
+        Some(idx) => {
+            write_varint(*idx as u64, out);
+            Ok(1)
+        }
+        None => {
+            encode_float(out, *storage, v)?;
+            Ok(2)
+        }
+    }
+}
+
+fn decode_float_dict(
+    values: &[f64],
+    storage: FloatStorage,
+    tag: u8,
+    data: &mut &[u8],
+) -> Result<f64> {
+    if tag == 1 {
+        let idx = read_varint(data)? as usize;
+        return values
+            .get(idx)
+            .copied()
+            .ok_or_else(|| anyhow!("rowpack float dict index {idx} out of range"));
+    }
+    decode_float(data, storage)
 }
 
 fn encode_decimal_i128_with_tag(
@@ -4702,6 +5090,22 @@ fn tokenize_bpe(bytes: &[u8], trie: &BpeTrie, tokens: &mut Vec<u32>) {
     }
 }
 
+/// Payload bytes `samples` would occupy under `encoding`, counting the same
+/// per-value framing and fallbacks the encoders write, so candidates are
+/// directly comparable. Excludes the per-column context, which the eligibility
+/// rules already bound.
+fn estimate_string_bytes(samples: &[Vec<u8>], encoding: &StringEncoding) -> u64 {
+    match encoding {
+        StringEncoding::Raw => estimate_raw_bytes(samples),
+        // Alphabet is only ever a candidate when every observed value is in the
+        // alphabet, so there is no unpacked fallback to price here.
+        StringEncoding::Alphabet { alphabet } => estimate_alphabet_bytes(samples, alphabet.len()),
+        StringEncoding::Dict { values } => estimate_dict_bytes(samples, values),
+        StringEncoding::Lz4 => estimate_lz4_bytes(samples),
+        StringEncoding::Bpe { dict } => estimate_bpe_bytes(samples, dict),
+    }
+}
+
 fn estimate_raw_bytes(samples: &[Vec<u8>]) -> u64 {
     let mut total = 0u64;
     for sample in samples {
@@ -4718,6 +5122,41 @@ fn estimate_alphabet_bytes(samples: &[Vec<u8>], alphabet_len: usize) -> u64 {
         total += varint_bytes_u64(sample.len() as u64) as u64;
         let packed = (sample.len() * bits).div_ceil(8);
         total += packed as u64;
+    }
+    total
+}
+
+fn estimate_dict_bytes(samples: &[Vec<u8>], values: &[Vec<u8>]) -> u64 {
+    let index: FastHashMap<&[u8], u32> = values
+        .iter()
+        .enumerate()
+        .map(|(idx, value)| (value.as_slice(), idx as u32))
+        .collect();
+    let mut total = 0u64;
+    for sample in samples {
+        total += match index.get(sample.as_slice()) {
+            Some(idx) => varint_bytes_u64(*idx as u64) as u64,
+            None => varint_bytes_u64(sample.len() as u64) as u64 + sample.len() as u64,
+        };
+    }
+    total
+}
+
+fn estimate_lz4_bytes(samples: &[Vec<u8>]) -> u64 {
+    let mut buf = Vec::new();
+    let mut total = 0u64;
+    for sample in samples {
+        let raw_total = varint_bytes_u64(sample.len() as u64) + sample.len();
+        buf.resize(lz4_flex::block::get_maximum_output_size(sample.len()), 0);
+        let compressed_total = match lz4_flex::block::compress_into(sample, &mut buf) {
+            Ok(written) => {
+                varint_bytes_u64(sample.len() as u64)
+                    + varint_bytes_u64(written as u64)
+                    + written
+            }
+            Err(_) => raw_total,
+        };
+        total += compressed_total.min(raw_total) as u64;
     }
     total
 }
@@ -5230,6 +5669,19 @@ fn decode_value_msgpack(
     dict: Option<&Vec<Vec<u8>>>,
 ) -> Result<()> {
     match &col.encoding {
+        ColumnEncoding::IntDict {
+            values,
+            signed,
+            varint,
+            bits,
+        } => {
+            let v = decode_int_dict(values, *signed, *varint, *bits, tag, data)?;
+            if *signed {
+                mp::write_sint(out, v)?;
+            } else {
+                mp::write_uint(out, v as u64)?;
+            }
+        }
         ColumnEncoding::Int {
             signed,
             varint,
@@ -5241,6 +5693,13 @@ fn decode_value_msgpack(
             } else {
                 let v = decode_uint(data, *varint, *bits)?;
                 mp::write_uint(out, v)?;
+            }
+        }
+        ColumnEncoding::FloatDict { values, storage } => {
+            let v = decode_float_dict(values, *storage, tag, data)?;
+            match col.logical_type {
+                IngestedType::Float32 => mp::write_f32(out, v as f32)?,
+                _ => mp::write_f64(out, v)?,
             }
         }
         ColumnEncoding::Float { storage } => {
@@ -5391,6 +5850,19 @@ fn decode_value_json(
     dict: Option<&Vec<Vec<u8>>>,
 ) -> Result<JsonValue> {
     let value = match &col.encoding {
+        ColumnEncoding::IntDict {
+            values,
+            signed,
+            varint,
+            bits,
+        } => {
+            let v = decode_int_dict(values, *signed, *varint, *bits, tag, data)?;
+            if *signed {
+                JsonValue::from(v)
+            } else {
+                JsonValue::from(v as u64)
+            }
+        }
         ColumnEncoding::Int {
             signed,
             varint,
@@ -5400,6 +5872,13 @@ fn decode_value_json(
                 JsonValue::from(decode_int(data, *varint, *bits)?)
             } else {
                 JsonValue::from(decode_uint(data, *varint, *bits)?)
+            }
+        }
+        ColumnEncoding::FloatDict { values, storage } => {
+            let v = decode_float_dict(values, *storage, tag, data)?;
+            match col.logical_type {
+                IngestedType::Float32 => JsonValue::from(v as f32),
+                _ => JsonValue::from(v),
             }
         }
         ColumnEncoding::Float { storage } => {
@@ -5545,6 +6024,19 @@ fn decode_value_ref<'a>(
     scratch: &'a mut RowPackDecodeScratch,
 ) -> Result<ValueRef<'a>> {
     match &col.encoding {
+        ColumnEncoding::IntDict {
+            values,
+            signed,
+            varint,
+            bits,
+        } => {
+            let v = decode_int_dict(values, *signed, *varint, *bits, tag, data)?;
+            if *signed {
+                Ok(ValueRef::Int64(v))
+            } else {
+                Ok(ValueRef::UInt64(v as u64))
+            }
+        }
         ColumnEncoding::Int {
             signed,
             varint,
@@ -5554,6 +6046,13 @@ fn decode_value_ref<'a>(
                 Ok(ValueRef::Int64(decode_int(data, *varint, *bits)?))
             } else {
                 Ok(ValueRef::UInt64(decode_uint(data, *varint, *bits)?))
+            }
+        }
+        ColumnEncoding::FloatDict { values, storage } => {
+            let v = decode_float_dict(values, *storage, tag, data)?;
+            match col.logical_type {
+                IngestedType::Float32 => Ok(ValueRef::Float32(v as f32)),
+                _ => Ok(ValueRef::Float64(v)),
             }
         }
         ColumnEncoding::Float { storage } => {
@@ -5746,6 +6245,14 @@ fn decode_value_skip(
     dict: Option<&Vec<Vec<u8>>>,
 ) -> Result<()> {
     match &col.encoding {
+        ColumnEncoding::IntDict {
+            values,
+            signed,
+            varint,
+            bits,
+        } => {
+            let _ = decode_int_dict(values, *signed, *varint, *bits, tag, data)?;
+        }
         ColumnEncoding::Int {
             signed,
             varint,
@@ -5756,6 +6263,9 @@ fn decode_value_skip(
             } else {
                 let _ = decode_uint(data, *varint, *bits)?;
             }
+        }
+        ColumnEncoding::FloatDict { values, storage } => {
+            let _ = decode_float_dict(values, *storage, tag, data)?;
         }
         ColumnEncoding::Float { storage } => {
             let _ = decode_float(data, *storage)?;
@@ -5922,6 +6432,89 @@ fn decode_value_skip(
         ColumnEncoding::Bool => {}
     }
     Ok(())
+}
+
+/// When `signed` is false, `v` is an unsigned value reinterpreted as i64.
+fn append_int_to_builder(
+    builder: &mut dyn arrow_array::builder::ArrayBuilder,
+    logical: IngestedType,
+    signed: bool,
+    v: i64,
+) -> Result<()> {
+    use arrow_array::builder::*;
+    if signed {
+        match logical {
+            IngestedType::Int64 => builder
+                .as_any_mut()
+                .downcast_mut::<Int64Builder>()
+                .unwrap()
+                .append_value(v),
+            IngestedType::Int32 => builder
+                .as_any_mut()
+                .downcast_mut::<Int32Builder>()
+                .unwrap()
+                .append_value(v as i32),
+            IngestedType::Int16 => builder
+                .as_any_mut()
+                .downcast_mut::<Int16Builder>()
+                .unwrap()
+                .append_value(v as i16),
+            IngestedType::Int8 => builder
+                .as_any_mut()
+                .downcast_mut::<Int8Builder>()
+                .unwrap()
+                .append_value(v as i8),
+            _ => return Err(anyhow!("rowpack int type mismatch")),
+        }
+    } else {
+        let v = v as u64;
+        match logical {
+            IngestedType::UInt64 => builder
+                .as_any_mut()
+                .downcast_mut::<UInt64Builder>()
+                .unwrap()
+                .append_value(v),
+            IngestedType::UInt32 => builder
+                .as_any_mut()
+                .downcast_mut::<UInt32Builder>()
+                .unwrap()
+                .append_value(v as u32),
+            IngestedType::UInt16 => builder
+                .as_any_mut()
+                .downcast_mut::<UInt16Builder>()
+                .unwrap()
+                .append_value(v as u16),
+            IngestedType::UInt8 => builder
+                .as_any_mut()
+                .downcast_mut::<UInt8Builder>()
+                .unwrap()
+                .append_value(v as u8),
+            _ => return Err(anyhow!("rowpack uint type mismatch")),
+        }
+    }
+    Ok(())
+}
+
+fn decode_int_dict(
+    values: &[i64],
+    signed: bool,
+    varint: bool,
+    bits: u8,
+    tag: u8,
+    data: &mut &[u8],
+) -> Result<i64> {
+    if tag == 1 {
+        let idx = read_varint(data)? as usize;
+        return values
+            .get(idx)
+            .copied()
+            .ok_or_else(|| anyhow!("rowpack int dict index {idx} out of range"));
+    }
+    if signed {
+        decode_int(data, varint, bits)
+    } else {
+        Ok(decode_uint(data, varint, bits)? as i64)
+    }
 }
 
 fn decode_int(data: &mut &[u8], varint: bool, bits: u8) -> Result<i64> {
@@ -6748,61 +7341,41 @@ fn decode_and_append_to_builder(
     // However, we should be careful.
 
     match &col.encoding {
+        ColumnEncoding::IntDict {
+            values,
+            signed,
+            varint,
+            bits,
+        } => {
+            let v = decode_int_dict(values, *signed, *varint, *bits, tag, data)?;
+            append_int_to_builder(builder, col.logical_type, *signed, v)?;
+        }
         ColumnEncoding::Int {
             signed,
             varint,
             bits,
         } => {
-            if *signed {
-                let v = decode_int(data, *varint, *bits)?;
-                match col.logical_type {
-                    IngestedType::Int64 => builder
-                        .as_any_mut()
-                        .downcast_mut::<Int64Builder>()
-                        .unwrap()
-                        .append_value(v),
-                    IngestedType::Int32 => builder
-                        .as_any_mut()
-                        .downcast_mut::<Int32Builder>()
-                        .unwrap()
-                        .append_value(v as i32),
-                    IngestedType::Int16 => builder
-                        .as_any_mut()
-                        .downcast_mut::<Int16Builder>()
-                        .unwrap()
-                        .append_value(v as i16),
-                    IngestedType::Int8 => builder
-                        .as_any_mut()
-                        .downcast_mut::<Int8Builder>()
-                        .unwrap()
-                        .append_value(v as i8),
-                    _ => return Err(anyhow!("rowpack int type mismatch")),
-                }
+            let v = if *signed {
+                decode_int(data, *varint, *bits)?
             } else {
-                let v = decode_uint(data, *varint, *bits)?;
-                match col.logical_type {
-                    IngestedType::UInt64 => builder
-                        .as_any_mut()
-                        .downcast_mut::<UInt64Builder>()
-                        .unwrap()
-                        .append_value(v),
-                    IngestedType::UInt32 => builder
-                        .as_any_mut()
-                        .downcast_mut::<UInt32Builder>()
-                        .unwrap()
-                        .append_value(v as u32),
-                    IngestedType::UInt16 => builder
-                        .as_any_mut()
-                        .downcast_mut::<UInt16Builder>()
-                        .unwrap()
-                        .append_value(v as u16),
-                    IngestedType::UInt8 => builder
-                        .as_any_mut()
-                        .downcast_mut::<UInt8Builder>()
-                        .unwrap()
-                        .append_value(v as u8),
-                    _ => return Err(anyhow!("rowpack uint type mismatch")),
-                }
+                decode_uint(data, *varint, *bits)? as i64
+            };
+            append_int_to_builder(builder, col.logical_type, *signed, v)?;
+        }
+        ColumnEncoding::FloatDict { values, storage } => {
+            let v = decode_float_dict(values, *storage, tag, data)?;
+            match col.logical_type {
+                IngestedType::Float32 => builder
+                    .as_any_mut()
+                    .downcast_mut::<Float32Builder>()
+                    .unwrap()
+                    .append_value(v as f32),
+                IngestedType::Float64 => builder
+                    .as_any_mut()
+                    .downcast_mut::<Float64Builder>()
+                    .unwrap()
+                    .append_value(v),
+                _ => return Err(anyhow!("rowpack float type mismatch")),
             }
         }
         ColumnEncoding::Float { storage } => {
