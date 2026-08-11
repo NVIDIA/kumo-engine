@@ -899,7 +899,7 @@ impl RowPackContextBuilder {
                     // every int-array width.
                     match access.with_int64_array(idx, |values| {
                         for &v in values {
-                            stats.observe_int64(v);
+                            stats.observe_int_stats(v);
                         }
                         Ok(())
                     }) {
@@ -1432,8 +1432,8 @@ impl ColumnStats {
                 self.uint_max = self.uint_max.max(*v as u64);
                 self.observe_int_key(*v as i64);
             }
-            ValueRef::Float64(v) => self.observe_float_stats(*v),
-            ValueRef::Float32(v) => self.observe_float_stats(*v as f64),
+            ValueRef::Float64(v) => self.observe_scalar_float(*v),
+            ValueRef::Float32(v) => self.observe_scalar_float(*v as f64),
             ValueRef::Bool(_) => {
                 self.bool_seen = true;
             }
@@ -1537,28 +1537,28 @@ impl ColumnStats {
                 self.array_len_total += values.len();
                 self.array_count += 1;
                 for &v in *values {
-                    self.observe_int64(v as i64);
+                    self.observe_int_stats(v as i64);
                 }
             }
             ValueRef::Int16Array(values) => {
                 self.array_len_total += values.len();
                 self.array_count += 1;
                 for &v in *values {
-                    self.observe_int64(v as i64);
+                    self.observe_int_stats(v as i64);
                 }
             }
             ValueRef::Int32Array(values) => {
                 self.array_len_total += values.len();
                 self.array_count += 1;
                 for &v in *values {
-                    self.observe_int64(v as i64);
+                    self.observe_int_stats(v as i64);
                 }
             }
             ValueRef::Int64Array(values) => {
                 self.array_len_total += values.len();
                 self.array_count += 1;
                 for &v in *values {
-                    self.observe_int64(v);
+                    self.observe_int_stats(v);
                 }
             }
             ValueRef::StringArray(tokens) => {
@@ -1589,10 +1589,19 @@ impl ColumnStats {
         self.nulls += 1;
     }
 
-    fn observe_int64(&mut self, v: i64) {
+    /// Range stats only. Array elements come here: an int-array column
+    /// resolves to `Int64Array`/`FixedIntArray` and never reaches
+    /// `int_encoding`, so recording a dictionary key per element cannot change
+    /// any decision. The range is still needed, since the array encoding picks
+    /// varint by magnitude.
+    fn observe_int_stats(&mut self, v: i64) {
         self.count += 1;
         self.int_min = self.int_min.min(v);
         self.int_max = self.int_max.max(v);
+    }
+
+    fn observe_int64(&mut self, v: i64) {
+        self.observe_int_stats(v);
         self.observe_int_key(v);
     }
 
@@ -1612,7 +1621,7 @@ impl ColumnStats {
 
     fn observe_float64(&mut self, v: f64) {
         self.count += 1;
-        self.observe_float_stats(v);
+        self.observe_scalar_float(v);
     }
 
     fn observe_float32(&mut self, v: f32) {
@@ -1722,8 +1731,11 @@ impl ColumnStats {
         }
     }
 
-    /// Every float observation funnels here so the dictionary sees the same
-    /// values the encoder will. Keyed on bits, so -0.0 and 0.0 stay distinct.
+    /// Records a scalar float for the dictionary. Keyed on bits, so -0.0 and
+    /// 0.0 stay distinct. Deliberately not called for array elements: an array
+    /// column resolves to `FloatArray`/`FixedFloatArray` and never reaches
+    /// `float_encoding`, so recording its elements cannot change any decision,
+    /// and it costs a hash insert per element rather than per row.
     fn observe_float_key(&mut self, v: f64) {
         let key = v.to_bits();
         match self.float_counts.get_mut(&key) {
@@ -1736,8 +1748,15 @@ impl ColumnStats {
         }
     }
 
-    fn observe_float_stats(&mut self, v: f64) {
+    /// Scalar float observation: distribution stats plus the dictionary key.
+    /// One entry point so the two cannot drift apart, which is how the encoder
+    /// and the dictionary ended up seeing different value sets before.
+    fn observe_scalar_float(&mut self, v: f64) {
+        self.observe_float_stats(v);
         self.observe_float_key(v);
+    }
+
+    fn observe_float_stats(&mut self, v: f64) {
         if v.is_nan() {
             self.float_has_nan = true;
         } else if v.is_infinite() {
@@ -3541,6 +3560,24 @@ fn encode_string(
     let ColumnEncoding::String { encoding } = &col.encoding else {
         return Err(anyhow!("rowpack string encoding mismatch"));
     };
+    encode_string_value(out, value, encoding, _dict, _alphabet, _bpe, _bpe_tokens, _lz4_buf)
+}
+
+/// Encodes one string against an encoding directly. List columns hold their
+/// element encoding inline, and building a `ColumnContext` for each element
+/// would clone that encoding -- which for a dictionary is one allocation per
+/// entry, per row.
+#[allow(clippy::too_many_arguments)]
+fn encode_string_value(
+    out: &mut Vec<u8>,
+    value: &str,
+    encoding: &StringEncoding,
+    _dict: Option<&FastHashMap<Vec<u8>, u32>>,
+    _alphabet: Option<&AlphabetMap>,
+    _bpe: Option<&BpeTrie>,
+    _bpe_tokens: Option<&mut Vec<u32>>,
+    _lz4_buf: Option<&mut Vec<u8>>,
+) -> Result<u8> {
     match encoding {
         StringEncoding::Raw => encode_string_raw(out, value),
         StringEncoding::Dict { .. } => encode_string_dict(out, value, _dict),
@@ -4640,22 +4677,15 @@ fn encode_string_list_with_tag(
     write_varint(tokens.len() as u64, out);
     // Temporary buffer to hold one token's bytes before we know the tag.
     let mut token_buf = Vec::new();
-    let tmp_col = ColumnContext {
-        name: col.name.clone(),
-        logical_type: IngestedType::String,
-        encoding: ColumnEncoding::String {
-            encoding: encoding.clone(),
-        },
-    };
     for &token in tokens {
         token_buf.clear();
         // Reborrow mutable references for each iteration so they aren't consumed.
         let bpe_tok_ref: Option<&mut Vec<u32>> = bpe_tokens.as_deref_mut();
         let lz4_ref: Option<&mut Vec<u8>> = lz4_buf.as_deref_mut();
-        let token_tag = encode_string(
+        let token_tag = encode_string_value(
             &mut token_buf,
             token,
-            &tmp_col,
+            encoding,
             dict,
             alphabet,
             bpe,
@@ -4711,22 +4741,14 @@ fn encode_string_list_view_with_tag(
     write_varint(non_null_count as u64, out);
 
     let mut token_buf = Vec::new();
-    let tmp_col = ColumnContext {
-        name: col.name.clone(),
-        logical_type: IngestedType::String,
-        encoding: ColumnEncoding::String {
-            encoding: encoding.clone(),
-        },
-    };
-
     let mut encode_token = |token: &str| -> Result<()> {
         token_buf.clear();
         let bpe_tok_ref: Option<&mut Vec<u32>> = bpe_tokens.as_deref_mut();
         let lz4_ref: Option<&mut Vec<u8>> = lz4_buf.as_deref_mut();
-        let token_tag = encode_string(
+        let token_tag = encode_string_value(
             &mut token_buf,
             token,
-            &tmp_col,
+            encoding,
             dict,
             alphabet,
             bpe,
