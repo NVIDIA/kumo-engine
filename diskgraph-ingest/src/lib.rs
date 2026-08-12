@@ -77,7 +77,9 @@ use diskgraph_core::metadata::{
     NodeDataCompression, NodeShardMetadata, NodeTypeMetadata, PrimaryKeyMap,
 };
 use diskgraph_fs::{CloudObjectCondition, CloudTransfer, PooledBytes};
-use diskgraph_index::builder::{EdgeBufferPool as IndexEdgeBufferPool, MemoryBudget};
+use diskgraph_index::builder::{
+    EdgeBufferPool as IndexEdgeBufferPool, MemoryBudget, MemoryBudgetGuard,
+};
 use diskgraph_index::graph::{GraphDataSource, GraphIndexBuilder, GraphProgressSink};
 use diskgraph_rowpack::{
     BinaryStringHint, IngestedType as RowpackType, RowAccess, RowAccessHints, RowAccessStats,
@@ -1676,7 +1678,6 @@ mod tests_repopulate_helpers {
             relationships: Vec::new(),
             fk_edge_targets: HashMap::new(),
             edge_counts: HashMap::new(),
-            edge_dst_degree_bits: HashMap::new(),
             edge_dst_nonzero_counts: HashMap::new(),
             pk_duplicate_counts: HashMap::new(),
             pk_duplicate_drops: HashMap::new(),
@@ -2339,6 +2340,78 @@ fn disk_space_bytes(path: &Path) -> Option<(u64, u64)> {
     Some((total, available))
 }
 
+struct BudgetedDstDegreeBitmap {
+    bits: Vec<u8>,
+    _budget_guard: Option<MemoryBudgetGuard>,
+}
+
+fn ensure_dst_degree_bitmap_budget(bitmap_bytes: u64, budget_bytes: u64) -> Result<()> {
+    ensure!(
+        bitmap_bytes.saturating_mul(2) <= budget_bytes,
+        "destination-degree bitmap requires {bitmap_bytes} B, but edges_map needs room for both \
+         an accumulator and a worker bitmap within its {budget_bytes} B budget"
+    );
+    Ok(())
+}
+
+fn merge_dst_degree_bitmap(
+    merged: &mut HashMap<String, BudgetedDstDegreeBitmap>,
+    relation: String,
+    bitmap: BudgetedDstDegreeBitmap,
+) {
+    match merged.entry(relation) {
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(bitmap);
+        }
+        std::collections::hash_map::Entry::Occupied(mut entry) => {
+            let target = &mut entry.get_mut().bits;
+            for (index, byte) in bitmap.bits.iter().enumerate() {
+                if index < target.len() {
+                    target[index] |= byte;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod dst_degree_bitmap_budget_tests {
+    use super::*;
+
+    #[test]
+    fn budget_must_hold_an_accumulator_and_a_worker_bitmap() {
+        assert!(ensure_dst_degree_bitmap_budget(50, 100).is_ok());
+        assert!(ensure_dst_degree_bitmap_budget(51, 100).is_err());
+    }
+
+    #[test]
+    fn merged_bitmap_stays_charged_until_relation_finalization() {
+        let budget = Arc::new(MemoryBudget::new(100));
+        let mut merged = HashMap::new();
+        merge_dst_degree_bitmap(
+            &mut merged,
+            "rel".to_string(),
+            BudgetedDstDegreeBitmap {
+                bits: vec![0b0001],
+                _budget_guard: Some(budget.acquire(10).unwrap()),
+            },
+        );
+        merge_dst_degree_bitmap(
+            &mut merged,
+            "rel".to_string(),
+            BudgetedDstDegreeBitmap {
+                bits: vec![0b0100],
+                _budget_guard: Some(budget.acquire(10).unwrap()),
+            },
+        );
+
+        assert_eq!(merged["rel"].bits, vec![0b0101]);
+        assert_eq!(budget.snapshot().in_use, 10);
+        merged.remove("rel");
+        assert_eq!(budget.snapshot().in_use, 0);
+    }
+}
+
 struct IngestContext {
     source: GraphConfig,
     target: std::sync::Arc<OutputTarget>,
@@ -2379,9 +2452,6 @@ struct IngestContext {
     /// Key format: "table_name.column_name" -> FkEdgeTarget
     fk_edge_targets: HashMap<String, FkEdgeTarget>,
     edge_counts: HashMap<String, u64>,
-    /// Per forward-relation bitvec of dst node IDs with nonzero degree.
-    /// Used only during EdgesMap to compute NUM_DST_NONZERO_DEGREE.
-    edge_dst_degree_bits: HashMap<String, Vec<u8>>,
     /// Scalar result retained after EdgesMap so resume state never serializes
     /// destination-sized bitmaps.
     edge_dst_nonzero_counts: HashMap<String, u64>,
@@ -6358,7 +6428,6 @@ impl IngestContext {
             relationships,
             fk_edge_targets,
             edge_counts: HashMap::new(),
-            edge_dst_degree_bits: HashMap::new(),
             edge_dst_nonzero_counts: HashMap::new(),
             pk_duplicate_counts: HashMap::new(),
             pk_duplicate_drops: HashMap::new(),
@@ -7251,7 +7320,6 @@ impl IngestContext {
             ));
         }
         self.edge_counts = state.edge_counts;
-        self.edge_dst_degree_bits.clear();
         self.edge_dst_nonzero_counts = state.edge_dst_nonzero_counts;
         self.pk_duplicate_counts = state.pk_duplicate_counts;
         self.pk_duplicate_drops = state.pk_duplicate_drops;
@@ -9624,7 +9692,6 @@ impl IngestContext {
     fn build_edges_mapped(&mut self, edge_ctx: &EdgeBuildContext) -> Result<()> {
         let root = &edge_ctx.root;
         self.edge_counts.clear();
-        self.edge_dst_degree_bits.clear();
         self.edge_dst_nonzero_counts.clear();
         self.pk_duplicate_drops.clear();
         self.edge_null_timestamp_drops.clear();
@@ -9639,7 +9706,7 @@ impl IngestContext {
                 pk_duplicate_drops: u64,
                 null_timestamp_drops: u64,
                 /// Forward relation name → bitvec tracking unique dst node IDs.
-                dst_degree_bits: HashMap<String, Vec<u8>>,
+                dst_degree_bits: HashMap<String, BudgetedDstDegreeBitmap>,
             }
             if let Some(total_mem) = total_memory_bytes() {
                 tracing::info!(
@@ -9676,7 +9743,17 @@ impl IngestContext {
             let rel_sort_lookups = std::sync::Arc::clone(&edge_ctx.rel_sort_lookups);
             let source = self.source.clone();
             let num_shards = self.num_shards;
-            let (tx, rx) = std::sync::mpsc::channel::<Result<EdgeMapResult>>();
+            // Destination-degree bitmaps are the largest anonymous allocation in
+            // this phase. Reserve at most 20% of process memory for all running
+            // and queued shard bitmaps, leaving headroom for PK maps, sort keys,
+            // writer buffers, and the rest of the service stack.
+            let dst_degree_bitmap_budget = total_memory_bytes().map(|total| {
+                std::sync::Arc::new(MemoryBudget::new(total.saturating_mul(20) / 100))
+            });
+            // A result can contain a destination bitmap proportional to the full
+            // destination table. Keep at most one completed result queued while
+            // the coordinator merges it into the relation-level bitmap.
+            let (tx, rx) = std::sync::mpsc::sync_channel::<Result<EdgeMapResult>>(1);
             let mut tasks = Vec::new();
             let mut expected = HashMap::new();
             let mut totals = HashMap::new();
@@ -9736,6 +9813,7 @@ impl IngestContext {
                     let buffer_pool = std::sync::Arc::clone(&buffer_pool);
                     let tx = tx.clone();
                     let fk_target_type = fk_target_type.clone();
+                    let dst_degree_bitmap_budget = dst_degree_bitmap_budget.clone();
                     tasks.push(WorkItem {
                         bucket: None,
                         run: Box::new(move |scratch: &mut EdgeMapScratch| {
@@ -9828,7 +9906,24 @@ impl IngestContext {
                             // table's max_id; it tracks which dst rows received an FK
                             // edge so kumo can compute per-rel uniqueness stats.
                             let dst_max = max_ids.get(&rel.dst_table).copied().unwrap_or(0);
-                            let mut dst_bits = vec![0u8; ((dst_max + 8) / 8) as usize];
+                            let dst_bitmap_bytes = (dst_max + 8) / 8;
+                            let dst_degree_budget_guard =
+                                if let Some(budget) = &dst_degree_bitmap_budget {
+                                    let budget_total = budget.snapshot().total;
+                                    ensure_dst_degree_bitmap_budget(
+                                        dst_bitmap_bytes,
+                                        budget_total,
+                                    )
+                                    .with_context(|| {
+                                        format!("relation {}", rel.name_forward)
+                                    })?;
+                                    Some(budget.acquire(dst_bitmap_bytes)?)
+                                } else {
+                                    None
+                                };
+                            let dst_bitmap_len = usize::try_from(dst_bitmap_bytes)
+                                .map_err(|_| anyhow!("destination-degree bitmap size overflow"))?;
+                            let mut dst_bits = vec![0u8; dst_bitmap_len];
                             let fkey_path =
                                 root.join(temp_fkey_path(&rel.src_table, &rel.name_forward, shard));
                             let bitmap_path = root.join(temp_fkey_bitmap_path(
@@ -9983,7 +10078,13 @@ impl IngestContext {
                             }
                             result
                                 .dst_degree_bits
-                                .insert(rel.name_forward.clone(), dst_bits);
+                                .insert(
+                                    rel.name_forward.clone(),
+                                    BudgetedDstDegreeBitmap {
+                                        bits: dst_bits,
+                                        _budget_guard: dst_degree_budget_guard,
+                                    },
+                                );
                             result.pk_duplicate_drops = pk_duplicate_drops;
                             tx.send(Ok(result))
                                 .map_err(|e| anyhow!("edges_map output error: {e}"))?;
@@ -10273,62 +10374,95 @@ impl IngestContext {
 
             drop(tx);
             let task_count = tasks.len();
-            run_tasks(tasks, &pool)?;
             let mut done = HashMap::new();
-            for _ in 0..task_count {
-                let result = rx
-                    .recv()
-                    .map_err(|e| anyhow!("edges_map output error: {e}"))??;
-                self.merge_key_failures(result.key_failures);
-                for (rel, count) in result.edge_counts {
-                    let entry = self.edge_counts.entry(rel).or_insert(0);
-                    *entry = entry.saturating_add(count);
-                }
-                for (rel, bits) in result.dst_degree_bits {
-                    let merged = self.edge_dst_degree_bits.entry(rel).or_default();
-                    if merged.is_empty() {
-                        *merged = bits;
-                    } else {
-                        for (i, b) in bits.iter().enumerate() {
-                            if i < merged.len() {
-                                merged[i] |= b;
+            let mut merged_dst_degree_bits: HashMap<String, BudgetedDstDegreeBitmap> =
+                HashMap::new();
+            // Workers must run concurrently with result consumption. Waiting for
+            // every task first retains num_shards full-destination bitmaps per
+            // relation in this channel (O(num_shards * destination_nodes)).
+            // Streaming the merge bounds retained result memory to the running
+            // workers plus the channel's single completed result.
+            std::thread::scope(|scope| -> Result<()> {
+                let task_runner = scope.spawn(|| run_tasks(tasks, &pool));
+                let mut output_error = None;
+                for _ in 0..task_count {
+                    let result = match rx.recv() {
+                        Ok(Ok(result)) => result,
+                        Ok(Err(error)) => {
+                            if output_error.is_none() {
+                                output_error = Some(error);
+                            }
+                            continue;
+                        }
+                        Err(error) => {
+                            if output_error.is_none() {
+                                output_error =
+                                    Some(anyhow!("edges_map output error: {error}"));
+                            }
+                            break;
+                        }
+                    };
+                    self.merge_key_failures(result.key_failures);
+                    for (rel, count) in result.edge_counts {
+                        let entry = self.edge_counts.entry(rel).or_insert(0);
+                        *entry = entry.saturating_add(count);
+                    }
+                    for (rel, bitmap) in result.dst_degree_bits {
+                        merge_dst_degree_bitmap(&mut merged_dst_degree_bits, rel, bitmap);
+                    }
+                    if result.pk_duplicate_drops > 0 {
+                        let entry = self
+                            .pk_duplicate_drops
+                            .entry(result.relation.clone())
+                            .or_insert(0);
+                        *entry = entry.saturating_add(result.pk_duplicate_drops);
+                    }
+                    if result.null_timestamp_drops > 0 {
+                        let entry = self
+                            .edge_null_timestamp_drops
+                            .entry(result.relation.clone())
+                            .or_insert(0);
+                        *entry = entry.saturating_add(result.null_timestamp_drops);
+                    }
+                    let entry = done.entry(result.relation.clone()).or_insert(0u64);
+                    *entry = entry.saturating_add(1);
+                    if let Some(expected) = expected.get(&result.relation) {
+                        if *entry == *expected {
+                            if let Some(bitmap) =
+                                merged_dst_degree_bits.remove(&result.relation)
+                            {
+                                let count = bitmap
+                                    .bits
+                                    .iter()
+                                    .map(|byte| byte.count_ones() as u64)
+                                    .sum();
+                                self.edge_dst_nonzero_counts
+                                    .insert(result.relation.clone(), count);
+                            }
+                            let total = totals.get(&result.relation).copied();
+                            if let Some(cb) = &self.progress {
+                                cb(ProgressEvent {
+                                    phase: ProgressPhase::EdgesPassA,
+                                    table: result.relation.clone(),
+                                    shard: None,
+                                    kind: ProgressKind::Finish,
+                                    delta: 0,
+                                    total,
+                                    status: None,
+                                });
                             }
                         }
                     }
                 }
-                if result.pk_duplicate_drops > 0 {
-                    let entry = self
-                        .pk_duplicate_drops
-                        .entry(result.relation.clone())
-                        .or_insert(0);
-                    *entry = entry.saturating_add(result.pk_duplicate_drops);
+                let task_result = task_runner
+                    .join()
+                    .map_err(|_| anyhow!("edges_map task runner panicked"))?;
+                task_result?;
+                if let Some(error) = output_error {
+                    return Err(error);
                 }
-                if result.null_timestamp_drops > 0 {
-                    let entry = self
-                        .edge_null_timestamp_drops
-                        .entry(result.relation.clone())
-                        .or_insert(0);
-                    *entry = entry.saturating_add(result.null_timestamp_drops);
-                }
-                let entry = done.entry(result.relation.clone()).or_insert(0u64);
-                *entry = entry.saturating_add(1);
-                if let Some(expected) = expected.get(&result.relation) {
-                    if *entry == *expected {
-                        let total = totals.get(&result.relation).copied();
-                        if let Some(cb) = &self.progress {
-                            cb(ProgressEvent {
-                                phase: ProgressPhase::EdgesPassA,
-                                table: result.relation.clone(),
-                                shard: None,
-                                kind: ProgressKind::Finish,
-                                delta: 0,
-                                total,
-                                status: None,
-                            });
-                        }
-                    }
-                }
-            }
+                Ok(())
+            })?;
             drop(writer_senders);
             writer_pool.finish()?;
             self.ensure_edge_map_shards(edge_ctx)?;
@@ -10343,13 +10477,14 @@ impl IngestContext {
             self.temp_edges_map_bytes = self
                 .temp_edges_map_bytes
                 .saturating_add(self.record_edge_stage_bytes("edges_map")?);
-            self.edge_dst_nonzero_counts = std::mem::take(&mut self.edge_dst_degree_bits)
-                .into_iter()
-                .map(|(relation, bits)| {
-                    let count = bits.iter().map(|byte| byte.count_ones() as u64).sum();
-                    (relation, count)
-                })
-                .collect();
+            for (relation, bitmap) in merged_dst_degree_bits {
+                let count = bitmap
+                    .bits
+                    .iter()
+                    .map(|byte| byte.count_ones() as u64)
+                    .sum();
+                self.edge_dst_nonzero_counts.insert(relation, count);
+            }
             // Post-edges_map cleanup of inputs (edges_src/fkeys/fkeys_dst/edge_keys)
             // is now driven by `ingest_with_stats_from_source` after the edges_map
             // marker is written, so a crash mid-cleanup cannot leave the pipeline
