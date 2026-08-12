@@ -6794,23 +6794,17 @@ impl IngestContext {
                         let remaining_prefix_bytes = SOURCE_PREFIX_MAX_BYTES - prefix_bytes;
                         let mut prefix_permit =
                             source_budget.acquire(remaining_prefix_bytes as u64)?;
-                        let compact = match compact_prefix_with_budget(
+                        let compact = compact_context_prefix_with_budget(
+                            &table.name,
                             &batch.batch,
                             sample_limit - prefix_rows,
                             remaining_prefix_bytes,
-                        )? {
-                            Some(compact) => compact,
-                            None => {
-                                let row_bytes = compact_record_batch_prefix(&batch.batch, 1)?
-                                    .get_array_memory_size();
-                                return Err(context_prefix_budget_error(
-                                    &table.name,
-                                    remaining_prefix_bytes,
-                                    row_bytes,
-                                    prefix_rows,
-                                    prefix_bytes,
-                                ));
-                            }
+                            prefix_rows,
+                            prefix_bytes,
+                        )?;
+                        let Some(compact) = compact else {
+                            remainder = stream.defer_context_remainder(batch);
+                            break;
                         };
                         let sampled_rows = compact.num_rows();
                         prefix_permit.shrink_to(compact.get_array_memory_size() as u64);
@@ -11799,6 +11793,59 @@ mod context_prefix_tests {
             !message.contains("larger than the context prefix budget"),
             "{message}"
         );
+    }
+}
+
+fn compact_context_prefix_with_budget(
+    table_name: &str,
+    batch: &RecordBatch,
+    max_rows: usize,
+    max_bytes: usize,
+    sampled_rows: usize,
+    sampled_bytes: usize,
+) -> Result<Option<RecordBatch>> {
+    let compact = compact_prefix_with_budget(batch, max_rows, max_bytes)?;
+    if compact.is_none() && sampled_rows == 0 {
+        let row_bytes = compact_prefix_bytes(batch, 1)?;
+        return Err(context_prefix_budget_error(
+            table_name,
+            max_bytes,
+            row_bytes,
+            sampled_rows,
+            sampled_bytes,
+        ));
+    }
+    Ok(compact)
+}
+
+#[cfg(test)]
+mod source_prefix_tests {
+    use super::*;
+    use arrow_array::Int64Array;
+    use arrow_schema::{Field, Schema};
+
+    fn batch() -> RecordBatch {
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)])),
+            vec![Arc::new(Int64Array::from(vec![1]))],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn residual_context_prefix_budget_defers_the_next_batch() {
+        let compact =
+            compact_context_prefix_with_budget("nodes", &batch(), 1, 1, 10, 100).unwrap();
+        assert!(compact.is_none());
+    }
+
+    #[test]
+    fn first_source_row_must_fit_the_full_context_prefix_budget() {
+        let error = compact_context_prefix_with_budget("nodes", &batch(), 1, 1, 0, 0)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("table nodes: the context prefix budget has 1 bytes left"));
+        assert!(error.contains("cannot hold one more source row"));
     }
 }
 
