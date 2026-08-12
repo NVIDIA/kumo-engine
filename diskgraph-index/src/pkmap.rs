@@ -6,7 +6,7 @@ use gxhash::GxHasher;
 use memmap2::Mmap;
 #[cfg(feature = "pkhash128")]
 use ptr_hash::hash::GxHash128;
-use ptr_hash::hash::GxHash64;
+use ptr_hash::hash::PkHash;
 use ptr_hash::DefaultPtrHash;
 use std::fs::File;
 use std::hash::Hasher;
@@ -19,7 +19,7 @@ const PK_DATA_HEADER_LEN: usize = 8 + 4 + 1 + 4 + 8;
 const GXHASH_SHARD_SEED: u64 = 0x6a09e667f3bcc909;
 
 #[cfg(not(feature = "pkhash128"))]
-type PkPtrHash = GxHash64;
+type PkPtrHash = PkHash;
 #[cfg(feature = "pkhash128")]
 type PkPtrHash = GxHash128;
 

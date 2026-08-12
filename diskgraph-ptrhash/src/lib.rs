@@ -56,6 +56,10 @@ use std::{borrow::Borrow, default::Default, marker::PhantomData};
 
 use crate::{hash::*, pack::Packed, reduce::*};
 
+/// Longest key for which gxhash's compression is injective. Above it,
+/// collisions are constructible and hold under every seed.
+pub const MAX_GXHASH_INJECTIVE_LEN: usize = 16;
+
 #[derive(Debug)]
 pub(crate) enum SortPartsError {
     DuplicateHashes,
@@ -79,6 +83,8 @@ pub struct PtrHashParams<BF> {
     pub bucket_fn: BF,
     /// Force using a single part.
     pub single_part: bool,
+    /// Hash keys with [`hash::PkHash`]'s collision-resistant fallback.
+    pub prefer_fallback_hash: bool,
 }
 
 impl PtrHashParams<CubicEps> {
@@ -96,6 +102,7 @@ impl PtrHashParams<CubicEps> {
             lambda: 3.5,
             bucket_fn: CubicEps,
             single_part: false,
+            prefer_fallback_hash: false,
         }
     }
 }
@@ -112,7 +119,7 @@ impl Default for PtrHashParams<CubicEps> {
 /// [`DefaultPtrHash`] fills in most values.
 ///
 /// Use this as [`DefaultPtrHash::try_new_from_source_with_scratch()`].
-pub type DefaultPtrHash<Hx = hash::GxHash64, Key = u64, BF = bucket_fn::CubicEps> =
+pub type DefaultPtrHash<Hx = hash::PkHash, Key = u64, BF = bucket_fn::CubicEps> =
     PtrHash<Key, BF, CachelineEfVec, Hx, Vec<u8>>;
 
 /// Trait that keys must satisfy.
@@ -163,7 +170,7 @@ type PilotHash = u64;
 /// - `Key`: The type of keys to hash.
 /// - `BF`: The bucket function to use. Inferred from `PtrHashParams` when calling `PtrHash::new()`.
 /// - `F`: The packing to use for remapping free slots, default `CachelineEf`.
-/// - `Hx`: The hasher to use for keys, default `GxHash64`.
+/// - `Hx`: The hasher to use for keys, default `PkHash`.
 /// - `V`: The pilots type. Usually `Vec<u8>`, or `&[u8]` for Epserde.
 #[cfg_attr(feature = "epserde", derive(epserde::prelude::Epserde))]
 #[derive(Clone, MemSize)]
@@ -171,7 +178,7 @@ pub struct PtrHash<
     Key: KeyT + ?Sized = u64,
     BF: BucketFn = bucket_fn::CubicEps,
     F: Packed = CachelineEfVec,
-    Hx: Hasher<Key> = hash::GxHash64,
+    Hx: Hasher<Key> = hash::PkHash,
     V: AsRef<[u8]> = Vec<u8>,
 > {
     params: PtrHashParams<BF>,
@@ -497,12 +504,12 @@ impl<Key: KeyT, BF: BucketFn, F: Packed, Hx: Hasher<Key>, V: AsRef<[u8]>>
 {
     #[inline]
     fn hash_key(&self, key: &Key) -> Hx::H {
-        Hx::hash(key, self.seed)
+        Hx::hash(key, self.seed, self.params.prefer_fallback_hash)
     }
 
     #[inline]
     fn hash_pilot(&self, pilot: Pilot) -> PilotHash {
-        MulHash::hash(&pilot, self.seed)
+        MulHash::hash(&pilot, self.seed, false)
     }
 
     #[inline]

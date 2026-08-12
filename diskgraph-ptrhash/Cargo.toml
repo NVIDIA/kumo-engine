@@ -22,6 +22,7 @@ itertools = "0.14.0"
 fastrand = "2.0.1"
 mem_dbg = "0.3.0"
 gxhash = "3.5.0"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 cacheline-ef = "1.1.0"
 tracing = { workspace = true }
 

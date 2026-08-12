@@ -249,6 +249,49 @@ struct ParquetInput {
 /// read twice, which for `sample_limit` rows out of a whole table is cheaper
 /// than any coupling that would avoid it. Loading without a resident budget
 /// takes the ranged-read path rather than downloading whole cloud objects.
+/// Longest value in a variable-width column. An upper bound on the key
+/// `pk_map` hashes, since `parse_bytes_key` only ever shrinks its input.
+fn max_binary_value_len(array: &ArrayRef) -> usize {
+    fn from_offsets<O: arrow_array::OffsetSizeTrait>(offsets: &[O]) -> usize {
+        offsets
+            .windows(2)
+            .map(|w| (w[1] - w[0]).as_usize())
+            .max()
+            .unwrap_or(0)
+    }
+    match array.data_type() {
+        DataType::Utf8 => from_offsets(
+            array
+                .as_any()
+                .downcast_ref::<arrow_array::StringArray>()
+                .map(|a| a.value_offsets())
+                .unwrap_or(&[]),
+        ),
+        DataType::LargeUtf8 => from_offsets(
+            array
+                .as_any()
+                .downcast_ref::<arrow_array::LargeStringArray>()
+                .map(|a| a.value_offsets())
+                .unwrap_or(&[]),
+        ),
+        DataType::Binary => from_offsets(
+            array
+                .as_any()
+                .downcast_ref::<arrow_array::BinaryArray>()
+                .map(|a| a.value_offsets())
+                .unwrap_or(&[]),
+        ),
+        DataType::LargeBinary => from_offsets(
+            array
+                .as_any()
+                .downcast_ref::<arrow_array::LargeBinaryArray>()
+                .map(|a| a.value_offsets())
+                .unwrap_or(&[]),
+        ),
+        _ => 0,
+    }
+}
+
 fn sample_context_batches(
     table: &TableSpec,
     transfer: Option<&CloudTransfer>,
@@ -1641,6 +1684,7 @@ mod tests_repopulate_helpers {
             edge_null_timestamp_drops: HashMap::new(),
             pk_duplicate_samples: HashMap::new(),
             dropped_rows_counts: HashMap::new(),
+            pk_sampled_max_key_len: HashMap::new(),
             key_parse_failures: 0,
             key_lookup_failures: 0,
             key_membership_failures: 0,
@@ -2347,6 +2391,7 @@ struct IngestContext {
     edge_null_timestamp_drops: HashMap<String, u64>,
     pk_duplicate_samples: HashMap<String, Vec<String>>,
     dropped_rows_counts: HashMap<String, u64>,
+    pk_sampled_max_key_len: HashMap<String, usize>,
     key_parse_failures: u64,
     key_lookup_failures: u64,
     key_membership_failures: u64,
@@ -2415,6 +2460,7 @@ struct EncodeState {
     binary_label_counts: Vec<EncodeLabelCounts>,
     sample_weight_counts: Vec<EncodeWeightCounts>,
     dropped_rows_counts: HashMap<String, u64>,
+    pk_sampled_max_key_len: HashMap<String, usize>,
     key_parse_failures: u64,
     key_lookup_failures: u64,
     key_membership_failures: u64,
@@ -6320,6 +6366,7 @@ impl IngestContext {
             edge_null_timestamp_drops: HashMap::new(),
             pk_duplicate_samples: HashMap::new(),
             dropped_rows_counts: HashMap::new(),
+            pk_sampled_max_key_len: HashMap::new(),
             key_parse_failures: 0,
             key_lookup_failures: 0,
             key_membership_failures: 0,
@@ -6627,6 +6674,11 @@ impl IngestContext {
                         .filter(|resolution| resolution.table == table.name)
                         .filter_map(|resolution| column_index(table, &resolution.node_id_col).ok())
                         .collect();
+                    let pk_col_index = table
+                        .primary_key
+                        .as_ref()
+                        .and_then(|pk| column_index(table, pk).ok());
+                    let mut pk_max_key_len = 0usize;
                     let row_access_hints = build_row_access_hints(table);
                     let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
                     let mut access = RowAccess::new(row_access_hints, stats);
@@ -6646,6 +6698,10 @@ impl IngestContext {
                         sample_limit,
                     )?;
                     for batch in &strided {
+                        if let Some(col) = pk_col_index {
+                            pk_max_key_len =
+                                pk_max_key_len.max(max_binary_value_len(batch.column(col)));
+                        }
                         let cols = build_access_cols(batch, table, &resolve_node_ids)?;
                         access.set_cols(&cols);
                         for row in 0..batch.num_rows() {
@@ -6682,6 +6738,10 @@ impl IngestContext {
                         })?;
                         let sampled_rows = compact.num_rows();
                         prefix_permit.shrink_to(compact.get_array_memory_size() as u64);
+                        if let Some(col) = pk_col_index {
+                            pk_max_key_len =
+                                pk_max_key_len.max(max_binary_value_len(compact.column(col)));
+                        }
                         let cols = build_access_cols(&compact, table, &resolve_node_ids)?;
                         access.set_cols(&cols);
                         for row in 0..sampled_rows {
@@ -6757,6 +6817,10 @@ impl IngestContext {
                         source_table.columns.clone_from(&table.columns);
                     }
 
+                    if pk_col_index.is_some() {
+                        self.pk_sampled_max_key_len
+                            .insert(table.name.clone(), pk_max_key_len);
+                    }
                     let node_context = context_builder.finish()?;
                     let context_bytes = node_context.to_bytes()?;
                     self.target
@@ -7046,6 +7110,7 @@ impl IngestContext {
         let state = EncodeState {
             version: ENCODE_STATE_VERSION,
             source: self.source.clone(),
+            pk_sampled_max_key_len: self.pk_sampled_max_key_len.clone(),
             binary_label_counts: self
                 .binary_label_counts
                 .iter()
@@ -7117,6 +7182,7 @@ impl IngestContext {
             .map(|entry| ((entry.table, entry.shard), entry.counts))
             .collect();
         self.dropped_rows_counts = state.dropped_rows_counts;
+        self.pk_sampled_max_key_len = state.pk_sampled_max_key_len;
         self.key_parse_failures = state.key_parse_failures;
         self.key_lookup_failures = state.key_lookup_failures;
         self.key_membership_failures = state.key_membership_failures;
@@ -8324,6 +8390,19 @@ impl IngestContext {
             });
             let pk_name = table.primary_key.clone().unwrap();
             let pk_col = column_spec(table, &pk_name)?;
+            let max_key_len = match key_type_for_column(pk_col)? {
+                KeyType::VarBytes => *self
+                    .pk_sampled_max_key_len
+                    .get(&table.name)
+                    .ok_or_else(|| anyhow!("table {} was not sampled", table.name))?,
+                KeyType::Int64 => 8,
+                KeyType::Uuid | KeyType::Ip => 16,
+                KeyType::Uuid256 => 32,
+            };
+            let ptrhash_params = ptr_hash::PtrHashParams {
+                prefer_fallback_hash: max_key_len > ptr_hash::MAX_GXHASH_INJECTIVE_LEN,
+                ..ptr_hash::PtrHashParams::default()
+            };
             let pk_hash_paths =
                 std::sync::Arc::new(std::sync::Mutex::new(vec![None; self.num_shards]));
             pk_hash_handles.insert(table.name.clone(), std::sync::Arc::clone(&pk_hash_paths));
@@ -8557,7 +8636,7 @@ impl IngestContext {
                                             })?;
                                         }
                                     }
-                                    let params = ptr_hash::PtrHashParams::default();
+                                    let params = ptrhash_params;
                                     let seen = std::mem::take(&mut pkmap.seen_u64);
                                     let mphf =
                                         DefaultPtrHash::<PkPtrHash, u64>::try_new_from_source_with_scratch(
@@ -8717,7 +8796,7 @@ impl IngestContext {
                                             );
                                         }
                                     }
-                                    let params = ptr_hash::PtrHashParams::default();
+                                    let params = ptrhash_params;
                                     let seen = std::mem::take(&mut pkmap.seen_bytes);
                                     tracing::info!(
                                         target: "diskgraph::pk_map_diag",
@@ -8861,7 +8940,7 @@ impl IngestContext {
                                             })?;
                                         }
                                     }
-                                    let params = ptr_hash::PtrHashParams::default();
+                                    let params = ptrhash_params;
                                     let seen = std::mem::take(&mut pkmap.seen_uuid);
                                     let mphf =
                                         DefaultPtrHash::<PkPtrHash, [u8; 16]>::try_new_from_source_with_scratch(
@@ -8983,7 +9062,7 @@ impl IngestContext {
                                             })?;
                                         }
                                     }
-                                    let params = ptr_hash::PtrHashParams::default();
+                                    let params = ptrhash_params;
                                     let seen = std::mem::take(&mut pkmap.seen_uuid256);
                                     let mphf =
                                         DefaultPtrHash::<PkPtrHash, [u8; 32]>::try_new_from_source_with_scratch(
@@ -9105,7 +9184,7 @@ impl IngestContext {
                                             })?;
                                         }
                                     }
-                                    let params = ptr_hash::PtrHashParams::default();
+                                    let params = ptrhash_params;
                                     let seen = std::mem::take(&mut pkmap.seen_ip);
                                     let mphf =
                                         DefaultPtrHash::<PkPtrHash, [u8; 16]>::try_new_from_source_with_scratch(

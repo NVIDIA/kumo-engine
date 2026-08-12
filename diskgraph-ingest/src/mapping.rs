@@ -4,7 +4,7 @@ use memmap2::Mmap;
 #[cfg(feature = "pkhash128")]
 use ptr_hash::hash::GxHash128;
 #[cfg(not(feature = "pkhash128"))]
-use ptr_hash::hash::GxHash64;
+use ptr_hash::hash::PkHash;
 use ptr_hash::hash::Hasher as PtrHasher;
 use ptr_hash::DefaultPtrHash;
 use std::fs::File;
@@ -99,7 +99,7 @@ impl PkDataHeader {
 }
 
 #[cfg(not(feature = "pkhash128"))]
-pub type PkPtrHash = GxHash64;
+pub type PkPtrHash = PkHash;
 #[cfg(feature = "pkhash128")]
 pub type PkPtrHash = GxHash128;
 pub type PkPtrHashOutput = <PkPtrHash as PtrHasher<u64>>::H;

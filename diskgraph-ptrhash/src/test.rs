@@ -1,5 +1,22 @@
 use super::*;
 
+struct ByteKeys(Vec<Vec<u8>>);
+
+impl KeySource<Vec<u8>> for ByteKeys {
+    type Iter<'a>
+        = std::slice::Iter<'a, Vec<u8>>
+    where
+        Self: 'a;
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn iter(&self) -> Self::Iter<'_> {
+        self.0.iter()
+    }
+}
+
 struct KeyVec(Vec<u64>);
 
 impl KeySource<u64> for KeyVec {
@@ -35,9 +52,9 @@ fn make_low_entropy_keys(n: usize) -> KeyVec {
     KeyVec(keys)
 }
 
-fn build_u64(keys: &KeyVec) -> DefaultPtrHash<hash::GxHash64, u64> {
+fn build_u64(keys: &KeyVec) -> DefaultPtrHash<hash::PkHash, u64> {
     let mut scratch = PtrHashScratch::<u64>::new();
-    DefaultPtrHash::<hash::GxHash64, u64>::try_new_from_source_with_scratch(
+    DefaultPtrHash::<hash::PkHash, u64>::try_new_from_source_with_scratch(
         keys,
         PtrHashParams::default(),
         &mut scratch,
@@ -52,7 +69,7 @@ fn construct_unique() {
     for n in [2, 10, 100, 1000, 10_000, 100_000] {
         let keys = make_keys(n);
         let mut scratch = PtrHashScratch::<u64>::new();
-        let ptr_hash = DefaultPtrHash::<hash::GxHash64, u64>::try_new_from_source_with_scratch(
+        let ptr_hash = DefaultPtrHash::<hash::PkHash, u64>::try_new_from_source_with_scratch(
             &keys,
             PtrHashParams::default(),
             &mut scratch,
@@ -72,7 +89,7 @@ fn construct_unique() {
 fn ptr_hash_can_clone() {
     let keys = make_keys(64);
     let mut scratch = PtrHashScratch::<u64>::new();
-    let ptr_hash = DefaultPtrHash::<hash::GxHash64, u64>::try_new_from_source_with_scratch(
+    let ptr_hash = DefaultPtrHash::<hash::PkHash, u64>::try_new_from_source_with_scratch(
         &keys,
         PtrHashParams::default(),
         &mut scratch,
@@ -148,7 +165,7 @@ fn single_part_build() {
     let mut scratch = PtrHashScratch::<u64>::new();
     let mut params = PtrHashParams::default();
     params.single_part = true;
-    let ptr_hash = DefaultPtrHash::<hash::GxHash64, u64>::try_new_from_source_with_scratch(
+    let ptr_hash = DefaultPtrHash::<hash::PkHash, u64>::try_new_from_source_with_scratch(
         &keys,
         params,
         &mut scratch,
@@ -167,7 +184,7 @@ fn small_n_tuning_applies() {
     let mut params = PtrHashParams::default();
     params.alpha = 0.8;
     params.lambda = 10.0;
-    let ptr_hash = DefaultPtrHash::<hash::GxHash64, u64>::try_new_from_source_with_scratch(
+    let ptr_hash = DefaultPtrHash::<hash::PkHash, u64>::try_new_from_source_with_scratch(
         &keys,
         params,
         &mut scratch,
@@ -182,7 +199,7 @@ fn scratch_reuse_multiple_builds() {
     let mut scratch = PtrHashScratch::<u64>::new();
     for n in [10, 1000, 100, 5000] {
         let keys = make_keys(n);
-        let ptr_hash = DefaultPtrHash::<hash::GxHash64, u64>::try_new_from_source_with_scratch(
+        let ptr_hash = DefaultPtrHash::<hash::PkHash, u64>::try_new_from_source_with_scratch(
             &keys,
             PtrHashParams::default(),
             &mut scratch,
@@ -225,7 +242,7 @@ fn retry_stress_tight_params() {
     let mut params = PtrHashParams::default();
     params.alpha = 0.995;
     params.lambda = 2.0;
-    let ptr_hash = DefaultPtrHash::<hash::GxHash64, u64>::try_new_from_source_with_scratch(
+    let ptr_hash = DefaultPtrHash::<hash::PkHash, u64>::try_new_from_source_with_scratch(
         &keys,
         params,
         &mut scratch,
@@ -235,4 +252,83 @@ fn retry_stress_tight_params() {
         let idx = ptr_hash.index(key);
         assert!(idx < keys.len());
     }
+}
+
+/// A 33-byte twin of `key` that gxhash cannot separate from it, under any seed.
+///
+/// `compress_all` folds `a = key[1..17]` with `b = key[17..33]` as
+/// `M(a) ^ b`, so `b' = b ^ M(a) ^ M(a')` cancels a change to `a`.
+#[cfg(target_arch = "x86_64")]
+fn seed_independent_twin(key: &[u8]) -> Vec<u8> {
+    use std::arch::x86_64::*;
+    assert_eq!(key.len(), 33);
+    unsafe {
+        let load = |s: &[u8]| _mm_loadu_si128(s.as_ptr() as *const __m128i);
+        let m = |v: __m128i| _mm_aesenc_si128(v, _mm_setzero_si128());
+
+        let mut a2 = [0u8; 16];
+        a2.copy_from_slice(&key[1..17]);
+        a2[15] ^= 0x5a;
+
+        let delta = _mm_xor_si128(m(load(&key[1..17])), m(load(&a2)));
+        let b2 = _mm_xor_si128(load(&key[17..33]), delta);
+
+        let mut out = key.to_vec();
+        out[1..17].copy_from_slice(&a2);
+        _mm_storeu_si128(out[17..33].as_mut_ptr() as *mut __m128i, b2);
+        out
+    }
+}
+
+/// Keys gxhash cannot separate must build with the fallback.
+#[test]
+#[cfg(target_arch = "x86_64")]
+fn fallback_hash_builds_what_gxhash_cannot() {
+    let base = b"kumo30356-collision-witness-key01".to_vec();
+    let twin = seed_independent_twin(&base);
+    assert_ne!(base, twin);
+    for seed in [0u64, 1, 12_345, u64::MAX] {
+        assert_eq!(
+            <hash::PkHash as Hasher<Vec<u8>>>::hash(&base, seed, false),
+            <hash::PkHash as Hasher<Vec<u8>>>::hash(&twin, seed, false),
+            "the witness stopped colliding under seed {seed:#x}"
+        );
+    }
+
+    let mut keys = vec![base.clone(), twin.clone()];
+    keys.extend((0..2_000u32).map(|i| {
+        let mut k = format!("kumo30356-filler-{i:016}").into_bytes();
+        k.resize(33, b'.');
+        k
+    }));
+    let n = keys.len();
+    let mut scratch = PtrHashScratch::<u64>::new();
+
+    assert!(
+        DefaultPtrHash::<hash::PkHash, Vec<u8>>::try_new_from_source_with_scratch(
+            &ByteKeys(keys.clone()),
+            PtrHashParams::default(),
+            &mut scratch,
+        )
+        .is_none(),
+        "gxhash must fail here, or this proves nothing about the fallback"
+    );
+
+    let mphf = DefaultPtrHash::<hash::PkHash, Vec<u8>>::try_new_from_source_with_scratch(
+        &ByteKeys(keys.clone()),
+        PtrHashParams {
+            prefer_fallback_hash: true,
+            ..PtrHashParams::default()
+        },
+        &mut scratch,
+    )
+    .expect("the fallback must build it");
+
+    let mut seen = vec![false; n];
+    for k in &keys {
+        let idx = mphf.index(k);
+        assert!(idx < n && !seen[idx], "not a bijection onto 0..n");
+        seen[idx] = true;
+    }
+    assert_ne!(mphf.index(&base), mphf.index(&twin));
 }
