@@ -1,13 +1,14 @@
-use crate::builder::EdgeWriter;
-use crate::builder::{EdgeRec, IndexBuildError};
+use crate::builder::{EdgeWriter, IndexBuildError};
 use crate::layout::RelationLayout;
 
-/// Truncate per-relation edge lists for a node to keep the offset delta within u16::MAX.
+/// Truncate per-relation edge lists for a node to keep the offset delta within its selected width.
 /// Strategy: identify the longest edge lists and "level" them down together so they end
 /// up the same length (and still longer than all other lists), repeating until the node
 /// payload fits in the allowed delta.
-pub(crate) fn truncate_counts(
-    buckets: &mut [Vec<EdgeRec>],
+/// Compute the retained count for every relation without materializing its
+/// edges. Callers can use the result as a drain limit, so oversized nodes are
+/// bounded by the collective node-blob budget rather than once per relation.
+pub(crate) fn truncate_count_vector(
     counts: &mut [usize],
     layouts: &[RelationLayout],
     current_offset: u64,
@@ -29,10 +30,6 @@ pub(crate) fn truncate_counts(
             .checked_add(extra_bytes)
             .ok_or(IndexBuildError::CountOverflow)?;
         if node_bytes <= budget {
-            // Apply truncations to buckets and propagate counts.
-            for (idx, target) in counts.iter().enumerate() {
-                buckets[idx].truncate(*target);
-            }
             return Ok(());
         }
 

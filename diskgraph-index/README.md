@@ -21,7 +21,7 @@ At query time a shard is mmapped and edge lists are served zero-copy by slicing 
 - **Edge blob (edges.bin):** For each node:
   - If the node has zero edges across all relations, nothing is written; its start/end offsets are equal.
   - Otherwise: Prefix compact varint counts for every relation (fixed order), then optional node data length, then per relation `count * entry_bytes` packed edges, then optional node data payload.
-    - Count encoding: 1 byte for 0–63 (`00xxxxxx`), 2 bytes for 64–16,383 (`01xxxxxx xxxxxxxx`), 3 bytes for 16,384–4,194,303 (`10xxxxxx xxxxxxxx xxxxxxxx`), and 4 bytes for 4,194,304–1,073,741,823 (`11xxxxxx xxxxxxxx xxxxxxxx xxxxxxxx`). Counts are truncated when a node’s payload would exceed the shard’s delta budget.
+    - Count encoding: 1 byte for 0–63 (`00xxxxxx`), 2 bytes for 64–16,383 (`01xxxxxx xxxxxxxx`), 3 bytes for 16,384–4,194,303 (`10xxxxxx xxxxxxxx xxxxxxxx`), and 4 bytes for 4,194,304–1,073,741,823 (`11xxxxxx xxxxxxxx xxxxxxxx xxxxxxxx`). Counts are truncated when a node’s payload would exceed the shard’s delta budget. If the maximum untruncated payload exceeds the 32-bit format, the builder selects 32-bit deltas and caps hot-node lists to fit.
     - Entry packing: `dst_id` masked to the minimum bits needed for the destination type, followed by optional `dest_sort_key` bits (if present for that relation). Relation IDs are implicit by position, not stored per edge.
     - Node data length: `node_data_len_bytes` (2, 3, or 4) byte length (little-endian) stored immediately after the counts when node data is enabled. Node data bytes follow all relation segments (rowpack-compressed).
 
@@ -131,7 +131,7 @@ Steps:
 
 ## Counters and stats
 - `NodeEdgeStats`: total edges and bytes written for the shard.
-- `BuildStats`: nodes/edges ingested, nodes truncated, total truncated edges, per-relation truncation counts, and how many relation lists were capped at the varint limit. Returned from build for monitoring/alerting.
+- `BuildStats`: nodes/edges ingested, nodes truncated, total truncated edges, per-relation truncation counts, and how many relation lists were capped at the format budget. Returned from build for monitoring/alerting.
 
 ## Edge cases handled
 - Missing `dest_sort_key`: relation stores only `dst_id` with minimal bits.

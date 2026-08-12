@@ -2,7 +2,7 @@ use crate::layout::{
     NodeEdgeStats, OffsetFileHeader, RelationLayout, DELTA_CHUNK, EDGES_FILENAME, OFFSETS_FILENAME,
 };
 use crate::streaming::EdgeShardInput;
-use crate::truncate::truncate_counts;
+use crate::truncate::truncate_count_vector;
 use anyhow::Result;
 use diskgraph_core::metadata::{EdgeRelationMetadata, NodeTypeMetadata};
 use lz4_flex::frame::FrameDecoder;
@@ -118,7 +118,10 @@ fn select_delta_bytes(
             return Ok(delta_bytes);
         }
     }
-    Err(IndexBuildError::OffsetDeltaOverflow.into())
+    // The on-disk format cannot represent a node blob wider than u32. Use the
+    // widest layout and let the builder's per-node truncation keep hot nodes
+    // within that limit instead of rejecting the entire shard up front.
+    Ok(4)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -161,7 +164,7 @@ pub enum IndexBuildError {
     NotImplemented(&'static str),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("offset delta exceeds u16 max")]
+    #[error("offset delta exceeds selected width")]
     OffsetDeltaOverflow,
     #[error("edge or byte count exceeds supported limit")]
     CountOverflow,
@@ -796,23 +799,6 @@ impl ShardBuilder {
         )?;
         let node_data_len_bytes = delta_bytes;
         let max_delta = max_delta_for_bytes(delta_bytes);
-        let counts_min_bytes = rel_count as u64;
-        let mut max_edge_counts = Vec::with_capacity(rel_count);
-        for layout in layouts.iter() {
-            let mut budget = max_delta.saturating_sub(OFFSET_OVERHEAD_BYTES);
-            if self.params.node_meta.has_node_data && node_data_max_len > 0 {
-                budget = budget
-                    .saturating_sub(node_data_max_len as u64)
-                    .saturating_sub(node_data_len_bytes as u64);
-            }
-            budget = budget.saturating_sub(counts_min_bytes);
-            let cap = if layout.entry_bytes == 0 {
-                0
-            } else {
-                (budget / layout.entry_bytes as u64) as usize
-            };
-            max_edge_counts.push(cap.min(MAX_VARINT_COUNT));
-        }
 
         let mut offsets_writer =
             OffsetChunkWriter::try_new(&offsets_path, delta_bytes, node_data_len_bytes)?;
@@ -835,7 +821,7 @@ impl ShardBuilder {
         let mut counts: Vec<usize> = vec![0; rel_count];
         let mut last_counts: Vec<usize> = vec![0; rel_count];
         let mut original_counts: Vec<usize> = vec![0; rel_count];
-        let mut lens: Vec<usize> = vec![0; rel_count];
+        let mut observed_counts: Vec<usize> = vec![0; rel_count];
         let result = (|| {
             if let Some(progress) = progress {
                 progress.report(BuildProgress {
@@ -881,66 +867,53 @@ impl ShardBuilder {
                         bucket.reserve_exact(last_counts[i] - bucket.capacity());
                     }
                 }
-                let mut truncated_node = false;
-                edge_stream.drain_for_node(node_id, &mut buckets)?;
-                // Compute lengths first to avoid borrowing conflicts, then apply truncation.
-                let mut any_truncated = false;
-                let mut total_edges: usize = 0;
-                for i in 0..rel_count {
-                    let len = buckets[i].len();
-                    lens[i] = len;
-                    counts[i] = len;
-                    total_edges = total_edges.saturating_add(len);
-                    let cap = max_edge_counts.get(i).copied().unwrap_or(0);
-                    if cap > 0 && len > cap {
-                        buckets[i].truncate(cap);
-                        counts[i] = cap;
-                        total_edges = total_edges.saturating_sub(len - cap);
-                        truncated_node = true;
-                        any_truncated = true;
-                        build_stats.capped_edge_lists =
-                            build_stats.capped_edge_lists.saturating_add(1);
-                    }
-                }
-                if any_truncated {
-                    original_counts.copy_from_slice(&lens);
-                }
-                if total_edges == 0 && node_data_len.is_none() {
-                    // No edges for this node across all relations; avoid writing zero counts.
-                    offsets_writer.push(start_offset)?;
-                    prev_offset = start_offset;
-                    continue;
+                original_counts.fill(0);
+                edge_stream.count_for_node(node_id, &mut original_counts)?;
+                for (retained, observed) in counts.iter_mut().zip(&original_counts) {
+                    *retained = (*observed).min(MAX_VARINT_COUNT);
                 }
                 let extra_bytes = node_data_len
                     .map(|len| node_data_len_bytes as u64 + len as u64)
                     .unwrap_or(0);
-                let node_bytes = EdgeWriter::node_length_bytes_fast(&layouts, &counts)
-                    .saturating_add(extra_bytes);
+                truncate_count_vector(
+                    &mut counts,
+                    &layouts,
+                    start_offset,
+                    prev_offset,
+                    extra_bytes,
+                    max_delta,
+                )?;
 
-                // Determine if we need to truncate to stay within u16 delta budget.
-                let base_span = start_offset
-                    .checked_sub(prev_offset)
-                    .ok_or(IndexBuildError::CountOverflow)?;
-                let budget = max_delta
-                    .checked_sub(base_span)
-                    .ok_or(IndexBuildError::OffsetDeltaOverflow)?;
-                if node_bytes > budget {
-                    if !any_truncated {
-                        original_counts.copy_from_slice(&lens);
-                        any_truncated = true;
-                    }
-                    truncate_counts(
-                        &mut buckets,
-                        &mut counts,
-                        &layouts,
-                        start_offset,
-                        prev_offset,
-                        extra_bytes,
-                        max_delta,
-                    )?;
-                    truncated_node = true;
+                // Count before materializing so every relation shares one
+                // node-blob budget. This avoids retaining up to 4 GiB once
+                // per relation and preserves the existing leveling policy.
+                observed_counts.fill(0);
+                edge_stream.drain_for_node(
+                    node_id,
+                    &mut buckets,
+                    &counts,
+                    &mut observed_counts,
+                )?;
+                if observed_counts != original_counts {
+                    return Err(IndexBuildError::CountOverflow.into());
                 }
-
+                let total_edges = counts
+                    .iter()
+                    .fold(0usize, |total, count| total.saturating_add(*count));
+                let any_truncated = original_counts
+                    .iter()
+                    .zip(&counts)
+                    .any(|(observed, retained)| observed > retained);
+                let truncated_node = any_truncated;
+                if any_truncated {
+                    build_stats.capped_edge_lists = build_stats.capped_edge_lists.saturating_add(
+                        original_counts
+                            .iter()
+                            .zip(&counts)
+                            .filter(|(observed, retained)| observed > retained)
+                            .count() as u64,
+                    );
+                }
                 if truncated_node {
                     build_stats.truncated_nodes = build_stats.truncated_nodes.saturating_add(1);
                 }
@@ -957,6 +930,13 @@ impl ShardBuilder {
                             .truncated_edges_per_relation[rel_idx]
                             .saturating_add(truncated as u64);
                     }
+                }
+                if total_edges == 0 && node_data_len.is_none() {
+                    // No retained edges for this node; the source was still
+                    // fully consumed by `drain_for_node` above.
+                    offsets_writer.push(start_offset)?;
+                    prev_offset = start_offset;
+                    continue;
                 }
                 let node_data_slice = node_data_len.map(|_| node_data_buf.as_slice());
                 edges_writer.write_node(
@@ -1485,9 +1465,20 @@ impl EdgeSubStream {
         }
     }
 
-    fn drain_edges(&mut self, node_id: u64, buckets: &mut [Vec<EdgeRec>]) -> Result<Option<u64>> {
+    fn drain_edges(
+        &mut self,
+        node_id: u64,
+        bucket: &mut Vec<EdgeRec>,
+        max_edges: usize,
+    ) -> Result<(Option<u64>, usize)> {
         match self {
-            EdgeSubStream::Memory(inner) => inner.drain_edges(node_id, buckets),
+            EdgeSubStream::Memory(inner) => inner.drain_edges(node_id, bucket, max_edges),
+        }
+    }
+
+    fn count_edges(&self, node_id: u64) -> usize {
+        match self {
+            EdgeSubStream::Memory(inner) => inner.count_edges(node_id),
         }
     }
 
@@ -1509,24 +1500,41 @@ impl MemoryEdgeSubStream {
         Ok(self.buffer.as_slice().get(self.index).map(|r| r.src_id))
     }
 
-    fn drain_edges(&mut self, node_id: u64, buckets: &mut [Vec<EdgeRec>]) -> Result<Option<u64>> {
+    fn count_edges(&self, node_id: u64) -> usize {
+        self.buffer.as_slice()[self.index..]
+            .partition_point(|record| record.src_id == node_id)
+    }
+
+    fn drain_edges(
+        &mut self,
+        node_id: u64,
+        bucket: &mut Vec<EdgeRec>,
+        max_edges: usize,
+    ) -> Result<(Option<u64>, usize)> {
+        let mut observed = 0usize;
         while let Some(record) = self.buffer.as_slice().get(self.index) {
             if record.src_id != node_id {
                 break;
             }
-            buckets[self.relation_id as usize].push(EdgeRec {
-                src: record.src_id,
-                dst: record.dst_id,
-                dest_sort_key: if self.sort_width > 0 {
-                    Some(record.sort_key)
-                } else {
-                    None
-                },
-                relation_id: self.relation_id,
-            });
+            if bucket.len() < max_edges {
+                bucket.push(EdgeRec {
+                    src: record.src_id,
+                    dst: record.dst_id,
+                    dest_sort_key: if self.sort_width > 0 {
+                        Some(record.sort_key)
+                    } else {
+                        None
+                    },
+                    relation_id: self.relation_id,
+                });
+            }
+            observed = observed.saturating_add(1);
             self.index += 1;
         }
-        Ok(self.buffer.as_slice().get(self.index).map(|r| r.src_id))
+        Ok((
+            self.buffer.as_slice().get(self.index).map(|r| r.src_id),
+            observed,
+        ))
     }
 }
 
@@ -1929,7 +1937,27 @@ impl MergedEdgeStream {
         self.head_srcs.iter().copied().flatten().next()
     }
 
-    fn drain_for_node(&mut self, node_id: u64, buckets: &mut [Vec<EdgeRec>]) -> Result<()> {
+    fn count_for_node(&self, node_id: u64, counts: &mut [usize]) -> Result<()> {
+        for (stream, head_src) in self.streams.iter().zip(&self.head_srcs) {
+            if *head_src != Some(node_id) {
+                continue;
+            }
+            let relation_id = stream.relation_id() as usize;
+            let count = counts
+                .get_mut(relation_id)
+                .ok_or(IndexBuildError::UnknownRelation)?;
+            *count = count.saturating_add(stream.count_edges(node_id));
+        }
+        Ok(())
+    }
+
+    fn drain_for_node(
+        &mut self,
+        node_id: u64,
+        buckets: &mut [Vec<EdgeRec>],
+        max_edge_counts: &[usize],
+        observed_counts: &mut [usize],
+    ) -> Result<()> {
         for idx in 0..self.streams.len() {
             let Some(head_src) = self.head_srcs[idx] else {
                 continue;
@@ -1937,7 +1965,17 @@ impl MergedEdgeStream {
             if head_src != node_id {
                 continue;
             }
-            let next_src = self.streams[idx].drain_edges(node_id, buckets)?;
+            let relation_id = self.streams[idx].relation_id() as usize;
+            let bucket = buckets
+                .get_mut(relation_id)
+                .ok_or(IndexBuildError::UnknownRelation)?;
+            let max_edges = max_edge_counts
+                .get(relation_id)
+                .copied()
+                .ok_or(IndexBuildError::UnknownRelation)?;
+            let remaining = max_edges.saturating_sub(bucket.len());
+            let (next_src, observed) = self.streams[idx].drain_edges(node_id, bucket, remaining)?;
+            observed_counts[relation_id] = observed_counts[relation_id].saturating_add(observed);
             if let Some(next_src) = next_src {
                 if next_src < head_src {
                     return Err(IndexBuildError::EdgeOrderingViolation.into());
@@ -1946,5 +1984,99 @@ impl MergedEdgeStream {
             self.head_srcs[idx] = next_src;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod hot_node_tests {
+    use super::*;
+
+    fn eight_byte_layout() -> RelationLayout {
+        RelationLayout {
+            relation_id: 0,
+            dst_bits: 32,
+            dest_sort_key_bits: Some(32),
+            entry_bytes: 8,
+            dst_mask: u32::MAX as u64,
+            dest_sort_key_mask: Some(u32::MAX as u64),
+        }
+    }
+
+    fn layout(relation_id: u16, entry_bytes: usize) -> RelationLayout {
+        RelationLayout {
+            relation_id,
+            dst_bits: 32,
+            dest_sort_key_bits: None,
+            entry_bytes,
+            dst_mask: u32::MAX as u64,
+            dest_sort_key_mask: None,
+        }
+    }
+
+    #[test]
+    fn oversized_node_estimate_uses_widest_delta_width() {
+        let count = (u32::MAX as usize / 8) + 1;
+        let required = estimate_max_node_bytes(&[eight_byte_layout()], &[count], 0, 4, false);
+        assert!(required > u32::MAX as u64);
+        assert_eq!(
+            select_delta_bytes(&[eight_byte_layout()], &[count], 0, false).unwrap(),
+            4
+        );
+    }
+
+    #[test]
+    fn bounded_drain_counts_discarded_edges_and_keeps_sorted_prefix() {
+        let pool = Arc::new(EdgeBufferPool::new(None));
+        let mut buffer = pool.acquire(4).unwrap();
+        buffer.buf.extend([
+            EdgeRecord {
+                src_id: 7,
+                dst_id: 10,
+                sort_key: 30,
+            },
+            EdgeRecord {
+                src_id: 7,
+                dst_id: 11,
+                sort_key: 20,
+            },
+            EdgeRecord {
+                src_id: 7,
+                dst_id: 12,
+                sort_key: 10,
+            },
+            EdgeRecord {
+                src_id: 8,
+                dst_id: 13,
+                sort_key: 40,
+            },
+        ]);
+        let mut stream = MemoryEdgeSubStream {
+            buffer,
+            index: 0,
+            relation_id: 0,
+            sort_width: 4,
+            max_edges_per_src: 3,
+        };
+        let mut bucket = Vec::new();
+
+        let (next_src, observed) = stream.drain_edges(7, &mut bucket, 2).unwrap();
+
+        assert_eq!(next_src, Some(8));
+        assert_eq!(observed, 3);
+        assert_eq!(bucket.len(), 2);
+        assert_eq!(bucket[0].dst, 10);
+        assert_eq!(bucket[1].dst, 11);
+    }
+
+    #[test]
+    fn count_truncation_applies_one_budget_across_relations() {
+        let layouts = [layout(0, 8), layout(1, 8)];
+        let mut counts = vec![100, 100];
+
+        truncate_count_vector(&mut counts, &layouts, 0, 0, 0, 1_000).unwrap();
+
+        assert!(EdgeWriter::node_length_bytes_fast(&layouts, &counts) <= 1_000);
+        assert_eq!(counts[0], counts[1]);
+        assert!(counts[0] < 100);
     }
 }
