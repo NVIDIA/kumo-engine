@@ -6725,17 +6725,24 @@ impl IngestContext {
                         let remaining_prefix_bytes = SOURCE_PREFIX_MAX_BYTES - prefix_bytes;
                         let mut prefix_permit =
                             source_budget.acquire(remaining_prefix_bytes as u64)?;
-                        let compact = compact_prefix_with_budget(
+                        let compact = match compact_prefix_with_budget(
                             &batch.batch,
                             sample_limit - prefix_rows,
                             remaining_prefix_bytes,
-                        )?
-                        .ok_or_else(|| {
-                            anyhow!(
-                                "table {} has a source row larger than the context prefix budget",
-                                table.name
-                            )
-                        })?;
+                        )? {
+                            Some(compact) => compact,
+                            None => {
+                                let row_bytes = compact_record_batch_prefix(&batch.batch, 1)?
+                                    .get_array_memory_size();
+                                return Err(context_prefix_budget_error(
+                                    &table.name,
+                                    remaining_prefix_bytes,
+                                    row_bytes,
+                                    prefix_rows,
+                                    prefix_bytes,
+                                ));
+                            }
+                        };
                         let sampled_rows = compact.num_rows();
                         prefix_permit.shrink_to(compact.get_array_memory_size() as u64);
                         if let Some(col) = pk_col_index {
@@ -11286,6 +11293,45 @@ fn compact_record_batch_prefix(batch: &RecordBatch, rows: usize) -> Result<Recor
     Ok(RecordBatch::try_new(batch.schema(), arrays)?)
 }
 
+/// The failure when the context prefix cannot take one more row.
+///
+/// The condition is a budget already spent by earlier batches, not an
+/// oversized row, and the message says so: a row that genuinely exceeded
+/// `SOURCE_PREFIX_MAX_BYTES` would be reported by the same numbers, and every
+/// other case names the real remaining budget so the reader is not sent
+/// looking for a pathological row that does not exist.
+fn context_prefix_budget_error(
+    table: &str,
+    remaining_bytes: usize,
+    row_bytes: usize,
+    sampled_rows: usize,
+    sampled_bytes: usize,
+) -> anyhow::Error {
+    anyhow!(
+        "table {table}: the context prefix budget has {remaining_bytes} bytes left, which cannot \
+         hold one more source row of {row_bytes} bytes; {sampled_rows} rows totalling \
+         {sampled_bytes} bytes were already sampled against the {SOURCE_PREFIX_MAX_BYTES} byte \
+         budget"
+    )
+}
+
+/// The cost of the prefix `compact_record_batch_prefix` would produce, measured
+/// by producing it.
+///
+/// The obvious cheaper measurement is wrong for nested data.
+/// `ArrayData::slice` is a zero-copy view, and it propagates the new offset
+/// into child data only for `Struct`; every other type keeps its `child_data`
+/// whole. `get_slice_memory_size` then recurses into that unsliced child, so a
+/// `ListArray` prefix is charged for the entire child buffer no matter how few
+/// rows are taken. The measurement carries a constant term that no row count
+/// can trim, which is the opposite of what a row-count search needs.
+/// `compact_record_batch_prefix` copies through `MutableArrayData`, which does
+/// narrow children to the rows taken, so measuring with it cannot disagree
+/// with what is finally kept.
+fn compact_prefix_bytes(batch: &RecordBatch, rows: usize) -> Result<usize> {
+    Ok(compact_record_batch_prefix(batch, rows)?.get_array_memory_size())
+}
+
 fn compact_prefix_with_budget(
     batch: &RecordBatch,
     max_rows: usize,
@@ -11295,34 +11341,330 @@ fn compact_prefix_with_budget(
     if max_rows == 0 || max_bytes == 0 {
         return Ok(None);
     }
-    let mut low = 1usize;
-    let mut high = max_rows;
-    let mut best_rows = None;
-    while low <= high {
-        let rows = low + (high - low) / 2;
-        let candidate_bytes = batch.columns().iter().try_fold(0usize, |total, array| {
-            array
-                .slice(0, rows)
-                .to_data()
-                .get_slice_memory_size()
-                .ok()
-                .and_then(|bytes| total.checked_add(bytes))
-        });
-        if candidate_bytes.is_some_and(|bytes| bytes <= max_bytes) {
-            best_rows = Some(rows);
-            low = rows.saturating_add(1);
+    // Grow the candidate from below instead of bisecting the whole range from
+    // its midpoint. Every probe now materialises the prefix it measures, and a
+    // midpoint probe would allocate far past the budget this call was given a
+    // permit for. If a probe exceeds the budget, doubling makes it the smallest
+    // rejected row count, no larger than the source batch already resident in
+    // memory, and bisection then stays below that count.
+    //
+    // The result fits the budget but is not necessarily the largest row count
+    // that would: `MutableArrayData` sizes by capacity and capacity doubles, so
+    // prefix cost is not monotone in row count and a bisection can settle below
+    // a larger prefix that also fits. The bound that holds is that the returned
+    // prefix fits; sampling reads it as a statistics sample, which does not
+    // require maximality.
+    let mut largest_fitting = None;
+    let mut smallest_rejected = None;
+    let mut rows = 1usize;
+    loop {
+        if compact_prefix_bytes(batch, rows)? <= max_bytes {
+            largest_fitting = Some(rows);
+            if rows == max_rows {
+                break;
+            }
+            rows = rows.saturating_mul(2).min(max_rows);
         } else {
-            high = rows.saturating_sub(1);
+            smallest_rejected = Some(rows);
+            break;
         }
     }
-    let Some(rows) = best_rows else {
+    if let (Some(fitting), Some(rejected)) = (largest_fitting, smallest_rejected) {
+        let mut fitting = fitting;
+        let mut rejected = rejected;
+        while rejected - fitting > 1 {
+            let candidate = fitting + (rejected - fitting) / 2;
+            if compact_prefix_bytes(batch, candidate)? <= max_bytes {
+                fitting = candidate;
+            } else {
+                rejected = candidate;
+            }
+        }
+        largest_fitting = Some(fitting);
+    }
+    let Some(rows) = largest_fitting else {
         return Ok(None);
     };
-    let compact = compact_record_batch_prefix(batch, rows)?;
-    if compact.get_array_memory_size() > max_bytes {
-        return Ok(None);
+    // No re-check against `max_bytes` here: the search accepted `rows` using
+    // this very function, so the result is the measurement.
+    Ok(Some(compact_record_batch_prefix(batch, rows)?))
+}
+
+#[cfg(test)]
+mod context_prefix_tests {
+    use super::*;
+    use arrow_array::builder::{Float64Builder, ListBuilder, StringBuilder};
+    use arrow_array::Int64Array;
+    use arrow_schema::{DataType, Field, Schema};
+
+    /// A feature table with embedding columns: the shape that exposed this.
+    /// Tubi's `programs` is 3,401 rows with two 1,020-wide `float64` lists.
+    fn embedding_batch(rows: usize, width: usize) -> RecordBatch {
+        let mut embedding = ListBuilder::new(Float64Builder::new());
+        for row in 0..rows {
+            for element in 0..width {
+                embedding.values().append_value((row + element) as f64);
+            }
+            embedding.append(true);
+        }
+        let embedding = embedding.finish();
+        let mut label = StringBuilder::new();
+        for row in 0..rows {
+            label.append_value(format!("label-{row}"));
+        }
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("label", DataType::Utf8, false),
+            Field::new("embedding", embedding.data_type().clone(), false),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from_iter_values(0..rows as i64)),
+                Arc::new(label.finish()),
+                Arc::new(embedding),
+            ],
+        )
+        .unwrap()
     }
-    Ok(Some(compact))
+
+    fn flat_batch(rows: usize) -> RecordBatch {
+        let mut label = StringBuilder::new();
+        for row in 0..rows {
+            label.append_value(format!("label-{row}"));
+        }
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("label", DataType::Utf8, false),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from_iter_values(0..rows as i64)),
+                Arc::new(label.finish()),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn sliced_measure(batch: &RecordBatch, rows: usize) -> usize {
+        batch
+            .columns()
+            .iter()
+            .map(|array| {
+                array
+                    .slice(0, rows)
+                    .to_data()
+                    .get_slice_memory_size()
+                    .unwrap()
+            })
+            .sum()
+    }
+
+    /// The defect, stated as an invariant of the two measurements. Slicing a
+    /// `ListArray` does not narrow its child, so the old measurement is almost
+    /// flat in the row count while the real cost is linear. Any search that
+    /// trusts the first cannot converge on the second.
+    #[test]
+    fn slicing_a_list_column_does_not_shrink_its_measured_size() {
+        let batch = embedding_batch(2_000, 256);
+        let sliced_one = sliced_measure(&batch, 1);
+        let sliced_all = sliced_measure(&batch, batch.num_rows());
+        let compact_one = compact_prefix_bytes(&batch, 1).unwrap();
+        let compact_all = compact_prefix_bytes(&batch, batch.num_rows()).unwrap();
+
+        // One row measures within a few percent of the whole batch under the
+        // old measurement: the child buffer is carried whole either way.
+        assert!(
+            sliced_one * 100 > sliced_all * 95,
+            "slice measure for 1 row is {sliced_one}, for {} rows is {sliced_all}",
+            batch.num_rows()
+        );
+        // Measured by the function that materialises it, one row is three
+        // orders of magnitude smaller than the batch.
+        assert!(
+            compact_one * 1_000 < compact_all,
+            "compact measure for 1 row is {compact_one}, for {} rows is {compact_all}",
+            batch.num_rows()
+        );
+    }
+
+    /// The regression: a budget that comfortably holds hundreds of rows but not
+    /// the whole batch. The old search measured every candidate at roughly the
+    /// whole child buffer, found nothing that fit, and the caller aborted the
+    /// ingest.
+    #[test]
+    fn a_partially_spent_budget_still_admits_rows_of_a_list_column() {
+        let batch = embedding_batch(2_000, 256);
+        let row_bytes = compact_prefix_bytes(&batch, 1).unwrap();
+        let budget = row_bytes * 500;
+        // Precondition: this is exactly the situation that used to fail.
+        assert!(
+            sliced_measure(&batch, 1) > budget,
+            "the old measurement must reject even one row for this to be the regression"
+        );
+
+        let compact = compact_prefix_with_budget(&batch, SAMPLE_ROW_LIMIT, budget)
+            .unwrap()
+            .expect("a budget worth ~500 rows must admit rows, not abort the ingest");
+        assert!(compact.num_rows() > 1);
+        assert!(compact.get_array_memory_size() <= budget);
+    }
+
+    /// Replay the context-prefix loop across source parts. The first part uses
+    /// most of the byte budget; the remainder is smaller than the second
+    /// part's retained list child but large enough for a materialised prefix.
+    /// Sampling must advance into part two instead of aborting the table.
+    #[test]
+    fn a_partially_spent_budget_advances_into_the_next_list_part() {
+        let first_part = embedding_batch(400, 256);
+        let second_part = embedding_batch(200, 256);
+        let first_part_bytes = compact_prefix_bytes(&first_part, first_part.num_rows()).unwrap();
+        let second_prefix_rows = 50;
+        let second_prefix_bytes = compact_prefix_bytes(&second_part, second_prefix_rows).unwrap();
+        let total_budget = first_part_bytes + second_prefix_bytes;
+        let old_one_row_measure = sliced_measure(&second_part, 1);
+
+        assert!(
+            old_one_row_measure > second_prefix_bytes,
+            "the old measurement must reject part two for this to cover the regression"
+        );
+
+        let mut sampled_rows = 0;
+        let mut sampled_bytes = 0;
+        for part in [&first_part, &second_part] {
+            let remaining = total_budget - sampled_bytes;
+            let compact =
+                compact_prefix_with_budget(part, SAMPLE_ROW_LIMIT - sampled_rows, remaining)
+                    .unwrap()
+                    .expect("the remaining budget must admit a materialised list prefix");
+            sampled_rows += compact.num_rows();
+            sampled_bytes += compact.get_array_memory_size();
+            if compact.num_rows() < part.num_rows() {
+                break;
+            }
+        }
+
+        assert_eq!(sampled_rows, first_part.num_rows() + second_prefix_rows);
+        assert_eq!(sampled_bytes, total_budget);
+    }
+
+    /// The admitted prefix fits the budget. That is the property the search
+    /// guarantees for every input.
+    ///
+    /// Maximality is not guaranteed and is deliberately not asserted here:
+    /// prefix cost is not monotone in row count, because `MutableArrayData`
+    /// sizes by capacity and capacity doubles, so a bisection can settle below
+    /// a larger prefix that also fits. On this fixture the result does happen
+    /// to be maximal, which
+    /// `the_next_row_does_not_fit_on_an_evenly_sized_fixture` records as an
+    /// observation about the fixture rather than as a general claim.
+    #[test]
+    fn the_admitted_prefix_fits_the_budget() {
+        let batch = embedding_batch(2_000, 256);
+        let budget = compact_prefix_bytes(&batch, 1).unwrap() * 500;
+        let compact = compact_prefix_with_budget(&batch, SAMPLE_ROW_LIMIT, budget)
+            .unwrap()
+            .unwrap();
+        let rows = compact.num_rows();
+        assert!(rows > 1);
+        assert!(compact_prefix_bytes(&batch, rows).unwrap() <= budget);
+        assert!(compact.get_array_memory_size() <= budget);
+    }
+
+    /// Records that on a fixture whose rows are all the same size the search
+    /// does reach the largest fitting count. This is a statement about this
+    /// fixture, not about the search: see
+    /// `the_admitted_prefix_fits_the_budget` for why maximality is not general.
+    #[test]
+    fn the_next_row_does_not_fit_on_an_evenly_sized_fixture() {
+        let batch = embedding_batch(2_000, 256);
+        let budget = compact_prefix_bytes(&batch, 1).unwrap() * 500;
+        let compact = compact_prefix_with_budget(&batch, SAMPLE_ROW_LIMIT, budget)
+            .unwrap()
+            .unwrap();
+        let rows = compact.num_rows();
+        if rows < batch.num_rows() {
+            assert!(
+                compact_prefix_bytes(&batch, rows + 1).unwrap() > budget,
+                "{rows} rows fit but the search stopped short of the budget"
+            );
+        }
+    }
+
+    /// A budget that genuinely cannot hold one row still refuses, rather than
+    /// admitting a prefix over budget. That case is real and must stay an
+    /// error; only its explanation changes.
+    #[test]
+    fn a_budget_below_one_row_still_refuses() {
+        let batch = embedding_batch(64, 256);
+        let row_bytes = compact_prefix_bytes(&batch, 1).unwrap();
+        let half_a_row = compact_prefix_with_budget(&batch, SAMPLE_ROW_LIMIT, row_bytes / 2);
+        assert!(half_a_row.unwrap().is_none());
+        let no_budget = compact_prefix_with_budget(&batch, SAMPLE_ROW_LIMIT, 0);
+        assert!(no_budget.unwrap().is_none());
+        let no_rows = compact_prefix_with_budget(&batch, 0, usize::MAX);
+        assert!(no_rows.unwrap().is_none());
+    }
+
+    /// Batches with no nested columns were already measured correctly. The new
+    /// search must return the same answer, so this is not a behaviour change
+    /// for the common case.
+    #[test]
+    fn flat_batches_keep_their_previous_row_counts() {
+        let batch = flat_batch(5_000);
+        for budget in [1_024usize, 16_384, 1 << 20, SOURCE_PREFIX_MAX_BYTES] {
+            let old_rows = {
+                let (mut low, mut high, mut best) = (1usize, batch.num_rows(), None);
+                while low <= high {
+                    let rows = low + (high - low) / 2;
+                    if sliced_measure(&batch, rows) <= budget {
+                        best = Some(rows);
+                        low = rows + 1;
+                    } else {
+                        high = rows - 1;
+                    }
+                }
+                best
+            };
+            let new_rows = compact_prefix_with_budget(&batch, SAMPLE_ROW_LIMIT, budget)
+                .unwrap()
+                .map(|compact| compact.num_rows());
+            // The old measurement undercounts a compacted Utf8 array's
+            // allocated capacity, so it can admit one or two rows more than
+            // actually fit. The new count is never larger, and never differs by
+            // a factor.
+            match (old_rows, new_rows) {
+                (Some(old), Some(new)) => {
+                    assert!(new <= old, "budget {budget}: old {old} rows, new {new}");
+                    assert!(
+                        new * 2 >= old,
+                        "budget {budget}: old {old} rows, new {new} is not within a factor of two"
+                    );
+                }
+                (None, None) => {}
+                other => panic!("budget {budget}: disagreement on admissibility: {other:?}"),
+            }
+        }
+    }
+
+    /// The message must describe the condition that actually held. It reports
+    /// the remaining budget and the measured per-row cost, and never claims a
+    /// row is larger than the budget.
+    #[test]
+    fn the_budget_error_names_the_remaining_budget_not_an_oversized_row() {
+        let message = context_prefix_budget_error("programs", 8_533_676, 17_228, 3_401, 58_575_188)
+            .to_string();
+        assert!(message.contains("programs"));
+        assert!(message.contains("8533676"));
+        assert!(message.contains("17228"));
+        assert!(message.contains("3401"));
+        assert!(message.contains("58575188"));
+        assert!(
+            !message.contains("larger than the context prefix budget"),
+            "{message}"
+        );
+    }
 }
 
 fn text_stats_from_prefix(

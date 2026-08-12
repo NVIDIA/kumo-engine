@@ -183,6 +183,83 @@ fn integ_intlist_roundtrip() -> Result<()> {
 }
 
 #[test]
+fn integ_list_column_across_multiple_parquet_parts() -> Result<()> {
+    let dir = tempdir()?;
+    let data_dir = dir.path().join("data");
+    let index_dir = dir.path().join("index");
+    fs::create_dir_all(&data_dir)?;
+
+    let write_part = |path: &Path, ids: &[i64], lists: &[&[i64]]| -> Result<()> {
+        let mut id_builder = Int64Builder::new();
+        let mut list_builder = ListBuilder::new(Int64Builder::new());
+        for (&id, values) in ids.iter().zip(lists) {
+            id_builder.append_value(id);
+            for &value in *values {
+                list_builder.values().append_value(value);
+            }
+            list_builder.append(true);
+        }
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("item_id", DataType::Int64, false),
+            Field::new(
+                "tag_ids",
+                DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
+                false,
+            ),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(id_builder.finish()) as ArrayRef,
+                Arc::new(list_builder.finish()) as ArrayRef,
+            ],
+        )?;
+        write_parquet(path, &batch);
+        Ok(())
+    };
+
+    let first_path = data_dir.join("part-00000.parquet");
+    let second_path = data_dir.join("part-00001.parquet");
+    write_part(&first_path, &[0, 1], &[&[10, 20], &[30]])?;
+    write_part(&second_path, &[2, 3], &[&[40, 50, 60], &[70, 80]])?;
+
+    let config = serde_json::json!({
+        "dataset_name": "multi_part_list_test",
+        "num_shards": 1,
+        "tables": [{
+            "name": "items",
+            "columns": [
+                {"name": "item_id", "ingested_dtype": "int64"},
+                {"name": "tag_ids", "ingested_dtype": "int64_array"}
+            ],
+            "primary_key": "item_id",
+            "source": {"type": "parquet", "paths": [first_path, second_path]}
+        }]
+    });
+    let config_path = data_dir.join("config.json");
+    fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+
+    ingest(
+        &config_path,
+        index_dir.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions {
+            parallel: false,
+            ..Default::default()
+        },
+    )?;
+
+    let reader = GraphIndexReader::open(&index_dir.join("index_metadata.json"), &index_dir)?;
+    let table = reader.table("items").expect("items table");
+    assert_eq!(table.node_count(), 4);
+    let first = decode_node_json(&index_dir, "items", 0)?;
+    let last = decode_node_json(&index_dir, "items", 3)?;
+    assert_eq!(first["tag_ids"], serde_json::json!([10, 20]));
+    assert_eq!(last["tag_ids"], serde_json::json!([70, 80]));
+    Ok(())
+}
+
+#[test]
 fn integ_intlist_negative_values() -> Result<()> {
     // Separate small fixture: negative and large integers round-trip correctly.
     let dir = tempdir()?;

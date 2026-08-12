@@ -138,8 +138,8 @@ Notes:
 ```
 
 Fields:
-- `ingested_dtype` (required): `int8|int16|int32|int64|uint8|uint16|uint32|uint64|float32|float64|bool|string|bytes|uuid|uuid256|ip|date|timestamp|decimal128|decimal256|float16_array|float32_array|float64_array`
-- `fixed_len` (optional): only valid for `string`/`bytes`.
+- `ingested_dtype` (required): `int8|int16|int32|int64|uint8|uint16|uint32|uint64|float32|float64|bool|string|bytes|uuid|uuid256|ip|date|timestamp|decimal128|decimal256|float16_array|float32_array|float64_array|int8_array|int16_array|int32_array|int64_array|string_array`
+- `fixed_len` (optional): only valid for `string`/`bytes` and numeric array types.
 - `timestamp_format` (optional): format string for string timestamps.
 - `timestamp_unit` (optional): `seconds|millis|micros|nanos` for integer timestamps.
 - `precision`/`scale` (optional): required for decimal columns and rejected for non-decimals.
@@ -192,7 +192,7 @@ Ingestion expects schemas to match `diskgraph_config.json` and supports:
 - **Date**: `Date32`
 - **Timestamp**: `Timestamp` with `Second|Millisecond|Microsecond|Nanosecond` units (timezone accepted, normalized to UTC)
 - **Decimal**: `Decimal128`, `Decimal256` (requires `precision` + `scale` in metadata)
-- **Arrays**: `List(Float16)`, `List(Float32)`, and `List(Float64)` only
+- **Arrays**: `List`/`LargeList` with `Float16`, `Float32`, `Float64`, `Int8`, `Int16`, `Int32`, `Int64`, or `Utf8` values
 
 Other Parquet/Arrow types are rejected during ingest.
 
