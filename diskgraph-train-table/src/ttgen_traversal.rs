@@ -194,7 +194,10 @@ pub fn read_column_value(
         .decode_column_value(raw_data, col_idx, &mut scratch)
         .ok()?;
 
-    Some(value_ref_to_value(&value_ref))
+    match value_ref {
+        ValueRef::Null => None,
+        _ => Some(value_ref_to_value(&value_ref)),
+    }
 }
 
 /// Read a column value, distinguishing explicit NULL from missing data.

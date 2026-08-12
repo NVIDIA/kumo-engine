@@ -5322,6 +5322,49 @@ fn integ_bp_pass_through() {
 }
 
 #[test]
+fn integ_bp_pass_through_entity_is_null_filter() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+
+    let plan = DiskGraphTTPlan::<Seconds> {
+        is_prediction: true,
+        entity: EntitySpec::<Seconds> {
+            table: "users".to_string(),
+            column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
+            time_col: None,
+            valid_to_col: None,
+            filter: Some(RowFilter::Compare {
+                lhs: RowFilterLhs::Column("split_bucket".to_string()),
+                op: CompareOp::IsNull,
+                rhs: RowFilterRhs::Constant(Value::Int(0)),
+            }),
+        },
+        temporal: Some(TemporalSpec::<Seconds> {
+            timestamps: vec![Abs::from_raw(1234)],
+            forecast_length: 1,
+            lag_timesteps: None,
+        }),
+        prediction_type: PredictionType::PassThrough,
+        stages: vec![],
+        split: None,
+        target_stype: Some("numerical".to_string()),
+        weight_col: None,
+        fkey_mapping: None,
+        lp_resolution: None,
+        lp_rhs_is_temporal: false,
+    };
+
+    let (receiver, handle) = execute(&plan, &index).unwrap();
+    let (rows, schema) = read_output_rows_pass_through(receiver);
+    handle.join().unwrap().unwrap();
+
+    assert_eq!(schema.fields().len(), 2);
+    assert_eq!(rows, vec![(2, 1234), (4, 1234)]);
+}
+
+#[test]
 fn integ_bp_pseudo_time_injection() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
