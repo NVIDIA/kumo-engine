@@ -474,6 +474,10 @@ impl DiskGraphTTBuilder {
         let split_unit = parse_time_unit(unit)?;
         let rng_unit = parse_time_unit(range_unit)?;
         let is_date_offset_split = kind.as_deref() == Some("DateOffsetSplit");
+        let has_temporal_boundary_semantics = matches!(
+            kind.as_deref(),
+            Some("DateOffsetSplit") | Some("TimeRangeSplit")
+        );
         if is_date_offset_split {
             reject_calendar_date_offset_unit("unit", split_unit)?;
         }
@@ -511,13 +515,14 @@ impl DiskGraphTTBuilder {
             is_temporal,
             offsets: offsets_dur,
             offset_unit: is_date_offset_split.then(|| time_unit_name(off_unit).to_string()),
-            unit: is_date_offset_split.then(|| time_unit_name(split_unit).to_string()),
-            timeframe: if is_date_offset_split {
+            unit: has_temporal_boundary_semantics
+                .then(|| time_unit_name(split_unit).to_string()),
+            timeframe: if has_temporal_boundary_semantics {
                 timeframe
             } else {
                 None
             },
-            anchor_start_offset: if is_date_offset_split {
+            anchor_start_offset: if has_temporal_boundary_semantics {
                 Some(anchor_start_offset)
             } else {
                 None
@@ -540,12 +545,12 @@ impl DiskGraphTTBuilder {
             manual_val_values,
             manual_test_values,
             month_offsets,
-            flexible_boundaries: if is_date_offset_split {
+            flexible_boundaries: if has_temporal_boundary_semantics {
                 flexible_boundaries
             } else {
                 None
             },
-            timeframe_step: if is_date_offset_split {
+            timeframe_step: if has_temporal_boundary_semantics {
                 timeframe_step
             } else {
                 None
@@ -981,5 +986,45 @@ fn extract_edge_path(path: &Bound<'_, PyAny>) -> PyResult<Vec<tt::EdgeRef>> {
         Err(crate::DiskgraphConfigError::new_err(
             "path must be an EdgeRef or a list of EdgeRef",
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn time_range_split_preserves_temporal_boundary_semantics() {
+        let mut builder = DiskGraphTTBuilder::new();
+        builder
+            .split_ratio(
+                None,
+                Some("TimeRangeSplit".to_string()),
+                None,
+                Some(true),
+                None,
+                Some(vec![(0, 20), (20, 30), (30, 40)]),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                "days",
+                "seconds",
+                "days",
+                Some(1),
+                2,
+                Some(false),
+                Some(1),
+            )
+            .unwrap();
+
+        let split = builder.split.expect("split should be configured");
+        assert_eq!(split.unit.as_deref(), Some("days"));
+        assert_eq!(split.timeframe, Some(1));
+        assert_eq!(split.anchor_start_offset, Some(2));
+        assert_eq!(split.flexible_boundaries, Some(false));
+        assert_eq!(split.timeframe_step, Some(1));
     }
 }

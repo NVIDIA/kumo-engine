@@ -258,17 +258,33 @@ impl<U: UnitSystem> SplitDecider<U> for NoSplitDecider {
 #[derive(Debug, Clone)]
 pub(crate) struct TimeRangeDecider<U: UnitSystem> {
     ranges: Vec<(Abs<U>, Abs<U>)>,
+    /// `None` is the legacy static-query predicate `(start, end]`. Temporal
+    /// queries carry the target window plus anchor offset and use
+    /// `[start, end - shift]` instead.
+    end_shift: Option<OffsetUnit<U>>,
 }
 
 impl<U: UnitSystem> TimeRangeDecider<U> {
     pub(crate) fn new(ranges: Vec<(Abs<U>, Abs<U>)>) -> Self {
-        Self { ranges }
+        Self {
+            ranges,
+            end_shift: None,
+        }
+    }
+
+    pub(crate) fn with_end_shift(mut self, end_shift: Option<OffsetUnit<U>>) -> Self {
+        self.end_shift = end_shift;
+        self
     }
 
     #[inline]
-    fn decide_ts(&self, ts: Abs<U>) -> u8 {
+    pub(crate) fn decide_ts(&self, ts: Abs<U>) -> u8 {
         for (idx, (start, end)) in self.ranges.iter().enumerate() {
-            if ts >= *start && ts <= *end {
+            let in_range = match self.end_shift {
+                Some(shift) => ts >= *start && apply_offset(ts, &shift) <= *end,
+                None => ts > *start && ts <= *end,
+            };
+            if in_range {
                 return idx as u8;
             }
         }
@@ -2086,6 +2102,33 @@ mod tests {
     fn test_time_range_decider_required_columns() {
         let d = time_range_three_stage();
         assert_eq!(d.required_columns(), vec!["TIMESTAMP".to_string()]);
+    }
+
+    #[test]
+    fn test_time_range_decider_temporal_adjacent_boundaries() {
+        let d = TimeRangeDecider::<Seconds>::new(vec![
+            (Abs::from_secs(0), Abs::from_secs(20)),
+            (Abs::from_secs(20), Abs::from_secs(30)),
+            (Abs::from_secs(30), Abs::from_secs(40)),
+        ])
+        .with_end_shift(Some(OffsetUnit::Fixed(Dur::from_secs(10))));
+
+        assert_eq!(d.decide_ts(Abs::from_secs(10)), 0);
+        assert_eq!(d.decide_ts(Abs::from_secs(20)), 1);
+        assert_eq!(d.decide_ts(Abs::from_secs(30)), 2);
+        assert_eq!(d.decide_ts(Abs::from_secs(40)), UNUSED_STAGE);
+    }
+
+    #[test]
+    fn test_time_range_decider_static_shared_boundary_belongs_to_earlier_stage() {
+        let d = TimeRangeDecider::<Seconds>::new(vec![
+            (Abs::from_secs(0), Abs::from_secs(20)),
+            (Abs::from_secs(20), Abs::from_secs(30)),
+        ]);
+
+        assert_eq!(d.decide_ts(Abs::from_secs(20)), 0);
+        assert_eq!(d.decide_ts(Abs::from_secs(30)), 1);
+        assert_eq!(d.decide_ts(Abs::from_secs(0)), UNUSED_STAGE);
     }
 
     /// A decider that takes a column-name string at construction and

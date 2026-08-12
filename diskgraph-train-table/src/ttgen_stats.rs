@@ -47,7 +47,7 @@ use diskgraph_core::accumulators::{
 use diskgraph_core::time::{Abs, Dur, UnitSystem};
 use diskgraph_core::tt_builder::Value;
 
-use crate::split_decider::SplitDecider;
+use crate::split_decider::{OffsetUnit, SplitDecider, TimeRangeDecider, UNUSED_STAGE};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -531,6 +531,7 @@ impl<U: UnitSystem> StatsMerger<U> {
             split_is_temporal,
             split_offsets,
             None,
+            None,
             split_ranges,
             split_backtesting_timestamp,
             split_column,
@@ -555,6 +556,7 @@ impl<U: UnitSystem> StatsMerger<U> {
         split_is_temporal: bool,
         split_offsets: Option<&[Dur<U>]>,
         date_offset_semantics: Option<DateOffsetSplitSemantics<U>>,
+        time_range_end_shift: Option<OffsetUnit<U>>,
         split_ranges: Option<&[(Abs<U>, Abs<U>)]>,
         split_backtesting_timestamp: Option<Abs<U>>,
         split_column: Option<&str>,
@@ -638,6 +640,7 @@ impl<U: UnitSystem> StatsMerger<U> {
             split_is_temporal,
             split_offsets,
             date_offset_semantics,
+            time_range_end_shift,
             split_ranges,
             split_backtesting_timestamp,
             split_column,
@@ -1601,6 +1604,7 @@ fn derive_split_mask_counts<U: UnitSystem>(
     split_is_temporal: bool,
     split_offsets: Option<&[Dur<U>]>,
     date_offset_semantics: Option<DateOffsetSplitSemantics<U>>,
+    time_range_end_shift: Option<OffsetUnit<U>>,
     split_ranges: Option<&[(Abs<U>, Abs<U>)]>,
     split_backtesting_timestamp: Option<Abs<U>>,
     split_column: Option<&str>,
@@ -1655,8 +1659,11 @@ fn derive_split_mask_counts<U: UnitSystem>(
             }
         }
         (Some("TimeRangeSplit"), true) => {
-            let stage_map =
-                derive_time_range_timestamp_stage_assignments(split_ranges, typed_timestamp_counts);
+            let stage_map = derive_time_range_timestamp_stage_assignments(
+                split_ranges,
+                time_range_end_shift,
+                typed_timestamp_counts,
+            );
             let counts = stage_map.as_ref().map(|assignments| {
                 mask_counts_from_timestamp_assignments(assignments, typed_timestamp_counts)
             });
@@ -2022,6 +2029,7 @@ fn infer_date_offset_timeframe<U: UnitSystem>(offsets: &[Dur<U>]) -> Dur<U> {
 
 fn derive_time_range_timestamp_stage_assignments<U: UnitSystem>(
     split_ranges: Option<&[(Abs<U>, Abs<U>)]>,
+    end_shift: Option<OffsetUnit<U>>,
     timestamp_counts: &HashMap<Abs<U>, u64>,
 ) -> Option<Vec<TimestampSplitAssignmentV3<U>>> {
     let ranges = split_ranges?;
@@ -2031,16 +2039,15 @@ fn derive_time_range_timestamp_stage_assignments<U: UnitSystem>(
     let mut ts_values: Vec<Abs<U>> = timestamp_counts.keys().copied().collect();
     ts_values.sort_unstable();
 
+    let decider = TimeRangeDecider::new(ranges.to_vec()).with_end_shift(end_shift);
     let mut assignments = Vec::with_capacity(ts_values.len());
     for ts in ts_values {
-        for (idx, (start, end)) in ranges.iter().enumerate() {
-            if ts >= *start && ts <= *end {
-                assignments.push(TimestampSplitAssignmentV3 {
-                    timestamp: ts,
-                    stage: stage_name(idx),
-                });
-                break;
-            }
+        let stage = decider.decide_ts(ts);
+        if stage != UNUSED_STAGE {
+            assignments.push(TimestampSplitAssignmentV3 {
+                timestamp: ts,
+                stage: stage_name(stage as usize),
+            });
         }
     }
     Some(assignments)
@@ -2538,6 +2545,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             "numerical",
             None,
         );
@@ -2559,6 +2567,67 @@ mod tests {
                 .chain((13..=15).map(|ts| (ts, "val".to_string())))
                 .chain(std::iter::once((19, "test".to_string())))
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_time_range_stage_assignments_respect_temporal_window_end() {
+        let mut merger: StatsMerger<Seconds> = StatsMerger::default();
+        let mut chunk: ChunkStats<Seconds> = ChunkStats {
+            timestamp_hll: Some(HyperLogLog::new()),
+            ..ChunkStats::default()
+        };
+        for ts in [10, 20, 30] {
+            chunk.timestamp_hll.as_mut().unwrap().observe_i64(ts);
+            chunk.timestamp_counts.insert(Abs::from_secs(ts), 1);
+        }
+        chunk.num_train_rows = 3;
+        merger.merge(chunk);
+
+        let ranges = [
+            (Abs::from_secs(0), Abs::from_secs(20)),
+            (Abs::from_secs(20), Abs::from_secs(30)),
+            (Abs::from_secs(30), Abs::from_secs(40)),
+        ];
+        let out = merger.finalize_with_split_semantics(
+            3,
+            false,
+            false,
+            false,
+            None,
+            Some("TimeRangeSplit"),
+            true,
+            None,
+            None,
+            Some(OffsetUnit::Fixed(Dur::from_secs(10))),
+            Some(&ranges),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "numerical",
+            None,
+        );
+        let assignments = out
+            .split_payload
+            .as_ref()
+            .and_then(|p| p.artifacts_v3.as_ref())
+            .and_then(|a| a.timestamp_stage_assignments.as_ref())
+            .expect("time-range assignments should be derived");
+        let stages: Vec<(i64, String)> = assignments
+            .iter()
+            .map(|a| (a.timestamp, a.stage.clone()))
+            .collect();
+
+        assert_eq!(
+            stages,
+            vec![
+                (10, "train".to_string()),
+                (20, "val".to_string()),
+                (30, "test".to_string()),
+            ]
         );
     }
 

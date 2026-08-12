@@ -136,14 +136,14 @@ pub struct SplitSpec<U: UnitSystem> {
     /// offsets should be expressed as months (year * 12) at construction time.
     #[serde(default)]
     pub month_offsets: Option<Vec<i32>>,
-    /// `DateOffsetSplit` boundary-snapping (kumo `flexible_boundaries`, prod
-    /// default `True`). When set/absent-true, `derive_cutoffs` snaps each split
-    /// start back to the sampling grid (`max_ts - tf - k*step`) so every split
-    /// holds ≥1 full timeframe. `Some(false)` keeps the rigid raw offsets.
+    /// Temporal-split boundary adjustment (kumo `flexible_boundaries`, prod
+    /// default `True`). DateOffsetSplit uses this to snap each split start back
+    /// to the sampling grid; TimeRangeSplit normally arrives with this disabled
+    /// after kumo resolves the query-specific ranges.
     #[serde(default)]
     pub flexible_boundaries: Option<bool>,
-    /// `DateOffsetSplit` sampling step (kumo `timeframe_step`). Grid spacing for
-    /// flexible-boundary snapping; defaults to `timeframe` when absent.
+    /// Temporal sampling step (kumo `timeframe_step`). DateOffsetSplit uses it
+    /// as the grid spacing for flexible-boundary snapping.
     #[serde(default)]
     pub timeframe_step: Option<i64>,
 }

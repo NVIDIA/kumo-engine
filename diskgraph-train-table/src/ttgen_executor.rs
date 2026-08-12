@@ -407,6 +407,39 @@ where
     } else {
         None
     };
+    let time_range_end_shift = if let Some(s) = plan
+        .split
+        .as_ref()
+        .filter(|s| s.kind.as_deref() == Some("TimeRangeSplit"))
+    {
+        if let Some(timeframe) = s.timeframe {
+            let unit_name = s.unit.as_deref().unwrap_or("days");
+            let unit = TimeUnit::from_name(unit_name).ok_or_else(|| {
+                TTGenError::InvalidPlan(format!(
+                    "TimeRangeSplit unit '{unit_name}' is not supported"
+                ))
+            })?;
+            let shift = timeframe.saturating_add(s.anchor_start_offset.unwrap_or(0));
+            let offset = match unit {
+                TimeUnit::Months => OffsetUnit::Months(i32::try_from(shift).map_err(|_| {
+                    TTGenError::InvalidPlan(format!(
+                        "TimeRangeSplit month shift {shift} exceeds the supported range"
+                    ))
+                })?),
+                TimeUnit::Years => OffsetUnit::Years(i32::try_from(shift).map_err(|_| {
+                    TTGenError::InvalidPlan(format!(
+                        "TimeRangeSplit year shift {shift} exceeds the supported range"
+                    ))
+                })?),
+                _ => OffsetUnit::Fixed(dur_from_unit::<U>(shift, unit)),
+            };
+            Some(offset)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let split_ranges: Option<Vec<(Abs<U>, Abs<U>)>> =
         plan.split.as_ref().and_then(|s| s.ranges.clone());
     let split_backtesting_timestamp: Option<Abs<U>> =
@@ -532,7 +565,8 @@ where
                 let ranges = split_ranges.clone().ok_or_else(|| {
                     TTGenError::InvalidPlan("TimeRangeSplit requires split.ranges".to_string())
                 })?;
-                let decider = TimeRangeDecider::<U>::new(ranges);
+                let decider =
+                    TimeRangeDecider::<U>::new(ranges).with_end_shift(time_range_end_shift);
                 run_pass_a_then_pass_b::<U, _>(
                     &resolved,
                     sender,
@@ -891,6 +925,7 @@ where
         split_is_temporal,
         split_offsets.as_deref(),
         date_offset_semantics,
+        time_range_end_shift,
         split_ranges.as_deref(),
         split_backtesting_timestamp,
         split_column.as_deref(),

@@ -5711,6 +5711,9 @@ fn integ_forecasting_split_stats_use_future_labels() {
 
     let mut split = phase5b_split_spec_base::<Seconds>();
     split.kind = Some("TimeRangeSplit".to_string());
+    split.unit = Some("seconds".to_string());
+    split.timeframe = Some(0);
+    split.anchor_start_offset = Some(0);
     split.ranges = Some(vec![
         (Abs::from_raw(0), Abs::from_raw(4000)),
         (Abs::from_raw(4001), Abs::from_raw(5000)),
@@ -5810,6 +5813,9 @@ fn integ_forecasting_split_outputs_drop_horizon_tail_rows() {
 
     let mut split = phase5b_split_spec_base::<Seconds>();
     split.kind = Some("TimeRangeSplit".to_string());
+    split.unit = Some("seconds".to_string());
+    split.timeframe = Some(0);
+    split.anchor_start_offset = Some(0);
     split.ranges = Some(vec![
         (Abs::from_raw(0), Abs::from_raw(4000)),
         (Abs::from_raw(4001), Abs::from_raw(7000)),
@@ -7437,13 +7443,13 @@ fn integ_e2e_time_range_split_writes_split_bin() {
         is_temporal: Some(true),
         offsets: None,
         offset_unit: None,
-        unit: None,
-        timeframe: None,
-        anchor_start_offset: None,
+        unit: Some("seconds".to_string()),
+        timeframe: Some(1000),
+        anchor_start_offset: Some(0),
         ranges: Some(vec![
-            (Abs::from_secs(0), Abs::from_secs(1000)),
-            (Abs::from_secs(1001), Abs::from_secs(2000)),
-            (Abs::from_secs(2001), Abs::from_secs(3000)),
+            (Abs::from_secs(0), Abs::from_secs(2000)),
+            (Abs::from_secs(2000), Abs::from_secs(3000)),
+            (Abs::from_secs(3000), Abs::from_secs(4000)),
         ]),
         backtesting_timestamp: None,
         split_column: None,
@@ -7477,9 +7483,9 @@ fn integ_e2e_time_range_split_writes_split_bin() {
     assert_eq!(pairs.len() as u64, output.rows_written);
     for (ent, ts) in &pairs {
         let expected: Option<u8> = match *ts {
-            t if (0..=1000).contains(&t) => Some(0),
-            t if (1001..=2000).contains(&t) => Some(1),
-            t if (2001..=3000).contains(&t) => Some(2),
+            1000 => Some(0),
+            2000 => Some(1),
+            3000 => Some(2),
             _ => None,
         };
         let got = stage_map.get(&(ent.clone(), *ts)).copied();
