@@ -5,18 +5,21 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use aws_config::{self, BehaviorVersion};
-use aws_credential_types::provider::ProvideCredentials;
 use aws_types::region::Region;
 use bytes::Bytes;
-use object_store::aws::AmazonS3Builder;
+use object_store::aws::{AmazonS3Builder, AwsCredential, AwsCredentialProvider};
 use object_store::azure::MicrosoftAzureBuilder;
 use object_store::gcp::GoogleCloudStorageBuilder;
 use object_store::path::Path as ObjectPath;
 use object_store::ClientOptions;
+use object_store::StaticCredentialProvider;
 use object_store::WriteMultipart;
 use object_store::{ObjectStore, ObjectStoreExt};
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot};
+
+mod s3_credentials;
+use s3_credentials::{aws_runtime_handle, block_on_aws, spawn_on_aws, RefreshingCredentials};
 
 /// Parse a bool environment flag (e.g., "1", "true").
 fn env_flag(name: &str) -> Option<bool> {
@@ -38,6 +41,7 @@ pub struct S3Config {
     pub session_token: Option<String>,
 }
 
+/// Non-secret settings used to construct the S3 client.
 #[derive(Clone, Debug)]
 pub struct ResolvedS3 {
     pub bucket: String,
@@ -45,9 +49,6 @@ pub struct ResolvedS3 {
     pub endpoint: Option<String>,
     pub allow_http: bool,
     pub virtual_hosted: bool,
-    pub access_key_id: String,
-    pub secret_access_key: String,
-    pub session_token: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -74,14 +75,70 @@ pub fn cloud_client_options() -> ClientOptions {
 }
 
 pub fn build_s3_client(cfg: S3Config) -> Result<S3Client> {
-    build_s3_client_inner(cfg, true)
+    block_on_aws(build_s3_client_inner(cfg, true))
 }
 
 pub fn build_s3_client_without_env_endpoint(cfg: S3Config) -> Result<S3Client> {
-    build_s3_client_inner(cfg, false)
+    block_on_aws(build_s3_client_inner(cfg, false))
 }
 
-fn build_s3_client_inner(cfg: S3Config, inherit_env_endpoint: bool) -> Result<S3Client> {
+pub async fn build_s3_client_async(cfg: S3Config) -> Result<S3Client> {
+    spawn_on_aws(build_s3_client_inner(cfg, true)).await
+}
+
+fn static_s3_credentials(cfg: &S3Config) -> Option<AwsCredential> {
+    fn complete(
+        key_id: Option<String>,
+        secret_key: Option<String>,
+        token: Option<String>,
+    ) -> Option<AwsCredential> {
+        Some(AwsCredential {
+            key_id: key_id?,
+            secret_key: secret_key?,
+            token,
+        })
+    }
+
+    complete(
+        cfg.access_key_id.clone(),
+        cfg.secret_access_key.clone(),
+        cfg.session_token.clone(),
+    )
+    .or_else(|| {
+        complete(
+            std::env::var("S3_ACCESS_KEY").ok(),
+            std::env::var("S3_SECRET_KEY").ok(),
+            std::env::var("S3_SESSION_TOKEN").ok(),
+        )
+    })
+    .or_else(|| {
+        complete(
+            std::env::var("AWS_ACCESS_KEY_ID").ok(),
+            std::env::var("AWS_SECRET_ACCESS_KEY").ok(),
+            std::env::var("AWS_SESSION_TOKEN").ok(),
+        )
+    })
+}
+
+async fn resolve_s3_credentials(
+    cfg: &S3Config,
+    aws_conf: &aws_types::sdk_config::SdkConfig,
+) -> Result<AwsCredentialProvider> {
+    if let Some(credential) = static_s3_credentials(cfg) {
+        tracing::debug!("signing S3 requests with statically configured credentials");
+        return Ok(Arc::new(StaticCredentialProvider::new(credential)));
+    }
+
+    let provider = aws_conf.credentials_provider().ok_or_else(|| {
+        anyhow!("No AWS credentials provider found; ensure AWS_PROFILE/SSO is set")
+    })?;
+    let refreshing = RefreshingCredentials::new(provider, aws_runtime_handle()?);
+    // Resolve once so configuration errors surface while the client is built.
+    refreshing.prime().await?;
+    Ok(Arc::new(refreshing))
+}
+
+async fn build_s3_client_inner(cfg: S3Config, inherit_env_endpoint: bool) -> Result<S3Client> {
     let allow_http = cfg
         .allow_http
         .or_else(|| env_flag("S3_ALLOW_HTTP"))
@@ -98,109 +155,7 @@ fn build_s3_client_inner(cfg: S3Config, inherit_env_endpoint: bool) -> Result<S3
         .or_else(|| std::env::var("S3_PROFILE").ok())
         .or_else(|| std::env::var("AWS_PROFILE").ok());
     let mut loader = aws_config::defaults(BehaviorVersion::latest());
-    if let Some(p) = profile.clone() {
-        loader = loader.profile_name(p);
-    }
-    if let Some(region) = cfg
-        .region
-        .clone()
-        .or_else(|| std::env::var("S3_REGION").ok())
-    {
-        loader = loader.region(Region::new(region));
-    }
-    let rt = Runtime::new()?;
-    let aws_conf = rt.block_on(loader.load());
-    let creds_provider = aws_conf.credentials_provider().ok_or_else(|| {
-        anyhow!("No AWS credentials provider found; ensure AWS_PROFILE/SSO is set")
-    })?;
-    let creds = rt.block_on(async {
-        creds_provider
-            .provide_credentials()
-            .await
-            .map_err(|e| anyhow!("Failed to load AWS credentials: {e}"))
-    })?;
-
-    let region = cfg
-        .region
-        .clone()
-        .or_else(|| std::env::var("S3_REGION").ok())
-        .or_else(|| aws_conf.region().map(|r| r.as_ref().to_string()))
-        .unwrap_or_else(|| "us-east-1".to_string());
-    let virtual_hosted = cfg
-        .virtual_hosted
-        .or_else(|| env_flag("S3_VIRTUAL_HOSTED"))
-        .unwrap_or_else(|| {
-            endpoint
-                .as_ref()
-                .map_or(true, |ep| ep.contains("amazonaws.com"))
-        });
-    let access_key_id = cfg
-        .access_key_id
-        .clone()
-        .or_else(|| std::env::var("S3_ACCESS_KEY").ok())
-        .or_else(|| std::env::var("AWS_ACCESS_KEY_ID").ok())
-        .unwrap_or_else(|| creds.access_key_id().to_string());
-    let secret_access_key = cfg
-        .secret_access_key
-        .clone()
-        .or_else(|| std::env::var("S3_SECRET_KEY").ok())
-        .or_else(|| std::env::var("AWS_SECRET_ACCESS_KEY").ok())
-        .unwrap_or_else(|| creds.secret_access_key().to_string());
-    let session_token = cfg
-        .session_token
-        .clone()
-        .or_else(|| std::env::var("S3_SESSION_TOKEN").ok())
-        .or_else(|| creds.session_token().map(|t| t.to_string()));
-
-    // with_client_options replaces the entire ClientOptions struct,
-    // so it must come before with_allow_http (which writes into it).
-    let mut builder = AmazonS3Builder::new()
-        .with_client_options(cloud_client_options())
-        .with_bucket_name(&cfg.bucket)
-        .with_region(&region)
-        .with_virtual_hosted_style_request(virtual_hosted)
-        .with_allow_http(allow_http)
-        .with_access_key_id(access_key_id.clone())
-        .with_secret_access_key(secret_access_key.clone());
-    if let Some(ep) = &endpoint {
-        builder = builder.with_endpoint(ep);
-    }
-    if let Some(token) = &session_token {
-        builder = builder.with_token(token);
-    }
-    let store = Arc::new(builder.build()?);
-    Ok(S3Client {
-        store,
-        resolved: ResolvedS3 {
-            bucket: cfg.bucket,
-            region,
-            endpoint,
-            allow_http,
-            virtual_hosted,
-            access_key_id,
-            secret_access_key,
-            session_token,
-        },
-    })
-}
-
-pub async fn build_s3_client_async(cfg: S3Config) -> Result<S3Client> {
-    let allow_http = cfg
-        .allow_http
-        .or_else(|| env_flag("S3_ALLOW_HTTP"))
-        .or_else(|| env_flag("AWS_ALLOW_HTTP"))
-        .unwrap_or(false);
-    let endpoint = cfg
-        .endpoint
-        .clone()
-        .or_else(|| std::env::var("S3_ENDPOINT").ok());
-    let profile = cfg
-        .profile
-        .clone()
-        .or_else(|| std::env::var("S3_PROFILE").ok())
-        .or_else(|| std::env::var("AWS_PROFILE").ok());
-    let mut loader = aws_config::defaults(BehaviorVersion::latest());
-    if let Some(p) = profile.clone() {
+    if let Some(p) = profile {
         loader = loader.profile_name(p);
     }
     if let Some(region) = cfg
@@ -211,13 +166,6 @@ pub async fn build_s3_client_async(cfg: S3Config) -> Result<S3Client> {
         loader = loader.region(Region::new(region));
     }
     let aws_conf = loader.load().await;
-    let creds_provider = aws_conf.credentials_provider().ok_or_else(|| {
-        anyhow!("No AWS credentials provider found; ensure AWS_PROFILE/SSO is set")
-    })?;
-    let creds = creds_provider
-        .provide_credentials()
-        .await
-        .map_err(|e| anyhow!("Failed to load AWS credentials: {e}"))?;
 
     let region = cfg
         .region
@@ -233,37 +181,19 @@ pub async fn build_s3_client_async(cfg: S3Config) -> Result<S3Client> {
                 .as_ref()
                 .map_or(true, |ep| ep.contains("amazonaws.com"))
         });
-    let access_key_id = cfg
-        .access_key_id
-        .clone()
-        .or_else(|| std::env::var("S3_ACCESS_KEY").ok())
-        .or_else(|| std::env::var("AWS_ACCESS_KEY_ID").ok())
-        .unwrap_or_else(|| creds.access_key_id().to_string());
-    let secret_access_key = cfg
-        .secret_access_key
-        .clone()
-        .or_else(|| std::env::var("S3_SECRET_KEY").ok())
-        .or_else(|| std::env::var("AWS_SECRET_ACCESS_KEY").ok())
-        .unwrap_or_else(|| creds.secret_access_key().to_string());
-    let session_token = cfg
-        .session_token
-        .clone()
-        .or_else(|| std::env::var("S3_SESSION_TOKEN").ok())
-        .or_else(|| creds.session_token().map(|t| t.to_string()));
+    let credentials = resolve_s3_credentials(&cfg, &aws_conf).await?;
 
+    // with_client_options replaces the entire ClientOptions struct,
+    // so it must come before with_allow_http (which writes into it).
     let mut builder = AmazonS3Builder::new()
         .with_client_options(cloud_client_options())
         .with_bucket_name(&cfg.bucket)
         .with_region(&region)
         .with_virtual_hosted_style_request(virtual_hosted)
         .with_allow_http(allow_http)
-        .with_access_key_id(access_key_id.clone())
-        .with_secret_access_key(secret_access_key.clone());
+        .with_credentials(credentials);
     if let Some(ep) = &endpoint {
         builder = builder.with_endpoint(ep);
-    }
-    if let Some(token) = &session_token {
-        builder = builder.with_token(token);
     }
     let store = Arc::new(builder.build()?);
     Ok(S3Client {
@@ -274,9 +204,6 @@ pub async fn build_s3_client_async(cfg: S3Config) -> Result<S3Client> {
             endpoint,
             allow_http,
             virtual_hosted,
-            access_key_id,
-            secret_access_key,
-            session_token,
         },
     })
 }
@@ -843,12 +770,88 @@ mod tests {
                 )?
                 .store
             )
-                .contains("https://login.microsoftonline.com/tenant/oauth2/v2.0/token"),
+            .contains("https://login.microsoftonline.com/tenant/oauth2/v2.0/token"),
             "source-scoped authority should override the worker environment"
         );
         for key in OVERRIDING_VARS {
             std::env::remove_var(key);
         }
         Ok(())
+    }
+
+    /// `static_s3_credentials` is the branch that decides whether S3 signs with
+    /// a frozen credential or with the refreshing provider, so it is the seam
+    /// the production incident actually lived on. The cases share
+    /// process-global env vars, so they run in one test.
+    #[test]
+    fn s3_static_credential_selection() {
+        const VARS: &[&str] = &[
+            "S3_ACCESS_KEY",
+            "S3_SECRET_KEY",
+            "S3_SESSION_TOKEN",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+        ];
+        let blank = S3Config {
+            bucket: "bucket".to_string(),
+            region: Some("us-west-2".to_string()),
+            endpoint: None,
+            allow_http: None,
+            virtual_hosted: None,
+            profile: None,
+            access_key_id: None,
+            secret_access_key: None,
+            session_token: None,
+        };
+        let resolve = |vars: &[(&str, &str)]| -> Option<AwsCredential> {
+            for key in VARS {
+                std::env::remove_var(key);
+            }
+            for (key, value) in vars {
+                std::env::set_var(key, value);
+            }
+            static_s3_credentials(&blank)
+        };
+
+        assert!(
+            resolve(&[]).is_none(),
+            "an empty environment must fall through to the refreshing provider"
+        );
+        assert!(
+            resolve(&[("AWS_ACCESS_KEY_ID", "AKIA")]).is_none(),
+            "a key with no secret is not a credential, and must not be paired \
+             with a secret from somewhere else"
+        );
+        assert!(
+            resolve(&[("AWS_SECRET_ACCESS_KEY", "shh")]).is_none(),
+            "a secret with no key is not a credential either"
+        );
+
+        let minio = resolve(&[("S3_ACCESS_KEY", "minio"), ("S3_SECRET_KEY", "miniosecret")])
+            .expect("a whole static pair should be honoured");
+        assert_eq!(minio.key_id, "minio");
+        assert_eq!(minio.secret_key, "miniosecret");
+        assert!(
+            minio.token.is_none(),
+            "a static pair must not borrow a session token from the ambient \
+             IRSA identity - that combination can never sign a valid request"
+        );
+
+        let temporary = resolve(&[
+            ("AWS_ACCESS_KEY_ID", "ASIA"),
+            ("AWS_SECRET_ACCESS_KEY", "shh"),
+            ("AWS_SESSION_TOKEN", "session"),
+        ])
+        .expect("standard temporary credentials should be honoured");
+        assert_eq!(
+            temporary.token.as_deref(),
+            Some("session"),
+            "AWS_SESSION_TOKEN is documented in the README and must be read"
+        );
+
+        for key in VARS {
+            std::env::remove_var(key);
+        }
     }
 }

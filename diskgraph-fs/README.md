@@ -112,6 +112,14 @@ These keep the downloader code portable and avoid AWS SDK usage.
 
 For async contexts, use `build_s3_client_async` to avoid nested runtimes.
 
+#### Credentials
+
+Static credentials are selected from the first complete source, in this order:
+config, `S3_*`, then `AWS_*`. The optional session token comes from that source
+too. Otherwise the AWS SDK provider chain is retained and temporary credentials
+are refreshed on demand. Provider results are cached and concurrent refresh
+work is shared.
+
 ### GCS
 
 `build_gcs_client` uses `GoogleCloudStorageBuilder::from_env()` with standard

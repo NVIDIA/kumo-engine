@@ -1625,6 +1625,7 @@ name = "diskgraph-fs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "aws-config",
  "aws-credential-types",
  "aws-types",
