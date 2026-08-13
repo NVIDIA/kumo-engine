@@ -1174,7 +1174,10 @@ pub fn build_inline_col_stats(
         let stype = "kumo.categorical";
         let name = "ENTITY1";
 
-        if let Some(ref cat_counts) = entity_category_counts {
+        // Empty means not collected. Emit no CATEGORY_COUNTS key at all, so a
+        // consumer fails on the missing key instead of reading an empty
+        // vocabulary as "no categories".
+        if let Some(ref cat_counts) = entity_category_counts.filter(|c| !c.is_empty()) {
             let cat_total: u64 = cat_counts.values().sum();
             let effective_count = if cat_total > 0 { cat_total } else { count };
             stats.insert(
@@ -2182,7 +2185,7 @@ pub(crate) trait RowObserver<U: UnitSystem>: Send {
         &mut self,
         row: &TTRowRef<'_, U>,
         local_target_counts: &mut Option<LocalColumnCounts>,
-        local_entity_counts: &mut LocalColumnCounts,
+        local_entity_counts: &mut Option<LocalColumnCounts>,
     );
 
     /// Fold another observer's state into self.
@@ -2197,7 +2200,7 @@ impl<U: UnitSystem> RowObserver<U> for ChunkStats<U> {
         &mut self,
         row: &TTRowRef<'_, U>,
         local_target_counts: &mut Option<LocalColumnCounts>,
-        local_entity_counts: &mut LocalColumnCounts,
+        local_entity_counts: &mut Option<LocalColumnCounts>,
     ) {
         // Delegate to the existing per-row stats logic. Trait-shape only;
         // no behavior change.
@@ -2243,7 +2246,7 @@ impl<U: UnitSystem, D: SplitDecider<U>> RowProcessor<U, D> {
         &mut self,
         row: &TTRowRef<'_, U>,
         local_target_counts: &mut Option<LocalColumnCounts>,
-        local_entity_counts: &mut LocalColumnCounts,
+        local_entity_counts: &mut Option<LocalColumnCounts>,
     ) {
         // Both calls are monomorphized — the compiler resolves D's accumulate
         // at compile time and elides NoSplitDecider's no-op entirely.
@@ -2937,7 +2940,7 @@ mod tests {
         let mut processor: RowProcessor<Seconds, NoSplitDecider> =
             RowProcessor::new(p_stats, NoSplitDecider);
         let mut local_target_counts: Option<LocalColumnCounts> = None;
-        let mut local_entity_counts = LocalColumnCounts::with_capacity(8);
+        let mut local_entity_counts: Option<LocalColumnCounts> = None;
         processor.observe(&row, &mut local_target_counts, &mut local_entity_counts);
 
         // Compare against an independent ChunkStats path that uses the
@@ -2945,7 +2948,7 @@ mod tests {
         let mut reference_stats: ChunkStats<Seconds> = ChunkStats::default();
         seed_hlls(&mut reference_stats);
         let mut local_target_counts2: Option<LocalColumnCounts> = None;
-        let mut local_entity_counts2 = LocalColumnCounts::with_capacity(8);
+        let mut local_entity_counts2: Option<LocalColumnCounts> = None;
         <ChunkStats<Seconds> as RowObserver<Seconds>>::observe(
             &mut reference_stats,
             &row,
@@ -3014,9 +3017,9 @@ mod tests {
         let mut p_b: RowProcessor<Seconds, NoSplitDecider> = RowProcessor::new(s_b, NoSplitDecider);
 
         let mut ltc_a: Option<LocalColumnCounts> = None;
-        let mut lec_a = LocalColumnCounts::with_capacity(8);
+        let mut lec_a: Option<LocalColumnCounts> = None;
         let mut ltc_b: Option<LocalColumnCounts> = None;
-        let mut lec_b = LocalColumnCounts::with_capacity(8);
+        let mut lec_b: Option<LocalColumnCounts> = None;
 
         p_a.observe(
             &make_row(&entity_a, Abs::from_raw(100), &target_a),
@@ -3169,6 +3172,75 @@ mod tests {
             target_stype,
             None,
         )
+    }
+
+    /// The entity column is a foreign key resolved to graph node ids; it is
+    /// never encoded, so nothing reads its CATEGORY_COUNTS. Collecting them
+    /// shared the target's string budget, and a high-cardinality entity could
+    /// exhaust it and drop the target's counts, which ARE required.
+    ///
+    /// Drained-but-empty is what production produces once collection stops, so
+    /// that is what this feeds in. The key must be absent rather than empty: a
+    /// consumer added later should fail on the missing key, not read an empty
+    /// vocabulary as "no categories".
+    #[test]
+    fn test_finalize_omits_entity_category_counts() {
+        let mut chunk: ChunkStats<Seconds> = ChunkStats {
+            num_train_rows: 5,
+            ..Default::default()
+        };
+        chunk.timestamp_counts.insert(Abs::from_raw(100), 5);
+        chunk.timestamp_min = Some(Abs::from_raw(100));
+        chunk.timestamp_max = Some(Abs::from_raw(100));
+
+        let mut target_counts = HashMap::new();
+        target_counts.insert("a".to_string(), 3u64);
+        target_counts.insert("b".to_string(), 2u64);
+
+        let mut merger: StatsMerger<Seconds> = StatsMerger::default();
+        merger.merge(chunk);
+        let payload = merger.finalize(
+            5,
+            false,
+            false,
+            false,
+            Some(&[1.0, 0.0, 0.0]),
+            Some("RandomSplit"),
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(target_counts),
+            "categorical",
+            // What the executor hands over once entity counting is disabled.
+            Some(HashMap::new()),
+        );
+
+        let stats = payload
+            .parsed_train_table_col_stats
+            .as_ref()
+            .and_then(|v| v.get("stats"))
+            .and_then(|v| v.as_object())
+            .cloned()
+            .expect("train-table col stats must be emitted");
+
+        for key in stats.keys() {
+            assert!(
+                !(key.starts_with("ENTITY1") && key.contains("CATEGORY_COUNTS")),
+                "entity CATEGORY_COUNTS must not be emitted, found {key:?}"
+            );
+        }
+        // The target's counts must survive: they size the classification head.
+        assert!(
+            stats
+                .keys()
+                .any(|k| k.starts_with("TARGET1") && k.contains("CATEGORY_COUNTS")),
+            "target CATEGORY_COUNTS must still be emitted"
+        );
     }
 
     #[test]

@@ -1574,8 +1574,14 @@ fn execute_chunk<U: UnitSystem, D: SplitDecider<U> + Clone>(
         None
     };
 
-    // Thread-local entity category counts (flushed to shared at end)
-    let mut local_entity_counts = LocalColumnCounts::with_capacity(5000);
+    // Entity CATEGORY_COUNTS has no downstream reader: the entity column is a
+    // FK/pkey resolved to node ids and is never encoded (it lives in the graph
+    // table's fkeys/pkey, outside the feature `cols` that `infer_encoders`
+    // iterates), so its per-category counts are dead weight. `None` disables the
+    // per-row collection and the flush below, leaving the shared category-string
+    // budget entirely to the target column. Entity cardinality is still tracked
+    // via the HLL (NUM_UNIQUE).
+    let mut local_entity_counts: Option<LocalColumnCounts> = None;
 
     for entity_node in entity_range {
         execute_entity(
@@ -1600,8 +1606,12 @@ fn execute_chunk<U: UnitSystem, D: SplitDecider<U> + Clone>(
     {
         shared.merge_local_batch(local);
     }
-    // Flush local entity counts to shared
-    shared_entity_counts.merge_local_batch(&mut local_entity_counts);
+    // Flush local entity counts to shared -- disabled: entity counts are not
+    // collected (see `local_entity_counts` above), so the shared accumulator
+    // stays empty and consumes none of the category-string budget.
+    if let Some(ref mut local) = local_entity_counts {
+        shared_entity_counts.merge_local_batch(local);
+    }
 
     let rows = writer.finish()?;
     processor.stats.num_total_rows = rows;
@@ -1621,7 +1631,7 @@ fn execute_entity<U: UnitSystem, D: SplitDecider<U>>(
     target_is_categorical: bool,
     target_stype: &str,
     local_target_counts: &mut Option<LocalColumnCounts>,
-    local_entity_counts: &mut LocalColumnCounts,
+    local_entity_counts: &mut Option<LocalColumnCounts>,
     writer: &mut ChannelBatchWriter<U>,
     processor: &mut RowProcessor<U, D>,
 ) -> TTGenResult<()> {
@@ -1798,7 +1808,7 @@ fn write_target<U: UnitSystem, D: SplitDecider<U>>(
     target_is_categorical: bool,
     target_stype: &str,
     local_target_counts: &mut Option<LocalColumnCounts>,
-    local_entity_counts: &mut LocalColumnCounts,
+    local_entity_counts: &mut Option<LocalColumnCounts>,
     writer: &mut ChannelBatchWriter<U>,
     processor: &mut RowProcessor<U, D>,
 ) -> TTGenResult<()> {
@@ -2134,7 +2144,7 @@ pub(crate) fn update_exact_stats<U: UnitSystem>(
     target_is_categorical: bool,
     target_stype: &str,
     local_target_counts: &mut Option<LocalColumnCounts>,
-    local_entity_counts: &mut LocalColumnCounts,
+    local_entity_counts: &mut Option<LocalColumnCounts>,
 ) {
     // Cardinality tracking is HLL-only. Target HLL is observed
     // in the per-stype branches below (numerical: raw value; categorical:
@@ -2165,11 +2175,12 @@ pub(crate) fn update_exact_stats<U: UnitSystem>(
         observe_entity_hll(h, entity_pk);
     }
 
-    // Observe entity value into local category counts (for CATEGORY_COUNTS stat)
-    {
+    // Entity CATEGORY_COUNTS is not collected (no downstream reader); `None`
+    // skips the per-row observe. Entity cardinality is tracked by the HLL above.
+    if let Some(local) = local_entity_counts.as_mut() {
         let entity_str = value_to_string(entity_pk);
         let entity_hash = hash_value(entity_pk);
-        local_entity_counts.observe(entity_hash, &entity_str);
+        local.observe(entity_hash, &entity_str);
     }
 
     // Observe entity value into Welford + TDigest (numeric entities only — Int values)

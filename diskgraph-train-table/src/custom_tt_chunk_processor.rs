@@ -563,7 +563,11 @@ pub(crate) fn custom_tt_chunk_processor<U: UnitSystem, D: SplitDecider<U> + Clon
     } else {
         None
     };
-    let mut local_entity_counts = LocalColumnCounts::with_capacity(5000);
+    // Entity CATEGORY_COUNTS has no downstream reader (the entity column is a
+    // FK/pkey resolved to node ids, never encoded), so it is not collected --
+    // only entity cardinality via the HLL (NUM_UNIQUE) is retained. See the
+    // parallel comment in `ttgen_executor::run_pass_a`.
+    let mut local_entity_counts: Option<LocalColumnCounts> = None;
 
     // ── Read assigned row groups ─────────────────────────────────────────
     if !row_groups.is_empty() {
@@ -625,7 +629,11 @@ pub(crate) fn custom_tt_chunk_processor<U: UnitSystem, D: SplitDecider<U> + Clon
     {
         shared.merge_local_batch(local);
     }
-    shared_entity_counts.merge_local_batch(&mut local_entity_counts);
+    // Entity counts are not collected (see `local_entity_counts` above), so the
+    // shared accumulator stays empty and consumes none of the string budget.
+    if let Some(ref mut local) = local_entity_counts {
+        shared_entity_counts.merge_local_batch(local);
+    }
 
     let rows = writer.finish()?;
     processor.stats.num_total_rows = rows;
@@ -650,7 +658,7 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
     target_is_categorical: bool,
     target_stype: &str,
     local_target_counts: &mut Option<LocalColumnCounts>,
-    local_entity_counts: &mut LocalColumnCounts,
+    local_entity_counts: &mut Option<LocalColumnCounts>,
     writer: &mut ChannelBatchWriter<U>,
     processor: &mut RowProcessor<U, D>,
     input_timestamp_unit: TimeUnit,
