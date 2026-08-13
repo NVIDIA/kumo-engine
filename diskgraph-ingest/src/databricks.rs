@@ -8,6 +8,8 @@ use crate::graph_config::DataSource;
 use crate::source_memory::{ByteBudget, BytePermit};
 use anyhow::{anyhow, bail, Context, Result};
 use arrow_array::RecordBatch;
+use arrow_buffer::Buffer;
+use arrow_data::ArrayData;
 use arrow_ipc::reader::StreamReader;
 use arrow_schema::SchemaRef;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -15,7 +17,7 @@ use base64::Engine;
 use lz4_flex::frame::FrameDecoder;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, BufWriter, Cursor, Read, Write};
@@ -757,6 +759,38 @@ fn retained_link_bytes(decoded_bytes: u64) -> Result<u64> {
     Ok(expanded_bytes.max(bytes_with_floor))
 }
 
+/// The heap a decoded Arrow batch pins, counting each distinct allocation once.
+///
+/// Not `RecordBatch::get_array_memory_size`, which sums `Buffer::capacity` per
+/// buffer. `arrow_ipc`'s reader slices every column buffer of a decoded batch
+/// out of one message body, so that sum counts the body once per buffer.
+fn pinned_batch_bytes(batch: &RecordBatch) -> u64 {
+    fn visit(data: &ArrayData, seen: &mut HashSet<(usize, usize)>) {
+        let mut record = |buffer: &Buffer| {
+            // `as_ptr` points into the slice; back it out to the allocation base.
+            let base = buffer.as_ptr() as usize - buffer.ptr_offset();
+            seen.insert((base, buffer.capacity()));
+        };
+        for buffer in data.buffers() {
+            record(buffer);
+        }
+        if let Some(nulls) = data.nulls() {
+            record(nulls.buffer());
+        }
+        for child in data.child_data() {
+            visit(child, seen);
+        }
+    }
+
+    let mut seen = HashSet::new();
+    for column in batch.columns() {
+        visit(&column.to_data(), &mut seen);
+    }
+    seen.iter()
+        .map(|(_, capacity)| *capacity as u64)
+        .fold(0u64, u64::saturating_add)
+}
+
 fn stream_cloud_fetch_link(
     agent: &ureq::Agent,
     link: &CloudFetchLink,
@@ -861,7 +895,7 @@ fn stream_cloud_fetch_link(
             break;
         };
         let batch = batch.map_err(|_| anyhow!("Databricks returned invalid Arrow IPC data"))?;
-        let batch_bytes = batch.get_array_memory_size() as u64;
+        let batch_bytes = pinned_batch_bytes(&batch);
         if batch_bytes > permit.max_input_chunk_bytes() {
             bail!("Databricks Arrow batch exceeds the shared single-input memory limit");
         }
@@ -1655,7 +1689,7 @@ fn validate_ipc_envelope(bytes: &[u8], max_message_bytes: u64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow_array::{ArrayRef, Int64Array, RecordBatch};
+    use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
     use arrow_ipc::writer::StreamWriter;
     use arrow_schema::{DataType, Field, Schema};
     use lz4_flex::frame::FrameEncoder;
@@ -1723,16 +1757,104 @@ mod tests {
             _ => panic!("link did not finish"),
         };
         assert!(peak_retained_batch_bytes <= retained_bytes);
-        let retained_batches = events
+        let batches = events
             .into_iter()
             .filter_map(|event| match event.unwrap() {
-                LinkEvent::Batch(batch) => Some(batch.get_array_memory_size() as u64),
+                LinkEvent::Batch(batch) => Some(pinned_batch_bytes(&batch)),
                 _ => None,
             })
-            .sum::<u64>();
+            .collect::<Vec<_>>();
+        let flowed = batches.iter().copied().fold(0u64, u64::saturating_add);
+        assert_eq!(batches.len(), 256);
         assert!(
-            retained_batches > retained_bytes,
-            "test data did not exceed reservation: {retained_batches} <= {retained_bytes}"
+            flowed > peak_retained_batch_bytes * 8,
+            "link did not stream: {flowed} bytes flowed against a {peak_retained_batch_bytes} high water"
+        );
+    }
+
+    /// A string column carries two buffers, three when nullable, against one
+    /// for a non-null numeric, so text is where per-buffer accounting diverges
+    /// most from the memory a batch holds.
+    #[test]
+    fn string_columns_are_charged_their_real_memory_not_their_buffer_count() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("colour", DataType::Utf8, false),
+            Field::new("code", DataType::Int64, false),
+        ]));
+        // Large enough that the reservation is the 4x multiple, not the 4 MiB floor.
+        let rows = 32_768;
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(StringArray::from_iter_values(
+                    (0..rows).map(|row| format!("article-{row:012}")),
+                )) as ArrayRef,
+                Arc::new(StringArray::from_iter_values(
+                    (0..rows).map(|row| format!("product name {row:020}")),
+                )) as ArrayRef,
+                Arc::new(StringArray::from_iter_values(
+                    (0..rows).map(|row| format!("colour {}", row % 64)),
+                )) as ArrayRef,
+                Arc::new(Int64Array::from_iter_values(0..rows as i64)) as ArrayRef,
+            ],
+        )
+        .unwrap();
+
+        let mut encoded = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut encoded, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+        let decoded_bytes = encoded.len() as u64;
+        let retained_bytes = retained_link_bytes(decoded_bytes).unwrap();
+
+        let (result, events, _) = run_streaming_link(
+            encoded,
+            decoded_bytes,
+            rows as u64,
+            false,
+            VecOrMapHeaders::default(),
+        );
+        let peak = match result.expect("link failed") {
+            LinkEvent::Finished {
+                peak_retained_batch_bytes,
+                ..
+            } => peak_retained_batch_bytes,
+            _ => panic!("link did not finish"),
+        };
+        assert!(
+            peak <= retained_bytes,
+            "charged {peak} against a {retained_bytes} reservation"
+        );
+
+        let decoded = events
+            .into_iter()
+            .filter_map(|event| match event.unwrap() {
+                LinkEvent::Batch(batch) => Some(batch),
+                _ => None,
+            })
+            .next()
+            .expect("no batch was emitted");
+
+        let charged = pinned_batch_bytes(&decoded);
+        assert!(
+            charged <= decoded_bytes,
+            "charged {charged} bytes for {decoded_bytes} bytes of IPC"
+        );
+
+        // Guard against charging the reservation with `get_array_memory_size`,
+        // which scores this same batch past the reservation.
+        let inflated = decoded.get_array_memory_size() as u64;
+        assert!(
+            inflated > retained_bytes,
+            "test data no longer exercises the inflation: {inflated} <= {retained_bytes}"
+        );
+        assert!(
+            inflated >= charged * 4,
+            "expected get_array_memory_size to multiply the real size: {inflated} vs {charged}"
         );
     }
 
