@@ -14,8 +14,8 @@ use crate::errors::{TTGenError, TTGenResult};
 use arrow_schema::DataType;
 use crossbeam_channel::{bounded, Sender};
 use diskgraph_core::accumulators::{
-    for_each_split_ascii_byte, CategoryStringBudget, HyperLogLog, LocalColumnCounts,
-    SharedColumnCounts, TDigestEstimator, WelfordAccumulator, CATEGORY_MEMORY_BUDGET_BYTES,
+    for_each_split_ascii_byte, HyperLogLog, LocalColumnCounts, SharedColumnCounts,
+    TDigestEstimator, WelfordAccumulator,
 };
 use diskgraph_core::time::{add_calendar_months, dur_from_unit, Abs, Dur, TimeUnit, UnitSystem};
 use diskgraph_core::tt_builder::*;
@@ -61,20 +61,22 @@ type PassAOutputs<U> = (
     Option<[StagePartsOut; 3]>,
 );
 
+/// Train-table targets require a complete vocabulary and have no hash-encoder
+/// fallback. Keep this ceiling separate from the 1M graph-feature policy.
+const MAX_TRAIN_TABLE_TARGET_CATEGORIES: u64 = 250_000_000;
+
 fn category_count_accumulators(
     target_is_categorical: bool,
-    budget_bytes: u64,
 ) -> (
     Option<Arc<SharedColumnCounts>>,
     Arc<SharedColumnCounts>,
 ) {
-    let budget = Arc::new(CategoryStringBudget::new(budget_bytes));
     let target = target_is_categorical.then(|| {
-        Arc::new(SharedColumnCounts::new_hashed_with_string_budget(
-            Arc::clone(&budget),
+        Arc::new(SharedColumnCounts::new_hashed_with_max_categories(
+            MAX_TRAIN_TABLE_TARGET_CATEGORIES,
         ))
     });
-    let entity = Arc::new(SharedColumnCounts::new_hashed_with_string_budget(budget));
+    let entity = Arc::new(SharedColumnCounts::new_hashed());
     (target, entity)
 }
 
@@ -465,13 +467,12 @@ where
         "categorical" | "boolean" | "ID" | "multicategorical"
     );
 
-    // Bound recovery strings across entity and categorical-target counts.
-    // Without this, high-cardinality long IDs can make the JSON stats sidecars
-    // larger than the source table and exceed Arrow/serde's practical limits.
-    let (shared_target_counts, shared_entity_counts) = category_count_accumulators(
-        target_is_categorical,
-        CATEGORY_MEMORY_BUDGET_BYTES,
-    );
+    // A categorical target needs its complete vocabulary. Unlike graph feature
+    // statistics, this path has no hash-encoder fallback, so it uses a
+    // target-specific 250M ceiling and no CategoryStringBudget. ENTITY1 exact
+    // counts remain disabled and therefore cannot consume target capacity.
+    let (shared_target_counts, shared_entity_counts) =
+        category_count_accumulators(target_is_categorical);
 
     // ── Writer thread ────────────────────────────────────────────────────
     // Reads from the bounded(16) channel and writes to tt.parquet on disk.
@@ -3100,19 +3101,43 @@ mod tests {
     use diskgraph_core::time::Seconds;
 
     #[test]
-    fn train_table_category_counts_share_a_bounded_string_budget() {
-        let (target, entity) = category_count_accumulators(true, 5_000);
+    fn train_table_category_counts_use_target_specific_limit_without_string_budget() {
+        let (limit_target, _) = category_count_accumulators(true);
+        let limit_target = limit_target.expect("categorical target accumulator");
+        limit_target
+            .unique_count
+            .store(
+                MAX_TRAIN_TABLE_TARGET_CATEGORIES - 1,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        limit_target.record_new_unique();
+        assert!(!limit_target.is_aborted());
+        limit_target.record_new_unique();
+        assert!(limit_target.is_aborted());
+
+        let (target, entity) = category_count_accumulators(true);
         let target = target.expect("categorical target accumulator");
 
-        let mut entity_local = LocalColumnCounts::with_capacity(1);
-        entity_local.observe(1, "first");
-        entity.merge_local_batch(&mut entity_local);
-        assert!(!entity.is_aborted());
-        let mut target_local = LocalColumnCounts::with_capacity(1);
-        target_local.observe(2, "second");
+        // Forty thousand short strings exceed the former 128 MiB conservative
+        // CategoryStringBudget charge while retaining only a modest test map.
+        const NUM_TARGETS: usize = 40_000;
+        let mut target_local = LocalColumnCounts::with_capacity(NUM_TARGETS);
+        for value in 0..NUM_TARGETS {
+            target_local.observe(value as u64, &format!("target_{value}"));
+        }
         target.merge_local_batch(&mut target_local);
-        assert!(target.is_aborted());
-        assert!(target.drain_to_map().is_none());
+        assert!(!target.is_aborted());
+        assert_eq!(
+            target
+                .drain_to_map()
+                .expect("complete target counts")
+                .len(),
+            NUM_TARGETS
+        );
+        assert_eq!(
+            entity.drain_to_map().expect("empty entity counts").len(),
+            0
+        );
     }
 
     // ─── HLL hash-basis consistency (LP train-table stat over-count fix) ─────

@@ -437,6 +437,13 @@ mod tests {
         capped.record_new_unique();
         assert!(capped.is_aborted());
 
+        let caller_capped = SharedColumnCounts::new_hashed_with_max_categories(2);
+        caller_capped.unique_count.store(1, Ordering::Relaxed);
+        caller_capped.record_new_unique();
+        assert!(!caller_capped.is_aborted());
+        caller_capped.record_new_unique();
+        assert!(caller_capped.is_aborted());
+
         let uncapped = SharedColumnCounts::new_hashed_uncapped();
         uncapped
             .unique_count
@@ -885,6 +892,15 @@ impl SharedColumnCounts {
 
     pub fn new_hashed_with_string_budget(budget: Arc<CategoryStringBudget>) -> Self {
         Self::new_hashed_with_cap(Some(MAX_CATEGORIES), Some(budget))
+    }
+
+    /// Create hash-based storage with a caller-specific unique-category cap.
+    ///
+    /// This is used when a producer has a different completeness contract from
+    /// graph feature statistics. It deliberately does not attach a string
+    /// budget; callers remain bounded only by `max_categories`.
+    pub fn new_hashed_with_max_categories(max_categories: u64) -> Self {
+        Self::new_hashed_with_cap(Some(max_categories), None)
     }
 
     /// Create hash-based storage without an ingestion-side unique cap.
