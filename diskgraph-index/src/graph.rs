@@ -2,25 +2,50 @@ use crate::builder::{
     compute_relation_layouts, estimate_edge_record_bytes, shard_node_count, BuildStats,
     EdgeBufferPool, MemoryBudget, ShardBuildParams, ShardBuilder,
 };
-use crate::layout::RelationLayout;
+use crate::layout::{
+    OffsetFileHeader, RelationLayout, EDGES_FILENAME, LAYOUT_VERSION, OFFSETS_FILENAME,
+};
 use crate::pkmap::{self, Key, PkHashTable};
 use crate::reader::ShardReader;
 use crate::streaming::EdgeShardInput;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use diskgraph_core::metadata::{
     DatasetMetadata, EdgeRelationMetadata, NodeDataCompression, NodeShardMetadata,
     NodeTypeMetadata, PrimaryKeyMap,
 };
 use diskgraph_core::tt_builder::Value;
+use serde::{Deserialize, Serialize};
 use serde_json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 const TEMP_META_MAGIC: [u8; 4] = *b"DGTP";
 const TEMP_META_VERSION: u8 = 2;
+pub const INDEX_SHARD_COMMIT_DIR: &str = "_tmp/index_commits";
+const INDEX_SHARD_COMMIT_VERSION: u32 = 1;
+
+#[derive(Debug, Deserialize, Serialize)]
+struct IndexShardCommit {
+    version: u32,
+    shard_key: String,
+    expected_nodes: u64,
+    offsets_len: u64,
+    edges_len: u64,
+    build_stats_len: u64,
+}
+
+pub struct PreparedResumableJobs {
+    pub jobs: Vec<ShardBuildJob>,
+    pub resumed_shards: Vec<ResumedShard>,
+}
+
+pub struct ResumedShard {
+    pub shard_key: Arc<str>,
+    pub expected_nodes: u64,
+}
 
 pub struct GraphIndexBuilder {
     metadata: DatasetMetadata,
@@ -144,7 +169,29 @@ impl GraphIndexBuilder {
         &self,
         edge_buffer_pool: Option<Arc<EdgeBufferPool>>,
     ) -> Result<Vec<ShardBuildJob>> {
+        Ok(self.prepare_jobs_impl(edge_buffer_pool, false)?.jobs)
+    }
+
+    /// Prepare only incomplete shards and discard inputs for shards whose
+    /// committed outputs survived an interrupted index build.
+    ///
+    /// Callers using this mode must also call
+    /// [`ShardBuildJob::cleanup_consumed_inputs`] after each successful job.
+    pub fn prepare_resumable_jobs_with_pool(
+        &self,
+        edge_buffer_pool: Option<Arc<EdgeBufferPool>>,
+    ) -> Result<PreparedResumableJobs> {
+        self.prepare_jobs_impl(edge_buffer_pool, true)
+    }
+
+    fn prepare_jobs_impl(
+        &self,
+        edge_buffer_pool: Option<Arc<EdgeBufferPool>>,
+        resume_completed_shards: bool,
+    ) -> Result<PreparedResumableJobs> {
         let mut jobs = Vec::new();
+        let mut resumed_shards = Vec::new();
+        let input_cleanup_root = self.input_cleanup_root();
         // Layout-computation scope: local types + external (parent) types
         // for cross-boundary FK width lookup. Externals are append-only —
         // `compute_relation_layouts` uses `find` so name collisions favor
@@ -171,12 +218,41 @@ impl GraphIndexBuilder {
             for (shard_idx, shard_meta) in node_type.shards.iter().enumerate() {
                 let shard_key: Arc<str> =
                     Arc::from(format!("{}/shard-{:05}", node_type.name, shard_idx));
-                let output_dir = Arc::new(
-                    self.output_root
-                        .join("nodes")
-                        .join(node_type.name.to_lowercase())
-                        .join(format!("shard-{:05}", shard_idx)),
-                );
+                let output_dir = self
+                    .output_root
+                    .join("nodes")
+                    .join(node_type.name.to_lowercase())
+                    .join(format!("shard-{:05}", shard_idx));
+                let expected_nodes = shard_node_count(node_type, shard_idx)?;
+                let commit_path = self.shard_commit_path(node_type, shard_idx);
+                let input_cleanup_paths = self.shard_input_cleanup_paths(
+                    node_type,
+                    shard_meta,
+                    relation_metas.as_ref(),
+                    shard_idx,
+                )?;
+                if resume_completed_shards
+                    && shard_output_is_committed(
+                        &output_dir,
+                        &commit_path,
+                        Some(shard_key.as_ref()),
+                        Some(expected_nodes),
+                    )?
+                {
+                    let reclaimed =
+                        remove_consumed_input_paths(&input_cleanup_paths, &input_cleanup_root)?;
+                    tracing::info!(
+                        shard = shard_key.as_ref(),
+                        reclaimed_bytes = reclaimed,
+                        "index resume: reusing committed shard output"
+                    );
+                    resumed_shards.push(ResumedShard {
+                        shard_key,
+                        expected_nodes,
+                    });
+                    continue;
+                }
+                let output_dir = Arc::new(output_dir);
                 let (node_data, node_data_max_len) = if node_type.has_node_data {
                     let paths = shard_meta
                         .node_data_paths
@@ -214,18 +290,79 @@ impl GraphIndexBuilder {
                     node_data_paths: node_data,
                     node_data_max_len,
                     edge_inputs: Arc::new(edge_inputs),
-                    expected_nodes: shard_node_count(node_type, shard_idx)?,
+                    expected_nodes,
                     edge_buffer_pool: edge_buffer_pool.clone(),
+                    input_cleanup_paths: Arc::new(input_cleanup_paths),
+                    input_cleanup_root: Arc::new(input_cleanup_root.clone()),
+                    commit_path: Arc::new(commit_path),
+                    output_sync_root: Arc::new(self.output_root.clone()),
+                    resumable: resume_completed_shards,
                 };
                 jobs.push(job);
             }
         }
-        Ok(jobs)
+        Ok(PreparedResumableJobs {
+            jobs,
+            resumed_shards,
+        })
+    }
+
+    fn shard_input_cleanup_paths(
+        &self,
+        node_type: &NodeTypeMetadata,
+        shard_meta: &NodeShardMetadata,
+        relation_metas: &[EdgeRelationMetadata],
+        shard_idx: usize,
+    ) -> Result<Vec<PathBuf>> {
+        let mut paths = Vec::new();
+        if node_type.has_node_data {
+            let node_paths = shard_meta.node_data_paths.as_ref().ok_or_else(|| {
+                anyhow!(
+                    "node data paths missing for {}/shard-{:05}",
+                    node_type.name,
+                    shard_idx
+                )
+            })?;
+            for path in node_paths {
+                let data_path = self.resolve_path(path);
+                if let Some(parent) = data_path.parent() {
+                    paths.push(parent.join("node_data.meta"));
+                }
+                paths.push(data_path);
+            }
+        }
+        for relation in relation_metas {
+            let shard = relation.shards.get(shard_idx).ok_or_else(|| {
+                anyhow!(
+                    "missing edge shard {} index {}",
+                    relation.name,
+                    shard_idx
+                )
+            })?;
+            paths.push(self.resolve_path(&shard.path));
+        }
+        Ok(paths)
     }
 
     fn resolve_path(&self, rel_path: &str) -> PathBuf {
         match &self.source {
             GraphDataSource::Local { root } => root.join(rel_path),
+        }
+    }
+
+    fn input_cleanup_root(&self) -> PathBuf {
+        match &self.source {
+            GraphDataSource::Local { root } => root.join("_tmp"),
+        }
+    }
+
+    fn shard_commit_path(&self, node_type: &NodeTypeMetadata, shard_idx: usize) -> PathBuf {
+        match &self.source {
+            GraphDataSource::Local { root } => index_shard_commit_path(
+                root,
+                &node_type.name.to_lowercase(),
+                &format!("shard-{:05}", shard_idx),
+            ),
         }
     }
 
@@ -285,6 +422,11 @@ pub struct ShardBuildJob {
     edge_inputs: Arc<Vec<EdgeShardInput>>,
     expected_nodes: u64,
     edge_buffer_pool: Option<Arc<EdgeBufferPool>>,
+    input_cleanup_paths: Arc<Vec<PathBuf>>,
+    input_cleanup_root: Arc<PathBuf>,
+    commit_path: Arc<PathBuf>,
+    output_sync_root: Arc<PathBuf>,
+    resumable: bool,
 }
 
 impl ShardBuildJob {
@@ -294,6 +436,16 @@ impl ShardBuildJob {
 
     pub fn estimated_edge_record_bytes(&self) -> Result<u64> {
         estimate_edge_record_bytes(self.edge_inputs.as_ref())
+    }
+
+    /// Remove the temporary node and mapped-edge inputs consumed by this job.
+    /// The caller must invoke this only after [`Self::run_with_budget`]
+    /// succeeds and the shard output is committed.
+    pub fn cleanup_consumed_inputs(&self) -> Result<u64> {
+        remove_consumed_input_paths(
+            self.input_cleanup_paths.as_ref(),
+            self.input_cleanup_root.as_ref(),
+        )
     }
 
     pub fn run(
@@ -324,14 +476,26 @@ impl ShardBuildJob {
         let builder = ShardBuilder::new(params);
         let adapter =
             progress.map(|sink| ShardProgressAdapter::new(Arc::clone(&self.shard_key), sink));
-        let result = builder.build_with_progress(
+        let mut output = builder.build_with_progress(
             &self.edge_inputs,
             Some(self.expected_nodes),
             adapter
                 .as_ref()
                 .map(|a| a as &dyn crate::builder::ProgressSink),
             None,
-        );
+        )?;
+        if self.resumable {
+            commit_shard_output(
+                self.output_dir.as_ref(),
+                self.commit_path.as_ref(),
+                self.shard_key.as_ref(),
+                self.expected_nodes,
+                self.output_sync_root.as_ref(),
+                self.input_cleanup_root
+                    .parent()
+                    .ok_or_else(|| anyhow!("index scratch root has no parent"))?,
+            )?;
+        }
         if let Some(sink) = progress {
             sink.report(GraphBuildProgress {
                 stage: GraphBuildStage::Complete {
@@ -341,11 +505,283 @@ impl ShardBuildJob {
                 total: None,
             });
         }
-        result.map(|mut output| {
-            output.wall_ms = start.elapsed().as_millis() as u64;
-            output
-        })
+        output.wall_ms = start.elapsed().as_millis() as u64;
+        Ok(output)
     }
+}
+
+pub fn index_shard_commit_path(root: &Path, table_dir: &str, shard_dir: &str) -> PathBuf {
+    root.join(INDEX_SHARD_COMMIT_DIR)
+        .join(table_dir)
+        .join(format!("{shard_dir}.json"))
+}
+
+/// A commit marker is published only after all shard outputs are synced.
+/// A missing marker means the output is provisional and can be rebuilt. An
+/// invalid marker is an integrity error: its inputs may already be reclaimed,
+/// so silently rebuilding would be unsafe.
+pub fn shard_output_is_committed(
+    output_dir: &Path,
+    commit_path: &Path,
+    expected_shard_key: Option<&str>,
+    expected_nodes: Option<u64>,
+) -> Result<bool> {
+    let Some(commit) = read_validated_shard_commit(
+        output_dir,
+        commit_path,
+        expected_shard_key,
+    )? else {
+        return Ok(false);
+    };
+    if let Some(expected) = expected_nodes {
+        ensure!(
+            commit.expected_nodes == expected,
+            "index shard commit node count mismatch at {}: expected {}, found {}",
+            commit_path.display(),
+            expected,
+            commit.expected_nodes
+        );
+    }
+    Ok(true)
+}
+
+/// Return the durable node count for a committed shard whose Encode metadata
+/// may already have been reclaimed. The marker and all committed output files
+/// are validated before its count is trusted.
+pub fn committed_shard_expected_nodes(
+    output_dir: &Path,
+    commit_path: &Path,
+    expected_shard_key: Option<&str>,
+) -> Result<Option<u64>> {
+    Ok(read_validated_shard_commit(
+        output_dir,
+        commit_path,
+        expected_shard_key,
+    )?
+    .map(|commit| commit.expected_nodes))
+}
+
+fn read_validated_shard_commit(
+    output_dir: &Path,
+    commit_path: &Path,
+    expected_shard_key: Option<&str>,
+) -> Result<Option<IndexShardCommit>> {
+    if !commit_path.exists() {
+        return Ok(None);
+    }
+    let payload = fs::read(commit_path)
+        .with_context(|| format!("read index shard commit {}", commit_path.display()))?;
+    let commit: IndexShardCommit = serde_json::from_slice(&payload)
+        .with_context(|| format!("parse index shard commit {}", commit_path.display()))?;
+    ensure!(
+        commit.version == INDEX_SHARD_COMMIT_VERSION,
+        "unsupported index shard commit version {} at {}",
+        commit.version,
+        commit_path.display()
+    );
+    if let Some(expected) = expected_shard_key {
+        ensure!(
+            commit.shard_key == expected,
+            "index shard commit key mismatch at {}: expected {}, found {}",
+            commit_path.display(),
+            expected,
+            commit.shard_key
+        );
+    }
+    validate_committed_shard_files(output_dir, &commit)
+        .with_context(|| format!("validate committed index shard {}", commit.shard_key))?;
+    Ok(Some(commit))
+}
+
+fn commit_shard_output(
+    output_dir: &Path,
+    commit_path: &Path,
+    shard_key: &str,
+    expected_nodes: u64,
+    output_sync_root: &Path,
+    commit_sync_root: &Path,
+) -> Result<()> {
+    let offsets_len = sync_file_len(&output_dir.join(OFFSETS_FILENAME))?;
+    let edges_len = sync_file_len(&output_dir.join(EDGES_FILENAME))?;
+    let build_stats_path = output_dir.join("build_stats.json");
+    let build_stats_len = sync_file_len(&build_stats_path)?;
+    let report = fs::File::open(&build_stats_path)?;
+    serde_json::from_reader::<_, serde_json::Value>(report)
+        .context("parse completed shard build_stats.json")?;
+    sync_directory_chain(output_dir, output_sync_root)?;
+
+    let commit = IndexShardCommit {
+        version: INDEX_SHARD_COMMIT_VERSION,
+        shard_key: shard_key.to_string(),
+        expected_nodes,
+        offsets_len,
+        edges_len,
+        build_stats_len,
+    };
+    write_durable_commit(
+        commit_path,
+        &serde_json::to_vec(&commit)?,
+        commit_sync_root,
+    )?;
+    validate_committed_shard_files(output_dir, &commit)
+}
+
+fn validate_committed_shard_files(output_dir: &Path, commit: &IndexShardCommit) -> Result<()> {
+    for (name, expected_len) in [
+        (OFFSETS_FILENAME, commit.offsets_len),
+        (EDGES_FILENAME, commit.edges_len),
+        ("build_stats.json", commit.build_stats_len),
+    ] {
+        let path = output_dir.join(name);
+        let actual = fs::metadata(&path)
+            .with_context(|| format!("stat committed shard file {}", path.display()))?
+            .len();
+        ensure!(
+            actual == expected_len,
+            "committed shard file size changed for {}: expected {}, found {}",
+            path.display(),
+            expected_len,
+            actual
+        );
+    }
+
+    let report = fs::File::open(output_dir.join("build_stats.json"))?;
+    serde_json::from_reader::<_, serde_json::Value>(report)
+        .context("parse committed shard build_stats.json")?;
+
+    let offsets_path = output_dir.join(OFFSETS_FILENAME);
+    let mut offsets = fs::File::open(&offsets_path)?;
+    let header_len = bincode::serialized_size(&OffsetFileHeader::new(0, 0))? as usize;
+    let mut header_bytes = vec![0u8; header_len];
+    offsets
+        .read_exact(&mut header_bytes)
+        .with_context(|| format!("read committed offsets header {}", offsets_path.display()))?;
+    let header: OffsetFileHeader = bincode::deserialize(&header_bytes)?;
+    ensure!(
+        header.version == LAYOUT_VERSION,
+        "committed offsets layout version mismatch: expected {}, found {}",
+        LAYOUT_VERSION,
+        header.version
+    );
+    ensure!(
+        header.nodes == commit.expected_nodes
+            && header.total_offsets == commit.expected_nodes.saturating_add(1),
+        "committed offsets count mismatch: expected {} nodes, found {} nodes and {} offsets",
+        commit.expected_nodes,
+        header.nodes,
+        header.total_offsets
+    );
+    Ok(())
+}
+
+fn sync_file_len(path: &Path) -> Result<u64> {
+    let file = fs::File::open(path).with_context(|| format!("open {} for sync", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("sync completed shard file {}", path.display()))?;
+    Ok(file.metadata()?.len())
+}
+
+fn sync_directory(path: &Path) -> Result<()> {
+    fs::File::open(path)
+        .and_then(|dir| dir.sync_all())
+        .with_context(|| format!("sync directory {}", path.display()))
+}
+
+fn sync_directory_chain(start: &Path, stop: &Path) -> Result<()> {
+    let mut current = Some(start);
+    while let Some(path) = current {
+        sync_directory(path)?;
+        if path == stop {
+            return Ok(());
+        }
+        current = path.parent();
+    }
+    Err(anyhow!(
+        "directory {} is not below durable root {}",
+        start.display(),
+        stop.display()
+    ))
+}
+
+fn write_durable_commit(path: &Path, payload: &[u8], durable_root: &Path) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("index shard commit has no parent: {}", path.display()))?;
+    fs::create_dir_all(parent)?;
+    let tmp_path = path.with_extension("json.tmp");
+    let _ = fs::remove_file(&tmp_path);
+    let mut file = fs::File::create(&tmp_path)?;
+    file.write_all(payload)?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(&tmp_path, path)?;
+    sync_directory_chain(parent, durable_root)
+}
+
+fn remove_consumed_input_paths(paths: &[PathBuf], allowed_root: &Path) -> Result<u64> {
+    let mut removed_bytes = 0u64;
+    let mut unique = HashSet::new();
+    let allowed_root = allowed_root
+        .canonicalize()
+        .with_context(|| format!("canonicalize index scratch root {}", allowed_root.display()))?;
+    for path in paths {
+        if !unique.insert(path.clone()) || !path.exists() {
+            continue;
+        }
+        let link_metadata = fs::symlink_metadata(path)
+            .with_context(|| format!("stat consumed index input {}", path.display()))?;
+        ensure!(
+            !link_metadata.file_type().is_symlink(),
+            "refusing to remove symlinked index input {}",
+            path.display()
+        );
+        let canonical = path
+            .canonicalize()
+            .with_context(|| format!("canonicalize consumed index input {}", path.display()))?;
+        ensure!(
+            canonical.starts_with(&allowed_root) && canonical != allowed_root,
+            "refusing to remove index input outside {}: {}",
+            allowed_root.display(),
+            canonical.display()
+        );
+        removed_bytes = removed_bytes.saturating_add(if link_metadata.is_dir() {
+            directory_bytes(&canonical)?
+        } else {
+            link_metadata.len()
+        });
+        if link_metadata.is_dir() {
+            fs::remove_dir_all(&canonical).with_context(|| {
+                format!("remove consumed index input {}", canonical.display())
+            })?;
+        } else {
+            fs::remove_file(&canonical).with_context(|| {
+                format!("remove consumed index input {}", canonical.display())
+            })?;
+        }
+        if let Some(parent) = canonical.parent() {
+            sync_directory(parent)?;
+        }
+    }
+    Ok(removed_bytes)
+}
+
+fn directory_bytes(root: &Path) -> Result<u64> {
+    let mut total = 0u64;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(&dir).with_context(|| format!("read_dir {}", dir.display()))? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else if file_type.is_symlink() {
+                total = total.saturating_add(fs::symlink_metadata(entry.path())?.len());
+            } else {
+                total = total.saturating_add(entry.metadata()?.len());
+            }
+        }
+    }
+    Ok(total)
 }
 
 struct ShardProgressAdapter<'a> {
@@ -1299,4 +1735,77 @@ fn load_pk_hash_table(
         shards.push(shard);
     }
     Ok(PkHashTable::new(key_type, shards))
+}
+
+#[cfg(test)]
+mod scratch_cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn committed_shard_requires_durable_marker_and_matching_files() {
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("nodes/users/shard-00000");
+        fs::create_dir_all(&output).unwrap();
+        let mut header = OffsetFileHeader::new(0, 1);
+        header.version = LAYOUT_VERSION;
+        fs::write(
+            output.join(OFFSETS_FILENAME),
+            bincode::serialize(&header).unwrap(),
+        )
+        .unwrap();
+        fs::write(output.join(EDGES_FILENAME), b"").unwrap();
+        fs::write(output.join("build_stats.json"), b"{}").unwrap();
+        let marker = index_shard_commit_path(root.path(), "users", "shard-00000");
+        assert!(
+            !shard_output_is_committed(&output, &marker, Some("Users/shard-00000"), Some(0))
+                .unwrap()
+        );
+
+        commit_shard_output(
+            &output,
+            &marker,
+            "Users/shard-00000",
+            0,
+            root.path(),
+            root.path(),
+        )
+        .unwrap();
+        assert!(
+            shard_output_is_committed(&output, &marker, Some("Users/shard-00000"), Some(0))
+                .unwrap()
+        );
+        assert_eq!(
+            committed_shard_expected_nodes(&output, &marker, Some("Users/shard-00000"))
+                .unwrap(),
+            Some(0)
+        );
+        fs::write(output.join(EDGES_FILENAME), b"changed").unwrap();
+        assert!(
+            shard_output_is_committed(&output, &marker, Some("Users/shard-00000"), Some(0))
+                .is_err()
+        );
+        assert!(
+            committed_shard_expected_nodes(&output, &marker, Some("Users/shard-00000")).is_err()
+        );
+    }
+
+    #[test]
+    fn consumed_input_cleanup_handles_files_directories_and_duplicates() {
+        let root = tempfile::tempdir().unwrap();
+        let node_data = root.path().join("node_data.bin");
+        let edge_shard = root.path().join("edge-shard");
+        fs::create_dir(&edge_shard).unwrap();
+        fs::write(&node_data, b"node").unwrap();
+        fs::write(edge_shard.join("part-00000.bin"), b"edges").unwrap();
+
+        let removed = remove_consumed_input_paths(
+            &[node_data.clone(), edge_shard.clone(), node_data.clone()],
+            root.path(),
+        )
+        .unwrap();
+
+        assert_eq!(removed, 9);
+        assert!(!node_data.exists());
+        assert!(!edge_shard.exists());
+    }
 }

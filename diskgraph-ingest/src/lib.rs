@@ -80,7 +80,10 @@ use diskgraph_fs::{CloudObjectCondition, CloudTransfer, PooledBytes};
 use diskgraph_index::builder::{
     EdgeBufferPool as IndexEdgeBufferPool, MemoryBudget, MemoryBudgetGuard,
 };
-use diskgraph_index::graph::{GraphDataSource, GraphIndexBuilder, GraphProgressSink};
+use diskgraph_index::graph::{
+    committed_shard_expected_nodes, index_shard_commit_path, shard_output_is_committed,
+    GraphBuildProgress, GraphBuildStage, GraphDataSource, GraphIndexBuilder, GraphProgressSink,
+};
 use diskgraph_rowpack::{
     BinaryStringHint, IngestedType as RowpackType, RowAccess, RowAccessHints, RowAccessStats,
     RowPackConfig, RowPackContextBuilder, RowPackEncoder, RowPackRowLens,
@@ -994,9 +997,15 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     } else {
         tracing::info!(stage = "pk_map", "resume: skipped (marker present)");
     }
-    let edge_ctx = ctx.edge_build_context()?;
+    // Shard offsets are needed by Index metadata even when EdgesMap is
+    // skipped during resume. They are independent of reclaimable edge inputs.
+    ctx.build_shard_offsets();
     ctx.set_peak_stage(Some(3));
     if should_run(IngestPhase::EdgesMap) {
+        // Build the sort-key/FK lookups only when EdgesMap will actually run.
+        // Index resume intentionally permits those EdgesMap inputs to have
+        // been reclaimed after its durable predecessor marker was written.
+        let edge_ctx = ctx.edge_build_context()?;
         let edges_map_start = std::time::Instant::now();
         run_phase_with_marker(
             &local_root,
@@ -1005,9 +1014,11 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
             profile_dir.as_deref(),
             || {
                 ctx.build_edges_mapped(&edge_ctx)?;
+                ctx.record_index_input_bytes();
                 ctx.persist_resume_stats_state(EDGES_MAP_STATE_PATH)
             },
         )?;
+        drop(edge_ctx);
         edges_map_wall = edges_map_start.elapsed();
         tracing::info!(
             stage = "edges_map",
@@ -1019,15 +1030,14 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
         // needs. Marker is already on disk so a crash here doesn't break
         // resume — `index` doesn't read these dirs, and `cleanup_temp` at
         // pipeline end will remove `_tmp/` wholesale on full success.
-        let _ = ctx.cleanup_edge_stage("edges_src");
-        let _ = ctx.cleanup_edge_stage("fkeys");
-        let _ = ctx.cleanup_edge_stage("fkeys_dst");
-        let _ = ctx.cleanup_edge_stage("edge_keys");
     } else {
         tracing::info!(stage = "edges_map", "resume: skipped (marker present)");
     }
-    drop(edge_ctx);
+    for stage in ["edges_src", "fkeys", "fkeys_dst", "edge_keys", "sort_keys"] {
+        let _ = ctx.cleanup_edge_stage(stage);
+    }
     ctx.set_peak_stage(Some(4));
+    ctx.record_index_input_bytes_if_missing();
     let index_metadata = ctx.build_index_metadata()?;
     if should_run(IngestPhase::Index) {
         let index_start = std::time::Instant::now();
@@ -1055,16 +1065,6 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     ctx.set_peak_stage(Some(5));
     let finalize_start = std::time::Instant::now();
     let index_metadata = ctx.finalize_metadata(index_metadata)?;
-    if let OutputTarget::Local { root, .. } = &*ctx.target {
-        let nodes_root = root.join(TEMP_DIR_NAME).join("nodes");
-        if nodes_root.exists() {
-            ctx.temp_node_data_bytes = sum_dir_bytes(&nodes_root).unwrap_or(0);
-        }
-        let edges_root = root.join(TEMP_DIR_NAME).join("edges_map");
-        if edges_root.exists() {
-            ctx.temp_edges_map_bytes = sum_dir_bytes(&edges_root).unwrap_or(0);
-        }
-    }
     // TT-NG timestamp grouping: merge the per-shard spills into per-stage
     // `bucket_index.bin` (final node-ids grouped by TIMESTAMP). Runs after
     // `finalize_metadata` (shard offsets / min-ids known) and BEFORE
@@ -1440,6 +1440,43 @@ mod tests_resume_phase {
         assert!(table_dir.join("node_data.ctx").exists());
         assert!(table_dir.join("pk_hash-00000.bin").exists());
         assert!(table_dir.join("pk_data-00000.bin").exists());
+    }
+
+    #[test]
+    fn wipe_index_preserves_committed_shard_and_rejects_corruption() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let shard = root.join("nodes/users/shard-00000");
+        fs::create_dir_all(&shard).unwrap();
+        let header = diskgraph_index::layout::OffsetFileHeader::new(0, 1);
+        let offsets = bincode::serialize(&header).unwrap();
+        fs::write(shard.join("offsets.bin"), &offsets).unwrap();
+        fs::write(shard.join("edges.bin"), b"").unwrap();
+        fs::write(shard.join("build_stats.json"), b"{}").unwrap();
+        let commit = index_shard_commit_path(root, "users", "shard-00000");
+        fs::create_dir_all(commit.parent().unwrap()).unwrap();
+        fs::write(
+            &commit,
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "shard_key": "Users/shard-00000",
+                "expected_nodes": 0,
+                "offsets_len": offsets.len(),
+                "edges_len": 0,
+                "build_stats_len": 2,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        wipe_phase_outputs(root, "index").unwrap();
+        assert!(shard.join("offsets.bin").exists());
+        assert!(shard.join("edges.bin").exists());
+        assert!(shard.join("build_stats.json").exists());
+
+        fs::write(shard.join("edges.bin"), b"corrupt").unwrap();
+        assert!(wipe_phase_outputs(root, "index").is_err());
+        assert!(commit.exists(), "an invalid commit must not be discarded");
     }
 
     #[test]
@@ -1820,6 +1857,46 @@ mod tests_repopulate_helpers {
             "missing-shard slot should be 0"
         );
         assert_eq!(ctx.table_rows.get("Users"), Some(&16u64));
+    }
+
+    #[test]
+    fn repopulate_node_stats_uses_validated_commit_after_meta_reclaim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let target = local_target(root);
+        let table = node_table("Users", Some("id"));
+        let num_shards = 3;
+        write_temp_meta(&target, &temp_node_data_meta_path(&table.name, 0), 5, 0).unwrap();
+        write_temp_meta(&target, &temp_node_data_meta_path(&table.name, 2), 11, 0).unwrap();
+
+        let shard_name = "shard-00001";
+        let output_dir = root.join("nodes/users").join(shard_name);
+        fs::create_dir_all(&output_dir).unwrap();
+        let offsets = bincode::serialize(&diskgraph_index::layout::OffsetFileHeader::new(7, 8))
+            .unwrap();
+        fs::write(output_dir.join("offsets.bin"), &offsets).unwrap();
+        fs::write(output_dir.join("edges.bin"), b"").unwrap();
+        fs::write(output_dir.join("build_stats.json"), b"{}").unwrap();
+        let commit = index_shard_commit_path(root, "users", shard_name);
+        fs::create_dir_all(commit.parent().unwrap()).unwrap();
+        fs::write(
+            &commit,
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "shard_key": "Users/shard-00001",
+                "expected_nodes": 7,
+                "offsets_len": offsets.len(),
+                "edges_len": 0,
+                "build_stats_len": 2,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mut ctx = make_ctx(graph_config(vec![table]), target, num_shards);
+        ctx.repopulate_node_stats_from_meta().unwrap();
+        assert_eq!(ctx.shard_rows.get("Users"), Some(&vec![5u64, 7, 11]));
+        assert_eq!(ctx.table_rows.get("Users"), Some(&23u64));
     }
 
     #[test]
@@ -7343,6 +7420,7 @@ impl IngestContext {
         };
         self.shard_rows.clear();
         self.table_rows.clear();
+        let mut recovered_committed_shards = 0usize;
         for table in &self.source.tables {
             if table.edge_table.is_some() {
                 continue;
@@ -7351,18 +7429,45 @@ impl IngestContext {
             let mut total = 0u64;
             for (shard, slot) in shard_rows.iter_mut().enumerate() {
                 let meta_path = root.join(temp_node_data_meta_path(&table.name, shard));
-                if !meta_path.exists() {
-                    continue;
-                }
-                let meta = read_temp_meta(&meta_path)?;
-                *slot = meta.row_count;
-                total = total.saturating_add(meta.row_count);
+                let row_count = if meta_path.exists() {
+                    read_temp_meta(&meta_path)?.row_count
+                } else {
+                    // A committed Index shard is allowed to reclaim its
+                    // node_data.meta. Recover the durable count from the
+                    // validated commit marker instead of treating the shard
+                    // as empty on resume.
+                    let shard_name = format!("shard-{shard:05}");
+                    let output_dir = root
+                        .join("nodes")
+                        .join(table.name.to_lowercase())
+                        .join(&shard_name);
+                    let commit_path = index_shard_commit_path(
+                        &root,
+                        &table.name.to_lowercase(),
+                        &shard_name,
+                    );
+                    let shard_key = format!("{}/{shard_name}", table.name);
+                    match committed_shard_expected_nodes(
+                        &output_dir,
+                        &commit_path,
+                        Some(&shard_key),
+                    )? {
+                        Some(count) => {
+                            recovered_committed_shards += 1;
+                            count
+                        }
+                        None => 0,
+                    }
+                };
+                *slot = row_count;
+                total = total.saturating_add(row_count);
             }
             self.shard_rows.insert(table.name.clone(), shard_rows);
             self.table_rows.insert(table.name.clone(), total);
         }
         tracing::info!(
             tables = self.shard_rows.len(),
+            recovered_committed_shards,
             "repopulated shard_rows + table_rows from encode meta files"
         );
         Ok(())
@@ -9452,7 +9557,6 @@ impl IngestContext {
 
     fn edge_build_context(&mut self) -> Result<EdgeBuildContext> {
         let root = require_local_output(&self.target)?.to_path_buf();
-        self.build_shard_offsets();
         let mut rel_sort_bits = HashMap::new();
         let mut rel_sort_keys = HashMap::new();
         for rel in &self.relation_defs {
@@ -10785,6 +10889,30 @@ impl IngestContext {
         Ok(())
     }
 
+    fn record_index_input_bytes(&mut self) {
+        let OutputTarget::Local { root, .. } = &*self.target else {
+            return;
+        };
+        let nodes_root = root.join(TEMP_DIR_NAME).join("nodes");
+        if nodes_root.exists() {
+            self.temp_node_data_bytes = self
+                .temp_node_data_bytes
+                .max(sum_dir_bytes(&nodes_root).unwrap_or(0));
+        }
+        let edges_root = root.join(TEMP_DIR_NAME).join("edges_map");
+        if edges_root.exists() {
+            self.temp_edges_map_bytes = self
+                .temp_edges_map_bytes
+                .max(sum_dir_bytes(&edges_root).unwrap_or(0));
+        }
+    }
+
+    fn record_index_input_bytes_if_missing(&mut self) {
+        if self.temp_node_data_bytes == 0 || self.temp_edges_map_bytes == 0 {
+            self.record_index_input_bytes();
+        }
+    }
+
     fn record_edge_stage_bytes(&mut self, dir: &str) -> Result<u64> {
         if let OutputTarget::Local { root, .. } = &*self.target {
             let stage_root = root.join(TEMP_DIR_NAME).join(dir);
@@ -10987,14 +11115,32 @@ impl IngestContext {
         let mut metadata_writer = BufWriter::new(metadata_file);
         serde_json::to_writer_pretty(&mut metadata_writer, builder.metadata())?;
         metadata_writer.flush()?;
-        let jobs = builder.prepare_jobs_with_pool(edge_buffer_pool)?;
+        let prepared = builder.prepare_resumable_jobs_with_pool(edge_buffer_pool)?;
         let adapter = self
             .progress
             .clone()
             .map(|cb| IndexProgressAdapter::new(cb, table_totals.clone()));
         let adapter = adapter.map(std::sync::Arc::new);
-        let mut tasks = Vec::with_capacity(jobs.len());
-        for job in jobs {
+        if let Some(progress) = adapter.as_ref() {
+            for resumed in prepared.resumed_shards {
+                progress.report(GraphBuildProgress {
+                    stage: GraphBuildStage::BuildShard {
+                        shard: std::sync::Arc::clone(&resumed.shard_key),
+                    },
+                    current: resumed.expected_nodes,
+                    total: Some(resumed.expected_nodes),
+                });
+                progress.report(GraphBuildProgress {
+                    stage: GraphBuildStage::Complete {
+                        shard: resumed.shard_key,
+                    },
+                    current: 0,
+                    total: None,
+                });
+            }
+        }
+        let mut tasks = Vec::with_capacity(prepared.jobs.len());
+        for job in prepared.jobs {
             let adapter = adapter.clone();
             let mem_budget = mem_budget.clone();
             tasks.push(WorkItem {
@@ -11004,7 +11150,16 @@ impl IngestContext {
                         .as_ref()
                         .map(|value| value.as_ref() as &dyn GraphProgressSink);
 
-                    job.run_with_budget(progress, mem_budget).map(|_| ())
+                    job.run_with_budget(progress, mem_budget)?;
+                    let reclaimed = job.cleanup_consumed_inputs()?;
+                    if reclaimed > 0 {
+                        tracing::info!(
+                            shard = job.shard_key(),
+                            reclaimed_bytes = reclaimed,
+                            "index shard complete: removed consumed scratch"
+                        );
+                    }
+                    Ok(())
                 }),
             });
         }
@@ -12079,12 +12234,26 @@ fn wipe_phase_outputs(root: &Path, phase: &str) -> Result<()> {
                         if !name.starts_with("shard-") {
                             continue;
                         }
+                        let table_name = match table_dir.file_name().and_then(|n| n.to_str()) {
+                            Some(name) => name,
+                            None => continue,
+                        };
+                        let commit_path = index_shard_commit_path(root, table_name, name.as_str());
+                        if shard_output_is_committed(&shard_dir, &commit_path, None, None)? {
+                            continue;
+                        }
                         for f in ["offsets.bin", "edges.bin", "build_stats.json"] {
                             let p = shard_dir.join(f);
                             if p.exists() {
                                 fs::remove_file(&p)
                                     .with_context(|| format!("remove {}", p.display()))?;
                             }
+                        }
+                        let stale_commit_tmp = commit_path.with_extension("json.tmp");
+                        if stale_commit_tmp.exists() {
+                            fs::remove_file(&stale_commit_tmp).with_context(|| {
+                                format!("remove {}", stale_commit_tmp.display())
+                            })?;
                         }
                     }
                 }

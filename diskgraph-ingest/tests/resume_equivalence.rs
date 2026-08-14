@@ -480,7 +480,8 @@ fn run_phase_boundary_test(stop_after: IngestPhase) -> Result<()> {
             parent_index_path: None,
             ..Default::default()
         },
-    )?;
+    )
+    .context("fresh baseline ingest")?;
 
     // 2. Split arm 1: partial run stopped after `stop_after`.
     run_partial(&config_path, &split_root, stop_after)?;
@@ -499,6 +500,24 @@ fn run_phase_boundary_test(stop_after: IngestPhase) -> Result<()> {
             leaked.join("split").display(),
         );
     }
+
+    // A durable EdgesMap marker permits reclaiming the sort-key inputs before
+    // Index begins. Make that state deterministic instead of relying on the
+    // race between post-EdgesMap cleanup and run_partial's SIGKILL. Index
+    // resume must not reconstruct an EdgesMap context that reopens these files.
+    if resume_from == IngestPhase::Index {
+        let sort_keys = split_root.join("_tmp/sort_keys");
+        if sort_keys.exists() {
+            fs::remove_dir_all(&sort_keys)
+                .with_context(|| format!("remove reclaimed {}", sort_keys.display()))?;
+        }
+        if sort_keys.exists() {
+            bail!(
+                "reclaimed sort-key directory still exists: {}",
+                sort_keys.display()
+            );
+        }
+    }
     // Note: we deliberately do NOT bail when index_metadata.json exists
     // here. That file is Index's *first* output (`build_index`'s
     // `fs::File::create` runs immediately after the phase begins), not
@@ -516,7 +535,7 @@ fn run_phase_boundary_test(stop_after: IngestPhase) -> Result<()> {
     // `run_partial`'s predecessor check catches on its own).
 
     // 3. Split arm 2: in-process resume from `resume_from`.
-    ingest_with_stats(
+    if let Err(error) = ingest_with_stats(
         &config_path,
         split_root.to_str().unwrap(),
         Dest::Local,
@@ -530,7 +549,16 @@ fn run_phase_boundary_test(stop_after: IngestPhase) -> Result<()> {
             parent_index_path: None,
             ..Default::default()
         },
-    )?;
+    ) {
+        let leaked = tmp.keep();
+        return Err(error).with_context(|| {
+            format!(
+                "resume ingest from {}; split: {}",
+                resume_from.name(),
+                leaked.join("split").display()
+            )
+        });
+    }
 
     // 4. Both must produce a final index_metadata.json + per-shard files.
     if !baseline_root.join("index_metadata.json").exists() {
