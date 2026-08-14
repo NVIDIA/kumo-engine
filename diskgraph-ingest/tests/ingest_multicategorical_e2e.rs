@@ -613,6 +613,38 @@ fn convert_multicat_string_detects_sparse_comma() -> Result<()> {
 }
 
 #[test]
+fn convert_multicat_string_rejects_bracketed_json_rows() -> Result<()> {
+    let dir = tempdir()?;
+    let data_dir = dir.path().join("data");
+    fs::create_dir_all(&data_dir)?;
+    let rows: Vec<&str> = (0..100).map(|_| r#"["kids","outdoor"]"#).collect();
+    write_tags_parquet(&data_dir.join("items.parquet"), &rows);
+
+    let kumo_json = build_kumo_config(&data_dir, None);
+    let kumo: KumoGraphConfig = serde_json::from_value(kumo_json)?;
+    let options = ConvertOptions {
+        data_persist_dir: data_dir.to_string_lossy().to_string(),
+        dataset_name: "mc_detect_bracketed".to_string(),
+        table_data_versions: None,
+        source_paths_base: None,
+        source_paths: Some({
+            let mut m = std::collections::HashMap::new();
+            m.insert("items".to_string(), data_dir.to_string_lossy().to_string());
+            m
+        }),
+        source_specs: None,
+    };
+    let cfg = convert_kumo_to_diskgraph(&kumo, &options)?;
+    let col = cfg.tables[0]
+        .columns
+        .iter()
+        .find(|c| c.name == "tags")
+        .expect("tags col");
+    assert_eq!(col.multicategorical_delimiter, None);
+    Ok(())
+}
+
+#[test]
 fn convert_multicat_string_detects_pipe() -> Result<()> {
     let dir = tempdir()?;
     let data_dir = dir.path().join("data");

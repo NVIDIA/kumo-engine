@@ -210,10 +210,21 @@ pub(crate) fn ip_to_ipv6_bytes(ip: std::net::IpAddr) -> [u8; 16] {
     }
 }
 
+fn format_has_tz(fmt: &str) -> bool {
+    fmt.contains("%z") || fmt.contains("%:z") || fmt.contains("%#z")
+}
+
+/// kumo#30447: chrono's `%z` rejects the `Z` that RFC3339 allows, so an
+/// offset-bearing format must not be stricter than no format at all.
+fn parse_rfc3339_utc(value: &str) -> Option<NaiveDateTime> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|v| v.naive_utc())
+}
+
 pub(crate) fn parse_timestamp_text(value: &str, format: Option<&str>) -> Option<i64> {
     let ts = if let Some(fmt) = format {
-        let has_tz = fmt.contains("%z") || fmt.contains("%:z");
-        if has_tz {
+        if format_has_tz(fmt) {
             chrono::DateTime::parse_from_str(value, fmt)
                 .ok()
                 .map(|v| v.naive_utc())
@@ -222,6 +233,8 @@ pub(crate) fn parse_timestamp_text(value: &str, format: Option<&str>) -> Option<
                     let base_fmt = fmt
                         .replace(" %:z", "")
                         .replace("%:z", "")
+                        .replace(" %#z", "")
+                        .replace("%#z", "")
                         .replace(" %z", "")
                         .replace("%z", "");
                     NaiveDateTime::parse_from_str(value, &base_fmt)
@@ -231,7 +244,8 @@ pub(crate) fn parse_timestamp_text(value: &str, format: Option<&str>) -> Option<
                                 .ok()
                                 .map(|d| d.and_hms_opt(0, 0, 0).unwrap())
                         })
-                })?
+                })
+                .or_else(|| parse_rfc3339_utc(value))?
         } else {
             NaiveDateTime::parse_from_str(value, fmt)
                 .ok()
@@ -242,9 +256,7 @@ pub(crate) fn parse_timestamp_text(value: &str, format: Option<&str>) -> Option<
                 })?
         }
     } else {
-        chrono::DateTime::parse_from_rfc3339(value)
-            .ok()
-            .map(|v| v.naive_utc())
+        parse_rfc3339_utc(value)
             .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").ok())
             .or_else(|| {
                 NaiveDate::parse_from_str(value, "%Y-%m-%d")
@@ -258,11 +270,19 @@ pub(crate) fn parse_timestamp_text(value: &str, format: Option<&str>) -> Option<
 
 pub(crate) fn parse_date_text(value: &str, format: Option<&str>) -> Option<i32> {
     let dt = if let Some(fmt) = format {
-        NaiveDate::parse_from_str(value, fmt).ok().or_else(|| {
-            NaiveDateTime::parse_from_str(value, fmt)
-                .ok()
-                .map(|v| v.date())
-        })
+        NaiveDate::parse_from_str(value, fmt)
+            .ok()
+            .or_else(|| {
+                NaiveDateTime::parse_from_str(value, fmt)
+                    .ok()
+                    .map(|v| v.date())
+            })
+            .or_else(|| {
+                format_has_tz(fmt)
+                    .then(|| parse_rfc3339_utc(value))
+                    .flatten()
+                    .map(|v| v.date())
+            })
     } else {
         NaiveDate::parse_from_str(value, "%Y-%m-%d")
             .ok()
@@ -375,6 +395,9 @@ pub const TIMESTAMP_FORMATS: &[&str] = &[
     "%Y-%m-%d %H:%M:%S %:z",
     "%Y-%m-%dT%H:%M:%S%z",
     "%Y-%m-%dT%H:%M:%S%:z",
+    // %#z also accepts a 'Z' suffix, which %z/%:z reject
+    "%Y-%m-%dT%H:%M:%S%#z",
+    "%Y-%m-%d %H:%M:%S%#z",
     // Non-ISO formats (chrono fallback, lower priority)
     "%m/%d/%Y",
     "%m/%d/%Y %H:%M:%S",
@@ -399,6 +422,15 @@ pub fn detect_timestamp_format(value: &str) -> Option<&'static str> {
     })
 }
 
+pub(crate) fn digit_count(mut value: u64) -> u32 {
+    let mut n = 1;
+    while value >= 10 {
+        value /= 10;
+        n += 1;
+    }
+    n
+}
+
 /// Detect if an integer value encodes a date in a compact format.
 ///
 /// Checks digit count and validates plausibility (year 1900-2100, etc.):
@@ -410,9 +442,7 @@ pub fn detect_timestamp_format(value: &str) -> Option<&'static str> {
 /// Returns `None` for values that don't match or fail plausibility checks.
 pub fn detect_encoded_int_format(value: i64) -> Option<&'static str> {
     let abs = value.unsigned_abs();
-    let digits = if abs == 0 { 1 } else { ((abs as f64).log10().floor() as u32) + 1 };
-
-    match digits {
+    match digit_count(abs) {
         4 => {
             // %Y — year only
             let year = abs as u32;
@@ -542,7 +572,9 @@ pub(crate) fn parse_fraction(bytes: &[u8], pos: usize) -> Option<(u32, usize, us
 
 // "%Y-%m-%d"
 pub(crate) fn parse_ymd_fast(bytes: &[u8]) -> Option<i64> {
-    if bytes.len() != 10 {
+    // Separator bytes are not compared, so rejecting digits there is what keeps
+    // a 10-digit epoch-seconds string from reading as a date.
+    if bytes.len() != 10 || bytes[4].is_ascii_digit() || bytes[7].is_ascii_digit() {
         return None;
     }
     let a = unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const u64) };
@@ -653,6 +685,9 @@ pub(crate) fn parse_ymd_hms_space_fast(bytes: &[u8]) -> Option<i64> {
 // "%Y-%m-%d %H:%M:%S%.f" / "%Y-%m-%dT%H:%M:%S%.f"
 pub(crate) fn parse_ymd_hms_space_frac_fast(bytes: &[u8]) -> Option<i64> {
     if bytes.len() < 21 {
+        return None;
+    }
+    if bytes[19] != b'.' {
         return None;
     }
     let (year, month, day, hour, minute, second) = parse_ymd_hms_digits(bytes)?;

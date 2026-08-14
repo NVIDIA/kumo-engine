@@ -415,6 +415,25 @@ impl TimestampUnit {
             TimestampUnit::Nanos
         })
     }
+
+    /// Canonical `s`/`ms`/`us`/`ns` token; the inverse of `map_timestamp_unit`.
+    pub fn token(self) -> &'static str {
+        match self {
+            TimestampUnit::Seconds => "s",
+            TimestampUnit::Millis => "ms",
+            TimestampUnit::Micros => "us",
+            TimestampUnit::Nanos => "ns",
+        }
+    }
+
+    pub fn to_arrow(self) -> arrow_schema::TimeUnit {
+        match self {
+            TimestampUnit::Seconds => arrow_schema::TimeUnit::Second,
+            TimestampUnit::Millis => arrow_schema::TimeUnit::Millisecond,
+            TimestampUnit::Micros => arrow_schema::TimeUnit::Microsecond,
+            TimestampUnit::Nanos => arrow_schema::TimeUnit::Nanosecond,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]

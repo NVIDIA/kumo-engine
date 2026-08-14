@@ -34,6 +34,11 @@ from ._c import (
     verify_snapshot_integrity,
     has_resumable_ingest,
     compute_col_stats_for_parquet,
+    resolve_temporal,
+    detect_multicat_delimiter,
+    multicat_delimiter_is_proven,
+    TIMESTAMP_FORMATS,
+    MULTICAT_DELIMITERS,
 )
 from ._exceptions import DiskgraphTaskError
 

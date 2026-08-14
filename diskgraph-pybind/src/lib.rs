@@ -160,6 +160,7 @@ mod custom_tt_entry;
 mod index_metadata;
 mod success_marker;
 mod runtime_batch_iterator;
+mod temporal;
 mod tt_builder;
 mod tt_executor;
 
@@ -1379,5 +1380,6 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
         custom_tt_entry::build_prediction_table_artifacts_for_existing_table,
         m
     )?)?;
+    temporal::register(m)?;
     Ok(())
 }

@@ -2047,6 +2047,112 @@ fn test_parse_timestamp_text_tz_format_no_tz_value() {
     assert_eq!(result.unwrap(), expected);
 }
 
+// ---- zulu ('Z') handling ----
+
+const ZULU_TS: i64 = 1_562_198_400; // 2019-07-04T00:00:00Z
+
+#[test]
+fn test_parse_timestamp_text_offset_format_zulu_value() {
+    // kumo#30447: chrono's %z rejects 'Z'; an explicit format must not be worse than none.
+    assert_eq!(
+        parse_timestamp_text("2019-07-04T00:00:00Z", Some("%Y-%m-%dT%H:%M:%S%z")),
+        Some(ZULU_TS)
+    );
+    assert_eq!(
+        parse_timestamp_text("2019-07-04T00:00:00Z", Some("%Y-%m-%dT%H:%M:%S%:z")),
+        Some(ZULU_TS)
+    );
+}
+
+#[test]
+fn test_detect_timestamp_format_zulu() {
+    let fmt = detect_timestamp_format("2019-07-04T00:00:00Z").unwrap();
+    assert_eq!(
+        parse_timestamp_text("2019-07-04T00:00:00Z", Some(fmt)),
+        Some(ZULU_TS)
+    );
+    // Offset-bearing values keep their pre-existing format (detection order is load-bearing).
+    assert_eq!(
+        detect_timestamp_format("2019-07-04T00:00:00+00:00"),
+        Some("%Y-%m-%d %H:%M:%S%:z")
+    );
+    assert_eq!(
+        detect_timestamp_format("2019-07-04 00:00:00"),
+        Some("%Y-%m-%d %H:%M:%S")
+    );
+}
+
+#[test]
+fn test_parse_timestamp_text_permissive_offset_format() {
+    let fmt = "%Y-%m-%dT%H:%M:%S%#z";
+    assert_eq!(
+        parse_timestamp_text("2019-07-04T00:00:00Z", Some(fmt)),
+        Some(ZULU_TS)
+    );
+    assert_eq!(
+        parse_timestamp_text("2019-07-04T00:00:00+00:00", Some(fmt)),
+        Some(ZULU_TS)
+    );
+    // has_tz + mixed-tz strip chain must recognise %#z, else a tz-less value nulls out.
+    assert_eq!(
+        parse_timestamp_text("2019-07-04T00:00:00", Some(fmt)),
+        Some(ZULU_TS)
+    );
+}
+
+const ZULU_DAYS: i32 = 18081;
+
+#[test]
+fn test_parse_date_text_permissive_offset_format() {
+    assert_eq!(
+        parse_date_text("2019-07-04T00:00:00Z", Some("%Y-%m-%dT%H:%M:%S%#z")),
+        Some(ZULU_DAYS)
+    );
+}
+
+#[test]
+fn test_parse_date_text_offset_format_zulu_value() {
+    assert_eq!(
+        parse_date_text("2019-07-04T00:00:00Z", Some("%Y-%m-%dT%H:%M:%S%z")),
+        Some(ZULU_DAYS)
+    );
+    assert_eq!(
+        parse_date_text("2019-07-04T00:00:00Z", Some("%Y-%m-%dT%H:%M:%S%:z")),
+        Some(ZULU_DAYS)
+    );
+}
+
+#[test]
+fn test_parse_date_text_no_tz_format_rejects_tz_value() {
+    assert!(parse_date_text("2019-07-04T00:00:00+05:30", Some("%Y-%m-%dT%H:%M:%S")).is_none());
+}
+
+/// The fraction fast path must not read a colonless offset as a fraction:
+/// `...T00:00:00-0530` would otherwise detect as `%.f` and lose 5h30m.
+#[test]
+fn test_parse_ymd_hms_frac_fast_requires_a_dot() {
+    assert!(parse_ymd_hms_space_frac_fast(b"2019-07-04T00:00:00.500").is_some());
+    assert!(parse_ymd_hms_space_frac_fast(b"2019-07-04T00:00:00-0530").is_none());
+    assert_eq!(
+        parse_timestamp_text("2019-07-04T00:00:00-0530", Some("%Y-%m-%dT%H:%M:%S%z")),
+        Some(1_562_218_200)
+    );
+}
+
+// ---- digit counting ----
+
+#[test]
+fn test_digit_count_exact_at_powers_of_ten() {
+    assert_eq!(digit_count(0), 1);
+    let mut p: u64 = 1;
+    for expected in 1..=19u32 {
+        assert_eq!(digit_count(p), expected, "10^{}", expected - 1);
+        assert_eq!(digit_count(p - 1), expected.saturating_sub(1).max(1));
+        p = p.saturating_mul(10);
+    }
+    assert_eq!(digit_count(u64::MAX), 20);
+}
+
 fn int_dict_ctx(values: &[i64]) -> RowPackContext {
     let mut builder = RowPackContextBuilder::new(
         vec![RowPackColumn {
@@ -2364,5 +2470,3 @@ fn float_dict_round_trips_hits_and_misses() {
         other => panic!("expected Float64, got {other:?}"),
     }
 }
-
-

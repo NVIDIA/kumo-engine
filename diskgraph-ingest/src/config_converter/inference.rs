@@ -16,6 +16,24 @@ enum TimestampDetection {
     Unit(TimestampUnit),
 }
 
+/// How one sampled value votes.
+enum TemporalVote {
+    /// Arrow-native temporal type: the value carries its own unit, no hint needed.
+    Native,
+    Detected(TimestampDetection),
+    /// Non-null but unclassifiable; carries a sample for the warning.
+    Unrecognized(String),
+    Abstain,
+}
+
+/// Budget is counted in votes, not rows: a run of sentinels must not exhaust it
+/// and hide the timestamps behind it. Sized to kumo's inference sample
+/// (`NUM_ROWS_FOR_APPROX_STATS`), so the format is decided by the whole sample
+/// the caller supplies rather than by its first handful of classifiable rows —
+/// the detected format is persisted and never re-inferred, so a decision made
+/// on too little evidence is permanent.
+const TEMPORAL_MAX_VOTES: usize = 10_000;
+
 fn build_parquet_sample_reader<T, E>(
     source: T,
     path: &str,
@@ -131,128 +149,53 @@ pub fn detect_timestamp_formats(
         // Info about non-null values we couldn't classify (for warnings).
         let mut unrecognized_info: HashMap<usize, String> = HashMap::new();
 
-        /// Maximum number of non-null values to sample per column for majority vote.
-        const MAX_SAMPLES: usize = 10;
         /// Maximum number of files to download when searching for non-null values.
         const MAX_FILES: usize = 15;
 
         macro_rules! sample_from_reader {
             ($reader:expr, $schema:expr) => {{
-                // Resolve column indices and their arrow data types.
-                let col_info: Vec<Option<(usize, arrow_schema::DataType)>> = candidates
+                let col_info: Vec<Option<usize>> = candidates
                     .iter()
-                    .map(|(_, name)| {
-                        $schema
-                            .index_of(name)
-                            .ok()
-                            .map(|idx| (idx, $schema.field(idx).data_type().clone()))
-                    })
+                    .map(|(_, name)| $schema.index_of(name).ok())
                     .collect();
 
                 for batch in $reader {
                     let batch = batch?;
                     for (cand_idx, info) in col_info.iter().enumerate() {
-                        let (arr_idx, dt) = match info {
-                            Some((i, dt)) => (*i, dt),
-                            None => continue,
+                        let Some(arr_idx) = *info else {
+                            continue;
                         };
                         let col_key = candidates[cand_idx].0;
                         if native_temporal.contains(&col_key) {
                             continue;
                         }
-                        if *sample_counts.get(&col_key).unwrap_or(&0) >= MAX_SAMPLES {
+                        if votes.get(&col_key).map_or(0, Vec::len) >= TEMPORAL_MAX_VOTES {
                             continue;
                         }
                         let array = batch.column(arr_idx);
                         for row in 0..batch.num_rows() {
-                            if *sample_counts.get(&col_key).unwrap_or(&0) >= MAX_SAMPLES {
+                            if votes.get(&col_key).map_or(0, Vec::len) >= TEMPORAL_MAX_VOTES {
                                 break;
                             }
                             if array.is_null(row) {
                                 continue;
                             }
                             *sample_counts.entry(col_key).or_insert(0) += 1;
-                            match dt {
-                                // Native Arrow temporal types — rowpack handles
-                                // these directly from the Arrow type, no hint needed.
-                                arrow_schema::DataType::Date32
-                                | arrow_schema::DataType::Date64
-                                | arrow_schema::DataType::Timestamp(_, _)
-                                | arrow_schema::DataType::Time32(_)
-                                | arrow_schema::DataType::Time64(_) => {
+                            match classify_temporal_value(array.as_ref(), row) {
+                                TemporalVote::Native => {
                                     native_temporal.insert(col_key);
                                     break; // done with this column
                                 }
-                                arrow_schema::DataType::Utf8
-                                | arrow_schema::DataType::LargeUtf8
-                                | arrow_schema::DataType::Binary => {
-                                    let text: Option<&str> = if let Some(s) =
-                                        array.as_any().downcast_ref::<arrow_array::StringArray>()
-                                    {
-                                        Some(s.value(row))
-                                    } else if let Some(s) = array
-                                        .as_any()
-                                        .downcast_ref::<arrow_array::LargeStringArray>(
-                                    ) {
-                                        Some(s.value(row))
-                                    } else if let Some(s) =
-                                        array.as_any().downcast_ref::<arrow_array::BinaryArray>()
-                                    {
-                                        std::str::from_utf8(s.value(row)).ok()
-                                    } else {
-                                        None
-                                    };
-                                    if let Some(text) = text {
-                                        if let Some(fmt) =
-                                            diskgraph_rowpack::detect_timestamp_format(text)
-                                        {
-                                            votes
-                                                .entry(col_key)
-                                                .or_default()
-                                                .push(format!("fmt:{}", fmt));
-                                        } else if let Ok(v) = text.trim().parse::<i64>() {
-                                            if let Some(det) = detect_int_timestamp(v) {
-                                                votes
-                                                    .entry(col_key)
-                                                    .or_default()
-                                                    .push(detection_to_vote_key(&det));
-                                            }
-                                        } else {
-                                            // Non-null string, not a recognized timestamp
-                                            // format, not parseable as integer.
-                                            let sample =
-                                                if text.len() > 50 { &text[..50] } else { text };
-                                            unrecognized_info.entry(col_key).or_insert_with(|| {
-                                                format!(
-                                                    "unrecognized string format, sample: \"{}\"",
-                                                    sample
-                                                )
-                                            });
-                                        }
-                                    }
+                                TemporalVote::Detected(det) => {
+                                    votes
+                                        .entry(col_key)
+                                        .or_default()
+                                        .push(detection_to_vote_key(&det));
                                 }
-                                arrow_schema::DataType::Int8
-                                | arrow_schema::DataType::Int16
-                                | arrow_schema::DataType::Int32
-                                | arrow_schema::DataType::Int64
-                                | arrow_schema::DataType::UInt8
-                                | arrow_schema::DataType::UInt16
-                                | arrow_schema::DataType::UInt32
-                                | arrow_schema::DataType::UInt64 => {
-                                    if let Some(v) = read_int_value(array, row) {
-                                        if let Some(det) = detect_int_timestamp(v) {
-                                            votes
-                                                .entry(col_key)
-                                                .or_default()
-                                                .push(detection_to_vote_key(&det));
-                                        }
-                                    }
+                                TemporalVote::Unrecognized(info) => {
+                                    unrecognized_info.entry(col_key).or_insert(info);
                                 }
-                                _ => {
-                                    unrecognized_info.entry(col_key).or_insert_with(|| {
-                                        format!("unsupported arrow type: {:?}", dt)
-                                    });
-                                }
+                                TemporalVote::Abstain => {}
                             }
                         }
                     }
@@ -467,6 +410,151 @@ fn read_int_value(array: &dyn arrow_array::Array, row: usize) -> Option<i64> {
     }
 }
 
+/// Rewrite pandas' epoch encodings — float64 once a null appears, `i64::MIN`
+/// for NaT — as a null-carrying `Int64Array`, so a sentinel or an out-of-range
+/// float becomes null rather than a wrong instant. `None` when already clean.
+fn normalize_epoch_column(array: &dyn arrow_array::Array) -> Option<arrow_array::ArrayRef> {
+    use arrow_array::{Float32Array, Float64Array, Int64Array};
+    let truncate =
+        |v: f64| (v.is_finite() && v > i64::MIN as f64 && v < i64::MAX as f64).then_some(v as i64);
+    let values: Vec<Option<i64>> = if let Some(a) = array.as_any().downcast_ref::<Float64Array>() {
+        a.iter().map(|v| v.and_then(truncate)).collect()
+    } else if let Some(a) = array.as_any().downcast_ref::<Float32Array>() {
+        a.iter()
+            .map(|v| v.and_then(|v| truncate(f64::from(v))))
+            .collect()
+    } else {
+        let a = array.as_any().downcast_ref::<Int64Array>()?;
+        if !a.iter().any(|v| v == Some(i64::MIN)) {
+            return None;
+        }
+        a.iter().map(|v| v.filter(|&v| v != i64::MIN)).collect()
+    };
+    Some(std::sync::Arc::new(Int64Array::from(values)))
+}
+
+fn string_value(array: &dyn arrow_array::Array, row: usize) -> Option<&str> {
+    use arrow_array::*;
+    if let Some(a) = array.as_any().downcast_ref::<StringArray>() {
+        Some(a.value(row))
+    } else if let Some(a) = array.as_any().downcast_ref::<LargeStringArray>() {
+        Some(a.value(row))
+    } else {
+        array
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .and_then(|a| std::str::from_utf8(a.value(row)).ok())
+    }
+}
+
+/// The single per-value temporal decision; every caller funnels through here.
+fn classify_temporal_value(array: &dyn arrow_array::Array, row: usize) -> TemporalVote {
+    use arrow_schema::DataType::*;
+    match array.data_type() {
+        Date32 | Date64 | Timestamp(_, _) | Time32(_) | Time64(_) => TemporalVote::Native,
+        Utf8 | LargeUtf8 | Binary => {
+            let Some(text) = string_value(array, row) else {
+                return TemporalVote::Abstain;
+            };
+            if let Some(fmt) = diskgraph_rowpack::detect_timestamp_format(text) {
+                TemporalVote::Detected(TimestampDetection::Format(fmt.to_string()))
+            } else if let Ok(value) = text.trim().parse::<i64>() {
+                match detect_int_timestamp(value) {
+                    Some(det) => TemporalVote::Detected(det),
+                    None => TemporalVote::Abstain,
+                }
+            } else {
+                let sample: String = text.chars().take(50).collect();
+                TemporalVote::Unrecognized(format!(
+                    "unrecognized string format, sample: \"{}\"",
+                    sample
+                ))
+            }
+        }
+        Int8 | Int16 | Int32 | Int64 | UInt8 | UInt16 | UInt32 | UInt64 => {
+            match read_int_value(array, row).and_then(detect_int_timestamp) {
+                Some(det) => TemporalVote::Detected(det),
+                None => TemporalVote::Abstain,
+            }
+        }
+        dt => TemporalVote::Unrecognized(format!("unsupported arrow type: {:?}", dt)),
+    }
+}
+
+/// Majority-vote a column's temporal hint from its first non-null values.
+/// `None` for a native-temporal, empty or unclassifiable column.
+fn detect_temporal_column(array: &dyn arrow_array::Array) -> Option<TimestampDetection> {
+    let mut votes: Vec<String> = Vec::new();
+    for row in 0..array.len() {
+        if votes.len() >= TEMPORAL_MAX_VOTES {
+            break;
+        }
+        if array.is_null(row) {
+            continue;
+        }
+        match classify_temporal_value(array, row) {
+            TemporalVote::Native => return None,
+            TemporalVote::Detected(det) => votes.push(detection_to_vote_key(&det)),
+            _ => {}
+        }
+    }
+    majority_vote(&votes)
+}
+
+/// The hint Rust chose and the epoch values it produced under it. Detection
+/// sets at most one of `format`/`unit`; a caller that declares both gets both.
+pub struct ResolvedTemporal {
+    pub epochs: Vec<Option<i64>>,
+    pub format: Option<String>,
+    pub unit: Option<TimestampUnit>,
+}
+
+/// Detect (unless declared) and apply the temporal hint for one column,
+/// yielding epoch seconds, or epoch days when `as_days`. Best-effort: a null or
+/// unparseable value yields `None`, never an epoch.
+pub fn resolve_temporal(
+    array: &arrow_array::ArrayRef,
+    declared_format: Option<&str>,
+    declared_unit: Option<TimestampUnit>,
+    as_days: bool,
+) -> ResolvedTemporal {
+    let normalized = normalize_epoch_column(array.as_ref());
+    let array = normalized.as_ref().unwrap_or(array);
+    let (format, unit) = match (declared_format, declared_unit) {
+        (None, None) => match detect_temporal_column(array.as_ref()) {
+            Some(TimestampDetection::Format(fmt)) => (Some(fmt), None),
+            Some(TimestampDetection::Unit(unit)) => (None, Some(unit)),
+            None => (None, None),
+        },
+        (fmt, unit) => (fmt.map(str::to_string), unit),
+    };
+    let hints = diskgraph_rowpack::RowAccessHints {
+        timestamp_format: format.clone(),
+        timestamp_unit: unit.map(TimestampUnit::to_arrow),
+        ..Default::default()
+    };
+    let mut access = diskgraph_rowpack::RowAccess::new(
+        vec![hints],
+        diskgraph_rowpack::RowAccessStats::default(),
+    );
+    access.set_cols(std::slice::from_ref(array));
+    let epochs = (0..array.len())
+        .map(|row| {
+            access.set_row(row);
+            if as_days {
+                access.get_date(0).ok().flatten().map(i64::from)
+            } else {
+                access.get_timestamp(0).ok().flatten()
+            }
+        })
+        .collect();
+    ResolvedTemporal {
+        epochs,
+        format,
+        unit,
+    }
+}
+
 /// Compute total bytes across all table paths in a GraphConfig.
 ///
 /// For local paths, walks directories and sums file sizes.
@@ -666,9 +754,8 @@ use crate::graph_config::SemanticType;
 use arrow_array::Array;
 
 /// Candidate delimiters tried for `String + Multicategorical` columns.
-/// Order matters for deterministic reporting; the detector does not prefer
-/// earlier candidates, only uses the list for enumeration.
-const MULTICAT_DELIMITER_CANDIDATES: &[&str] = &[",", "|", ";", "\t"];
+/// Order is the tie-break: on equal hit counts the earlier candidate wins.
+pub const MULTICAT_DELIMITER_CANDIDATES: &[&str] = &[",", "|", ";", "\t"];
 
 /// Minimum sample support for auto-detecting a delimiter. Below this floor,
 /// punctuation is treated as noise and the column stays single-token-per-row.
@@ -681,19 +768,6 @@ const MULTICAT_EXPLICIT_SUSPICIOUS_FRACTION: f64 = 0.20;
 const MULTICAT_MAX_SAMPLES: usize = 1_000;
 /// Max number of files to inspect while looking for multicat delimiter samples.
 const MULTICAT_MAX_FILES: usize = 15;
-
-fn multicat_string_value(array: &dyn Array, row: usize) -> Option<&str> {
-    if let Some(str_arr) = array.as_any().downcast_ref::<arrow_array::StringArray>() {
-        Some(str_arr.value(row))
-    } else if let Some(str_arr) = array
-        .as_any()
-        .downcast_ref::<arrow_array::LargeStringArray>()
-    {
-        Some(str_arr.value(row))
-    } else {
-        None
-    }
-}
 
 struct ExplicitMulticatCandidate {
     name: String,
@@ -776,7 +850,7 @@ impl ExplicitMulticatDelimiterValidator {
                 if array.is_null(row) {
                     continue;
                 }
-                let Some(text) = multicat_string_value(array.as_ref(), row) else {
+                let Some(text) = string_value(array.as_ref(), row) else {
                     continue;
                 };
                 if text.is_empty() {
@@ -842,6 +916,8 @@ impl ExplicitMulticatDelimiterValidator {
 ///   long as it appears in at least ceil(1% of sampled non-null rows).
 /// - No candidate reaches the floor → `delimiter = None` (legitimate
 ///   single-token-per-row multicat).
+/// - Every non-empty sampled row is `[...]` → `delimiter = None`; bracketed
+///   JSON-like lists require a native list dtype, not a scalar delimiter.
 ///
 /// Ties are resolved by `MULTICAT_DELIMITER_CANDIDATES` order.
 ///
@@ -883,10 +959,7 @@ pub fn detect_multicategorical_delimiters(
             continue;
         }
 
-        // Per-column per-candidate occurrence counts, and total non-null
-        // sample rows for that column.
-        let mut per_col_totals: HashMap<usize, usize> = HashMap::new();
-        let mut per_col_hits: HashMap<usize, HashMap<&'static str, usize>> = HashMap::new();
+        let mut per_col: HashMap<usize, MulticatSamples> = HashMap::new();
 
         // Sample multiple parquet files. Early files can be empty, all-null,
         // or non-representative partitions, so continue until each candidate
@@ -906,29 +979,22 @@ pub fn detect_multicategorical_delimiters(
                         for (cand_idx, info) in col_info.iter().enumerate() {
                             let Some(arr_idx) = info else { continue };
                             let col_key = candidates[cand_idx].0;
-                            if *per_col_totals.get(&col_key).unwrap_or(&0) >= MULTICAT_MAX_SAMPLES {
+                            let samples = per_col.entry(col_key).or_default();
+                            if samples.is_full() {
                                 continue;
                             }
                             let array = batch.column(*arr_idx);
                             for row in 0..batch.num_rows() {
-                                if *per_col_totals.get(&col_key).unwrap_or(&0)
-                                    >= MULTICAT_MAX_SAMPLES
-                                {
+                                if samples.is_full() {
                                     break;
                                 }
                                 if array.is_null(row) {
                                     continue;
                                 }
-                                let Some(text) = multicat_string_value(array.as_ref(), row) else {
+                                let Some(text) = string_value(array.as_ref(), row) else {
                                     continue;
                                 };
-                                *per_col_totals.entry(col_key).or_insert(0) += 1;
-                                let hits = per_col_hits.entry(col_key).or_default();
-                                for cand in MULTICAT_DELIMITER_CANDIDATES {
-                                    if text.contains(cand) {
-                                        *hits.entry(*cand).or_insert(0) += 1;
-                                    }
-                                }
+                                samples.observe(text);
                             }
                         }
                     }
@@ -946,9 +1012,9 @@ pub fn detect_multicategorical_delimiters(
             scan_reader!(reader, schema);
 
             // Stop as soon as we have enough samples for every candidate.
-            let all_done = candidates.iter().all(|(col_idx, _)| {
-                *per_col_totals.get(col_idx).unwrap_or(&0) >= MULTICAT_MAX_SAMPLES
-            });
+            let all_done = candidates
+                .iter()
+                .all(|(col_idx, _)| per_col.get(col_idx).is_some_and(MulticatSamples::is_full));
             if all_done {
                 break;
             }
@@ -956,17 +1022,21 @@ pub fn detect_multicategorical_delimiters(
 
         // Decision per candidate column.
         for (col_idx, col_name) in &candidates {
-            let total = *per_col_totals.get(col_idx).unwrap_or(&0);
-            let hits = per_col_hits.remove(col_idx).unwrap_or_default();
-            let decision = decide_multicat_delimiter(total, &hits);
-            match decision {
+            let samples = per_col.remove(col_idx).unwrap_or_default();
+            match samples.decide() {
                 MulticatDelimiterDecision::NoDelimiter => {
                     // Leave `multicategorical_delimiter = None`.
-                    if total == 0 {
+                    if samples.total == 0 {
                         tracing::warn!(
                             table = %table.name, column = %col_name,
                             "multicategorical column was entirely null in sampled file — \
                              treating as single-token-per-row",
+                        );
+                    } else if samples.is_bracketed_encoding() {
+                        tracing::warn!(
+                            table = %table.name, column = %col_name,
+                            "multicategorical column is a bracketed JSON-like list, which is \
+                             not a supported scalar encoding — treating as single-token-per-row",
                         );
                     } else {
                         tracing::info!(
@@ -1043,39 +1113,108 @@ pub fn validate_explicit_multicat_delimiters(
     Ok(())
 }
 
+/// The delimiter for one column of sampled rows, or `None`.
+pub fn detect_multicat_delimiter<'a>(
+    rows: impl IntoIterator<Item = &'a str>,
+) -> Option<&'static str> {
+    let mut samples = MulticatSamples::default();
+    for row in rows {
+        samples.observe(row);
+    }
+    match samples.decide() {
+        MulticatDelimiterDecision::Winner(delimiter) => Some(delimiter),
+        MulticatDelimiterDecision::NoDelimiter => None,
+    }
+}
+
+/// Whether an already-chosen delimiter clears the same support floor. Several
+/// delimiters can clear it at once, so this is not "is it the winner".
+pub fn multicat_delimiter_is_proven<'a>(
+    rows: impl IntoIterator<Item = &'a str>,
+    delimiter: &str,
+) -> bool {
+    let mut samples = MulticatSamples::default();
+    for row in rows {
+        samples.observe(row);
+    }
+    samples.proves(delimiter)
+}
+
 #[derive(Debug)]
 enum MulticatDelimiterDecision {
     NoDelimiter,
     Winner(&'static str),
 }
 
-/// Pure decision function — exposed for unit testing so we can cover the
-/// threshold logic without parquet fixtures.
-fn decide_multicat_delimiter(
+#[derive(Default)]
+struct MulticatSamples {
     total: usize,
-    hits: &HashMap<&'static str, usize>,
-) -> MulticatDelimiterDecision {
-    if total == 0 {
-        return MulticatDelimiterDecision::NoDelimiter;
-    }
-    let min_count = (MULTICAT_DETECT_MIN_FRACTION * total as f64).ceil() as usize;
+    non_empty: usize,
+    bracketed: usize,
+    hits: HashMap<&'static str, usize>,
+}
 
-    let mut best: Option<(&'static str, usize)> = None;
-    for cand in MULTICAT_DELIMITER_CANDIDATES {
-        let count = hits.get(cand).copied().unwrap_or(0);
-        if count == 0 {
-            continue;
+impl MulticatSamples {
+    fn observe(&mut self, text: &str) {
+        self.total += 1;
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            self.non_empty += 1;
+            if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                self.bracketed += 1;
+            }
         }
+        for cand in MULTICAT_DELIMITER_CANDIDATES {
+            if text.contains(cand) {
+                *self.hits.entry(*cand).or_insert(0) += 1;
+            }
+        }
+    }
+
+    fn is_full(&self) -> bool {
+        self.total >= MULTICAT_MAX_SAMPLES
+    }
+
+    /// Splitting a JSON-like list would leave brackets and quotes in the tokens.
+    fn is_bracketed_encoding(&self) -> bool {
+        self.non_empty > 0 && self.bracketed == self.non_empty
+    }
+
+    /// Minimum hit count a delimiter needs, or `None` when nothing can be
+    /// proven against these rows.
+    fn min_count(&self) -> Option<usize> {
+        (self.total > 0 && !self.is_bracketed_encoding())
+            .then(|| (MULTICAT_DETECT_MIN_FRACTION * self.total as f64).ceil() as usize)
+    }
+
+    fn proves(&self, delimiter: &str) -> bool {
+        self.min_count()
+            .is_some_and(|min| self.hits.get(delimiter).copied().unwrap_or(0) >= min)
+    }
+
+    fn decide(&self) -> MulticatDelimiterDecision {
+        let Some(min_count) = self.min_count() else {
+            return MulticatDelimiterDecision::NoDelimiter;
+        };
+
+        let mut best: Option<(&'static str, usize)> = None;
+        for cand in MULTICAT_DELIMITER_CANDIDATES {
+            let count = self.hits.get(cand).copied().unwrap_or(0);
+            if count == 0 {
+                continue;
+            }
+            match best {
+                Some((_, best_count)) if best_count >= count => {}
+                _ => best = Some((cand, count)),
+            }
+        }
+
         match best {
-            Some((_, best_count)) if best_count >= count => {}
-            _ => best = Some((cand, count)),
+            Some((winner, count)) if count >= min_count => {
+                MulticatDelimiterDecision::Winner(winner)
+            }
+            _ => MulticatDelimiterDecision::NoDelimiter,
         }
-    }
-
-    match best {
-        Some((winner, count)) if count >= min_count => MulticatDelimiterDecision::Winner(winner),
-        None => MulticatDelimiterDecision::NoDelimiter,
-        _ => MulticatDelimiterDecision::NoDelimiter,
     }
 }
 
@@ -1385,29 +1524,39 @@ mod tests {
     // =====================================================================
     // Multicategorical delimiter decision-function tests
     //
-    // These cover the threshold logic in `decide_multicat_delimiter` without
-    // requiring parquet fixtures. End-to-end detection against real parquet
+    // These cover the threshold and encoding logic in `MulticatSamples`
+    // without parquet fixtures. End-to-end detection against real parquet
     // is exercised by the integration tests in `diskgraph-ingest/tests/`.
     // =====================================================================
 
-    fn hits(pairs: &[(&'static str, usize)]) -> HashMap<&'static str, usize> {
-        pairs.iter().copied().collect()
+    fn counted(total: usize, pairs: &[(&'static str, usize)]) -> MulticatSamples {
+        MulticatSamples {
+            total,
+            non_empty: total,
+            hits: pairs.iter().copied().collect(),
+            ..Default::default()
+        }
+    }
+
+    fn observed(rows: &[&str]) -> MulticatSamples {
+        let mut samples = MulticatSamples::default();
+        for row in rows {
+            samples.observe(row);
+        }
+        samples
     }
 
     #[test]
     fn multicat_decide_zero_samples_is_no_delimiter() {
-        let h = hits(&[]);
-        assert!(matches!(
-            decide_multicat_delimiter(0, &h),
-            MulticatDelimiterDecision::NoDelimiter
-        ));
+        let s = counted(0, &[]);
+        assert!(matches!(s.decide(), MulticatDelimiterDecision::NoDelimiter));
     }
 
     #[test]
     fn multicat_decide_clear_majority_comma_wins() {
         // 80 / 100 rows have comma, none have others.
-        let h = hits(&[(",", 80)]);
-        match decide_multicat_delimiter(100, &h) {
+        let s = counted(100, &[(",", 80)]);
+        match s.decide() {
             MulticatDelimiterDecision::Winner(",") => {}
             other => panic!("expected Winner(\",\"), got {:?}", other),
         }
@@ -1416,8 +1565,8 @@ mod tests {
     #[test]
     fn multicat_decide_pipe_wins_against_noise() {
         // 60% pipe, 0.9% comma: the most common observed delimiter wins.
-        let h = hits(&[("|", 600), (",", 9)]);
-        match decide_multicat_delimiter(1000, &h) {
+        let s = counted(1000, &[("|", 600), (",", 9)]);
+        match s.decide() {
             MulticatDelimiterDecision::Winner("|") => {}
             other => panic!("expected Winner(\"|\"), got {:?}", other),
         }
@@ -1427,8 +1576,8 @@ mod tests {
     fn multicat_decide_picks_most_common_candidate() {
         // Comma in 50% of rows and pipe in 30%: comma wins because it is
         // most common.
-        let h = hits(&[(",", 50), ("|", 30)]);
-        match decide_multicat_delimiter(100, &h) {
+        let s = counted(100, &[(",", 50), ("|", 30)]);
+        match s.decide() {
             MulticatDelimiterDecision::Winner(",") => {}
             other => panic!("expected Winner(\",\"), got {:?}", other),
         }
@@ -1438,8 +1587,8 @@ mod tests {
     fn multicat_decide_single_sparse_candidate_below_50pct_wins() {
         // Sparse multicategorical columns are valid: if exactly one delimiter
         // is observed, it should win even if most rows are single-token.
-        let h = hits(&[(",", 30)]);
-        match decide_multicat_delimiter(100, &h) {
+        let s = counted(100, &[(",", 30)]);
+        match s.decide() {
             MulticatDelimiterDecision::Winner(",") => {}
             other => panic!("expected Winner(\",\"), got {:?}", other),
         }
@@ -1448,8 +1597,8 @@ mod tests {
     #[test]
     fn multicat_decide_single_observed_candidate_wins() {
         // A delimiter at the 1% floor wins if it is the most common candidate.
-        let h = hits(&[(",", 10)]);
-        match decide_multicat_delimiter(1000, &h) {
+        let s = counted(1000, &[(",", 10)]);
+        match s.decide() {
             MulticatDelimiterDecision::Winner(",") => {}
             other => panic!("expected Winner(\",\"), got {:?}", other),
         }
@@ -1457,17 +1606,14 @@ mod tests {
 
     #[test]
     fn multicat_decide_observed_candidate_below_one_percent_is_no_delimiter() {
-        let h = hits(&[(",", 9)]);
-        assert!(matches!(
-            decide_multicat_delimiter(1000, &h),
-            MulticatDelimiterDecision::NoDelimiter
-        ));
+        let s = counted(1000, &[(",", 9)]);
+        assert!(matches!(s.decide(), MulticatDelimiterDecision::NoDelimiter));
     }
 
     #[test]
     fn multicat_decide_competing_candidates_pick_highest_count() {
-        let h = hits(&[(",", 10), ("|", 11)]);
-        match decide_multicat_delimiter(1000, &h) {
+        let s = counted(1000, &[(",", 10), ("|", 11)]);
+        match s.decide() {
             MulticatDelimiterDecision::Winner("|") => {}
             other => panic!("expected Winner(\"|\"), got {:?}", other),
         }
@@ -1475,8 +1621,8 @@ mod tests {
 
     #[test]
     fn multicat_decide_tie_uses_candidate_order() {
-        let h = hits(&[(",", 10), ("|", 10)]);
-        match decide_multicat_delimiter(1000, &h) {
+        let s = counted(1000, &[(",", 10), ("|", 10)]);
+        match s.decide() {
             MulticatDelimiterDecision::Winner(",") => {}
             other => panic!("expected Winner(\",\"), got {:?}", other),
         }
@@ -1484,19 +1630,52 @@ mod tests {
 
     #[test]
     fn multicat_decide_no_observed_candidate_is_no_delimiter() {
-        let h = hits(&[]);
-        assert!(matches!(
-            decide_multicat_delimiter(1000, &h),
-            MulticatDelimiterDecision::NoDelimiter
-        ));
+        let s = counted(1000, &[]);
+        assert!(matches!(s.decide(), MulticatDelimiterDecision::NoDelimiter));
     }
 
     #[test]
     fn multicat_decide_thresholds_scale_with_total() {
         // At very small sample counts, the ceil() in the 1% floor matters.
         // 3 rows, 2 with comma, 0 others → winner.
-        let h = hits(&[(",", 2)]);
-        match decide_multicat_delimiter(3, &h) {
+        let s = counted(3, &[(",", 2)]);
+        match s.decide() {
+            MulticatDelimiterDecision::Winner(",") => {}
+            other => panic!("expected Winner(\",\"), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn multicat_bracketed_json_rows_are_no_delimiter() {
+        let s = observed(&[r#"["a","b"]"#, r#"["c"]"#, r#"["d","e","f"]"#]);
+        assert!(matches!(s.decide(), MulticatDelimiterDecision::NoDelimiter));
+    }
+
+    #[test]
+    fn multicat_bracketed_rows_ignore_empty_and_whitespace() {
+        let s = observed(&[r#"  ["a","b"]  "#, "", "   ", r#"["c","d"]"#]);
+        assert!(matches!(s.decide(), MulticatDelimiterDecision::NoDelimiter));
+    }
+
+    #[test]
+    fn multicat_one_unbracketed_row_keeps_detection() {
+        let s = observed(&[r#"["a","b"]"#, "c,d"]);
+        match s.decide() {
+            MulticatDelimiterDecision::Winner(",") => {}
+            other => panic!("expected Winner(\",\"), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn multicat_all_empty_rows_are_not_bracketed() {
+        let s = observed(&["", "  "]);
+        assert!(!s.is_bracketed_encoding());
+    }
+
+    #[test]
+    fn multicat_plain_rows_still_detect_comma() {
+        let s = observed(&["a,b", "c,d", "e"]);
+        match s.decide() {
             MulticatDelimiterDecision::Winner(",") => {}
             other => panic!("expected Winner(\",\"), got {:?}", other),
         }
@@ -1547,5 +1726,232 @@ mod tests {
             compute_local_dir_bytes(&with_scheme),
             compute_local_dir_bytes(bare)
         );
+    }
+}
+
+#[cfg(test)]
+mod tests_resolve {
+    use super::*;
+    use arrow_array::ArrayRef;
+    use std::sync::Arc;
+
+    const JUL_4_2019: i64 = 1_562_198_400;
+
+    fn strings(values: &[Option<&str>]) -> ArrayRef {
+        Arc::new(arrow_array::StringArray::from(values.to_vec()))
+    }
+
+    fn resolve(
+        array: &ArrayRef,
+        fmt: Option<&str>,
+        unit: Option<TimestampUnit>,
+    ) -> ResolvedTemporal {
+        resolve_temporal(array, fmt, unit, false)
+    }
+
+    #[test]
+    fn resolve_detects_string_format_and_parses() {
+        let array = strings(&[Some("2019-07-04 00:00:00"), None]);
+        let r = resolve(&array, None, None);
+        assert_eq!(r.epochs, vec![Some(JUL_4_2019), None]);
+        assert_eq!(r.format.as_deref(), Some("%Y-%m-%d %H:%M:%S"));
+        assert_eq!(r.unit, None);
+    }
+
+    /// kumo#30447: an offset format must not null a `Z`-suffixed value.
+    #[test]
+    fn resolve_zulu_value_under_offset_format() {
+        let array = strings(&[Some("2019-07-04T00:00:00Z")]);
+        let r = resolve(&array, Some("%Y-%m-%dT%H:%M:%S%z"), None);
+        assert_eq!(r.epochs, vec![Some(JUL_4_2019)]);
+        assert_eq!(r.format.as_deref(), Some("%Y-%m-%dT%H:%M:%S%z"));
+    }
+
+    #[test]
+    fn resolve_honors_declared_format_over_detection() {
+        let array = strings(&[Some("07/04/2019")]);
+        let r = resolve(&array, Some("%m/%d/%Y"), None);
+        assert_eq!(r.epochs, vec![Some(JUL_4_2019)]);
+        assert_eq!(r.format.as_deref(), Some("%m/%d/%Y"));
+    }
+
+    #[test]
+    fn resolve_detects_epoch_unit_from_magnitude() {
+        let array: ArrayRef = Arc::new(arrow_array::Int64Array::from(vec![
+            Some(JUL_4_2019 * 1_000),
+            None,
+        ]));
+        let r = resolve(&array, None, None);
+        assert_eq!(r.epochs, vec![Some(JUL_4_2019), None]);
+        assert_eq!(r.unit, Some(TimestampUnit::Millis));
+        assert_eq!(r.format, None);
+    }
+
+    #[test]
+    fn resolve_honors_declared_unit_over_magnitude() {
+        let array: ArrayRef = Arc::new(arrow_array::Int64Array::from(vec![JUL_4_2019 * 1_000]));
+        let r = resolve(&array, None, Some(TimestampUnit::Micros));
+        assert_eq!(r.epochs, vec![Some(1_562_199)]);
+        assert_eq!(r.unit, Some(TimestampUnit::Micros));
+    }
+
+    #[test]
+    fn resolve_detects_encoded_int_date() {
+        let array: ArrayRef = Arc::new(arrow_array::Int64Array::from(vec![20190704]));
+        let r = resolve(&array, None, None);
+        assert_eq!(r.format.as_deref(), Some("%Y%m%d"));
+        assert_eq!(r.unit, None);
+        assert_eq!(r.epochs, vec![Some(JUL_4_2019)]);
+    }
+
+    #[test]
+    fn resolve_native_column_carries_no_hint() {
+        let array: ArrayRef = Arc::new(arrow_array::TimestampMicrosecondArray::from(vec![
+            Some(JUL_4_2019 * 1_000_000),
+            None,
+        ]));
+        let r = resolve(&array, None, None);
+        assert_eq!(r.epochs, vec![Some(JUL_4_2019), None]);
+        assert_eq!(r.format, None);
+        assert_eq!(r.unit, None);
+    }
+
+    #[test]
+    fn resolve_all_null_column_yields_no_hint_and_no_epochs() {
+        let array = strings(&[None, None]);
+        let r = resolve(&array, None, None);
+        assert_eq!(r.epochs, vec![None, None]);
+        assert_eq!(r.format, None);
+        assert_eq!(r.unit, None);
+    }
+
+    #[test]
+    fn resolve_unparseable_value_is_none_not_zero() {
+        let array = strings(&[Some("2019-07-04"), Some("not a date")]);
+        let r = resolve(&array, None, None);
+        assert_eq!(r.epochs, vec![Some(JUL_4_2019), None]);
+    }
+
+    /// A run of sentinels at the head of a column must not exhaust the sample
+    /// budget and hide the timestamps behind it.
+    #[test]
+    fn resolve_looks_past_leading_sentinels() {
+        let mut values = vec![Some("0"); TEMPORAL_MAX_VOTES * 3];
+        values.push(Some("2019-07-04"));
+        let r = resolve(&strings(&values), None, None);
+        assert_eq!(r.format.as_deref(), Some("%Y-%m-%d"));
+    }
+
+    #[test]
+    fn resolve_gives_up_on_a_column_of_pure_sentinels() {
+        let values = vec![Some("0"); TEMPORAL_MAX_VOTES * 3];
+        let r = resolve(&strings(&values), None, None);
+        assert_eq!(r.format, None);
+        assert_eq!(r.unit, None);
+    }
+
+    /// A colonless offset must not be swallowed as a sub-second fraction.
+    /// (The resolved token keeps the space separator: the fast paths accept
+    /// either separator, so detection reports the first equivalent format.)
+    #[test]
+    fn resolve_colonless_offset_keeps_the_offset() {
+        let array = strings(&[Some("2019-07-04T00:00:00-0530")]);
+        let r = resolve(&array, None, None);
+        assert!(r.format.as_deref().is_some_and(|f| f.ends_with("%z")));
+        assert_eq!(r.epochs, vec![Some(JUL_4_2019 + 5 * 3600 + 1800)]);
+    }
+
+    #[test]
+    fn resolve_float_epoch_column() {
+        let array: ArrayRef = Arc::new(arrow_array::Float64Array::from(vec![
+            Some(JUL_4_2019 as f64 * 1_000.0),
+            Some(f64::NAN),
+            None,
+        ]));
+        let r = resolve(&array, None, None);
+        assert_eq!(r.unit, Some(TimestampUnit::Millis));
+        assert_eq!(r.epochs, vec![Some(JUL_4_2019), None, None]);
+    }
+
+    /// pandas encodes NaT as `i64::MIN`; it must not decode to year 1677.
+    #[test]
+    fn resolve_nat_sentinel_is_null_not_an_epoch() {
+        let array: ArrayRef = Arc::new(arrow_array::Int64Array::from(vec![
+            Some(JUL_4_2019),
+            Some(i64::MIN),
+        ]));
+        let r = resolve(&array, None, None);
+        assert_eq!(r.epochs, vec![Some(JUL_4_2019), None]);
+        assert_eq!(r.unit, Some(TimestampUnit::Seconds));
+    }
+
+    /// A float too large for `i64` must be null, not a saturated cast.
+    #[test]
+    fn resolve_out_of_range_float_is_null() {
+        let array: ArrayRef = Arc::new(arrow_array::Float64Array::from(vec![
+            Some(JUL_4_2019 as f64),
+            Some(1e300),
+            Some(f64::INFINITY),
+        ]));
+        let r = resolve(&array, None, None);
+        assert_eq!(r.epochs, vec![Some(JUL_4_2019), None, None]);
+    }
+
+    /// A declared unit must reach the apply path even when a format is also
+    /// declared, exactly as `build_row_access_hints` passes both to ingest.
+    #[test]
+    fn resolve_applies_declared_unit_alongside_declared_format() {
+        let array: ArrayRef = Arc::new(arrow_array::Int64Array::from(vec![JUL_4_2019 * 1_000]));
+        let r = resolve(
+            &array,
+            Some("%Y-%m-%d %H:%M:%S"),
+            Some(TimestampUnit::Millis),
+        );
+        assert_eq!(r.epochs, vec![Some(JUL_4_2019)]);
+        assert_eq!(r.unit, Some(TimestampUnit::Millis));
+    }
+
+    /// A 10-digit epoch-seconds string is an epoch, not a `%Y-%m-%d` date.
+    #[test]
+    fn resolve_string_epoch_column_is_a_unit_not_a_date_format() {
+        let array = strings(&[Some("1562198400"), Some("1562284800")]);
+        let r = resolve_temporal(&array, None, None, false);
+        assert_eq!(r.format, None);
+        assert_eq!(r.unit, Some(TimestampUnit::Seconds));
+        assert_eq!(r.epochs, vec![Some(JUL_4_2019), Some(JUL_4_2019 + 86_400)]);
+    }
+
+    /// `as_days` routes to the date path; a partial day still rounds up.
+    #[test]
+    fn resolve_days_returns_epoch_days() {
+        let array = strings(&[
+            Some("2019-07-04 00:00:00"),
+            Some("2019-07-04 12:00:00"),
+            None,
+        ]);
+        let r = resolve_temporal(&array, None, None, true);
+        let day = JUL_4_2019 / 86_400;
+        assert_eq!(r.epochs, vec![Some(day), Some(day + 1), None]);
+        assert_eq!(r.format.as_deref(), Some("%Y-%m-%d %H:%M:%S"));
+    }
+
+    #[test]
+    fn detect_multicat_delimiter_picks_the_supported_candidate() {
+        assert_eq!(detect_multicat_delimiter(["a,b", "c,d"]), Some(","));
+        assert_eq!(detect_multicat_delimiter(["a|b", "c|d"]), Some("|"));
+        assert_eq!(detect_multicat_delimiter(["a", "b"]), None);
+        assert_eq!(detect_multicat_delimiter(["[\"a\", \"b\"]"]), None);
+    }
+
+    /// A loser can still be proven: proof is the support floor, not the vote.
+    #[test]
+    fn multicat_delimiter_is_proven_accepts_a_non_winning_candidate() {
+        let rows = ["a,b|c", "d,e"];
+        assert_eq!(detect_multicat_delimiter(rows), Some(","));
+        assert!(multicat_delimiter_is_proven(rows, "|"));
+        assert!(!multicat_delimiter_is_proven(rows, ";"));
+        assert!(!multicat_delimiter_is_proven(rows, ":"));
+        assert!(!multicat_delimiter_is_proven(["[\"a\", \"b\"]"], ","));
+        assert!(!multicat_delimiter_is_proven([], ","));
     }
 }

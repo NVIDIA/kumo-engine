@@ -16672,7 +16672,7 @@ pub(crate) fn build_row_access_hints(table: &TableSpec) -> Vec<RowAccessHints> {
         .iter()
         .map(|col| RowAccessHints {
             timestamp_format: col.timestamp_format.clone(),
-            timestamp_unit: to_arrow_time_unit(col.timestamp_unit.as_ref()),
+            timestamp_unit: col.timestamp_unit.map(|u| u.to_arrow()),
             decimal_scale: col.scale,
             binary_string_hint: match col.ingested_dtype {
                 IngestedType::Uuid => BinaryStringHint::Uuid,
@@ -16684,17 +16684,6 @@ pub(crate) fn build_row_access_hints(table: &TableSpec) -> Vec<RowAccessHints> {
             column_name: Some(col.name.clone()),
         })
         .collect()
-}
-
-fn to_arrow_time_unit(
-    unit: Option<&crate::graph_config::TimestampUnit>,
-) -> Option<arrow_schema::TimeUnit> {
-    match unit? {
-        crate::graph_config::TimestampUnit::Seconds => Some(arrow_schema::TimeUnit::Second),
-        crate::graph_config::TimestampUnit::Millis => Some(arrow_schema::TimeUnit::Millisecond),
-        crate::graph_config::TimestampUnit::Micros => Some(arrow_schema::TimeUnit::Microsecond),
-        crate::graph_config::TimestampUnit::Nanos => Some(arrow_schema::TimeUnit::Nanosecond),
-    }
 }
 
 fn rowpack_columns(table: &TableSpec) -> Result<Vec<diskgraph_rowpack::RowPackColumn>> {
