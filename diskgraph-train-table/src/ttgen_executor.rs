@@ -80,6 +80,25 @@ fn category_count_accumulators(
     (target, entity)
 }
 
+fn drain_required_target_category_counts(
+    target: Option<&SharedColumnCounts>,
+) -> TTGenResult<Option<HashMap<String, u64>>> {
+    if target.is_some_and(SharedColumnCounts::is_aborted) {
+        return Err(TTGenError::TargetCategoryLimit(format!(
+            "train-table target category limit exceeded: TARGET1 requires exact \
+             CATEGORY_COUNTS, but observed more than \
+             {MAX_TRAIN_TABLE_TARGET_CATEGORIES} unique categories; refusing to publish \
+             an incomplete train-table statistics artifact"
+        )));
+    }
+
+    Ok(target.map(|counts| {
+        counts
+            .drain_to_map()
+            .expect("non-aborted target counts must drain")
+    }))
+}
+
 /// Build `[StageGenInfo; 3]` for train/val/test from the fused pass-B output.
 fn stage_gen_infos_from_parts(parts: &[StagePartsOut; 3]) -> Vec<StageGenInfo> {
     const KEYS: [&str; 3] = ["train", "val", "test"];
@@ -910,10 +929,15 @@ where
         }
     }
 
-    // Drain shared categorical target counts after all chunks are done
-    let target_category_counts = shared_target_counts.as_ref().and_then(|s| s.drain_to_map());
+    // Categorical targets require exact CATEGORY_COUNTS for encoder inference.
+    // The target accumulator has no string budget, but it still aborts above
+    // its DiskGraph-owned safety ceiling. Treating that abort as `None` would
+    // silently omit required target stats while reporting generation success.
+    let target_category_counts =
+        drain_required_target_category_counts(shared_target_counts.as_deref())?;
 
-    // Drain shared entity category counts after all chunks are done
+    // ENTITY1 exact category counts are intentionally not collected: the
+    // entity column is a graph foreign key and has no category-count consumer.
     let entity_category_counts = shared_entity_counts.drain_to_map();
 
     let finalized_stats = stats.finalize_with_split_semantics(
@@ -3134,6 +3158,32 @@ mod tests {
                 .len(),
             NUM_TARGETS
         );
+        assert_eq!(
+            entity.drain_to_map().expect("empty entity counts").len(),
+            0
+        );
+    }
+
+    #[test]
+    fn target_category_limit_is_a_generation_error() {
+        let (target, entity) = category_count_accumulators(true);
+        let target = target.expect("categorical target accumulator");
+        target.unique_count.store(
+            MAX_TRAIN_TABLE_TARGET_CATEGORIES,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        target.record_new_unique();
+
+        let error = drain_required_target_category_counts(Some(target.as_ref()))
+            .expect_err("an incomplete target vocabulary must fail generation");
+        assert!(matches!(&error, TTGenError::TargetCategoryLimit(_)));
+        let message = error.to_string();
+        assert!(message.contains("TARGET1"), "{message}");
+        assert!(
+            message.contains(&MAX_TRAIN_TABLE_TARGET_CATEGORIES.to_string()),
+            "{message}"
+        );
+        assert!(message.contains("refusing to publish"), "{message}");
         assert_eq!(
             entity.drain_to_map().expect("empty entity counts").len(),
             0

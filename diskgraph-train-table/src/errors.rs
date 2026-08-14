@@ -14,6 +14,9 @@ pub enum TTGenError {
     #[error("Parquet error: {0}")]
     Parquet(String),
 
+    #[error("{0}")]
+    TargetCategoryLimit(String),
+
     #[error("System error: {0}")]
     SystemError(String),
 }
@@ -37,6 +40,9 @@ impl TTGenError {
                 format!("{context}: {error}"),
             )),
             Self::Parquet(message) => Self::Parquet(format!("{context}: {message}")),
+            Self::TargetCategoryLimit(message) => {
+                Self::TargetCategoryLimit(format!("{context}: {message}"))
+            }
             Self::SystemError(message) => Self::SystemError(format!("{context}: {message}")),
         }
     }

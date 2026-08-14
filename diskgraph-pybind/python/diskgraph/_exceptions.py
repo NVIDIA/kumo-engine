@@ -1,7 +1,8 @@
 """Exception classes used by the task-dataset rework modules.
 
-Re-exports the Rust-backed `DiskgraphDataError` / `DiskgraphConfigError`
-/ `DiskgraphSystemError` triple from `._c` so the new task-dataset
+Re-exports the Rust-backed `DiskgraphDataError`,
+`DiskgraphTargetCategoryLimitError`, `DiskgraphConfigError`, and
+`DiskgraphSystemError` classes from `._c` so the new task-dataset
 modules raise the *same* class objects callers already catch elsewhere
 in the codebase.  Adds `DiskgraphTaskError` as a Python sibling for
 task-runtime failures (dataset reopen, runtime open, batch iteration);
@@ -15,6 +16,7 @@ from ._c import (
     DiskgraphCorruptionError,
     DiskgraphDataError,
     DiskgraphSystemError,
+    DiskgraphTargetCategoryLimitError,
 )
 
 
@@ -29,6 +31,7 @@ __all__ = [
     "DiskgraphConfigError",
     "DiskgraphDataError",
     "DiskgraphSystemError",
+    "DiskgraphTargetCategoryLimitError",
     "DiskgraphTaskError",
     "DiskgraphCorruptionError",
 ]

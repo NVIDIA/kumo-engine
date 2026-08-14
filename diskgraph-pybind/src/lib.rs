@@ -14,6 +14,11 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyString, PyTuple};
 
 create_exception!(diskgraph, DiskgraphDataError, PyException);
+create_exception!(
+    diskgraph,
+    DiskgraphTargetCategoryLimitError,
+    DiskgraphDataError
+);
 create_exception!(diskgraph, DiskgraphConfigError, PyException);
 create_exception!(diskgraph, DiskgraphSystemError, PyException);
 // Distinct from the Data/Config/System siblings: corruption is unexpected
@@ -49,6 +54,7 @@ pub(crate) fn map_ttgen_err(err: diskgraph_train_table::errors::TTGenError) -> P
     match err {
         TTGenError::SchemaError(msg) => DiskgraphDataError::new_err(msg),
         TTGenError::InvalidPlan(msg) => DiskgraphConfigError::new_err(msg),
+        TTGenError::TargetCategoryLimit(msg) => DiskgraphTargetCategoryLimitError::new_err(msg),
         TTGenError::SystemError(msg) => DiskgraphSystemError::new_err(msg),
         TTGenError::Io(e) => DiskgraphSystemError::new_err(e.to_string()),
         TTGenError::Parquet(msg) => DiskgraphSystemError::new_err(msg),
@@ -105,6 +111,9 @@ pub(crate) fn map_anyhow_err(err: anyhow::Error) -> PyErr {
             }
             diskgraph_train_table::errors::TTGenError::InvalidPlan(_) => {
                 return DiskgraphConfigError::new_err(e.to_string());
+            }
+            diskgraph_train_table::errors::TTGenError::TargetCategoryLimit(_) => {
+                return DiskgraphTargetCategoryLimitError::new_err(e.to_string());
             }
             _ => return DiskgraphSystemError::new_err(e.to_string()),
         }
@@ -1324,6 +1333,10 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
         .num_threads(diskgraph_ingest::effective_parallelism())
         .build_global();
     m.add("DiskgraphDataError", m.py().get_type::<DiskgraphDataError>())?;
+    m.add(
+        "DiskgraphTargetCategoryLimitError",
+        m.py().get_type::<DiskgraphTargetCategoryLimitError>(),
+    )?;
     m.add("DiskgraphConfigError", m.py().get_type::<DiskgraphConfigError>())?;
     m.add("DiskgraphSystemError", m.py().get_type::<DiskgraphSystemError>())?;
     m.add(
