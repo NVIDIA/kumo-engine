@@ -360,7 +360,22 @@ fn vote_key_to_detection(key: &str) -> Option<TimestampDetection> {
     }
 }
 
-/// Pick the most common vote. On ties, prefer Format over Unit.
+/// Coarser units rank higher: read as seconds, a millisecond column overflows
+/// to null and is reported; read as millis, a second column silently becomes a
+/// plausible 1970 timestamp. Ties go to the failure you can see.
+fn unit_vote_rank(key: &str) -> u8 {
+    match key {
+        "unit:Seconds" => 4,
+        "unit:Millis" => 3,
+        "unit:Micros" => 2,
+        "unit:Nanos" => 1,
+        _ => 0,
+    }
+}
+
+/// Pick the most common vote. Ties prefer Format over Unit, then the coarser
+/// unit, then the first vote cast. The winner is persisted and never
+/// re-inferred, so the tie-break has to be total and deterministic.
 fn majority_vote(votes: &[String]) -> Option<TimestampDetection> {
     if votes.is_empty() {
         return None;
@@ -370,17 +385,21 @@ fn majority_vote(votes: &[String]) -> Option<TimestampDetection> {
         *counts.entry(v.as_str()).or_insert(0) += 1;
     }
     let max_count = *counts.values().max().unwrap();
-    // Collect all keys with the max count
-    let mut best: Vec<&str> = counts
-        .iter()
-        .filter(|(_, &c)| c == max_count)
-        .map(|(&k, _)| k)
-        .collect();
-    // On ties, prefer Format over Unit
+    // Seed from `votes`, not `counts`: first-seen order, not hash order.
+    let mut best: Vec<&str> = Vec::new();
+    for v in votes {
+        let key = v.as_str();
+        if counts[key] == max_count && !best.contains(&key) {
+            best.push(key);
+        }
+    }
+    // Stable, so equal-rank keys keep first-seen order.
     best.sort_by(|a, b| {
         let a_is_fmt = a.starts_with("fmt:");
         let b_is_fmt = b.starts_with("fmt:");
-        b_is_fmt.cmp(&a_is_fmt) // true (fmt) sorts before false (unit)
+        b_is_fmt
+            .cmp(&a_is_fmt) // true (fmt) sorts before false (unit)
+            .then_with(|| unit_vote_rank(b).cmp(&unit_vote_rank(a)))
     });
     vote_key_to_detection(best[0])
 }
@@ -1739,6 +1758,47 @@ mod tests_resolve {
 
     fn strings(values: &[Option<&str>]) -> ArrayRef {
         Arc::new(arrow_array::StringArray::from(values.to_vec()))
+    }
+
+    fn ints(values: &[Option<i64>]) -> ArrayRef {
+        Arc::new(arrow_array::Int64Array::from(values.to_vec()))
+    }
+
+    #[test]
+    fn a_tie_resolves_the_same_way_whatever_order_the_votes_arrive_in() {
+        let s = "unit:Seconds".to_string();
+        let ms = "unit:Millis".to_string();
+        for votes in [
+            vec![s.clone(), s.clone(), ms.clone(), ms.clone()],
+            vec![ms.clone(), ms.clone(), s.clone(), s.clone()],
+        ] {
+            assert!(matches!(
+                majority_vote(&votes),
+                Some(TimestampDetection::Unit(TimestampUnit::Seconds))
+            ));
+        }
+    }
+
+    #[test]
+    fn a_tie_still_prefers_a_format_over_a_unit() {
+        let votes = vec!["unit:Seconds".to_string(), "fmt:%Y-%m-%d".to_string()];
+        assert!(matches!(
+            majority_vote(&votes),
+            Some(TimestampDetection::Format(_))
+        ));
+    }
+
+    #[test]
+    fn an_even_split_of_second_and_millisecond_epochs_reads_seconds() {
+        // Resolving to millis would silently read the 10-digit values as 1970.
+        let array = ints(&[
+            Some(1_659_304_801),
+            Some(1_659_304_901),
+            Some(1_659_304_801_388),
+            Some(1_659_304_901_388),
+        ]);
+        let r = resolve(&array, None, None);
+        assert_eq!(r.unit, Some(TimestampUnit::Seconds));
     }
 
     fn resolve(
