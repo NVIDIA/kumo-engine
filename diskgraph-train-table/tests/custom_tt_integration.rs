@@ -15,7 +15,6 @@
 //!    `ColumnDeciderManual` and dropped from the seed output — there is no
 //!    `split.bin` sidecar.
 
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1297,10 +1296,10 @@ fn test_dispatch_summary_keys_preserved() {
     assert!(output.stage_gen_infos.is_none());
     // Stats payload should be Some.
     assert!(output.stats.is_some());
-    // Per-entity timestamp_counts has the single TS we used.
+    // The bounded HLL-backed diagnostic reports the single timeframe without
+    // retaining per-timestamp counts.
     let stats = output.stats.unwrap();
-    let ts_counts: HashMap<i64, u64> = stats.timestamp_counts.clone();
-    assert_eq!(ts_counts.get(&1_000_000), Some(&5));
+    assert_eq!(stats.kumo_contract.num_timeframes, 1);
 }
 
 // ─── Deferred: executor-fills-missing-columns scenarios ───────────────────

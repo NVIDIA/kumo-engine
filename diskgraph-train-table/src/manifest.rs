@@ -202,20 +202,14 @@ pub fn read_manifest(path: &Path) -> TTGenResult<TTManifest> {
 
 // ─── Stats artifact (`stats.json`) ──────────────────────────────────────────
 
-/// On-disk shape for `stats.json`. Wraps a `TrainTableStatsPayload` with
-/// the kind/version envelope expected by kumo's `parse_stats_artifact`.
+/// Bounded on-disk shape for `stats.json`.
 ///
-/// Inlines the integer fields kumo validates (`num_total_rows`,
-/// `num_train_rows`, `num_entities`, `num_targets`) for ergonomic JSON.
-/// Kumo's reader only validates those four ints + optional `num_links`
-/// and `provided_fields`; everything else passes through.
-///
-/// Kumo-contract fields are also serialized at the top level (via the
-/// flattened `kumo_contract`) so kumo's
-/// `seed_train_stats_cache_from_native_artifact` finds them in the
-/// top-level dict (`key in parsed_stats`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StatsArtifact {
+/// Split assignment is owned by pass B and its exact bounded results are
+/// persisted in `split_info.json` and `split_stats.json`. This diagnostic
+/// deliberately contains no per-timestamp data and remains constant-size as
+/// timestamp cardinality grows.
+#[derive(Debug, Serialize)]
+pub struct StatsArtifact<'a> {
     pub version: u32,
     pub kind: String,
     pub num_total_rows: u64,
@@ -224,30 +218,21 @@ pub struct StatsArtifact {
     pub num_targets: u64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub num_links: Option<u64>,
-    /// Eight kumo-contract keys hoisted to the top of `stats.json`.
-    /// Kumo reads `key in parsed_stats` against these.
     #[serde(flatten)]
-    pub kumo_contract: crate::ttgen_stats::KumoContractStats,
-    /// The full TT-NG stats payload (round-trips through serde).
-    /// Stays nested under `payload` for legacy diagnostics; the
-    /// kumo-required keys are emitted twice (once at top via
-    /// `kumo_contract`, once nested via `payload`) — kumo only reads
-    /// the top-level copy.
-    pub payload: TrainTableStatsPayload,
+    pub kumo_contract: &'a crate::ttgen_stats::KumoContractStats,
 }
 
-impl StatsArtifact {
-    pub fn from_payload(payload: TrainTableStatsPayload) -> Self {
+impl<'a> StatsArtifact<'a> {
+    pub fn from_payload(payload: &'a TrainTableStatsPayload) -> Self {
         Self {
-            version: 1,
+            version: 2,
             kind: "tt_stats".to_string(),
             num_total_rows: payload.num_total_rows,
             num_train_rows: payload.num_train_rows,
             num_entities: payload.num_entities,
             num_targets: payload.num_targets,
             num_links: payload.num_links,
-            kumo_contract: payload.kumo_contract.clone(),
-            payload,
+            kumo_contract: &payload.kumo_contract,
         }
     }
 }
@@ -258,10 +243,13 @@ pub fn write_stats_artifact(
     payload: &TrainTableStatsPayload,
 ) -> TTGenResult<PathBuf> {
     let path = output_dir.join("stats.json");
-    let artifact = StatsArtifact::from_payload(payload.clone());
-    let json = serde_json::to_string_pretty(&artifact)
+    let artifact = StatsArtifact::from_payload(payload);
+    let file = std::fs::File::create(&path)?;
+    let mut writer = std::io::BufWriter::new(file);
+    serde_json::to_writer(&mut writer, &artifact)
         .map_err(|e| TTGenError::SystemError(format!("stats artifact serialize: {e}")))?;
-    std::fs::write(&path, json)?;
+    use std::io::Write;
+    writer.flush()?;
     Ok(path)
 }
 
@@ -348,7 +336,6 @@ mod tests {
             node_degree_stats: JsonValue::Null,
             scoring_table_column_stats: JsonValue::Null,
             target_distribution: JsonValue::Object(serde_json::Map::new()),
-            stats_per_timeframe: JsonValue::Array(Vec::new()),
         }
     }
 
@@ -367,8 +354,6 @@ mod tests {
                 frequency: None,
                 entity_include_bit: None,
             },
-            split_payload: None,
-            timestamp_counts: HashMap::new(),
             parsed_train_table_col_stats: None,
             kumo_contract: empty_kumo_contract(),
         }
@@ -513,14 +498,22 @@ mod tests {
         let path = write_stats_artifact(dir.path(), &payload).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         let v: JsonValue = serde_json::from_str(&raw).unwrap();
-        // kumo's reader checks (version, kind) against {(1, 'tt_stats'),
-        // (2, 'tt_stats')}, plus the four required ints.
-        assert_eq!(v["version"].as_u64(), Some(1));
+        assert_eq!(v["version"].as_u64(), Some(2));
         assert_eq!(v["kind"].as_str(), Some("tt_stats"));
         assert_eq!(v["num_total_rows"].as_u64(), Some(10));
         assert_eq!(v["num_train_rows"].as_u64(), Some(7));
         assert_eq!(v["num_entities"].as_u64(), Some(3));
         assert_eq!(v["num_targets"].as_u64(), Some(4));
+        for removed in [
+            "provided_fields",
+            "payload",
+            "timestamp_counts",
+            "stats_per_timeframe",
+            "timestamp_stage_assignments",
+            "kumo_contract",
+        ] {
+            assert!(v.get(removed).is_none(), "unexpected field {removed}");
+        }
     }
 
     #[test]
@@ -535,5 +528,4 @@ mod tests {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
     }
-
 }

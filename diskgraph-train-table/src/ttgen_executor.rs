@@ -46,8 +46,7 @@ use crate::ttgen_output::{
 };
 use crate::ttgen_resolve::*;
 use crate::ttgen_stats::{
-    ChunkStats, DateOffsetSplitSemantics, RowProcessor, StatsMerger, TTRowRef,
-    TrainTableStatsPayload,
+    ChunkStats, RowProcessor, StatsMerger, TTRowRef, TrainTableStatsPayload,
 };
 use crate::ttgen_traversal::*;
 
@@ -391,11 +390,6 @@ where
     let split_ratio = plan.split.as_ref().and_then(|s| s.ratio.clone());
     let split_kind = plan.split.as_ref().and_then(|s| s.kind.clone());
     let split_rnd_seed = plan.split.as_ref().and_then(|s| s.rnd_seed);
-    let split_is_temporal = plan
-        .split
-        .as_ref()
-        .and_then(|s| s.is_temporal)
-        .unwrap_or(false);
     let split_offsets: Option<Vec<Dur<U>>> = plan.split.as_ref().and_then(|s| s.offsets.clone());
     // Optional calendar-month offsets. Mutually exclusive with
     // `split_offsets` for the same SplitSpec; if both are set,
@@ -418,13 +412,13 @@ where
                 "DateOffsetSplit unit={unit_name} is not supported for summary derivation"
             )));
         }
-        Some(DateOffsetSplitSemantics {
-            timeframe: s.timeframe.map(|v| dur_from_unit::<U>(v, unit)),
-            anchor_start_offset: dur_from_unit::<U>(s.anchor_start_offset.unwrap_or(0), unit),
+        Some((
+            dur_from_unit::<U>(s.anchor_start_offset.unwrap_or(0), unit),
+            s.timeframe.map(|v| dur_from_unit::<U>(v, unit)),
             // Absent ⇒ kumo production default (flexible_boundaries=True).
-            flexible_boundaries: s.flexible_boundaries.unwrap_or(true),
-            timeframe_step: s.timeframe_step.map(|v| dur_from_unit::<U>(v, unit)),
-        })
+            s.flexible_boundaries.unwrap_or(true),
+            s.timeframe_step.map(|v| dur_from_unit::<U>(v, unit)),
+        ))
     } else {
         None
     };
@@ -738,15 +732,6 @@ where
                 // arithmetic needs the anchor, resolved later in derive_cutoffs.
                 // Fixed offsets + timeframe/anchor are Dur<U>.
                 let (anchor, timeframe, flexible, tf_step) = date_offset_semantics
-                    .as_ref()
-                    .map(|s| {
-                        (
-                            s.anchor_start_offset,
-                            s.timeframe,
-                            s.flexible_boundaries,
-                            s.timeframe_step,
-                        )
-                    })
                     .unwrap_or((Dur::<U>::zero(), None, true, None));
                 let decider = if let Some(months) = split_month_offsets.clone() {
                     let units: Vec<OffsetUnit<U>> =
@@ -940,23 +925,11 @@ where
     // entity column is a graph foreign key and has no category-count consumer.
     let entity_category_counts = shared_entity_counts.drain_to_map();
 
-    let finalized_stats = stats.finalize_with_split_semantics(
+    let finalized_stats = stats.finalize(
         total_rows,
         is_link_prediction,
         has_frequency_col,
         has_include_bit_col,
-        split_ratio.as_deref(),
-        split_kind.as_deref(),
-        split_is_temporal,
-        split_offsets.as_deref(),
-        date_offset_semantics,
-        time_range_end_shift,
-        split_ranges.as_deref(),
-        split_backtesting_timestamp,
-        split_column.as_deref(),
-        manual_train_values.as_deref(),
-        manual_val_values.as_deref(),
-        manual_test_values.as_deref(),
         target_category_counts,
         target_stype_str.as_str(),
         entity_category_counts,
@@ -2052,7 +2025,6 @@ fn write_target<U: UnitSystem, D: SplitDecider<U>>(
                             if let Some(ref mut h) = processor.stats.timestamp_hll {
                                 h.observe_i64(ts.raw());
                             }
-                            *processor.stats.timestamp_counts.entry(ts).or_insert(0) += 1;
                             processor.stats.timestamp_min =
                                 Some(match processor.stats.timestamp_min {
                                     Some(existing) => existing.min(ts),
@@ -2074,11 +2046,6 @@ fn write_target<U: UnitSystem, D: SplitDecider<U>>(
                         if entity_include_bit {
                             processor.stats.include_true_count += 1;
                             processor.stats.num_links += targets.len() as u64;
-                            // Per-anchor link count for the kumo-contract
-                            // `stats_per_timeframe[i].num_links`. Array LP carries
-                            // `targets.len()` links per row.
-                            *processor.stats.num_links_per_ts.entry(ts).or_insert(0) +=
-                                targets.len() as u64;
                             processor.stats.num_train_rows += 1;
                         } else {
                             processor.stats.include_false_count += 1;
@@ -2175,10 +2142,7 @@ pub(crate) fn update_exact_stats<U: UnitSystem>(
     // in the per-stype branches below (numerical: raw value; categorical:
     // hashed identity; multicategorical: per-token). Entity / timestamp
     // HLL observations are unconditional and live below alongside their
-    // Welford / TDigest siblings. `timestamp_counts` remains exact —
-    // bounded by unique-timestamp cardinality, typically much smaller
-    // than row count.
-    *stats.timestamp_counts.entry(ts).or_insert(0) += 1;
+    // Welford / TDigest siblings.
 
     stats.timestamp_min = Some(match stats.timestamp_min {
         Some(existing) => existing.min(ts),

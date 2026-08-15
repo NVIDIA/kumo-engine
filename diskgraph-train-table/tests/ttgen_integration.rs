@@ -8062,6 +8062,37 @@ fn integ_e2e_approx_date_offset_split_writes_split_bin() {
     assert_eq!(tier_sum, output.rows_written, "no unused rows");
     // All three stages should be exercised (train dominant).
     assert!(stage_row_count(&output, "train") > 0);
+    assert_eq!(stage_row_count(&output, "train"), 5);
+    assert_eq!(stage_row_count(&output, "val"), 5);
+    assert_eq!(stage_row_count(&output, "test"), 5);
+    let stage_map = read_stage_map_from_seeds(out_dir.path());
+    assert_eq!(stage_map.len(), 15);
+    for ((_, ts), stage) in stage_map {
+        let expected = match ts {
+            1000 => 0,
+            2000 => 1,
+            3000 => 2,
+            other => panic!("unexpected ApproxDateOffset anchor {other}"),
+        };
+        assert_eq!(stage, expected, "wrong stage for anchor {ts}");
+    }
+
+    let stats: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out_dir.path().join("stats.json")).unwrap()).unwrap();
+    let obj = stats.as_object().unwrap();
+    assert_eq!(obj.get("version").and_then(|v| v.as_u64()), Some(2));
+    for removed in [
+        "payload",
+        "timestamp_counts",
+        "stats_per_timeframe",
+        "timestamp_stage_assignments",
+        "kumo_contract",
+    ] {
+        assert!(
+            !obj.contains_key(removed),
+            "ApproxDateOffset stats.json must omit {removed}"
+        );
+    }
 }
 
 #[test]

@@ -675,7 +675,7 @@ fn e2e_pq_time_range_split_full_pipeline() {
     assert!(stats_path.exists());
     let stats_raw = fs::read_to_string(&stats_path).unwrap();
     let stats_v: serde_json::Value = serde_json::from_str(&stats_raw).unwrap();
-    assert_eq!(stats_v["version"].as_u64(), Some(1));
+    assert_eq!(stats_v["version"].as_u64(), Some(2));
     assert_eq!(stats_v["kind"].as_str(), Some("tt_stats"));
     assert_eq!(
         stats_v["num_total_rows"].as_u64(),
@@ -1918,6 +1918,31 @@ fn e2e_stage_count_consistency_across_families() {
             "[{}] stage keys must be train/val/test",
             case.name
         );
+        for stage in infos.iter().filter(|stage| stage.row_count > 0) {
+            let bounds = stage.seed_time.unwrap_or_else(|| {
+                panic!(
+                    "[{}] non-empty stage {} must carry authoritative time bounds",
+                    case.name, stage.key
+                )
+            });
+            assert!(bounds[0] <= bounds[1]);
+        }
+        let stats: serde_json::Value =
+            serde_json::from_slice(&fs::read(out_dir.path().join("stats.json")).unwrap()).unwrap();
+        let stats = stats.as_object().unwrap();
+        for removed in [
+            "payload",
+            "timestamp_counts",
+            "stats_per_timeframe",
+            "timestamp_stage_assignments",
+            "kumo_contract",
+        ] {
+            assert!(
+                !stats.contains_key(removed),
+                "[{}] bounded stats must omit {removed}",
+                case.name
+            );
+        }
         let manifest = read_manifest(&output.manifest_path).unwrap();
         // Flat-manifest split fields stay None on the TT-NG path.
         assert!(

@@ -4,8 +4,6 @@ use arrow_array::{Array, ListArray};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 
-const SPLIT_RATIO_EPSILON: f64 = 1e-6;
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SequenceFeatureStats {
     pub count: u64,
@@ -44,10 +42,10 @@ use diskgraph_core::accumulators::{
     build_multicat_emit_stats, kumo_entry, kumo_key, kumo_safe_div, HyperLogLog, LocalColumnCounts,
     TDigestEstimator, WelfordAccumulator,
 };
-use diskgraph_core::time::{Abs, Dur, UnitSystem};
+use diskgraph_core::time::{Abs, UnitSystem};
 use diskgraph_core::tt_builder::Value;
 
-use crate::split_decider::{OffsetUnit, SplitDecider, TimeRangeDecider, UNUSED_STAGE};
+use crate::split_decider::SplitDecider;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -78,74 +76,15 @@ pub struct TrainTableExactStatsPayload {
     pub entity_include_bit: Option<BoolColumnStats>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub struct TrainTableSplitMaskCounts {
-    pub train: u64,
-    pub val: u64,
-    pub test: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-#[serde(bound = "")]
-pub struct TimestampSplitAssignmentV3<U: UnitSystem> {
-    pub timestamp: Abs<U>,
-    pub stage: String,
-}
-
-/// Raw i64 serialization form of a timestamp-stage assignment, used in the
-/// output payload consumed by Python.  The generic internal representation
-/// is [`TimestampSplitAssignmentV3<U>`].
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub struct TimestampSplitAssignmentV3Raw {
-    pub timestamp: i64,
-    pub stage: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub struct TrainTableSplitPayloadArtifactsV3 {
-    pub strategy: String,
-    pub split_kind: Option<String>,
-    pub ratio: Option<Vec<String>>,
-    pub offsets: Option<Vec<i64>>,
-    pub ranges: Option<Vec<(i64, i64)>>,
-    pub backtesting_timestamp: Option<i64>,
-    pub split_column: Option<String>,
-    pub manual_train_values: Option<Vec<String>>,
-    pub manual_val_values: Option<Vec<String>>,
-    pub manual_test_values: Option<Vec<String>>,
-    pub authoritative_supported_family: bool,
-    pub timestamp_stage_assignments: Option<Vec<TimestampSplitAssignmentV3Raw>>,
-    pub index_stage_sizes: Option<TrainTableSplitMaskCounts>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub struct TrainTableSplitPayload {
-    pub version: u32,
-    pub status: String,
-    pub supports_native_execution: bool,
-    pub split_kind: Option<String>,
-    pub derivation_method: Option<String>,
-    pub num_total_rows: u64,
-    pub mask_counts: Option<TrainTableSplitMaskCounts>,
-    pub artifacts_v3: Option<TrainTableSplitPayloadArtifactsV3>,
-}
-
-/// Kumo-contract train-table stats fields. Shape derived from
+/// Bounded Kumo-contract train-table stats fields. Shape derived from
 /// the legacy `build_tt_stats_artifact_value` formatter on origin/main and
 /// `kumo.stats.train_table_stats.{TemporalNodeTrainTableStats,
 /// TemporalLinkTrainTableStats}`. Kumo's
 /// `seed_train_stats_cache_from_native_artifact` reads these eight keys
 /// directly from the top-level stats.json dict.
 ///
-/// `target_distribution` and `stats_per_timeframe` are stored as
-/// `JsonValue` because their concrete shape is task-type-discriminated
-/// (categorical vs numerical for distribution; per-row dicts for
-/// timeframes) and contains f64s that block `Eq`.
+/// `target_distribution` is stored as `JsonValue` because its concrete shape
+/// is task-type-discriminated and contains f64s that block `Eq`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct KumoContractStats {
@@ -172,16 +111,6 @@ pub struct KumoContractStats {
     /// target_percentile_75, target_median, target_mode, target_mode_percentage,
     /// target_mode_count, histogram: {bins, counts, bin_width, num_bins}}`.
     pub target_distribution: JsonValue,
-    /// List of per-anchor timeframe stats, sorted DESCENDING by anchor
-    /// timestamp (newest first — kumo's `update_train_table_stats` asserts
-    /// this). Per-entry shape is task-type-discriminated:
-    /// - Node-pred (`TemporalNodeTimeFrameStats`): keys = {min_date,
-    ///   max_date, anchor_date, num_train_rows, num_entities, num_targets,
-    ///   target_distribution, index} — NO node_degree_stats.
-    /// - Link-pred (`TemporalLinkTimeFrameStats`): keys = {min_date,
-    ///   max_date, anchor_date, num_train_rows, num_entities, num_targets,
-    ///   num_links, index, node_degree_stats} — NO target_distribution.
-    pub stats_per_timeframe: JsonValue,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,21 +123,14 @@ pub struct TrainTableStatsPayload {
     pub num_targets: u64,
     pub num_links: Option<u64>,
     pub exact_stats: TrainTableExactStatsPayload,
-    pub split_payload: Option<TrainTableSplitPayload>,
-    /// Per-timestamp row counts: {timestamp_seconds: row_count}.
-    /// Used by the pybind layer to build accurate stats_per_timeframe.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub timestamp_counts: HashMap<i64, u64>,
     /// Kumo-format column stats for encoder inference (TARGET, FREQUENCY, ENTITY_INCLUDE_BIT).
     /// Format matches ingest's kumo_col_stats_v1 for compatibility with
     /// seed_train_table_col_stats_from_manifest().
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parsed_train_table_col_stats: Option<JsonValue>,
-    /// Kumo-contract eight-key payload. Nested here on the
-    /// payload so pybind / tests can read it. The `StatsArtifact` writer
-    /// holds a separate flattened copy at the top level of `stats.json`
-    /// (kumo's `seed_train_stats_cache_from_native_artifact` reads from
-    /// there).
+    /// Bounded Kumo cache fields, flattened in executor summaries as well as
+    /// the on-disk artifact so no nested contract copy is serialized.
+    #[serde(flatten)]
     pub kumo_contract: KumoContractStats,
 }
 
@@ -224,19 +146,11 @@ pub struct TTExecutionSummary {
 // distinct cardinality (OOM risk at 50B-row scale: ~5 GB per worker for
 // entities alone, ~80 GB across 16 workers, then ~800 GB peak in the
 // merger). HLL gives ~0.5% error within bounded ~12 KB per accumulator
-// regardless of input cardinality. `timestamp_counts` is left unbounded
-// here because it's typically much smaller (cardinality of unique
-// timestamps), but it remains a separate concern.
+// regardless of input cardinality.
 pub(crate) struct ChunkStats<U: UnitSystem> {
     pub(crate) num_total_rows: u64,
     pub(crate) num_train_rows: u64,
     pub(crate) num_links: u64,
-    pub(crate) timestamp_counts: HashMap<Abs<U>, u64>,
-    /// Per-anchor link count for LP rows. Same cardinality bound as
-    /// `timestamp_counts` (number of unique timestamps). Only populated
-    /// for link-prediction passes; node-pred chunks leave this empty.
-    /// Kumo's `stats_per_timeframe[i].num_links` reads this.
-    pub(crate) num_links_per_ts: HashMap<Abs<U>, u64>,
     pub(crate) timestamp_min: Option<Abs<U>>,
     pub(crate) timestamp_max: Option<Abs<U>>,
     pub(crate) entity_min: Option<i64>,
@@ -279,8 +193,6 @@ impl<U: UnitSystem> Default for ChunkStats<U> {
             num_total_rows: 0,
             num_train_rows: 0,
             num_links: 0,
-            timestamp_counts: HashMap::new(),
-            num_links_per_ts: HashMap::new(),
             timestamp_min: None,
             timestamp_max: None,
             entity_min: None,
@@ -314,10 +226,6 @@ impl<U: UnitSystem> Default for ChunkStats<U> {
 pub(crate) struct StatsMerger<U: UnitSystem> {
     num_train_rows: u64,
     num_links: u64,
-    timestamp_counts: HashMap<Abs<U>, u64>,
-    /// Per-anchor link count merged from per-worker `ChunkStats`. Mirrors
-    /// `ChunkStats::num_links_per_ts`; LP-only.
-    num_links_per_ts: HashMap<Abs<U>, u64>,
     timestamp_min: Option<Abs<U>>,
     timestamp_max: Option<Abs<U>>,
     entity_min: Option<i64>,
@@ -352,23 +260,11 @@ pub(crate) struct StatsMerger<U: UnitSystem> {
     pub(crate) sequence_feature_stats: HashMap<String, SequenceFeatureStats>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct DateOffsetSplitSemantics<U: UnitSystem> {
-    pub(crate) timeframe: Option<Dur<U>>,
-    pub(crate) anchor_start_offset: Dur<U>,
-    /// kumo `flexible_boundaries` (absent ⇒ prod default `true`).
-    pub(crate) flexible_boundaries: bool,
-    /// kumo `timeframe_step`; flexible-snapping grid spacing.
-    pub(crate) timeframe_step: Option<Dur<U>>,
-}
-
 impl<U: UnitSystem> Default for StatsMerger<U> {
     fn default() -> Self {
         Self {
             num_train_rows: 0,
             num_links: 0,
-            timestamp_counts: HashMap::new(),
-            num_links_per_ts: HashMap::new(),
             timestamp_min: None,
             timestamp_max: None,
             entity_min: None,
@@ -403,13 +299,6 @@ impl<U: UnitSystem> StatsMerger<U> {
     pub(crate) fn merge(&mut self, chunk: ChunkStats<U>) {
         self.num_train_rows += chunk.num_train_rows;
         self.num_links += chunk.num_links;
-        for (ts, count) in chunk.timestamp_counts {
-            *self.timestamp_counts.entry(ts).or_insert(0) += count;
-        }
-        for (ts, count) in chunk.num_links_per_ts {
-            *self.num_links_per_ts.entry(ts).or_insert(0) += count;
-        }
-
         self.timestamp_min = min_opt_abs(self.timestamp_min, chunk.timestamp_min);
         self.timestamp_max = max_opt_abs(self.timestamp_max, chunk.timestamp_max);
         self.entity_min = min_opt(self.entity_min, chunk.entity_min);
@@ -499,70 +388,13 @@ impl<U: UnitSystem> StatsMerger<U> {
         }
     }
 
-    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn finalize(
-        self,
-        num_total_rows: u64,
-        is_link_prediction: bool,
-        has_frequency_col: bool,
-        has_include_bit_col: bool,
-        split_ratio: Option<&[f64]>,
-        split_kind: Option<&str>,
-        split_is_temporal: bool,
-        split_offsets: Option<&[Dur<U>]>,
-        split_ranges: Option<&[(Abs<U>, Abs<U>)]>,
-        split_backtesting_timestamp: Option<Abs<U>>,
-        split_column: Option<&str>,
-        manual_train_values: Option<&[String]>,
-        manual_val_values: Option<&[String]>,
-        manual_test_values: Option<&[String]>,
-        target_category_counts: Option<HashMap<String, u64>>,
-        target_stype: &str,
-        entity_category_counts: Option<HashMap<String, u64>>,
-    ) -> TrainTableStatsPayload {
-        self.finalize_with_split_semantics(
-            num_total_rows,
-            is_link_prediction,
-            has_frequency_col,
-            has_include_bit_col,
-            split_ratio,
-            split_kind,
-            split_is_temporal,
-            split_offsets,
-            None,
-            None,
-            split_ranges,
-            split_backtesting_timestamp,
-            split_column,
-            manual_train_values,
-            manual_val_values,
-            manual_test_values,
-            target_category_counts,
-            target_stype,
-            entity_category_counts,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn finalize_with_split_semantics(
         mut self,
         num_total_rows: u64,
         is_link_prediction: bool,
         has_frequency_col: bool,
         has_include_bit_col: bool,
-        split_ratio: Option<&[f64]>,
-        split_kind: Option<&str>,
-        split_is_temporal: bool,
-        split_offsets: Option<&[Dur<U>]>,
-        date_offset_semantics: Option<DateOffsetSplitSemantics<U>>,
-        time_range_end_shift: Option<OffsetUnit<U>>,
-        split_ranges: Option<&[(Abs<U>, Abs<U>)]>,
-        split_backtesting_timestamp: Option<Abs<U>>,
-        split_column: Option<&str>,
-        manual_train_values: Option<&[String]>,
-        manual_val_values: Option<&[String]>,
-        manual_test_values: Option<&[String]>,
         target_category_counts: Option<HashMap<String, u64>>,
         target_stype: &str,
         entity_category_counts: Option<HashMap<String, u64>>,
@@ -580,7 +412,7 @@ impl<U: UnitSystem> StatsMerger<U> {
             .as_ref()
             .map(|h| h.estimate() as u64)
             .unwrap_or(0);
-        let num_unique_timestamps = self
+        let estimated_num_unique_timestamps = self
             .timestamp_hll
             .as_ref()
             .map(|h| h.estimate() as u64)
@@ -597,7 +429,7 @@ impl<U: UnitSystem> StatsMerger<U> {
         let timestamp_stats = IntColumnStats {
             count: self.num_train_rows,
             null_count: 0,
-            num_unique: Some(num_unique_timestamps),
+            num_unique: Some(estimated_num_unique_timestamps),
             min: self.timestamp_min.map(|t| t.raw()),
             max: self.timestamp_max.map(|t| t.raw()),
         };
@@ -633,34 +465,8 @@ impl<U: UnitSystem> StatsMerger<U> {
             None
         };
 
-        let split_derivation = derive_split_mask_counts(
-            num_total_rows,
-            split_ratio,
-            split_kind,
-            split_is_temporal,
-            split_offsets,
-            date_offset_semantics,
-            time_range_end_shift,
-            split_ranges,
-            split_backtesting_timestamp,
-            split_column,
-            manual_train_values,
-            manual_val_values,
-            manual_test_values,
-            &self.timestamp_counts,
-        );
-
-        // Convert typed timestamp_counts to raw i64 only at the final output boundary.
-        let raw_timestamp_counts: HashMap<i64, u64> = self
-            .timestamp_counts
-            .iter()
-            .map(|(k, v)| (k.raw(), *v))
-            .collect();
-
-        // Build the kumo-contract `target_distribution` and
-        // `stats_per_timeframe` BEFORE moving `target_category_counts`
-        // into `build_inline_col_stats`. The legacy formatter shape lives
-        // in the helpers below.
+        // Build the bounded target distribution before moving category
+        // counts into the train-table column-stats sidecar.
         let is_categorical_target_for_dist = matches!(
             target_stype,
             "categorical" | "boolean" | "ID" | "multicategorical"
@@ -671,29 +477,16 @@ impl<U: UnitSystem> StatsMerger<U> {
             build_target_distribution_numerical(&self.target_welford, &mut self.target_tdigest)
         };
 
-        // Sort timestamps DESCENDING (newest first). Kumo's
-        // `update_train_table_stats` asserts this ordering.
-        let mut sorted_ts: Vec<(Abs<U>, u64)> = self
-            .timestamp_counts
-            .iter()
-            .map(|(k, v)| (*k, *v))
-            .collect();
-        sorted_ts.sort_unstable_by_key(|(ts, _)| std::cmp::Reverse(*ts));
-
-        let stats_per_timeframe_value =
-            build_stats_per_timeframe(&sorted_ts, &self.num_links_per_ts, is_link_prediction);
-
-        let num_timeframes_u64 = self.timestamp_counts.len() as u64;
+        // Exact timestamp counts are split-decider-local when needed. Global
+        // diagnostics use the bounded HLL estimate instead.
+        let num_timeframes_u64 = estimated_num_unique_timestamps;
         let avg_entities_per_timeframe = if num_timeframes_u64 > 0 {
             (self.num_train_rows as f64 / num_timeframes_u64 as f64).round() as u64
         } else {
             0
         };
 
-        // Format epoch-second timestamps as RFC3339 strings to match the
-        // per-ts entry format in `stats_per_timeframe`. Kumo's
-        // `convert_str_to_timestamp` round-trips these back to
-        // `pd.Timestamp` on read.
+        // Format epoch-second bounds as RFC3339 strings for Kumo's cache.
         use chrono::DateTime;
         let fmt_ts = |t: Abs<U>| -> JsonValue {
             let secs = t.to_secs();
@@ -727,7 +520,6 @@ impl<U: UnitSystem> StatsMerger<U> {
             node_degree_stats: JsonValue::Null,
             scoring_table_column_stats: JsonValue::Null,
             target_distribution: target_distribution_value,
-            stats_per_timeframe: stats_per_timeframe_value,
         };
 
         let parsed_train_table_col_stats = build_inline_col_stats(
@@ -767,7 +559,6 @@ impl<U: UnitSystem> StatsMerger<U> {
             } else {
                 None
             },
-            timestamp_counts: raw_timestamp_counts,
             parsed_train_table_col_stats,
             kumo_contract,
             exact_stats: TrainTableExactStatsPayload {
@@ -777,31 +568,6 @@ impl<U: UnitSystem> StatsMerger<U> {
                 frequency: frequency_stats,
                 entity_include_bit: include_bit_stats,
             },
-            split_payload: Some(TrainTableSplitPayload {
-                version: 3,
-                status: if split_derivation.supports_native_execution {
-                    "ready_row_artifacts_v3".to_string()
-                } else {
-                    "counts_only_no_masks".to_string()
-                },
-                supports_native_execution: split_derivation.supports_native_execution,
-                split_kind: split_kind.map(|s| s.to_string()),
-                derivation_method: split_derivation.method.clone(),
-                num_total_rows,
-                mask_counts: split_derivation.mask_counts.clone(),
-                artifacts_v3: Some(build_split_artifacts_v3(
-                    split_kind,
-                    split_ratio,
-                    split_offsets.map(|xs| xs.iter().map(|d| d.raw()).collect()),
-                    split_ranges.map(|xs| xs.iter().map(|(lo, hi)| (lo.raw(), hi.raw())).collect()),
-                    split_backtesting_timestamp.map(|ts| ts.raw()),
-                    split_column,
-                    manual_train_values,
-                    manual_val_values,
-                    manual_test_values,
-                    &split_derivation,
-                )),
-            }),
         }
     }
 }
@@ -1416,17 +1182,9 @@ pub fn build_inline_col_stats(
     }
 }
 
-struct SplitMaskDerivation<U: UnitSystem> {
-    method: Option<String>,
-    mask_counts: Option<TrainTableSplitMaskCounts>,
-    timestamp_stage_assignments: Option<Vec<TimestampSplitAssignmentV3<U>>>,
-    index_stage_sizes: Option<TrainTableSplitMaskCounts>,
-    supports_native_execution: bool,
-}
+// Kumo-contract target distribution.
 
-// ─── kumo-contract target_distribution / stats_per_timeframe ───────────────
-
-/// Build the categorical-shape `target_distribution` value:
+// Kumo-contract target distribution.
 /// `{count: {key: int}, percentage: {key: float}}`. Mirrors kumo's
 /// `CategoricalDictTargetDistribution`. Returns `{}` when no category
 /// counts are available (defensive — kumo treats empty dict as missing
@@ -1505,579 +1263,6 @@ fn build_target_distribution_numerical(
             "num_bins": 0,
         },
     })
-}
-
-/// Build the `stats_per_timeframe` list. `sorted_ts` MUST be sorted
-/// descending (newest-first); kumo's `update_train_table_stats` asserts
-/// this. `num_links_per_ts` is consulted for LP rows (defaults to 0).
-///
-/// Each entry mirrors kumo's `TemporalNodeTimeFrameStats` /
-/// `TemporalLinkTimeFrameStats` (per-timeframe dataclass keys
-/// `min_date`/`max_date`/`anchor_date` as ISO-8601 strings,
-/// `num_train_rows`, `num_entities`, `num_targets`, `index`, optional
-/// `num_links`, `node_degree_stats`, `target_distribution`).
-///
-/// Per-timeframe entity / target cardinality is NOT streamed today
-/// (HLL is global, not per-anchor) — entries stub `num_entities` and
-/// `num_targets` to 0 (legacy formatter did the same; kumo's split
-/// logic at `task/split.py:780-860` reads `anchor_date` /
-/// `num_train_rows` / `num_links` only, not per-anchor cardinality).
-fn build_stats_per_timeframe<U: UnitSystem>(
-    sorted_ts: &[(Abs<U>, u64)],
-    num_links_per_ts: &HashMap<Abs<U>, u64>,
-    is_link_prediction: bool,
-) -> JsonValue {
-    use chrono::DateTime;
-    let mut out = Vec::with_capacity(sorted_ts.len());
-    for (idx, (ts, row_count)) in sorted_ts.iter().enumerate() {
-        let secs = ts.to_secs();
-        let dt_str = DateTime::from_timestamp(secs, 0)
-            .map(|dt| dt.to_rfc3339())
-            .unwrap_or_else(|| secs.to_string());
-        let mut entry = serde_json::Map::new();
-        entry.insert("min_date".to_string(), json!(dt_str));
-        entry.insert("max_date".to_string(), json!(dt_str));
-        entry.insert("anchor_date".to_string(), json!(dt_str));
-        entry.insert("num_train_rows".to_string(), json!(row_count));
-        entry.insert("num_entities".to_string(), json!(0u64));
-        entry.insert("num_targets".to_string(), json!(0u64));
-        entry.insert("index".to_string(), json!(idx));
-        if is_link_prediction {
-            // TemporalLinkTimeFrameStats accepts: num_links + node_degree_stats.
-            // Does NOT accept: target_distribution.
-            let n_links = num_links_per_ts.get(ts).copied().unwrap_or(0);
-            entry.insert("num_links".to_string(), json!(n_links));
-            entry.insert("node_degree_stats".to_string(), JsonValue::Null);
-        } else {
-            // TemporalNodeTimeFrameStats accepts: target_distribution.
-            // Does NOT accept: node_degree_stats / num_links.
-            // Per-anchor distribution isn't streamed; stub `{}`.
-            entry.insert("target_distribution".to_string(), json!({}));
-        }
-        out.push(JsonValue::Object(entry));
-    }
-    JsonValue::Array(out)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn build_split_artifacts_v3<U: UnitSystem>(
-    split_kind: Option<&str>,
-    split_ratio: Option<&[f64]>,
-    split_offsets: Option<Vec<i64>>,
-    split_ranges: Option<Vec<(i64, i64)>>,
-    split_backtesting_timestamp: Option<i64>,
-    split_column: Option<&str>,
-    manual_train_values: Option<&[String]>,
-    manual_val_values: Option<&[String]>,
-    manual_test_values: Option<&[String]>,
-    split_derivation: &SplitMaskDerivation<U>,
-) -> TrainTableSplitPayloadArtifactsV3 {
-    TrainTableSplitPayloadArtifactsV3 {
-        strategy: "rule_based_v3".to_string(),
-        split_kind: split_kind.map(str::to_string),
-        ratio: split_ratio.map(|xs| xs.iter().map(|x| x.to_string()).collect()),
-        offsets: split_offsets,
-        ranges: split_ranges,
-        backtesting_timestamp: split_backtesting_timestamp,
-        split_column: split_column.map(str::to_string),
-        manual_train_values: manual_train_values.map(|xs| xs.to_vec()),
-        manual_val_values: manual_val_values.map(|xs| xs.to_vec()),
-        manual_test_values: manual_test_values.map(|xs| xs.to_vec()),
-        authoritative_supported_family: split_derivation.supports_native_execution,
-        timestamp_stage_assignments: split_derivation.timestamp_stage_assignments.as_ref().map(
-            |assignments| {
-                assignments
-                    .iter()
-                    .map(|a| TimestampSplitAssignmentV3Raw {
-                        timestamp: a.timestamp.raw(),
-                        stage: a.stage.clone(),
-                    })
-                    .collect()
-            },
-        ),
-        index_stage_sizes: split_derivation.index_stage_sizes.clone(),
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn derive_split_mask_counts<U: UnitSystem>(
-    num_total_rows: u64,
-    split_ratio: Option<&[f64]>,
-    split_kind: Option<&str>,
-    split_is_temporal: bool,
-    split_offsets: Option<&[Dur<U>]>,
-    date_offset_semantics: Option<DateOffsetSplitSemantics<U>>,
-    time_range_end_shift: Option<OffsetUnit<U>>,
-    split_ranges: Option<&[(Abs<U>, Abs<U>)]>,
-    split_backtesting_timestamp: Option<Abs<U>>,
-    split_column: Option<&str>,
-    manual_train_values: Option<&[String]>,
-    manual_val_values: Option<&[String]>,
-    manual_test_values: Option<&[String]>,
-    typed_timestamp_counts: &HashMap<Abs<U>, u64>,
-) -> SplitMaskDerivation<U> {
-    match (split_kind, split_is_temporal) {
-        (Some("FixedSplit"), false) => {
-            let counts = validate_split_ratio(split_ratio)
-                .and_then(|ratio| derive_ratio_mask_counts(num_total_rows, ratio));
-            SplitMaskDerivation {
-                method: Some("fixed_index_ranges".to_string()),
-                mask_counts: counts.clone(),
-                timestamp_stage_assignments: None,
-                index_stage_sizes: counts,
-                supports_native_execution: true,
-            }
-        }
-        (Some("ApproxDateOffsetSplit"), true) => {
-            let ratio = validate_split_ratio(split_ratio);
-            let stage_map = ratio.and_then(|r| {
-                derive_approx_date_offset_timestamp_stage_assignments(r, typed_timestamp_counts)
-            });
-            let counts = stage_map.as_ref().map(|assignments| {
-                mask_counts_from_timestamp_assignments(assignments, typed_timestamp_counts)
-            });
-            SplitMaskDerivation {
-                method: Some("approx_date_offset_timeframes".to_string()),
-                mask_counts: counts,
-                timestamp_stage_assignments: stage_map,
-                index_stage_sizes: None,
-                supports_native_execution: true,
-            }
-        }
-        (Some("DateOffsetSplit"), true) => {
-            let stage_map = derive_date_offset_timestamp_stage_assignments_with_semantics(
-                split_offsets,
-                date_offset_semantics,
-                typed_timestamp_counts,
-            );
-            let counts = stage_map.as_ref().map(|assignments| {
-                mask_counts_from_timestamp_assignments(assignments, typed_timestamp_counts)
-            });
-            SplitMaskDerivation {
-                method: Some("date_offset_boundaries".to_string()),
-                mask_counts: counts,
-                timestamp_stage_assignments: stage_map,
-                index_stage_sizes: None,
-                supports_native_execution: true,
-            }
-        }
-        (Some("TimeRangeSplit"), true) => {
-            let stage_map = derive_time_range_timestamp_stage_assignments(
-                split_ranges,
-                time_range_end_shift,
-                typed_timestamp_counts,
-            );
-            let counts = stage_map.as_ref().map(|assignments| {
-                mask_counts_from_timestamp_assignments(assignments, typed_timestamp_counts)
-            });
-            SplitMaskDerivation {
-                method: Some("time_range_boundaries".to_string()),
-                mask_counts: counts,
-                timestamp_stage_assignments: stage_map,
-                index_stage_sizes: None,
-                supports_native_execution: true,
-            }
-        }
-        (Some("BacktestingSplit"), true) => {
-            let stage_map = derive_backtesting_timestamp_stage_assignments(
-                split_backtesting_timestamp,
-                typed_timestamp_counts,
-            );
-            let counts = stage_map.as_ref().map(|assignments| {
-                mask_counts_from_timestamp_assignments(assignments, typed_timestamp_counts)
-            });
-            SplitMaskDerivation {
-                method: Some("backtesting_timestamp".to_string()),
-                mask_counts: counts,
-                timestamp_stage_assignments: stage_map,
-                index_stage_sizes: None,
-                supports_native_execution: true,
-            }
-        }
-        (Some("TemporalSplit"), true) => {
-            let counts = validate_split_ratio(split_ratio)
-                .and_then(|ratio| derive_ratio_mask_counts(num_total_rows, ratio));
-            SplitMaskDerivation {
-                method: Some("temporal_ratio_sort_reconstruct".to_string()),
-                mask_counts: counts,
-                timestamp_stage_assignments: None,
-                index_stage_sizes: None,
-                supports_native_execution: true,
-            }
-        }
-        (Some("ColumnSplit"), false) => {
-            let counts = validate_split_ratio(split_ratio)
-                .and_then(|ratio| derive_ratio_mask_counts(num_total_rows, ratio));
-            SplitMaskDerivation {
-                method: Some("column_ratio_sort_reconstruct".to_string()),
-                mask_counts: counts,
-                timestamp_stage_assignments: None,
-                index_stage_sizes: None,
-                supports_native_execution: true,
-            }
-        }
-        (Some("ManualSplit" | "CustomSplit"), false) => {
-            let counts = derive_manual_split_mask_counts(
-                split_column,
-                manual_train_values,
-                manual_val_values,
-                manual_test_values,
-                typed_timestamp_counts,
-            );
-            SplitMaskDerivation {
-                method: Some("manual_value_membership_reconstruct".to_string()),
-                mask_counts: counts,
-                timestamp_stage_assignments: None,
-                index_stage_sizes: None,
-                supports_native_execution: true,
-            }
-        }
-        (Some("RandomSplit"), false) | (Some("RandomLinkSplit" | "CustomLinkSplit"), false) => {
-            let counts = validate_split_ratio(split_ratio)
-                .and_then(|ratio| derive_ratio_mask_counts(num_total_rows, ratio));
-            SplitMaskDerivation {
-                method: Some("ratio_rounding".to_string()),
-                mask_counts: counts,
-                timestamp_stage_assignments: None,
-                index_stage_sizes: None,
-                supports_native_execution: false,
-            }
-        }
-        _ => SplitMaskDerivation {
-            method: None,
-            mask_counts: None,
-            timestamp_stage_assignments: None,
-            index_stage_sizes: None,
-            supports_native_execution: false,
-        },
-    }
-}
-
-fn validate_split_ratio(split_ratio: Option<&[f64]>) -> Option<&[f64]> {
-    let ratio = split_ratio?;
-    if ratio.len() < 2 || ratio.len() > 3 {
-        return None;
-    }
-    if ratio.iter().any(|v| !v.is_finite() || *v < 0.0) {
-        return None;
-    }
-    let sum: f64 = ratio.iter().sum();
-    if sum > 1.0 + SPLIT_RATIO_EPSILON {
-        return None;
-    }
-    Some(ratio)
-}
-
-fn derive_ratio_mask_counts(
-    num_total_rows: u64,
-    ratio: &[f64],
-) -> Option<TrainTableSplitMaskCounts> {
-    let mut ratio_vals: Vec<f64> = ratio.iter().take(3).map(|x| x.max(0.0)).collect();
-    if ratio_vals.is_empty() {
-        return Some(TrainTableSplitMaskCounts {
-            train: 0,
-            val: 0,
-            test: 0,
-        });
-    }
-
-    let total: f64 = ratio_vals.iter().sum();
-    if total <= 0.0 {
-        return Some(TrainTableSplitMaskCounts {
-            train: 0,
-            val: 0,
-            test: 0,
-        });
-    }
-    for x in &mut ratio_vals {
-        *x /= total;
-    }
-
-    let row_count = num_total_rows as usize;
-    let ideal: Vec<f64> = ratio_vals.iter().map(|x| x * row_count as f64).collect();
-    let mut sizes: Vec<usize> = ideal.iter().map(|v| v.floor() as usize).collect();
-
-    let assigned_floor: usize = sizes.iter().sum();
-    let mut remaining = row_count.saturating_sub(assigned_floor);
-
-    let mut order: Vec<usize> = (0..sizes.len()).collect();
-    order.sort_by(|&a, &b| {
-        let ra = ideal[a] - sizes[a] as f64;
-        let rb = ideal[b] - sizes[b] as f64;
-        rb.partial_cmp(&ra)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.cmp(&b))
-    });
-
-    let mut k = 0usize;
-    while remaining > 0 && !order.is_empty() {
-        sizes[order[k]] += 1;
-        remaining -= 1;
-        k += 1;
-        if k == order.len() {
-            k = 0;
-        }
-    }
-
-    let train = sizes.first().copied().unwrap_or(0) as u64;
-    let val = sizes.get(1).copied().unwrap_or(0) as u64;
-    let test = sizes.get(2).copied().unwrap_or(0) as u64;
-    Some(TrainTableSplitMaskCounts { train, val, test })
-}
-
-fn derive_manual_split_mask_counts<U: UnitSystem>(
-    split_column: Option<&str>,
-    manual_train_values: Option<&[String]>,
-    manual_val_values: Option<&[String]>,
-    manual_test_values: Option<&[String]>,
-    timestamp_counts: &HashMap<Abs<U>, u64>,
-) -> Option<TrainTableSplitMaskCounts> {
-    // Current TT summary only carries timestamp-level value distributions.
-    // Therefore ManualSplit parity is supported only when splitting on
-    // TIMESTAMP/PSEUDO_TIMESTAMP and values are epoch-second integers.
-    let col = split_column?;
-    if col != "TIMESTAMP" && col != "PSEUDO_TIMESTAMP" {
-        return None;
-    }
-
-    let parse = |vals: Option<&[String]>| -> Option<Vec<Abs<U>>> {
-        vals.map(|xs| {
-            xs.iter()
-                .filter_map(|x| x.parse::<i64>().ok().map(Abs::from_raw))
-                .collect::<Vec<_>>()
-        })
-    };
-
-    let train_vals = parse(manual_train_values).unwrap_or_default();
-    let val_vals = parse(manual_val_values).unwrap_or_default();
-    let test_vals = parse(manual_test_values).unwrap_or_default();
-
-    let sum_for = |vals: &[Abs<U>]| -> u64 {
-        vals.iter()
-            .map(|v| *timestamp_counts.get(v).unwrap_or(&0))
-            .sum()
-    };
-
-    Some(TrainTableSplitMaskCounts {
-        train: sum_for(&train_vals),
-        val: sum_for(&val_vals),
-        test: sum_for(&test_vals),
-    })
-}
-
-fn stage_name(idx: usize) -> String {
-    match idx {
-        0 => "train".to_string(),
-        1 => "val".to_string(),
-        _ => "test".to_string(),
-    }
-}
-
-fn mask_counts_from_timestamp_assignments<U: UnitSystem>(
-    assignments: &[TimestampSplitAssignmentV3<U>],
-    timestamp_counts: &HashMap<Abs<U>, u64>,
-) -> TrainTableSplitMaskCounts {
-    let mut counts = TrainTableSplitMaskCounts {
-        train: 0,
-        val: 0,
-        test: 0,
-    };
-    for a in assignments {
-        let c = *timestamp_counts.get(&a.timestamp).unwrap_or(&0);
-        match a.stage.as_str() {
-            "train" => counts.train += c,
-            "val" => counts.val += c,
-            "test" => counts.test += c,
-            _ => {}
-        }
-    }
-    counts
-}
-
-fn derive_approx_date_offset_timestamp_stage_assignments<U: UnitSystem>(
-    ratio: &[f64],
-    timestamp_counts: &HashMap<Abs<U>, u64>,
-) -> Option<Vec<TimestampSplitAssignmentV3<U>>> {
-    if timestamp_counts.is_empty() {
-        return None;
-    }
-    let mut latest_to_earliest: Vec<(Abs<U>, u64)> =
-        timestamp_counts.iter().map(|(ts, c)| (*ts, *c)).collect();
-    latest_to_earliest.sort_by_key(|entry| std::cmp::Reverse(entry.0));
-
-    let earliest_to_latest: Vec<(Abs<U>, u64)> = latest_to_earliest.into_iter().rev().collect();
-    let counts_only: Vec<u64> = earliest_to_latest.iter().map(|(_, c)| *c).collect();
-    let num_timeframes = counts_only.len();
-    let num_split = ratio.len();
-    if num_timeframes < num_split {
-        return None;
-    }
-
-    let total: f64 = counts_only.iter().map(|c| *c as f64).sum();
-    if total <= 0.0 {
-        return None;
-    }
-
-    let mut cumulative = Vec::with_capacity(num_timeframes);
-    let mut acc = 0.0f64;
-    for count in &counts_only {
-        acc += (*count as f64) / total;
-        cumulative.push(acc);
-    }
-
-    let mut train_val_index = search_sorted_left(&cumulative, ratio[0]);
-    train_val_index = train_val_index.min(num_timeframes - num_split);
-
-    let mut val_test_index = None;
-    if num_split == 3 {
-        let mut idx = search_sorted_left(&cumulative, ratio[0] + ratio[1]);
-        idx = idx.min(num_timeframes - 2);
-        idx = idx.max(train_val_index + 1);
-        val_test_index = Some(idx);
-    }
-
-    let mut assignments = Vec::with_capacity(num_timeframes);
-    for (i, (ts, _)) in earliest_to_latest.into_iter().enumerate() {
-        let stage = if i <= train_val_index {
-            stage_name(0)
-        } else if num_split == 2 || i <= val_test_index.unwrap_or(i) {
-            stage_name(1)
-        } else {
-            stage_name(2)
-        };
-        assignments.push(TimestampSplitAssignmentV3 {
-            timestamp: ts,
-            stage,
-        });
-    }
-    Some(assignments)
-}
-
-fn derive_date_offset_timestamp_stage_assignments_with_semantics<U: UnitSystem>(
-    split_offsets: Option<&[Dur<U>]>,
-    semantics: Option<DateOffsetSplitSemantics<U>>,
-    timestamp_counts: &HashMap<Abs<U>, u64>,
-) -> Option<Vec<TimestampSplitAssignmentV3<U>>> {
-    let offsets = split_offsets?;
-    if timestamp_counts.is_empty() || offsets.is_empty() || offsets.len() > 2 {
-        return None;
-    }
-
-    let mut ts_values: Vec<Abs<U>> = timestamp_counts.keys().copied().collect();
-    ts_values.sort_unstable();
-    let min_ts = *ts_values.first()?;
-    let max_ts = *ts_values.last()?;
-
-    let mut boundaries = vec![min_ts];
-    for off in offsets {
-        // Abs<U> + Dur<U> = Abs<U> — no manual scaling needed.
-        boundaries.push(max_ts + *off);
-    }
-    let shift = date_offset_shift(offsets, semantics);
-    boundaries.push(max_ts + shift);
-
-    if boundaries.len() < 3 {
-        return None;
-    }
-
-    // Match the pass-B decider: snap boundaries when flexible_boundaries=True
-    // (kumo production default) so the manifest's per-timestamp stage map
-    // agrees with DateOffsetDecider's row assignment.
-    if semantics.map(|s| s.flexible_boundaries).unwrap_or(true) {
-        let tf = semantics
-            .and_then(|s| s.timeframe)
-            .unwrap_or_else(|| infer_date_offset_timeframe(offsets));
-        let anchor = semantics.map(|s| s.anchor_start_offset).unwrap_or_else(Dur::zero);
-        let step = semantics.and_then(|s| s.timeframe_step);
-        crate::split_decider::flex_adjust_boundaries(&mut boundaries, tf, anchor, step);
-    }
-
-    let mut assignments = Vec::with_capacity(ts_values.len());
-    for ts in ts_values {
-        for i in 0..(boundaries.len() - 1) {
-            let start = boundaries[i];
-            let end = boundaries[i + 1];
-            if ts >= start && ts + shift <= end {
-                assignments.push(TimestampSplitAssignmentV3 {
-                    timestamp: ts,
-                    stage: stage_name(i),
-                });
-                break;
-            }
-        }
-    }
-    Some(assignments)
-}
-
-fn date_offset_shift<U: UnitSystem>(
-    offsets: &[Dur<U>],
-    semantics: Option<DateOffsetSplitSemantics<U>>,
-) -> Dur<U> {
-    let timeframe = semantics
-        .and_then(|s| s.timeframe)
-        .unwrap_or_else(|| infer_date_offset_timeframe(offsets));
-    let anchor_start_offset = semantics
-        .map(|s| s.anchor_start_offset)
-        .unwrap_or_else(Dur::zero);
-    timeframe + anchor_start_offset
-}
-
-fn infer_date_offset_timeframe<U: UnitSystem>(offsets: &[Dur<U>]) -> Dur<U> {
-    if offsets.len() == 2 {
-        offsets[1] - offsets[0]
-    } else {
-        -offsets[0]
-    }
-}
-
-fn derive_time_range_timestamp_stage_assignments<U: UnitSystem>(
-    split_ranges: Option<&[(Abs<U>, Abs<U>)]>,
-    end_shift: Option<OffsetUnit<U>>,
-    timestamp_counts: &HashMap<Abs<U>, u64>,
-) -> Option<Vec<TimestampSplitAssignmentV3<U>>> {
-    let ranges = split_ranges?;
-    if ranges.len() < 2 || ranges.len() > 3 {
-        return None;
-    }
-    let mut ts_values: Vec<Abs<U>> = timestamp_counts.keys().copied().collect();
-    ts_values.sort_unstable();
-
-    let decider = TimeRangeDecider::new(ranges.to_vec()).with_end_shift(end_shift);
-    let mut assignments = Vec::with_capacity(ts_values.len());
-    for ts in ts_values {
-        let stage = decider.decide_ts(ts);
-        if stage != UNUSED_STAGE {
-            assignments.push(TimestampSplitAssignmentV3 {
-                timestamp: ts,
-                stage: stage_name(stage as usize),
-            });
-        }
-    }
-    Some(assignments)
-}
-
-fn derive_backtesting_timestamp_stage_assignments<U: UnitSystem>(
-    split_backtesting_timestamp: Option<Abs<U>>,
-    timestamp_counts: &HashMap<Abs<U>, u64>,
-) -> Option<Vec<TimestampSplitAssignmentV3<U>>> {
-    let test_ts = split_backtesting_timestamp?;
-    if !timestamp_counts.contains_key(&test_ts) {
-        return Some(Vec::new());
-    }
-
-    Some(vec![TimestampSplitAssignmentV3 {
-        timestamp: test_ts,
-        stage: stage_name(2),
-    }])
-}
-
-fn search_sorted_left(cumulative: &[f64], value: f64) -> usize {
-    for (idx, v) in cumulative.iter().enumerate() {
-        if *v >= value {
-            return idx;
-        }
-    }
-    cumulative.len().saturating_sub(1)
 }
 
 fn min_opt(a: Option<i64>, b: Option<i64>) -> Option<i64> {
@@ -2275,12 +1460,6 @@ fn merge_chunk_stats_into<U: UnitSystem>(dst: &mut ChunkStats<U>, src: ChunkStat
     dst.num_total_rows += src.num_total_rows;
     dst.num_train_rows += src.num_train_rows;
     dst.num_links += src.num_links;
-    for (ts, count) in src.timestamp_counts {
-        *dst.timestamp_counts.entry(ts).or_insert(0) += count;
-    }
-    for (ts, count) in src.num_links_per_ts {
-        *dst.num_links_per_ts.entry(ts).or_insert(0) += count;
-    }
     dst.timestamp_min = min_opt_abs(dst.timestamp_min, src.timestamp_min);
     dst.timestamp_max = max_opt_abs(dst.timestamp_max, src.timestamp_max);
     dst.entity_min = min_opt(dst.entity_min, src.entity_min);
@@ -2405,25 +1584,7 @@ mod tests {
         chunk.include_false_count = 1;
 
         merger.merge(chunk);
-        let out = merger.finalize(
-            4,
-            true,
-            true,
-            true,
-            Some(&[0.5, 0.25, 0.25]),
-            Some("RandomSplit"),
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            "numerical",
-            None,
-        );
+        let out = merger.finalize(4, true, true, true, None, "numerical", None);
 
         assert_eq!(out.version, 2);
         assert_eq!(out.num_total_rows, 4);
@@ -2434,287 +1595,7 @@ mod tests {
         assert_eq!(out.exact_stats.timestamp.min, Some(1000));
         assert_eq!(out.exact_stats.timestamp.max, Some(2000));
         assert_eq!(out.exact_stats.entity_include_bit.unwrap().false_count, 1);
-        assert_eq!(out.split_payload.as_ref().map(|p| p.version), Some(3));
-        assert_eq!(
-            out.split_payload.as_ref().map(|p| p.status.as_str()),
-            Some("counts_only_no_masks")
-        );
-        assert_eq!(
-            out.split_payload
-                .as_ref()
-                .map(|p| p.supports_native_execution),
-            Some(false)
-        );
-        assert_eq!(
-            out.split_payload.as_ref().map(|p| p.num_total_rows),
-            Some(4)
-        );
-        assert!(!out
-            .split_payload
-            .as_ref()
-            .and_then(|p| p.artifacts_v3.as_ref())
-            .map(|a| a.authoritative_supported_family)
-            .unwrap_or(false));
-        let counts = out
-            .split_payload
-            .as_ref()
-            .and_then(|p| p.mask_counts.as_ref())
-            .expect("mask counts should be present");
-        assert_eq!(counts.train, 2);
-        assert_eq!(counts.val, 1);
-        assert_eq!(counts.test, 1);
     }
-
-    #[test]
-    fn test_finalize_approx_date_offset_split_counts() {
-        let mut merger: StatsMerger<Seconds> = StatsMerger::default();
-        let mut chunk: ChunkStats<Seconds> = ChunkStats::default();
-
-        // Latest -> earliest frame counts: [4500, 4500, 4500, 4500]
-        // ApproxDateOffsetSplit(0.8, 0.1, 0.1) should allocate full
-        // timeframes and result in 9000/4500/4500 under Kumo logic.
-        // Only `timestamp_counts` (used by split derivation) is needed
-        // here; the prior `timestamps` HashSet was redundant and has
-        // been dropped.
-        for ts in [40_i64, 30, 20, 10] {
-            chunk.timestamp_counts.insert(Abs::from_raw(ts), 4_500);
-        }
-        chunk.num_train_rows = 18_000;
-
-        merger.merge(chunk);
-        let out = merger.finalize(
-            18_000,
-            true,
-            false,
-            false,
-            Some(&[0.8, 0.1, 0.1]),
-            Some("ApproxDateOffsetSplit"),
-            true,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            "numerical",
-            None,
-        );
-
-        let counts = out
-            .split_payload
-            .as_ref()
-            .and_then(|p| p.mask_counts.as_ref())
-            .expect("mask counts should be present for ApproxDateOffsetSplit");
-        assert_eq!(counts.train, 9_000);
-        assert_eq!(counts.val, 4_500);
-        assert_eq!(counts.test, 4_500);
-    }
-
-    #[test]
-    fn test_date_offset_stage_assignments_respect_shifted_window_end() {
-        let mut merger: StatsMerger<Seconds> = StatsMerger::default();
-        let mut chunk: ChunkStats<Seconds> = ChunkStats {
-            timestamp_hll: Some(HyperLogLog::new()),
-            ..ChunkStats::default()
-        };
-        for ts in 0..20 {
-            chunk.timestamp_hll.as_mut().unwrap().observe_i64(ts);
-            chunk.timestamp_counts.insert(Abs::from_raw(ts), 1);
-        }
-        chunk.num_train_rows = 20;
-        merger.merge(chunk);
-
-        let out = merger.finalize_with_split_semantics(
-            20,
-            false,
-            false,
-            false,
-            None,
-            Some("DateOffsetSplit"),
-            true,
-            Some(&[Dur::from_secs(-6), Dur::from_secs(0)]),
-            Some(DateOffsetSplitSemantics {
-                timeframe: Some(Dur::from_secs(2)),
-                anchor_start_offset: Dur::from_secs(2),
-                flexible_boundaries: false,
-                timeframe_step: None,
-            }),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            "numerical",
-            None,
-        );
-        let assignments = out
-            .split_payload
-            .as_ref()
-            .and_then(|p| p.artifacts_v3.as_ref())
-            .and_then(|a| a.timestamp_stage_assignments.as_ref())
-            .expect("date-offset assignments should be derived");
-        let stages: Vec<(i64, String)> = assignments
-            .iter()
-            .map(|a| (a.timestamp, a.stage.clone()))
-            .collect();
-
-        assert_eq!(
-            stages,
-            (0..=9)
-                .map(|ts| (ts, "train".to_string()))
-                .chain((13..=15).map(|ts| (ts, "val".to_string())))
-                .chain(std::iter::once((19, "test".to_string())))
-                .collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn test_time_range_stage_assignments_respect_temporal_window_end() {
-        let mut merger: StatsMerger<Seconds> = StatsMerger::default();
-        let mut chunk: ChunkStats<Seconds> = ChunkStats {
-            timestamp_hll: Some(HyperLogLog::new()),
-            ..ChunkStats::default()
-        };
-        for ts in [10, 20, 30] {
-            chunk.timestamp_hll.as_mut().unwrap().observe_i64(ts);
-            chunk.timestamp_counts.insert(Abs::from_secs(ts), 1);
-        }
-        chunk.num_train_rows = 3;
-        merger.merge(chunk);
-
-        let ranges = [
-            (Abs::from_secs(0), Abs::from_secs(20)),
-            (Abs::from_secs(20), Abs::from_secs(30)),
-            (Abs::from_secs(30), Abs::from_secs(40)),
-        ];
-        let out = merger.finalize_with_split_semantics(
-            3,
-            false,
-            false,
-            false,
-            None,
-            Some("TimeRangeSplit"),
-            true,
-            None,
-            None,
-            Some(OffsetUnit::Fixed(Dur::from_secs(10))),
-            Some(&ranges),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            "numerical",
-            None,
-        );
-        let assignments = out
-            .split_payload
-            .as_ref()
-            .and_then(|p| p.artifacts_v3.as_ref())
-            .and_then(|a| a.timestamp_stage_assignments.as_ref())
-            .expect("time-range assignments should be derived");
-        let stages: Vec<(i64, String)> = assignments
-            .iter()
-            .map(|a| (a.timestamp, a.stage.clone()))
-            .collect();
-
-        assert_eq!(
-            stages,
-            vec![
-                (10, "train".to_string()),
-                (20, "val".to_string()),
-                (30, "test".to_string()),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_finalize_backtesting_split_counts() {
-        let mut merger: StatsMerger<Seconds> = StatsMerger::default();
-        let mut chunk: ChunkStats<Seconds> = ChunkStats::default();
-        // Split derivation reads `timestamp_counts` only; the redundant
-        // `timestamps` HashSet was dropped.
-        chunk.timestamp_counts.insert(Abs::from_raw(10), 7);
-        chunk.timestamp_counts.insert(Abs::from_raw(20), 3);
-        chunk.num_train_rows = 10;
-
-        merger.merge(chunk);
-        let out = merger.finalize(
-            10,
-            true,
-            false,
-            false,
-            Some(&[1.0, 0.0]),
-            Some("BacktestingSplit"),
-            true,
-            None,
-            None,
-            Some(Abs::from_raw(20)),
-            None,
-            None,
-            None,
-            None,
-            None,
-            "numerical",
-            None,
-        );
-        let counts = out
-            .split_payload
-            .as_ref()
-            .and_then(|p| p.mask_counts.as_ref())
-            .expect("mask counts should be present for BacktestingSplit");
-        assert_eq!(counts.train, 0);
-        assert_eq!(counts.val, 0);
-        assert_eq!(counts.test, 3);
-    }
-
-    #[test]
-    fn test_finalize_fixed_split_counts_match_largest_remainder() {
-        let mut merger: StatsMerger<Seconds> = StatsMerger::default();
-        let chunk: ChunkStats<Seconds> = ChunkStats {
-            num_train_rows: 10,
-            ..Default::default()
-        };
-        merger.merge(chunk);
-
-        let out = merger.finalize(
-            10,
-            true,
-            false,
-            false,
-            Some(&[0.34, 0.33, 0.33]),
-            Some("FixedSplit"),
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            "numerical",
-            None,
-        );
-
-        let counts = out
-            .split_payload
-            .as_ref()
-            .and_then(|p| p.mask_counts.as_ref())
-            .expect("mask counts should be present for FixedSplit");
-        assert_eq!(counts.train, 4);
-        assert_eq!(counts.val, 3);
-        assert_eq!(counts.test, 3);
-    }
-
-    // ─── target_is_bool_dtype propagation ────────────────────────────────────
-
     #[test]
     fn test_merge_propagates_target_is_bool_dtype_when_chunk_sets_it() {
         // A single chunk that observed a bool target dtype must flip the
@@ -2771,25 +1652,7 @@ mod tests {
         counts.insert("false".to_string(), 7);
         counts.insert("true".to_string(), 3);
 
-        let payload = merger.finalize(
-            10,
-            false,
-            false,
-            false,
-            Some(&[0.8, 0.1, 0.1]),
-            Some("RandomSplit"),
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(counts),
-            "categorical",
-            None,
-        );
+        let payload = merger.finalize(10, false, false, false, Some(counts), "categorical", None);
 
         let outer = payload
             .parsed_train_table_col_stats
@@ -2834,25 +1697,7 @@ mod tests {
         counts.insert("false".to_string(), 7);
         counts.insert("true".to_string(), 3);
 
-        let payload = merger.finalize(
-            10,
-            false,
-            false,
-            false,
-            Some(&[0.8, 0.1, 0.1]),
-            Some("RandomSplit"),
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(counts),
-            "categorical",
-            None,
-        );
+        let payload = merger.finalize(10, false, false, false, Some(counts), "categorical", None);
         let outer = payload.parsed_train_table_col_stats.unwrap();
         let stats = outer.get("stats").expect("outer must have 'stats' wrapper");
         let key = stats
@@ -3056,12 +1901,10 @@ mod tests {
     }
 
     #[test]
-    fn test_hll_cardinality_matches_exact_count_on_small_fixture() {
-        // Regression guard: HLL replacement for the prior entities /
-        // targets / timestamps HashSets must produce the exact unique
-        // count when cardinality is well below the HLL's M = 16384
-        // registers (default-precision sweet spot for small inputs).
-        // Asserts the equivalence on a representative chunk.
+    fn test_hll_cardinality_estimate_on_small_fixture() {
+        // Regression guard for a representative low-cardinality fixture.
+        // HyperLogLog is probabilistic even below its 16384-register size;
+        // these deterministic inputs happen to estimate to their exact counts.
         let mut chunk: ChunkStats<Seconds> = ChunkStats::default();
         seed_hlls(&mut chunk);
 
@@ -3079,17 +1922,17 @@ mod tests {
         assert_eq!(
             chunk.entity_hll.as_ref().unwrap().estimate() as u64,
             5,
-            "HLL must give exact count for small cardinality"
+            "unexpected entity estimate for fixture"
         );
         assert_eq!(
             chunk.target_hll.as_ref().unwrap().estimate() as u64,
             3,
-            "HLL must give exact count for small cardinality"
+            "unexpected target estimate for fixture"
         );
         assert_eq!(
             chunk.timestamp_hll.as_ref().unwrap().estimate() as u64,
             4,
-            "HLL must give exact count for small cardinality"
+            "unexpected timestamp estimate for fixture"
         );
 
         // Now drive the merger->finalize path and ensure num_entities /
@@ -3098,25 +1941,7 @@ mod tests {
         chunk.num_train_rows = 6;
         let mut merger: StatsMerger<Seconds> = StatsMerger::default();
         merger.merge(chunk);
-        let out = merger.finalize(
-            6,
-            false,
-            false,
-            false,
-            Some(&[1.0, 0.0, 0.0]),
-            Some("RandomSplit"),
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            "numerical",
-            None,
-        );
+        let out = merger.finalize(6, false, false, false, None, "numerical", None);
         assert_eq!(out.num_entities, 5);
         assert_eq!(out.num_targets, 3);
         assert_eq!(out.exact_stats.timestamp.num_unique, Some(4));
@@ -3158,16 +1983,6 @@ mod tests {
             is_link_prediction,
             false,
             false,
-            Some(&[1.0, 0.0, 0.0]),
-            Some("RandomSplit"),
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
             target_category_counts,
             target_stype,
             None,
@@ -3189,7 +2004,6 @@ mod tests {
             num_train_rows: 5,
             ..Default::default()
         };
-        chunk.timestamp_counts.insert(Abs::from_raw(100), 5);
         chunk.timestamp_min = Some(Abs::from_raw(100));
         chunk.timestamp_max = Some(Abs::from_raw(100));
 
@@ -3204,16 +2018,6 @@ mod tests {
             false,
             false,
             false,
-            Some(&[1.0, 0.0, 0.0]),
-            Some("RandomSplit"),
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
             Some(target_counts),
             "categorical",
             // What the executor hands over once entity counting is disabled.
@@ -3249,10 +2053,11 @@ mod tests {
         // looks up directly.
         let mut chunk: ChunkStats<Seconds> = ChunkStats {
             num_train_rows: 5,
+            timestamp_hll: Some(HyperLogLog::new()),
             ..Default::default()
         };
-        chunk.timestamp_counts.insert(Abs::from_raw(100), 3);
-        chunk.timestamp_counts.insert(Abs::from_raw(200), 2);
+        chunk.timestamp_hll.as_mut().unwrap().observe_i64(100);
+        chunk.timestamp_hll.as_mut().unwrap().observe_i64(200);
         chunk.timestamp_min = Some(Abs::from_raw(100));
         chunk.timestamp_max = Some(Abs::from_raw(200));
 
@@ -3262,7 +2067,7 @@ mod tests {
         // Spot-check each of the required keys is populated and
         // serializes to the expected top-level field name. We check the
         // serialized JSON of StatsArtifact to ensure they end up at top.
-        let artifact = crate::manifest::StatsArtifact::from_payload(payload.clone());
+        let artifact = crate::manifest::StatsArtifact::from_payload(&payload);
         let json = serde_json::to_value(&artifact).expect("StatsArtifact serializes");
         let obj = json.as_object().expect("StatsArtifact is a JSON object");
         for key in [
@@ -3276,7 +2081,6 @@ mod tests {
             "node_degree_stats",
             "scoring_table_column_stats",
             "target_distribution",
-            "stats_per_timeframe",
         ] {
             assert!(
                 obj.contains_key(key),
@@ -3297,6 +2101,47 @@ mod tests {
         assert!(kc.max_date.is_string(), "max_date must be a string");
         // anchor_date == max_date by kumo convention.
         assert_eq!(kc.anchor_date, kc.max_date);
+        for removed in [
+            "payload",
+            "timestamp_counts",
+            "stats_per_timeframe",
+            "timestamp_stage_assignments",
+            "kumo_contract",
+        ] {
+            assert!(
+                !obj.contains_key(removed),
+                "expanded field {removed:?} must not be in stats.json"
+            );
+        }
+    }
+
+    #[test]
+    fn test_stats_artifact_size_is_bounded_by_timestamp_cardinality() {
+        fn artifact_bytes(cardinality: i64) -> Vec<u8> {
+            let mut timestamp_hll = HyperLogLog::new();
+            for ts in 0..cardinality {
+                timestamp_hll.observe_i64(ts);
+            }
+            let chunk: ChunkStats<Seconds> = ChunkStats {
+                num_train_rows: cardinality as u64,
+                timestamp_hll: Some(timestamp_hll),
+                timestamp_min: Some(Abs::from_raw(0)),
+                timestamp_max: Some(Abs::from_raw(cardinality.saturating_sub(1))),
+                ..Default::default()
+            };
+            let payload = finalize_minimal(chunk, cardinality as u64, false, None, "numerical");
+            serde_json::to_vec(&crate::manifest::StatsArtifact::from_payload(&payload)).unwrap()
+        }
+
+        let ten = artifact_bytes(10);
+        let hundred_thousand = artifact_bytes(100_000);
+        assert!(hundred_thousand.len() < 2_048);
+        assert!(
+            hundred_thousand.len() <= ten.len() + 32,
+            "artifact grew with timestamp cardinality: {} -> {} bytes",
+            ten.len(),
+            hundred_thousand.len()
+        );
     }
 
     #[test]
@@ -3371,231 +2216,12 @@ mod tests {
         assert_eq!(hist.get("num_bins").unwrap().as_i64(), Some(0));
         assert_eq!(hist.get("bin_width").unwrap().as_f64(), Some(0.0));
     }
-
-    #[test]
-    fn test_finalize_stats_per_timeframe_sorted_descending() {
-        // 3 timestamps, verify list is sorted newest-first
-        // (kumo's update_train_table_stats asserts this).
-        let mut chunk: ChunkStats<Seconds> = ChunkStats {
-            num_train_rows: 6,
-            ..Default::default()
-        };
-        chunk.timestamp_counts.insert(Abs::from_raw(100), 1);
-        chunk.timestamp_counts.insert(Abs::from_raw(300), 3);
-        chunk.timestamp_counts.insert(Abs::from_raw(200), 2);
-
-        let payload = finalize_minimal(chunk, 6, false, None, "numerical");
-        let arr = payload
-            .kumo_contract
-            .stats_per_timeframe
-            .as_array()
-            .expect("stats_per_timeframe must be an array");
-        assert_eq!(arr.len(), 3);
-
-        // Anchor dates must descend in real time. Compare ISO strings
-        // lexicographically — same RFC3339 "+00:00" suffix so cmp works.
-        let a0 = arr[0].get("anchor_date").unwrap().as_str().unwrap();
-        let a1 = arr[1].get("anchor_date").unwrap().as_str().unwrap();
-        let a2 = arr[2].get("anchor_date").unwrap().as_str().unwrap();
-        assert!(a0 > a1, "newest-first: {a0:?} > {a1:?}");
-        assert!(a1 > a2, "newest-first: {a1:?} > {a2:?}");
-
-        // index field reflects the sort order: 0..2.
-        assert_eq!(arr[0].get("index").unwrap().as_u64(), Some(0));
-        assert_eq!(arr[1].get("index").unwrap().as_u64(), Some(1));
-        assert_eq!(arr[2].get("index").unwrap().as_u64(), Some(2));
-
-        // num_train_rows for each entry comes from timestamp_counts.
-        assert_eq!(arr[0].get("num_train_rows").unwrap().as_u64(), Some(3)); // ts=300
-        assert_eq!(arr[1].get("num_train_rows").unwrap().as_u64(), Some(2)); // ts=200
-        assert_eq!(arr[2].get("num_train_rows").unwrap().as_u64(), Some(1)); // ts=100
-    }
-
-    #[test]
-    fn test_finalize_num_links_per_ts_lp() {
-        // LP fixture: per-anchor num_links must surface in
-        // stats_per_timeframe[i].num_links.
-        let mut chunk: ChunkStats<Seconds> = ChunkStats {
-            num_train_rows: 4,
-            num_links: 11,
-            ..Default::default()
-        };
-        chunk.timestamp_counts.insert(Abs::from_raw(100), 2);
-        chunk.timestamp_counts.insert(Abs::from_raw(200), 2);
-        chunk.num_links_per_ts.insert(Abs::from_raw(100), 7);
-        chunk.num_links_per_ts.insert(Abs::from_raw(200), 4);
-
-        let payload = finalize_minimal(chunk, 4, true, None, "numerical");
-        let arr = payload
-            .kumo_contract
-            .stats_per_timeframe
-            .as_array()
-            .expect("stats_per_timeframe must be an array");
-        assert_eq!(arr.len(), 2);
-
-        // Newest-first: ts=200 then ts=100.
-        assert_eq!(arr[0].get("num_links").unwrap().as_u64(), Some(4));
-        assert_eq!(arr[1].get("num_links").unwrap().as_u64(), Some(7));
-        // Top-level num_links also matches (existing behavior).
-        assert_eq!(payload.num_links, Some(11));
-    }
-
-    #[test]
-    fn test_per_ts_entry_shape_node_pred() {
-        // TemporalNodeTimeFrameStats.__init__ does NOT accept
-        // `node_degree_stats` or `num_links` — only the Link variant does.
-        // Each per-ts entry for a node-pred run must therefore exclude
-        // these keys, otherwise kumo's `from_stats` raises TypeError.
-        let mut chunk: ChunkStats<Seconds> = ChunkStats {
-            num_train_rows: 4,
-            ..Default::default()
-        };
-        chunk.timestamp_counts.insert(Abs::from_raw(100), 4);
-
-        let payload = finalize_minimal(
-            chunk,
-            4,
-            /*is_link_prediction=*/ false,
-            None,
-            "categorical",
-        );
-        let arr = payload
-            .kumo_contract
-            .stats_per_timeframe
-            .as_array()
-            .expect("stats_per_timeframe must be an array");
-        assert_eq!(arr.len(), 1);
-        let entry = arr[0].as_object().unwrap();
-
-        // Required Node-variant kwargs:
-        for k in [
-            "min_date",
-            "max_date",
-            "anchor_date",
-            "num_train_rows",
-            "num_entities",
-            "num_targets",
-            "target_distribution",
-            "index",
-        ] {
-            assert!(
-                entry.contains_key(k),
-                "Node-variant per-ts entry must contain key {k:?}, got {entry:?}"
-            );
-        }
-        // FORBIDDEN for Node variant — kumo's TemporalNodeTimeFrameStats
-        // rejects these via TypeError on unexpected kwargs:
-        for k in ["node_degree_stats", "num_links"] {
-            assert!(
-                !entry.contains_key(k),
-                "Node-variant per-ts entry MUST NOT contain key {k:?} (kumo rejects), \
-                 got {entry:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_per_ts_entry_shape_link_pred() {
-        // TemporalLinkTimeFrameStats.__init__ accepts `num_links` and
-        // `node_degree_stats`, but does NOT accept `target_distribution`.
-        // Per-ts entries for a link-pred run must include the former and
-        // exclude the latter.
-        let mut chunk: ChunkStats<Seconds> = ChunkStats {
-            num_train_rows: 5,
-            num_links: 8,
-            ..Default::default()
-        };
-        chunk.timestamp_counts.insert(Abs::from_raw(500), 5);
-        chunk.num_links_per_ts.insert(Abs::from_raw(500), 8);
-
-        let payload = finalize_minimal(
-            chunk,
-            5,
-            /*is_link_prediction=*/ true,
-            None,
-            "numerical",
-        );
-        let arr = payload
-            .kumo_contract
-            .stats_per_timeframe
-            .as_array()
-            .expect("stats_per_timeframe must be an array");
-        assert_eq!(arr.len(), 1);
-        let entry = arr[0].as_object().unwrap();
-
-        // Required Link-variant kwargs:
-        for k in [
-            "min_date",
-            "max_date",
-            "anchor_date",
-            "num_train_rows",
-            "num_entities",
-            "num_targets",
-            "num_links",
-            "node_degree_stats",
-            "index",
-        ] {
-            assert!(
-                entry.contains_key(k),
-                "Link-variant per-ts entry must contain key {k:?}, got {entry:?}"
-            );
-        }
-        // FORBIDDEN for Link variant:
-        assert!(
-            !entry.contains_key("target_distribution"),
-            "Link-variant per-ts entry MUST NOT contain target_distribution, got {entry:?}"
-        );
-        // num_links from per-ts accumulator
-        assert_eq!(entry.get("num_links").unwrap().as_u64(), Some(8));
-        assert!(entry.get("node_degree_stats").unwrap().is_null());
-    }
-
-    #[test]
-    fn test_per_ts_num_links_merge() {
-        // ChunkStats.num_links_per_ts must fold correctly across the
-        // merger's per-worker chunks (sum same-key values; same shape as
-        // `timestamp_counts`).
-        let mut merger: StatsMerger<Seconds> = StatsMerger::default();
-
-        let mut a: ChunkStats<Seconds> = ChunkStats::default();
-        a.num_links_per_ts.insert(Abs::from_raw(100), 3);
-        a.num_links_per_ts.insert(Abs::from_raw(200), 5);
-        merger.merge(a);
-
-        let mut b: ChunkStats<Seconds> = ChunkStats::default();
-        b.num_links_per_ts.insert(Abs::from_raw(100), 4); // same key
-        b.num_links_per_ts.insert(Abs::from_raw(300), 7); // new key
-        merger.merge(b);
-
-        assert_eq!(
-            merger.num_links_per_ts.get(&Abs::from_raw(100)).copied(),
-            Some(7)
-        );
-        assert_eq!(
-            merger.num_links_per_ts.get(&Abs::from_raw(200)).copied(),
-            Some(5)
-        );
-        assert_eq!(
-            merger.num_links_per_ts.get(&Abs::from_raw(300)).copied(),
-            Some(7)
-        );
-    }
-
     #[test]
     fn test_finalize_emits_top_level_dates() {
-        // Top-level min_date / max_date / anchor_date must be populated
-        // when timestamp_min / timestamp_max are present.
-        // anchor_date == max_date by kumo convention.
         let mut chunk: ChunkStats<Seconds> = ChunkStats {
             num_train_rows: 2,
             ..Default::default()
         };
-        chunk
-            .timestamp_counts
-            .insert(Abs::from_raw(1_700_000_000), 1);
-        chunk
-            .timestamp_counts
-            .insert(Abs::from_raw(1_800_000_000), 1);
         chunk.timestamp_min = Some(Abs::from_raw(1_700_000_000));
         chunk.timestamp_max = Some(Abs::from_raw(1_800_000_000));
 
@@ -3637,65 +2263,65 @@ mod tests {
     }
 }
 
-    #[test]
-    fn test_sequence_feature_stats_observation_and_merge() {
-        use arrow_array::builder::{Float64Builder, ListBuilder};
-        use std::sync::Arc;
-        
-        let mut stats1 = SequenceFeatureStats::default();
-        let mut stats2 = SequenceFeatureStats::default();
-        
-        // Build first array: one list of length 2, one null, one list of length 4
-        let array1 = {
-            let mut b = ListBuilder::new(Float64Builder::new());
-            b.values().append_value(1.0);
-            b.values().append_value(2.0);
-            b.append(true);
-            b.append(false); // null
-            b.values().append_value(3.0);
-            b.values().append_value(4.0);
-            b.values().append_value(5.0);
-            b.values().append_value(6.0);
-            b.append(true);
-            Arc::new(b.finish()) as Arc<dyn Array>
-        };
-        
-        stats1.observe(array1.as_ref(), 0);
-        stats1.observe(array1.as_ref(), 1);
-        stats1.observe(array1.as_ref(), 2);
-        
-        assert_eq!(stats1.count, 2);
-        assert_eq!(stats1.null_count, 1);
-        assert_eq!(stats1.min_len, Some(2));
-        assert_eq!(stats1.max_len, Some(4));
-        
-        // Build second array: one list of length 1, one list of length 5
-        let array2 = {
-            let mut b = ListBuilder::new(Float64Builder::new());
-            b.values().append_value(7.0);
-            b.append(true);
-            b.values().append_value(8.0);
-            b.values().append_value(9.0);
-            b.values().append_value(10.0);
-            b.values().append_value(11.0);
-            b.values().append_value(12.0);
-            b.append(true);
-            Arc::new(b.finish()) as Arc<dyn Array>
-        };
-        
-        stats2.observe(array2.as_ref(), 0);
-        stats2.observe(array2.as_ref(), 1);
-        
-        assert_eq!(stats2.count, 2);
-        assert_eq!(stats2.null_count, 0);
-        assert_eq!(stats2.min_len, Some(1));
-        assert_eq!(stats2.max_len, Some(5));
-        
-        // Merge stats2 into stats1
-        stats1.merge(&stats2);
-        
-        assert_eq!(stats1.count, 4);
-        assert_eq!(stats1.null_count, 1);
-        assert_eq!(stats1.min_len, Some(1));
-        assert_eq!(stats1.max_len, Some(5));
-    }
+#[test]
+fn test_sequence_feature_stats_observation_and_merge() {
+    use arrow_array::builder::{Float64Builder, ListBuilder};
+    use std::sync::Arc;
+
+    let mut stats1 = SequenceFeatureStats::default();
+    let mut stats2 = SequenceFeatureStats::default();
+
+    // Build first array: one list of length 2, one null, one list of length 4
+    let array1 = {
+        let mut b = ListBuilder::new(Float64Builder::new());
+        b.values().append_value(1.0);
+        b.values().append_value(2.0);
+        b.append(true);
+        b.append(false); // null
+        b.values().append_value(3.0);
+        b.values().append_value(4.0);
+        b.values().append_value(5.0);
+        b.values().append_value(6.0);
+        b.append(true);
+        Arc::new(b.finish()) as Arc<dyn Array>
+    };
+
+    stats1.observe(array1.as_ref(), 0);
+    stats1.observe(array1.as_ref(), 1);
+    stats1.observe(array1.as_ref(), 2);
+
+    assert_eq!(stats1.count, 2);
+    assert_eq!(stats1.null_count, 1);
+    assert_eq!(stats1.min_len, Some(2));
+    assert_eq!(stats1.max_len, Some(4));
+
+    // Build second array: one list of length 1, one list of length 5
+    let array2 = {
+        let mut b = ListBuilder::new(Float64Builder::new());
+        b.values().append_value(7.0);
+        b.append(true);
+        b.values().append_value(8.0);
+        b.values().append_value(9.0);
+        b.values().append_value(10.0);
+        b.values().append_value(11.0);
+        b.values().append_value(12.0);
+        b.append(true);
+        Arc::new(b.finish()) as Arc<dyn Array>
+    };
+
+    stats2.observe(array2.as_ref(), 0);
+    stats2.observe(array2.as_ref(), 1);
+
+    assert_eq!(stats2.count, 2);
+    assert_eq!(stats2.null_count, 0);
+    assert_eq!(stats2.min_len, Some(1));
+    assert_eq!(stats2.max_len, Some(5));
+
+    // Merge stats2 into stats1
+    stats1.merge(&stats2);
+
+    assert_eq!(stats1.count, 4);
+    assert_eq!(stats1.null_count, 1);
+    assert_eq!(stats1.min_len, Some(1));
+    assert_eq!(stats1.max_len, Some(5));
+}

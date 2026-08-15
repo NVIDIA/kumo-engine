@@ -1176,7 +1176,6 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                     if let Some(ref mut h) = processor.stats.timestamp_hll {
                         h.observe_i64(ts.raw());
                     }
-                    *processor.stats.timestamp_counts.entry(ts).or_insert(0) += 1;
                     processor.stats.timestamp_min = Some(match processor.stats.timestamp_min {
                         Some(existing) => existing.min(ts),
                         None => ts,
@@ -1193,7 +1192,6 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
 
                 processor.stats.include_true_count += 1;
                 processor.stats.num_links += targets.len() as u64;
-                *processor.stats.num_links_per_ts.entry(ts).or_insert(0) += targets.len() as u64;
                 processor.stats.num_train_rows += 1;
             }
         }

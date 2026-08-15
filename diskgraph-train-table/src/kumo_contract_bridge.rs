@@ -151,7 +151,6 @@ mod tests {
         TrainTableStatsPayload,
     };
     use serde_json::Value as JsonValue;
-    use std::collections::HashMap;
 
     fn empty_int_col() -> IntColumnStats {
         IntColumnStats {
@@ -175,7 +174,6 @@ mod tests {
             node_degree_stats: JsonValue::Null,
             scoring_table_column_stats: JsonValue::Null,
             target_distribution: JsonValue::Object(serde_json::Map::new()),
-            stats_per_timeframe: JsonValue::Array(Vec::new()),
         }
     }
 
@@ -214,8 +212,6 @@ mod tests {
                 frequency: None,
                 entity_include_bit: None,
             },
-            split_payload: None,
-            timestamp_counts: HashMap::new(),
             parsed_train_table_col_stats,
             kumo_contract: empty_kumo_contract(),
         }
