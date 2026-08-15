@@ -2843,10 +2843,23 @@ struct TempNodeFileResult {
     node_data_dropped: u64,
 }
 
+/// Safe validation error whose outcome cannot change across worker retries.
 #[derive(Debug, thiserror::Error)]
 #[error("{message}")]
 pub struct PublicIngestError {
     message: String,
+}
+
+const PUBLIC_INGEST_ERROR_CODE: &str = "diskgraph_ingest_validation";
+const PUBLIC_INGEST_ERROR_MESSAGE_MAX_BYTES: usize = 2 * 1024;
+
+#[derive(serde::Serialize)]
+struct PublicIngestErrorEnvelope<'a> {
+    version: u8,
+    code: &'static str,
+    public_message: &'a str,
+    native_type: &'static str,
+    non_retryable: bool,
 }
 
 impl PublicIngestError {
@@ -2859,6 +2872,30 @@ pub fn public_ingest_error_message(error: &anyhow::Error) -> Option<String> {
     error
         .downcast_ref::<PublicIngestError>()
         .map(ToString::to_string)
+}
+
+/// Serialize the allowlisted worker error contract consumed by supervisors.
+pub fn public_ingest_error_envelope(error: &anyhow::Error) -> Option<String> {
+    let error = error.downcast_ref::<PublicIngestError>()?;
+    let mut message_end = error
+        .message
+        .len()
+        .min(PUBLIC_INGEST_ERROR_MESSAGE_MAX_BYTES);
+    while !error.message.is_char_boundary(message_end) {
+        message_end -= 1;
+    }
+    serde_json::to_string(&PublicIngestErrorEnvelope {
+        version: 1,
+        code: PUBLIC_INGEST_ERROR_CODE,
+        public_message: &error.message[..message_end],
+        native_type: "PublicIngestError",
+        non_retryable: true,
+    })
+    .ok()
+}
+
+pub fn is_non_retryable_ingest_error(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<PublicIngestError>().is_some()
 }
 
 enum SourceBatchRetention {
@@ -3513,7 +3550,48 @@ fn only_explicit_public_ingest_errors_are_publishable() {
         public_ingest_error_message(&public_error).as_deref(),
         Some("safe validation detail")
     );
+    assert!(is_non_retryable_ingest_error(&public_error));
+    let envelope: JsonValue =
+        serde_json::from_str(&public_ingest_error_envelope(&public_error).unwrap()).unwrap();
+    assert_eq!(
+        envelope,
+        serde_json::json!({
+            "version": 1,
+            "code": "diskgraph_ingest_validation",
+            "public_message": "safe validation detail",
+            "native_type": "PublicIngestError",
+            "non_retryable": true,
+        })
+    );
     assert!(public_ingest_error_message(&anyhow!("provider secret detail")).is_none());
+    assert!(public_ingest_error_envelope(&anyhow!("provider secret detail")).is_none());
+    assert!(!is_non_retryable_ingest_error(&anyhow!(
+        "provider secret detail"
+    )));
+}
+
+#[cfg(test)]
+#[test]
+fn missing_source_columns_are_public_and_non_retryable() {
+    let table: TableSpec = serde_json::from_value(serde_json::json!({
+        "name": "TRANS",
+        "columns": [
+            {"name": "id", "ingested_dtype": "int64"},
+            {"name": "K_SYMBOL", "ingested_dtype": "utf8"}
+        ],
+        "primary_key": "id",
+        "source": {"type": "parquet", "paths": ["unused.parquet"]}
+    }))
+    .unwrap();
+    let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+
+    let error = validate_source_schema(&table, &schema, &HashSet::new()).unwrap_err();
+
+    assert_eq!(
+        public_ingest_error_message(&error).as_deref(),
+        Some("table TRANS source schema is missing column 'K_SYMBOL'")
+    );
+    assert!(is_non_retryable_ingest_error(&error));
 }
 
 const FILE_DECODE_READ_BUFFER_BYTES: usize = 64 * 1024;
@@ -16580,19 +16658,18 @@ fn validate_source_schema(
             continue;
         }
         let field_index = schema.index_of(&column.name).map_err(|_| {
-            anyhow!(
+            PublicIngestError::new(format!(
                 "table {} source schema is missing column '{}'",
-                table.name,
-                column.name
-            )
+                table.name, column.name
+            ))
         })?;
         let actual = schema.field(field_index).data_type();
         if *actual == DataType::Null {
-            return Err(anyhow!(
+            return Err(PublicIngestError::new(format!(
                 "table {} column '{}' has Null data type in the source schema",
-                table.name,
-                column.name
-            ));
+                table.name, column.name
+            ))
+            .into());
         }
     }
     Ok(())
@@ -16609,11 +16686,10 @@ fn validate_source_batch_values(
             continue;
         }
         let field_index = batch.schema().index_of(&column.name).map_err(|_| {
-            anyhow!(
+            PublicIngestError::new(format!(
                 "table {} source batch is missing column '{}'",
-                table.name,
-                column.name
-            )
+                table.name, column.name
+            ))
         })?;
         let array = batch.column(field_index);
         match array.data_type() {

@@ -2,12 +2,16 @@ use anyhow::{anyhow, Result};
 use diskgraph_core::metadata::DatasetMetadata;
 use diskgraph_index::graph::GraphIndexReader;
 use diskgraph_index::pkmap::{shard_for_key, Key};
-use diskgraph_ingest::{ingest, ingest_with_stats, Dest, IngestOptions};
+use diskgraph_ingest::{
+    ingest, ingest_with_stats, is_non_retryable_ingest_error, public_ingest_error_message, Dest,
+    IngestOptions,
+};
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use std::process::Command;
 use std::sync::{Arc, Once};
 use tempfile::tempdir;
 
@@ -3636,8 +3640,8 @@ fn ingest_parquet_null_column_type_rejected() -> Result<()> {
         IngestOptions::default(),
     );
 
-    assert!(result.is_err(), "ingest should fail for Null-typed column");
-    let err_msg = result.unwrap_err().to_string();
+    let error = result.expect_err("ingest should fail for Null-typed column");
+    let err_msg = error.to_string();
     assert!(
         err_msg.contains("Null data type"),
         "error should mention Null data type, got: {err_msg}"
@@ -3645,6 +3649,89 @@ fn ingest_parquet_null_column_type_rejected() -> Result<()> {
     assert!(
         err_msg.contains("value"),
         "error should mention the column name, got: {err_msg}"
+    );
+    assert_eq!(
+        public_ingest_error_message(&error).as_deref(),
+        Some(err_msg.as_str())
+    );
+    assert!(is_non_retryable_ingest_error(&error));
+
+    Ok(())
+}
+
+/// The real worker/supervisor protocol must preserve the trusted envelope and
+/// stop after one deterministic validation failure.
+#[test]
+fn ingest_binary_propagates_public_validation_without_retry() -> Result<()> {
+    let dir = tempdir()?;
+    let data_dir = dir.path().join("data");
+    fs::create_dir_all(&data_dir)?;
+    let data_path = data_dir.join("nodes.parquet");
+    write_parquet(
+        &data_path,
+        Schema::new(vec![Field::new("id", DataType::Int64, false)]),
+        vec![Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef],
+    )?;
+
+    let config = serde_json::json!({
+        "dataset_name": "missing_column_protocol_test",
+        "tables": [{
+            "name": "Nodes",
+            "columns": [
+                {"name": "id", "ingested_dtype": "int64"},
+                {"name": "value", "ingested_dtype": "int64"}
+            ],
+            "primary_key": "id",
+            "source": {
+                "type": "parquet",
+                "paths": [data_path.to_string_lossy()]
+            }
+        }],
+        "relationships": []
+    });
+    let config_path = dir.path().join("config.json");
+    fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
+    let output_root = dir.path().join("output");
+
+    let process = Command::new(env!("CARGO_BIN_EXE_ingest"))
+        .arg("--source")
+        .arg(&config_path)
+        .arg("--output")
+        .arg(&output_root)
+        .arg("--dest")
+        .arg("local")
+        .arg("--oom-retries")
+        .arg("8")
+        .arg("--context-threads")
+        .arg("1")
+        .arg("--encode-threads")
+        .arg("1")
+        .arg("--pk-map-threads")
+        .arg("1")
+        .arg("--edges-map-threads")
+        .arg("1")
+        .arg("--index-threads")
+        .arg("1")
+        .output()?;
+
+    assert_eq!(process.status.code(), Some(78));
+    let stderr = String::from_utf8_lossy(&process.stderr);
+    assert_eq!(
+        stderr.matches("source schema is missing column 'value'").count(),
+        1,
+        "the supervisor must not restart a deterministic validation failure: {stderr}"
+    );
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&fs::read(output_root.join(".ingest_error"))?)?;
+    assert_eq!(
+        envelope,
+        serde_json::json!({
+            "version": 1,
+            "code": "diskgraph_ingest_validation",
+            "public_message": "table Nodes source schema is missing column 'value'",
+            "native_type": "PublicIngestError",
+            "non_retryable": true,
+        })
     );
 
     Ok(())

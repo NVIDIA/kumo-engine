@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -32,7 +32,7 @@ struct Args {
     /// Internal worker mode used by the phase-aware OOM supervisor.
     #[arg(long, hide = true)]
     worker: bool,
-    /// Maximum worker restarts after an OOM-classified exit.
+    /// Maximum worker restarts after a retryable exit.
     #[arg(long, default_value_t = 8)]
     oom_retries: usize,
     /// Print the resolved default worker-thread count (cgroup-aware) and exit.
@@ -224,12 +224,13 @@ fn main() -> Result<()> {
     match run_worker(args) {
         Ok(()) => Ok(()),
         Err(error) => {
-            if let (Some(path), Some(message)) = (
-                worker_error_path,
-                diskgraph_ingest::public_ingest_error_message(&error),
-            ) {
-                let message = message.chars().take(16 * 1024).collect::<String>();
-                let _ = fs::write(path, message);
+            let public_envelope = diskgraph_ingest::public_ingest_error_envelope(&error);
+            if let (Some(path), Some(envelope)) = (&worker_error_path, &public_envelope) {
+                persist_worker_error(path, envelope);
+            }
+            if public_envelope.is_some() {
+                eprintln!("Error: {error:?}");
+                std::process::exit(NON_RETRYABLE_WORKER_EXIT_CODE);
             }
             Err(error)
         }
@@ -636,6 +637,28 @@ fn run_worker(args: Args) -> Result<()> {
 
 const SUPERVISOR_RESUME_ENV: &str = "DISKGRAPH_SUPERVISOR_RESUME_PHASE";
 const WORKER_ERROR_FILENAME: &str = ".ingest_error";
+// EX_CONFIG: the worker validated its input and a retry cannot change it.
+const NON_RETRYABLE_WORKER_EXIT_CODE: i32 = 78;
+
+fn persist_worker_error(path: &Path, error: &str) {
+    if let Some(parent) = path.parent() {
+        if let Err(write_error) = fs::create_dir_all(parent) {
+            tracing::warn!(
+                path = %path.display(),
+                error = %write_error,
+                "failed to recreate ingest output directory for worker error"
+            );
+            return;
+        }
+    }
+    if let Err(write_error) = fs::write(path, error) {
+        tracing::warn!(
+            path = %path.display(),
+            error = %write_error,
+            "failed to persist worker error"
+        );
+    }
+}
 
 fn supervisor_thread_override(phase: &str) -> Option<usize> {
     std::env::var(format!("DISKGRAPH_SUPERVISOR_{phase}_THREADS"))
@@ -673,11 +696,16 @@ fn is_oom_exit(status: ExitStatus) -> bool {
     }
 }
 
+fn is_non_retryable_exit(status: ExitStatus) -> bool {
+    status.code() == Some(NON_RETRYABLE_WORKER_EXIT_CODE)
+}
+
 fn retry_phase_for_exit(
     oom: bool,
+    non_retryable: bool,
     phase: diskgraph_ingest::IngestPhase,
 ) -> Option<diskgraph_ingest::IngestPhase> {
-    (oom || phase == diskgraph_ingest::IngestPhase::Encode).then_some(phase)
+    (!non_retryable && (oom || phase == diskgraph_ingest::IngestPhase::Encode)).then_some(phase)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -826,9 +854,14 @@ fn supervise_ingest(args: &Args) -> Result<()> {
         }
         let oom = is_oom_exit(status);
         let incomplete_phase = diskgraph_ingest::first_incomplete_phase(&output)?;
-        let Some(phase) = retry_phase_for_exit(oom, incomplete_phase) else {
+        let Some(phase) =
+            retry_phase_for_exit(oom, is_non_retryable_exit(status), incomplete_phase)
+        else {
             if let Some(error) = &first_worker_error {
-                let _ = fs::write(&worker_error_path, error);
+                persist_worker_error(&worker_error_path, error);
+            }
+            if is_non_retryable_exit(status) {
+                std::process::exit(NON_RETRYABLE_WORKER_EXIT_CODE);
             }
             anyhow::bail!("DiskGraph ingest worker exited with {status}");
         };
@@ -837,7 +870,7 @@ fn supervise_ingest(args: &Args) -> Result<()> {
                 diskgraph_ingest::discard_provisional_encode_outputs(&output)?;
             }
             if let Some(error) = &first_worker_error {
-                let _ = fs::write(&worker_error_path, error);
+                persist_worker_error(&worker_error_path, error);
             }
             anyhow::bail!(
                 "DiskGraph ingest exhausted {} worker retries",
@@ -1455,14 +1488,15 @@ mod supervisor_tests {
     }
 
     #[test]
-    fn ordinary_encode_failures_retry_but_later_failures_require_oom() {
+    fn only_retryable_encode_failures_and_ooms_restart() {
         use diskgraph_ingest::IngestPhase::{EdgesMap, Encode, Index, PkMap};
 
-        assert_eq!(retry_phase_for_exit(false, Encode), Some(Encode));
-        assert_eq!(retry_phase_for_exit(false, PkMap), None);
-        assert_eq!(retry_phase_for_exit(false, EdgesMap), None);
-        assert_eq!(retry_phase_for_exit(false, Index), None);
-        assert_eq!(retry_phase_for_exit(true, PkMap), Some(PkMap));
+        assert_eq!(retry_phase_for_exit(false, false, Encode), Some(Encode));
+        assert_eq!(retry_phase_for_exit(false, true, Encode), None);
+        assert_eq!(retry_phase_for_exit(false, false, PkMap), None);
+        assert_eq!(retry_phase_for_exit(false, false, EdgesMap), None);
+        assert_eq!(retry_phase_for_exit(false, false, Index), None);
+        assert_eq!(retry_phase_for_exit(true, false, PkMap), Some(PkMap));
     }
 
     #[test]
@@ -1496,5 +1530,9 @@ mod supervisor_tests {
         assert!(is_oom_exit(ExitStatus::from_raw(libc::SIGKILL)));
         assert!(is_oom_exit(ExitStatus::from_raw(137 << 8)));
         assert!(!is_oom_exit(ExitStatus::from_raw(1 << 8)));
+        assert!(is_non_retryable_exit(ExitStatus::from_raw(
+            NON_RETRYABLE_WORKER_EXIT_CODE << 8
+        )));
+        assert!(!is_non_retryable_exit(ExitStatus::from_raw(1 << 8)));
     }
 }
