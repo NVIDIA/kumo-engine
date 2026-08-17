@@ -1480,7 +1480,10 @@ async fn download_range_once(
     let bytes = match permit {
         Ok(_permit) => get_exact_range_once(&store, path, range, condition.as_ref())
             .await
-            .map_err(|err| anyhow!("range download failed for {}: {}", path, err)),
+            .map_err(|error| {
+                let message = format!("range download failed for {path}: {error}");
+                error.context(message)
+            }),
         Err(err) => Err(err),
     };
     stats.inflight_parts.fetch_sub(1, Ordering::Relaxed);

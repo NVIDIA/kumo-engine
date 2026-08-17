@@ -3737,6 +3737,189 @@ fn ingest_binary_propagates_public_validation_without_retry() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn ingest_binary_rejects_corrupt_parquet_metadata_after_one_attempt() -> Result<()> {
+    let dir = tempdir()?;
+    let data_path = dir.path().join("do-not-publish-this-path.parquet");
+    fs::write(&data_path, b"not a parquet file")?;
+    let config = serde_json::json!({
+        "dataset_name": "corrupt_parquet_protocol_test",
+        "tables": [{
+            "name": "Nodes",
+            "columns": [{"name": "id", "ingested_dtype": "int64"}],
+            "primary_key": "id",
+            "source": {
+                "type": "parquet",
+                "paths": [data_path.to_string_lossy()]
+            }
+        }],
+        "relationships": []
+    });
+    let config_path = dir.path().join("config.json");
+    fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
+    let output_root = dir.path().join("output");
+
+    let process = Command::new(env!("CARGO_BIN_EXE_ingest"))
+        .arg("--source")
+        .arg(&config_path)
+        .arg("--output")
+        .arg(&output_root)
+        .arg("--dest")
+        .arg("local")
+        .arg("--oom-retries")
+        .arg("8")
+        .arg("--context-threads")
+        .arg("1")
+        .arg("--encode-threads")
+        .arg("1")
+        .arg("--pk-map-threads")
+        .arg("1")
+        .arg("--edges-map-threads")
+        .arg("1")
+        .arg("--index-threads")
+        .arg("1")
+        .output()?;
+
+    assert_eq!(process.status.code(), Some(78));
+    let stderr = String::from_utf8_lossy(&process.stderr);
+    let public_message =
+        "table Nodes Parquet input 1 has an invalid footer or metadata; regenerate the source file";
+    assert_eq!(stderr.matches(public_message).count(), 1, "{stderr}");
+    assert_eq!(
+        stderr
+            .matches("ingest worker failed; restarting from first incomplete phase")
+            .count(),
+        0,
+        "a structural metadata failure must not restart: {stderr}"
+    );
+    assert!(!stderr.contains("do-not-publish-this-path"));
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&fs::read(output_root.join(".ingest_error"))?)?;
+    assert_eq!(envelope["public_message"], public_message);
+
+    Ok(())
+}
+
+#[test]
+fn ingest_binary_retries_local_source_open_failure_nine_times() -> Result<()> {
+    let dir = tempdir()?;
+    let missing_path = dir.path().join("temporarily-unavailable.parquet");
+    let config = serde_json::json!({
+        "dataset_name": "transient_parquet_open_protocol_test",
+        "tables": [{
+            "name": "Nodes",
+            "columns": [{"name": "id", "ingested_dtype": "int64"}],
+            "primary_key": "id",
+            "source": {
+                "type": "parquet",
+                "paths": [missing_path.to_string_lossy()]
+            }
+        }],
+        "relationships": []
+    });
+    let config_path = dir.path().join("config.json");
+    fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
+    let output_root = dir.path().join("output");
+
+    let process = Command::new(env!("CARGO_BIN_EXE_ingest"))
+        .arg("--source")
+        .arg(&config_path)
+        .arg("--output")
+        .arg(&output_root)
+        .arg("--dest")
+        .arg("local")
+        .arg("--oom-retries")
+        .arg("8")
+        .arg("--context-threads")
+        .arg("1")
+        .arg("--encode-threads")
+        .arg("1")
+        .arg("--pk-map-threads")
+        .arg("1")
+        .arg("--edges-map-threads")
+        .arg("1")
+        .arg("--index-threads")
+        .arg("1")
+        .output()?;
+
+    assert_eq!(process.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&process.stderr);
+    assert_eq!(
+        stderr
+            .matches(&format!("stat {}", missing_path.display()))
+            .count(),
+        9,
+        "the initial worker and eight retries must all attempt the transient source: {stderr}"
+    );
+    assert!(stderr.contains("exhausted 8 worker retries"), "{stderr}");
+    assert!(!output_root.join(".ingest_error").exists());
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn ingest_binary_retries_successful_local_short_read_nine_times() -> Result<()> {
+    // sysfs reports a page-sized logical file but returns a short successful
+    // read followed by EOF. This gives the supervisor a deterministic local
+    // TOCTOU-equivalent without a timing hook in production code.
+    let short_path = Path::new("/sys/devices/system/cpu/online");
+    let reported_size = fs::metadata(short_path)?.len();
+    let actual_size = fs::read(short_path)?.len() as u64;
+    assert!(reported_size > actual_size);
+
+    let dir = tempdir()?;
+    let config = serde_json::json!({
+        "dataset_name": "short_local_parquet_read_protocol_test",
+        "tables": [{
+            "name": "Nodes",
+            "columns": [{"name": "id", "ingested_dtype": "int64"}],
+            "primary_key": "id",
+            "source": {
+                "type": "parquet",
+                "paths": [short_path.to_string_lossy()]
+            }
+        }],
+        "relationships": []
+    });
+    let config_path = dir.path().join("config.json");
+    fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
+    let output_root = dir.path().join("output");
+
+    let process = Command::new(env!("CARGO_BIN_EXE_ingest"))
+        .arg("--source")
+        .arg(&config_path)
+        .arg("--output")
+        .arg(&output_root)
+        .arg("--dest")
+        .arg("local")
+        .arg("--oom-retries")
+        .arg("8")
+        .arg("--context-threads")
+        .arg("1")
+        .arg("--encode-threads")
+        .arg("1")
+        .arg("--pk-map-threads")
+        .arg("1")
+        .arg("--edges-map-threads")
+        .arg("1")
+        .arg("--index-threads")
+        .arg("1")
+        .output()?;
+
+    assert_eq!(process.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&process.stderr);
+    assert_eq!(
+        stderr.matches(&short_path.to_string_lossy().to_string()).count(),
+        9,
+        "the initial worker and eight retries must all observe the short local source: {stderr}"
+    );
+    assert!(stderr.contains("exhausted 8 worker retries"), "{stderr}");
+    assert!(!output_root.join(".ingest_error").exists());
+
+    Ok(())
+}
+
 /// Binary IP FK → String PK (FixedSizeBinary(4) arrow data, BinaryStringHint::Ip formats back to IPv4 string)
 #[test]
 fn ingest_parquet_binary_ip_fk_to_string_pk() -> Result<()> {

@@ -116,7 +116,7 @@ use std::io::{self as std_io, BufWriter, Read, Write};
 #[cfg(target_os = "linux")]
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use uuid_simd::{parse_hyphenated, parse_simple, AsOut};
 
@@ -477,6 +477,7 @@ fn load_parquet_source_schemas(
         .map(|(index, input)| {
             let transfer = transfer.clone();
             let slots = Arc::clone(&slots);
+            let table_name = table.name.clone();
             WorkItem {
                 bucket: None,
                 run: Box::new(move |_| {
@@ -487,7 +488,23 @@ fn load_parquet_source_schemas(
                         None,
                         input.condition,
                     )
-                    .with_context(|| format!("prepare Parquet schema for {}", input.path))?;
+                    .map_err(|error| {
+                        if error
+                            .downcast_ref::<InvalidParquetMetadataError>()
+                            .is_some()
+                        {
+                            anyhow::Error::new(PublicIngestError::new(format!(
+                                "table {} Parquet input {} has an invalid footer or metadata; regenerate the source file",
+                                table_name,
+                                index + 1,
+                            )))
+                        } else {
+                            error.context(format!(
+                                "prepare Parquet schema for {}",
+                                input.path
+                            ))
+                        }
+                    })?;
                     let schema = Arc::clone(
                         resident
                             .parquet_metadata
@@ -3478,6 +3495,257 @@ mod resident_parquet_tests {
     }
 
     #[test]
+    fn corrupt_local_footer_is_public_without_exposing_the_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("customer-secret.parquet");
+        fs::write(&path, b"not a parquet file").unwrap();
+        let mut table = super::tests_repopulate_helpers::node_table("Nodes", None);
+        table.source = graph_config::DataSource::Parquet {
+            paths: vec![path.to_string_lossy().into_owned()],
+        };
+
+        let error = load_parquet_source_schemas(&table, parquet_inputs(&table)).unwrap_err();
+
+        assert_eq!(
+            public_ingest_error_message(&error).as_deref(),
+            Some(
+                "table Nodes Parquet input 1 has an invalid footer or metadata; regenerate the source file"
+            )
+        );
+        assert!(is_non_retryable_ingest_error(&error));
+        assert!(!error.to_string().contains("customer-secret"));
+    }
+
+    #[test]
+    fn corrupt_local_thrift_metadata_is_public() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("metadata.parquet");
+        write_parquet(&path, &int_batch("id", [1, 2, 3]), None);
+        let mut bytes = fs::read(&path).unwrap();
+        let metadata_len = u32::from_le_bytes(
+            bytes[bytes.len() - 8..bytes.len() - 4]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let metadata_start = bytes.len() - 8 - metadata_len;
+        bytes[metadata_start..metadata_start + metadata_len.min(8)].fill(0xff);
+        fs::write(&path, bytes).unwrap();
+        let mut table = super::tests_repopulate_helpers::node_table("Nodes", None);
+        table.source = graph_config::DataSource::Parquet {
+            paths: vec![path.to_string_lossy().into_owned()],
+        };
+
+        let error = load_parquet_source_schemas(&table, parquet_inputs(&table)).unwrap_err();
+
+        assert!(is_non_retryable_ingest_error(&error));
+        assert_eq!(
+            public_ingest_error_message(&error).as_deref(),
+            Some(
+                "table Nodes Parquet input 1 has an invalid footer or metadata; regenerate the source file"
+            )
+        );
+    }
+
+    #[test]
+    fn corrupt_pinned_remote_metadata_is_structural() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let object_path = object_store::path::Path::from("data/corrupt.parquet");
+        let store = Arc::new(InMemory::new());
+        runtime
+            .block_on(store.put(
+                &object_path,
+                PutPayload::from(Bytes::from_static(b"not a parquet file")),
+            ))
+            .unwrap();
+        let metadata = runtime.block_on(store.head(&object_path)).unwrap();
+        let transfer = test_cloud_transfer(store);
+        let error = ResidentFile::load(
+            "s3://bucket/data/corrupt.parquet",
+            TableFormat::Parquet,
+            Some(&transfer),
+            None,
+            Some(CloudObjectCondition {
+                size: metadata.size,
+                e_tag: metadata.e_tag,
+                version: metadata.version,
+            }),
+        )
+        .err()
+        .expect("corrupt remote metadata should fail");
+
+        assert!(error
+            .downcast_ref::<InvalidParquetMetadataError>()
+            .is_some());
+        assert!(!is_non_retryable_ingest_error(&error));
+    }
+
+    #[test]
+    fn changed_pinned_remote_object_preserves_retryable_read_source() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let object_path = object_store::path::Path::from("data/changing.parquet");
+        let (store, metadata) = cloud_parquet_fixture(&object_path, [1, 2, 3]);
+        let condition = CloudObjectCondition {
+            size: metadata.size,
+            e_tag: metadata.e_tag,
+            version: metadata.version,
+        };
+        assert!(condition.e_tag.is_some() || condition.version.is_some());
+        runtime
+            .block_on(store.put(
+                &object_path,
+                PutPayload::from(Bytes::from(vec![0u8; condition.size as usize])),
+            ))
+            .unwrap();
+        let transfer = test_cloud_transfer(store);
+
+        let error = ResidentFile::load(
+            "s3://bucket/data/changing.parquet",
+            TableFormat::Parquet,
+            Some(&transfer),
+            None,
+            Some(condition),
+        )
+        .err()
+        .expect("changed remote object should fail");
+
+        assert!(error
+            .chain()
+            .any(|source| source.to_string().contains("precondition failure")),
+            "unexpected error chain: {error:#}"
+        );
+        assert!(error
+            .downcast_ref::<InvalidParquetMetadataError>()
+            .is_none());
+        assert!(public_ingest_error_message(&error).is_none());
+    }
+
+    #[test]
+    fn local_open_failure_remains_retryable() {
+        let error = ResidentFile::load(
+            "/definitely/missing/source.parquet",
+            TableFormat::Parquet,
+            None,
+            None,
+            None,
+        )
+        .err()
+        .expect("missing local input should fail");
+
+        assert!(error
+            .downcast_ref::<InvalidParquetMetadataError>()
+            .is_none());
+        assert!(public_ingest_error_message(&error).is_none());
+    }
+
+    struct ShortReadFixture;
+
+    impl Length for ShortReadFixture {
+        fn len(&self) -> u64 {
+            128
+        }
+    }
+
+    impl ChunkReader for ShortReadFixture {
+        type T = std_io::Cursor<Vec<u8>>;
+
+        fn get_read(&self, _start: u64) -> parquet::errors::Result<Self::T> {
+            Err(parquet::errors::ParquetError::External(Box::new(
+                std_io::Error::new(std_io::ErrorKind::TimedOut, "injected read timeout"),
+            )))
+        }
+
+        fn get_bytes(&self, _start: u64, _length: usize) -> parquet::errors::Result<Bytes> {
+            Err(parquet::errors::ParquetError::EOF(
+                "injected short read".to_string(),
+            ))
+        }
+    }
+
+    #[test]
+    fn adapter_short_read_is_not_structural() {
+        let error = load_parquet_metadata(ShortReadFixture).unwrap_err();
+
+        assert!(error
+            .downcast_ref::<InvalidParquetMetadataError>()
+            .is_none());
+        assert!(
+            error
+                .chain()
+                .any(|source| source.to_string().contains("injected")),
+            "unexpected error chain: {error:#}"
+        );
+        assert!(public_ingest_error_message(&error).is_none());
+    }
+
+    struct SuccessfulShortReadFixture;
+
+    impl Length for SuccessfulShortReadFixture {
+        fn len(&self) -> u64 {
+            128
+        }
+    }
+
+    impl ChunkReader for SuccessfulShortReadFixture {
+        type T = std_io::Cursor<Vec<u8>>;
+
+        fn get_read(&self, _start: u64) -> parquet::errors::Result<Self::T> {
+            Ok(std_io::Cursor::new(vec![0; 4]))
+        }
+
+        fn get_bytes(&self, _start: u64, length: usize) -> parquet::errors::Result<Bytes> {
+            Ok(Bytes::from(vec![0; length.min(4)]))
+        }
+    }
+
+    #[test]
+    fn successful_get_bytes_short_read_is_not_structural() {
+        let error = load_parquet_metadata(SuccessfulShortReadFixture).unwrap_err();
+
+        assert!(error
+            .downcast_ref::<InvalidParquetMetadataError>()
+            .is_none());
+        assert!(public_ingest_error_message(&error).is_none());
+    }
+
+    #[test]
+    fn successful_reader_eof_before_captured_length_is_tracked() {
+        let reader = TrackedChunkReader::new(SuccessfulShortReadFixture);
+        let mut returned_reader = reader.get_read(0).unwrap();
+        let mut bytes = Vec::new();
+
+        returned_reader.read_to_end(&mut bytes).unwrap();
+
+        assert_eq!(bytes.len(), 4);
+        assert!(reader.read_failed());
+    }
+
+    #[test]
+    fn local_truncate_after_captured_length_is_not_structural() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("truncated-after-stat.parquet");
+        write_parquet(&path, &int_batch("id", [1, 2, 3]), None);
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let captured_size = file.metadata().unwrap().len();
+        assert!(captured_size > 8);
+        file.set_len(captured_size - 4).unwrap();
+
+        let error = load_parquet_metadata(ResidentReader::Local {
+            file,
+            size: captured_size,
+        })
+        .unwrap_err();
+
+        assert!(error
+            .downcast_ref::<InvalidParquetMetadataError>()
+            .is_none());
+        assert!(public_ingest_error_message(&error).is_none());
+    }
+
+    #[test]
     fn inspect_source_schema_accepts_a_partial_config() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("partial.parquet");
@@ -4512,9 +4780,101 @@ enum ResidentSource {
 }
 
 enum ResidentReader {
-    Local(fs::File),
+    Local { file: fs::File, size: u64 },
     Cloud(Bytes),
     Remote(Arc<RemoteObject>),
+}
+
+/// Records failures at the source adapter boundary. Parquet metadata decoding
+/// errors are deterministic only when every requested source byte was read
+/// successfully; provider, open, range, and short-read failures stay retryable.
+struct TrackedChunkReader<R> {
+    inner: R,
+    read_failed: Arc<AtomicBool>,
+}
+
+impl<R> TrackedChunkReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            read_failed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn read_failed(&self) -> bool {
+        self.read_failed.load(Ordering::Relaxed)
+    }
+}
+
+struct TrackedRead<R> {
+    inner: R,
+    read_failed: Arc<AtomicBool>,
+    remaining: u64,
+}
+
+impl<R: Read> Read for TrackedRead<R> {
+    fn read(&mut self, output: &mut [u8]) -> std_io::Result<usize> {
+        match self.inner.read(output) {
+            Ok(0) if !output.is_empty() && self.remaining > 0 => {
+                self.read_failed.store(true, Ordering::Relaxed);
+                Ok(0)
+            }
+            Ok(read) => {
+                self.remaining = self.remaining.saturating_sub(read as u64);
+                Ok(read)
+            }
+            Err(error) => {
+                self.read_failed.store(true, Ordering::Relaxed);
+                Err(error)
+            }
+        }
+    }
+}
+
+impl<R: Length> Length for TrackedChunkReader<R> {
+    fn len(&self) -> u64 {
+        self.inner.len()
+    }
+}
+
+impl<R: ChunkReader> ChunkReader for TrackedChunkReader<R> {
+    type T = TrackedRead<R::T>;
+
+    fn get_read(&self, start: u64) -> parquet::errors::Result<Self::T> {
+        let remaining = self.len().saturating_sub(start);
+        self.inner
+            .get_read(start)
+            .map(|inner| TrackedRead {
+                inner,
+                read_failed: Arc::clone(&self.read_failed),
+                remaining,
+            })
+            .inspect_err(|_| {
+                self.read_failed.store(true, Ordering::Relaxed);
+            })
+    }
+
+    fn get_bytes(&self, start: u64, length: usize) -> parquet::errors::Result<Bytes> {
+        match self.inner.get_bytes(start, length) {
+            Ok(bytes) => {
+                if bytes.len() != length {
+                    self.read_failed.store(true, Ordering::Relaxed);
+                }
+                Ok(bytes)
+            }
+            Err(error) => {
+                self.read_failed.store(true, Ordering::Relaxed);
+                Err(error)
+            }
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Parquet footer or metadata is invalid")]
+struct InvalidParquetMetadataError {
+    #[source]
+    source: parquet::errors::ParquetError,
 }
 
 struct RemoteObject {
@@ -4569,7 +4929,7 @@ impl RemoteRangeReader {
         self.buffered = self
             .object
             .read_range(self.position, end)
-            .map_err(|_| std_io::Error::other("remote object range read failed"))?;
+            .map_err(|error| std_io::Error::other(error.into_boxed_dyn_error()))?;
         self.buffered_start = self.position;
         Ok(())
     }
@@ -4640,7 +5000,7 @@ mod remote_range_reader_tests {
 impl Length for ResidentReader {
     fn len(&self) -> u64 {
         match self {
-            Self::Local(file) => file.metadata().map(|meta| meta.len()).unwrap_or(0),
+            Self::Local { size, .. } => *size,
             Self::Cloud(bytes) => bytes.len() as u64,
             Self::Remote(object) => object.size,
         }
@@ -4652,7 +5012,7 @@ impl ChunkReader for ResidentReader {
 
     fn get_read(&self, start: u64) -> parquet::errors::Result<Self::T> {
         match self {
-            Self::Local(file) => Ok(Box::new(ChunkReader::get_read(file, start)?)),
+            Self::Local { file, .. } => Ok(Box::new(ChunkReader::get_read(file, start)?)),
             Self::Cloud(bytes) => Ok(Box::new(ChunkReader::get_read(bytes, start)?)),
             Self::Remote(object) => {
                 if start > object.size {
@@ -4667,7 +5027,7 @@ impl ChunkReader for ResidentReader {
 
     fn get_bytes(&self, start: u64, length: usize) -> parquet::errors::Result<Bytes> {
         match self {
-            Self::Local(file) => ChunkReader::get_bytes(file, start, length),
+            Self::Local { file, .. } => ChunkReader::get_bytes(file, start, length),
             Self::Cloud(bytes) => ChunkReader::get_bytes(bytes, start, length),
             Self::Remote(object) => {
                 if length > REMOTE_METADATA_RANGE_MAX_BYTES {
@@ -4680,13 +5040,20 @@ impl ChunkReader for ResidentReader {
                         "remote Parquet range overflowed".to_string(),
                     )
                 })?;
-                object.read_range(start, end).map_err(|_| {
-                    parquet::errors::ParquetError::General(
-                        "remote Parquet range read failed".to_string(),
-                    )
+                object.read_range(start, end).map_err(|source| {
+                    parquet::errors::ParquetError::External(source.into_boxed_dyn_error())
                 })
             }
         }
+    }
+}
+
+fn load_parquet_metadata<R: ChunkReader>(reader: R) -> Result<ArrowReaderMetadata> {
+    let reader = TrackedChunkReader::new(reader);
+    match ArrowReaderMetadata::load(&reader, Default::default()) {
+        Ok(metadata) => Ok(metadata),
+        Err(error) if reader.read_failed() => Err(error.into()),
+        Err(source) => Err(InvalidParquetMetadataError { source }.into()),
     }
 }
 
@@ -4696,10 +5063,14 @@ impl ResidentSource {
             Self::Local(path) => {
                 let file = fs::File::open(path)
                     .with_context(|| format!("open resident source {}", path.display()))?;
+                let size = file
+                    .metadata()
+                    .with_context(|| format!("stat resident source {}", path.display()))?
+                    .len();
                 if willneed {
                     advise_file_willneed(&file);
                 }
-                Ok(ResidentReader::Local(file))
+                Ok(ResidentReader::Local { file, size })
             }
             Self::Cloud { bytes, .. } => Ok(ResidentReader::Cloud(bytes.bytes())),
             Self::Remote(object) => Ok(ResidentReader::Remote(Arc::clone(object))),
@@ -4767,7 +5138,7 @@ impl ResidentFile {
             // Advise the local file once while loading metadata. Partition
             // readers must not repeatedly prefetch the complete file.
             let reader = source.reader(true)?;
-            Some(ArrowReaderMetadata::load(&reader, Default::default())?)
+            Some(load_parquet_metadata(reader)?)
         } else {
             None
         };
