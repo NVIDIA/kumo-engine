@@ -1397,15 +1397,24 @@ impl ColumnStatsCollector {
                 min_len,
                 max_len,
                 welford,
-            } => Some(json!({
-                "semantic_type": "sequence",
-                "count": *count + *null_count,
-                "null_count": *null_count,
-                "min_len": *min_len,
-                "max_len": *max_len,
-                "sequence_mean": welford.mean(),
-                "sequence_std": welford.std_dev(),
-            })),
+            } => {
+                // Keep the internal sentinel intact for merge, but do not
+                // expose usize::MAX for a column with no populated rows.
+                let (emitted_min_len, emitted_max_len) = if *count == 0 {
+                    (0, 0)
+                } else {
+                    (*min_len, *max_len)
+                };
+                Some(json!({
+                    "semantic_type": "sequence",
+                    "count": *count + *null_count,
+                    "null_count": *null_count,
+                    "min_len": emitted_min_len,
+                    "max_len": emitted_max_len,
+                    "sequence_mean": welford.mean(),
+                    "sequence_std": welford.std_dev(),
+                }))
+            }
             ColumnStatsCollector::Latlong {
                 count,
                 null_count,
@@ -1900,6 +1909,11 @@ impl FileColStats {
                     ..
                 } => {
                     let total = *c + *null_count;
+                    let (emitted_min_len, emitted_max_len) = if *c == 0 {
+                        (0, 0)
+                    } else {
+                        (*min_len, *max_len)
+                    };
                     map.insert(
                         kumo_key(name, sk, "COUNT", false),
                         kumo_entry(json!(total), false, dv, total),
@@ -1916,14 +1930,15 @@ impl FileColStats {
                         kumo_key(name, sk, "INVALID_FRACTION", false),
                         kumo_entry(json!(0.0), false, dv, total),
                     );
-                    // Always emit min/max length (Python bridge emits even sentinels).
+                    // Emit 0/0 for an all-missing sequence; otherwise expose
+                    // the non-empty observations' length bounds.
                     map.insert(
                         kumo_key(name, sk, "SEQUENCE_MIN_LENGTH", false),
-                        kumo_entry(json!(*min_len), false, dv, total),
+                        kumo_entry(json!(emitted_min_len), false, dv, total),
                     );
                     map.insert(
                         kumo_key(name, sk, "SEQUENCE_MAX_LENGTH", false),
-                        kumo_entry(json!(*max_len), false, dv, total),
+                        kumo_entry(json!(emitted_max_len), false, dv, total),
                     );
                 }
                 ColumnStatsCollector::Latlong {
@@ -2458,12 +2473,22 @@ impl ColumnValueObserver for FileColStats {
         match &mut self.cols[col_idx] {
             ColumnStatsCollector::Sequence {
                 count,
+                null_count,
                 min_len,
                 max_len,
                 welford,
                 ..
             } => {
                 let len = view.len();
+                // An empty fixed-width sequence carries no dimensionality.
+                // Treat it as a missing feature for stats purposes so nullable
+                // embeddings derive their width from populated rows. The
+                // rowpack value remains an empty list and downstream tensor
+                // mapping pads it with NaNs at the derived width.
+                if len == 0 {
+                    *null_count += 1;
+                    return;
+                }
                 *count += 1;
                 if len < *min_len {
                     *min_len = len;
@@ -2531,12 +2556,17 @@ impl ColumnValueObserver for FileColStats {
             // embedding statistics" for any int-list sequence column.
             ColumnStatsCollector::Sequence {
                 count,
+                null_count,
                 min_len,
                 max_len,
                 welford,
                 ..
             } => {
                 let len = view.len();
+                if len == 0 {
+                    *null_count += 1;
+                    return;
+                }
                 *count += 1;
                 if len < *min_len {
                     *min_len = len;
@@ -3794,12 +3824,12 @@ mod tests {
             "v42",
             2,
         );
-        // min_len=usize::MAX, max_len=0 (sentinel values from zero observations)
+        // Internal sentinels are normalized to 0/0 when every row is null.
         {
             let min_l = map
                 .get("embedding__kumo.sequence__SEQUENCE_MIN_LENGTH__False")
                 .unwrap();
-            assert_eq!(min_l["value"], json!(usize::MAX));
+            assert_eq!(min_l["value"], json!(0));
         }
         {
             let max_l = map
@@ -4121,6 +4151,208 @@ mod tests {
             }
             _ => panic!("expected Sequence collector"),
         }
+    }
+
+    #[test]
+    fn col_stats_sequence_floatarray_derives_width_from_non_empty_rows() {
+        let empty = build_float64_list_view(&[]);
+        let populated = build_float64_list_view(&[Some(1.0), Some(2.0), Some(3.0)]);
+        let (mut stats, _tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Sequence),
+            IngestedType::Float64Array,
+            None,
+        )]);
+        let (mut populated_stats, _tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Sequence),
+            IngestedType::Float64Array,
+            None,
+        )]);
+
+        stats.observe_float_list(0, &empty);
+        populated_stats.observe_float_list(0, &populated);
+        stats.merge(&mut populated_stats);
+
+        match &stats.cols[0] {
+            ColumnStatsCollector::Sequence {
+                count,
+                null_count,
+                min_len,
+                max_len,
+                ..
+            } => {
+                assert_eq!(*count, 1);
+                assert_eq!(*null_count, 1);
+                assert_eq!(*min_len, 3);
+                assert_eq!(*max_len, 3);
+            }
+            _ => panic!("expected Sequence collector"),
+        }
+
+        let map = stats.to_kumo_json(
+            &["embedding".to_string()],
+            &[IngestedType::Float64Array],
+            None,
+            None,
+            "v1",
+        );
+        assert_eq!(
+            map["embedding__kumo.sequence__COUNT__False"]["value"],
+            json!(2)
+        );
+        assert_eq!(
+            map["embedding__kumo.sequence__NUM_NA__False"]["value"],
+            json!(1)
+        );
+        assert_eq!(
+            map["embedding__kumo.sequence__SEQUENCE_MIN_LENGTH__False"]["value"],
+            json!(3)
+        );
+        assert_eq!(
+            map["embedding__kumo.sequence__SEQUENCE_MAX_LENGTH__False"]["value"],
+            json!(3)
+        );
+    }
+
+    #[test]
+    fn col_stats_sequence_intarray_treats_empty_rows_as_missing() {
+        let empty = build_int_list_view(&[]);
+        let populated = build_int_list_view(&[Some(1), Some(2)]);
+        let (mut stats, _tc) =
+            make_hybrid_stats(&[(Some(SemanticType::Sequence), IngestedType::Int64Array, None)]);
+
+        stats.observe_int64_list(0, &empty);
+        stats.observe_int64_list(0, &populated);
+
+        match &stats.cols[0] {
+            ColumnStatsCollector::Sequence {
+                count,
+                null_count,
+                min_len,
+                max_len,
+                ..
+            } => {
+                assert_eq!(*count, 1);
+                assert_eq!(*null_count, 1);
+                assert_eq!(*min_len, 2);
+                assert_eq!(*max_len, 2);
+            }
+            _ => panic!("expected Sequence collector"),
+        }
+    }
+
+    #[test]
+    fn col_stats_sequence_all_empty_normalizes_emitted_lengths_across_partitions() {
+        let empty = build_float64_list_view(&[]);
+        let (mut stats, _tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Sequence),
+            IngestedType::Float64Array,
+            None,
+        )]);
+        let (mut other, _tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Sequence),
+            IngestedType::Float64Array,
+            None,
+        )]);
+
+        stats.observe_float_list(0, &empty);
+        other.observe_float_list(0, &empty);
+        other.observe_null(0);
+        stats.merge(&mut other);
+
+        match &stats.cols[0] {
+            ColumnStatsCollector::Sequence {
+                count,
+                null_count,
+                min_len,
+                max_len,
+                ..
+            } => {
+                assert_eq!(*count, 0);
+                assert_eq!(*null_count, 3);
+                assert_eq!(*min_len, usize::MAX);
+                assert_eq!(*max_len, 0);
+            }
+            _ => panic!("expected Sequence collector"),
+        }
+
+        let summary = stats.to_json(
+            &["embedding".to_string()],
+            &[IngestedType::Float64Array],
+            None,
+            None,
+        );
+        assert_eq!(summary["embedding"]["count"], json!(3));
+        assert_eq!(summary["embedding"]["null_count"], json!(3));
+        assert_eq!(summary["embedding"]["min_len"], json!(0));
+        assert_eq!(summary["embedding"]["max_len"], json!(0));
+
+        let map = stats.to_kumo_json(
+            &["embedding".to_string()],
+            &[IngestedType::Float64Array],
+            None,
+            None,
+            "v1",
+        );
+        assert_eq!(
+            map["embedding__kumo.sequence__COUNT__False"]["value"],
+            json!(3)
+        );
+        assert_eq!(
+            map["embedding__kumo.sequence__NUM_NA__False"]["value"],
+            json!(3)
+        );
+        assert_eq!(
+            map["embedding__kumo.sequence__NA_FRACTION__False"]["value"],
+            json!(1.0)
+        );
+        assert_eq!(
+            map["embedding__kumo.sequence__SEQUENCE_MIN_LENGTH__False"]["value"],
+            json!(0)
+        );
+        assert_eq!(
+            map["embedding__kumo.sequence__SEQUENCE_MAX_LENGTH__False"]["value"],
+            json!(0)
+        );
+    }
+
+    #[test]
+    fn col_stats_sequence_empty_does_not_hide_mixed_nonzero_widths() {
+        let empty = build_float64_list_view(&[]);
+        let width_32 = build_float64_list_view(&vec![Some(1.0); 32]);
+        let width_31 = build_float64_list_view(&vec![Some(1.0); 31]);
+        let (mut stats, _tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Sequence),
+            IngestedType::Float64Array,
+            None,
+        )]);
+
+        stats.observe_float_list(0, &empty);
+        stats.observe_float_list(0, &width_32);
+        stats.observe_float_list(0, &width_31);
+
+        let map = stats.to_kumo_json(
+            &["embedding".to_string()],
+            &[IngestedType::Float64Array],
+            None,
+            None,
+            "v1",
+        );
+        assert_eq!(
+            map["embedding__kumo.sequence__COUNT__False"]["value"],
+            json!(3)
+        );
+        assert_eq!(
+            map["embedding__kumo.sequence__NUM_NA__False"]["value"],
+            json!(1)
+        );
+        assert_eq!(
+            map["embedding__kumo.sequence__SEQUENCE_MIN_LENGTH__False"]["value"],
+            json!(31)
+        );
+        assert_eq!(
+            map["embedding__kumo.sequence__SEQUENCE_MAX_LENGTH__False"]["value"],
+            json!(32)
+        );
     }
 
     #[test]
