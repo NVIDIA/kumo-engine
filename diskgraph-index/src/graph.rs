@@ -47,6 +47,119 @@ pub struct ResumedShard {
     pub expected_nodes: u64,
 }
 
+/// Validate and enumerate every durable Index shard commit below `root`.
+///
+/// Temporary marker files are not durable commits and are ignored. Every
+/// published marker is checked against its path and exact output files because
+/// its scratch inputs may already have been reclaimed.
+pub fn validated_index_shard_commits(root: &Path) -> Result<Vec<String>> {
+    let commit_root = root.join(INDEX_SHARD_COMMIT_DIR);
+    if !commit_root.exists() {
+        return Ok(Vec::new());
+    }
+    ensure_plain_directory(root, "index output root")?;
+    ensure!(
+        fs::symlink_metadata(&commit_root)?.file_type().is_dir(),
+        "index shard commit root is not a directory: {}",
+        commit_root.display()
+    );
+    let nodes_root = root.join("nodes");
+    ensure_plain_directory(&nodes_root, "committed nodes root")?;
+
+    let mut shard_keys = Vec::new();
+    for table_entry in fs::read_dir(&commit_root)? {
+        let table_entry = table_entry?;
+        let table_path = table_entry.path();
+        let table_type = table_entry.file_type()?;
+        ensure!(
+            table_type.is_dir() && !table_type.is_symlink(),
+            "unexpected entry in index shard commit root: {}",
+            table_path.display()
+        );
+        let table_dir = table_entry.file_name().into_string().map_err(|_| {
+            anyhow!(
+                "non-UTF8 index shard commit table path: {}",
+                table_path.display()
+            )
+        })?;
+        let output_table_dir = nodes_root.join(&table_dir);
+        ensure_plain_directory(&output_table_dir, "committed node table")?;
+
+        for marker_entry in fs::read_dir(&table_path)? {
+            let marker_entry = marker_entry?;
+            let marker_path = marker_entry.path();
+            let marker_type = marker_entry.file_type()?;
+            ensure!(
+                marker_type.is_file() && !marker_type.is_symlink(),
+                "unexpected entry in index shard commit table: {}",
+                marker_path.display()
+            );
+            let marker_name = marker_entry.file_name().into_string().map_err(|_| {
+                anyhow!(
+                    "non-UTF8 index shard commit path: {}",
+                    marker_path.display()
+                )
+            })?;
+            if marker_name.ends_with(".json.tmp") {
+                continue;
+            }
+            ensure!(
+                marker_name.ends_with(".json"),
+                "unexpected index shard commit file: {}",
+                marker_path.display()
+            );
+            let shard_dir = marker_name.trim_end_matches(".json");
+            ensure!(
+                !shard_dir.is_empty(),
+                "empty shard name in index commit marker {}",
+                marker_path.display()
+            );
+            let output_dir = output_table_dir.join(shard_dir);
+            ensure_plain_directory(&output_dir, "committed node shard")?;
+            let commit = read_validated_shard_commit(&output_dir, &marker_path, None)?
+                .ok_or_else(|| {
+                    anyhow!(
+                        "index shard commit disappeared: {}",
+                        marker_path.display()
+                    )
+                })?;
+            let (node_type, committed_shard_dir) =
+                commit.shard_key.split_once('/').ok_or_else(|| {
+                    anyhow!(
+                        "invalid shard key '{}' in index commit {}",
+                        commit.shard_key,
+                        marker_path.display()
+                    )
+                })?;
+            ensure!(
+                node_type.to_lowercase() == table_dir && committed_shard_dir == shard_dir,
+                "index shard commit path/key mismatch at {}: found {}",
+                marker_path.display(),
+                commit.shard_key
+            );
+            shard_keys.push(commit.shard_key);
+        }
+    }
+    shard_keys.sort_unstable();
+    ensure!(
+        shard_keys.windows(2).all(|pair| pair[0] != pair[1]),
+        "duplicate index shard commit key"
+    );
+    Ok(shard_keys)
+}
+
+fn ensure_plain_directory(path: &Path, kind: &str) -> Result<()> {
+    let file_type = fs::symlink_metadata(path)
+        .with_context(|| format!("stat {kind} {}", path.display()))?
+        .file_type();
+    ensure!(
+        file_type.is_dir() && !file_type.is_symlink(),
+        "{kind} is not a plain directory: {}",
+        path.display()
+    );
+    Ok(())
+}
+
 pub struct GraphIndexBuilder {
     metadata: DatasetMetadata,
     source: GraphDataSource,
@@ -566,9 +679,19 @@ fn read_validated_shard_commit(
     commit_path: &Path,
     expected_shard_key: Option<&str>,
 ) -> Result<Option<IndexShardCommit>> {
-    if !commit_path.exists() {
-        return Ok(None);
-    }
+    let marker_type = match fs::symlink_metadata(commit_path) {
+        Ok(metadata) => metadata.file_type(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("stat index shard commit {}", commit_path.display()))
+        }
+    };
+    ensure!(
+        marker_type.is_file() && !marker_type.is_symlink(),
+        "index shard commit is not a plain file: {}",
+        commit_path.display()
+    );
     let payload = fs::read(commit_path)
         .with_context(|| format!("read index shard commit {}", commit_path.display()))?;
     let commit: IndexShardCommit = serde_json::from_slice(&payload)
@@ -627,15 +750,21 @@ fn commit_shard_output(
 }
 
 fn validate_committed_shard_files(output_dir: &Path, commit: &IndexShardCommit) -> Result<()> {
+    ensure_plain_directory(output_dir, "committed node shard")?;
     for (name, expected_len) in [
         (OFFSETS_FILENAME, commit.offsets_len),
         (EDGES_FILENAME, commit.edges_len),
         ("build_stats.json", commit.build_stats_len),
     ] {
         let path = output_dir.join(name);
-        let actual = fs::metadata(&path)
-            .with_context(|| format!("stat committed shard file {}", path.display()))?
-            .len();
+        let metadata = fs::symlink_metadata(&path)
+            .with_context(|| format!("stat committed shard file {}", path.display()))?;
+        ensure!(
+            metadata.file_type().is_file() && !metadata.file_type().is_symlink(),
+            "committed shard path is not a plain file: {}",
+            path.display()
+        );
+        let actual = metadata.len();
         ensure!(
             actual == expected_len,
             "committed shard file size changed for {}: expected {}, found {}",
@@ -1779,6 +1908,42 @@ mod scratch_cleanup_tests {
                 .unwrap(),
             Some(0)
         );
+        fs::write(marker.with_extension("json.tmp"), b"provisional").unwrap();
+        assert_eq!(
+            validated_index_shard_commits(root.path()).unwrap(),
+            vec!["Users/shard-00000"]
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            for name in [OFFSETS_FILENAME, EDGES_FILENAME, "build_stats.json"] {
+                let committed_file = output.join(name);
+                let contents = fs::read(&committed_file).unwrap();
+                let external_file = root.path().join(format!("external-{name}"));
+                fs::write(&external_file, &contents).unwrap();
+                fs::remove_file(&committed_file).unwrap();
+                symlink(&external_file, &committed_file).unwrap();
+                assert!(validated_index_shard_commits(root.path()).is_err());
+                fs::remove_file(&committed_file).unwrap();
+                fs::write(&committed_file, contents).unwrap();
+            }
+
+            let real_output = root.path().join("real-shard-output");
+            fs::rename(&output, &real_output).unwrap();
+            symlink(&real_output, &output).unwrap();
+            assert!(validated_index_shard_commits(root.path()).is_err());
+            fs::remove_file(&output).unwrap();
+            fs::rename(&real_output, &output).unwrap();
+
+            let table_dir = root.path().join("nodes/users");
+            let real_table_dir = root.path().join("real-users-table");
+            fs::rename(&table_dir, &real_table_dir).unwrap();
+            symlink(&real_table_dir, &table_dir).unwrap();
+            assert!(validated_index_shard_commits(root.path()).is_err());
+            fs::remove_file(&table_dir).unwrap();
+            fs::rename(&real_table_dir, &table_dir).unwrap();
+        }
         fs::write(output.join(EDGES_FILENAME), b"changed").unwrap();
         assert!(
             shard_output_is_committed(&output, &marker, Some("Users/shard-00000"), Some(0))
@@ -1787,6 +1952,17 @@ mod scratch_cleanup_tests {
         assert!(
             committed_shard_expected_nodes(&output, &marker, Some("Users/shard-00000")).is_err()
         );
+        assert!(validated_index_shard_commits(root.path()).is_err());
+    }
+
+    #[test]
+    fn validated_commit_inventory_rejects_unexpected_entries() {
+        let root = tempfile::tempdir().unwrap();
+        let commit_root = root.path().join(INDEX_SHARD_COMMIT_DIR);
+        fs::create_dir_all(&commit_root).unwrap();
+        fs::write(commit_root.join("not-a-table"), b"unexpected").unwrap();
+
+        assert!(validated_index_shard_commits(root.path()).is_err());
     }
 
     #[test]

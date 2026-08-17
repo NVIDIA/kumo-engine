@@ -1329,6 +1329,13 @@ fn has_resumable_ingest(output_dir: &str) -> PyResult<bool> {
         .map_err(|e| DiskgraphCorruptionError::new_err(e.to_string()))
 }
 
+/// Return sorted durable Index shard keys for a bounded Kumo resume retry.
+#[pyfunction]
+fn validated_index_resume_progress(output_dir: &str) -> PyResult<Option<Vec<String>>> {
+    diskgraph_ingest::validated_index_resume_progress(std::path::Path::new(output_dir))
+        .map_err(|e| DiskgraphCorruptionError::new_err(e.to_string()))
+}
+
 #[pymodule]
 #[pyo3(name = "_c")]
 fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -1369,6 +1376,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(success_marker::touch_success_marker, m)?)?;
     m.add_function(wrap_pyfunction!(verify_snapshot_integrity, m)?)?;
     m.add_function(wrap_pyfunction!(has_resumable_ingest, m)?)?;
+    m.add_function(wrap_pyfunction!(validated_index_resume_progress, m)?)?;
     m.add_function(wrap_pyfunction!(compute_col_stats_for_parquet, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_export::read_col_stats, m)?)?;
     m.add_function(wrap_pyfunction!(col_stats_export::read_edge_stats, m)?)?;

@@ -166,6 +166,18 @@ pub fn initial_resume_phase(root: &Path) -> Result<Option<IngestPhase>> {
     Ok(chain.encode_complete.then_some(chain.first_incomplete))
 }
 
+/// Return validated durable Index commits when an unpublished ingest is
+/// eligible for a bounded Index-resume retry.
+pub fn validated_index_resume_progress(root: &Path) -> Result<Option<Vec<String>>> {
+    if initial_resume_phase(root)? != Some(IngestPhase::Index)
+        || phase_marker_exists(root, IngestPhase::Index.name())
+    {
+        return Ok(None);
+    }
+    let commits = diskgraph_index::graph::validated_index_shard_commits(root)?;
+    Ok((!commits.is_empty()).then_some(commits))
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct PhysicalFieldSignature {
     pub name: String,
@@ -1361,6 +1373,72 @@ mod tests_resume_phase {
             assert_eq!(IngestPhase::from_name(p.name()), Some(p));
         }
         assert!(IngestPhase::from_name("nope").is_none());
+    }
+
+    #[test]
+    fn validated_index_progress_requires_index_phase_and_a_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        assert_eq!(validated_index_resume_progress(root).unwrap(), None);
+
+        write_phase_marker(root, IngestPhase::Encode.name()).unwrap();
+        assert_eq!(validated_index_resume_progress(root).unwrap(), None);
+        write_phase_marker(root, IngestPhase::PkMap.name()).unwrap();
+        write_phase_marker(root, IngestPhase::EdgesMap.name()).unwrap();
+        assert_eq!(first_incomplete_phase(root).unwrap(), IngestPhase::Index);
+        assert_eq!(validated_index_resume_progress(root).unwrap(), None);
+
+        write_phase_marker(root, IngestPhase::Index.name()).unwrap();
+        assert_eq!(validated_index_resume_progress(root).unwrap(), None);
+    }
+
+    #[test]
+    fn validated_index_progress_returns_only_fully_validated_commits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for phase in [
+            IngestPhase::Encode,
+            IngestPhase::PkMap,
+            IngestPhase::EdgesMap,
+        ] {
+            write_phase_marker(root, phase.name()).unwrap();
+        }
+
+        let output = root.join("nodes/users/shard-00000");
+        fs::create_dir_all(&output).unwrap();
+        let offsets = bincode::serialize(
+            &diskgraph_index::layout::OffsetFileHeader::new(0, 1),
+        )
+        .unwrap();
+        fs::write(output.join("offsets.bin"), &offsets).unwrap();
+        fs::write(output.join("edges.bin"), b"").unwrap();
+        fs::write(output.join("build_stats.json"), b"{}").unwrap();
+        let marker = diskgraph_index::graph::index_shard_commit_path(
+            root,
+            "users",
+            "shard-00000",
+        );
+        fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        fs::write(
+            &marker,
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "shard_key": "Users/shard-00000",
+                "expected_nodes": 0,
+                "offsets_len": offsets.len(),
+                "edges_len": 0,
+                "build_stats_len": 2,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            validated_index_resume_progress(root).unwrap(),
+            Some(vec!["Users/shard-00000".to_string()])
+        );
+        fs::write(output.join("edges.bin"), b"corrupt").unwrap();
+        assert!(validated_index_resume_progress(root).is_err());
     }
 
     #[test]
