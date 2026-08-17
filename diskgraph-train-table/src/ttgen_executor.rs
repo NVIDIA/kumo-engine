@@ -171,9 +171,9 @@ pub struct StageGenInfo {
     pub key: String,
     pub table_name: String,
     /// Relative part paths under the staging dir, e.g.
-    /// `["train_seeds/part-00000.parquet", ...]` — one per pass-A row-group
-    /// that routed >0 rows to the stage. An empty stage carries a single
-    /// schema-only 0-row part so ingest never hits a missing dir.
+    /// `["train_seeds/part-00000.parquet", ...]` — one per bounded source
+    /// row-group span that routed >0 rows to the stage. An empty stage carries
+    /// a single schema-only 0-row part so ingest never hits a missing dir.
     pub parts: Vec<String>,
     pub row_count: u64,
     pub seed_time: Option<[i64; 2]>,
@@ -3087,6 +3087,38 @@ fn execute_aggregate<U: UnitSystem>(
 mod tests {
     use super::*;
     use diskgraph_core::time::Seconds;
+
+    #[test]
+    fn stage_manifest_preserves_exact_nineteen_part_lists() {
+        let parts = std::array::from_fn(|stage| {
+            let table = STAGE_TABLE_NAMES[stage];
+            StagePartsOut {
+                parts: (0..19)
+                    .map(|part| format!("{table}/part-{part:05}.parquet"))
+                    .collect(),
+                row_count: 19,
+                seed_time: Some([stage as i64, stage as i64 + 18]),
+                ..StagePartsOut::default()
+            }
+        });
+
+        let infos = stage_gen_infos_from_parts(&parts);
+        assert_eq!(infos.len(), 3);
+        for (stage, info) in infos.iter().enumerate() {
+            assert_eq!(info.parts, parts[stage].parts);
+            assert_eq!(info.parts.len(), 19);
+            assert_eq!(info.table_name, STAGE_TABLE_NAMES[stage]);
+            assert_eq!(info.row_count, 19);
+            assert_eq!(info.seed_time, Some([stage as i64, stage as i64 + 18]));
+        }
+
+        let encoded = serde_json::to_value(&infos).unwrap();
+        assert!(encoded
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|stage| stage["parts"].as_array().unwrap().len() == 19));
+    }
 
     #[test]
     fn train_table_category_counts_use_target_specific_limit_without_string_budget() {

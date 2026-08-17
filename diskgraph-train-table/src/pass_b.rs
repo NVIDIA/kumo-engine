@@ -5,16 +5,18 @@
 //!
 //! ## Concurrency model
 //!
-//! `run_pass_b_routed` parallelizes across row groups via rayon. Each worker
-//! opens its own `File`, decodes its row group, routes each batch via the
-//! supplied closure → `[train, val, test]`, and writes each >0-row sub-batch to
-//! its own `ArrowWriter` at `<output_dir>/<stage_table>/part-<rg:05>.parquet`,
+//! `run_pass_b_routed` parallelizes across bounded groups of contiguous source
+//! row groups via rayon. Each worker opens its own `File`, decodes its span,
+//! routes each batch via the supplied closure → `[train, val, test]`, and
+//! writes each >0-row sub-batch to
+//! its own `ArrowWriter` at `<output_dir>/<stage_table>/part-<group:05>.parquet`,
 //! tracking per-stage row_count + TIMESTAMP (min,max) over its OUTPUT rows.
 //!
 //! Workers write disjoint part files → no cross-worker sharing or sync. The main
 //! thread merges per-stage results (sorted parts, summed row_count, merged
 //! seed_time min/max). A stage with 0 parts gets a single schema-only 0-row part
-//! so ingest never hits a missing dir. Peak RAM = O(one row-group) per worker.
+//! so ingest never hits a missing dir. Peak RAM is bounded by one decoded
+//! source row group per worker.
 
 use std::fs::File;
 use std::path::Path;
@@ -49,6 +51,19 @@ pub const STAGE_TABLE_NAMES: [&str; 3] = ["train_seeds", "val_seeds", "test_seed
 // Keep enough headroom below ingest's 2 GiB oversized-chunk limit for
 // Parquet decoder amplification (offsets, validity buffers, and values).
 pub(crate) const MAX_PARQUET_ROW_GROUP_DECODE_BYTES: usize = 256 * 1024 * 1024;
+
+const MIN_PASS_B_GROUPS: usize = 16;
+const MAX_SOURCE_ROW_GROUPS_PER_PART: usize = 128;
+
+/// Deterministic coalescing policy based only on immutable source shape.
+///
+/// For production-sized inputs this keeps at least 16 schedulable groups while
+/// bounding each physical output part to 128 source row groups. It deliberately
+/// does not depend on the current Rayon pool size, so filenames and bytes remain
+/// stable across hosts and thread-count settings.
+fn source_row_groups_per_part(num_row_groups: usize) -> usize {
+    (num_row_groups / MIN_PASS_B_GROUPS).clamp(1, MAX_SOURCE_ROW_GROUPS_PER_PART)
+}
 
 fn record_batch_slice_decode_bytes(
     batch: &RecordBatch,
@@ -159,7 +174,7 @@ pub(crate) fn write_bounded_parquet_batch(
 #[derive(Debug, Default)]
 pub struct StagePartsOut {
     /// Relative part paths, e.g. `["train_seeds/part-00000.parquet", ...]`,
-    /// sorted by row-group index. Always at least one entry (a single
+    /// sorted by source-group index. Always at least one entry (a single
     /// schema-only 0-row part for an empty stage).
     pub parts: Vec<String>,
     pub row_count: u64,
@@ -169,19 +184,19 @@ pub struct StagePartsOut {
     pub(crate) split_stats: KumoStageStats,
 }
 
-/// Per-(row-group, stage) worker result.
+/// Per-(source-row-group span, stage) worker result.
 struct WorkerStageResult {
-    /// `Some(rel_path)` when this row-group wrote a >0-row part for the stage.
+    /// `Some(rel_path)` when this span wrote a >0-row part for the stage.
     part: Option<String>,
     row_count: u64,
     seed_time: Option<(i64, i64)>,
     split_stats: KumoStageStats,
 }
 
-/// Relative part path for a stage row-group, e.g.
+/// Relative part path for a stage group, e.g.
 /// `"train_seeds/part-00003.parquet"`.
-fn part_rel_path(stage: usize, rg_idx: usize) -> String {
-    format!("{}/part-{rg_idx:05}.parquet", STAGE_TABLE_NAMES[stage])
+fn part_rel_path(stage: usize, group_idx: usize) -> String {
+    format!("{}/part-{group_idx:05}.parquet", STAGE_TABLE_NAMES[stage])
 }
 
 /// Core fused router. Parallel over row groups; each worker reads its
@@ -200,6 +215,20 @@ fn run_pass_b_routed<F>(
     output_dir: &Path,
     total_rows: u64,
     out_schema: &SchemaRef,
+    route: F,
+) -> TTGenResult<[StagePartsOut; 3]>
+where
+    F: Fn(&RecordBatch, u64) -> TTGenResult<[RecordBatch; 3]> + Sync,
+{
+    run_pass_b_routed_impl(tt_parquet, output_dir, total_rows, out_schema, None, route)
+}
+
+fn run_pass_b_routed_impl<F>(
+    tt_parquet: &Path,
+    output_dir: &Path,
+    total_rows: u64,
+    out_schema: &SchemaRef,
+    source_row_groups_per_part_override: Option<usize>,
     route: F,
 ) -> TTGenResult<[StagePartsOut; 3]>
 where
@@ -226,6 +255,13 @@ where
     let metadata = probe_builder.metadata().clone();
     let row_groups = metadata.row_groups();
     let num_row_groups = row_groups.len();
+    let source_row_groups_per_part = source_row_groups_per_part_override
+        .unwrap_or_else(|| source_row_groups_per_part(num_row_groups));
+    if source_row_groups_per_part == 0 {
+        return Err(TTGenError::SystemError(
+            "pass_b: source row groups per part must be positive".to_string(),
+        ));
+    }
 
     let mut cum_offsets: Vec<u64> = Vec::with_capacity(num_row_groups + 1);
     cum_offsets.push(0);
@@ -243,15 +279,20 @@ where
     let tt_parquet = tt_parquet.to_path_buf();
     let output_dir = output_dir.to_path_buf();
 
-    // One worker per row-group; each returns its per-stage result.
-    let per_worker: Vec<TTGenResult<[WorkerStageResult; 3]>> = (0..num_row_groups)
+    // One worker per contiguous group; each returns its per-stage result.
+    let num_groups = num_row_groups.div_ceil(source_row_groups_per_part);
+    let per_worker: Vec<TTGenResult<[WorkerStageResult; 3]>> = (0..num_groups)
         .into_par_iter()
-        .map(|rg_idx| {
-            run_pass_b_one_group(
+        .map(|group_idx| {
+            let start_rg = group_idx * source_row_groups_per_part;
+            let end_rg = (start_rg + source_row_groups_per_part).min(num_row_groups);
+            run_pass_b_row_group_span(
                 &tt_parquet,
                 &output_dir,
-                rg_idx,
-                cum_offsets[rg_idx],
+                group_idx,
+                start_rg,
+                end_rg,
+                cum_offsets[start_rg],
                 &route,
             )
         })
@@ -291,25 +332,21 @@ where
     Ok(merged)
 }
 
-/// Per-row-group worker: read the row-group (all columns), route each batch,
-/// write each non-empty stage sub-batch to its own part file. Returns the
-/// per-stage `WorkerStageResult`.
-fn run_pass_b_one_group<F>(
+/// Per-group worker: read a contiguous source row-group span (all columns),
+/// route batches in source order, and write each non-empty stage to one part.
+fn run_pass_b_row_group_span<F>(
     tt_parquet: &Path,
     output_dir: &Path,
-    rg_idx: usize,
-    byte_offset: u64,
+    group_idx: usize,
+    start_rg: usize,
+    end_rg: usize,
+    row_offset: u64,
     route: &F,
 ) -> TTGenResult<[WorkerStageResult; 3]>
 where
     F: Fn(&RecordBatch, u64) -> TTGenResult<[RecordBatch; 3]>,
 {
-    let file = File::open(tt_parquet)?;
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)?
-        .with_row_groups(vec![rg_idx])
-        .build()?;
-
-    // Lazily-created per-stage writers + accumulators for THIS row-group.
+    // Lazily-created per-stage writers + accumulators for this group.
     let mut writers: [Option<ArrowWriter<File>>; 3] = [None, None, None];
     let mut in_progress_decode_bytes = [0usize; 3];
     let mut counts: [u64; 3] = [0; 3];
@@ -317,36 +354,52 @@ where
     let mut split_stats: [KumoStageStats; 3] = Default::default();
 
     let mut local_idx: u64 = 0;
-    for batch_res in reader {
-        let batch =
-            batch_res.map_err(|e| TTGenError::Parquet(format!("pass_b reader: {e}")))?;
-        let nrows = batch.num_rows() as u64;
-        let sub_batches = route(&batch, byte_offset + local_idx)?;
-        for (stage, sub) in sub_batches.into_iter().enumerate() {
-            if sub.num_rows() == 0 {
-                continue;
-            }
-            observe_seed_time(&sub, &mut seed_times[stage])?;
-            counts[stage] += sub.num_rows() as u64;
-            observe_pass_b_stage_batch(&sub, &mut split_stats[stage])?;
-            let writer = match writers[stage].as_mut() {
-                Some(w) => w,
-                None => {
-                    let path = output_dir.join(part_rel_path(stage, rg_idx));
-                    let f = File::create(&path)?;
-                    let w = ArrowWriter::try_new(f, sub.schema(), None)?;
-                    writers[stage] = Some(w);
-                    writers[stage].as_mut().unwrap()
+    for rg_idx in start_rg..end_rg {
+        let file = File::open(tt_parquet)?;
+        let reader = ParquetRecordBatchReaderBuilder::try_new(file)?
+            .with_row_groups(vec![rg_idx])
+            .build()?;
+        for batch_res in reader {
+            let batch =
+                batch_res.map_err(|e| TTGenError::Parquet(format!("pass_b reader: {e}")))?;
+            let nrows = batch.num_rows() as u64;
+            let sub_batches = route(&batch, row_offset + local_idx)?;
+            for (stage, sub) in sub_batches.into_iter().enumerate() {
+                if sub.num_rows() == 0 {
+                    continue;
                 }
-            };
-            write_bounded_parquet_batch(
-                writer,
-                &mut in_progress_decode_bytes[stage],
-                &sub,
-                MAX_PARQUET_ROW_GROUP_DECODE_BYTES,
-            )?;
+                observe_seed_time(&sub, &mut seed_times[stage])?;
+                counts[stage] += sub.num_rows() as u64;
+                observe_pass_b_stage_batch(&sub, &mut split_stats[stage])?;
+                let writer = match writers[stage].as_mut() {
+                    Some(w) => w,
+                    None => {
+                        let path = output_dir.join(part_rel_path(stage, group_idx));
+                        let f = File::create(&path)?;
+                        let w = ArrowWriter::try_new(f, sub.schema(), None)?;
+                        writers[stage] = Some(w);
+                        writers[stage].as_mut().unwrap()
+                    }
+                };
+                write_bounded_parquet_batch(
+                    writer,
+                    &mut in_progress_decode_bytes[stage],
+                    &sub,
+                    MAX_PARQUET_ROW_GROUP_DECODE_BYTES,
+                )?;
+            }
+            local_idx += nrows;
         }
-        local_idx += nrows;
+
+        // Preserve each source row-group boundary inside the coalesced file.
+        // This bounds decode size and resets dictionaries at the same locality
+        // boundary as the previous one-file-per-source-row-group layout.
+        for stage in 0..3 {
+            if let Some(writer) = writers[stage].as_mut() {
+                writer.flush()?;
+                in_progress_decode_bytes[stage] = 0;
+            }
+        }
     }
 
     // Close any writers we opened; build the per-stage results.
@@ -374,7 +427,7 @@ where
         if let Some(w) = writers[stage].take() {
             w.close()?;
             out[stage] = WorkerStageResult {
-                part: Some(part_rel_path(stage, rg_idx)),
+                part: Some(part_rel_path(stage, group_idx)),
                 row_count: counts[stage],
                 seed_time: seed_times[stage],
                 split_stats: std::mem::take(&mut split_stats[stage]),
@@ -551,10 +604,12 @@ pub(crate) fn run_pass_b_per_link(
 mod tests {
     use super::*;
     use crate::split_decider::{NoSplitDecider, TimeRangeDecider};
+    use crate::split_stats::write_kumo_split_stats_artifact;
     use arrow_array::builder::{Int64Builder, ListBuilder, StringBuilder, TimestampNanosecondBuilder};
     use arrow_array::{Int64Array, RecordBatch, StringArray, TimestampNanosecondArray};
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use diskgraph_core::time::{Abs, Seconds};
+    use diskgraph_core::tt_builder::PredictionType;
     use std::path::PathBuf;
     use std::sync::Arc as StdArc;
 
@@ -583,6 +638,43 @@ mod tests {
             props = props.set_max_row_group_size(n);
         }
         let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props.build())).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        schema
+    }
+
+    fn write_numeric_tt_parquet(path: &Path, ts_secs: &[i64], max_rg_rows: usize) -> SchemaRef {
+        let entities = (0..ts_secs.len() as i64).collect::<Vec<_>>();
+        let ts_nanos = ts_secs
+            .iter()
+            .map(|seconds| seconds * 1_000_000_000)
+            .collect::<Vec<_>>();
+        let targets = (0..ts_secs.len())
+            .map(|row| (row % 11) as f64 * 0.25)
+            .collect::<Vec<_>>();
+        let schema = StdArc::new(Schema::new(vec![
+            Field::new("ENTITY1", DataType::Int64, false),
+            Field::new(
+                "TIMESTAMP",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("TARGET1", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                StdArc::new(Int64Array::from(entities)),
+                StdArc::new(TimestampNanosecondArray::from(ts_nanos)),
+                StdArc::new(arrow_array::Float64Array::from(targets)),
+            ],
+        )
+        .unwrap();
+        let file = File::create(path).unwrap();
+        let props = parquet::file::properties::WriterProperties::builder()
+            .set_max_row_group_size(max_rg_rows)
+            .build();
+        let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props)).unwrap();
         writer.write(&batch).unwrap();
         writer.close().unwrap();
         schema
@@ -678,6 +770,161 @@ mod tests {
             (Abs::from_secs(101), Abs::from_secs(200)),
             (Abs::from_secs(201), Abs::from_secs(300)),
         ])
+    }
+
+    fn run_per_anchor_with_group_size<D: SplitDecider<Seconds> + Sync>(
+        tt: &Path,
+        decider: &D,
+        output: &Path,
+        total_rows: u64,
+        schema: &SchemaRef,
+        group_size: usize,
+    ) -> TTGenResult<[StagePartsOut; 3]> {
+        run_pass_b_routed_impl(
+            tt,
+            output,
+            total_rows,
+            schema,
+            Some(group_size),
+            |batch, offset| {
+                route_per_anchor::<Seconds, D>(batch, decider, offset, false, None, None)
+            },
+        )
+    }
+
+    fn write_split_stats(output: &Path, parts: &[StagePartsOut; 3]) -> Vec<u8> {
+        let (path, _) =
+            write_kumo_split_stats_artifact(output, parts, &PredictionType::Node, "numerical")
+                .unwrap()
+                .unwrap();
+        std::fs::read(path).unwrap()
+    }
+
+    #[test]
+    fn source_row_group_policy_boundaries() {
+        for (num_row_groups, expected) in [
+            (0, 1),
+            (1, 1),
+            (15, 1),
+            (16, 1),
+            (31, 1),
+            (32, 2),
+            (255, 15),
+            (256, 16),
+            (2_047, 127),
+            (2_048, 128),
+            (2_049, 128),
+            (usize::MAX, 128),
+        ] {
+            assert_eq!(source_row_groups_per_part(num_row_groups), expected);
+        }
+
+        for num_row_groups in 16..10_000 {
+            let group_size = source_row_groups_per_part(num_row_groups);
+            assert!(group_size <= MAX_SOURCE_ROW_GROUPS_PER_PART);
+            assert!(num_row_groups.div_ceil(group_size) >= MIN_PASS_B_GROUPS);
+        }
+    }
+
+    #[test]
+    fn grouping_preserves_order_semantics_and_split_stats() {
+        let source = tempfile::tempdir().unwrap();
+        let tt = source.path().join("tt.parquet");
+        let timestamps = (0..64)
+            .map(|row| [10_i64, 110, 210, 310][row % 4])
+            .collect::<Vec<_>>();
+        let schema = write_numeric_tt_parquet(&tt, &timestamps, 1);
+        let decider = time_range_decider();
+
+        let one_part_per_row_group = tempfile::tempdir().unwrap();
+        let baseline = run_per_anchor_with_group_size(
+            &tt,
+            &decider,
+            one_part_per_row_group.path(),
+            timestamps.len() as u64,
+            &schema,
+            1,
+        )
+        .unwrap();
+        let grouped_dir = tempfile::tempdir().unwrap();
+        let grouped = run_per_anchor_with_group_size(
+            &tt,
+            &decider,
+            grouped_dir.path(),
+            timestamps.len() as u64,
+            &schema,
+            4,
+        )
+        .unwrap();
+
+        for stage in 0..3 {
+            assert_eq!(grouped[stage].row_count, baseline[stage].row_count);
+            assert_eq!(grouped[stage].seed_time, baseline[stage].seed_time);
+            assert_eq!(
+                stage_entities(grouped_dir.path(), &grouped[stage].parts),
+                stage_entities(one_part_per_row_group.path(), &baseline[stage].parts,),
+            );
+            assert_eq!(grouped[stage].parts.len(), 16);
+            assert_eq!(
+                grouped[stage].parts,
+                (0..16)
+                    .map(|part| part_rel_path(stage, part))
+                    .collect::<Vec<_>>(),
+            );
+        }
+        assert_eq!(
+            write_split_stats(grouped_dir.path(), &grouped),
+            write_split_stats(one_part_per_row_group.path(), &baseline),
+        );
+    }
+
+    #[test]
+    fn production_grouping_is_thread_count_and_byte_invariant() {
+        let source = tempfile::tempdir().unwrap();
+        let tt = source.path().join("tt.parquet");
+        let timestamps = (0..64)
+            .map(|row| [10_i64, 110, 210, 310][row % 4])
+            .collect::<Vec<_>>();
+        let schema = write_tt_parquet(&tt, &timestamps, Some(1));
+        let decider = time_range_decider();
+
+        let run = |threads| {
+            let output = tempfile::tempdir().unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            let parts = pool
+                .install(|| {
+                    run_pass_b_per_anchor::<Seconds, _>(
+                        &tt,
+                        &decider,
+                        output.path(),
+                        timestamps.len() as u64,
+                        false,
+                        None,
+                        &schema,
+                        None,
+                    )
+                })
+                .unwrap();
+            let files = parts.each_ref().map(|stage| {
+                stage
+                    .parts
+                    .iter()
+                    .map(|part| {
+                        (
+                            part.clone(),
+                            std::fs::read(output.path().join(part)).unwrap(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            });
+            let stats = write_split_stats(output.path(), &parts);
+            (parts.map(|stage| stage.parts), files, stats)
+        };
+
+        assert_eq!(run(1), run(7));
     }
 
     #[test]
@@ -1008,8 +1255,8 @@ mod tests {
     }
 
     #[test]
-    fn per_link_rowgroup_invariance() {
-        let rows: Vec<(i64, i64, Vec<(&str, i64)>)> = (0..20)
+    fn per_link_grouping_preserves_semantics() {
+        let rows: Vec<(i64, i64, Vec<(&str, i64)>)> = (0..64)
             .map(|i| {
                 let items: Vec<(&str, i64)> = vec![("a", 1), ("b", 2), ("c", 3)];
                 (i as i64, 1000 + i as i64, items)
@@ -1025,10 +1272,10 @@ mod tests {
         let out1 =
             run_pass_b_per_link(&tt1, &assigner, dir1.path(), rows.len() as u64, &schema1).unwrap();
 
-        // Multi row-group run (4 rows/group).
+        // One source row per row group selects the production group size of 4.
         let dir2 = tempfile::tempdir().unwrap();
         let tt2: PathBuf = dir2.path().join("tt.parquet");
-        let schema2 = write_lp_parquet(&tt2, &rows, Some(4));
+        let schema2 = write_lp_parquet(&tt2, &rows, Some(1));
         let out2 =
             run_pass_b_per_link(&tt2, &assigner, dir2.path(), rows.len() as u64, &schema2).unwrap();
 
@@ -1041,12 +1288,23 @@ mod tests {
             let m2 = stage_membership(dir2.path(), &out2[stage].parts);
             assert_eq!(m1, m2, "stage {stage} membership differs across row-group sizes");
         }
-        // Multi-rowgroup non-empty stage has >1 part; Σ part rows == count.
+        // The shared production entry bounds all physical paths to 16 groups;
+        // summing their rows still yields the exact routed stage count.
         for stage in 0..3 {
             if out2[stage].row_count > 0 {
-                assert!(out2[stage].parts.len() >= 1);
-                let sum: u64 =
-                    out2[stage].parts.iter().map(|p| part_row_count(dir2.path(), p)).sum();
+                let expected_paths = (0..16)
+                    .map(|part| part_rel_path(stage, part))
+                    .collect::<Vec<_>>();
+                assert!(out2[stage]
+                    .parts
+                    .iter()
+                    .all(|part| expected_paths.contains(part)));
+                assert!(out2[stage].parts.len() <= 16);
+                let sum: u64 = out2[stage]
+                    .parts
+                    .iter()
+                    .map(|p| part_row_count(dir2.path(), p))
+                    .sum();
                 assert_eq!(sum, out2[stage].row_count);
             }
         }

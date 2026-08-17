@@ -3070,6 +3070,78 @@ fn test_ts_grouping_groups_by_timestamp_end_to_end() {
     );
 }
 
+/// Stage-extension ingestion must treat the exact 19-part shape produced by
+/// the production policy as the same logical stream as one parquet carrying
+/// the same rows.
+#[test]
+fn test_stage_extension_nineteen_parts_preserve_semantic_rows() {
+    let tmp = tempdir().unwrap();
+    let parent_root = tmp.path().join("parent_idx");
+    ingest_tiny_parent_index(&parent_root, &IngestedType::Int64, 1, 128).unwrap();
+
+    let entity_ids: Vec<i64> = (0..76).collect();
+    let ts_secs = (0..entity_ids.len())
+        .map(|i| [30, 10, 20, 10, 40][i % 5])
+        .collect::<Vec<_>>();
+    let one_part = tmp.path().join("one").join("part-00000.parquet");
+    write_ts_group_parquet(&one_part, &entity_ids, &ts_secs);
+
+    let many_root = tmp.path().join("many");
+    let mut many_parts = Vec::new();
+    for (part_idx, start) in (0..entity_ids.len()).step_by(4).enumerate() {
+        let end = (start + 4).min(entity_ids.len());
+        let path = many_root.join(format!("part-{part_idx:05}.parquet"));
+        write_ts_group_parquet(&path, &entity_ids[start..end], &ts_secs[start..end]);
+        many_parts.push(path);
+    }
+    assert_eq!(many_parts.len(), 19);
+
+    let ingest = |name: &str, parts: Vec<PathBuf>| {
+        let output = tmp.path().join(name);
+        let result = diskgraph_ingest::ingest_stage_extension_with_resolution(
+            name,
+            &output,
+            &parent_root,
+            &[diskgraph_ingest::StageSpec {
+                stage_table_name: "train_seeds".to_string(),
+                parquet_paths: parts,
+            }],
+            pred_columns(),
+            vec![],
+            &[ts_group_resolve_spec()],
+            Some(1),
+            true,
+            true,
+        )
+        .unwrap();
+        let reader = diskgraph_index::graph::GraphIndexReader::open(
+            &output.join("index_metadata.json"),
+            &output,
+        )
+        .unwrap();
+        let table = reader.table("train_seeds").unwrap();
+        let mut rows = (0..table.node_count())
+            .map(|node_id| {
+                let view = table.edges_for_node(node_id).unwrap();
+                serde_json::to_string(&table.decode_node_data_json(&view).unwrap().unwrap())
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        rows.sort();
+        let grouping = result.ts_groupings.get("train_seeds").unwrap();
+        let buckets = grouping
+            .buckets
+            .iter()
+            .map(|bucket| (bucket.ts, bucket.offset, bucket.count))
+            .collect::<Vec<_>>();
+        (result.counts, result.input_row_count, rows, buckets)
+    };
+
+    let single = ingest("single_part_extension", vec![one_part]);
+    let grouped = ingest("grouped_parts_extension", many_parts);
+    assert_eq!(single, grouped);
+}
+
 // Integration Test 2 (+min_id, multi-shard) — node-ids in the bin equal the
 // final global ids (= local + shard min_id), grouped by ts across shards.
 #[test]
