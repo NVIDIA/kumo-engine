@@ -15,6 +15,7 @@ from ._c import (
     DiskgraphConfigError,
     DiskgraphCorruptionError,
     DiskgraphDataError,
+    DiskgraphSourceValidationError,
     DiskgraphSystemError,
     DiskgraphTargetCategoryLimitError,
 )
@@ -30,6 +31,7 @@ class DiskgraphTaskError(Exception):
 __all__ = [
     "DiskgraphConfigError",
     "DiskgraphDataError",
+    "DiskgraphSourceValidationError",
     "DiskgraphSystemError",
     "DiskgraphTargetCategoryLimitError",
     "DiskgraphTaskError",

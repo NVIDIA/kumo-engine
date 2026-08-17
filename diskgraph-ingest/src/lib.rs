@@ -2866,6 +2866,21 @@ impl PublicIngestError {
     fn new(message: String) -> Self {
         Self { message }
     }
+
+    pub fn int64_decimal_out_of_range(
+        table_name: Option<&str>,
+        column_name: &str,
+    ) -> Self {
+        let location = table_name.map_or_else(
+            || format!("column '{column_name}'"),
+            |table_name| format!("table {table_name} column '{column_name}'"),
+        );
+        Self::new(format!(
+            "{location} contains a scale-zero decimal value outside Kumo's signed 64-bit integer \
+             range; cast the column to DOUBLE or STRING in Custom SQL, or keep its values within \
+             the signed 64-bit range"
+        ))
+    }
 }
 
 pub fn public_ingest_error_message(error: &anyhow::Error) -> Option<String> {
@@ -16700,13 +16715,10 @@ fn validate_source_batch_values(
                     .ok_or_else(|| anyhow!("decimal128 array cast failed"))?;
                 for row in 0..values.len() {
                     if !values.is_null(row) && i64::try_from(values.value(row)).is_err() {
-                        return Err(PublicIngestError::new(format!(
-                            "table {} column '{}' contains a scale-zero decimal value outside \
-                             Kumo's signed 64-bit integer range; cast the column to DOUBLE or \
-                             STRING in Custom SQL, or keep its values within the signed 64-bit \
-                             range",
-                            table.name, column.name,
-                        ))
+                        return Err(PublicIngestError::int64_decimal_out_of_range(
+                            Some(&table.name),
+                            &column.name,
+                        )
                         .into());
                     }
                 }
@@ -16718,13 +16730,10 @@ fn validate_source_batch_values(
                     .ok_or_else(|| anyhow!("decimal256 array cast failed"))?;
                 for row in 0..values.len() {
                     if !values.is_null(row) && values.value(row).to_i64().is_none() {
-                        return Err(PublicIngestError::new(format!(
-                            "table {} column '{}' contains a scale-zero decimal value outside \
-                             Kumo's signed 64-bit integer range; cast the column to DOUBLE or \
-                             STRING in Custom SQL, or keep its values within the signed 64-bit \
-                             range",
-                            table.name, column.name,
-                        ))
+                        return Err(PublicIngestError::int64_decimal_out_of_range(
+                            Some(&table.name),
+                            &column.name,
+                        )
                         .into());
                     }
                 }

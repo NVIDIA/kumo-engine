@@ -16,6 +16,11 @@ use pyo3::types::{PyDict, PyList, PyString, PyTuple};
 create_exception!(diskgraph, DiskgraphDataError, PyException);
 create_exception!(
     diskgraph,
+    DiskgraphSourceValidationError,
+    DiskgraphDataError
+);
+create_exception!(
+    diskgraph,
     DiskgraphTargetCategoryLimitError,
     DiskgraphDataError
 );
@@ -103,6 +108,9 @@ pub(crate) fn map_anyhow_err(err: anyhow::Error) -> PyErr {
     }
     if let Some(e) = err.downcast_ref::<diskgraph_ingest::errors::KeyParseError>() {
         return DiskgraphDataError::new_err(e.to_string());
+    }
+    if let Some(e) = err.downcast_ref::<diskgraph_ingest::PublicIngestError>() {
+        return DiskgraphSourceValidationError::new_err(e.to_string());
     }
     if let Some(e) = err.downcast_ref::<diskgraph_train_table::errors::TTGenError>() {
         match e {
@@ -1333,6 +1341,10 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
         .num_threads(diskgraph_ingest::effective_parallelism())
         .build_global();
     m.add("DiskgraphDataError", m.py().get_type::<DiskgraphDataError>())?;
+    m.add(
+        "DiskgraphSourceValidationError",
+        m.py().get_type::<DiskgraphSourceValidationError>(),
+    )?;
     m.add(
         "DiskgraphTargetCategoryLimitError",
         m.py().get_type::<DiskgraphTargetCategoryLimitError>(),

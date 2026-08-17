@@ -21,6 +21,7 @@ use diskgraph_core::accumulators::{
 };
 use diskgraph_ingest::col_stats::{minify_kumo_stats, FileColStats, TableCategoryCounts};
 use diskgraph_ingest::graph_config::{ColumnSpec, IngestedType, SemanticType, TimestampUnit};
+use diskgraph_ingest::PublicIngestError;
 use diskgraph_rowpack::{ColumnValueObserver, RowAccess, RowAccessHints, RowAccessStats};
 
 /// CATEGORY_COUNTS truncation limit for the "min" variant (matches ingest).
@@ -489,6 +490,31 @@ fn access_or_parse_failure<T, O: ColumnValueObserver>(
     }
 }
 
+fn integer_or_parse_failure<O: ColumnValueObserver>(
+    access: &RowAccess<'_>,
+    array: &arrow_array::ArrayRef,
+    col: &ColumnSpec,
+    col_idx: usize,
+    observer: &mut O,
+) -> Result<Option<i64>> {
+    match integer_value(access, 0, col) {
+        Ok(value) => Ok(value),
+        Err(_)
+            if col.ingested_dtype == IngestedType::Int64
+                && matches!(
+                    array.data_type(),
+                    DataType::Decimal128(_, 0) | DataType::Decimal256(_, 0)
+                ) =>
+        {
+            Err(PublicIngestError::int64_decimal_out_of_range(None, &col.name).into())
+        }
+        Err(_) => {
+            observer.observe_parse_failure(col_idx);
+            Ok(None)
+        }
+    }
+}
+
 fn bin_numeric_col(
     array: &arrow_array::ArrayRef,
     col: &ColumnSpec,
@@ -626,9 +652,9 @@ fn drive_from_arrow_column<O: ColumnValueObserver>(
                 | IngestedType::UInt32
                 | IngestedType::UInt16
                 | IngestedType::UInt8 => {
-                    if let Some(value) =
-                        access_or_parse_failure(integer_value(&access, 0, col), col_idx, observer)
-                    {
+                    if let Some(value) = integer_or_parse_failure(
+                        &access, array, col, col_idx, observer,
+                    )? {
                         if let Some(range) = integer_range.as_deref_mut() {
                             range.observe(value);
                         }
@@ -784,14 +810,22 @@ fn stats_for_row_group(
                 .binary_search(&i)
                 .ok()
                 .map(|idx| &mut integer_ranges[idx]);
-            drive_from_arrow_column(
+            let result = drive_from_arrow_column(
                 i,
                 batch.column(schema.index_of(&col.name)?),
                 col,
                 &mut fcs,
                 range,
-            )
-            .with_context(|| format!("compute statistics for column '{}'", col.name))?;
+            );
+            if let Err(error) = result {
+                if error.is::<PublicIngestError>() {
+                    return Err(error);
+                }
+                return Err(error.context(format!(
+                    "compute statistics for column '{}'",
+                    col.name
+                )));
+            }
         }
         if let Some((score, class)) = score_class {
             accumulate_by_class(
@@ -1142,9 +1176,10 @@ mod tests {
 
     use arrow_array::builder::{Float64Builder, ListBuilder};
     use arrow_array::{
-        ArrayRef, Date32Array, Decimal128Array, Float64Array, Int32Array, Int64Array, RecordBatch,
-        StringArray, TimestampMicrosecondArray, TimestampSecondArray,
+        ArrayRef, Date32Array, Decimal128Array, Decimal256Array, Float64Array, Int32Array,
+        Int64Array, RecordBatch, StringArray, TimestampMicrosecondArray, TimestampSecondArray,
     };
+    use arrow::datatypes::i256;
     use arrow_schema::{DataType, Field, Schema};
     use diskgraph_ingest::graph_config::SemanticType;
     use parquet::arrow::ArrowWriter;
@@ -1965,6 +2000,159 @@ mod tests {
         assert_eq!(histogram.first().unwrap()[0], i64::MIN);
         assert_eq!(histogram.first().unwrap()[1], 50.0);
         assert_eq!(histogram.last().unwrap()[1], 50.0);
+    }
+
+    #[test]
+    fn scale_zero_decimal_int64_boundaries_are_preserved() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("decimal128.parquet");
+        let values = Decimal128Array::from(vec![
+            Some(i128::from(i64::MIN)),
+            None,
+            Some(i128::from(i64::MAX)),
+        ])
+        .with_precision_and_scale(38, 0)
+        .unwrap();
+        write_parquet(
+            &path,
+            Schema::new(vec![Field::new("wide_int", DataType::Decimal128(38, 0), true)]),
+            vec![StdArc::new(values) as ArrayRef],
+            1,
+        );
+
+        let (full, _) = compute_parquet_col_stats(
+            &[path.as_path()],
+            &[col(
+                "wide_int",
+                IngestedType::Int64,
+                SemanticType::Numerical,
+            )],
+            "v1",
+        )
+        .unwrap();
+
+        assert_eq!(
+            val(&full, "wide_int__kumo.numerical__MIN__False"),
+            i64::MIN
+        );
+        assert_eq!(
+            val(&full, "wide_int__kumo.numerical__MAX__False"),
+            i64::MAX
+        );
+        assert_eq!(
+            val(&full, "wide_int__kumo.numerical__NUM_NA__False"),
+            1
+        );
+    }
+
+    #[test]
+    fn malformed_string_int64_remains_parse_failure() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("string_int64.parquet");
+        write_parquet(
+            &path,
+            Schema::new(vec![Field::new("integer", DataType::Utf8, true)]),
+            vec![StdArc::new(StringArray::from(vec![
+                Some("7"),
+                Some("not-an-integer"),
+                None,
+            ])) as ArrayRef],
+            1,
+        );
+
+        let (full, _) = compute_parquet_col_stats(
+            &[path.as_path()],
+            &[col(
+                "integer",
+                IngestedType::Int64,
+                SemanticType::Numerical,
+            )],
+            "v1",
+        )
+        .unwrap();
+
+        assert_eq!(val(&full, "integer__kumo.numerical__MIN__False"), 7);
+        assert_eq!(val(&full, "integer__kumo.numerical__MAX__False"), 7);
+        assert_eq!(val(&full, "integer__kumo.numerical__NUM_NA__False"), 2);
+    }
+
+    #[test]
+    fn scale_zero_decimal_overflow_is_public_validation_error() {
+        let dir = tempdir().unwrap();
+        let cases: Vec<(&str, DataType, ArrayRef)> = vec![
+            (
+                "decimal128_above",
+                DataType::Decimal128(38, 0),
+                StdArc::new(
+                    Decimal128Array::from(vec![
+                        Some(i128::from(i64::MAX)),
+                        None,
+                        Some(i128::from(i64::MAX) + 1),
+                    ])
+                    .with_precision_and_scale(38, 0)
+                    .unwrap(),
+                ),
+            ),
+            (
+                "decimal128_below",
+                DataType::Decimal128(38, 0),
+                StdArc::new(
+                    Decimal128Array::from(vec![i128::from(i64::MIN) - 1])
+                        .with_precision_and_scale(38, 0)
+                        .unwrap(),
+                ),
+            ),
+            (
+                "decimal256_above",
+                DataType::Decimal256(76, 0),
+                StdArc::new(
+                    Decimal256Array::from(vec![i256::from_i128(i128::from(i64::MAX) + 1)])
+                        .with_precision_and_scale(76, 0)
+                        .unwrap(),
+                ),
+            ),
+            (
+                "decimal256_below",
+                DataType::Decimal256(76, 0),
+                StdArc::new(
+                    Decimal256Array::from(vec![i256::from_i128(i128::from(i64::MIN) - 1)])
+                        .with_precision_and_scale(76, 0)
+                        .unwrap(),
+                ),
+            ),
+        ];
+
+        for (name, data_type, values) in cases {
+            let path = dir.path().join(format!("{name}.parquet"));
+            write_parquet(
+                &path,
+                Schema::new(vec![Field::new("wide_int", data_type, true)]),
+                vec![values],
+                1,
+            );
+            let error = compute_parquet_col_stats(
+                &[path.as_path()],
+                &[col(
+                    "wide_int",
+                    IngestedType::Int64,
+                    SemanticType::Numerical,
+                )],
+                "v1",
+            )
+            .unwrap_err();
+
+            assert!(
+                error.downcast_ref::<PublicIngestError>().is_some(),
+                "{name}: unexpected error type: {error:#}"
+            );
+            assert!(
+                error.to_string().contains(
+                    "column 'wide_int' contains a scale-zero decimal value outside Kumo's signed \
+                     64-bit integer range"
+                ),
+                "{name}: unexpected error: {error:#}"
+            );
+        }
     }
 
     #[test]
