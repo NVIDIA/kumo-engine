@@ -856,6 +856,14 @@ fn e2e_lp_array_random_link_split_regroup() {
     let manifest = read_manifest(&output.manifest_path).unwrap();
     assert!(manifest.stage_counts.is_none());
     assert_eq!(manifest.split_kind.as_deref(), Some("RandomLinkSplit"));
+    assert!(
+        manifest.train_table_col_stats.is_none(),
+        "LP has no train-table target encoder and must omit the col-stats sidecar"
+    );
+    assert!(
+        !out_dir.path().join("train_table_col_stats.json").exists(),
+        "LP must not publish an unreferenced col-stats sidecar"
+    );
 
     // 2. All 10 link-cells (5 users × 2 products) are accounted for across the
     //    three stages: count the TOTAL TARGET items in every seed part. Ratio

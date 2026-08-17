@@ -60,17 +60,20 @@ type PassAOutputs<U> = (
     Option<[StagePartsOut; 3]>,
 );
 
-/// Train-table targets require a complete vocabulary and have no hash-encoder
-/// fallback. Keep this ceiling separate from the 1M graph-feature policy.
+/// Node-task train-table targets require a complete vocabulary and have no
+/// hash-encoder fallback. Link-prediction targets are graph node IDs and do
+/// not use this encoder vocabulary.
 const MAX_TRAIN_TABLE_TARGET_CATEGORIES: u64 = 250_000_000;
 
 fn category_count_accumulators(
     target_is_categorical: bool,
+    is_link_prediction: bool,
 ) -> (
     Option<Arc<SharedColumnCounts>>,
     Arc<SharedColumnCounts>,
 ) {
-    let target = target_is_categorical.then(|| {
+    let collect_exact_target_categories = target_is_categorical && !is_link_prediction;
+    let target = collect_exact_target_categories.then(|| {
         Arc::new(SharedColumnCounts::new_hashed_with_max_categories(
             MAX_TRAIN_TABLE_TARGET_CATEGORIES,
         ))
@@ -480,12 +483,12 @@ where
         "categorical" | "boolean" | "ID" | "multicategorical"
     );
 
-    // A categorical target needs its complete vocabulary. Unlike graph feature
-    // statistics, this path has no hash-encoder fallback, so it uses a
-    // target-specific 250M ceiling and no CategoryStringBudget. ENTITY1 exact
-    // counts remain disabled and therefore cannot consume target capacity.
+    // Node-task categorical targets need their complete encoder vocabulary.
+    // Link-prediction targets are graph node IDs: their scalar/HLL stats remain
+    // collected, but an exact target-ID distribution has no registered
+    // consumer and can grow with the RHS entity cardinality.
     let (shared_target_counts, shared_entity_counts) =
-        category_count_accumulators(target_is_categorical);
+        category_count_accumulators(target_is_categorical, is_link_prediction);
 
     // ── Writer thread ────────────────────────────────────────────────────
     // Reads from the bounded(16) channel and writes to tt.parquet on disk.
@@ -914,10 +917,8 @@ where
         }
     }
 
-    // Categorical targets require exact CATEGORY_COUNTS for encoder inference.
-    // The target accumulator has no string budget, but it still aborts above
-    // its DiskGraph-owned safety ceiling. Treating that abort as `None` would
-    // silently omit required target stats while reporting generation success.
+    // Node-task categorical targets require exact CATEGORY_COUNTS for encoder
+    // inference. LP deliberately has no accumulator, so this returns None.
     let target_category_counts =
         drain_required_target_category_counts(shared_target_counts.as_deref())?;
 
@@ -3122,7 +3123,7 @@ mod tests {
 
     #[test]
     fn train_table_category_counts_use_target_specific_limit_without_string_budget() {
-        let (limit_target, _) = category_count_accumulators(true);
+        let (limit_target, _) = category_count_accumulators(true, false);
         let limit_target = limit_target.expect("categorical target accumulator");
         limit_target
             .unique_count
@@ -3135,7 +3136,7 @@ mod tests {
         limit_target.record_new_unique();
         assert!(limit_target.is_aborted());
 
-        let (target, entity) = category_count_accumulators(true);
+        let (target, entity) = category_count_accumulators(true, false);
         let target = target.expect("categorical target accumulator");
 
         // Forty thousand short strings exceed the former 128 MiB conservative
@@ -3161,8 +3162,19 @@ mod tests {
     }
 
     #[test]
+    fn link_prediction_does_not_allocate_exact_target_category_counts() {
+        let (target, entity) = category_count_accumulators(true, true);
+
+        assert!(target.is_none());
+        assert_eq!(
+            entity.drain_to_map().expect("empty entity counts").len(),
+            0
+        );
+    }
+
+    #[test]
     fn target_category_limit_is_a_generation_error() {
-        let (target, entity) = category_count_accumulators(true);
+        let (target, entity) = category_count_accumulators(true, false);
         let target = target.expect("categorical target accumulator");
         target.unique_count.store(
             MAX_TRAIN_TABLE_TARGET_CATEGORIES,

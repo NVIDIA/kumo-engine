@@ -123,7 +123,8 @@ pub struct TrainTableStatsPayload {
     pub num_targets: u64,
     pub num_links: Option<u64>,
     pub exact_stats: TrainTableExactStatsPayload,
-    /// Kumo-format column stats for encoder inference (TARGET, FREQUENCY, ENTITY_INCLUDE_BIT).
+    /// Kumo-format column stats for node-task encoder inference. Link
+    /// prediction has no train-table target encoder and omits this sidecar.
     /// Format matches ingest's kumo_col_stats_v1 for compatibility with
     /// seed_train_table_col_stats_from_manifest().
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -465,13 +466,16 @@ impl<U: UnitSystem> StatsMerger<U> {
             None
         };
 
-        // Build the bounded target distribution before moving category
-        // counts into the train-table column-stats sidecar.
+        // LP targets are graph node IDs. Their exact category distribution is
+        // neither an encoder input nor a registered LP statistic, so keep the
+        // categorical contract empty while retaining scalar/HLL counts below.
         let is_categorical_target_for_dist = matches!(
             target_stype,
             "categorical" | "boolean" | "ID" | "multicategorical"
         );
-        let target_distribution_value = if is_categorical_target_for_dist {
+        let target_distribution_value = if is_link_prediction && is_categorical_target_for_dist {
+            json!({})
+        } else if is_categorical_target_for_dist {
             build_target_distribution_categorical(target_category_counts.as_ref())
         } else {
             build_target_distribution_numerical(&self.target_welford, &mut self.target_tdigest)
@@ -522,31 +526,35 @@ impl<U: UnitSystem> StatsMerger<U> {
             target_distribution: target_distribution_value,
         };
 
-        let parsed_train_table_col_stats = build_inline_col_stats(
-            &self.target_welford,
-            &mut self.target_tdigest,
-            &self.target_hll,
-            self.target_invalid_count,
-            &self.frequency_welford,
-            &mut self.frequency_tdigest,
-            &self.frequency_hll,
-            self.frequency_invalid_count,
-            self.include_true_count,
-            self.include_false_count,
-            num_total_rows,
-            "v1",
-            target_category_counts,
-            target_stype,
-            self.target_is_bool_dtype,
-            &self.entity_hll,
-            &self.entity_welford,
-            &mut self.entity_tdigest,
-            entity_category_counts,
-            &self.timestamp_welford,
-            &mut self.timestamp_tdigest,
-            &self.timestamp_hll,
-            self.sequence_feature_stats.clone(),
-        );
+        let parsed_train_table_col_stats = if is_link_prediction {
+            None
+        } else {
+            build_inline_col_stats(
+                &self.target_welford,
+                &mut self.target_tdigest,
+                &self.target_hll,
+                self.target_invalid_count,
+                &self.frequency_welford,
+                &mut self.frequency_tdigest,
+                &self.frequency_hll,
+                self.frequency_invalid_count,
+                self.include_true_count,
+                self.include_false_count,
+                num_total_rows,
+                "v1",
+                target_category_counts,
+                target_stype,
+                self.target_is_bool_dtype,
+                &self.entity_hll,
+                &self.entity_welford,
+                &mut self.entity_tdigest,
+                entity_category_counts,
+                &self.timestamp_welford,
+                &mut self.timestamp_tdigest,
+                &self.timestamp_hll,
+                self.sequence_feature_stats.clone(),
+            )
+        };
 
         TrainTableStatsPayload {
             version: 2,
@@ -2177,6 +2185,34 @@ mod tests {
         assert!((pa - 0.6).abs() < 1e-9);
         assert!((pb - 0.3).abs() < 1e-9);
         assert!((pc - 0.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_finalize_link_prediction_omits_exact_target_metadata() {
+        let mut chunk: ChunkStats<Seconds> = ChunkStats {
+            num_train_rows: 10,
+            num_links: 12,
+            ..Default::default()
+        };
+        let mut target_hll = HyperLogLog::new();
+        target_hll.observe_i64(10);
+        target_hll.observe_i64(20);
+        chunk.target_hll = Some(target_hll);
+
+        // Even if an older caller supplies exact counts, the LP artifact must
+        // not distribute or duplicate graph node IDs.
+        let mut counts = HashMap::new();
+        counts.insert("10".to_string(), 6);
+        counts.insert("20".to_string(), 4);
+
+        let payload = finalize_minimal(chunk, 10, true, Some(counts), "ID");
+
+        assert_eq!(payload.num_train_rows, 10);
+        assert_eq!(payload.num_links, Some(12));
+        assert_eq!(payload.num_targets, 2);
+        assert_eq!(payload.kumo_contract.target_distribution, json!({}));
+        assert!(payload.parsed_train_table_col_stats.is_none());
+        assert_eq!(payload.exact_stats.target.num_unique, Some(2));
     }
 
     #[test]
