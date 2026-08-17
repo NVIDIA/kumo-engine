@@ -21,6 +21,7 @@ use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{Context as ReadlineContext, Editor, Helper};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
@@ -39,6 +40,27 @@ enum Source {
 struct IngestReport {
     stats: IngestStatsReport,
     source: SourceMetadataReport,
+}
+
+#[derive(Debug, Deserialize)]
+struct StoredIngestReport {
+    #[serde(default = "legacy_ingest_report_version")]
+    version: u32,
+    stats: IngestStatsReport,
+    #[serde(default)]
+    source_config: Option<SourceConfigReference>,
+    #[serde(default)]
+    source: Option<SourceMetadataReport>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SourceConfigReference {
+    path: String,
+    sha256: String,
+}
+
+const fn legacy_ingest_report_version() -> u32 {
+    1
 }
 
 #[derive(Debug, Deserialize)]
@@ -921,9 +943,65 @@ fn read_ingest_report(root: &Path) -> Result<Option<IngestReport>> {
         return Ok(None);
     }
     let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-    let report: IngestReport =
+    let report: StoredIngestReport =
         serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
-    Ok(Some(report))
+    let StoredIngestReport {
+        version,
+        stats,
+        source_config,
+        source,
+    } = report;
+    let source = match version {
+        1 => {
+            if source_config.is_some() {
+                return Err(anyhow!(
+                    "version 1 ingest report must not contain a source config reference"
+                ));
+            }
+            source.ok_or_else(|| anyhow!("version 1 ingest report is missing source config"))?
+        }
+        2 => {
+            if source.is_some() {
+                return Err(anyhow!(
+                    "version 2 ingest report must not embed source config"
+                ));
+            }
+            let reference = source_config.ok_or_else(|| {
+                anyhow!("version 2 ingest report is missing source config reference")
+            })?;
+            if reference.path != "diskgraph_config.json" {
+                return Err(anyhow!(
+                    "ingest report source config path must be diskgraph_config.json"
+                ));
+            }
+            if !is_sha256_hex(&reference.sha256) {
+                return Err(anyhow!(
+                    "ingest report source config checksum is not lowercase SHA-256"
+                ));
+            }
+            let config_path = root.join(&reference.path);
+            let config_bytes = fs::read(&config_path)
+                .with_context(|| format!("read {}", config_path.display()))?;
+            let actual_sha256 = format!("{:x}", Sha256::digest(&config_bytes));
+            if actual_sha256 != reference.sha256 {
+                return Err(anyhow!(
+                    "{} checksum does not match ingest report",
+                    config_path.display()
+                ));
+            }
+            serde_json::from_slice(&config_bytes)
+                .with_context(|| format!("parse {}", config_path.display()))?
+        }
+        version => return Err(anyhow!("unsupported ingest report version {version}")),
+    };
+    Ok(Some(IngestReport { stats, source }))
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn read_build_report(root: &Path) -> Result<Option<BuildReport>> {
@@ -3067,4 +3145,114 @@ fn escape_ascii(bytes: &[u8]) -> String {
 
 fn parse_source(raw: &str) -> Result<Source> {
     Ok(Source::Local(PathBuf::from(raw)))
+}
+
+#[cfg(test)]
+mod ingest_report_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn stats() -> serde_json::Value {
+        json!({
+            "key_parse_failures": 0,
+            "key_lookup_failures": 0,
+            "key_failure_samples": [],
+            "key_failures_by_context": {},
+            "edge_counts": {},
+            "pk_duplicate_counts": {},
+            "pk_duplicate_total": 0,
+            "pk_duplicate_samples": {}
+        })
+    }
+
+    fn source() -> serde_json::Value {
+        json!({
+            "dataset_name": "report-reader-test",
+            "tables": [{
+                "name": "events",
+                "columns": [],
+                "source": {"type": "parquet", "paths": ["events.parquet"]}
+            }]
+        })
+    }
+
+    #[test]
+    fn reads_historical_report_with_embedded_source() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("ingest_stats.json"),
+            serde_json::to_vec(&json!({"stats": stats(), "source": source()})).unwrap(),
+        )
+        .unwrap();
+
+        let report = read_ingest_report(root.path()).unwrap().unwrap();
+        assert_eq!(report.source.dataset_name, "report-reader-test");
+        assert_eq!(report.source.tables.len(), 1);
+    }
+
+    #[test]
+    fn reads_compact_report_only_after_config_identity_validation() {
+        let root = tempfile::tempdir().unwrap();
+        let config = serde_json::to_vec_pretty(&source()).unwrap();
+        let checksum = format!("{:x}", Sha256::digest(&config));
+        fs::write(root.path().join("diskgraph_config.json"), &config).unwrap();
+        fs::write(
+            root.path().join("ingest_stats.json"),
+            serde_json::to_vec(&json!({
+                "version": 2,
+                "stats": stats(),
+                "source_config": {
+                    "path": "diskgraph_config.json",
+                    "sha256": checksum,
+                    "representative_data_path": "events.parquet"
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let report = read_ingest_report(root.path()).unwrap().unwrap();
+        assert_eq!(report.source.dataset_name, "report-reader-test");
+
+        fs::write(root.path().join("diskgraph_config.json"), b"{}").unwrap();
+        let error = read_ingest_report(root.path()).unwrap_err().to_string();
+        assert!(error.contains("checksum does not match"), "{error}");
+    }
+
+    #[test]
+    fn compact_report_rejects_missing_traversing_or_malformed_config_reference() {
+        let root = tempfile::tempdir().unwrap();
+        let report_path = root.path().join("ingest_stats.json");
+        let write_report = |path: &str, checksum: &str| {
+            fs::write(
+                &report_path,
+                serde_json::to_vec(&json!({
+                    "version": 2,
+                    "stats": stats(),
+                    "source_config": {"path": path, "sha256": checksum}
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        };
+
+        write_report("diskgraph_config.json", &"a".repeat(64));
+        assert!(read_ingest_report(root.path())
+            .unwrap_err()
+            .to_string()
+            .contains("read"));
+
+        write_report("../diskgraph_config.json", &"a".repeat(64));
+        assert!(read_ingest_report(root.path())
+            .unwrap_err()
+            .to_string()
+            .contains("path must be"));
+
+        write_report("diskgraph_config.json", &"A".repeat(64));
+        assert!(read_ingest_report(root.path())
+            .unwrap_err()
+            .to_string()
+            .contains("lowercase SHA-256"));
+    }
+
 }

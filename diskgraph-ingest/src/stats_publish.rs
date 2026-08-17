@@ -8,7 +8,6 @@ use chrono::{SecondsFormat, Utc};
 use futures::{stream, StreamExt};
 use serde::Serialize;
 
-use crate::graph_config::GraphConfig;
 use crate::io::{
     build_store_for_cloud_path, is_cloud_path, parse_az_url, parse_gs_url, parse_s3_url, Dest,
     OutputTarget,
@@ -465,22 +464,7 @@ fn build_run_summary(
 fn data_source_path_from_report(ingest_stats: &Option<Vec<u8>>) -> Option<String> {
     let bytes = ingest_stats.as_ref()?;
     let report: IngestReport = serde_json::from_slice(bytes).ok()?;
-    data_source_path_from_config(&report.source)
-}
-
-fn data_source_path_from_config(source: &GraphConfig) -> Option<String> {
-    let mut first_local: Option<String> = None;
-    for table in &source.tables {
-        for path in table.source_paths() {
-            if is_cloud_path(path) {
-                return Some(path.to_string());
-            }
-            if first_local.is_none() {
-                first_local = Some(path.to_string());
-            }
-        }
-    }
-    first_local
+    report.representative_data_path()
 }
 
 fn current_user() -> String {
@@ -734,4 +718,71 @@ fn object_path_join(prefix: &str, name: &str) -> object_store::path::Path {
     } else {
         object_store::path::Path::from(format!("{}/{}", prefix.trim_end_matches('/'), name))
     }
+}
+
+#[cfg(test)]
+mod ingest_report_source_tests {
+    use super::*;
+    use crate::stats::{IngestSourceConfig, INGEST_REPORT_VERSION};
+    use serde_json::json;
+
+    #[test]
+    fn compact_report_supplies_representative_source_without_graph_config() {
+        let bytes = serde_json::to_vec(&json!({
+            "version": INGEST_REPORT_VERSION,
+            "stats": IngestStats::default(),
+            "source_config": IngestSourceConfig {
+                path: crate::graph_config::DISKGRAPH_CONFIG_FILENAME.to_string(),
+                sha256: "a".repeat(64),
+                representative_data_path: Some("gs://bucket/events.parquet".to_string()),
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            data_source_path_from_report(&Some(bytes)).as_deref(),
+            Some("gs://bucket/events.parquet")
+        );
+    }
+
+    #[test]
+    fn historical_report_still_prefers_first_cloud_source() {
+        let bytes = serde_json::to_vec(&json!({
+            "stats": IngestStats::default(),
+            "source": {
+                "dataset_name": "historical",
+                "tables": [{
+                    "name": "events",
+                    "columns": [],
+                    "source": {
+                        "type": "parquet",
+                        "paths": ["/local/events.parquet", "az://bucket/events.parquet"]
+                    }
+                }]
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            data_source_path_from_report(&Some(bytes)).as_deref(),
+            Some("az://bucket/events.parquet")
+        );
+    }
+
+    #[test]
+    fn malformed_compact_report_falls_back_to_publish_config_source() {
+        let bytes = serde_json::to_vec(&json!({
+            "version": INGEST_REPORT_VERSION,
+            "stats": IngestStats::default(),
+            "source_config": {
+                "path": "../diskgraph_config.json",
+                "sha256": "not-a-checksum",
+                "representative_data_path": "s3://untrusted/path"
+            }
+        }))
+        .unwrap();
+
+        assert!(data_source_path_from_report(&Some(bytes)).is_none());
+    }
+
 }

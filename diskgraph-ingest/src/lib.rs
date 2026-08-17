@@ -62,7 +62,9 @@ pub use crate::stage_extension::{
     ingest_stage_extension_with_resolution, ingest_stage_extension_with_resolution_and_sidecars,
     ResolveSpec, StageExtensionResult, StageSidecarColumns, StageSpec,
 };
-pub use crate::stats::{IngestReport, IngestStats, KeyFailureCounts, KeyFailureState, PerfStats};
+pub use crate::stats::{
+    IngestReport, IngestSourceConfig, IngestStats, KeyFailureCounts, KeyFailureState, PerfStats,
+};
 use anyhow::{anyhow, ensure, Context, Result};
 use arrow_array::{make_array, Array, ArrayRef, RecordBatch};
 use arrow_data::transform::MutableArrayData;
@@ -105,6 +107,7 @@ use pprof::ProfilerGuard;
 use ptr_hash::DefaultPtrHash;
 use ptr_hash::PtrHashScratch;
 use serde_json::Value as JsonValue;
+use sha2::{Digest, Sha256};
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
@@ -1064,7 +1067,7 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     }
     ctx.set_peak_stage(Some(5));
     let finalize_start = std::time::Instant::now();
-    let index_metadata = ctx.finalize_metadata(index_metadata)?;
+    let (index_metadata, source_config) = ctx.finalize_metadata(index_metadata)?;
     // TT-NG timestamp grouping: merge the per-shard spills into per-stage
     // `bucket_index.bin` (final node-ids grouped by TIMESTAMP). Runs after
     // `finalize_metadata` (shard offsets / min-ids known) and BEFORE
@@ -1160,10 +1163,7 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     stats.ts_groupings = ts_groupings;
     stats.sample_weight_indexes = sample_weight_indexes;
     stats.binary_label_indexes = binary_label_indexes;
-    let report = IngestReport {
-        stats: stats.clone(),
-        source: ctx.source.clone(),
-    };
+    let report = IngestReport::compact(stats.clone(), source_config);
     ctx.target
         .write_bytes("ingest_stats.json", serde_json::to_vec_pretty(&report)?)?;
 
@@ -11395,7 +11395,10 @@ impl IngestContext {
         Ok(index_metadata)
     }
 
-    fn finalize_metadata(&self, mut metadata: DatasetMetadata) -> Result<DatasetMetadata> {
+    fn finalize_metadata(
+        &self,
+        mut metadata: DatasetMetadata,
+    ) -> Result<(DatasetMetadata, IngestSourceConfig)> {
         for node in &mut metadata.node_types {
             for shard in &mut node.shards {
                 shard.node_data_paths = None;
@@ -11415,9 +11418,17 @@ impl IngestContext {
         // semantic_type populated for every column by the context-build
         // stage (see populate_table_contexts at lib.rs:1998).
         let config_json = serde_json::to_vec_pretty(&self.source)?;
+        let config_sha256 = format!("{:x}", Sha256::digest(&config_json));
         self.target
             .write_bytes(graph_config::DISKGRAPH_CONFIG_FILENAME, config_json)?;
-        Ok(metadata)
+        Ok((
+            metadata,
+            IngestSourceConfig {
+                path: graph_config::DISKGRAPH_CONFIG_FILENAME.to_string(),
+                sha256: config_sha256,
+                representative_data_path: stats::representative_data_path(&self.source),
+            },
+        ))
     }
 
     fn build_stats(&self, metadata: &DatasetMetadata, perf: PerfStats) -> IngestStats {

@@ -20,6 +20,7 @@ memmap2 = "0.9"
 ptr_hash = { workspace = true, features = ["epserde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = "0.10"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 bincode = "1.3"

@@ -1693,6 +1693,7 @@ mod tests {
     use arrow_ipc::writer::StreamWriter;
     use arrow_schema::{DataType, Field, Schema};
     use lz4_flex::frame::FrameEncoder;
+    use sha2::Digest;
     use std::sync::Arc;
     use std::{net::TcpListener, thread};
 
@@ -2611,11 +2612,29 @@ for line in sys.stdin:
         .unwrap();
         assert_eq!(metadata.node_types[0].max_id, 2);
         assert_eq!(stats.total_nodes, 3);
-        let persisted =
-            std::fs::read_to_string(output.path().join("diskgraph_config.json")).unwrap();
+        let config_bytes = std::fs::read(output.path().join("diskgraph_config.json")).unwrap();
+        let persisted = String::from_utf8(config_bytes.clone()).unwrap();
         assert!(persisted.contains(r#""auth_profile": "standalone""#));
-        let report = std::fs::read_to_string(output.path().join("ingest_stats.json")).unwrap();
-        assert!(report.contains(r#""auth_profile": "standalone""#));
+        let report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(output.path().join("ingest_stats.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["version"], 2);
+        assert!(report.get("source").is_none());
+        assert_eq!(
+            report["source_config"]["path"],
+            crate::graph_config::DISKGRAPH_CONFIG_FILENAME
+        );
+        assert_eq!(
+            report["source_config"]["sha256"],
+            format!("{:x}", sha2::Sha256::digest(&config_bytes))
+        );
+        assert!(
+            !serde_json::to_string(&report)
+                .unwrap()
+                .contains("auth_profile"),
+            "ingest report must not duplicate the resolved graph config"
+        );
         std::env::remove_var("DISKGRAPH_DATABRICKS_HELPER_SCRIPT");
     }
 
