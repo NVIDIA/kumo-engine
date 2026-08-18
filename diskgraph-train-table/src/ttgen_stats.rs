@@ -20,6 +20,11 @@ impl SequenceFeatureStats {
         }
         if let Some(list) = array.as_any().downcast_ref::<ListArray>() {
             let len = list.value_length(row) as i64;
+            // Treat a zero-length list as a null embedding.
+            if len == 0 {
+                self.null_count += 1;
+                return;
+            }
             self.count += 1;
             self.min_len = Some(self.min_len.map_or(len, |current| current.min(len)));
             self.max_len = Some(self.max_len.map_or(len, |current| current.max(len)));
@@ -2307,7 +2312,7 @@ fn test_sequence_feature_stats_observation_and_merge() {
     let mut stats1 = SequenceFeatureStats::default();
     let mut stats2 = SequenceFeatureStats::default();
 
-    // Build first array: one list of length 2, one null, one list of length 4
+    // Build first array: one list of length 2, one null, one list of length 4, and one empty list.
     let array1 = {
         let mut b = ListBuilder::new(Float64Builder::new());
         b.values().append_value(1.0);
@@ -2319,15 +2324,17 @@ fn test_sequence_feature_stats_observation_and_merge() {
         b.values().append_value(5.0);
         b.values().append_value(6.0);
         b.append(true);
+        b.append(true); // empty list
         Arc::new(b.finish()) as Arc<dyn Array>
     };
 
     stats1.observe(array1.as_ref(), 0);
     stats1.observe(array1.as_ref(), 1);
+    stats1.observe(array1.as_ref(), 3);
     stats1.observe(array1.as_ref(), 2);
 
     assert_eq!(stats1.count, 2);
-    assert_eq!(stats1.null_count, 1);
+    assert_eq!(stats1.null_count, 2);
     assert_eq!(stats1.min_len, Some(2));
     assert_eq!(stats1.max_len, Some(4));
 
@@ -2357,7 +2364,7 @@ fn test_sequence_feature_stats_observation_and_merge() {
     stats1.merge(&stats2);
 
     assert_eq!(stats1.count, 4);
-    assert_eq!(stats1.null_count, 1);
+    assert_eq!(stats1.null_count, 2);
     assert_eq!(stats1.min_len, Some(1));
     assert_eq!(stats1.max_len, Some(5));
 }
