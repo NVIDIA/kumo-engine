@@ -216,6 +216,290 @@
         w.close().unwrap();
     }
 
+    fn t_write_stage_rows(path: &Path, rows: usize) {
+        use arrow_array::Int64Array;
+        use arrow_schema::{DataType, Field, Schema};
+
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let schema = StdArc2::new(Schema::new(vec![Field::new(
+            "ENTITY1",
+            DataType::Int64,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![StdArc2::new(Int64Array::from_iter_values(
+                (0..rows).map(|value| value as i64),
+            ))],
+        )
+        .unwrap();
+        t_write_parquet(path, &batch);
+    }
+
+    fn t_stage_info(
+        part: &str,
+        row_count: u64,
+        artifact_inventory: Option<
+            diskgraph_train_table::ttgen_executor::StageArtifactInventory,
+        >,
+    ) -> StageGenInfo {
+        StageGenInfo {
+            key: "train".to_string(),
+            table_name: "train_seeds".to_string(),
+            parts: vec![part.to_string()],
+            row_count,
+            seed_time: None,
+            artifact_inventory,
+        }
+    }
+
+    fn t_stage_inventory(
+        root: &Path,
+        part: &str,
+        row_count: u64,
+    ) -> diskgraph_train_table::ttgen_executor::StageArtifactInventory {
+        use diskgraph_train_table::ttgen_executor::{
+            StageArtifactInventory, StagePartArtifact,
+        };
+
+        StageArtifactInventory {
+            schema_version: STAGE_ARTIFACT_INVENTORY_SCHEMA_VERSION.to_string(),
+            parts: vec![StagePartArtifact {
+                path: part.to_string(),
+                size_bytes: std::fs::metadata(root.join(part)).unwrap().len(),
+                row_count,
+            }],
+        }
+    }
+
+    fn t_write_fixed_staging_artifacts(root: &Path) {
+        std::fs::create_dir_all(root).unwrap();
+        for name in [TT_INGEST_SPEC_FILENAME, "tt.parquet", "manifest.json"] {
+            std::fs::write(root.join(name), b"artifact").unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_staging_boundary_rejects_symlink_root_and_fixed_artifacts() {
+        use std::os::unix::fs::symlink;
+
+        let parent = tempfile::tempdir().unwrap();
+        let real_root = parent.path().join("real-root");
+        t_write_fixed_staging_artifacts(&real_root);
+        let linked_root = parent.path().join("linked-root");
+        symlink(&real_root, &linked_root).unwrap();
+        let error = validate_staging_artifact_types(&linked_root).unwrap_err();
+        assert!(error.to_string().contains("non-symlink directory"));
+
+        for artifact in [TT_INGEST_SPEC_FILENAME, "tt.parquet", "manifest.json"] {
+            let root = parent.path().join(format!("root-{artifact}"));
+            t_write_fixed_staging_artifacts(&root);
+            let external = parent.path().join(format!("external-{artifact}"));
+            std::fs::rename(root.join(artifact), &external).unwrap();
+            symlink(&external, root.join(artifact)).unwrap();
+            let error = validate_staging_artifact_types(&root).unwrap_err();
+            assert!(error.to_string().contains("symlink"));
+        }
+
+        let nonregular_root = parent.path().join("root-nonregular");
+        t_write_fixed_staging_artifacts(&nonregular_root);
+        std::fs::remove_file(nonregular_root.join("manifest.json")).unwrap();
+        std::fs::create_dir(nonregular_root.join("manifest.json")).unwrap();
+        let error = validate_staging_artifact_types(&nonregular_root).unwrap_err();
+        assert!(error.to_string().contains("regular file"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_resolve_ingest_stages_rejects_symlink_part_and_parent_escape() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let part = "train_seeds/part-00000.parquet";
+        let part_path = root.path().join(part);
+        t_write_stage_rows(&part_path, 1);
+        let inventory = t_stage_inventory(root.path(), part, 1);
+        let external = root.path().join("external-part.parquet");
+        std::fs::rename(&part_path, &external).unwrap();
+        symlink(&external, &part_path).unwrap();
+        let info = t_stage_info(part, 1, Some(inventory));
+        let error = resolve_ingest_stages(
+            root.path(),
+            &root.path().join("tt.parquet"),
+            "predict",
+            Some(std::slice::from_ref(&info)),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("symlink"));
+
+        std::fs::remove_file(&part_path).unwrap();
+        std::fs::remove_dir(root.path().join("train_seeds")).unwrap();
+        let external_dir = root.path().join("external-stage");
+        std::fs::create_dir(&external_dir).unwrap();
+        t_write_stage_rows(&external_dir.join("part-00000.parquet"), 1);
+        symlink(&external_dir, root.path().join("train_seeds")).unwrap();
+        let error = resolve_ingest_stages(
+            root.path(),
+            &root.path().join("tt.parquet"),
+            "predict",
+            Some(&[info]),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("symlink"));
+    }
+
+    #[test]
+    fn test_v2_inventory_is_additive_and_requires_fleet_wide_consumer_rollout() {
+        use diskgraph_train_table::ttgen_executor::{
+            StageArtifactInventory, StagePartArtifact,
+        };
+
+        #[allow(dead_code)]
+        #[derive(serde::Deserialize)]
+        struct LegacyStageInfo {
+            parts: Vec<String>,
+            row_count: u64,
+        }
+        #[allow(dead_code)]
+        #[derive(serde::Deserialize)]
+        struct LegacySpec {
+            schema_version: String,
+            split_stages: Option<Vec<LegacyStageInfo>>,
+        }
+
+        let mut spec = TtIngestSpec::from_plan("tt", &t_node_plan(true));
+        spec.split_stages = Some(vec![t_stage_info(
+            "train_seeds/part-00000.parquet",
+            1,
+            Some(StageArtifactInventory {
+                schema_version: STAGE_ARTIFACT_INVENTORY_SCHEMA_VERSION.to_string(),
+                parts: vec![StagePartArtifact {
+                    path: "train_seeds/part-00000.parquet".to_string(),
+                    size_bytes: 123,
+                    row_count: 1,
+                }],
+            }),
+        )]);
+        let encoded = serde_json::to_vec(&spec).unwrap();
+
+        // This mirrors the old serde shape: unknown additive inventory fields
+        // are silently dropped. A new producer must therefore not be enabled
+        // until every ingest consumer runs the v2 validator.
+        let legacy: LegacySpec = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(legacy.schema_version, TT_INGEST_SPEC_SCHEMA_VERSION);
+        let stage = &legacy.split_stages.unwrap()[0];
+        assert_eq!(stage.parts, ["train_seeds/part-00000.parquet"]);
+        assert_eq!(stage.row_count, 1);
+    }
+
+    #[test]
+    fn test_resolve_ingest_stages_rejects_missing_artifact_inventory() {
+        let root = tempfile::tempdir().unwrap();
+        let part = "train_seeds/part-00000.parquet";
+        t_write_stage_rows(&root.path().join(part), 1);
+        let info = t_stage_info(part, 2, None);
+
+        let error = resolve_ingest_stages(
+            root.path(),
+            &root.path().join("tt.parquet"),
+            "predict",
+            Some(&[info]),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("missing artifact inventory"));
+    }
+
+    #[test]
+    fn test_resolve_ingest_stages_enforces_v2_part_size() {
+        use diskgraph_train_table::ttgen_executor::{
+            StageArtifactInventory, StagePartArtifact,
+        };
+
+        let root = tempfile::tempdir().unwrap();
+        let part = "train_seeds/part-00000.parquet";
+        let path = root.path().join(part);
+        t_write_stage_rows(&path, 1);
+        let actual_size = std::fs::metadata(&path).unwrap().len();
+        let info = t_stage_info(
+            part,
+            1,
+            Some(StageArtifactInventory {
+                schema_version: STAGE_ARTIFACT_INVENTORY_SCHEMA_VERSION.to_string(),
+                parts: vec![StagePartArtifact {
+                    path: part.to_string(),
+                    size_bytes: actual_size + 1,
+                    row_count: 1,
+                }],
+            }),
+        );
+
+        let error = resolve_ingest_stages(
+            root.path(),
+            &root.path().join("tt.parquet"),
+            "predict",
+            Some(&[info]),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("size mismatch"));
+    }
+
+    #[test]
+    fn test_resolve_ingest_stages_enforces_v2_part_row_count() {
+        use diskgraph_train_table::ttgen_executor::{
+            StageArtifactInventory, StagePartArtifact,
+        };
+
+        let root = tempfile::tempdir().unwrap();
+        let part = "train_seeds/part-00000.parquet";
+        let path = root.path().join(part);
+        t_write_stage_rows(&path, 1);
+        let info = t_stage_info(
+            part,
+            1,
+            Some(StageArtifactInventory {
+                schema_version: STAGE_ARTIFACT_INVENTORY_SCHEMA_VERSION.to_string(),
+                parts: vec![StagePartArtifact {
+                    path: part.to_string(),
+                    size_bytes: std::fs::metadata(&path).unwrap().len(),
+                    row_count: 2,
+                }],
+            }),
+        );
+
+        let error = resolve_ingest_stages(
+            root.path(),
+            &root.path().join("tt.parquet"),
+            "predict",
+            Some(&[info]),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("row_count mismatch"));
+    }
+
+    #[test]
+    fn test_ingest_spec_v2_requires_stage_artifact_inventory() {
+        let mut spec = TtIngestSpec::from_plan("tt", &t_node_plan(true));
+        spec.split_stages = Some(vec![t_stage_info(
+            "train_seeds/part-00000.parquet",
+            1,
+            None,
+        )]);
+
+        let error = validate_ingest_spec(&spec).unwrap_err();
+        assert!(error.to_string().contains("missing its artifact inventory"));
+        spec.schema_version = "diskgraph.tt_ingest_spec.v1".to_string();
+        let error = validate_ingest_spec(&spec).unwrap_err();
+        assert!(error.to_string().contains("unsupported tt_ingest_spec"));
+
+        let missing_version = serde_json::json!({
+            "tt_id": "tt",
+            "entity_table": "users",
+            "split_stages": null,
+        });
+        assert!(serde_json::from_value::<TtIngestSpec>(missing_version).is_err());
+    }
+
     /// Build a tiny `users`/`orders` graph (5 users, 2 orders each) so the
     /// `count_orders` op below resolves and `ENTITY1` values map to real
     /// `users` node-ids during resolution-mode ingest. Returns the index dir.

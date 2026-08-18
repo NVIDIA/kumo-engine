@@ -24,8 +24,9 @@ use parquet::arrow::ArrowWriter;
 use rayon::prelude::*;
 
 use crate::manifest::{
-    sha256_file, write_manifest, write_stats_artifact, ArtifactRef, ManifestChecksums, TTManifest,
-    SPLIT_STATS_FORMAT, STATS_FORMAT, TT_PARQUET_FORMAT,
+    sha256_file, write_manifest, write_stats_artifact, ArtifactRef, ManifestChecksums,
+    TrainTableArtifactRef, TTManifest, SPLIT_STATS_FORMAT, STATS_FORMAT, TT_MANIFEST_VERSION,
+    TT_PARQUET_FORMAT,
 };
 use crate::pass_b::{
     run_pass_b_per_anchor, run_pass_b_per_link, write_bounded_parquet_batch, StagePartsOut,
@@ -101,18 +102,65 @@ fn drain_required_target_category_counts(
     }))
 }
 
+pub const STAGE_ARTIFACT_INVENTORY_SCHEMA_VERSION: &str =
+    "diskgraph.tt_stage_artifact_inventory.v1";
+
+fn stage_part_artifact(
+    output_dir: &Path,
+    relative_path: &str,
+) -> TTGenResult<StagePartArtifact> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+    let path = output_dir.join(relative_path);
+    let size_bytes = std::fs::metadata(&path)?.len();
+    let file = File::open(&path)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+    let row_count = u64::try_from(builder.metadata().file_metadata().num_rows()).map_err(|_| {
+        TTGenError::SystemError(format!(
+            "stage parquet {} has a negative footer row count",
+            path.display()
+        ))
+    })?;
+    Ok(StagePartArtifact {
+        path: relative_path.to_string(),
+        size_bytes,
+        row_count,
+    })
+}
+
 /// Build `[StageGenInfo; 3]` for train/val/test from the fused pass-B output.
-fn stage_gen_infos_from_parts(parts: &[StagePartsOut; 3]) -> Vec<StageGenInfo> {
+fn stage_gen_infos_from_parts(
+    parts: &[StagePartsOut; 3],
+    output_dir: &Path,
+) -> TTGenResult<Vec<StageGenInfo>> {
     const KEYS: [&str; 3] = ["train", "val", "test"];
     parts
         .iter()
         .enumerate()
-        .map(|(i, p)| StageGenInfo {
-            key: KEYS[i].to_string(),
-            table_name: STAGE_TABLE_NAMES[i].to_string(),
-            parts: p.parts.clone(),
-            row_count: p.row_count,
-            seed_time: p.seed_time,
+        .map(|(i, p)| {
+            let artifacts = p
+                .parts
+                .iter()
+                .map(|part| stage_part_artifact(output_dir, part))
+                .collect::<TTGenResult<Vec<_>>>()?;
+            let artifact_rows = artifacts.iter().map(|part| part.row_count).sum::<u64>();
+            if artifact_rows != p.row_count {
+                return Err(TTGenError::SystemError(format!(
+                    "stage {} wrote {artifact_rows} parquet rows but reported {}",
+                    KEYS[i], p.row_count
+                )));
+            }
+            Ok(StageGenInfo {
+                key: KEYS[i].to_string(),
+                table_name: STAGE_TABLE_NAMES[i].to_string(),
+                parts: p.parts.clone(),
+                row_count: p.row_count,
+                seed_time: p.seed_time,
+                artifact_inventory: Some(StageArtifactInventory {
+                    schema_version: STAGE_ARTIFACT_INVENTORY_SCHEMA_VERSION.to_string(),
+                    parts: artifacts,
+                }),
+            })
         })
         .collect()
 }
@@ -170,6 +218,19 @@ enum PassBMode {
 /// demux. `seed_time` is the `(min, max)` of the stage's TIMESTAMP column in
 /// int64-ns (None when the stage carried no finite timestamp).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StagePartArtifact {
+    pub path: String,
+    pub size_bytes: u64,
+    pub row_count: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StageArtifactInventory {
+    pub schema_version: String,
+    pub parts: Vec<StagePartArtifact>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StageGenInfo {
     pub key: String,
     pub table_name: String,
@@ -180,6 +241,10 @@ pub struct StageGenInfo {
     pub parts: Vec<String>,
     pub row_count: u64,
     pub seed_time: Option<[i64; 2]>,
+    /// Exact bounded-metadata contract for the stage parquets. Absent only on
+    /// v1 ingest specs produced before this field existed.
+    #[serde(default)]
+    pub artifact_inventory: Option<StageArtifactInventory>,
 }
 
 /// Output of a single TT-gen pass: tt.parquet, the per-stage seed parquets
@@ -1011,8 +1076,10 @@ where
         None
     };
 
-    let stage_gen_infos: Option<Vec<StageGenInfo>> =
-        stage_parts.as_ref().map(stage_gen_infos_from_parts);
+    let stage_gen_infos: Option<Vec<StageGenInfo>> = stage_parts
+        .as_ref()
+        .map(|parts| stage_gen_infos_from_parts(parts, output_dir))
+        .transpose()?;
 
     // Stats sidecar (kumo `tt_stats` envelope).
     let stats_path = write_stats_artifact(output_dir, &finalized_stats)?;
@@ -1023,25 +1090,39 @@ where
         "pquery"
     };
 
-    let train_table_sha = sha256_file(&tt_parquet_path)?;
+    // The parquet writer and any in-place regroup/drop pass have completed.
+    // Freeze the exact closed-file size without an additional full-file read.
+    let train_table_size_bytes = std::fs::metadata(&tt_parquet_path)?.len();
     let stats_sha = sha256_file(&stats_path)?;
 
     // TT-NG carries stage row-counts + seed-times per-stage in the ingest-output
     // manifest (not split.bin/arange.bin), so the legacy flat-manifest split
     // fields are left `None` (struct retained for the custom-TT/stats path).
     let mut manifest = TTManifest {
-        version: 1,
+        version: TT_MANIFEST_VERSION,
         row_count: total_rows,
         source_mode: source_mode_str.to_string(),
         split_mode: "none".to_string(),
         split_kind: split_kind.clone(),
         stage_counts: None,
-        train_table: ArtifactRef::new(
-            tt_parquet_path.to_string_lossy().into_owned(),
+        train_table: TrainTableArtifactRef::new(
+            tt_parquet_path
+                .file_name()
+                .expect("tt.parquet path has a filename")
+                .to_string_lossy()
+                .into_owned(),
             TT_PARQUET_FORMAT,
+            train_table_size_bytes,
         ),
         split: None,
-        stats: ArtifactRef::new(stats_path.to_string_lossy().into_owned(), STATS_FORMAT),
+        stats: ArtifactRef::new(
+            stats_path
+                .file_name()
+                .expect("stats artifact path has a filename")
+                .to_string_lossy()
+                .into_owned(),
+            STATS_FORMAT,
+        ),
         split_stats: None,
         stage_seed_times: None,
         train_table_col_stats: None,
@@ -1053,7 +1134,6 @@ where
         // Weight rides as the reserved `WEIGHT` column now; sidecar field kept None.
         weight_sidecar: None,
         checksums: ManifestChecksums {
-            train_table_sha256: train_table_sha,
             split_sha256: String::new(),
             stats_sha256: stats_sha,
             split_stats_sha256: None,
@@ -1071,7 +1151,10 @@ where
             target_stype_str.as_str(),
         )? {
             manifest.split_stats = Some(ArtifactRef::new(
-                path.to_string_lossy().into_owned(),
+                path.file_name()
+                    .expect("split-stats artifact path has a filename")
+                    .to_string_lossy()
+                    .into_owned(),
                 SPLIT_STATS_FORMAT,
             ));
             manifest.checksums.split_stats_sha256 = Some(sha);
@@ -3091,19 +3174,43 @@ mod tests {
 
     #[test]
     fn stage_manifest_preserves_exact_nineteen_part_lists() {
+        use arrow_array::{Int64Array, RecordBatch};
+        use arrow_schema::{Field, Schema};
+
+        let output_dir = tempfile::tempdir().unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            DataType::Int64,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int64Array::from(vec![1]))],
+        )
+        .unwrap();
         let parts = std::array::from_fn(|stage| {
             let table = STAGE_TABLE_NAMES[stage];
+            let table_dir = output_dir.path().join(table);
+            std::fs::create_dir_all(&table_dir).unwrap();
+            let part_paths = (0..19)
+                .map(|part| {
+                    let relative_path = format!("{table}/part-{part:05}.parquet");
+                    let file = File::create(output_dir.path().join(&relative_path)).unwrap();
+                    let mut writer = ArrowWriter::try_new(file, schema.clone(), None).unwrap();
+                    writer.write(&batch).unwrap();
+                    writer.close().unwrap();
+                    relative_path
+                })
+                .collect();
             StagePartsOut {
-                parts: (0..19)
-                    .map(|part| format!("{table}/part-{part:05}.parquet"))
-                    .collect(),
+                parts: part_paths,
                 row_count: 19,
                 seed_time: Some([stage as i64, stage as i64 + 18]),
                 ..StagePartsOut::default()
             }
         });
 
-        let infos = stage_gen_infos_from_parts(&parts);
+        let infos = stage_gen_infos_from_parts(&parts, output_dir.path()).unwrap();
         assert_eq!(infos.len(), 3);
         for (stage, info) in infos.iter().enumerate() {
             assert_eq!(info.parts, parts[stage].parts);
@@ -3111,6 +3218,9 @@ mod tests {
             assert_eq!(info.table_name, STAGE_TABLE_NAMES[stage]);
             assert_eq!(info.row_count, 19);
             assert_eq!(info.seed_time, Some([stage as i64, stage as i64 + 18]));
+            let inventory = info.artifact_inventory.as_ref().unwrap();
+            assert_eq!(inventory.parts.len(), 19);
+            assert_eq!(inventory.parts.iter().map(|part| part.row_count).sum::<u64>(), 19);
         }
 
         let encoded = serde_json::to_value(&infos).unwrap();

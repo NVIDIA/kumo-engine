@@ -38,7 +38,10 @@ pub fn write_all(
 ) -> TTGenResult<()> {
     if let Some((path, sha)) = write_train_table_col_stats_artifact(payload, output_dir)? {
         manifest.train_table_col_stats = Some(ArtifactRef::new(
-            path.to_string_lossy().into_owned(),
+            path.file_name()
+                .expect("train-table col-stats path has a filename")
+                .to_string_lossy()
+                .into_owned(),
             TRAIN_TABLE_COL_STATS_FORMAT,
         ));
         manifest.checksums.train_table_col_stats_sha256 = Some(sha);
@@ -52,12 +55,10 @@ pub fn write_all(
 /// the optional fields. Public so tests can construct manifests cleanly.
 #[allow(dead_code)]
 pub fn empty_checksums(
-    train_table_sha256: String,
     split_sha256: String,
     stats_sha256: String,
 ) -> ManifestChecksums {
     ManifestChecksums {
-        train_table_sha256,
         split_sha256,
         stats_sha256,
         split_stats_sha256: None,
@@ -199,7 +200,7 @@ mod tests {
             })
         });
         TrainTableStatsPayload {
-            version: 1,
+            version: 2,
             num_total_rows: num_train_rows,
             num_train_rows,
             num_entities,
@@ -219,13 +220,17 @@ mod tests {
 
     fn baseline_manifest() -> TTManifest {
         TTManifest {
-            version: 1,
+            version: 2,
             row_count: 1623,
             source_mode: "pquery".into(),
             split_mode: "compute".into(),
             split_kind: Some("TimeRangeSplit".into()),
             stage_counts: None,
-            train_table: ArtifactRef::new("tt.parquet", TT_PARQUET_FORMAT),
+            train_table: crate::manifest::TrainTableArtifactRef::new(
+                "tt.parquet",
+                TT_PARQUET_FORMAT,
+                1234,
+            ),
             split: Some(ArtifactRef::new("split.bin", SPLIT_FORMAT)),
             stats: ArtifactRef::new("stats.json", STATS_FORMAT),
             split_stats: None,
@@ -237,7 +242,6 @@ mod tests {
             }),
             weight_sidecar: None,
             checksums: ManifestChecksums {
-                train_table_sha256: "a".into(),
                 split_sha256: "b".into(),
                 stats_sha256: "c".into(),
                 ..Default::default()

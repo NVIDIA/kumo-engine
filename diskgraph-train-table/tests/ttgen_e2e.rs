@@ -38,6 +38,7 @@ use diskgraph_train_table::manifest::{
 };
 use diskgraph_train_table::ttgen_executor::{
     execute_tt_pass, execute_tt_pass_with_source, CustomTtSource, TTPassOutput,
+    STAGE_ARTIFACT_INVENTORY_SCHEMA_VERSION,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
@@ -619,8 +620,17 @@ fn assert_stage_infos_consistent(output: &TTPassOutput, output_dir: &Path) {
             "stage `{}` must record at least one part",
             s.key
         );
+        let inventory = s
+            .artifact_inventory
+            .as_ref()
+            .expect("new stage output must carry an artifact inventory");
+        assert_eq!(
+            inventory.schema_version,
+            STAGE_ARTIFACT_INVENTORY_SCHEMA_VERSION
+        );
+        assert_eq!(inventory.parts.len(), s.parts.len());
         let mut part_sum = 0u64;
-        for part in &s.parts {
+        for (part_index, part) in s.parts.iter().enumerate() {
             let seed_path = output_dir.join(part);
             assert!(
                 seed_path.exists(),
@@ -628,7 +638,12 @@ fn assert_stage_infos_consistent(output: &TTPassOutput, output_dir: &Path) {
                 s.key,
                 seed_path.display()
             );
-            part_sum += parquet_row_count(&seed_path);
+            let rows = parquet_row_count(&seed_path);
+            let artifact = &inventory.parts[part_index];
+            assert_eq!(artifact.path, *part);
+            assert_eq!(artifact.size_bytes, fs::metadata(&seed_path).unwrap().len());
+            assert_eq!(artifact.row_count, rows);
+            part_sum += rows;
         }
         assert_eq!(
             part_sum, s.row_count,
@@ -691,7 +706,7 @@ fn e2e_pq_time_range_split_full_pipeline() {
     assert_eq!(manifest.split_kind.as_deref(), Some("TimeRangeSplit"));
     assert!(manifest.split.is_none());
     assert!(manifest.stage_counts.is_none());
-    assert_artifact_paths_exist(&manifest);
+    assert_artifact_paths_exist(&manifest, out_dir.path());
 
     // 6. stage row counts sum to row_count (TimeRangeSplit over a range that
     //    covers all anchors → no unused rows here).
@@ -817,7 +832,7 @@ fn e2e_custom_tt_passthrough_full_pipeline() {
     assert_eq!(manifest.source_mode, "custom_tt");
     assert_eq!(manifest.split_mode, "none");
     assert_eq!(manifest.row_count, output.rows_written);
-    assert_artifact_paths_exist(&manifest);
+    assert_artifact_paths_exist(&manifest, out_dir.path());
 }
 
 // ─── Test 4: LP+array+RandomLinkSplit regroup pipeline ──────────────────────
@@ -1074,15 +1089,22 @@ fn e2e_manifest_kumo_reader_contract() {
 
     // Required fields: version, row_count, source_mode, train_table, stats.
     let manifest = read_manifest(&output.manifest_path).unwrap();
-    assert_eq!(manifest.version, 1);
+    assert_eq!(manifest.version, 2);
     assert_eq!(manifest.row_count, output.rows_written);
     assert_eq!(manifest.source_mode, "pquery");
-    // `train_table.path` exists on disk.
-    assert!(Path::new(&manifest.train_table.path).exists());
+    // The train-table reference is bundle-relative and records the exact
+    // closed-file size without requiring a second content hash pass.
+    let train_table_path = out_dir.path().join(&manifest.train_table.path);
+    assert!(train_table_path.exists());
+    assert_eq!(
+        manifest.train_table.size_bytes,
+        std::fs::metadata(&train_table_path).unwrap().len()
+    );
     // `train_table.format` value is exactly "tt_parquet_v1".
     assert_eq!(manifest.train_table.format, TT_PARQUET_FORMAT);
     // stats artifact ref.
-    assert!(Path::new(&manifest.stats.path).exists());
+    let stats_path = out_dir.path().join(&manifest.stats.path);
+    assert!(stats_path.exists());
     assert_eq!(manifest.stats.format, STATS_FORMAT);
     // Flat-manifest split / arange fields stay absent (split lives in
     // stage_gen_infos, asserted below); split_sha256 empty.
@@ -1095,21 +1117,13 @@ fn e2e_manifest_kumo_reader_contract() {
     // The split itself is reflected in the per-stage seed parquets.
     assert_stage_infos_consistent(&output, out_dir.path());
 
-    // Checksums: every referenced file's SHA-256 must agree with the
-    // current on-disk content. This catches the "manifest written but
-    // sidecar mutated after" failure mode.
-    let train_table_sha = sha256_file(Path::new(&manifest.train_table.path)).unwrap();
-    assert_eq!(train_table_sha, manifest.checksums.train_table_sha256);
-    let stats_sha = sha256_file(Path::new(&manifest.stats.path)).unwrap();
+    // Bounded sidecar checksums remain content-validated. The large parquet
+    // intentionally has no default SHA field in manifest v2.
+    let stats_sha = sha256_file(&stats_path).unwrap();
     assert_eq!(stats_sha, manifest.checksums.stats_sha256);
-    // Every present checksum is a valid 64-char hex string.
-    for sha in [
-        &manifest.checksums.train_table_sha256,
-        &manifest.checksums.stats_sha256,
-    ] {
-        assert_eq!(sha.len(), 64, "sha is {} chars: {sha}", sha.len());
-        assert!(sha.chars().all(|c| c.is_ascii_hexdigit()));
-    }
+    let sha = &manifest.checksums.stats_sha256;
+    assert_eq!(sha.len(), 64, "sha is {} chars: {sha}", sha.len());
+    assert!(sha.chars().all(|c| c.is_ascii_hexdigit()));
 
     // Round-trip the parsed manifest back to JSON and re-parse — must be
     // bit-equal.
@@ -1594,7 +1608,7 @@ fn e2e_multi_entity_multi_target_pipeline() {
     assert_eq!(manifest.source_mode, "custom_tt");
     assert_eq!(manifest.split_mode, "none");
     assert_eq!(manifest.row_count, output.rows_written);
-    assert_artifact_paths_exist(&manifest);
+    assert_artifact_paths_exist(&manifest, out_dir.path());
 
     // No split spec → no stage_gen_infos and no per-stage seed parquets.
     assert!(output.stage_gen_infos.is_none());
@@ -2139,7 +2153,7 @@ fn e2e_split_stats_emitted_when_split_computed() {
     let manifest = read_manifest(&output.manifest_path).unwrap();
     let split_ref = manifest.split_stats.as_ref().expect("split_stats set");
     assert_eq!(split_ref.format, SPLIT_STATS_FORMAT);
-    assert_eq!(split_ref.path, split_stats_path.to_string_lossy().as_ref());
+    assert_eq!(out_dir.path().join(&split_ref.path), split_stats_path);
     let actual = sha256_file(&split_stats_path).unwrap();
     assert_eq!(manifest.checksums.split_stats_sha256.as_ref(), Some(&actual));
 }
@@ -2360,10 +2374,10 @@ fn read_node_rows(path: &Path) -> Vec<(i64, i64, f64)> {
 
 /// Asserts every `ArtifactRef` / `SidecarRef` path in the manifest
 /// exists on disk.
-fn assert_artifact_paths_exist(m: &TTManifest) {
+fn assert_artifact_paths_exist(m: &TTManifest, bundle_dir: &Path) {
     let check = |label: &str, p: &str| {
         assert!(
-            Path::new(p).exists(),
+            bundle_dir.join(p).exists(),
             "manifest.{label} path does not exist: {p}"
         );
     };

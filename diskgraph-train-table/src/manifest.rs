@@ -11,18 +11,18 @@
 //!
 //! ```json
 //! {
-//!   "version": 1,
+//!   "version": 2,
 //!   "row_count": 1234,
 //!   "source_mode": "pquery",
 //!   "split_mode": "compute",
-//!   "train_table":           {"path": "...", "format": "tt_parquet_v1"},
+//!   "train_table":           {"path": "tt.parquet", "format": "tt_parquet_v1", "size_bytes": 4567},
 //!   "split":                 {"path": "...", "format": "split_assignment_row_stage_bin"},
 //!   "stats":                 {"path": "...", "format": "tt_stats_json"},
 //!   "split_stats":           {"path": "...", "format": "tt_split_stats_json"} | null,
 //!   "train_table_col_stats": {"path": "...", "format": "tt_train_table_col_stats_json"} | null,
 //!   "train_table_edges":     {...edge bundle JSON...} | null,
 //!   "arange_sidecar":        {"path": "..."} | null,
-//!   "checksums": {"train_table_sha256": "...", ...}
+//!   "checksums": {"stats_sha256": "...", ...}
 //! }
 //! ```
 //!
@@ -37,7 +37,7 @@
 //!
 //! ## Schema stability
 //!
-//! `version = 1` (integer, kumo's reader rejects mismatch). Breaking
+//! `version = 2` (integer, kumo's reader rejects mismatch). Breaking
 //! changes bump this.
 
 use std::collections::HashMap;
@@ -49,6 +49,8 @@ use sha2::{Digest, Sha256};
 
 use crate::errors::{TTGenError, TTGenResult};
 use crate::ttgen_stats::TrainTableStatsPayload;
+
+pub const TT_MANIFEST_VERSION: u32 = 2;
 
 // ─── Format identifiers (kumo's reader checks these strings exactly) ────────
 
@@ -74,6 +76,30 @@ pub struct ArtifactRef {
     pub format: String,
 }
 
+/// Reference to the large train-table parquet. Unlike bounded sidecars, this
+/// artifact is validated from file metadata instead of by re-reading all
+/// bytes after the writer has closed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TrainTableArtifactRef {
+    pub path: String,
+    pub format: String,
+    pub size_bytes: u64,
+}
+
+impl TrainTableArtifactRef {
+    pub fn new(
+        path: impl Into<String>,
+        format: impl Into<String>,
+        size_bytes: u64,
+    ) -> Self {
+        Self {
+            path: path.into(),
+            format: format.into(),
+            size_bytes,
+        }
+    }
+}
+
 impl ArtifactRef {
     pub fn new(path: impl Into<String>, format: impl Into<String>) -> Self {
         Self {
@@ -91,12 +117,11 @@ pub struct SidecarRef {
     pub path: String,
 }
 
-/// Checksums section. Kumo's reader requires `train_table_sha256`,
-/// `split_sha256`, `stats_sha256`; the optional ones gate on whether
-/// the corresponding artifact section is present.
+/// Checksums for bounded sidecars. The potentially very large train-table
+/// parquet is intentionally absent: manifest v2 validates its closed-file
+/// size and parquet metadata without a second full-file read.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct ManifestChecksums {
-    pub train_table_sha256: String,
     pub split_sha256: String,
     pub stats_sha256: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -117,7 +142,7 @@ pub struct ManifestChecksums {
 /// `path` + `format` objects).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TTManifest {
-    /// Schema version. `1` (integer) — kumo's reader rejects mismatch.
+    /// Schema version. `2` (integer) — kumo's reader rejects mismatch.
     pub version: u32,
     /// Total rows in `tt.parquet` (after regroup, if applicable).
     pub row_count: u64,
@@ -137,7 +162,7 @@ pub struct TTManifest {
     pub stage_counts: Option<HashMap<String, u64>>,
 
     /// Reference to `tt.parquet` (always present).
-    pub train_table: ArtifactRef,
+    pub train_table: TrainTableArtifactRef,
     /// Reference to `split.bin` (header-prefixed). `None` when no split
     /// was emitted (e.g. `SplitMode::None`).
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -185,6 +210,12 @@ pub struct TTManifest {
 /// Returns the absolute path on success. Single-threaded; no sync
 /// primitives.
 pub fn write_manifest(output_dir: &Path, manifest: &TTManifest) -> TTGenResult<PathBuf> {
+    if manifest.version != TT_MANIFEST_VERSION {
+        return Err(TTGenError::SystemError(format!(
+            "manifest version mismatch: expected={} got={}",
+            TT_MANIFEST_VERSION, manifest.version
+        )));
+    }
     let path = output_dir.join("manifest.json");
     let json = serde_json::to_string_pretty(manifest)
         .map_err(|e| TTGenError::SystemError(format!("manifest serialize: {e}")))?;
@@ -196,8 +227,15 @@ pub fn write_manifest(output_dir: &Path, manifest: &TTManifest) -> TTGenResult<P
 /// downstream consumers.
 pub fn read_manifest(path: &Path) -> TTGenResult<TTManifest> {
     let s = std::fs::read_to_string(path)?;
-    serde_json::from_str::<TTManifest>(&s)
-        .map_err(|e| TTGenError::SystemError(format!("manifest deserialize: {e}")))
+    let manifest = serde_json::from_str::<TTManifest>(&s)
+        .map_err(|e| TTGenError::SystemError(format!("manifest deserialize: {e}")))?;
+    if manifest.version != TT_MANIFEST_VERSION {
+        return Err(TTGenError::SystemError(format!(
+            "manifest version mismatch: expected={} got={}",
+            TT_MANIFEST_VERSION, manifest.version
+        )));
+    }
+    Ok(manifest)
 }
 
 // ─── Stats artifact (`stats.json`) ──────────────────────────────────────────
@@ -341,7 +379,7 @@ mod tests {
 
     fn dummy_stats() -> TrainTableStatsPayload {
         TrainTableStatsPayload {
-            version: 1,
+            version: 2,
             num_total_rows: 10,
             num_train_rows: 7,
             num_entities: 3,
@@ -369,13 +407,17 @@ mod tests {
             m
         };
         TTManifest {
-            version: 1,
+            version: 2,
             row_count: 10,
             source_mode: "pquery".into(),
             split_mode: "compute".into(),
             split_kind: Some("TimeRangeSplit".into()),
             stage_counts: Some(stage_counts),
-            train_table: ArtifactRef::new("tt.parquet", TT_PARQUET_FORMAT),
+            train_table: TrainTableArtifactRef::new(
+                "tt.parquet",
+                TT_PARQUET_FORMAT,
+                1234,
+            ),
             split: Some(ArtifactRef::new("split.bin", SPLIT_FORMAT)),
             stats: ArtifactRef::new("stats.json", STATS_FORMAT),
             split_stats: None,
@@ -387,7 +429,6 @@ mod tests {
             }),
             weight_sidecar: None,
             checksums: ManifestChecksums {
-                train_table_sha256: "a".into(),
                 split_sha256: "b".into(),
                 stats_sha256: "c".into(),
                 ..Default::default()
@@ -405,16 +446,35 @@ mod tests {
     }
 
     #[test]
+    fn test_manifest_v1_is_rejected_without_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut m = full_manifest_with_split();
+        m.version = 1;
+        let error = write_manifest(dir.path(), &m).unwrap_err();
+        assert!(error.to_string().contains("expected=2 got=1"));
+
+        let path = dir.path().join("manifest.json");
+        let raw = serde_json::to_string(&m).unwrap();
+        std::fs::write(&path, raw).unwrap();
+        let error = read_manifest(&path).unwrap_err();
+        assert!(error.to_string().contains("expected=2 got=1"));
+    }
+
+    #[test]
     fn test_manifest_optional_fields_elided() {
         let dir = tempfile::tempdir().unwrap();
         let m = TTManifest {
-            version: 1,
+            version: 2,
             row_count: 0,
             source_mode: "custom_tt".into(),
             split_mode: "none".into(),
             split_kind: None,
             stage_counts: None,
-            train_table: ArtifactRef::new("tt.parquet", TT_PARQUET_FORMAT),
+            train_table: TrainTableArtifactRef::new(
+                "tt.parquet",
+                TT_PARQUET_FORMAT,
+                4567,
+            ),
             split: None,
             stats: ArtifactRef::new("stats.json", STATS_FORMAT),
             split_stats: None,
@@ -424,7 +484,6 @@ mod tests {
             arange_sidecar: None,
             weight_sidecar: None,
             checksums: ManifestChecksums {
-                train_table_sha256: "x".into(),
                 split_sha256: "".into(),
                 stats_sha256: "y".into(),
                 ..Default::default()
@@ -470,12 +529,13 @@ mod tests {
                 obj.keys().collect::<Vec<_>>()
             );
         }
-        // version must be integer 1 (kumo rejects any other shape).
-        assert_eq!(obj["version"].as_u64(), Some(1));
-        // train_table must have path + format.
+        // version must be integer 2 (kumo rejects any other shape).
+        assert_eq!(obj["version"].as_u64(), Some(2));
+        // train_table must have path + format + exact closed-file size.
         let tt = obj["train_table"].as_object().unwrap();
         assert!(tt.contains_key("path"));
         assert_eq!(tt["format"].as_str(), Some(TT_PARQUET_FORMAT));
+        assert_eq!(tt["size_bytes"].as_u64(), Some(1234));
         // split must have path + format=split_assignment_row_stage_bin.
         let sp = obj["split"].as_object().unwrap();
         assert!(sp.contains_key("path"));
@@ -484,9 +544,10 @@ mod tests {
         let st = obj["stats"].as_object().unwrap();
         assert!(st.contains_key("path"));
         assert_eq!(st["format"].as_str(), Some(STATS_FORMAT));
-        // checksums must have the three required SHA fields.
+        // Checksums remain required only for bounded sidecars.
         let cs = obj["checksums"].as_object().unwrap();
-        for key in ["train_table_sha256", "split_sha256", "stats_sha256"] {
+        assert!(!cs.contains_key("train_table_sha256"));
+        for key in ["split_sha256", "stats_sha256"] {
             assert!(cs.contains_key(key), "checksums missing {key}");
         }
     }

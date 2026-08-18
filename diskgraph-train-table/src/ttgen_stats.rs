@@ -2368,3 +2368,118 @@ fn test_sequence_feature_stats_observation_and_merge() {
     assert_eq!(stats1.min_len, Some(1));
     assert_eq!(stats1.max_len, Some(5));
 }
+
+#[cfg(test)]
+mod sequence_feature_emission_tests {
+    use super::*;
+    use arrow_array::builder::{Float64Builder, ListBuilder};
+    use diskgraph_core::time::Seconds;
+    use std::sync::Arc;
+
+    fn observe(rows: &[Option<&[f64]>]) -> SequenceFeatureStats {
+        let mut builder = ListBuilder::new(Float64Builder::new());
+        for row in rows {
+            match row {
+                Some(values) => {
+                    for value in *values {
+                        builder.values().append_value(*value);
+                    }
+                    builder.append(true);
+                }
+                None => builder.append(false),
+            }
+        }
+        let array = Arc::new(builder.finish()) as Arc<dyn Array>;
+        let mut stats = SequenceFeatureStats::default();
+        for row in 0..array.len() {
+            stats.observe(array.as_ref(), row);
+        }
+        stats
+    }
+
+    fn emit(chunks: Vec<SequenceFeatureStats>) -> JsonValue {
+        let num_rows = chunks
+            .iter()
+            .map(|stats| stats.count + stats.null_count)
+            .sum();
+        let mut merger: StatsMerger<Seconds> = StatsMerger::default();
+        for stats in chunks {
+            merger.merge(ChunkStats {
+                sequence_feature_stats: HashMap::from([("FEATURE".to_string(), stats)]),
+                ..Default::default()
+            });
+        }
+        merger
+            .finalize(num_rows, false, false, false, None, "numerical", None)
+            .parsed_train_table_col_stats
+            .expect("sequence statistics must emit the Kumo envelope")
+    }
+
+    fn value<'a>(emitted: &'a JsonValue, stat: &str) -> &'a JsonValue {
+        let key = kumo_key("FEATURE", "kumo.sequence", stat, false);
+        emitted
+            .get("stats")
+            .and_then(|stats| stats.get(&key))
+            .and_then(|entry| entry.get("value"))
+            .unwrap_or_else(|| panic!("missing emitted sequence statistic {key}"))
+    }
+
+    #[test]
+    fn empty_and_null_rows_emit_as_missing_without_changing_fixed_width() {
+        let stats = observe(&[
+            Some(&[]),
+            Some(&[1.0, 2.0, 3.0]),
+            None,
+            Some(&[4.0, 5.0, 6.0]),
+        ]);
+        let emitted = emit(vec![stats]);
+
+        assert_eq!(value(&emitted, "COUNT").as_u64(), Some(4));
+        assert_eq!(value(&emitted, "NUM_NA").as_u64(), Some(2));
+        assert_eq!(value(&emitted, "NA_FRACTION").as_f64(), Some(0.5));
+        assert_eq!(value(&emitted, "SEQUENCE_MIN_LENGTH").as_i64(), Some(3));
+        assert_eq!(value(&emitted, "SEQUENCE_MAX_LENGTH").as_i64(), Some(3));
+    }
+
+    #[test]
+    fn all_missing_rows_emit_zero_width_bounds() {
+        let emitted = emit(vec![observe(&[Some(&[]), None, Some(&[])])]);
+
+        assert_eq!(value(&emitted, "COUNT").as_u64(), Some(3));
+        assert_eq!(value(&emitted, "NUM_NA").as_u64(), Some(3));
+        assert_eq!(value(&emitted, "NA_FRACTION").as_f64(), Some(1.0));
+        assert_eq!(value(&emitted, "SEQUENCE_MIN_LENGTH").as_i64(), Some(0));
+        assert_eq!(value(&emitted, "SEQUENCE_MAX_LENGTH").as_i64(), Some(0));
+    }
+
+    #[test]
+    fn mixed_nonempty_widths_emit_exact_bounds_and_missing_fraction() {
+        let emitted = emit(vec![observe(&[
+            Some(&[1.0, 2.0]),
+            Some(&[]),
+            Some(&[3.0, 4.0, 5.0, 6.0]),
+        ])]);
+
+        assert_eq!(value(&emitted, "COUNT").as_u64(), Some(3));
+        assert_eq!(value(&emitted, "NUM_NA").as_u64(), Some(1));
+        assert_eq!(value(&emitted, "NA_FRACTION").as_f64(), Some(1.0 / 3.0));
+        assert_eq!(value(&emitted, "SEQUENCE_MIN_LENGTH").as_i64(), Some(2));
+        assert_eq!(value(&emitted, "SEQUENCE_MAX_LENGTH").as_i64(), Some(4));
+    }
+
+    #[test]
+    fn emitted_contract_is_invariant_to_partitioning_and_merge_order() {
+        let first = observe(&[Some(&[]), Some(&[1.0, 2.0, 3.0])]);
+        let second = observe(&[None, Some(&[4.0, 5.0, 6.0])]);
+        let unpartitioned = observe(&[
+            Some(&[]),
+            Some(&[1.0, 2.0, 3.0]),
+            None,
+            Some(&[4.0, 5.0, 6.0]),
+        ]);
+
+        let expected = emit(vec![unpartitioned]);
+        assert_eq!(emit(vec![first.clone(), second.clone()]), expected);
+        assert_eq!(emit(vec![second, first]), expected);
+    }
+}

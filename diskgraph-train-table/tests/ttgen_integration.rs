@@ -5784,7 +5784,7 @@ fn integ_forecasting_split_stats_use_future_labels() {
     assert_eq!(split_stats.format, "tt_split_stats_json");
     assert!(manifest.checksums.split_stats_sha256.is_some());
 
-    let raw = std::fs::read_to_string(split_stats.path).unwrap();
+    let raw = std::fs::read_to_string(out_dir.path().join(split_stats.path)).unwrap();
     let payload: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(payload["kind"], "tt_split_stats");
     let train = &payload["train_table_stats"];
@@ -8347,7 +8347,7 @@ fn integ_e2e_array_link_random_split_regroup_emits_manifest() {
     // (split=None, stage_counts=None, split_mode="none"); split_kind is still
     // populated, and the per-stage counts live in stage_gen_infos.
     let manifest = diskgraph_train_table::manifest::read_manifest(&output.manifest_path).unwrap();
-    assert_eq!(manifest.version, 1);
+    assert_eq!(manifest.version, 2);
     assert_eq!(manifest.source_mode, "pquery");
     assert_eq!(manifest.split_kind.as_deref(), Some("RandomLinkSplit"));
     assert_eq!(manifest.split_mode, "none");
@@ -8384,7 +8384,7 @@ fn integ_e2e_manifest_pq_source_basic() {
         "manifest.json must be written"
     );
     let m = diskgraph_train_table::manifest::read_manifest(&output.manifest_path).unwrap();
-    assert_eq!(m.version, 1);
+    assert_eq!(m.version, 2);
     assert_eq!(m.source_mode, "pquery");
     assert_eq!(m.row_count, output.rows_written);
     // No split → no split.bin, no stage_counts.
@@ -8601,13 +8601,17 @@ fn integ_manifest_schema_matches_kumo_expectations_e2e() {
         !obj.contains_key("split"),
         "TT-NG path must not emit a split ArtifactRef"
     );
-    assert_eq!(obj["version"].as_u64(), Some(1));
+    assert_eq!(obj["version"].as_u64(), Some(2));
     let tt = obj["train_table"].as_object().unwrap();
     assert_eq!(
         tt["format"].as_str(),
         Some(diskgraph_train_table::manifest::TT_PARQUET_FORMAT)
     );
     assert!(tt.contains_key("path"));
+    assert_eq!(
+        tt["size_bytes"].as_u64(),
+        Some(std::fs::metadata(&output.tt_parquet_path).unwrap().len())
+    );
     let st = obj["stats"].as_object().unwrap();
     assert_eq!(
         st["format"].as_str(),
@@ -8615,14 +8619,13 @@ fn integ_manifest_schema_matches_kumo_expectations_e2e() {
     );
     assert!(st.contains_key("path"));
     // Checksums section. split_sha256 is now always "" on the TT-NG path, so
-    // only the train_table + stats checksums must be valid 64-char hex.
+    // only bounded sidecar checksums must be valid 64-char hex.
     let cs = obj["checksums"].as_object().unwrap();
-    for k in ["train_table_sha256", "stats_sha256"] {
-        let v = cs[k].as_str().unwrap_or("");
-        assert!(!v.is_empty(), "checksums[{k}] must be non-empty hex");
-        // SHA-256 hex is 64 chars.
-        assert_eq!(v.len(), 64, "checksums[{k}] must be 64-char hex");
-    }
+    let k = "stats_sha256";
+    let v = cs[k].as_str().unwrap_or("");
+    assert!(!v.is_empty(), "checksums[{k}] must be non-empty hex");
+    // SHA-256 hex is 64 chars.
+    assert_eq!(v.len(), 64, "checksums[{k}] must be 64-char hex");
     assert_eq!(
         cs["split_sha256"].as_str(),
         Some(""),
@@ -8630,9 +8633,9 @@ fn integ_manifest_schema_matches_kumo_expectations_e2e() {
     );
     // The sidecar files must actually exist on disk.
     let stats_path: &str = st["path"].as_str().unwrap();
-    assert!(std::path::Path::new(stats_path).exists());
+    assert!(out_dir.path().join(stats_path).exists());
     let tt_path: &str = tt["path"].as_str().unwrap();
-    assert!(std::path::Path::new(tt_path).exists());
+    assert!(out_dir.path().join(tt_path).exists());
     // The split is reflected in the per-stage seed parquets.
     assert_stage_infos_consistent(&output, out_dir.path());
 }
