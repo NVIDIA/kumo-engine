@@ -21,6 +21,7 @@
 
 use std::collections::HashSet;
 use std::fs::File;
+use std::io::Write;
 use std::path::{Component, Path};
 
 use arrow::pyarrow::ToPyArrow;
@@ -163,8 +164,15 @@ pub fn execute_tt_plan(
     let idx = index_path.to_owned();
     let tt_id_owned = tt_id.to_owned();
 
-    let (manifest_stages, tt_extension_path, key_failures, input_row_count): (
+    let (
+        manifest_stages,
+        tt_extension_path,
+        unpublished_extension_path,
+        key_failures,
+        input_row_count,
+    ): (
         Vec<ManifestStage>,
+        String,
         String,
         diskgraph_ingest::KeyFailureState,
         u64,
@@ -212,13 +220,13 @@ pub fn execute_tt_plan(
                 index_root,
                 &resolve_specs,
                 &artifacts,
-                &tt_root,
                 group_by_timestamp,
             )?;
             let _ = std::fs::remove_dir_all(&staging_root);
             Ok((
                 manifest_stages,
                 tt_root.to_string_lossy().to_string(),
+                ingest_root.to_string_lossy().to_string(),
                 key_failures,
                 input_row_count,
             ))
@@ -238,6 +246,7 @@ pub fn execute_tt_plan(
         index_path,
         tt_id,
         &tt_extension_path,
+        &unpublished_extension_path,
         &manifest_stages,
         is_temporal,
         rhs_node_type.as_deref(),
@@ -724,8 +733,17 @@ pub fn execute_tt_ingest(
     let staging_dir_owned = staging_dir.to_owned();
     let predict_stage_key = predict_stage_name.unwrap_or_else(|| DEFAULT_PREDICT_STAGE.to_string());
 
-    let (manifest_stages, tt_extension_path, is_temporal, rhs_node_type, key_failures, input_row_count): (
+    let (
+        manifest_stages,
+        tt_extension_path,
+        unpublished_extension_path,
+        is_temporal,
+        rhs_node_type,
+        key_failures,
+        input_row_count,
+    ): (
         Vec<ManifestStage>,
+        String,
         String,
         bool,
         Option<String>,
@@ -791,7 +809,6 @@ pub fn execute_tt_ingest(
                 index_root,
                 &resolve_specs,
                 &artifacts,
-                &tt_root,
                 group_by_timestamp,
             )?;
             // Self-describing manifest fields, recovered from the gen-time spec.
@@ -799,6 +816,7 @@ pub fn execute_tt_ingest(
             Ok((
                 manifest_stages,
                 tt_root.to_string_lossy().to_string(),
+                ingest_root.to_string_lossy().to_string(),
                 spec.is_temporal,
                 rhs_node_type,
                 key_failures,
@@ -812,6 +830,7 @@ pub fn execute_tt_ingest(
         index_path,
         tt_id,
         &tt_extension_path,
+        &unpublished_extension_path,
         &manifest_stages,
         is_temporal,
         rhs_node_type.as_deref(),
@@ -867,8 +886,9 @@ fn enforce_single_timestamp_eval_stage(
     Ok(())
 }
 
-/// Ingest a resolved stage list → copy artifacts → publish, returning the
-/// manifest stages. The ONLY caller-visible difference between the split (3
+/// Ingest a resolved stage list and copy artifacts into an unpublished
+/// attempt directory, returning the manifest stages. The ONLY caller-visible
+/// difference between the split (3
 /// stage) and predict (1 stage) paths is the `stages` list and `split_bin`
 /// (`Some` copies split.bin into the extension). Predict-stage counts (those
 /// `StageSpec`s with `count = None`) are read back from the freshly-ingested
@@ -881,7 +901,6 @@ pub(crate) fn ingest_resolved_stages(
     index_root: &Path,
     resolve_specs: &[RefResolveSpec],
     artifacts: &StagedTtArtifacts,
-    tt_root: &Path,
     // TT-NG temporal-LP timestamp grouping: emit per-stage `bucket_index.bin`.
     // Set only for the temporal-LP seed stages.
     group_by_timestamp: bool,
@@ -932,7 +951,6 @@ pub(crate) fn ingest_resolved_stages(
             ))
         })
         .collect::<diskgraph_train_table::errors::TTGenResult<Vec<_>>>()?;
-    publish_tt_extension(ingest_root, tt_root)?;
     Ok((
         manifest_stages,
         stage_ingest.key_failures,
@@ -993,6 +1011,7 @@ pub(crate) fn write_tt_manifest_and_build_result(
     index_path: &str,
     tt_id: &str,
     tt_extension_path: &str,
+    unpublished_extension_path: &str,
     stages: &[ManifestStage],
     // Self-describing task-level metadata. `rhs_node_type` is the FK-free LP RHS
     // table (`List`-resolution `dst_table`), `None` for node-prediction.
@@ -1010,7 +1029,7 @@ pub(crate) fn write_tt_manifest_and_build_result(
         .to_string_lossy()
         .to_string();
     // Drives `task_dataset.columns.weight`, which kumo reads as `has_weight`.
-    let has_weight = stages_have_weight_column(tt_extension_path, stages);
+    let has_weight = stages_have_weight_column(unpublished_extension_path, stages);
     let weight_col_json = if has_weight {
         Value::String(diskgraph_train_table::ttgen_output::WEIGHT_COL.to_string())
     } else {
@@ -1104,9 +1123,11 @@ pub(crate) fn write_tt_manifest_and_build_result(
             },
         },
     });
-    std::fs::write(
-        &diskgraph_manifest_path,
-        serde_json::to_vec_pretty(&manifest_json).map_err(|e| {
+    let unpublished_manifest_path =
+        Path::new(unpublished_extension_path).join("diskgraph_manifest.json");
+    write_unpublished_tt_manifest(
+        &unpublished_manifest_path,
+        &serde_json::to_vec_pretty(&manifest_json).map_err(|e| {
             crate::DiskgraphSystemError::new_err(format!(
                 "failed to encode diskgraph TT manifest: {e}"
             ))
@@ -1114,9 +1135,18 @@ pub(crate) fn write_tt_manifest_and_build_result(
     )
     .map_err(|e| {
         crate::DiskgraphSystemError::new_err(format!(
-            "failed to write diskgraph TT manifest {diskgraph_manifest_path}: {e}"
+            "failed to write unpublished diskgraph TT manifest {}: {e}",
+            unpublished_manifest_path.display()
         ))
     })?;
+    // The final extension must never be observable without the manifest that
+    // describes its files. Publish the complete attempt directory only after
+    // the manifest has been fully written and closed in that directory.
+    publish_tt_extension(
+        Path::new(unpublished_extension_path),
+        Path::new(tt_extension_path),
+    )
+    .map_err(crate::map_ttgen_err)?;
 
     let dict = PyDict::new(py);
     dict.set_item("schema_version", "diskgraph.tt_execute_result.v1")?;
@@ -1397,13 +1427,478 @@ pub(crate) fn publish_tt_extension(
     ingest_root: &Path,
     tt_root: &Path,
 ) -> diskgraph_train_table::errors::TTGenResult<()> {
-    if tt_root.exists() {
-        std::fs::remove_dir_all(tt_root)
-            .map_err(diskgraph_train_table::errors::TTGenError::from)?;
+    publish_tt_extension_with_rename(ingest_root, tt_root, |src, dst| std::fs::rename(src, dst))
+}
+
+fn publish_tt_extension_with_rename<F>(
+    ingest_root: &Path,
+    tt_root: &Path,
+    mut rename: F,
+) -> diskgraph_train_table::errors::TTGenResult<()>
+where
+    F: FnMut(&Path, &Path) -> std::io::Result<()>,
+{
+    recover_tt_extension_publication(tt_root, &mut rename)?;
+
+    let manifest = ingest_root.join("diskgraph_manifest.json");
+    if !is_complete_tt_extension_for(ingest_root, tt_root) {
+        return Err(diskgraph_train_table::errors::TTGenError::SystemError(
+            format!(
+                "refusing to publish incomplete or target-mismatched TT extension at {} (manifest {})",
+                ingest_root.display(),
+                manifest.display()
+            ),
+        ));
     }
-    std::fs::rename(ingest_root, tt_root)
-        .map_err(diskgraph_train_table::errors::TTGenError::from)?;
+
+    let previous_root = tt_extension_backup_path(tt_root)?;
+    let had_previous = tt_root.exists();
+    if had_previous {
+        rename(tt_root, &previous_root).map_err(diskgraph_train_table::errors::TTGenError::from)?;
+        sync_tt_extension_parent(tt_root)?;
+    }
+    if let Err(publish_error) = rename(ingest_root, tt_root) {
+        if had_previous {
+            if let Err(rollback_error) = rename(&previous_root, tt_root) {
+                return Err(diskgraph_train_table::errors::TTGenError::SystemError(
+                    format!(
+                        "failed to publish TT extension: {publish_error}; \
+                         failed to restore prior extension: {rollback_error}"
+                    ),
+                ));
+            }
+            sync_tt_extension_parent(tt_root)?;
+        }
+        return Err(diskgraph_train_table::errors::TTGenError::from(
+            publish_error,
+        ));
+    }
+    sync_tt_extension_parent(tt_root)?;
+    if had_previous {
+        std::fs::remove_dir_all(&previous_root)
+            .map_err(diskgraph_train_table::errors::TTGenError::from)?;
+        sync_tt_extension_parent(tt_root)?;
+    }
     Ok(())
+}
+
+fn tt_extension_backup_path(
+    tt_root: &Path,
+) -> diskgraph_train_table::errors::TTGenResult<std::path::PathBuf> {
+    let name = tt_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            diskgraph_train_table::errors::TTGenError::SystemError(format!(
+                "TT extension path has no UTF-8 file name: {}",
+                tt_root.display()
+            ))
+        })?;
+    Ok(tt_root.with_file_name(format!(".{name}.previous")))
+}
+
+fn is_complete_tt_extension_for(path: &Path, tt_root: &Path) -> bool {
+    let Ok(root_metadata) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !root_metadata.file_type().is_dir() || root_metadata.file_type().is_symlink() {
+        return false;
+    }
+    let manifest_path = path.join("diskgraph_manifest.json");
+    let Ok(manifest_metadata) = std::fs::symlink_metadata(&manifest_path) else {
+        return false;
+    };
+    if !manifest_metadata.file_type().is_file() || manifest_metadata.file_type().is_symlink() {
+        return false;
+    }
+    let Ok(manifest) = std::fs::File::open(&manifest_path) else {
+        return false;
+    };
+    let Ok(manifest) = serde_json::from_reader::<_, Value>(manifest) else {
+        return false;
+    };
+    let expected_tt_id = tt_root.file_name().and_then(|name| name.to_str());
+    let Some(train_tables_root) = tt_root.parent() else {
+        return false;
+    };
+    if train_tables_root.file_name().and_then(|name| name.to_str()) != Some("train_tables") {
+        return false;
+    }
+    let Some(graph_index_path) = train_tables_root.parent() else {
+        return false;
+    };
+    let expected_manifest_path = tt_root.join("diskgraph_manifest.json");
+    if manifest.get("schema_version").and_then(Value::as_str)
+        != Some("diskgraph.tt_execute_result.v1")
+        || manifest.get("tt_id").and_then(Value::as_str) != expected_tt_id
+        || !manifest_path_matches(&manifest, "graph_index_path", graph_index_path)
+        || !manifest_path_matches(&manifest, "tt_extension_path", tt_root)
+        || !manifest_path_matches(
+            &manifest,
+            "diskgraph_manifest_path",
+            &expected_manifest_path,
+        )
+    {
+        return false;
+    }
+
+    let Some(task_dataset) = manifest.get("task_dataset").and_then(Value::as_object) else {
+        return false;
+    };
+    if task_dataset.get("schema_version").and_then(Value::as_str)
+        != Some("diskgraph.task_dataset.v1")
+        || !object_path_matches(task_dataset, "graph_index_path", graph_index_path)
+        || !object_path_matches(task_dataset, "tt_extension_path", tt_root)
+        || !task_dataset
+            .get("is_temporal")
+            .is_some_and(Value::is_boolean)
+        || !task_dataset
+            .get("input_row_count")
+            .is_some_and(Value::is_u64)
+        || !valid_task_dataset_columns(task_dataset.get("columns"))
+    {
+        return false;
+    }
+    let Some(stages) = task_dataset.get("stages").and_then(Value::as_object) else {
+        return false;
+    };
+    !stages.is_empty()
+        && stages
+            .values()
+            .all(|stage| valid_manifest_stage(path, tt_root, stage))
+}
+
+fn manifest_path_matches(manifest: &Value, key: &str, expected: &Path) -> bool {
+    manifest
+        .get(key)
+        .and_then(Value::as_str)
+        .is_some_and(|actual| Path::new(actual) == expected)
+}
+
+fn object_path_matches(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+    expected: &Path,
+) -> bool {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .is_some_and(|actual| Path::new(actual) == expected)
+}
+
+fn valid_task_dataset_columns(columns: Option<&Value>) -> bool {
+    let Some(columns) = columns.and_then(Value::as_object) else {
+        return false;
+    };
+    columns.get("primary_entity").and_then(Value::as_str) == Some(PRIMARY_ENTITY_COL)
+        && columns.get("primary_target").and_then(Value::as_str) == Some(PRIMARY_TARGET_COL)
+        && columns.get("timestamp").and_then(Value::as_str) == Some(TIMESTAMP_COL)
+        && columns
+            .get("weight")
+            .is_some_and(|weight| weight.is_null() || weight.is_string())
+}
+
+fn valid_manifest_stage(extension_root: &Path, tt_root: &Path, stage: &Value) -> bool {
+    let Some(stage) = stage.as_object() else {
+        return false;
+    };
+    if stage
+        .get("table_name")
+        .and_then(Value::as_str)
+        .is_none_or(|name| name.is_empty())
+        || !object_path_matches(stage, "index_path", tt_root)
+        || !stage.get("row_count").is_some_and(Value::is_u64)
+        || !(stage.get("seed_time").is_some_and(Value::is_null)
+            || stage.get("seed_time").is_some_and(Value::is_array))
+    {
+        return false;
+    }
+    let Some(parts) = stage.get("parts").and_then(Value::as_array) else {
+        return false;
+    };
+    if parts.is_empty()
+        || !parts.iter().all(|part| {
+            part.as_str()
+                .and_then(|path| owned_regular_file_len(extension_root, path))
+                .is_some_and(|size| size > 0)
+        })
+    {
+        return false;
+    }
+    stage
+        .get("bucket_index")
+        .is_none_or(|index| valid_bucket_index(extension_root, index))
+        && stage
+            .get("binary_label_index")
+            .is_none_or(|index| valid_binary_label_index(extension_root, index))
+        && stage
+            .get("sample_weight_index")
+            .is_none_or(|index| valid_sample_weight_index(extension_root, index))
+}
+
+fn valid_bucket_index(extension_root: &Path, index: &Value) -> bool {
+    let Some(index) = index.as_object() else {
+        return false;
+    };
+    let Some(path) = index.get("path").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(size) = owned_regular_file_len(extension_root, path) else {
+        return false;
+    };
+    let Some(buckets) = index.get("buckets").and_then(Value::as_array) else {
+        return false;
+    };
+    let mut expected_offset = 0_u64;
+    for bucket in buckets {
+        let Some(bucket) = bucket.as_object() else {
+            return false;
+        };
+        let Some(offset) = bucket.get("offset").and_then(Value::as_u64) else {
+            return false;
+        };
+        let Some(count) = bucket.get("count").and_then(Value::as_u64) else {
+            return false;
+        };
+        if !bucket.get("ts").is_some_and(Value::is_i64) || offset != expected_offset {
+            return false;
+        }
+        let Some(next_offset) = offset.checked_add(count) else {
+            return false;
+        };
+        expected_offset = next_offset;
+    }
+    expected_offset
+        .checked_mul(std::mem::size_of::<u64>() as u64)
+        .is_some_and(|expected_size| expected_size == size)
+}
+
+fn valid_binary_label_index(extension_root: &Path, index: &Value) -> bool {
+    let Some(index) = index.as_object() else {
+        return false;
+    };
+    [
+        ("false_node_ids", "false_count"),
+        ("true_node_ids", "true_count"),
+    ]
+    .into_iter()
+    .all(|(path_key, count_key)| {
+        let Some(path) = index.get(path_key).and_then(Value::as_str) else {
+            return false;
+        };
+        let Some(count) = index.get(count_key).and_then(Value::as_u64) else {
+            return false;
+        };
+        owned_regular_file_len(extension_root, path)
+            == count.checked_mul(std::mem::size_of::<u64>() as u64)
+    })
+}
+
+fn valid_sample_weight_index(extension_root: &Path, index: &Value) -> bool {
+    let Some(index) = index.as_object() else {
+        return false;
+    };
+    index
+        .get("all")
+        .is_some_and(|bucket| valid_weighted_bucket(extension_root, bucket))
+        && index
+            .get("false_bucket")
+            .is_none_or(|bucket| valid_weighted_bucket(extension_root, bucket))
+        && index
+            .get("true_bucket")
+            .is_none_or(|bucket| valid_weighted_bucket(extension_root, bucket))
+}
+
+fn valid_weighted_bucket(extension_root: &Path, bucket: &Value) -> bool {
+    let Some(bucket) = bucket.as_object() else {
+        return false;
+    };
+    let Some(count) = bucket.get("count").and_then(Value::as_u64) else {
+        return false;
+    };
+    if !bucket
+        .get("total_weight")
+        .and_then(Value::as_f64)
+        .is_some_and(f64::is_finite)
+    {
+        return false;
+    }
+    let Some(expected_size) = count.checked_mul(std::mem::size_of::<u64>() as u64) else {
+        return false;
+    };
+    ["node_ids", "cdf"].into_iter().all(|key| {
+        bucket
+            .get(key)
+            .and_then(Value::as_str)
+            .and_then(|path| owned_regular_file_len(extension_root, path))
+            == Some(expected_size)
+    })
+}
+
+fn owned_regular_file_len(root: &Path, relative_path: &str) -> Option<u64> {
+    let relative_path = Path::new(relative_path);
+    if relative_path.as_os_str().is_empty()
+        || !relative_path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    let components = relative_path.components().collect::<Vec<_>>();
+    let mut current = root.to_path_buf();
+    for (index, component) in components.iter().enumerate() {
+        current.push(component.as_os_str());
+        let metadata = std::fs::symlink_metadata(&current).ok()?;
+        if metadata.file_type().is_symlink() {
+            return None;
+        }
+        if index + 1 == components.len() {
+            return metadata.file_type().is_file().then_some(metadata.len());
+        }
+        if !metadata.file_type().is_dir() {
+            return None;
+        }
+    }
+    None
+}
+
+fn write_unpublished_tt_manifest(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let mut manifest = std::fs::File::create(path)?;
+    manifest.write_all(contents)?;
+    manifest.sync_all()?;
+    drop(manifest);
+    sync_directory_if_supported(path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("TT manifest path has no parent: {}", path.display()),
+        )
+    })?)
+}
+
+fn remove_tt_extension_path(path: &Path) -> diskgraph_train_table::errors::TTGenResult<()> {
+    if path.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+    .map_err(diskgraph_train_table::errors::TTGenError::from)
+}
+
+fn sync_tt_extension_parent(tt_root: &Path) -> diskgraph_train_table::errors::TTGenResult<()> {
+    let parent = tt_root.parent().ok_or_else(|| {
+        diskgraph_train_table::errors::TTGenError::SystemError(format!(
+            "TT extension path has no parent: {}",
+            tt_root.display()
+        ))
+    })?;
+    sync_directory_if_supported(parent).map_err(diskgraph_train_table::errors::TTGenError::from)
+}
+
+fn sync_directory_if_supported(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(path)?.sync_all()?;
+    }
+    Ok(())
+}
+
+fn recover_tt_extension_publication<F>(
+    tt_root: &Path,
+    rename: &mut F,
+) -> diskgraph_train_table::errors::TTGenResult<()>
+where
+    F: FnMut(&Path, &Path) -> std::io::Result<()>,
+{
+    let parent = tt_root.parent().ok_or_else(|| {
+        diskgraph_train_table::errors::TTGenError::SystemError(format!(
+            "TT extension path has no parent: {}",
+            tt_root.display()
+        ))
+    })?;
+    let expected_backup = tt_extension_backup_path(tt_root)?;
+    let backup_prefix = expected_backup
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            diskgraph_train_table::errors::TTGenError::SystemError(format!(
+                "TT extension backup path has no UTF-8 file name: {}",
+                expected_backup.display()
+            ))
+        })?;
+    let entries = std::fs::read_dir(parent)
+        .map_err(diskgraph_train_table::errors::TTGenError::from)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(diskgraph_train_table::errors::TTGenError::from)?;
+    let backups = entries
+        .into_iter()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(backup_prefix))
+        })
+        .collect::<Vec<_>>();
+
+    if backups.len() > 1 || backups.first().is_some_and(|path| path != &expected_backup) {
+        return Err(diskgraph_train_table::errors::TTGenError::SystemError(
+            format!(
+                "ambiguous TT extension publication backups for {}: {:?}",
+                tt_root.display(),
+                backups
+            ),
+        ));
+    }
+
+    let backup_exists = expected_backup.exists();
+    let final_exists = tt_root.exists();
+    match (final_exists, backup_exists) {
+        (false, false) => Ok(()),
+        (false, true) => {
+            if !is_complete_tt_extension_for(&expected_backup, tt_root) {
+                return Err(diskgraph_train_table::errors::TTGenError::SystemError(
+                    format!(
+                        "cannot recover incomplete TT extension backup {}",
+                        expected_backup.display()
+                    ),
+                ));
+            }
+            rename(&expected_backup, tt_root)
+                .map_err(diskgraph_train_table::errors::TTGenError::from)?;
+            sync_tt_extension_parent(tt_root)
+        }
+        (true, false) => {
+            if is_complete_tt_extension_for(tt_root, tt_root) {
+                Ok(())
+            } else {
+                Err(diskgraph_train_table::errors::TTGenError::SystemError(
+                    format!(
+                        "incomplete TT extension has no recoverable backup: {}",
+                        tt_root.display()
+                    ),
+                ))
+            }
+        }
+        (true, true) => {
+            if !is_complete_tt_extension_for(&expected_backup, tt_root) {
+                return Err(diskgraph_train_table::errors::TTGenError::SystemError(
+                    format!(
+                        "cannot recover with incomplete TT extension backup {}",
+                        expected_backup.display()
+                    ),
+                ));
+            }
+            if is_complete_tt_extension_for(tt_root, tt_root) {
+                remove_tt_extension_path(&expected_backup)?;
+                sync_tt_extension_parent(tt_root)
+            } else {
+                remove_tt_extension_path(tt_root)?;
+                sync_tt_extension_parent(tt_root)?;
+                rename(&expected_backup, tt_root)
+                    .map_err(diskgraph_train_table::errors::TTGenError::from)?;
+                sync_tt_extension_parent(tt_root)
+            }
+        }
+    }
 }
 
 /// Source paths for the TT artifacts that were written by the gen phase into

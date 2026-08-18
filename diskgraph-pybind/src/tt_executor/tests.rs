@@ -1,5 +1,54 @@
     use super::*;
 
+    fn publication_paths(dir: &tempfile::TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
+        let train_tables = dir.path().join("index").join("train_tables");
+        std::fs::create_dir_all(&train_tables).unwrap();
+        (train_tables.join("published"), train_tables.join(".published.attempt"))
+    }
+
+    fn write_complete_tt_extension(root: &Path, target: &Path, generation: &[u8]) {
+        let graph_index = target.parent().unwrap().parent().unwrap();
+        let stage_part = root.join("stage").join("part-00000.parquet");
+        std::fs::create_dir_all(stage_part.parent().unwrap()).unwrap();
+        std::fs::write(&stage_part, b"parquet-part").unwrap();
+        std::fs::write(root.join("generation"), generation).unwrap();
+        let manifest = json!({
+            "schema_version": "diskgraph.tt_execute_result.v1",
+            "tt_id": target.file_name().unwrap().to_str().unwrap(),
+            "graph_index_path": graph_index,
+            "tt_extension_path": target,
+            "diskgraph_manifest_path": target.join("diskgraph_manifest.json"),
+            "task_dataset": {
+                "schema_version": "diskgraph.task_dataset.v1",
+                "graph_index_path": graph_index,
+                "tt_extension_path": target,
+                "is_temporal": false,
+                "rhs_node_type": null,
+                "input_row_count": 1,
+                "stages": {
+                    "train": {
+                        "table_name": "stage",
+                        "index_path": target,
+                        "row_count": 1,
+                        "parts": ["stage/part-00000.parquet"],
+                        "seed_time": null,
+                    }
+                },
+                "columns": {
+                    "primary_entity": PRIMARY_ENTITY_COL,
+                    "primary_target": PRIMARY_TARGET_COL,
+                    "timestamp": TIMESTAMP_COL,
+                    "weight": null,
+                },
+            },
+        });
+        std::fs::write(
+            root.join("diskgraph_manifest.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn test_build_prediction_table_edges_bundle_value_basic() {
         let root = std::env::temp_dir().join(format!("dg_pred_edges_{}", uuid::Uuid::new_v4()));
@@ -1001,6 +1050,275 @@
                 "resolution mode must emit ZERO edges for predict_seeds node {node_id}"
             );
         }
+    }
+
+    #[test]
+    fn test_manifest_staging_failure_preserves_prior_final() {
+        let dir = tempfile::tempdir().unwrap();
+        let (published, attempt) = publication_paths(&dir);
+        write_complete_tt_extension(&published, &published, b"old");
+        std::fs::create_dir_all(&attempt).unwrap();
+        std::fs::write(attempt.join("generation"), b"new").unwrap();
+        let blocked_manifest = attempt.join("diskgraph_manifest.json");
+        std::fs::create_dir(&blocked_manifest).unwrap();
+
+        let write_error =
+            write_unpublished_tt_manifest(&blocked_manifest, b"new-manifest").unwrap_err();
+        assert_ne!(write_error.kind(), std::io::ErrorKind::NotFound);
+        let error = publish_tt_extension(&attempt, &published).unwrap_err();
+        assert!(error.to_string().contains("incomplete"));
+        assert_eq!(std::fs::read(published.join("generation")).unwrap(), b"old");
+        assert!(is_complete_tt_extension_for(&published, &published));
+        assert!(attempt.exists());
+    }
+
+    #[test]
+    fn test_publish_tt_extension_rejects_target_mismatched_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let (published, attempt) = publication_paths(&dir);
+        write_complete_tt_extension(&published, &published, b"old");
+        write_complete_tt_extension(&attempt, &published, b"new");
+        let manifest_path = attempt.join("diskgraph_manifest.json");
+        let mut manifest: Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["tt_id"] = json!("different-target");
+        std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+
+        let error = publish_tt_extension(&attempt, &published).unwrap_err();
+        assert!(error.to_string().contains("target-mismatched"));
+        assert_eq!(std::fs::read(published.join("generation")).unwrap(), b"old");
+        assert!(attempt.exists());
+    }
+
+    #[test]
+    fn test_publish_tt_extension_moves_complete_attempt_with_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let (published, attempt) = publication_paths(&dir);
+        write_complete_tt_extension(&published, &published, b"old");
+        write_complete_tt_extension(&attempt, &published, b"new");
+
+        publish_tt_extension(&attempt, &published).unwrap();
+
+        assert!(!attempt.exists());
+        assert_eq!(std::fs::read(published.join("generation")).unwrap(), b"new");
+        assert!(is_complete_tt_extension_for(&published, &published));
+    }
+
+    #[test]
+    fn test_publish_tt_extension_never_exposes_incomplete_final() {
+        let dir = tempfile::tempdir().unwrap();
+        let (published, attempt) = publication_paths(&dir);
+        write_complete_tt_extension(&published, &published, b"old");
+        write_complete_tt_extension(&attempt, &published, b"new");
+
+        publish_tt_extension_with_rename(&attempt, &published, |src, dst| {
+            std::fs::rename(src, dst)?;
+            assert!(
+                !published.exists()
+                    || is_complete_tt_extension_for(&published, &published),
+                "a final path must be absent or contain its manifest"
+            );
+            Ok(())
+        })
+        .unwrap();
+        assert!(is_complete_tt_extension_for(&published, &published));
+    }
+
+    #[test]
+    fn test_publish_tt_extension_rename_failure_restores_prior_final() {
+        let dir = tempfile::tempdir().unwrap();
+        let (published, attempt) = publication_paths(&dir);
+        write_complete_tt_extension(&published, &published, b"old");
+        write_complete_tt_extension(&attempt, &published, b"new");
+        let mut rename_count = 0;
+
+        let error = publish_tt_extension_with_rename(&attempt, &published, |src, dst| {
+            rename_count += 1;
+            if rename_count == 2 {
+                return Err(std::io::Error::other("injected publish failure"));
+            }
+            std::fs::rename(src, dst)
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("injected publish failure"));
+        assert_eq!(rename_count, 3, "park, failed publish, rollback");
+        assert_eq!(std::fs::read(published.join("generation")).unwrap(), b"old");
+        assert!(is_complete_tt_extension_for(&published, &published));
+        assert_eq!(std::fs::read(attempt.join("generation")).unwrap(), b"new");
+
+        publish_tt_extension(&attempt, &published).unwrap();
+        assert_eq!(std::fs::read(published.join("generation")).unwrap(), b"new");
+        assert!(!attempt.exists());
+    }
+
+    #[test]
+    fn test_publish_tt_extension_recovers_crash_after_parking_prior() {
+        let dir = tempfile::tempdir().unwrap();
+        let (published, attempt) = publication_paths(&dir);
+        let backup = tt_extension_backup_path(&published).unwrap();
+        write_complete_tt_extension(&published, &published, b"old");
+        write_complete_tt_extension(&attempt, &published, b"new");
+
+        // Simulate a process crash immediately after final -> backup.
+        std::fs::rename(&published, &backup).unwrap();
+        recover_tt_extension_publication(&published, &mut |src, dst| {
+            std::fs::rename(src, dst)
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(published.join("generation")).unwrap(), b"old");
+        assert!(!backup.exists());
+
+        // Recovery is idempotent, and the same attempt can then retry safely.
+        recover_tt_extension_publication(&published, &mut |src, dst| {
+            std::fs::rename(src, dst)
+        })
+        .unwrap();
+        publish_tt_extension(&attempt, &published).unwrap();
+        assert_eq!(std::fs::read(published.join("generation")).unwrap(), b"new");
+        assert!(!backup.exists());
+    }
+
+    #[test]
+    fn test_publish_tt_extension_recovers_crash_after_new_final() {
+        let dir = tempfile::tempdir().unwrap();
+        let (published, _attempt) = publication_paths(&dir);
+        let backup = tt_extension_backup_path(&published).unwrap();
+        let retry = published.with_file_name(".published.retry");
+        write_complete_tt_extension(&published, &published, b"new");
+        write_complete_tt_extension(&backup, &published, b"old");
+
+        // Simulate a crash immediately after attempt -> final and before the
+        // now-stale prior generation was removed.
+        recover_tt_extension_publication(&published, &mut |src, dst| {
+            std::fs::rename(src, dst)
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(published.join("generation")).unwrap(), b"new");
+        assert!(!backup.exists());
+        recover_tt_extension_publication(&published, &mut |src, dst| {
+            std::fs::rename(src, dst)
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(published.join("generation")).unwrap(), b"new");
+
+        write_complete_tt_extension(&retry, &published, b"newer");
+        publish_tt_extension(&retry, &published).unwrap();
+        assert_eq!(std::fs::read(published.join("generation")).unwrap(), b"newer");
+        assert!(!backup.exists());
+    }
+
+    #[test]
+    fn test_publish_tt_extension_rolls_back_incomplete_final() {
+        let dir = tempfile::tempdir().unwrap();
+        let (published, _attempt) = publication_paths(&dir);
+        let backup = tt_extension_backup_path(&published).unwrap();
+        std::fs::create_dir_all(&published).unwrap();
+        std::fs::write(published.join("generation"), b"partial-new").unwrap();
+        write_complete_tt_extension(&backup, &published, b"old");
+
+        recover_tt_extension_publication(&published, &mut |src, dst| {
+            std::fs::rename(src, dst)
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(published.join("generation")).unwrap(), b"old");
+        assert!(!backup.exists());
+    }
+
+    #[test]
+    fn test_recovery_rolls_back_final_with_missing_declared_part() {
+        let dir = tempfile::tempdir().unwrap();
+        let (published, _attempt) = publication_paths(&dir);
+        let backup = tt_extension_backup_path(&published).unwrap();
+        write_complete_tt_extension(&published, &published, b"new");
+        write_complete_tt_extension(&backup, &published, b"old");
+        std::fs::remove_file(published.join("stage/part-00000.parquet")).unwrap();
+
+        recover_tt_extension_publication(&published, &mut |src, dst| {
+            std::fs::rename(src, dst)
+        })
+        .unwrap();
+
+        assert_eq!(std::fs::read(published.join("generation")).unwrap(), b"old");
+        assert!(is_complete_tt_extension_for(&published, &published));
+        assert!(!backup.exists());
+    }
+
+    #[test]
+    fn test_recovery_rolls_back_final_with_wrong_graph_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let (published, _attempt) = publication_paths(&dir);
+        let backup = tt_extension_backup_path(&published).unwrap();
+        write_complete_tt_extension(&published, &published, b"new");
+        write_complete_tt_extension(&backup, &published, b"old");
+        let manifest_path = published.join("diskgraph_manifest.json");
+        let mut manifest: Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["graph_index_path"] = json!(dir.path().join("wrong-index"));
+        std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+
+        recover_tt_extension_publication(&published, &mut |src, dst| {
+            std::fs::rename(src, dst)
+        })
+        .unwrap();
+
+        assert_eq!(std::fs::read(published.join("generation")).unwrap(), b"old");
+        assert!(is_complete_tt_extension_for(&published, &published));
+        assert!(!backup.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_recovery_rejects_symlink_final_without_following_it() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (published, _attempt) = publication_paths(&dir);
+        let backup = tt_extension_backup_path(&published).unwrap();
+        let external = dir.path().join("external");
+        write_complete_tt_extension(&external, &published, b"external");
+        write_complete_tt_extension(&backup, &published, b"old");
+        symlink(&external, &published).unwrap();
+
+        assert!(!is_complete_tt_extension_for(&published, &published));
+        recover_tt_extension_publication(&published, &mut |src, dst| {
+            std::fs::rename(src, dst)
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(published.join("generation")).unwrap(), b"old");
+        assert!(is_complete_tt_extension_for(&published, &published));
+        assert_eq!(std::fs::read(external.join("generation")).unwrap(), b"external");
+        assert!(!backup.exists());
+    }
+
+    #[test]
+    fn test_publish_tt_extension_fails_closed_on_ambiguous_or_invalid_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let (published, _attempt) = publication_paths(&dir);
+        let backup = tt_extension_backup_path(&published).unwrap();
+        let ambiguous = backup.with_file_name(".published.previous-stale");
+        write_complete_tt_extension(&published, &published, b"new");
+        write_complete_tt_extension(&backup, &published, b"old");
+        write_complete_tt_extension(&ambiguous, &published, b"stale");
+
+        let error = recover_tt_extension_publication(&published, &mut |src, dst| {
+            std::fs::rename(src, dst)
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("ambiguous"));
+        assert!(published.exists());
+        assert!(backup.exists());
+        assert!(ambiguous.exists());
+
+        std::fs::remove_dir_all(&ambiguous).unwrap();
+        std::fs::remove_file(backup.join("diskgraph_manifest.json")).unwrap();
+        let error = recover_tt_extension_publication(&published, &mut |src, dst| {
+            std::fs::rename(src, dst)
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("incomplete TT extension backup"));
+        assert!(published.exists());
+        assert!(backup.exists());
     }
 
     // The cross-graph TT-reuse case that motivated ingest-time membership
