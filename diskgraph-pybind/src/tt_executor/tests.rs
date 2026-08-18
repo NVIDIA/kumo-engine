@@ -189,15 +189,15 @@
     fn test_read_tt_parquet_batches_missing_column_errors() {
         // Constructing a `DiskgraphDataError` requires the Python interpreter,
         // so we test the underlying behavior by initializing the interpreter
-        // here. The pyo3 fixture handles this via `Python::with_gil` —
-        // but that requires `auto-initialize`. Use `prepare_freethreaded_python`
+        // here. The pyo3 fixture handles this via `Python::attach` —
+        // but that requires `auto-initialize`. Use `Python::initialize`
         // to spin up the interpreter just for this test.
         use arrow_array::Int64Array;
         use arrow_schema::{DataType, Field, Schema};
         use parquet::arrow::ArrowWriter;
         use std::sync::Arc as StdArc;
 
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tt.parquet");
@@ -218,7 +218,7 @@
             reader: None,
             schema: None,
         };
-        let result = pyo3::Python::with_gil(|_py| it.ensure_reader());
+        let result = pyo3::Python::attach(|_py| it.ensure_reader());
         assert!(result.is_err());
         let msg = format!("{:?}", result.unwrap_err());
         assert!(msg.contains("does_not_exist"));
@@ -879,13 +879,13 @@
 
     #[test]
     fn test_execute_tt_gen_no_split_writes_no_split_bin() {
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
         let dir = tempfile::tempdir().unwrap();
         let index = t_build_graph(dir.path());
         let plan = t_node_plan(false);
         let plan_json = serde_json::to_string(&plan).unwrap();
 
-        let result = pyo3::Python::with_gil(|py| {
+        let result = pyo3::Python::attach(|py| {
             execute_tt_gen(py, &plan_json, index.to_str().unwrap(), "ttpred").map(|d| {
                 let d = d.bind(py);
                 let staging: String =
@@ -912,7 +912,7 @@
 
     #[test]
     fn test_execute_tt_ingest_no_split_single_predict_stage() {
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
         let dir = tempfile::tempdir().unwrap();
         let index = t_build_graph(dir.path());
         // Split-less plan WITH resolution → predict seed table topologically
@@ -921,7 +921,7 @@
         let plan = t_node_plan(true);
         let plan_json = serde_json::to_string(&plan).unwrap();
 
-        let (staging, expected_rows) = pyo3::Python::with_gil(|py| {
+        let (staging, expected_rows) = pyo3::Python::attach(|py| {
             let d = execute_tt_gen(py, &plan_json, index.to_str().unwrap(), "ttpred").unwrap();
             let d = d.bind(py);
             let staging: String = d.get_item("staging_dir").unwrap().extract().unwrap();
@@ -929,7 +929,7 @@
             (staging, n)
         });
 
-        let tt_ext = pyo3::Python::with_gil(|py| {
+        let tt_ext = pyo3::Python::attach(|py| {
             // NEW dir-API: ingest takes the stage-set staging DIRECTORY.
             let d = execute_tt_ingest(
                 py,
@@ -1328,7 +1328,7 @@
     // `key_failures` — never silently collide onto a wrong G2 node.
     #[test]
     fn test_execute_tt_ingest_cross_graph_orphans_skipped_and_counted() {
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
         let dir_g1 = tempfile::tempdir().unwrap();
         let dir_g2 = tempfile::tempdir().unwrap();
         let g1 = t_build_graph_with_users(dir_g1.path(), &[0, 1, 2, 3, 4]);
@@ -1337,7 +1337,7 @@
 
         let plan = t_node_plan(true);
         let plan_json = serde_json::to_string(&plan).unwrap();
-        let (staging, total_rows) = pyo3::Python::with_gil(|py| {
+        let (staging, total_rows) = pyo3::Python::attach(|py| {
             let d = execute_tt_gen(py, &plan_json, g1.to_str().unwrap(), "ttx").unwrap();
             let d = d.bind(py);
             let staging: String = d.get_item("staging_dir").unwrap().extract().unwrap();
@@ -1347,7 +1347,7 @@
         assert_eq!(total_rows % 5, 0, "gen emits the same seed count per user");
         let rows_per_user = total_rows / 5;
 
-        let (tt_ext, skipped) = pyo3::Python::with_gil(|py| {
+        let (tt_ext, skipped) = pyo3::Python::attach(|py| {
             let d = execute_tt_ingest(
                 py,
                 &staging,
@@ -1440,14 +1440,14 @@
 
     #[test]
     fn test_execute_tt_ingest_split_path_still_three_stages() {
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
         let dir = tempfile::tempdir().unwrap();
         let index = t_build_graph(dir.path());
         let mut plan = t_node_plan(false);
         plan.split = Some(t_time_range_split());
         let plan_json = serde_json::to_string(&plan).unwrap();
 
-        let staging = pyo3::Python::with_gil(|py| {
+        let staging = pyo3::Python::attach(|py| {
             let d = execute_tt_gen(py, &plan_json, index.to_str().unwrap(), "tttrain").unwrap();
             let d = d.bind(py);
             let staging: String = d.get_item("staging_dir").unwrap().extract().unwrap();
@@ -1468,7 +1468,7 @@
             "split.bin must not be written"
         );
 
-        let tt_ext = pyo3::Python::with_gil(|py| {
+        let tt_ext = pyo3::Python::attach(|py| {
             // No predict_stage_name → split path. NEW dir-API: pass the dir.
             let d =
                 execute_tt_ingest(py, &staging, index.to_str().unwrap(), "tttrain", None).unwrap();
@@ -1586,7 +1586,7 @@
 
     #[test]
     fn test_train_binary_label_index_is_emitted_by_stage_ingest() {
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
         let dir = tempfile::tempdir().unwrap();
         let index = t_build_graph(dir.path());
         let stage_pq = dir.path().join("train_seed_rows.parquet");
@@ -1659,7 +1659,7 @@
         use arrow_array::{Float64Array, Int64Array, TimestampNanosecondArray};
         use arrow_schema::{DataType, Field, Schema, TimeUnit as ArrowTimeUnit};
 
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
         let dir = tempfile::tempdir().unwrap();
         let index = t_build_graph(dir.path());
         let stage_pq = dir.path().join("train_seed_rows.parquet");
@@ -1775,7 +1775,7 @@
 
     #[test]
     fn test_binary_label_index_is_train_only() {
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
         let dir = tempfile::tempdir().unwrap();
         let index = t_build_graph(dir.path());
         let train_pq = dir.path().join("train_seed_rows.parquet");
@@ -1859,7 +1859,7 @@
     // `test_custom_gen_ingest_parity_with_fused_path`.
     #[test]
     fn test_custom_tt_source_mode_gen_only_result_dict_and_bundle() {
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
         let dir = tempfile::tempdir().unwrap();
         let index = t_build_graph(dir.path());
 
@@ -1893,7 +1893,7 @@
 
         let tt_id = "custom_src_tt";
         let (staging_dir, tt_parquet_path, ingest_spec_path, row_count, split_counts_total) =
-            pyo3::Python::with_gil(|py| {
+            pyo3::Python::attach(|py| {
                 let d = crate::custom_tt_entry::build_train_table_artifacts_for_existing_table(
                     py,
                     custom_pq.to_str().unwrap(),
@@ -2086,14 +2086,14 @@
     // bundle, drop the fused ingest/publish + `remove_dir_all`).
     #[test]
     fn test_custom_gen_bundle_completeness_node_pred_no_split() {
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
         let dir = tempfile::tempdir().unwrap();
         let index = t_build_graph(dir.path());
         let custom_pq = dir.path().join("custom_tt.parquet");
         let _n_rows = t_write_custom_tt_node_parquet(&custom_pq);
 
         let tt_id = "custom_bundle_ns";
-        pyo3::Python::with_gil(|py| {
+        pyo3::Python::attach(|py| {
             let _ = crate::custom_tt_entry::build_train_table_artifacts_for_existing_table(
                 py,
                 custom_pq.to_str().unwrap(),
@@ -2145,7 +2145,7 @@
     // from the pass output, like `execute_tt_gen`).
     #[test]
     fn test_custom_gen_bundle_completeness_split() {
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
         let dir = tempfile::tempdir().unwrap();
         let index = t_build_graph(dir.path());
         let custom_pq = dir.path().join("custom_tt.parquet");
@@ -2166,7 +2166,7 @@
         .to_string();
 
         let tt_id = "custom_bundle_split";
-        pyo3::Python::with_gil(|py| {
+        pyo3::Python::attach(|py| {
             let _ = crate::custom_tt_entry::build_train_table_artifacts_for_existing_table(
                 py,
                 custom_pq.to_str().unwrap(),
@@ -2228,7 +2228,7 @@
     // the (LP) plan, exactly like `execute_tt_gen`/`TtIngestSpec::from_plan`.
     #[test]
     fn test_custom_gen_spec_content_lp() {
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
         let dir = tempfile::tempdir().unwrap();
         let index = t_build_graph(dir.path());
         let custom_pq = dir.path().join("custom_tt.parquet");
@@ -2239,7 +2239,7 @@
         // spec must exist regardless (gen-only writes it as part of the bundle).
         // Ignore the call result so this test isolates the bundle-artifact
         // contract from any downstream LP-gen specifics.
-        let _ = pyo3::Python::with_gil(|py| {
+        let _ = pyo3::Python::attach(|py| {
             crate::custom_tt_entry::build_train_table_artifacts_for_existing_table(
                 py,
                 custom_pq.to_str().unwrap(),
@@ -2312,7 +2312,7 @@
     // Impl change required: gen-only leaves a complete, re-ingestable bundle.
     #[test]
     fn test_custom_gen_bundle_roundtrips_through_execute_tt_ingest() {
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
         let dir = tempfile::tempdir().unwrap();
         let index = t_build_graph(dir.path());
         let custom_pq = dir.path().join("custom_tt.parquet");
@@ -2324,7 +2324,7 @@
         // different per-BP-job id (see
         // `test_custom_predict_bundle_reingests_under_distinct_target_id`).
         let tt_id = "custom_rt";
-        pyo3::Python::with_gil(|py| {
+        pyo3::Python::attach(|py| {
             let _ = crate::custom_tt_entry::build_train_table_artifacts_for_existing_table(
                 py,
                 custom_pq.to_str().unwrap(),
@@ -2351,7 +2351,7 @@
         // Ingest phase: the normal, pod-independent consumer, re-ingesting the
         // bundle under the SAME id (train contract: source==target).
         let ingest_tt_id = tt_id;
-        let tt_ext = pyo3::Python::with_gil(|py| {
+        let tt_ext = pyo3::Python::attach(|py| {
             let d = execute_tt_ingest(
                 py,
                 &bundle_str,
@@ -2396,7 +2396,7 @@
     // path (`test_execute_tt_ingest_split_path_still_three_stages`) produces.
     #[test]
     fn test_custom_gen_ingest_parity_with_fused_path() {
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
         let dir = tempfile::tempdir().unwrap();
         let index = t_build_graph(dir.path());
 
@@ -2420,7 +2420,7 @@
         // TRAIN contract: source==target. Training re-ingests its own gen
         // bundle under the SAME id (no per-BP-job fan-out — that's predict).
         let tt_id = "parity";
-        pyo3::Python::with_gil(|py| {
+        pyo3::Python::attach(|py| {
             let _ = crate::custom_tt_entry::build_train_table_artifacts_for_existing_table(
                 py,
                 gen_pq.to_str().unwrap(),
@@ -2443,7 +2443,7 @@
         let bundle = t_custom_bundle_dir(&gen_pq);
         let bundle_str = bundle.to_string_lossy().into_owned();
         let ingest_tt_id = tt_id;
-        let ingest_ext = pyo3::Python::with_gil(|py| {
+        let ingest_ext = pyo3::Python::attach(|py| {
             let d = execute_tt_ingest(
                 py,
                 &bundle_str,
@@ -2519,7 +2519,7 @@
     // under a DISTINCT target id publishes `train_tables/<target>/`.
     #[test]
     fn test_custom_predict_bundle_reingests_under_distinct_target_id() {
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
         let dir = tempfile::tempdir().unwrap();
         let index = t_build_graph(dir.path());
 
@@ -2530,7 +2530,7 @@
         // Gen phase: build the durable PREDICT bundle (gen-only). The gen id is
         // the bundle's own `spec.tt_id`.
         let gen_tt_id = "custom_pred_gen";
-        pyo3::Python::with_gil(|py| {
+        pyo3::Python::attach(|py| {
             let _ =
                 crate::custom_tt_entry::build_prediction_table_artifacts_for_existing_table(
                     py,
@@ -2602,7 +2602,7 @@
             target_tt_id, gen_tt_id,
             "predict target id must differ from the gen bundle id"
         );
-        let tt_ext = pyo3::Python::with_gil(|py| {
+        let tt_ext = pyo3::Python::attach(|py| {
             let d = execute_tt_ingest(
                 py,
                 &bundle_str,

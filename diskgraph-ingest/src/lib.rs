@@ -4405,15 +4405,28 @@ fn add_variable_payload_bound(
             "Arrow output",
         )?;
     }
-    let has_plain_data = column.page_encoding_stats().is_none_or(|stats| {
-        stats.iter().any(|page| {
-            page.page_type != PageType::DICTIONARY_PAGE
-                && !matches!(
-                    page.encoding,
-                    Encoding::PLAIN_DICTIONARY | Encoding::RLE_DICTIONARY
-                )
-        })
-    });
+    // parquet >= 58 distills `encoding_stats` into a data-page-only bitmask by
+    // default and leaves `page_encoding_stats()` empty; the per-page list only
+    // survives when the reader opts out via `encoding_stats_as_mask(false)`.
+    // Read whichever form is present, and stay conservative (assume plain data)
+    // when the column carries neither.
+    let has_plain_data = match column.page_encoding_stats_mask() {
+        Some(mask) => mask.encodings().any(|encoding| {
+            !matches!(
+                encoding,
+                Encoding::PLAIN_DICTIONARY | Encoding::RLE_DICTIONARY
+            )
+        }),
+        None => column.page_encoding_stats().is_none_or(|stats| {
+            stats.iter().any(|page| {
+                page.page_type != PageType::DICTIONARY_PAGE
+                    && !matches!(
+                        page.encoding,
+                        Encoding::PLAIN_DICTIONARY | Encoding::RLE_DICTIONARY
+                    )
+            })
+        }),
+    };
     if has_plain_data {
         terms.add_constant(chunk_bytes, "Arrow output")?;
     }
@@ -6070,9 +6083,12 @@ mod bounded_file_decoder_tests {
             .metadata()
             .row_group(0)
             .column(0);
-        assert!(chunk.page_encoding_stats().unwrap().iter().any(|page| {
-            page.page_type != PageType::DICTIONARY_PAGE && page.encoding == Encoding::PLAIN
-        }));
+        // The mask covers data pages only, so a set PLAIN bit is exactly the
+        // "fell back off the dictionary" signal this fixture is built to hit.
+        assert!(chunk
+            .page_encoding_stats_mask()
+            .unwrap()
+            .is_set(Encoding::PLAIN));
 
         let max_decode_bytes = 64 * 1024 * 1024;
         let (plan, reader) = planned_reader(resident, max_decode_bytes).unwrap();

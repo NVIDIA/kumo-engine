@@ -8,10 +8,10 @@ diskgraph-core = { path = "../diskgraph-core" }
 diskgraph-engine = { path = "../diskgraph-engine" }
 diskgraph-index = { path = "../diskgraph-index" }
 diskgraph-rowpack = { path = "../diskgraph-rowpack" }
-arrow-flight = "57.2.0"
+arrow-flight = "58.4.0"
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
-arrow-ipc = "57.2.0"
+arrow-ipc = "58.4.0"
 tonic = "0.14"
 tokio = { workspace = true }
 tokio-stream = "0.1"

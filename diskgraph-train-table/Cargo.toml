@@ -11,8 +11,8 @@ diskgraph-index = { path = "../diskgraph-index" }
 diskgraph-ingest = { path = "../diskgraph-ingest" }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
-arrow-select = "57.2.0"
-parquet = { version = "57.2.0", features = ["arrow"] }
+arrow-select = "58.4.0"
+parquet = { version = "58.4.0", features = ["arrow"] }
 rayon = "1"
 crossbeam-channel = "0.5"
 chrono = { workspace = true }

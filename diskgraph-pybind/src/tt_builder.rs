@@ -17,7 +17,7 @@ use diskgraph_core::tt_builder as tt;
 
 // ─── EdgeRef ─────────────────────────────────────────────────────────────────
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct EdgeRef {
     pub(crate) inner: tt::EdgeRef,
@@ -47,7 +47,7 @@ impl EdgeRef {
 
 // ─── RowFilter ───────────────────────────────────────────────────────────────
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct RowFilter {
     pub(crate) inner: tt::RowFilter,
@@ -187,7 +187,7 @@ impl RowFilter {
 
 // ─── StageFilter ─────────────────────────────────────────────────────────────
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct StageFilter {
     pub(crate) inner: tt::StageFilter,

@@ -40,7 +40,7 @@ fn strided_context_sample_reads_every_row_exactly_once() -> Result<()> {
         ];
         let path = input_root.join(format!("part-{file}.parquet"));
         let props = WriterProperties::builder()
-            .set_max_row_group_size(1024)
+            .set_max_row_group_row_count(Some(1024))
             .build();
         let writer_file = fs::File::create(&path)?;
         let mut writer =

@@ -626,7 +626,7 @@ fn generate_shard(
     let range = &table.shard_ranges[task.shard_idx];
     let sink = output.parquet_sink(&table.name, task.shard_idx)?;
     let props = WriterProperties::builder()
-        .set_max_row_group_size(plan.row_group_size)
+        .set_max_row_group_row_count(Some(plan.row_group_size))
         .build();
     let mut writer = ArrowWriter::try_new(sink, Arc::clone(&table.schema), Some(props))
         .with_context(|| format!("create parquet writer for {}", table.name))?;

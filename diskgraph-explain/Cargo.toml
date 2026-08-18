@@ -23,7 +23,7 @@ diskgraph-index = { path = "../diskgraph-index" }
 diskgraph-core = { path = "../diskgraph-core" }
 diskgraph-rowpack = { path = "../diskgraph-rowpack" }
 
-parquet = "57.2.0"
+parquet = "58.4.0"
 rand = "0.8"
 rayon = "1.10"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }

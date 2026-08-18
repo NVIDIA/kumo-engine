@@ -635,7 +635,7 @@ mod tests {
         let file = File::create(path).unwrap();
         let mut props = parquet::file::properties::WriterProperties::builder();
         if let Some(n) = max_rg_rows {
-            props = props.set_max_row_group_size(n);
+            props = props.set_max_row_group_row_count(Some(n));
         }
         let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props.build())).unwrap();
         writer.write(&batch).unwrap();
@@ -672,7 +672,7 @@ mod tests {
         .unwrap();
         let file = File::create(path).unwrap();
         let props = parquet::file::properties::WriterProperties::builder()
-            .set_max_row_group_size(max_rg_rows)
+            .set_max_row_group_row_count(Some(max_rg_rows))
             .build();
         let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props)).unwrap();
         writer.write(&batch).unwrap();
@@ -728,7 +728,7 @@ mod tests {
         let file = File::create(path).unwrap();
         let mut props = parquet::file::properties::WriterProperties::builder();
         if let Some(n) = max_rg_rows {
-            props = props.set_max_row_group_size(n);
+            props = props.set_max_row_group_row_count(Some(n));
         }
         let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props.build())).unwrap();
         writer.write(&batch).unwrap();

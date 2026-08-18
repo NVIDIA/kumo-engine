@@ -19,13 +19,13 @@ diskgraph-core = { path = "../diskgraph-core" }
 diskgraph-fs = { path = "../diskgraph-fs" }
 diskgraph-rowpack = { path = "../diskgraph-rowpack" }
 diskgraph-index = { path = "../diskgraph-index" }
-arrow-array = "57.2.0"
-arrow-buffer = "57.2.0"
-arrow-data = "57.2.0"
-arrow-schema = "57.2.0"
-arrow-csv = "57.2.0"
-arrow-ipc = "57.2.0"
-parquet = { version = "57.2.0", features = ["arrow"] }
+arrow-array = "58.4.0"
+arrow-buffer = "58.4.0"
+arrow-data = "58.4.0"
+arrow-schema = "58.4.0"
+arrow-csv = "58.4.0"
+arrow-ipc = "58.4.0"
+parquet = { version = "58.4.0", features = ["arrow"] }
 object_store = { version = "0.13.1", features = ["aws", "gcp", "azure"] }
 bytes = "1"
 url = "2"

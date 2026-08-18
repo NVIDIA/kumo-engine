@@ -444,7 +444,7 @@ fn write_parquet(path: &Path, schema: Schema, columns: Vec<ArrayRef>) -> Result<
         fs::create_dir_all(parent)?;
     }
     let props = WriterProperties::builder()
-        .set_max_row_group_size(1024)
+        .set_max_row_group_row_count(Some(1024))
         .build();
     let file = fs::File::create(path)?;
     let mut writer = ArrowWriter::try_new(file, Arc::new(schema.clone()), Some(props))?;

@@ -1195,7 +1195,7 @@ mod tests {
         let file = fs::File::create(path).unwrap();
         let batch = RecordBatch::try_new(StdArc::new(schema), columns).unwrap();
         let props = WriterProperties::builder()
-            .set_max_row_group_size(max_rows_per_rg)
+            .set_max_row_group_row_count(Some(max_rows_per_rg))
             .build();
         let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props)).unwrap();
         writer.write(&batch).unwrap();

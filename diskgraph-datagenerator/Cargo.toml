@@ -9,11 +9,11 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-arrow-array = "57.2.0"
-arrow-schema = "57.2.0"
+arrow-array = "58.4.0"
+arrow-schema = "58.4.0"
 clap = { version = "4.4", features = ["derive"] }
 indicatif = "0.17"
-parquet = { version = "57.2.0", features = ["arrow", "async"] }
+parquet = { version = "58.4.0", features = ["arrow", "async"] }
 chrono = "0.4"
 anyhow = { workspace = true }
 serde = { workspace = true }

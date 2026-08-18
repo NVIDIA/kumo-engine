@@ -181,7 +181,7 @@ mod temporal;
 mod tt_builder;
 mod tt_executor;
 
-#[pyclass(eq, eq_int, name = "TimeUnit", module = "diskgraph._c")]
+#[pyclass(eq, eq_int, from_py_object, name = "TimeUnit", module = "diskgraph._c")]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PyTimeUnit {
     Seconds,
@@ -767,7 +767,7 @@ impl PySampleIterator {
     }
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct FkeyConfig {
     #[pyo3(get, set)]
@@ -787,7 +787,7 @@ impl FkeyConfig {
     }
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct ExportConfig {
     #[pyo3(get, set)]
