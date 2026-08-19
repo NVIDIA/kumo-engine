@@ -277,9 +277,12 @@ enum StageFilterRhs {
 }
 enum StageFilter {
     Compare { alias: String, op: CompareOp, rhs: StageFilterRhs },
+    NonEmptyList { alias: String },
     And(Vec<StageFilter>), Or(Vec<StageFilter>), Not(Box<StageFilter>),
 }
 ```
+
+`NonEmptyList` expresses an explicit list-valued admission rule without relying on the generic convention that a numeric comparison against a list uses the list length. The compiler uses it for multilabel ranking targets, where an empty relevant-item set supplies no ranking supervision; multilabel classification does not use it because an empty set is a valid all-negative label.
 
 **Why separate LHS types:** RowFilter LHS reads from the row being
 traversed (a column or a remote lookup). StageFilter LHS is always a

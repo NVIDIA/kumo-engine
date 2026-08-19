@@ -507,6 +507,10 @@ pub enum StageFilter {
         op: CompareOp,
         rhs: StageFilterRhs,
     },
+    /// Require a computed alias to be a present, non-empty [`Value::List`].
+    NonEmptyList {
+        alias: String,
+    },
     And(Vec<StageFilter>),
     Or(Vec<StageFilter>),
     Not(Box<StageFilter>),
@@ -540,6 +544,24 @@ mod tests {
         assert_eq!(specs[1].src_col, "TARGET1");
         assert_eq!(specs[1].kind, RefResolveKind::List);
         assert_eq!(specs[1].node_id_col, "target_node_ids");
+    }
+
+    #[test]
+    fn non_empty_list_stage_filter_round_trips_expected_json() {
+        let filter = StageFilter::NonEmptyList {
+            alias: "labels".to_string(),
+        };
+        let json = serde_json::to_value(&filter).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"non_empty_list": {"alias": "labels"}})
+        );
+
+        let decoded: StageFilter = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            decoded,
+            StageFilter::NonEmptyList { alias } if alias == "labels"
+        ));
     }
 
     /// Verify that a `DiskGraphTTPlan<Seconds>` serialized as JSON produces

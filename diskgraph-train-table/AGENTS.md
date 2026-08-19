@@ -240,6 +240,8 @@ RHS can be:
 
 If a stage filter fails, later stages do not execute.
 
+`NonEmptyList` is the explicit list-valued admission filter. It passes only for a present `Value::List` with at least one item and is used when empty-list validity depends on the compiled task semantics.
+
 ### `HasEdges`
 
 `HasEdges` is the fast existence-check variant.
@@ -266,6 +268,7 @@ Important details:
 - `Sum` returns `0.0` for an empty traversal, while `Avg`/`Min`/`Max` return `None`
 - `CountDistinct` hashes `Value` instances
 - `ListDistinct` preserves first-seen order and also captures per-value occurrence counts for link-prediction frequency output
+- `ListDistinct` returns a present empty `Value::List` when no values match; consumers must not globally reinterpret that result as null or missing
 - `limit` provides early termination, mainly for `ListDistinct`
 - because edges iterate newest-first:
   - `Last` = first matching item encountered

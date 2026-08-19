@@ -266,6 +266,9 @@ pub fn eval_stage_filter(
             };
             compare_values(l, op, &r)
         }
+        ResolvedStageFilter::NonEmptyList { alias_idx } => {
+            matches!(&aliases[*alias_idx], Some(Value::List(values)) if !values.is_empty())
+        }
         ResolvedStageFilter::And(filters) => filters
             .iter()
             .all(|f| eval_stage_filter(f, aliases, entity_cols, entity_table, entity_node)),

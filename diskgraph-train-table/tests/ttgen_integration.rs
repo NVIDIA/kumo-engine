@@ -2614,6 +2614,128 @@ fn integ_list_distinct_with_row_filter() {
     assert_eq!(groups[&4][0].1, "", "eve");
 }
 
+#[test]
+fn integ_non_empty_list_stage_filter_drops_all_empty_targets() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+
+    let plan = g1_temporal(
+        vec![Stage::<Seconds> {
+            ops: vec![Op::Aggregate {
+                alias: "ld".to_string(),
+                path: vec![u2o_edge()],
+                func: AggFunc::ListDistinct,
+                target_col: Some("status".to_string()),
+                time_col: None,
+                window: Some((0, 5000)),
+                window_unit: Some(TimeUnit::Seconds),
+                row_filter: Some(RowFilter::Compare {
+                    lhs: RowFilterLhs::Column("price".to_string()),
+                    op: CompareOp::Gt,
+                    rhs: RowFilterRhs::Constant(Value::Float(1000.0)),
+                }),
+                limit: None,
+                target_entity_table: None,
+            }],
+            filter: Some(StageFilter::NonEmptyList {
+                alias: "ld".to_string(),
+            }),
+        }],
+        vec![0],
+    );
+    let groups = execute_and_group_str(&plan, &index);
+    assert!(groups.is_empty());
+}
+
+#[test]
+fn integ_list_distinct_target_admission_updates_physical_and_artifact_counts() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+
+    let make_plan = |require_non_empty: bool| {
+        let mut plan = g1_temporal(
+            vec![Stage::<Seconds> {
+                ops: vec![Op::Aggregate {
+                    alias: "labels".to_string(),
+                    path: vec![u2o_edge()],
+                    func: AggFunc::ListDistinct,
+                    target_col: Some("status".to_string()),
+                    time_col: None,
+                    window: Some((0, 5000)),
+                    window_unit: Some(TimeUnit::Seconds),
+                    row_filter: None,
+                    limit: None,
+                    target_entity_table: None,
+                }],
+                filter: require_non_empty.then(|| StageFilter::NonEmptyList {
+                    alias: "labels".to_string(),
+                }),
+            }],
+            vec![0],
+        );
+        plan.target_stype = Some("multicategorical".to_string());
+        let mut split = phase5b_split_spec_base::<Seconds>();
+        split.kind = Some("RandomSplit".to_string());
+        split.ratio = Some(vec![1.0, 0.0, 0.0]);
+        split.rnd_seed = Some(42);
+        plan.split = Some(split);
+        plan
+    };
+
+    for (case, require_non_empty, expected_rows) in [
+        ("multilabel classification", false, 5),
+        ("multilabel ranking", true, 4),
+    ] {
+        let out_dir = tempfile::tempdir().unwrap();
+        let output = diskgraph_train_table::ttgen_executor::execute_tt_pass(
+            &make_plan(require_non_empty),
+            &index,
+            out_dir.path(),
+        )
+        .unwrap();
+
+        assert_eq!(output.rows_written, expected_rows, "{case} output count");
+        assert_eq!(
+            parquet_row_count(&output.tt_parquet_path),
+            expected_rows,
+            "{case} physical parquet count"
+        );
+        let manifest =
+            diskgraph_train_table::manifest::read_manifest(&output.manifest_path).unwrap();
+        assert_eq!(manifest.row_count, expected_rows, "{case} manifest count");
+        let stats = output.stats.as_ref().expect("training-table stats");
+        assert_eq!(
+            stats.num_total_rows, expected_rows,
+            "{case} total stats count"
+        );
+        assert_eq!(
+            stats.num_train_rows, expected_rows,
+            "{case} train stats count"
+        );
+        assert_eq!(
+            stage_row_count(&output, "train"),
+            expected_rows,
+            "{case} train split count"
+        );
+        assert_eq!(stage_row_count(&output, "val"), 0, "{case} val split count");
+        assert_eq!(
+            stage_row_count(&output, "test"),
+            0,
+            "{case} test split count"
+        );
+        assert_stage_infos_consistent(&output, out_dir.path());
+
+        let split_stats = manifest.split_stats.expect("split stats manifest entry");
+        let raw = std::fs::read_to_string(out_dir.path().join(split_stats.path)).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(
+            payload["train_table_stats"]["num_train_rows"].as_u64(),
+            Some(expected_rows),
+            "{case} serialized train split count"
+        );
+    }
+}
+
 // ─── Tests: Temporal windows ────────────────────────────────────────────────
 
 #[test]

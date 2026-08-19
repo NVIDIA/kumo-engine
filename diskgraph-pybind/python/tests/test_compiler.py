@@ -365,6 +365,55 @@ def test_compiler_with_starts_with_row_filter():
     assert row_filter["rhs"]["constant"]["str"] == "investment"
 
 
+@pytest.mark.parametrize(
+    ("task_type", "expected_filter"),
+    [
+        ("multilabel_classification", None),
+        ("multilabel_ranking", {"non_empty_list": {"alias": "agg_1"}}),
+    ],
+)
+def test_compiler_encodes_task_specific_empty_list_target_admission(task_type, expected_filter):
+    target_ast = Aggregation(
+        target=Column(fqn="transactions.account_type"),
+        aggr=AggregationType.LIST_DISTINCT,
+    )
+    target_ast.target = Join(
+        rhs_target=Column(fqn="transactions.account_type"),
+        lhs_key="users.user_id",
+        rhs_key="transactions.user_id",
+    )
+    query = ValidatedPredictiveQuery(
+        entity_ast=Column(fqn="users.user_id"),
+        target_ast=target_ast,
+    )
+    query._query_type = "STATIC"
+
+    plan = json.loads(
+        DiskGraphPlanCompiler().compile(
+            query=query,
+            timestamps=[],
+            task_type=task_type,
+            target_stype="multicategorical",
+            input_timestamp_unit=TimeUnit.Seconds,
+        )
+    )
+
+    assert plan["stages"][0]["filter"] == expected_filter
+
+
+def test_compiler_rejects_ranking_without_multicategorical_target_stype():
+    query = _make_temporal_query()
+
+    with pytest.raises(DiskgraphConfigError, match="requires target_stype='multicategorical'"):
+        DiskGraphPlanCompiler().compile(
+            query=query,
+            timestamps=[1609459200],
+            task_type="multilabel_ranking",
+            target_stype="categorical",
+            input_timestamp_unit=TimeUnit.Seconds,
+        )
+
+
 def test_compiler_stage_filter():
     # PREDICT SUM(transactions.amount) FOR users.user_id WHERE COUNT(transactions.transaction_id) > 5
 

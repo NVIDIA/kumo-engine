@@ -28,6 +28,10 @@ LINK_PRED_TASKS = {
     "link_prediction",
 }
 
+# Multilabel classification can learn from an all-negative target set, while
+# multilabel ranking needs at least one relevant item to provide supervision.
+TASK_TYPES_REQUIRING_NON_EMPTY_TARGET_LIST = {"multilabel_ranking"}
+
 LP_BP_LAYOUTS = {"hstack", "separate_lhs_rhs"}
 
 # Canonical output column names for the autoregression ops emitted by
@@ -60,6 +64,10 @@ def _validate_lp_layout(name: str, value: Optional[str], allowed: set[str]) -> N
         return
     choices = ", ".join(sorted(allowed))
     raise DiskgraphConfigError(f"{name} must be one of: {choices}")
+
+def _requires_non_empty_target_list(task_type: str) -> bool:
+    return task_type in TASK_TYPES_REQUIRING_NON_EMPTY_TARGET_LIST
+
 
 class DiskGraphPlanCompiler:
     """
@@ -315,7 +323,14 @@ class DiskGraphPlanCompiler:
                 self.builder.column("entity_id_target", entity_table, entity_col)
         else:
             # Training Table Generation (Node/Link Prediction): evaluate target label natively.
-            self._traverse_target(query.target_ast, query)
+            target_alias = self._traverse_target(query.target_ast, query)
+            if _requires_non_empty_target_list(task_type):
+                if target_stype.lower() != "multicategorical":
+                    raise DiskgraphConfigError(
+                        f"{task_type} requires target_stype='multicategorical' "
+                        "for non-empty target-list admission"
+                    )
+                self.builder.filter(StageFilter.non_empty_list(target_alias))
 
         fkey_mapping = [(PRIMARY_ENTITY_COL, entity_table)]
         if is_link_pred and lp_rhs_entity_table is not None:

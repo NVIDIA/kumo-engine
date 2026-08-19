@@ -267,6 +267,18 @@ impl StageFilter {
         })
     }
 
+    /// Require an alias to contain a non-empty list.
+    ///
+    /// ```python
+    /// StageFilter.non_empty_list("_labels")
+    /// ```
+    #[staticmethod]
+    fn non_empty_list(alias: String) -> Self {
+        Self {
+            inner: tt::StageFilter::NonEmptyList { alias },
+        }
+    }
+
     #[staticmethod]
     #[pyo3(signature = (*filters))]
     fn and_(filters: Vec<StageFilter>) -> Self {

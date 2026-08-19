@@ -306,6 +306,7 @@ pub enum ResolvedStageFilter {
         op: CompareOp,
         rhs: ResolvedStageFilterRhs,
     },
+    NonEmptyList { alias_idx: usize },
     And(Vec<ResolvedStageFilter>),
     Or(Vec<ResolvedStageFilter>),
     Not(Box<ResolvedStageFilter>),
@@ -869,6 +870,7 @@ fn collect_entity_col_refs<U: UnitSystem>(
                     seen.insert(col.clone());
                 }
             }
+            StageFilter::NonEmptyList { .. } => {}
             StageFilter::And(filters) | StageFilter::Or(filters) => {
                 for f in filters {
                     collect_from_stage_filter(f, seen);
@@ -1557,6 +1559,13 @@ fn resolve_stage_filter(
                 op: *op,
                 rhs: resolved_rhs,
             })
+        }
+        StageFilter::NonEmptyList { alias } => {
+            let alias_idx = alias_to_idx
+                .get(alias)
+                .copied()
+                .ok_or_else(|| TTGenError::SchemaError(format!("alias '{}' not found", alias)))?;
+            Ok(ResolvedStageFilter::NonEmptyList { alias_idx })
         }
         StageFilter::And(filters) => {
             let resolved = filters
