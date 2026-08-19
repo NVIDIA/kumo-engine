@@ -14455,7 +14455,7 @@ impl NodeBatcher {
             .tag_bytes
             .saturating_add(lens.bool_bytes)
             .saturating_add(lens.data_bytes);
-        let _ = u16::try_from(row_len).map_err(|_| anyhow!("temp row too large"))?;
+        let _ = u32::try_from(row_len).map_err(|_| anyhow!("temp row too large"))?;
         if tags.len() != lens.tag_bytes
             || bools.len() != lens.bool_bytes
             || data.len() != lens.data_bytes
@@ -14468,7 +14468,7 @@ impl NodeBatcher {
         buffer.node.bools.extend_from_slice(bools);
         buffer.node.data.extend_from_slice(data);
         buffer.node.rows.push(lens);
-        buffer.bytes = buffer.bytes.saturating_add(2 + row_len);
+        buffer.bytes = buffer.bytes.saturating_add(4 + row_len);
         Ok(())
     }
 

@@ -1,4 +1,7 @@
-use super::{key_from_access_into_buf, BitWriter, OutputSink};
+use super::{
+    key_from_access_into_buf, BitWriter, NodeBatcher, NodeWriteMessage, OutputSink,
+    RowPackRowLens,
+};
 use crate::graph_config::{ColumnSpec, DataSource, IngestedType};
 use arrow_array::{ArrayRef, Decimal128Array, Decimal256Array, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
@@ -6,6 +9,39 @@ use diskgraph_rowpack::{BinaryStringHint, RowAccess, RowAccessHints, RowAccessSt
 use std::collections::HashSet;
 use std::io::Read;
 use std::sync::Arc;
+
+#[test]
+fn node_batcher_accepts_rows_larger_than_u16() {
+    let (sender, _receiver) = std::sync::mpsc::sync_channel::<NodeWriteMessage>(1);
+    let mut batcher = NodeBatcher::new(
+        Arc::<str>::from("nodes"),
+        Arc::new(Vec::new()),
+        false,
+        1,
+        usize::MAX,
+        Arc::new(vec![sender]),
+        Arc::new(std::sync::Mutex::new(None)),
+        false,
+        false,
+        false,
+    );
+    let row_len = usize::from(u16::MAX) + 1;
+    let data = vec![0; row_len];
+
+    batcher
+        .push_encoded_node(
+            0,
+            RowPackRowLens {
+                tag_bytes: 0,
+                bool_bytes: 0,
+                data_bytes: row_len,
+            },
+            &[],
+            &[],
+            &data,
+        )
+        .unwrap();
+}
 
 #[test]
 fn test_negative_int64_key() {
