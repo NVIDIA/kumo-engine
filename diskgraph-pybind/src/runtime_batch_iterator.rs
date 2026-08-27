@@ -815,8 +815,8 @@ impl BucketSchedule {
             ))
         })?;
         let mut ids: Vec<u64> = bytes
-            .chunks_exact(8)
-            .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<8>().0.iter()
+            .map(|c| u64::from_le_bytes(*c))
             .collect();
         let key = format!("{}:{}", self.stage_key, bucket.ts);
         let mut rng =

@@ -2897,8 +2897,8 @@ fn read_bucket_index(path: &Path) -> Vec<u64> {
     let bytes = fs::read(path).unwrap();
     assert_eq!(bytes.len() % 8, 0, "bucket_index.bin must be 8-byte aligned");
     bytes
-        .chunks_exact(8)
-        .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+        .as_chunks::<8>().0.iter()
+        .map(|c| u64::from_le_bytes(*c))
         .collect()
 }
 

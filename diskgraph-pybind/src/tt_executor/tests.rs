@@ -1633,7 +1633,7 @@
         fn read_node_ids(path: &Path) -> Vec<u64> {
             std::fs::read(path)
                 .unwrap()
-                .chunks_exact(8)
+                .as_chunks::<8>().0.iter()
                 .map(|chunk| {
                     let mut raw = [0u8; 8];
                     raw.copy_from_slice(chunk);
@@ -1736,7 +1736,7 @@
         fn read_u64s(path: &Path) -> Vec<u64> {
             std::fs::read(path)
                 .unwrap()
-                .chunks_exact(8)
+                .as_chunks::<8>().0.iter()
                 .map(|chunk| {
                     let mut raw = [0u8; 8];
                     raw.copy_from_slice(chunk);
@@ -1748,7 +1748,7 @@
         fn read_f64s(path: &Path) -> Vec<f64> {
             std::fs::read(path)
                 .unwrap()
-                .chunks_exact(8)
+                .as_chunks::<8>().0.iter()
                 .map(|chunk| {
                     let mut raw = [0u8; 8];
                     raw.copy_from_slice(chunk);
