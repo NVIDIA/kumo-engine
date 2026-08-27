@@ -4902,6 +4902,10 @@ impl RemoteObject {
         if start > end || end > self.size {
             return Err(anyhow!("remote object range is outside the object"));
         }
+        // Parquet may request zero-byte page bodies; object_store rejects empty ranges.
+        if start == end {
+            return Ok(Bytes::new());
+        }
         let pooled = self
             .transfer
             .get_range_blocking_condition(self.path.clone(), start..end, self.condition.clone())
@@ -5007,6 +5011,24 @@ mod remote_range_reader_tests {
 
         let reader = ResidentReader::Remote(object);
         assert_eq!(reader.get_bytes(100, 33).unwrap(), payload.slice(100..133));
+    }
+
+    #[test]
+    fn remote_reader_supports_zero_length_ranges_without_requesting_store() {
+        let store = Arc::new(InMemory::new());
+        let transfer = CloudTransfer::new(store, CloudTransferConfig::from_env());
+        let object = Arc::new(RemoteObject {
+            transfer,
+            path: object_store::path::Path::from("missing.bin"),
+            size: 10,
+            condition: None,
+        });
+        let reader = ResidentReader::Remote(Arc::clone(&object));
+
+        assert_eq!(reader.get_bytes(5, 0).unwrap(), Bytes::new());
+        assert_eq!(reader.get_bytes(10, 0).unwrap(), Bytes::new());
+        assert!(reader.get_bytes(11, 0).is_err());
+        assert!(object.read_range(6, 5).is_err());
     }
 }
 
