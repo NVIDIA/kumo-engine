@@ -36,7 +36,7 @@ const FREQUENCY_COL: &str = "__kumo_internal_frequency_column__";
 /// STATIC LP past-visit exclude key-list column emitted by `route_per_link` on
 /// every stage (empty on train; prior-stage target union on val/test). Ingest
 /// resolves it into the `exclude_node_ids` rowpack column.
-const EXCLUDE_TARGET_KEYS_COL: &str = "exclude_target_keys";
+pub const EXCLUDE_TARGET_KEYS_COL: &str = "exclude_target_keys";
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ForecastingHorizonPolicy {

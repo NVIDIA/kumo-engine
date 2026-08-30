@@ -50,6 +50,7 @@ use diskgraph_ingest::databricks::{
 };
 use diskgraph_ingest::graph_config::DataSource;
 use diskgraph_train_table::ttgen_executor::CustomTtSource;
+use diskgraph_train_table::route::EXCLUDE_TARGET_KEYS_COL;
 use diskgraph_train_table::ttgen_output::{PRIMARY_ENTITY_COL, PRIMARY_TARGET_COL};
 use parquet::arrow::ArrowWriter;
 use pyo3::prelude::*;
@@ -377,10 +378,19 @@ fn build_fkey_mapping(
 /// resolves the LHS `ENTITY1 → entity_node_id`; LP TRAIN additionally resolves
 /// `TARGET1 → target_node_ids`. Predict suppresses the TARGET1 spec (no such
 /// column in a prediction seed table) — see [`build_fkey_mapping`].
+///
+/// `per_link_excludes` mirrors the native PQL path's third spec: a per-link
+/// split appends `exclude_target_keys` (prior-stage RHS keys on val/test rows)
+/// and the engine hydrates the past-visit exclude set from `exclude_node_ids`.
+/// Without the spec the column is never resolved, the engine's lookup misses,
+/// and evaluation silently ranks against already-visited targets. It must track
+/// `per_link_output_schema` exactly: a declared-but-absent source column is a
+/// hard ingest error, not a skip.
 fn build_lp_resolution(
     entity_table_name: &str,
     target_entity_table: Option<&str>,
     is_prediction: bool,
+    per_link_excludes: bool,
 ) -> Option<Vec<RefResolveSpec>> {
     target_entity_table.map(|target_table| {
         let mut specs = vec![RefResolveSpec {
@@ -396,9 +406,22 @@ fn build_lp_resolution(
                 kind: RefResolveKind::List,
                 node_id_col: "target_node_ids".to_string(),
             });
+            if per_link_excludes {
+                specs.push(RefResolveSpec {
+                    src_col: EXCLUDE_TARGET_KEYS_COL.to_string(),
+                    dst_table: target_table.to_string(),
+                    kind: RefResolveKind::List,
+                    node_id_col: "exclude_node_ids".to_string(),
+                });
+            }
         }
         specs
     })
+}
+
+/// Gen appends `exclude_target_keys` only on the fused per-link pass-B path.
+fn emits_per_link_excludes(split_kind: Option<&str>) -> bool {
+    matches!(split_kind, Some("RandomLinkSplit") | Some("CustomLinkSplit"))
 }
 
 /// Shared gen-only bundle builder for both the TRAIN and PREDICT custom-TT
@@ -489,7 +512,12 @@ fn build_bundle_for_existing_table(
             target_entity_table,
             is_prediction,
         )),
-        lp_resolution: build_lp_resolution(entity_table_name, target_entity_table, is_prediction),
+        lp_resolution: build_lp_resolution(
+            entity_table_name,
+            target_entity_table,
+            is_prediction,
+            emits_per_link_excludes(split_kind_for_meta.as_deref()),
+        ),
         // Same grouping gate as the native PQL path: Kumo computes RHS
         // temporality from graph metadata and passes it through this bridge.
         lp_rhs_is_temporal,
@@ -624,9 +652,11 @@ fn build_bundle_for_existing_table(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_fkey_mapping, build_lp_resolution, custom_tt_artifact_base, path_with_suffix,
+        build_fkey_mapping, build_lp_resolution, custom_tt_artifact_base,
+        emits_per_link_excludes, path_with_suffix,
     };
     use diskgraph_core::tt_builder::RefResolveKind;
+    use diskgraph_train_table::route::EXCLUDE_TARGET_KEYS_COL;
     use diskgraph_train_table::ttgen_output::{PRIMARY_ENTITY_COL, PRIMARY_TARGET_COL};
     use std::path::{Path, PathBuf};
 
@@ -640,7 +670,7 @@ mod tests {
         assert_eq!(fkeys[1].src_col, PRIMARY_TARGET_COL);
         assert_eq!(fkeys[1].dst_table, "products");
 
-        let res = build_lp_resolution("users", Some("products"), false)
+        let res = build_lp_resolution("users", Some("products"), false, false)
             .expect("LP plan must have resolution");
         assert_eq!(res.len(), 2);
         assert_eq!(res[0].src_col, PRIMARY_ENTITY_COL);
@@ -660,12 +690,40 @@ mod tests {
         assert_eq!(fkeys[0].src_col, PRIMARY_ENTITY_COL);
         assert!(fkeys.iter().all(|f| f.src_col != PRIMARY_TARGET_COL));
 
-        let res = build_lp_resolution("users", Some("products"), true)
+        let res = build_lp_resolution("users", Some("products"), true, true)
             .expect("LP plan must still resolve the entity");
         assert_eq!(res.len(), 1);
         assert_eq!(res[0].src_col, PRIMARY_ENTITY_COL);
         assert_eq!(res[0].kind, RefResolveKind::Scalar);
         assert!(res.iter().all(|r| r.src_col != PRIMARY_TARGET_COL));
+    }
+
+    #[test]
+    fn per_link_lp_train_plan_resolves_past_visit_excludes() {
+        // A per-link split appends `exclude_target_keys` at gen; without this
+        // third spec the column is never resolved into `exclude_node_ids`, the
+        // engine's lookup misses, and eval ranks against already-visited
+        // targets -- silently, since nothing on that path warns.
+        let res = build_lp_resolution("users", Some("products"), false, true)
+            .expect("LP plan must have resolution");
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[2].src_col, EXCLUDE_TARGET_KEYS_COL);
+        assert_eq!(res[2].node_id_col, "exclude_node_ids");
+        assert_eq!(res[2].kind, RefResolveKind::List);
+        // Resolved against the SAME RHS table as the positives, or the ids
+        // would land in a different node space than the score matrix.
+        assert_eq!(res[2].dst_table, res[1].dst_table);
+    }
+
+    #[test]
+    fn exclude_spec_tracks_the_split_kinds_that_emit_the_column() {
+        // A declared-but-absent src_col is a hard ingest error, so this gate
+        // must match `per_link_output_schema` exactly.
+        assert!(emits_per_link_excludes(Some("RandomLinkSplit")));
+        assert!(emits_per_link_excludes(Some("CustomLinkSplit")));
+        for kind in [None, Some("RandomSplit"), Some("TimeRangeSplit"), Some("ManualSplit")] {
+            assert!(!emits_per_link_excludes(kind), "{kind:?} does not emit the column");
+        }
     }
 
     #[test]
@@ -676,7 +734,7 @@ mod tests {
             let fkeys = build_fkey_mapping("users", None, is_prediction);
             assert_eq!(fkeys.len(), 1);
             assert_eq!(fkeys[0].src_col, PRIMARY_ENTITY_COL);
-            assert!(build_lp_resolution("users", None, is_prediction).is_none());
+            assert!(build_lp_resolution("users", None, is_prediction, true).is_none());
         }
     }
 
