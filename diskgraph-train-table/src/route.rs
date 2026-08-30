@@ -26,7 +26,7 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use arrow_select::filter::filter_record_batch;
 use diskgraph_core::time::UnitSystem;
-use diskgraph_core::tt_builder::{Value, PRIMARY_ENTITY_COL, PRIMARY_TARGET_COL};
+use diskgraph_core::tt_builder::{Value, PRIMARY_ENTITY_COL, PRIMARY_TARGET_COL, WEIGHT_COL};
 
 use crate::errors::{TTGenError, TTGenResult};
 use crate::pass_b::{INCLUDE_MASK_COL, TIMESTAMP_COL};
@@ -327,11 +327,12 @@ pub(crate) fn route_per_link(
     for row_idx in 0..exploded.row_targets.len() {
         let targets = &exploded.row_targets[row_idx];
         let freqs = &exploded.row_freqs[row_idx];
+        let weights = &exploded.row_weights[row_idx];
         // Per-stage sub-lists for THIS anchor row.
-        let mut sub: [(Vec<ScalarCell>, Vec<i64>); 3] = [
-            (Vec::new(), Vec::new()),
-            (Vec::new(), Vec::new()),
-            (Vec::new(), Vec::new()),
+        let mut sub: [(Vec<ScalarCell>, Vec<i64>, Vec<f64>); 3] = [
+            (Vec::new(), Vec::new(), Vec::new()),
+            (Vec::new(), Vec::new(), Vec::new()),
+            (Vec::new(), Vec::new(), Vec::new()),
         ];
         for link_idx in 0..targets.len() {
             let stage = match assigner {
@@ -364,6 +365,9 @@ pub(crate) fn route_per_link(
                 let s = stage as usize;
                 sub[s].0.push(targets[link_idx].clone());
                 sub[s].1.push(freqs[link_idx]);
+                if !weights.is_empty() {
+                    sub[s].2.push(weights[link_idx]);
+                }
             }
         }
         // STATIC LP past-visit exclusion: prior-stage target unions for THIS
@@ -381,6 +385,7 @@ pub(crate) fn route_per_link(
                 row_idx,
                 std::mem::take(&mut sub[stage].0),
                 std::mem::take(&mut sub[stage].1),
+                std::mem::take(&mut sub[stage].2),
                 std::mem::take(&mut stage_excludes[stage]),
             );
         }
@@ -430,6 +435,7 @@ struct StageBuffers {
     source_row_idxs: Vec<usize>,
     targets: Vec<Vec<ScalarCell>>,
     freqs: Vec<Vec<i64>>,
+    weights: Vec<Vec<f64>>,
     /// STATIC LP past-visit exclusion key-list per output row (same item dtype
     /// as `targets`); see the exclude-union logic in `route_per_link`.
     excludes: Vec<Vec<ScalarCell>>,
@@ -441,6 +447,7 @@ impl StageBuffers {
             source_row_idxs: Vec::new(),
             targets: Vec::new(),
             freqs: Vec::new(),
+            weights: Vec::new(),
             excludes: Vec::new(),
         }
     }
@@ -449,11 +456,13 @@ impl StageBuffers {
         src: usize,
         targets: Vec<ScalarCell>,
         freqs: Vec<i64>,
+        weights: Vec<f64>,
         excludes: Vec<ScalarCell>,
     ) {
         self.source_row_idxs.push(src);
         self.targets.push(targets);
         self.freqs.push(freqs);
+        self.weights.push(weights);
         self.excludes.push(excludes);
     }
 }
@@ -467,6 +476,7 @@ struct BatchExplodedLinkData {
     /// `row_freqs[row_idx]` = the frequency values for that row (`1`s when no
     /// frequency column is present).
     row_freqs: Vec<Vec<i64>>,
+    row_weights: Vec<Vec<f64>>,
     /// `row_scalar_cols[col_idx][row_idx]` = the scalar passthrough value at
     /// that input column for that row. Empty for the target/freq/split cols.
     row_scalar_cols: Vec<Vec<ScalarCell>>,
@@ -480,6 +490,7 @@ struct BatchExplodedLinkData {
     schema: SchemaRef,
     target_idx: usize,
     freq_idx: Option<usize>,
+    weight_idx: Option<usize>,
     split_col_idx: Option<usize>,
 }
 
@@ -514,6 +525,15 @@ impl BatchExplodedLinkData {
                 for row in &buf.freqs {
                     for f in row {
                         b.values().append_value(*f);
+                    }
+                    b.append(true);
+                }
+                Arc::new(b.finish())
+            } else if Some(col_idx) == self.weight_idx {
+                let mut b = ListBuilder::new(Float64Builder::new());
+                for row in &buf.weights {
+                    for w in row {
+                        b.values().append_value(*w);
                     }
                     b.append(true);
                 }
@@ -560,6 +580,10 @@ fn collect_link_array_from_batch(
         ));
     }
     let freq_idx = schema.index_of(FREQUENCY_COL).ok();
+    let weight_idx = schema
+        .index_of(WEIGHT_COL)
+        .ok()
+        .filter(|&i| matches!(schema.field(i).data_type(), DataType::List(_)));
 
     let split_col_idx = if let Some(name) = split_col_name {
         let idx = schema.index_of(name).map_err(|_| {
@@ -603,6 +627,19 @@ fn collect_link_array_from_batch(
     } else {
         None
     };
+    let weight_list = if let Some(wi) = weight_idx {
+        Some(
+            batch
+                .column(wi)
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .ok_or_else(|| {
+                    TTGenError::SystemError("route_per_link: WEIGHT column must be ListArray".to_string())
+                })?,
+        )
+    } else {
+        None
+    };
     let split_list = if let Some(sci) = split_col_idx {
         Some(
             batch
@@ -632,6 +669,7 @@ fn collect_link_array_from_batch(
     let nrows = batch.num_rows();
     let mut row_targets: Vec<Vec<ScalarCell>> = Vec::with_capacity(nrows);
     let mut row_freqs: Vec<Vec<i64>> = Vec::with_capacity(nrows);
+    let mut row_weights: Vec<Vec<f64>> = Vec::with_capacity(nrows);
     let mut row_scalar_cols: Vec<Vec<ScalarCell>> = vec![Vec::new(); schema.fields().len()];
     let mut row_anchor_ts: Vec<i64> = Vec::with_capacity(nrows);
     let mut row_anchor_entity: Vec<Value> = Vec::with_capacity(nrows);
@@ -670,6 +708,34 @@ fn collect_link_array_from_batch(
             vec![1; targets.len()]
         };
 
+        let weights = if let Some(wlist) = weight_list {
+            let wvals = wlist.values();
+            let warr = wvals.as_any().downcast_ref::<Float64Array>().ok_or_else(|| {
+                TTGenError::SystemError("route_per_link: WEIGHT list items must be Float64".to_string())
+            })?;
+            let ws = wlist.value_offsets()[i] as usize;
+            let we = wlist.value_offsets()[i + 1] as usize;
+            if we - ws != targets.len() {
+                return Err(TTGenError::SystemError(format!(
+                    "route_per_link: WEIGHT/target length mismatch at row {i}: weight={} target={}",
+                    we - ws,
+                    targets.len()
+                )));
+            }
+            let mut wv = Vec::with_capacity(we - ws);
+            for j in ws..we {
+                if warr.is_null(j) {
+                    return Err(TTGenError::SystemError(format!(
+                        "route_per_link: WEIGHT has a null element at row {i}"
+                    )));
+                }
+                wv.push(warr.value(j));
+            }
+            wv
+        } else {
+            Vec::new()
+        };
+
         if let (Some(slist), Some(out)) = (split_list, link_split_values.as_mut()) {
             let svals = slist.values();
             let ss = slist.value_offsets()[i] as usize;
@@ -698,11 +764,16 @@ fn collect_link_array_from_batch(
 
         row_targets.push(targets);
         row_freqs.push(freqs);
+        row_weights.push(weights);
         row_anchor_ts.push(ts_arr.value(i));
         row_anchor_entity.push(read_entity_value_at(entity_col, i)?);
 
         for col_idx in 0..schema.fields().len() {
-            if col_idx == target_idx || Some(col_idx) == freq_idx || Some(col_idx) == split_col_idx {
+            if col_idx == target_idx
+                || Some(col_idx) == freq_idx
+                || Some(col_idx) == weight_idx
+                || Some(col_idx) == split_col_idx
+            {
                 continue;
             }
             let field = schema.field(col_idx);
@@ -723,6 +794,7 @@ fn collect_link_array_from_batch(
     Ok(BatchExplodedLinkData {
         row_targets,
         row_freqs,
+        row_weights,
         row_scalar_cols,
         row_anchor_ts,
         row_anchor_entity,
@@ -730,6 +802,7 @@ fn collect_link_array_from_batch(
         schema,
         target_idx,
         freq_idx,
+        weight_idx,
         split_col_idx,
     })
 }

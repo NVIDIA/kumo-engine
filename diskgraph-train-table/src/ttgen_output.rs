@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use crate::errors::{TTGenError, TTGenResult};
 use crate::ttgen_resolve::{AUTOREGRESSION_OUTPUT_ALIAS, FUTURE_LABELS_OUTPUT_ALIAS, YOY_OUTPUT_ALIAS};
-use arrow_array::builder::{Int64Builder, ListBuilder, StringBuilder};
+use arrow_array::builder::{Float64Builder, Int64Builder, ListBuilder, StringBuilder};
 use arrow_array::{
     BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
     TimestampNanosecondArray,
@@ -126,6 +126,10 @@ pub struct ChannelBatchWriter<U: UnitSystem> {
     /// drains it into the reserved `WEIGHT` column (no sidecar). PQ path leaves
     /// it `None` — invariant: `weight_col implies chunk processor`.
     weight_buf: Option<Vec<f64>>,
+
+    /// Set instead of `weight_buf` when the target is an array; exactly one
+    /// of the two is ever `Some`.
+    weight_list_buf: Option<Vec<Vec<f64>>>,
 
     _unit: PhantomData<U>,
 }
@@ -322,6 +326,7 @@ impl<U: UnitSystem> ChannelBatchWriter<U> {
             target_value_bufs,
             target_value_list_bufs,
             frequency_list_buf: Vec::new(),
+            weight_list_buf: None,
             autoregression_list_buf: Vec::new(),
             future_labels_list_buf: Vec::new(),
             yoy_list_buf: Vec::new(),
@@ -339,7 +344,7 @@ impl<U: UnitSystem> ChannelBatchWriter<U> {
     /// field to the schema). Only the custom-TT path calls this. Errors on a
     /// reserved-name collision with an existing `WEIGHT` column.
     pub fn enable_weight_buf(&mut self) -> TTGenResult<()> {
-        if self.weight_buf.is_some() {
+        if self.weight_buf.is_some() || self.weight_list_buf.is_some() {
             return Ok(());
         }
         if self.schema.fields().iter().any(|f| f.name() == WEIGHT_COL) {
@@ -348,6 +353,17 @@ impl<U: UnitSystem> ChannelBatchWriter<U> {
                  weights but a feature/output column already uses it"
             )));
         }
+        // An array target supervises one edge per element, so a scalar weight
+        // could only weight the whole anchor. A predict bundle has no TARGETk.
+        let per_element = matches!(
+            self.mode,
+            OutputMode::LinkArray { ref target_dtypes, .. } if !target_dtypes.is_empty()
+        );
+        let weight_type = if per_element {
+            DataType::List(Arc::new(Field::new("item", DataType::Float64, true)))
+        } else {
+            DataType::Float64
+        };
         // Append the reserved WEIGHT field to the schema so flush_batch can
         // emit it. Safe here because no rows are buffered yet.
         let mut fields: Vec<Field> = self
@@ -356,10 +372,18 @@ impl<U: UnitSystem> ChannelBatchWriter<U> {
             .iter()
             .map(|f| f.as_ref().clone())
             .collect();
-        fields.push(Field::new(WEIGHT_COL, DataType::Float64, false));
+        fields.push(Field::new(WEIGHT_COL, weight_type, false));
         self.schema = Arc::new(Schema::new(fields));
-        self.weight_buf = Some(Vec::new());
+        if per_element {
+            self.weight_list_buf = Some(Vec::new());
+        } else {
+            self.weight_buf = Some(Vec::new());
+        }
         Ok(())
+    }
+
+    pub(crate) fn weight_is_per_element(&self) -> bool {
+        self.weight_list_buf.is_some()
     }
 
     /// Push one weight, called per emitted output row by the chunk
@@ -368,6 +392,13 @@ impl<U: UnitSystem> ChannelBatchWriter<U> {
     pub fn push_weight(&mut self, weight: f64) {
         if let Some(buf) = self.weight_buf.as_mut() {
             buf.push(weight);
+        }
+    }
+
+    #[inline]
+    pub fn push_weight_list(&mut self, weights: Vec<f64>) {
+        if let Some(buf) = self.weight_list_buf.as_mut() {
+            buf.push(weights);
         }
     }
 
@@ -880,6 +911,24 @@ impl<U: UnitSystem> ChannelBatchWriter<U> {
             let rest = buf.split_off(n);
             let head = std::mem::replace(buf, rest);
             columns.push(Arc::new(Float64Array::from(head)));
+        }
+        if let Some(buf) = self.weight_list_buf.as_mut() {
+            debug_assert!(
+                buf.len() >= n_rows_for_weight,
+                "weight_list_buf has {} rows but batch needs {}",
+                buf.len(),
+                n_rows_for_weight
+            );
+            let rest = buf.split_off(n_rows_for_weight);
+            let head = std::mem::replace(buf, rest);
+            let mut builder = ListBuilder::new(Float64Builder::new());
+            for list in &head {
+                for &w in list {
+                    builder.values().append_value(w);
+                }
+                builder.append(true);
+            }
+            columns.push(Arc::new(builder.finish()));
         }
 
         let batch = RecordBatch::try_new(self.schema.clone(), columns)

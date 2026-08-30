@@ -372,6 +372,22 @@ fn validate_staging_artifact_types(
     Ok(())
 }
 
+fn weight_col_is_per_element(parts: &[std::path::PathBuf]) -> bool {
+    let Some(first) = parts.first() else {
+        return false;
+    };
+    let Ok(file) = std::fs::File::open(first) else {
+        return false;
+    };
+    let Ok(builder) = ParquetRecordBatchReaderBuilder::try_new(file) else {
+        return false;
+    };
+    let schema = builder.schema();
+    schema
+        .column_with_name(diskgraph_train_table::ttgen_output::WEIGHT_COL)
+        .is_some_and(|(_, f)| matches!(f.data_type(), arrow_schema::DataType::List(_)))
+}
+
 fn validate_stage_parts(
     staging_dir: &Path,
     info: &StageGenInfo,
@@ -563,14 +579,19 @@ pub(crate) fn resolve_ingest_stages(
             infos
                 .iter()
                 .map(|info| {
+                    let parquet_paths = validate_stage_parts(staging_dir, info)?;
+                    let per_element_weight =
+                        info.key == "train" && weight_col_is_per_element(&parquet_paths);
                     Ok(StageSpec {
                         key: info.key.clone(),
                         table_name: info.table_name.clone(),
-                        parquet_paths: validate_stage_parts(staging_dir, info)?,
+                        parquet_paths,
                         seed_time: info.seed_time,
                         binary_label_column: (info.key == "train")
                             .then(|| PRIMARY_TARGET_COL.to_string()),
-                        sample_weight_column: (info.key == "train")
+                        // Seed sampling weights whole rows; a per-element
+                        // weight has no per-row value to sample by.
+                        sample_weight_column: (info.key == "train" && !per_element_weight)
                             .then(|| diskgraph_train_table::ttgen_output::WEIGHT_COL.to_string()),
                     })
                 })

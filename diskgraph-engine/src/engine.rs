@@ -1268,6 +1268,7 @@ impl DiskGraphEngine {
         // ONLY model that roots + uses engine negatives; shallow/id/hybrid stay on
         // the label-only path (`target_node_type` set, `negatives = None`).
         let mut pair_from_array_mask: Option<Vec<bool>> = None;
+        let mut pair_from_array_offsets: Vec<Option<usize>> = Vec::new();
         if let (Some(spec), Some(_tn_type)) = (negatives, target_node_type) {
             // Only root when the rhs slot is empty (the FK-free label path always
             // leaves it empty; a future FK-edge path that pre-seeds rhs is left
@@ -1311,6 +1312,7 @@ impl DiskGraphEngine {
                     map.insert(spec.rhs_node_type.clone(), ts.clone());
                 }
                 pair_from_array_mask = Some(pair.mask);
+                pair_from_array_offsets = pair.chosen_offset;
             }
         }
 
@@ -1514,8 +1516,13 @@ impl DiskGraphEngine {
                 runtime_batch.task.lp_pos_rhs_global = ragged.rhs_global;
                 runtime_batch.task.lp_pos_mask = ragged.mask;
                 if pair_from_array_mask.is_none() {
+                    // A list WEIGHT is the customer's per-positive weight and
+                    // supersedes the frequency counts, which are not weights.
                     runtime_batch.task.lp_pos_weight =
-                        read_lp_frequency_weights(rb, &runtime_batch.task.lp_pos_counts)?;
+                        match read_lp_list_weights(rb, &runtime_batch.task.lp_pos_counts)? {
+                            Some(w) => Some(w),
+                            None => read_lp_frequency_weights(rb, &runtime_batch.task.lp_pos_counts)?,
+                        };
                 }
                 // `lp_pos_local` stays None on the label-only path (positives are
                 // never rooted).
@@ -1539,6 +1546,8 @@ impl DiskGraphEngine {
                     runtime_batch.task.lp_pos_rhs_global = chosen;
                     runtime_batch.task.lp_pos_mask = pf_mask;
                     runtime_batch.task.lp_pos_local = Some((0..b as u32).collect());
+                    runtime_batch.task.lp_pos_weight =
+                        read_lp_rooted_weights(rb, &pair_from_array_offsets, b)?;
                 }
             }
             // STATIC LP past-visit exclusion (eval-only). The resolved
@@ -2732,6 +2741,9 @@ pub(crate) struct PairFromArray {
     /// positive (empty list / unresolved); the rooted id is a placeholder.
     /// Same convention as `lp_pos_mask` / `neg_mask` (`true` == drop).
     pub mask: Vec<bool>,
+    /// Offset of the rooted positive, so a per-element column can be sampled
+    /// at the same place. `None` when masked.
+    pub chosen_offset: Vec<Option<usize>>,
 }
 
 /// `pair_from_array` (FK-free design §S4): explode a two-tower anchor's
@@ -2765,6 +2777,7 @@ pub(crate) fn pair_from_array(
     let mut out = PairFromArray {
         chosen_rhs: Vec::with_capacity(n),
         mask: Vec::with_capacity(n),
+        chosen_offset: Vec::with_capacity(n),
     };
 
     // Sample one offset within a row's [0, len) list. Mirrors the negative
@@ -2785,15 +2798,17 @@ pub(crate) fn pair_from_array(
 
     // Resolve the chosen element of row `i`'s list (or the scalar fallback) into
     // (id, mask) and push it. Shared by the List / LargeList / scalar arms.
-    let mut push_choice = |out: &mut PairFromArray, value: Option<Value>| {
+    let mut push_choice = |out: &mut PairFromArray, value: Option<Value>, offset: Option<usize>| {
         match value.and_then(|v| resolve(&v)) {
             Some(id) => {
                 out.chosen_rhs.push(id);
                 out.mask.push(false);
+                out.chosen_offset.push(offset);
             }
             None => {
                 out.chosen_rhs.push(0);
                 out.mask.push(true);
+                out.chosen_offset.push(None);
             }
         }
     };
@@ -2804,6 +2819,7 @@ pub(crate) fn pair_from_array(
             if list.is_null(i) {
                 out.chosen_rhs.push(0);
                 out.mask.push(true);
+                out.chosen_offset.push(None);
                 continue;
             }
             let start = list.value_offsets()[i] as usize;
@@ -2812,10 +2828,11 @@ pub(crate) fn pair_from_array(
             if len == 0 {
                 out.chosen_rhs.push(0);
                 out.mask.push(true);
+                out.chosen_offset.push(None);
                 continue;
             }
-            let pos = start + sample_offset(i, len);
-            push_choice(&mut out, list_child_to_value(child.as_ref(), pos));
+            let off = sample_offset(i, len);
+            push_choice(&mut out, list_child_to_value(child.as_ref(), start + off), Some(off));
         }
         return out;
     }
@@ -2825,6 +2842,7 @@ pub(crate) fn pair_from_array(
             if list.is_null(i) {
                 out.chosen_rhs.push(0);
                 out.mask.push(true);
+                out.chosen_offset.push(None);
                 continue;
             }
             let start = list.value_offsets()[i] as usize;
@@ -2833,17 +2851,18 @@ pub(crate) fn pair_from_array(
             if len == 0 {
                 out.chosen_rhs.push(0);
                 out.mask.push(true);
+                out.chosen_offset.push(None);
                 continue;
             }
-            let pos = start + sample_offset(i, len);
-            push_choice(&mut out, list_child_to_value(child.as_ref(), pos));
+            let off = sample_offset(i, len);
+            push_choice(&mut out, list_child_to_value(child.as_ref(), start + off), Some(off));
         }
         return out;
     }
 
     // Scalar single-positive fallback: one positive per row, no offset sampling.
     for i in 0..n {
-        push_choice(&mut out, cell_to_value(col, i));
+        push_choice(&mut out, cell_to_value(col, i), Some(0));
     }
     out
 }
@@ -2985,6 +3004,75 @@ pub(crate) fn project_seed_rowpack(
     Ok((project(&target_indices)?, project(&feature_indices)?))
 }
 
+fn read_lp_rooted_weights(
+    rb: &arrow_array::RecordBatch,
+    offsets: &[Option<usize>],
+    b: usize,
+) -> Result<Option<Vec<f32>>> {
+    use arrow_array::Array;
+
+    if !lp_list_weight_present(rb) {
+        return Ok(None);
+    }
+    let idx = rb.schema().index_of(WEIGHT_COL).expect("checked above");
+    let col = rb.column(idx);
+    let (values, offs): (arrow_array::ArrayRef, Vec<usize>) =
+        if let Some(l) = col.as_any().downcast_ref::<arrow_array::ListArray>() {
+            (
+                l.values().clone(),
+                l.value_offsets().iter().map(|&o| o as usize).collect(),
+            )
+        } else if let Some(l) = col.as_any().downcast_ref::<arrow_array::LargeListArray>() {
+            (
+                l.values().clone(),
+                l.value_offsets().iter().map(|&o| o as usize).collect(),
+            )
+        } else {
+            return Ok(None);
+        };
+    (0..b)
+        .map(
+            |i| match (offsets.get(i).copied().flatten(), offs.get(i), offs.get(i + 1)) {
+                (Some(off), Some(&start), Some(&end)) if start + off < end => {
+                    lp_weight_value(values.as_ref(), start + off)
+                }
+                _ => Ok(1.0),
+            },
+        )
+        .collect::<Result<Vec<f32>>>()
+        .map(Some)
+}
+
+fn lp_list_weight_present(rb: &arrow_array::RecordBatch) -> bool {
+    rb.schema().index_of(WEIGHT_COL).is_ok_and(|idx| {
+        matches!(
+            rb.column(idx).data_type(),
+            arrow_schema::DataType::List(_) | arrow_schema::DataType::LargeList(_)
+        )
+    })
+}
+
+fn read_lp_list_weights(
+    rb: &arrow_array::RecordBatch,
+    counts: &[u32],
+) -> Result<Option<Vec<f32>>> {
+    if !lp_list_weight_present(rb) {
+        return Ok(None);
+    }
+    let idx = rb.schema().index_of(WEIGHT_COL).expect("checked above");
+    let col = rb.column(idx);
+    let weights = hydrate_ragged_lp_weights(col.as_ref())?;
+    let expected = counts.iter().map(|&c| c as usize).sum::<usize>();
+    if weights.len() != expected {
+        return Err(EngineError::DataCorruption(format!(
+            "seed rowpack `{WEIGHT_COL}` length mismatch: got {} weights for {} positives",
+            weights.len(),
+            expected
+        )));
+    }
+    Ok(Some(weights))
+}
+
 fn read_lp_frequency_weights(
     rb: &arrow_array::RecordBatch,
     counts: &[u32],
@@ -3060,7 +3148,7 @@ fn lp_weight_value(col: &dyn arrow_array::Array, idx: usize) -> Result<f32> {
         return Ok(a.value(idx));
     }
     Err(EngineError::DataCorruption(format!(
-        "seed rowpack `{FREQUENCY_COL}` column must contain numeric weights, got {:?}",
+        "seed rowpack ragged weight column must contain numeric weights, got {:?}",
         col.data_type()
     )))
 }
@@ -3076,6 +3164,9 @@ fn read_weight_column(rb: &arrow_array::RecordBatch) -> Result<Option<Vec<f32>>>
         return Ok(None);
     };
     let col = rb.column(idx);
+    if lp_list_weight_present(rb) {
+        return Ok(None);
+    }
     let arr = col
         .as_any()
         .downcast_ref::<arrow_array::Float64Array>()

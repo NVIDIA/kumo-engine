@@ -38,7 +38,7 @@ use std::sync::Arc;
 
 use arrow_array::{
     Array, Decimal128Array, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array,
-    Int64Array, ListArray, RecordBatch, StringArray, TimestampMicrosecondArray,
+    Int64Array, LargeListArray, ListArray, RecordBatch, StringArray, TimestampMicrosecondArray,
     TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray,
 };
 use arrow_schema::DataType;
@@ -372,6 +372,61 @@ fn read_list_values(arr: &dyn Array, idx: usize) -> Option<Vec<Value>> {
             Some(Value::List(values)) => Some(values),
             _ => None,
         })
+}
+
+fn weight_slice_f64(values: &dyn Array, start: usize, end: usize, row: usize) -> TTGenResult<Vec<f64>> {
+    macro_rules! typed {
+        ($ty:ty) => {
+            if let Some(a) = values.as_any().downcast_ref::<$ty>() {
+                return (start..end)
+                    .map(|j| {
+                        if a.is_null(j) {
+                            return Err(TTGenError::SchemaError(format!(
+                                "custom-TT weight has a null element at source row {row}"
+                            )));
+                        }
+                        let w = a.value(j) as f64;
+                        if !w.is_finite() {
+                            return Err(TTGenError::SchemaError(format!(
+                                "custom-TT weight is not finite at source row {row}"
+                            )));
+                        }
+                        Ok(w)
+                    })
+                    .collect();
+            }
+        };
+    }
+    typed!(Float64Array);
+    typed!(Float32Array);
+    typed!(Int64Array);
+    typed!(Int32Array);
+    typed!(Int16Array);
+    typed!(Int8Array);
+    Err(TTGenError::SchemaError(format!(
+        "custom-TT weight elements must be numeric; found Arrow type {}",
+        values.data_type()
+    )))
+}
+
+fn read_weight_list_f64(arr: &dyn Array, idx: usize) -> TTGenResult<Vec<f64>> {
+    if arr.is_null(idx) {
+        return Err(TTGenError::SchemaError(format!(
+            "custom-TT weight is null at source row {idx}"
+        )));
+    }
+    if let Some(l) = arr.as_any().downcast_ref::<ListArray>() {
+        let o = l.value_offsets();
+        return weight_slice_f64(l.values().as_ref(), o[idx] as usize, o[idx + 1] as usize, idx);
+    }
+    if let Some(l) = arr.as_any().downcast_ref::<LargeListArray>() {
+        let o = l.value_offsets();
+        return weight_slice_f64(l.values().as_ref(), o[idx] as usize, o[idx + 1] as usize, idx);
+    }
+    Err(TTGenError::SchemaError(format!(
+        "custom-TT weight must be a list beside an array target; found Arrow type {}",
+        arr.data_type()
+    )))
 }
 
 fn read_i64_list_values(arr: &dyn Array, idx: usize) -> Option<Vec<i64>> {
@@ -1077,8 +1132,26 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                     (targets, freqs)
                 };
 
+                let per_element_weight = writer.weight_is_per_element();
+                let mut weights: Vec<f64> = match weight_col_idx {
+                    Some(c) if per_element_weight => {
+                        let w = read_weight_list_f64(batch.column(c).as_ref(), row_idx)?;
+                        if w.len() != targets.len() {
+                            return Err(TTGenError::SchemaError(format!(
+                                "custom-TT weight list has {} entries but the target \
+                                 has {} at source row {row_idx}",
+                                w.len(),
+                                targets.len()
+                            )));
+                        }
+                        w
+                    }
+                    _ => Vec::new(),
+                };
+
                 if let Some(pk_table) = plan.custom_target_pk_table.as_ref() {
                     let mut filtered_targets = Vec::with_capacity(targets.len());
+                    let mut filtered_weights = Vec::with_capacity(weights.len());
                     let mut filtered_freqs = if *include_frequency {
                         Vec::with_capacity(freqs.len())
                     } else {
@@ -1103,19 +1176,27 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                             if *include_frequency {
                                 filtered_freqs.push(freqs.get(idx).copied().unwrap_or(1));
                             }
+                            if per_element_weight {
+                                filtered_weights.push(weights[idx]);
+                            }
                         }
                     }
                     targets = filtered_targets;
                     if *include_frequency {
                         freqs = filtered_freqs;
                     }
+                    weights = filtered_weights;
                 }
 
                 if let Some(c) = weight_col_idx {
-                    writer.push_weight(read_weight_f64(
-                        batch.column(c).as_ref(),
-                        row_idx,
-                    )?);
+                    if per_element_weight {
+                        writer.push_weight_list(weights);
+                    } else {
+                        writer.push_weight(read_weight_f64(
+                            batch.column(c).as_ref(),
+                            row_idx,
+                        )?);
+                    }
                 }
                 let split_value = read_split_value(row_idx);
                 writer.write_row_array(

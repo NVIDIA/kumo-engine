@@ -440,21 +440,38 @@ fn synth_custom_tt_lp_array_parquet(
     ts_secs: &[i64],
     target_product_ids: &[Vec<i64>],
 ) {
+    synth_custom_tt_lp_array_parquet_inner(out_path, entity_pks, ts_secs, target_product_ids, None)
+}
+
+fn synth_custom_tt_lp_array_parquet_inner(
+    out_path: &Path,
+    entity_pks: &[i64],
+    ts_secs: &[i64],
+    target_product_ids: &[Vec<i64>],
+    weights: Option<&[Vec<f64>]>,
+) {
     assert_eq!(entity_pks.len(), ts_secs.len());
     assert_eq!(entity_pks.len(), target_product_ids.len());
     let mut entity = Int64Builder::new();
     let mut target = ListBuilder::new(Int64Builder::new());
     let mut frequency = ListBuilder::new(Int64Builder::new());
+    let mut weight = ListBuilder::new(Float64Builder::new());
     for i in 0..entity_pks.len() {
         entity.append_value(entity_pks[i]);
         for &product_id in &target_product_ids[i] {
             target.values().append_value(product_id);
             frequency.values().append_value(1);
         }
+        if let Some(w) = weights {
+            for &v in &w[i] {
+                weight.values().append_value(v);
+            }
+            weight.append(true);
+        }
         target.append(true);
         frequency.append(true);
     }
-    let fields: Vec<Field> = vec![
+    let mut fields: Vec<Field> = vec![
         Field::new("ENTITY1", DataType::Int64, false),
         Field::new(
             "TIMESTAMP",
@@ -472,7 +489,7 @@ fn synth_custom_tt_lp_array_parquet(
             true,
         ),
     ];
-    let columns: Vec<Arc<dyn Array>> = vec![
+    let mut columns: Vec<Arc<dyn Array>> = vec![
         Arc::new(entity.finish()),
         Arc::new(TimestampNanosecondArray::from(
             ts_secs.iter().map(|s| s * 1_000_000_000).collect::<Vec<_>>(),
@@ -480,6 +497,14 @@ fn synth_custom_tt_lp_array_parquet(
         Arc::new(target.finish()),
         Arc::new(frequency.finish()),
     ];
+    if weights.is_some() {
+        fields.push(Field::new(
+            "WEIGHT",
+            DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
+            true,
+        ));
+        columns.push(Arc::new(weight.finish()));
+    }
     let schema = Arc::new(Schema::new(fields));
     let batch = RecordBatch::try_new(schema, columns).unwrap();
     write_parquet(out_path, &batch);
@@ -2602,4 +2627,193 @@ fn test_custom_tt_lp_predict_emits_no_target_column() {
             .all(|c| !c.starts_with("TARGET") && c != "__kumo_internal_frequency_column__"),
         "LP predict bundle must carry no TARGET/frequency column; got {cols:?}"
     );
+}
+
+fn read_weight_lists(path: &Path) -> Vec<Vec<f64>> {
+    let file = fs::File::open(path).unwrap();
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut out = Vec::new();
+    for batch in reader {
+        let batch = batch.unwrap();
+        let idx = batch.schema().index_of("WEIGHT").expect("WEIGHT column");
+        let col = batch
+            .column(idx)
+            .as_any()
+            .downcast_ref::<arrow_array::ListArray>()
+            .expect("WEIGHT must be a ListArray beside an array target");
+        for i in 0..col.len() {
+            let cell = col.value(i);
+            let vals = cell.as_any().downcast_ref::<Float64Array>().unwrap();
+            out.push((0..vals.len()).map(|j| vals.value(j)).collect());
+        }
+    }
+    out
+}
+
+#[test]
+fn test_lp_weight_column_is_per_element() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_users_and_products_graph(dir.path(), 8, 8);
+
+    let pq = dir.path().join("custom_tt_lp_weighted.parquet");
+    let entity_pks: Vec<i64> = vec![0, 1, 2];
+    let ts_secs: Vec<i64> = vec![1_000_000; 3];
+    let targets: Vec<Vec<i64>> = vec![vec![0, 1, 2], vec![3], vec![4, 5]];
+    let weights: Vec<Vec<f64>> = vec![vec![0.5, 1.5, 2.5], vec![3.5], vec![4.5, 5.5]];
+    synth_custom_tt_lp_array_parquet_inner(&pq, &entity_pks, &ts_secs, &targets, Some(&weights));
+
+    let mut plan = make_custom_tt_lp_node_plan(None);
+    plan.prediction_type = PredictionType::Link {
+        include_frequency: true,
+    };
+    plan.weight_col = Some("WEIGHT".to_string());
+
+    let out_dir = tempfile::tempdir().unwrap();
+    let custom = CustomTtSource {
+        parquet_path: pq.clone(),
+        input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+    };
+    let pass = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
+    assert_eq!(pass.rows_written, 3);
+
+    let tt = out_dir.path().join("tt.parquet");
+    assert_eq!(read_weight_lists(&tt), weights);
+}
+
+#[test]
+fn test_lp_weight_length_mismatch_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_users_and_products_graph(dir.path(), 8, 8);
+
+    let pq = dir.path().join("custom_tt_lp_bad_weight.parquet");
+    let targets: Vec<Vec<i64>> = vec![vec![0, 1, 2]];
+    let weights: Vec<Vec<f64>> = vec![vec![1.0]];
+    synth_custom_tt_lp_array_parquet_inner(&pq, &[0], &[1_000_000], &targets, Some(&weights));
+
+    let mut plan = make_custom_tt_lp_node_plan(None);
+    plan.prediction_type = PredictionType::Link {
+        include_frequency: true,
+    };
+    plan.weight_col = Some("WEIGHT".to_string());
+
+    let out_dir = tempfile::tempdir().unwrap();
+    let custom = CustomTtSource {
+        parquet_path: pq.clone(),
+        input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+    };
+    let err = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom))
+        .expect_err("a weight list shorter than its target must not be accepted");
+    assert!(
+        format!("{err}").contains("weight list has"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn test_lp_weights_follow_their_link_across_a_split() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_users_and_products_graph(dir.path(), 8, 8);
+
+    // weight == target * 10, so any link that loses its weight is visible.
+    let pq = dir.path().join("custom_tt_lp_split_weights.parquet");
+    let entity_pks: Vec<i64> = vec![0, 1, 2, 3];
+    let ts_secs: Vec<i64> = vec![1_000_000; 4];
+    let targets: Vec<Vec<i64>> = vec![
+        vec![0, 1, 2, 3],
+        vec![4, 5, 6],
+        vec![7, 0, 1],
+        vec![2, 3, 4, 5],
+    ];
+    let weights: Vec<Vec<f64>> = targets
+        .iter()
+        .map(|row| row.iter().map(|t| *t as f64 * 10.0).collect())
+        .collect();
+    synth_custom_tt_lp_array_parquet_inner(&pq, &entity_pks, &ts_secs, &targets, Some(&weights));
+
+    let mut plan = make_custom_tt_lp_node_plan(None);
+    plan.prediction_type = PredictionType::Link {
+        include_frequency: true,
+    };
+    plan.weight_col = Some("WEIGHT".to_string());
+    plan.split = Some(SplitSpec::<Seconds> {
+        ratio: Some(vec![0.5, 0.25, 0.25]),
+        kind: Some("RandomLinkSplit".to_string()),
+        rnd_seed: Some(7),
+        is_temporal: Some(false),
+        offsets: None,
+        offset_unit: None,
+        unit: None,
+        timeframe: None,
+        anchor_start_offset: None,
+        ranges: None,
+        backtesting_timestamp: None,
+        split_column: None,
+        split_output_column: None,
+        manual_train_values: None,
+        manual_val_values: None,
+        manual_test_values: None,
+        month_offsets: None,
+        flexible_boundaries: None,
+        timeframe_step: None,
+    });
+
+    let out_dir = tempfile::tempdir().unwrap();
+    let custom = CustomTtSource {
+        parquet_path: pq.clone(),
+        input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+    };
+    let pass = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
+    let infos = pass
+        .stage_gen_infos
+        .expect("a link split must emit per-stage seed parquets");
+
+    let mut seen = 0usize;
+    for info in &infos {
+        for part in &info.parts {
+            let path = out_dir.path().join(part);
+            let stage_targets = read_target_list_column(&path);
+            let stage_weights = read_weight_lists(&path);
+            assert_eq!(stage_targets.len(), stage_weights.len());
+            for (ts, ws) in stage_targets.iter().zip(stage_weights.iter()) {
+                assert_eq!(ts.len(), ws.len(), "stage {} lost a weight", info.key);
+                for (target, weight) in ts.iter().zip(ws.iter()) {
+                    assert_eq!(
+                        *weight,
+                        *target as f64 * 10.0,
+                        "stage {} paired target {target} with weight {weight}",
+                        info.key
+                    );
+                    seen += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(seen, targets.iter().map(|r| r.len()).sum::<usize>());
+}
+
+fn read_target_list_column(path: &Path) -> Vec<Vec<i64>> {
+    let file = fs::File::open(path).unwrap();
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut out = Vec::new();
+    for batch in reader {
+        let batch = batch.unwrap();
+        let idx = batch.schema().index_of("TARGET1").unwrap();
+        let col = batch
+            .column(idx)
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .unwrap();
+        for i in 0..col.len() {
+            let cell = col.value(i);
+            let vals = cell.as_any().downcast_ref::<Int64Array>().unwrap();
+            out.push((0..vals.len()).map(|j| vals.value(j)).collect());
+        }
+    }
+    out
 }
