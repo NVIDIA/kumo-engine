@@ -134,31 +134,49 @@ fn test_varbytes_pk_extraction() -> Result<()> {
     // 1. String Table
     let path_str = input_root.join("str.parquet");
     let schema_str = Schema::new(vec![
-        Field::new("id", DataType::Utf8, false),
+        Field::new("id", DataType::Utf8, true),
         Field::new(
             "ts",
             DataType::Timestamp(arrow_schema::TimeUnit::Second, None),
             true,
         ),
     ]);
-    let ids_str = Arc::new(StringArray::from(vec!["valid", "invalid_null", ""])) as ArrayRef;
-    let tss_str =
-        Arc::new(TimestampSecondArray::from(vec![Some(100), None, Some(200)])) as ArrayRef;
+    let ids_str = Arc::new(StringArray::from(vec![
+        Some("valid"),
+        None,
+        Some(""),
+        Some("invalid_null"),
+    ])) as ArrayRef;
+    let tss_str = Arc::new(TimestampSecondArray::from(vec![
+        Some(100),
+        Some(150),
+        Some(200),
+        None,
+    ])) as ArrayRef;
     write_parquet(&path_str, schema_str, vec![ids_str, tss_str])?;
 
     // 2. Bytes Table
     let path_bin = input_root.join("bin.parquet");
     let schema_bin = Schema::new(vec![
-        Field::new("id", DataType::Binary, false),
+        Field::new("id", DataType::Binary, true),
         Field::new(
             "ts",
             DataType::Timestamp(arrow_schema::TimeUnit::Second, None),
             true,
         ),
     ]);
-    let ids_bin = Arc::new(BinaryArray::from(vec![b"AAAA".as_ref(), b"BBBB".as_ref()])) as ArrayRef;
-    // Row 2 (BBBB) has NULL timestamp
-    let tss_bin = Arc::new(TimestampSecondArray::from(vec![Some(100), None])) as ArrayRef;
+    let ids_bin = Arc::new(BinaryArray::from(vec![
+        Some(b"AAAA".as_ref()),
+        None,
+        Some(b"".as_ref()),
+        Some(b"BBBB".as_ref()),
+    ])) as ArrayRef;
+    let tss_bin = Arc::new(TimestampSecondArray::from(vec![
+        Some(100),
+        Some(150),
+        Some(200),
+        None,
+    ])) as ArrayRef;
     write_parquet(&path_bin, schema_bin, vec![ids_bin, tss_bin])?;
 
     let source = serde_json::json!({
@@ -208,6 +226,11 @@ fn test_varbytes_pk_extraction() -> Result<()> {
 
     // Check StrTable
     let table = reader.table("StrTable").unwrap();
+    assert_eq!(
+        table.node_count(),
+        2,
+        "null PK and null timestamp must drop"
+    );
     assert!(
         table
             .node_id_from_pk(&Key::Bytes(b"valid".to_vec()))
@@ -233,12 +256,24 @@ fn test_varbytes_pk_extraction() -> Result<()> {
 
     // Check BinTable
     let table = reader.table("BinTable").unwrap();
+    assert_eq!(
+        table.node_count(),
+        2,
+        "null PK and null timestamp must drop"
+    );
     assert!(
         table
             .node_id_from_pk(&Key::Bytes(b"AAAA".to_vec()))
             .unwrap()
             .is_some(),
         "id=AAAA should exist"
+    );
+    assert!(
+        table
+            .node_id_from_pk(&Key::Bytes(b"".to_vec()))
+            .unwrap()
+            .is_some(),
+        "id='' should exist"
     );
     assert!(
         table

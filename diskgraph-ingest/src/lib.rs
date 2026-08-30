@@ -16387,6 +16387,13 @@ fn key_from_access_into_buf(
     target_type: &IngestedType,
     out: &mut Vec<u8>,
 ) -> KeyParseResult<()> {
+    if access
+        .array(idx)
+        .map_err(|_| KeyParseError::TypeMismatch)?
+        .is_null(access.row())
+    {
+        return Err(KeyParseError::TypeMismatch);
+    }
     let key_type = key_type_for_dtype(target_type).map_err(|_| KeyParseError::UnsupportedType)?;
     out.clear();
     match key_type {
