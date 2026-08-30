@@ -976,19 +976,19 @@ fn test_project_seed_rowpack_routing() {
 }
 
 #[test]
-fn test_hydrate_ragged_lp_weights_from_frequency_list() {
+fn test_hydrate_ragged_lp_weights_flattens_a_ragged_list() {
     use arrow_array::builder::{Int64Builder, ListBuilder};
 
-    let mut frequency = ListBuilder::new(Int64Builder::new());
-    frequency.values().append_value(2);
-    frequency.values().append_value(5);
-    frequency.append(true);
-    frequency.values().append_value(7);
-    frequency.append(true);
-    frequency.append(true);
+    let mut weight = ListBuilder::new(Int64Builder::new());
+    weight.values().append_value(2);
+    weight.values().append_value(5);
+    weight.append(true);
+    weight.values().append_value(7);
+    weight.append(true);
+    weight.append(true);
 
     let weights =
-        crate::engine::hydrate_ragged_lp_weights(&frequency.finish()).expect("weights hydrate");
+        crate::engine::hydrate_ragged_lp_weights(&weight.finish()).expect("weights hydrate");
     assert_eq!(weights, vec![2.0, 5.0, 7.0]);
 }
 

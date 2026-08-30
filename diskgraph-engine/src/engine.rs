@@ -1516,13 +1516,8 @@ impl DiskGraphEngine {
                 runtime_batch.task.lp_pos_rhs_global = ragged.rhs_global;
                 runtime_batch.task.lp_pos_mask = ragged.mask;
                 if pair_from_array_mask.is_none() {
-                    // A list WEIGHT is the customer's per-positive weight and
-                    // supersedes the frequency counts, which are not weights.
                     runtime_batch.task.lp_pos_weight =
-                        match read_lp_list_weights(rb, &runtime_batch.task.lp_pos_counts)? {
-                            Some(w) => Some(w),
-                            None => read_lp_frequency_weights(rb, &runtime_batch.task.lp_pos_counts)?,
-                        };
+                        read_lp_list_weights(rb, &runtime_batch.task.lp_pos_counts)?;
                 }
                 // `lp_pos_local` stays None on the label-only path (positives are
                 // never rooted).
@@ -3066,25 +3061,6 @@ fn read_lp_list_weights(
     if weights.len() != expected {
         return Err(EngineError::DataCorruption(format!(
             "seed rowpack `{WEIGHT_COL}` length mismatch: got {} weights for {} positives",
-            weights.len(),
-            expected
-        )));
-    }
-    Ok(Some(weights))
-}
-
-fn read_lp_frequency_weights(
-    rb: &arrow_array::RecordBatch,
-    counts: &[u32],
-) -> Result<Option<Vec<f32>>> {
-    let Ok(idx) = rb.schema().index_of(FREQUENCY_COL) else {
-        return Ok(None);
-    };
-    let weights = hydrate_ragged_lp_weights(rb.column(idx).as_ref())?;
-    let expected = counts.iter().map(|&c| c as usize).sum::<usize>();
-    if weights.len() != expected {
-        return Err(EngineError::DataCorruption(format!(
-            "seed rowpack `{FREQUENCY_COL}` length mismatch: got {} weights for {} positives",
             weights.len(),
             expected
         )));

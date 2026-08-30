@@ -1077,7 +1077,8 @@ def test_fused_and_nonfused_iterators_emit_same_dict_shape(seed_table_fixture):
 
     assert collect_keys(fused=True) == collect_keys(fused=False)
 
-def test_execute_tt_plan_end_to_end_multi_fk_custom_tt(tmp_path):
+@pytest.mark.parametrize("weighted", [False, True])
+def test_execute_tt_plan_end_to_end_multi_fk_custom_tt(tmp_path, weighted):
     import json
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -1140,6 +1141,12 @@ def test_execute_tt_plan_end_to_end_multi_fk_custom_tt(tmp_path):
             "ENTITY1": pa.array([0, 1, 2], type=pa.int64()),
             "TIMESTAMP": pa.array([1000, 2000, 3000], type=pa.int64()),
             "TARGET1": pa.array([[5], [6], [7]], type=pa.list_(pa.int64())),
+            # Deliberately not 1.0: every frequency here is 1, so a weight that
+            # survives to the batch can only have come from this column.
+            **({
+                "WEIGHT": pa.array([[2.0], [3.0], [4.0]],
+                                   type=pa.list_(pa.float64())),
+            } if weighted else {}),
         }),
         tt_pq_path,
     )
@@ -1158,7 +1165,7 @@ def test_execute_tt_plan_end_to_end_multi_fk_custom_tt(tmp_path):
         target_stype="categorical",
         input_timestamp_unit="seconds",
         split_spec_json=None,
-        weight_col=None,
+        weight_col="WEIGHT" if weighted else None,
         target_entity_table="items",
     )
 
@@ -1253,7 +1260,15 @@ def test_execute_tt_plan_end_to_end_multi_fk_custom_tt(tmp_path):
     assert task["num_positives"] == 2
     assert task["lp_pos_counts"].to_pylist() == [1, 1]
     assert task["lp_pos_mask"].to_pylist() == [False, False]
-    assert task["lp_pos_weight"].to_pylist() == [1.0, 1.0]
+    if weighted:
+        # Pins the routing decision, not just hydration: a list WEIGHT is the
+        # only thing that populates this field.
+        assert set(task["lp_pos_weight"].to_pylist()) <= {2.0, 3.0, 4.0}
+        assert len(task["lp_pos_weight"]) == 2
+    else:
+        # Gen emits a frequency column for every LP bundle, but a count is not
+        # a weight: with no WEIGHT column here, no weights are supplied at all.
+        assert "lp_pos_weight" not in task
 
 
 # ---------------------------------------------------------------------------

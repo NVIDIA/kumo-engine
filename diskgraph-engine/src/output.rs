@@ -162,8 +162,9 @@ pub struct TaskBag {
     /// Per-positive validity mask, length `ΣP`. `true` = unresolved/drop; the
     /// loss must ignore masked positives.
     pub lp_pos_mask: Vec<bool>,
-    /// Per-positive edge weight, length `ΣP`. `None` when no weights are present.
-    /// Unused on the label-only S3 path (left `None`); reserved for S4.
+    /// Per-positive edge weight, length `ΣP`. `Some` only when the seed table
+    /// carries a list `WEIGHT`; `None` otherwise, so an unweighted task supplies
+    /// no weight rather than a stand-in.
     pub lp_pos_weight: Option<Vec<f32>>,
     /// Index into `node_ids[rhs]` of each rooted positive; length `ΣP`. Only set
     /// when rhs positives are rooted as seeds (two-tower / hybrid rooting, S4).

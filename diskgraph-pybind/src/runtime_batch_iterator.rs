@@ -1074,7 +1074,7 @@ fn runtime_batch_to_pydict<'py>(
     // Anchor-major. `lp_pos_counts` is `[B]` (per-anchor positive count);
     // `lp_pos_rhs_global` / `lp_pos_mask` are `[ΣP]`. Emitted only when non-empty
     // — the LP label path populates them; every non-LP path leaves the keys
-    // absent. `lp_pos_weight` / `lp_pos_local` are emitted only when Some (S4).
+    // absent. `lp_pos_weight` / `lp_pos_local` are emitted only when Some.
     if !lp_pos_counts.is_empty() {
         task.set_item("lp_pos_counts", py_u32_array(py, lp_pos_counts.clone())?)?;
         let rhs = Int64Array::from(lp_pos_rhs_global.clone());
