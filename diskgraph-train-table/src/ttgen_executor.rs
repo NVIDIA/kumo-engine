@@ -29,8 +29,7 @@ use crate::manifest::{
     TT_PARQUET_FORMAT,
 };
 use crate::pass_b::{
-    run_pass_b_per_anchor, run_pass_b_per_link, write_bounded_parquet_batch, StagePartsOut,
-    MAX_PARQUET_ROW_GROUP_DECODE_BYTES, STAGE_TABLE_NAMES,
+    run_pass_b_per_anchor, run_pass_b_per_link, StagePartsOut, STAGE_TABLE_NAMES,
 };
 use crate::route::{per_link_output_schema, LinkAssigner};
 use crate::split_decider::{
@@ -569,7 +568,6 @@ where
         std::thread::spawn(move || {
             let file = File::create(&writer_path)?;
             let mut arrow_writer: Option<ArrowWriter<File>> = None;
-            let mut in_progress_decode_bytes = 0usize;
             let mut total_rows: u64 = 0;
             for batch in receiver.iter() {
                 if arrow_writer.is_none() {
@@ -580,12 +578,7 @@ where
                     )?);
                 }
                 if let Some(w) = arrow_writer.as_mut() {
-                    write_bounded_parquet_batch(
-                        w,
-                        &mut in_progress_decode_bytes,
-                        &batch,
-                        MAX_PARQUET_ROW_GROUP_DECODE_BYTES,
-                    )?;
+                    w.write(&batch)?;
                 }
                 total_rows += batch.num_rows() as u64;
             }

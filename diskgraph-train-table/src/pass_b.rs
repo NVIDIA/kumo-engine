@@ -48,10 +48,6 @@ pub(crate) const INCLUDE_MASK_COL: &str = "ENTITY_INCLUDE_BIT";
 /// `<stage_table>/part-NNNNN.parquet`.
 pub const STAGE_TABLE_NAMES: [&str; 3] = ["train_seeds", "val_seeds", "test_seeds"];
 
-// Keep enough headroom below ingest's 2 GiB oversized-chunk limit for
-// Parquet decoder amplification (offsets, validity buffers, and values).
-pub(crate) const MAX_PARQUET_ROW_GROUP_DECODE_BYTES: usize = 256 * 1024 * 1024;
-
 const MIN_PASS_B_GROUPS: usize = 16;
 const MAX_SOURCE_ROW_GROUPS_PER_PART: usize = 128;
 
@@ -63,110 +59,6 @@ const MAX_SOURCE_ROW_GROUPS_PER_PART: usize = 128;
 /// stable across hosts and thread-count settings.
 fn source_row_groups_per_part(num_row_groups: usize) -> usize {
     (num_row_groups / MIN_PASS_B_GROUPS).clamp(1, MAX_SOURCE_ROW_GROUPS_PER_PART)
-}
-
-fn record_batch_slice_decode_bytes(
-    batch: &RecordBatch,
-    offset: usize,
-    rows: usize,
-) -> TTGenResult<usize> {
-    batch.columns().iter().try_fold(0usize, |total, array| {
-        let bytes = array
-            .slice(offset, rows)
-            .to_data()
-            .get_slice_memory_size()
-            .map_err(|error| {
-                TTGenError::SystemError(format!(
-                    "estimating Parquet row-group decode bytes: {error}"
-                ))
-            })?;
-        total.checked_add(bytes).ok_or_else(|| {
-            TTGenError::SystemError(
-                "Parquet row-group decode byte count overflowed".to_string(),
-            )
-        })
-    })
-}
-
-fn largest_bounded_batch_slice(
-    batch: &RecordBatch,
-    offset: usize,
-    max_rows: usize,
-    max_decode_bytes: usize,
-) -> TTGenResult<(usize, usize)> {
-    let mut low = 1usize;
-    let mut high = max_rows;
-    let mut best = None;
-    while low <= high {
-        let rows = low + (high - low) / 2;
-        let bytes = record_batch_slice_decode_bytes(batch, offset, rows)?;
-        if bytes <= max_decode_bytes {
-            best = Some((rows, bytes));
-            low = rows.saturating_add(1);
-        } else {
-            high = rows.saturating_sub(1);
-        }
-    }
-    if let Some(result) = best {
-        return Ok(result);
-    }
-    let bytes = record_batch_slice_decode_bytes(batch, offset, 1)?;
-    Err(TTGenError::SchemaError(format!(
-        "one training-table row requires {bytes} decoded bytes, exceeding \
-         the Parquet row-group limit of {max_decode_bytes} bytes"
-    )))
-}
-
-pub(crate) fn write_bounded_parquet_batch(
-    writer: &mut ArrowWriter<File>,
-    in_progress_decode_bytes: &mut usize,
-    batch: &RecordBatch,
-    max_decode_bytes: usize,
-) -> TTGenResult<()> {
-    debug_assert!(max_decode_bytes > 0);
-    let total_rows = batch.num_rows();
-    if total_rows == 0 {
-        return Ok(());
-    }
-
-    let mut offset = 0usize;
-    while offset < total_rows {
-        let mut remaining_budget = max_decode_bytes.saturating_sub(*in_progress_decode_bytes);
-        if remaining_budget == 0 {
-            writer.flush()?;
-            *in_progress_decode_bytes = 0;
-            remaining_budget = max_decode_bytes;
-        }
-        let (rows, chunk_bytes) = match largest_bounded_batch_slice(
-            batch,
-            offset,
-            total_rows - offset,
-            remaining_budget,
-        ) {
-            Ok(result) => result,
-            Err(_) if *in_progress_decode_bytes > 0 => {
-                writer.flush()?;
-                *in_progress_decode_bytes = 0;
-                largest_bounded_batch_slice(
-                    batch,
-                    offset,
-                    total_rows - offset,
-                    max_decode_bytes,
-                )
-                ?
-            }
-            Err(error) => return Err(error),
-        };
-        writer.write(&batch.slice(offset, rows))?;
-        *in_progress_decode_bytes =
-            in_progress_decode_bytes.saturating_add(chunk_bytes);
-        offset += rows;
-        if *in_progress_decode_bytes >= max_decode_bytes {
-            writer.flush()?;
-            *in_progress_decode_bytes = 0;
-        }
-    }
-    Ok(())
 }
 
 /// One stage's fused-pass-B output: its relative part paths, total rows, and
@@ -348,7 +240,6 @@ where
 {
     // Lazily-created per-stage writers + accumulators for this group.
     let mut writers: [Option<ArrowWriter<File>>; 3] = [None, None, None];
-    let mut in_progress_decode_bytes = [0usize; 3];
     let mut counts: [u64; 3] = [0; 3];
     let mut seed_times: [Option<(i64, i64)>; 3] = [None, None, None];
     let mut split_stats: [KumoStageStats; 3] = Default::default();
@@ -381,12 +272,7 @@ where
                         writers[stage].as_mut().unwrap()
                     }
                 };
-                write_bounded_parquet_batch(
-                    writer,
-                    &mut in_progress_decode_bytes[stage],
-                    &sub,
-                    MAX_PARQUET_ROW_GROUP_DECODE_BYTES,
-                )?;
+                writer.write(&sub)?;
             }
             local_idx += nrows;
         }
@@ -394,11 +280,8 @@ where
         // Preserve each source row-group boundary inside the coalesced file.
         // This bounds decode size and resets dictionaries at the same locality
         // boundary as the previous one-file-per-source-row-group layout.
-        for stage in 0..3 {
-            if let Some(writer) = writers[stage].as_mut() {
-                writer.flush()?;
-                in_progress_decode_bytes[stage] = 0;
-            }
+        for writer in writers.iter_mut().flatten() {
+            writer.flush()?;
         }
     }
 
@@ -606,7 +489,7 @@ mod tests {
     use crate::split_decider::{NoSplitDecider, TimeRangeDecider};
     use crate::split_stats::write_kumo_split_stats_artifact;
     use arrow_array::builder::{Int64Builder, ListBuilder, StringBuilder, TimestampNanosecondBuilder};
-    use arrow_array::{Int64Array, RecordBatch, StringArray, TimestampNanosecondArray};
+    use arrow_array::{Int64Array, RecordBatch, TimestampNanosecondArray};
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use diskgraph_core::time::{Abs, Seconds};
     use diskgraph_core::tt_builder::PredictionType;
@@ -925,106 +808,6 @@ mod tests {
         };
 
         assert_eq!(run(1), run(7));
-    }
-
-    #[test]
-    fn parquet_writer_bounds_row_groups_by_decoded_bytes() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("bounded.parquet");
-        let values: Vec<String> = (0..100)
-            .map(|i| format!("{i:04}-{}", "x".repeat(128)))
-            .collect();
-        let schema = StdArc::new(Schema::new(vec![Field::new(
-            "ENTITY1",
-            DataType::Utf8,
-            false,
-        )]));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![StdArc::new(StringArray::from(values))],
-        )
-        .unwrap();
-        let file = File::create(path).unwrap();
-        let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
-        let mut in_progress = 0;
-        write_bounded_parquet_batch(&mut writer, &mut in_progress, &batch, 2_048).unwrap();
-        let metadata = writer.close().unwrap();
-
-        assert!(metadata.num_row_groups() > 1);
-        assert_eq!(
-            metadata
-                .row_groups()
-                .iter()
-                .map(|group| group.num_rows() as usize)
-                .sum::<usize>(),
-            batch.num_rows(),
-        );
-    }
-
-    #[test]
-    fn parquet_writer_bounds_skewed_variable_width_rows() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("bounded-skewed.parquet");
-        let mut values = vec!["small-value".to_string(); 100];
-        values.insert(20, "x".repeat(1_500));
-        let schema = StdArc::new(Schema::new(vec![Field::new(
-            "ENTITY1",
-            DataType::Utf8,
-            false,
-        )]));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![StdArc::new(StringArray::from(values))],
-        )
-        .unwrap();
-        let file = File::create(&path).unwrap();
-        let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
-        let mut in_progress = 0;
-        let limit = 2_048;
-        write_bounded_parquet_batch(&mut writer, &mut in_progress, &batch, limit).unwrap();
-        let metadata = writer.close().unwrap();
-
-        assert!(metadata.num_row_groups() > 1);
-        for row_group in 0..metadata.num_row_groups() {
-            let file = File::open(&path).unwrap();
-            let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-                .unwrap()
-                .with_row_groups(vec![row_group])
-                .build()
-                .unwrap();
-            for decoded in reader {
-                let decoded = decoded.unwrap();
-                assert!(
-                    record_batch_slice_decode_bytes(&decoded, 0, decoded.num_rows()).unwrap()
-                        <= limit
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn parquet_writer_rejects_one_oversized_row() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("oversized-row.parquet");
-        let schema = StdArc::new(Schema::new(vec![Field::new(
-            "ENTITY1",
-            DataType::Utf8,
-            false,
-        )]));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![StdArc::new(StringArray::from(vec!["x".repeat(4_096)]))],
-        )
-        .unwrap();
-        let file = File::create(path).unwrap();
-        let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
-        let mut in_progress = 0;
-
-        let error =
-            write_bounded_parquet_batch(&mut writer, &mut in_progress, &batch, 2_048)
-                .unwrap_err();
-
-        assert!(error.to_string().contains("one training-table row requires"));
     }
 
     #[test]
