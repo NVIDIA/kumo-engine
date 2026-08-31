@@ -237,29 +237,7 @@ class DiskGraphPlanCompiler:
             )
         if split_spec is not None:
             split_spec.validate_for_compiler()
-            self.builder.split_ratio(
-                split_spec.ratio,
-                kind=split_spec.kind,
-                rnd_seed=split_spec.rnd_seed,
-                is_temporal=split_spec.is_temporal,
-                offsets=split_spec.offsets,
-                ranges=split_spec.ranges,
-                backtesting_timestamp=split_spec.backtesting_timestamp,
-                split_column=split_spec.split_column,
-                split_output_column=split_spec.split_output_column,
-                manual_train_values=split_spec.manual_train_values,
-                manual_val_values=split_spec.manual_val_values,
-                manual_test_values=split_spec.manual_test_values,
-                offset_unit=split_spec.offset_unit or "days",
-                unit=split_spec.unit or "days",
-                timeframe=split_spec.timeframe,
-                anchor_start_offset=(
-                    0 if split_spec.anchor_start_offset is None
-                    else split_spec.anchor_start_offset
-                ),
-                flexible_boundaries=split_spec.flexible_boundaries,
-                timeframe_step=split_spec.timeframe_step,
-            )
+            self.builder.split_ratio(split_spec)
 
         # 4. What-If (Assuming) — only for training, not prediction.
         # GE's batch_pred_table_generator skips ASSUMING entirely;

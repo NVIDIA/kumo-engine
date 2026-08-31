@@ -815,7 +815,9 @@ impl BucketSchedule {
             ))
         })?;
         let mut ids: Vec<u64> = bytes
-            .as_chunks::<8>().0.iter()
+            .as_chunks::<8>()
+            .0
+            .iter()
             .map(|c| u64::from_le_bytes(*c))
             .collect();
         let key = format!("{}:{}", self.stage_key, bucket.ts);

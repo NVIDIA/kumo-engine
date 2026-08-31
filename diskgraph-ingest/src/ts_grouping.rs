@@ -300,7 +300,9 @@ mod tests {
         let bytes = std::fs::read(path).unwrap();
         assert_eq!(bytes.len() % 8, 0);
         bytes
-            .as_chunks::<8>().0.iter()
+            .as_chunks::<8>()
+            .0
+            .iter()
             .map(|c| u64::from_le_bytes(*c))
             .collect()
     }

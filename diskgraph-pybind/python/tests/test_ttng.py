@@ -32,6 +32,8 @@ import sys
 import tempfile
 from typing import Any
 
+from diskgraph import SplitSpec
+
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -127,15 +129,14 @@ def _build_tt_plan() -> str:
         EdgeRef("users", "user_id", "orders", "user_id"),
         "count",
     )
-    builder.split_ratio(
-        None,
+    builder.split_ratio(SplitSpec(
         kind="TimeRangeSplit",
         ranges=[(0, 1999), (2000, 2999), (3000, 5000)],
         is_temporal=True,
-        range_unit="seconds",
+        timestamp_unit="seconds",
         offset_unit="seconds",
         unit="seconds",
-    )
+    ))
     return builder.build()
 
 
@@ -158,15 +159,14 @@ def _build_forecasting_tt_plan() -> str:
     )
     target_op = builder.pop_last_op_json()
     builder.future_labels("future_labels", target_op, [0, 1000, 2000])
-    builder.split_ratio(
-        None,
+    builder.split_ratio(SplitSpec(
         kind="TimeRangeSplit",
         ranges=[(0, 4000), (4001, 7000), (7001, 10000)],
         is_temporal=True,
-        range_unit="seconds",
+        timestamp_unit="seconds",
         offset_unit="seconds",
         unit="seconds",
-    )
+    ))
     return builder.build()
 
 

@@ -140,7 +140,7 @@ In addition to sampling/features, `diskgraph-pybind` exports the TT generation p
 | Class | Description |
 |-------|-------------|
 | `DiskGraphPlanCompiler` | Compiles a Kumo `ValidatedPredictiveQuery` AST into a DiskGraph execution plan (JSON). |
-| `DiskGraphTTBuilder` | Low-level plan builder with methods: `temporal()`, `for_each()`, `node_prediction()`, `link_prediction()`, `aggregate()`, `column()`, `compare()`, `filter()`, `split_ratio()`, `build()`. |
+| `DiskGraphTTBuilder` | Low-level plan builder with methods: `temporal()`, `for_each()`, `node_prediction()`, `link_prediction()`, `aggregate()`, `column()`, `compare()`, `filter()`, `split_ratio(spec)`, `build()`. `split_ratio` takes a `SplitSpec` (or any object carrying its attributes) as a single argument. |
 | `TTPlanIterator` | Streaming iterator over RecordBatches from the Rust TT gen executor. Implements `__iter__`/`__next__`. Releases GIL during `recv()`. |
 | `EdgeRef` | Directed FK reference: `(src_table, src_col, dst_table, dst_col)`. |
 | `RowFilter` / `StageFilter` | Filter specifications for per-row and per-stage filtering. |

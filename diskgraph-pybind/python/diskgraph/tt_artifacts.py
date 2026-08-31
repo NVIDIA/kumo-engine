@@ -9,13 +9,15 @@ SplitSpec shape and dispatches into the Rust pyo3 entry point at
 """
 from __future__ import annotations
 
+import dataclasses
 import json
-from typing import Any, Optional
+from typing import Optional
 
 from ._c import (  # type: ignore[import]
     DiskgraphConfigError,
     DiskgraphDataError,
     build_prediction_table_artifacts_for_existing_table as _native_build_predict,
+    build_split_spec_json as _native_build_split_spec_json,
     build_train_table_artifacts_for_existing_table as _native_build,
 )
 from .split_contract import SplitSpec
@@ -26,16 +28,24 @@ def _split_spec_to_plan_json(
     *,
     split_family_hint: Optional[str],
 ) -> Optional[str]:
-    """Serialize a Python `SplitSpec` to the JSON shape the Rust executor
-    consumes (`PlanSplitSpec<Seconds>` in `diskgraph-core`).
+    """Serialize a Python `SplitSpec` to the JSON the Rust executor consumes
+    (a `SplitSpec<Seconds>` from `diskgraph-core`), for
+    `build_train_table_artifacts_for_existing_table`'s `split_spec_json`.
 
     Returns None when split_spec is None (no split path).
 
-    The Rust side expects fields like `kind`, `ratio`, `rnd_seed`,
-    `is_temporal`, `offsets`, `ranges`, `backtesting_timestamp`,
-    `split_column`, `split_output_column`, `manual_train_values`,
-    `manual_val_values`, `manual_test_values`, `month_offsets`. We only
-    populate the ones the SplitSpec carries.
+    The marshalling itself lives in Rust -- `make_split_spec` in
+    `diskgraph-pybind/src/tt_builder.rs`, which extracts the dataclass
+    field-by-field and is shared with the generated path's
+    `DiskGraphTTBuilder.split_ratio`. That sharing is the point: the unit rules
+    are asymmetric enough to invite drift (`offsets` must be pre-scaled into
+    base units, `timeframe`/`anchor_start_offset`/`timeframe_step` must not be,
+    months and years route to `month_offsets` instead, and only DateOffset /
+    TimeRange splits carry unit fields at all), and a second copy of them here
+    did drift.
+
+    The only thing this function still does to the spec is resolve `kind`
+    against the caller's family hint.
     """
     if split_spec is None:
         return None
@@ -43,41 +53,16 @@ def _split_spec_to_plan_json(
         raise DiskgraphDataError(
             'build_train_table_artifacts_for_existing_table requires '
             f'split_config as SplitSpec, got {type(split_spec).__name__}')
-    resolved_family = split_spec.kind or split_family_hint
-    if resolved_family and split_family_hint and split_spec.kind \
+    if split_family_hint and split_spec.kind \
             and split_family_hint != split_spec.kind:
         raise DiskgraphConfigError(
             'diskgraph split contract mismatch: '
             f'split_family_hint={split_family_hint} conflicts with '
             f'split_config.kind={split_spec.kind}')
-
-    plan_split = {
-        'kind': resolved_family,
-        'ratio': list(split_spec.ratio) if split_spec.ratio is not None else None,
-        'rnd_seed': split_spec.rnd_seed,
-        'is_temporal': split_spec.is_temporal,
-        'offsets': (list(split_spec.offsets)
-                    if split_spec.offsets is not None else None),
-        'ranges': (
-            [list(p) for p in split_spec.ranges]
-            if split_spec.ranges is not None else None),
-        'backtesting_timestamp': split_spec.backtesting_timestamp,
-        'split_column': split_spec.split_column,
-        'split_output_column': split_spec.split_output_column,
-        'manual_train_values': (
-            list(split_spec.manual_train_values)
-            if split_spec.manual_train_values is not None else None),
-        'manual_val_values': (
-            list(split_spec.manual_val_values)
-            if split_spec.manual_val_values is not None else None),
-        'manual_test_values': (
-            list(split_spec.manual_test_values)
-            if split_spec.manual_test_values is not None else None),
-        'month_offsets': None,
-        'flexible_boundaries': split_spec.flexible_boundaries,
-        'timeframe_step': split_spec.timeframe_step,
-    }
-    return json.dumps(plan_split)
+    resolved_family = split_spec.kind or split_family_hint
+    if resolved_family != split_spec.kind:
+        split_spec = dataclasses.replace(split_spec, kind=resolved_family)
+    return _native_build_split_spec_json(split_spec)
 
 
 def _resolve_common_config(

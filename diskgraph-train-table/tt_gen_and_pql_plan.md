@@ -23,7 +23,7 @@ PQL Query (Kumo SDK)
 2. **Entity spec**: `builder.for_each(entity_table, entity_col, ...)`
 3. **Prediction type**: `builder.node_prediction()` or `builder.link_prediction(explode, include_frequency)`
 4. **Target**: `_traverse_target(query.target_ast, query)` — recursively walks AST, emitting `builder.aggregate()`, `builder.column()`, `builder.compare()` calls
-5. **Split**: `builder.split_ratio(ratio, kind, is_temporal, offsets, ranges, ...)`
+5. **Split**: `builder.split_ratio(split_spec)` — one `SplitSpec`; unit scaling and family gating happen Rust-side in `make_split_spec`
 6. **Output**: `builder.build()` → JSON string
 
 ### Key Parameters

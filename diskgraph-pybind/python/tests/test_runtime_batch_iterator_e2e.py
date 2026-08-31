@@ -24,6 +24,8 @@ import pathlib
 import struct
 from typing import Any
 
+from diskgraph import SplitSpec
+
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -975,15 +977,14 @@ def test_execute_tt_plan_end_to_end(tmp_path):
         EdgeRef("users", "user_id", "orders", "user_id"),
         "count",
     )
-    builder.split_ratio(
-        None,  # ratio is positional; TimeRangeSplit doesn't use it
+    builder.split_ratio(SplitSpec(
         kind="TimeRangeSplit",
         ranges=[(0, 1999), (2000, 2999), (3000, 5000)],
         is_temporal=True,
-        range_unit="seconds",
+        timestamp_unit="seconds",
         offset_unit="seconds",
         unit="seconds",
-    )
+    ))
     plan_json = builder.build()
 
     # Run execute_tt_plan against the real parent. Writes

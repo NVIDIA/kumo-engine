@@ -1383,6 +1383,7 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SamplerEngine>()?;
     runtime_batch_iterator::register(m)?;
     m.add_class::<PySampleIterator>()?;
+    m.add_function(wrap_pyfunction!(tt_builder::build_split_spec_json, m)?)?;
     m.add_class::<tt_builder::DiskGraphTTBuilder>()?;
     m.add_class::<tt_builder::EdgeRef>()?;
     m.add_class::<tt_builder::RowFilter>()?;

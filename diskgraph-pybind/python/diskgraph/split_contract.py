@@ -52,8 +52,10 @@ class SplitSpec:
     flexible_boundaries: Optional[bool] = None
     timeframe_step: Optional[int] = None
     # Unit of range/backtesting_timestamp values: "seconds", "milliseconds",
-    # "microseconds", or "nanoseconds".  The Rust pybind normalizes to
-    # nanoseconds internally for comparison against parquet timestamps.
+    # "microseconds", "nanoseconds", or "days".  The Rust pybind scales them
+    # into the plan's base unit; anything else is a config error, because these
+    # are absolute timestamps and `abs_from_unit` cannot anchor e.g. "months"
+    # to the epoch.
     timestamp_unit: str = "seconds"
 
     def to_assignment_config(self) -> dict[str, Any]:

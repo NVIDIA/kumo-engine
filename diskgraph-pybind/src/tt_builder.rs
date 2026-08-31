@@ -422,152 +422,14 @@ impl DiskGraphTTBuilder {
         self.prediction_type = tt::PredictionType::Node;
     }
 
-    /// Optional split metadata for native split payload derivation.
-    /// `offset_unit` declares the unit for `offsets` (default "days").
-    /// `range_unit` declares the unit for `ranges` and `backtesting_timestamp`
-    /// (default "seconds").
-    #[pyo3(signature = (
-        ratio,
-        kind=None,
-        rnd_seed=None,
-        is_temporal=None,
-        offsets=None,
-        ranges=None,
-        backtesting_timestamp=None,
-        split_column=None,
-        split_output_column=None,
-        manual_train_values=None,
-        manual_val_values=None,
-        manual_test_values=None,
-        offset_unit="days",
-        range_unit="seconds",
-        unit="days",
-        timeframe=None,
-        anchor_start_offset=0,
-        flexible_boundaries=None,
-        timeframe_step=None
-    ))]
-    #[allow(clippy::too_many_arguments)]
-    fn split_ratio(
-        &mut self,
-        ratio: Option<Vec<f64>>,
-        kind: Option<String>,
-        rnd_seed: Option<u64>,
-        is_temporal: Option<bool>,
-        offsets: Option<Vec<i64>>,
-        ranges: Option<Vec<(i64, i64)>>,
-        backtesting_timestamp: Option<i64>,
-        split_column: Option<String>,
-        split_output_column: Option<String>,
-        manual_train_values: Option<Vec<String>>,
-        manual_val_values: Option<Vec<String>>,
-        manual_test_values: Option<Vec<String>>,
-        offset_unit: &str,
-        range_unit: &str,
-        unit: &str,
-        timeframe: Option<i64>,
-        anchor_start_offset: i64,
-        flexible_boundaries: Option<bool>,
-        timeframe_step: Option<i64>,
-    ) -> PyResult<()> {
-        if let Some(ratio_vals) = ratio.as_ref() {
-            if ratio_vals.len() < 2 || ratio_vals.len() > 3 {
-                return Err(crate::DiskgraphConfigError::new_err(
-                    "split ratio must contain 2 or 3 entries",
-                ));
-            }
-            if ratio_vals.iter().any(|v| *v < 0.0) {
-                return Err(crate::DiskgraphConfigError::new_err(
-                    "split ratio cannot contain negative values",
-                ));
-            }
-        }
-        let off_unit = parse_time_unit(offset_unit)?;
-        let split_unit = parse_time_unit(unit)?;
-        let rng_unit = parse_time_unit(range_unit)?;
-        let is_date_offset_split = kind.as_deref() == Some("DateOffsetSplit");
-        let has_temporal_boundary_semantics = matches!(
-            kind.as_deref(),
-            Some("DateOffsetSplit") | Some("TimeRangeSplit")
-        );
-        if is_date_offset_split {
-            reject_calendar_date_offset_unit("unit", split_unit)?;
-        }
-        // When `offset_unit` is "months" or "years", route the int
-        // values through `month_offsets` (calendar arithmetic) rather than
-        // `offsets` (typed Dur<U>). Years are normalized to months at the
-        // boundary so the executor only has to dispatch on one dimension.
-        let (offsets_dur, month_offsets) = match (off_unit, offsets) {
-            (tt::TimeUnit::Months, Some(v)) => (
-                None,
-                Some(v.into_iter().map(|o| o as i32).collect::<Vec<i32>>()),
-            ),
-            (tt::TimeUnit::Years, Some(v)) => (
-                None,
-                Some(
-                    v.into_iter()
-                        .map(|o| (o as i32).saturating_mul(12))
-                        .collect::<Vec<i32>>(),
-                ),
-            ),
-            (_, Some(v)) => (
-                Some(
-                    v.into_iter()
-                        .map(|o| dur_from_unit::<Seconds>(o, off_unit))
-                        .collect::<Vec<_>>(),
-                ),
-                None,
-            ),
-            (_, None) => (None, None),
-        };
-        self.split = Some(tt::SplitSpec {
-            ratio,
-            kind,
-            rnd_seed,
-            is_temporal,
-            offsets: offsets_dur,
-            offset_unit: is_date_offset_split.then(|| time_unit_name(off_unit).to_string()),
-            unit: has_temporal_boundary_semantics
-                .then(|| time_unit_name(split_unit).to_string()),
-            timeframe: if has_temporal_boundary_semantics {
-                timeframe
-            } else {
-                None
-            },
-            anchor_start_offset: if has_temporal_boundary_semantics {
-                Some(anchor_start_offset)
-            } else {
-                None
-            },
-            ranges: ranges.map(|v| {
-                v.into_iter()
-                    .map(|(lo, hi)| {
-                        (
-                            abs_from_unit::<Seconds>(lo, rng_unit),
-                            abs_from_unit::<Seconds>(hi, rng_unit),
-                        )
-                    })
-                    .collect()
-            }),
-            backtesting_timestamp: backtesting_timestamp
-                .map(|v| abs_from_unit::<Seconds>(v, rng_unit)),
-            split_column,
-            split_output_column,
-            manual_train_values,
-            manual_val_values,
-            manual_test_values,
-            month_offsets,
-            flexible_boundaries: if has_temporal_boundary_semantics {
-                flexible_boundaries
-            } else {
-                None
-            },
-            timeframe_step: if has_temporal_boundary_semantics {
-                timeframe_step
-            } else {
-                None
-            },
-        });
+    /// Set the plan's split from a Python `SplitSpec` (the dataclass in
+    /// `diskgraph/split_contract.py`, or anything carrying the same
+    /// attributes).
+    ///
+    /// The unit rules live in [`make_split_spec`], shared with
+    /// [`build_split_spec_json`] -- see there for why they are asymmetric.
+    fn split_ratio(&mut self, spec: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.split = Some(make_split_spec(extract_split_spec(spec)?)?);
         Ok(())
     }
 
@@ -868,6 +730,254 @@ fn parse_agg_func(func: &str) -> PyResult<tt::AggFunc> {
     }
 }
 
+// ─── Standalone SplitSpec marshalling ────────────────────────────────────────
+
+/// The Python `SplitSpec` dataclass, extracted field by field.
+///
+/// `#[derive(FromPyObject)]` on a named-field struct does one `getattr` per
+/// field, so this binds directly to `diskgraph/split_contract.py`'s
+/// `SplitSpec` -- or to anything else carrying the same attributes; the
+/// extraction is structural, not nominal, which keeps tests free of the
+/// dataclass.
+///
+/// Field names must match the dataclass exactly. `timestamp_unit` is the
+/// dataclass's name for what the plan calls `range_unit`; the rename happens in
+/// [`make_split_spec`], which is also where the `days` / `days` / `seconds` / `0`
+/// defaults are applied, so a caller that omits them cannot get them wrong.
+#[derive(FromPyObject)]
+pub(crate) struct SplitSpecArgs {
+    pub kind: Option<String>,
+    pub ratio: Option<Vec<f64>>,
+    pub rnd_seed: Option<u64>,
+    pub is_temporal: Option<bool>,
+    pub offsets: Option<Vec<i64>>,
+    pub ranges: Option<Vec<[i64; 2]>>,
+    pub backtesting_timestamp: Option<i64>,
+    pub split_column: Option<String>,
+    pub split_output_column: Option<String>,
+    pub manual_train_values: Option<Vec<String>>,
+    pub manual_val_values: Option<Vec<String>>,
+    pub manual_test_values: Option<Vec<String>>,
+    pub timeframe: Option<i64>,
+    pub unit: Option<String>,
+    pub offset_unit: Option<String>,
+    pub anchor_start_offset: Option<i64>,
+    pub flexible_boundaries: Option<bool>,
+    pub timeframe_step: Option<i64>,
+    pub timestamp_unit: Option<String>,
+}
+
+/// Extract a [`SplitSpecArgs`], naming the argument when the object is wrong.
+///
+/// The derived `FromPyObject` reports a bare `getattr` failure -- "'dict' object
+/// has no attribute 'kind'" -- which says neither what was being extracted nor
+/// what the caller should have passed. A duck-typed object missing exactly one
+/// of the nineteen fields fails the same opaque way.
+fn extract_split_spec(spec: &Bound<'_, PyAny>) -> PyResult<SplitSpecArgs> {
+    spec.extract::<SplitSpecArgs>().map_err(|e| {
+        crate::DiskgraphConfigError::new_err(format!(
+            "split spec must be a SplitSpec, or an object carrying all of its \
+             fields: {e}"
+        ))
+    })
+}
+
+/// Resolve a unit name, treating `""` and `None` alike.
+///
+/// The Python callers used to apply these defaults with `spec.unit or "days"`,
+/// where `or` catches the empty string too -- and `normalize_split_spec`
+/// propagates `unit=""` verbatim when a config carries one.
+fn unit_or<'a>(value: &'a Option<String>, default: &'a str) -> &'a str {
+    match value.as_deref() {
+        Some(s) if !s.is_empty() => s,
+        _ => default,
+    }
+}
+
+/// Parse the unit of `ranges` / `backtesting_timestamp`.
+///
+/// Stricter than [`parse_time_unit`] because these are *absolute* timestamps:
+/// `abs_from_unit` (`diskgraph-core/src/time.rs`) panics on the five units it
+/// cannot anchor to the epoch. Rejecting them here turns an unsupported
+/// `timestamp_unit` into a config error at the boundary instead of a Rust panic
+/// crossing into Python as a `PanicException`.
+fn parse_timestamp_unit(unit: &str) -> PyResult<tt::TimeUnit> {
+    let parsed = parse_time_unit(unit)?;
+    match parsed {
+        tt::TimeUnit::Seconds
+        | tt::TimeUnit::Milliseconds
+        | tt::TimeUnit::Microseconds
+        | tt::TimeUnit::Nanoseconds
+        | tt::TimeUnit::Days => Ok(parsed),
+        other => Err(crate::DiskgraphConfigError::new_err(format!(
+            "split_config.timestamp_unit={} is not supported for `ranges` / \
+             `backtesting_timestamp`; use seconds, milliseconds, microseconds, \
+             nanoseconds, or days",
+            time_unit_name(other)
+        ))),
+    }
+}
+
+/// The single implementation of the kumo split config → plan `SplitSpec<Seconds>`
+/// contract.
+///
+/// Both routes into the executor land here: the PQ path via
+/// [`DiskGraphTTBuilder::split_ratio`], which folds the result into the plan it
+/// is building, and the custom-TT path via [`build_split_spec_json`], which
+/// serializes it standalone because
+/// `build_train_table_artifacts_for_existing_table` takes the split as its own
+/// argument.
+///
+/// One implementation is what keeps those two agreeing. The unit handling is
+/// asymmetric enough to invite drift: `offsets` must be *pre-scaled* into base
+/// units here, because `ttgen_executor` reads them as `Dur<Seconds>` and never
+/// rescales (`offset_unit` survives only as a label — no consumer reads it),
+/// whereas `timeframe` / `anchor_start_offset` / `timeframe_step` must cross
+/// *unscaled*, because the executor rescales them itself with
+/// `dur_from_unit(v, unit)` — and for `TimeRangeSplit` that unit may be
+/// calendar (`months` / `years`), which has no fixed-duration form.
+fn make_split_spec(args: SplitSpecArgs) -> PyResult<tt::SplitSpec<Seconds>> {
+    let SplitSpecArgs {
+        kind,
+        ratio,
+        rnd_seed,
+        is_temporal,
+        offsets,
+        ranges,
+        backtesting_timestamp,
+        split_column,
+        split_output_column,
+        manual_train_values,
+        manual_val_values,
+        manual_test_values,
+        timeframe,
+        unit,
+        offset_unit,
+        anchor_start_offset,
+        flexible_boundaries,
+        timeframe_step,
+        timestamp_unit,
+    } = args;
+    if let Some(ratio_vals) = ratio.as_ref() {
+        if ratio_vals.len() < 2 || ratio_vals.len() > 3 {
+            return Err(crate::DiskgraphConfigError::new_err(
+                "split ratio must contain 2 or 3 entries",
+            ));
+        }
+        if ratio_vals.iter().any(|v| *v < 0.0) {
+            return Err(crate::DiskgraphConfigError::new_err(
+                "split ratio cannot contain negative values",
+            ));
+        }
+    }
+    // Defaults live here rather than at the call sites: they are part of the
+    // contract, and a caller that has to remember them is a caller that can
+    // forget them.
+    let off_unit = parse_time_unit(unit_or(&offset_unit, "days"))?;
+    let split_unit = parse_time_unit(unit_or(&unit, "days"))?;
+    let rng_unit = parse_timestamp_unit(unit_or(&timestamp_unit, "seconds"))?;
+    let anchor_start_offset = anchor_start_offset.unwrap_or(0);
+    let is_date_offset_split = kind.as_deref() == Some("DateOffsetSplit");
+    let has_temporal_boundary_semantics = matches!(
+        kind.as_deref(),
+        Some("DateOffsetSplit") | Some("TimeRangeSplit")
+    );
+    if is_date_offset_split {
+        reject_calendar_date_offset_unit("unit", split_unit)?;
+    }
+    // When `offset_unit` is "months" or "years", route the int
+    // values through `month_offsets` (calendar arithmetic) rather than
+    // `offsets` (typed Dur<U>). Years are normalized to months at the
+    // boundary so the executor only has to dispatch on one dimension.
+    let (offsets_dur, month_offsets) = match (off_unit, offsets) {
+        (tt::TimeUnit::Months, Some(v)) => (
+            None,
+            Some(v.into_iter().map(|o| o as i32).collect::<Vec<i32>>()),
+        ),
+        (tt::TimeUnit::Years, Some(v)) => (
+            None,
+            Some(
+                v.into_iter()
+                    .map(|o| (o as i32).saturating_mul(12))
+                    .collect::<Vec<i32>>(),
+            ),
+        ),
+        (_, Some(v)) => (
+            Some(
+                v.into_iter()
+                    .map(|o| dur_from_unit::<Seconds>(o, off_unit))
+                    .collect::<Vec<_>>(),
+            ),
+            None,
+        ),
+        (_, None) => (None, None),
+    };
+    Ok(tt::SplitSpec {
+        ratio,
+        kind,
+        rnd_seed,
+        is_temporal,
+        offsets: offsets_dur,
+        offset_unit: is_date_offset_split.then(|| time_unit_name(off_unit).to_string()),
+        unit: has_temporal_boundary_semantics.then(|| time_unit_name(split_unit).to_string()),
+        timeframe: if has_temporal_boundary_semantics {
+            timeframe
+        } else {
+            None
+        },
+        anchor_start_offset: if has_temporal_boundary_semantics {
+            Some(anchor_start_offset)
+        } else {
+            None
+        },
+        ranges: ranges.map(|v| {
+            v.into_iter()
+                .map(|[lo, hi]| {
+                    (
+                        abs_from_unit::<Seconds>(lo, rng_unit),
+                        abs_from_unit::<Seconds>(hi, rng_unit),
+                    )
+                })
+                .collect()
+        }),
+        backtesting_timestamp: backtesting_timestamp.map(|v| abs_from_unit::<Seconds>(v, rng_unit)),
+        split_column,
+        split_output_column,
+        manual_train_values,
+        manual_val_values,
+        manual_test_values,
+        month_offsets,
+        flexible_boundaries: if has_temporal_boundary_semantics {
+            flexible_boundaries
+        } else {
+            None
+        },
+        timeframe_step: if has_temporal_boundary_semantics {
+            timeframe_step
+        } else {
+            None
+        },
+    })
+}
+
+/// Marshal a `SplitSpec` into the standalone JSON that
+/// `build_train_table_artifacts_for_existing_table` accepts as
+/// `split_spec_json`: a serialized `SplitSpec<Seconds>`, which `custom_tt_entry`
+/// parses straight back with `serde_json::from_str`. Serialization and
+/// deserialization are the derived impls on one struct, so the round-trip is
+/// symmetric by construction.
+///
+/// Takes the same single argument as [`DiskGraphTTBuilder::split_ratio`], so
+/// the generated and custom-TT paths share not just the marshalling rules but
+/// the call itself -- two hand-maintained argument lists were the weaker
+/// version of the same failure mode this exists to prevent.
+#[pyfunction]
+pub fn build_split_spec_json(spec: &Bound<'_, PyAny>) -> PyResult<String> {
+    serde_json::to_string(&make_split_spec(extract_split_spec(spec)?)?).map_err(|e| {
+        crate::DiskgraphConfigError::new_err(format!("failed to serialize split spec: {e}"))
+    })
+}
+
 fn parse_time_unit(unit: &str) -> PyResult<tt::TimeUnit> {
     match unit.to_lowercase().as_str() {
         "seconds" | "second" | "s" => Ok(tt::TimeUnit::Seconds),
@@ -1007,32 +1117,32 @@ mod tests {
 
     #[test]
     fn time_range_split_preserves_temporal_boundary_semantics() {
-        let mut builder = DiskGraphTTBuilder::new();
-        builder
-            .split_ratio(
-                None,
-                Some("TimeRangeSplit".to_string()),
-                None,
-                Some(true),
-                None,
-                Some(vec![(0, 20), (20, 30), (30, 40)]),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                "days",
-                "seconds",
-                "days",
-                Some(1),
-                2,
-                Some(false),
-                Some(1),
-            )
-            .unwrap();
+        // `split_ratio` now takes a Python object, so exercise the shared
+        // implementation directly -- it is what carries the semantics under
+        // test, and it needs no interpreter.
+        let split = make_split_spec(SplitSpecArgs {
+            kind: Some("TimeRangeSplit".to_string()),
+            ratio: None,
+            rnd_seed: None,
+            is_temporal: Some(true),
+            offsets: None,
+            ranges: Some(vec![[0, 20], [20, 30], [30, 40]]),
+            backtesting_timestamp: None,
+            split_column: None,
+            split_output_column: None,
+            manual_train_values: None,
+            manual_val_values: None,
+            manual_test_values: None,
+            timeframe: Some(1),
+            unit: Some("days".to_string()),
+            offset_unit: Some("days".to_string()),
+            anchor_start_offset: Some(2),
+            flexible_boundaries: Some(false),
+            timeframe_step: Some(1),
+            timestamp_unit: Some("seconds".to_string()),
+        })
+        .expect("spec should build");
 
-        let split = builder.split.expect("split should be configured");
         assert_eq!(split.unit.as_deref(), Some("days"));
         assert_eq!(split.timeframe, Some(1));
         assert_eq!(split.anchor_start_offset, Some(2));
