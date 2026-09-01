@@ -512,15 +512,27 @@ fn synth_custom_tt_lp_array_parquet_inner(
 
 /// Read the TARGET1 (Int64) column of an LP custom-TT tt.parquet output.
 /// Returns (ENTITY1, TARGET1) tuples.
-fn read_tt_parquet_lp_targets(tt_path: &Path) -> Vec<(i64, i64)> {
-    let file = fs::File::open(tt_path).unwrap();
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+fn read_parquet_batches(path: &Path) -> Vec<RecordBatch> {
+    let paths = if path.is_dir() {
+        diskgraph_train_table::parquet_dataset::ordered_tt_dataset_parts(path).unwrap()
+    } else {
+        vec![path.to_path_buf()]
+    };
+    paths
+        .into_iter()
+        .flat_map(|part| {
+            ParquetRecordBatchReaderBuilder::try_new(fs::File::open(part).unwrap())
         .unwrap()
         .build()
-        .unwrap();
+                .unwrap()
+                .map(|batch| batch.unwrap())
+        })
+        .collect()
+}
+
+fn read_tt_parquet_lp_targets(tt_path: &Path) -> Vec<(i64, i64)> {
     let mut out = Vec::new();
-    for batch_res in reader {
-        let batch = batch_res.unwrap();
+    for batch in read_parquet_batches(tt_path) {
         let schema = batch.schema();
         let e1 = batch
             .column(schema.index_of("ENTITY1").unwrap())
@@ -643,31 +655,22 @@ fn make_custom_tt_target_only_node_plan() -> DiskGraphTTPlan<Seconds> {
 /// Return the produced tt.parquet's column names (schema-shape assertions) and
 /// its row count. Used by the predict tests to prove NO TARGET column exists.
 fn read_tt_parquet_columns(tt_path: &Path) -> (Vec<String>, usize) {
-    let file = fs::File::open(tt_path).unwrap();
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-    let names: Vec<String> = builder
+    let batches = read_parquet_batches(tt_path);
+    let names: Vec<String> = batches
+        .first()
+        .expect("training table dataset has a batch")
         .schema()
         .fields()
         .iter()
         .map(|f| f.name().clone())
         .collect();
-    let reader = builder.build().unwrap();
-    let mut rows = 0usize;
-    for batch_res in reader {
-        rows += batch_res.unwrap().num_rows();
-    }
+    let rows = batches.iter().map(RecordBatch::num_rows).sum();
     (names, rows)
 }
 
 fn read_tt_parquet_node(tt_path: &Path) -> Vec<(i64, i64, f64)> {
-    let file = fs::File::open(tt_path).unwrap();
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-        .unwrap()
-        .build()
-        .unwrap();
     let mut out = Vec::new();
-    for batch_res in reader {
-        let batch = batch_res.unwrap();
+    for batch in read_parquet_batches(tt_path) {
         let entities = batch
             .column(0)
             .as_any()
@@ -704,14 +707,8 @@ struct ForecastingTtRow {
 }
 
 fn read_tt_parquet_forecasting(tt_path: &Path) -> Vec<ForecastingTtRow> {
-    let file = fs::File::open(tt_path).unwrap();
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-        .unwrap()
-        .build()
-        .unwrap();
     let mut out = Vec::new();
-    for batch_res in reader {
-        let batch = batch_res.unwrap();
+    for batch in read_parquet_batches(tt_path) {
         let entities = batch
             .column(0)
             .as_any()
@@ -1495,14 +1492,8 @@ fn synth_multi_target_parquet(
 /// Read tt.parquet for a multi-entity Node output. Returns one tuple per row:
 /// (ENTITY1, ENTITY2, TIMESTAMP_secs, TARGET1).
 fn read_tt_parquet_multi_entity_node(tt_path: &Path) -> Vec<(i64, i64, i64, f64)> {
-    let file = fs::File::open(tt_path).unwrap();
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-        .unwrap()
-        .build()
-        .unwrap();
     let mut out = Vec::new();
-    for batch_res in reader {
-        let batch = batch_res.unwrap();
+    for batch in read_parquet_batches(tt_path) {
         let schema = batch.schema();
         // Find columns by name (the executor controls slot order).
         let e1_idx = schema.index_of("ENTITY1").unwrap();
@@ -1533,14 +1524,8 @@ fn read_tt_parquet_multi_entity_node(tt_path: &Path) -> Vec<(i64, i64, i64, f64)
 /// Read tt.parquet for a multi-target Node output. Returns one tuple per row:
 /// (ENTITY1, TIMESTAMP_secs, TARGET1, TARGET2).
 fn read_tt_parquet_multi_target_node(tt_path: &Path) -> Vec<(i64, i64, f64, f64)> {
-    let file = fs::File::open(tt_path).unwrap();
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-        .unwrap()
-        .build()
-        .unwrap();
     let mut out = Vec::new();
-    for batch_res in reader {
-        let batch = batch_res.unwrap();
+    for batch in read_parquet_batches(tt_path) {
         let schema = batch.schema();
         let e1_idx = schema.index_of("ENTITY1").unwrap();
         let ts_idx = schema.index_of("TIMESTAMP").unwrap();
@@ -1898,14 +1883,8 @@ fn synth_custom_tt_parquet_with_weights_and_split(
 /// Read the `WEIGHT` (Float64) column off a parquet file in row order.
 /// Panics if the column is absent.
 fn read_weight_column(path: &Path) -> Vec<f64> {
-    let file = fs::File::open(path).unwrap();
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-        .unwrap()
-        .build()
-        .unwrap();
     let mut out = Vec::new();
-    for batch in reader {
-        let batch = batch.unwrap();
+    for batch in read_parquet_batches(path) {
         let idx = batch
             .schema()
             .index_of("WEIGHT")
@@ -1924,9 +1903,12 @@ fn read_weight_column(path: &Path) -> Vec<f64> {
 
 /// Whether a parquet file's schema declares a `WEIGHT` column.
 fn parquet_has_weight_column(path: &Path) -> bool {
-    let file = fs::File::open(path).unwrap();
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-    builder.schema().index_of("WEIGHT").is_ok()
+    read_parquet_batches(path)
+        .first()
+        .expect("parquet input has a batch")
+        .schema()
+        .index_of("WEIGHT")
+        .is_ok()
 }
 
 #[test]
@@ -2630,14 +2612,8 @@ fn test_custom_tt_lp_predict_emits_no_target_column() {
 }
 
 fn read_weight_lists(path: &Path) -> Vec<Vec<f64>> {
-    let file = fs::File::open(path).unwrap();
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-        .unwrap()
-        .build()
-        .unwrap();
     let mut out = Vec::new();
-    for batch in reader {
-        let batch = batch.unwrap();
+    for batch in read_parquet_batches(path) {
         let idx = batch.schema().index_of("WEIGHT").expect("WEIGHT column");
         let col = batch
             .column(idx)

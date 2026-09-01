@@ -15,7 +15,9 @@ def test_export_tt_artifacts_pybind(tmp_path_factory, ifood_graph):
     root = tmp_path_factory.mktemp("export_test")
 
     # Create mock train table pointing to users and merchants in the ifood graph
-    tt_path = str(root / "train_table.parquet")
+    tt_dir = root / "train_table"
+    tt_dir.mkdir()
+    tt_path = str(tt_dir / "part-00000.parquet")
     schema = pa.schema([
         ("arange", pa.int64()),
         ("USER_FKEY", pa.string()),
@@ -37,7 +39,7 @@ def test_export_tt_artifacts_pybind(tmp_path_factory, ifood_graph):
     output_dir = str(root / "output")
 
     config = diskgraph_py.ExportConfig(
-        train_table_path=tt_path,
+        train_table_path=str(tt_dir),
         index_path=ifood_graph,
         output_dir=output_dir,
         fkeys=[
@@ -91,9 +93,6 @@ def test_export_tt_artifacts_pybind_multi_file(tmp_path_factory, ifood_graph):
     ], schema=schema)
     pq.write_table(table2, str(tt_dir / "part-00001.parquet"))
 
-    # Also add a non-parquet file that should be ignored
-    (tt_dir / "_SUCCESS").touch()
-
     output_dir = str(root / "output")
 
     config = diskgraph_py.ExportConfig(
@@ -114,4 +113,3 @@ def test_export_tt_artifacts_pybind_multi_file(tmp_path_factory, ifood_graph):
     assert mask_table.column("__mask__")[0].as_py() == True
     assert mask_table.column("__mask__")[1].as_py() == False
     assert mask_table.column("__mask__")[2].as_py() == False
-

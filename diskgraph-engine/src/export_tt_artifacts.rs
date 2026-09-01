@@ -158,32 +158,60 @@ fn write_parquet(path: &Path, batch: &RecordBatch) -> Result<()> {
     Ok(())
 }
 
+fn ordered_train_table_parts(path: &Path) -> Result<Vec<std::path::PathBuf>> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(anyhow!(
+            "train_table_path must be a directory dataset: {}",
+            path.display()
+        ));
+    }
+    let mut indexed = Vec::new();
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let entry_path = entry.path();
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow!("non-UTF8 train-table part name"))?;
+        let index = name
+            .strip_prefix("part-")
+            .and_then(|value| value.strip_suffix(".parquet"))
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|index| format!("part-{index:05}.parquet") == name)
+            .ok_or_else(|| {
+                anyhow!(
+                    "unexpected train-table dataset entry: {}",
+                    entry_path.display()
+                )
+            })?;
+        let entry_metadata = std::fs::symlink_metadata(&entry_path)?;
+        if entry_metadata.file_type().is_symlink() || !entry_metadata.is_file() {
+            return Err(anyhow!(
+                "train-table dataset part must be a regular file: {}",
+                entry_path.display()
+            ));
+        }
+        indexed.push((index, entry_path));
+    }
+    indexed.sort_by_key(|(index, _)| *index);
+    for (expected, (actual, _)) in indexed.iter().enumerate() {
+        if expected != *actual {
+            return Err(anyhow!(
+                "train-table parts must be contiguous: expected part {expected}, found {actual}"
+            ));
+        }
+    }
+    Ok(indexed.into_iter().map(|(_, path)| path).collect())
+}
+
 pub fn process_export_internal<R: IdResolver>(
     config: &ExportConfig,
     resolver: &R,
     key_types: &[KeyType],
 ) -> Result<()> {
     let train_table_path = Path::new(&config.train_table_path);
-    let mut input_files = Vec::new();
-
-    if train_table_path.is_dir() {
-        for entry in std::fs::read_dir(train_table_path)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_file()
-                && path
-                    .extension()
-                    .map(|ext| ext == "parquet")
-                    .unwrap_or(false)
-            {
-                input_files.push(path);
-            }
-        }
-        // Sort files to ensure deterministic batch_index if needed
-        input_files.sort();
-    } else {
-        input_files.push(train_table_path.to_path_buf());
-    }
+    let input_files = ordered_train_table_parts(train_table_path)?;
 
     let output_dir = Path::new(&config.output_dir);
     std::fs::create_dir_all(output_dir)?;
@@ -256,8 +284,7 @@ pub fn process_export_internal<R: IdResolver>(
                 false,
             )]));
             let mask_batch = RecordBatch::try_new(mask_schema, vec![mask_array])?;
-            let mask_dir =
-                output_dir.join(format!("{}_mask.parquet", config.train_table_name));
+            let mask_dir = output_dir.join(format!("{}_mask.parquet", config.train_table_name));
             write_parquet(
                 &mask_dir.join(format!("part-{:04}.parquet", batch_index)),
                 &mask_batch,
@@ -321,9 +348,7 @@ pub fn process_export(config: &ExportConfig) -> Result<()> {
             .ok_or_else(|| anyhow!("Target table {} not found in index", fkey.target_table))?;
         let kt = table
             .pk_map()
-            .ok_or_else(|| {
-                anyhow!("Target table {} has no PK map", fkey.target_table)
-            })?
+            .ok_or_else(|| anyhow!("Target table {} has no PK map", fkey.target_table))?
             .key_type();
         key_types.push(kt);
         tables.push(table);
@@ -353,6 +378,7 @@ mod tests {
     }
 
     fn write_test_parquet_string(path: &Path) {
+        std::fs::create_dir(path).unwrap();
         let mut arange = Int64Builder::new();
         let mut entity = StringBuilder::new();
         let mut target = StringBuilder::new();
@@ -385,10 +411,10 @@ mod tests {
         )
         .unwrap();
 
-        write_parquet(path, &batch).unwrap();
+        write_parquet(&path.join("part-00000.parquet"), &batch).unwrap();
     }
 
-    fn write_test_parquet_int(path: &Path) {
+    fn write_test_parquet_int_part(path: &Path, part_index: usize, arange: [i64; 3]) {
         let schema = Arc::new(Schema::new(vec![
             Field::new("arange", DataType::Int64, false),
             Field::new("ENTITY", DataType::Int64, true),
@@ -398,14 +424,19 @@ mod tests {
         let batch = RecordBatch::try_new(
             schema,
             vec![
-                Arc::new(Int64Array::from(vec![100, 101, 102])) as Arc<dyn Array>,
+                Arc::new(Int64Array::from(arange.to_vec())) as Arc<dyn Array>,
                 Arc::new(Int64Array::from(vec![Some(1), Some(2), Some(1)])) as Arc<dyn Array>,
                 Arc::new(Int64Array::from(vec![Some(10), Some(999), None])) as Arc<dyn Array>,
             ],
         )
         .unwrap();
 
-        write_parquet(path, &batch).unwrap();
+        write_parquet(&path.join(format!("part-{part_index:05}.parquet")), &batch).unwrap();
+    }
+
+    fn write_test_parquet_int(path: &Path) {
+        std::fs::create_dir(path).unwrap();
+        write_test_parquet_int_part(path, 0, [100, 101, 102]);
     }
 
     #[test]
@@ -440,9 +471,7 @@ mod tests {
                     (Key::Bytes(b"user_1".to_vec()), 0),
                     (Key::Bytes(b"user_2".to_vec()), 1),
                 ],
-                vec![
-                    (Key::Bytes(b"prod_1".to_vec()), 0),
-                ],
+                vec![(Key::Bytes(b"prod_1".to_vec()), 0)],
             ],
         };
 
@@ -452,13 +481,10 @@ mod tests {
         assert!(output_dir
             .join("custom_train_table_fkey_cols.parquet")
             .exists());
-        assert!(output_dir
-            .join("custom_train_table_mask.parquet")
-            .exists());
+        assert!(output_dir.join("custom_train_table_mask.parquet").exists());
 
-        let mask_file = File::open(
-            output_dir.join("custom_train_table_mask.parquet/part-0000.parquet"),
-        )
+        let mask_file =
+            File::open(output_dir.join("custom_train_table_mask.parquet/part-0000.parquet"))
         .unwrap();
         let mut reader = ParquetRecordBatchReaderBuilder::try_new(mask_file)
             .unwrap()
@@ -509,9 +535,8 @@ mod tests {
         process_export_internal(&config, &resolver, &key_types).unwrap();
 
         // Verify mask
-        let mask_file = File::open(
-            output_dir.join("custom_train_table_mask.parquet/part-0000.parquet"),
-        )
+        let mask_file =
+            File::open(output_dir.join("custom_train_table_mask.parquet/part-0000.parquet"))
         .unwrap();
         let mut reader = ParquetRecordBatchReaderBuilder::try_new(mask_file)
             .unwrap()
@@ -525,9 +550,8 @@ mod tests {
         assert_eq!(mask.value(2), 0); // entity=1, target=null
 
         // Verify fkey_cols
-        let fkey_file = File::open(
-            output_dir.join("custom_train_table_fkey_cols.parquet/part-0000.parquet"),
-        )
+        let fkey_file =
+            File::open(output_dir.join("custom_train_table_fkey_cols.parquet/part-0000.parquet"))
         .unwrap();
         let mut reader = ParquetRecordBatchReaderBuilder::try_new(fkey_file)
             .unwrap()
@@ -557,6 +581,46 @@ mod tests {
     }
 
     #[test]
+    fn test_export_consumes_ordered_train_table_parts() {
+        let dir = TempDir::new().unwrap();
+        let tt_path = dir.path().join("train_table.parquet");
+        std::fs::create_dir(&tt_path).unwrap();
+        write_test_parquet_int_part(&tt_path, 0, [100, 101, 102]);
+        write_test_parquet_int_part(&tt_path, 1, [200, 201, 202]);
+
+        let output_dir = dir.path().join("output");
+        let config = ExportConfig {
+            train_table_path: tt_path.to_str().unwrap().to_string(),
+            index_path: "dummy".to_string(),
+            output_dir: output_dir.to_str().unwrap().to_string(),
+            row_idx_col: "arange".to_string(),
+            train_table_name: "custom_train_table".to_string(),
+            fkeys: vec![FkeyConfig {
+                column_name: "TARGET".to_string(),
+                target_table: "products".to_string(),
+            }],
+        };
+        let resolver = MockResolver {
+            maps: vec![vec![(Key::Int(10), 0)]],
+        };
+
+        process_export_internal(&config, &resolver, &[KeyType::Int64]).unwrap();
+
+        for (part_index, expected_arange) in [(0, 100), (1, 200)] {
+            let path = output_dir.join(format!(
+                "products__rev_TARGET__custom_train_table/edge.parquet/part-{part_index:04}.parquet"
+            ));
+            let mut reader = ParquetRecordBatchReaderBuilder::try_new(File::open(path).unwrap())
+                .unwrap()
+                .build()
+                .unwrap();
+            let batch = reader.next().unwrap().unwrap();
+            assert_eq!(batch.num_rows(), 1);
+            assert_eq!(batch.column(1).as_primitive::<Int64Type>().value(0), expected_arange);
+        }
+    }
+
+    #[test]
     fn test_export_e2e_real_index() {
         use std::process::Command;
 
@@ -565,8 +629,11 @@ mod tests {
         let source_dir = dir.path().join("source");
         std::fs::create_dir_all(&source_dir).unwrap();
 
-        let u_schema =
-            Arc::new(Schema::new(vec![Field::new("user_id", DataType::Utf8, false)]));
+        let u_schema = Arc::new(Schema::new(vec![Field::new(
+            "user_id",
+            DataType::Utf8,
+            false,
+        )]));
         let mut u_builder = StringBuilder::new();
         u_builder.append_value("user_1");
         u_builder.append_value("user_2");
@@ -611,11 +678,7 @@ mod tests {
             ]
         });
         let config_path = dir.path().join("config.json");
-        std::fs::write(
-            &config_path,
-            serde_json::to_string(&config_json).unwrap(),
-        )
-        .unwrap();
+        std::fs::write(&config_path, serde_json::to_string(&config_json).unwrap()).unwrap();
 
         let index_dir = dir.path().join("compiled_index");
 
@@ -672,9 +735,8 @@ mod tests {
 
         process_export(&config).unwrap();
 
-        let mask_file = File::open(
-            output_dir.join("custom_train_table_mask.parquet/part-0000.parquet"),
-        )
+        let mask_file =
+            File::open(output_dir.join("custom_train_table_mask.parquet/part-0000.parquet"))
         .unwrap();
         let mut reader = ParquetRecordBatchReaderBuilder::try_new(mask_file)
             .unwrap()

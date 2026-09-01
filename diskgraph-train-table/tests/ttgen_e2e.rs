@@ -1089,18 +1089,27 @@ fn e2e_manifest_kumo_reader_contract() {
 
     // Required fields: version, row_count, source_mode, train_table, stats.
     let manifest = read_manifest(&output.manifest_path).unwrap();
-    assert_eq!(manifest.version, 2);
+    assert_eq!(manifest.version, 3);
     assert_eq!(manifest.row_count, output.rows_written);
     assert_eq!(manifest.source_mode, "pquery");
     // The train-table reference is bundle-relative and records the exact
     // closed-file size without requiring a second content hash pass.
     let train_table_path = out_dir.path().join(&manifest.train_table.path);
     assert!(train_table_path.exists());
+    let parts = diskgraph_train_table::parquet_dataset::ordered_tt_dataset_parts(&train_table_path)
+        .unwrap();
+    assert_eq!(manifest.train_table.parts.len(), parts.len());
     assert_eq!(
         manifest.train_table.size_bytes,
-        std::fs::metadata(&train_table_path).unwrap().len()
+        parts.iter().map(|part| std::fs::metadata(part).unwrap().len()).sum::<u64>()
     );
-    // `train_table.format` value is exactly "tt_parquet_v1".
+    for (declared, part) in manifest.train_table.parts.iter().zip(parts) {
+        assert_eq!(
+            declared.path,
+            format!("tt.parquet/{}", part.file_name().unwrap().to_string_lossy())
+    );
+    }
+    // `train_table.format` identifies the directory-dataset contract.
     assert_eq!(manifest.train_table.format, TT_PARQUET_FORMAT);
     // stats artifact ref.
     let stats_path = out_dir.path().join(&manifest.stats.path);
@@ -1118,7 +1127,7 @@ fn e2e_manifest_kumo_reader_contract() {
     assert_stage_infos_consistent(&output, out_dir.path());
 
     // Bounded sidecar checksums remain content-validated. The large parquet
-    // intentionally has no default SHA field in manifest v2.
+    // intentionally has no default SHA field in manifest v3.
     let stats_sha = sha256_file(&stats_path).unwrap();
     assert_eq!(stats_sha, manifest.checksums.stats_sha256);
     let sha = &manifest.checksums.stats_sha256;
@@ -1544,7 +1553,14 @@ fn e2e_multi_entity_multi_target_pipeline() {
     // ENTITY1, ENTITY2, TIMESTAMP, TARGET1, TARGET2.
     let parquet_rows = parquet_row_count(&output.tt_parquet_path);
     assert_eq!(parquet_rows, n_rows as u64);
-    let file = fs::File::open(&output.tt_parquet_path).unwrap();
+    let first_part = diskgraph_train_table::parquet_dataset::ordered_tt_dataset_parts(
+        &output.tt_parquet_path,
+    )
+    .unwrap()
+    .into_iter()
+    .next()
+    .unwrap();
+    let file = fs::File::open(first_part).unwrap();
     let reader = ParquetRecordBatchReaderBuilder::try_new(file)
         .unwrap()
         .build()
@@ -1984,13 +2000,13 @@ struct TTParquetCols {
 }
 
 fn read_tt_parquet_columns(path: &Path) -> TTParquetCols {
-    let file = fs::File::open(path).unwrap();
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+    let mut column_names: Vec<String> = Vec::new();
+    let mut include_bits: Option<Vec<bool>> = None;
+    for part in diskgraph_train_table::parquet_dataset::ordered_tt_dataset_parts(path).unwrap() {
+        let reader = ParquetRecordBatchReaderBuilder::try_new(fs::File::open(part).unwrap())
         .unwrap()
         .build()
         .unwrap();
-    let mut column_names: Vec<String> = Vec::new();
-    let mut include_bits: Option<Vec<bool>> = None;
     for batch_res in reader {
         let batch = batch_res.unwrap();
         if column_names.is_empty() {
@@ -2014,6 +2030,7 @@ fn read_tt_parquet_columns(path: &Path) -> TTParquetCols {
             include_bits = Some(v);
         }
     }
+    }
     TTParquetCols {
         column_names,
         include_bits,
@@ -2021,16 +2038,21 @@ fn read_tt_parquet_columns(path: &Path) -> TTParquetCols {
 }
 
 fn parquet_row_count(path: &Path) -> u64 {
-    let file = fs::File::open(path).unwrap();
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+    let parts = if path.is_dir() {
+        diskgraph_train_table::parquet_dataset::ordered_tt_dataset_parts(path).unwrap()
+    } else {
+        vec![path.to_path_buf()]
+    };
+    parts
+        .into_iter()
+        .map(|part| {
+            ParquetRecordBatchReaderBuilder::try_new(fs::File::open(part).unwrap())
         .unwrap()
-        .build()
-        .unwrap();
-    let mut total = 0u64;
-    for b in reader {
-        total += b.unwrap().num_rows() as u64;
-    }
-    total
+                .metadata()
+                .file_metadata()
+                .num_rows() as u64
+        })
+        .sum()
 }
 
 // ─── Kumo-contract sidecar tests ─────────────────────────────────────────────
@@ -2140,7 +2162,10 @@ fn e2e_split_stats_emitted_when_split_computed() {
     for (stage_key, payload_key) in [("val", "val_table_stats"), ("test", "test_table_stats")] {
         let row_count = stage_row_count(&output, stage_key);
         if row_count == 0 {
-            assert!(payload[payload_key].is_null(), "{payload_key} should be null");
+            assert!(
+                payload[payload_key].is_null(),
+                "{payload_key} should be null"
+            );
         } else {
             assert_eq!(
                 payload[payload_key]["num_train_rows"].as_u64(),
@@ -2155,7 +2180,10 @@ fn e2e_split_stats_emitted_when_split_computed() {
     assert_eq!(split_ref.format, SPLIT_STATS_FORMAT);
     assert_eq!(out_dir.path().join(&split_ref.path), split_stats_path);
     let actual = sha256_file(&split_stats_path).unwrap();
-    assert_eq!(manifest.checksums.split_stats_sha256.as_ref(), Some(&actual));
+    assert_eq!(
+        manifest.checksums.split_stats_sha256.as_ref(),
+        Some(&actual)
+    );
 }
 
 #[test]
@@ -2334,12 +2362,12 @@ fn e2e_date_offset_calendar_months_e2e() {
 }
 
 fn read_node_rows(path: &Path) -> Vec<(i64, i64, f64)> {
-    let file = fs::File::open(path).unwrap();
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+    let mut out = Vec::new();
+    for part in diskgraph_train_table::parquet_dataset::ordered_tt_dataset_parts(path).unwrap() {
+        let reader = ParquetRecordBatchReaderBuilder::try_new(fs::File::open(part).unwrap())
         .unwrap()
         .build()
         .unwrap();
-    let mut out = Vec::new();
     for batch_res in reader {
         let batch = batch_res.unwrap();
         let schema = batch.schema();
@@ -2368,6 +2396,7 @@ fn read_node_rows(path: &Path) -> Vec<(i64, i64, f64)> {
                 targets.value(i),
             ));
         }
+    }
     }
     out
 }

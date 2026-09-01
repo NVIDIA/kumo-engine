@@ -362,9 +362,10 @@ fn execute(
     // detect that and short-circuit to an empty batch list — matches the
     // legacy streaming model where receiver.iter() simply yielded nothing.
     let mut batches = Vec::new();
-    let file_meta = std::fs::metadata(&output.tt_parquet_path)?;
-    if file_meta.len() > 0 {
-        let file = std::fs::File::open(&output.tt_parquet_path)?;
+    for part in diskgraph_train_table::parquet_dataset::ordered_tt_dataset_parts(
+        &output.tt_parquet_path,
+    )? {
+        let file = std::fs::File::open(part)?;
         let reader = ParquetRecordBatchReaderBuilder::try_new(file)
             .map_err(|e| diskgraph_train_table::errors::TTGenError::Parquet(e.to_string()))?
             .build()
@@ -5756,7 +5757,7 @@ fn integ_forecasting_training_future_labels() {
     )
     .unwrap();
 
-    let file = std::fs::File::open(&output.tt_parquet_path).unwrap();
+    let file = std::fs::File::open(first_tt_part(&output.tt_parquet_path)).unwrap();
     let reader = ParquetRecordBatchReaderBuilder::try_new(file)
         .unwrap()
         .build()
@@ -7257,13 +7258,13 @@ fn integ_execute_tt_pass_writes_parquet_at_expected_path() {
         expected_path.exists(),
         "tt.parquet should exist on disk after execute_tt_pass"
     );
-    let file_size = std::fs::metadata(&expected_path).unwrap().len();
-    assert!(file_size > 0, "tt.parquet should not be empty");
+    assert!(expected_path.is_dir(), "tt.parquet should be a directory dataset");
+    assert!(tt_dataset_size(&expected_path) > 0, "tt.parquet should not be empty");
     assert!(output.rows_written > 0, "rows_written should be > 0");
     assert!(output.stats.is_some(), "stats payload should be populated");
 
     // Sanity: read back via parquet reader and confirm row count matches.
-    let file = std::fs::File::open(&expected_path).unwrap();
+    let file = std::fs::File::open(first_tt_part(&expected_path)).unwrap();
     let reader = ParquetRecordBatchReaderBuilder::try_new(file)
         .unwrap()
         .build()
@@ -7380,18 +7381,39 @@ fn stage_row_count(output: &TTPassOutput, key: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// On-disk parquet row count for a single file.
+/// On-disk parquet row count for a stage file or the Pass-A dataset.
 fn parquet_row_count(path: &Path) -> u64 {
-    let file = std::fs::File::open(path).unwrap();
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+    let parts = if path.is_dir() {
+        diskgraph_train_table::parquet_dataset::ordered_tt_dataset_parts(path).unwrap()
+    } else {
+        vec![path.to_path_buf()]
+    };
+    parts
+        .into_iter()
+        .map(|part| {
+            ParquetRecordBatchReaderBuilder::try_new(std::fs::File::open(part).unwrap())
         .unwrap()
-        .build()
-        .unwrap();
-    let mut total = 0u64;
-    for b in reader {
-        total += b.unwrap().num_rows() as u64;
+                .metadata()
+                .file_metadata()
+                .num_rows() as u64
+        })
+        .sum()
     }
-    total
+
+fn first_tt_part(path: &Path) -> std::path::PathBuf {
+    diskgraph_train_table::parquet_dataset::ordered_tt_dataset_parts(path)
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("training table dataset has a part")
+}
+
+fn tt_dataset_size(path: &Path) -> u64 {
+    diskgraph_train_table::parquet_dataset::ordered_tt_dataset_parts(path)
+        .unwrap()
+        .into_iter()
+        .map(|part| std::fs::metadata(part).unwrap().len())
+        .sum()
 }
 
 /// Cross-cutting invariant on the new split contract:
@@ -7486,12 +7508,19 @@ fn read_stage_map_from_seeds(output_dir: &Path) -> std::collections::HashMap<(St
 /// stage, not row order — pass A's row order is non-deterministic by design
 /// (rayon parallel writer).
 fn read_tt_entity_ts_pairs(path: &Path) -> Vec<(String, i64)> {
-    let file = std::fs::File::open(path).unwrap();
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+    let paths = if path.is_dir() {
+        diskgraph_train_table::parquet_dataset::ordered_tt_dataset_parts(path).unwrap()
+    } else {
+        vec![path.to_path_buf()]
+    };
+    let mut out = Vec::new();
+    for part in paths {
+        let reader = ParquetRecordBatchReaderBuilder::try_new(
+            std::fs::File::open(part).unwrap(),
+        )
         .unwrap()
         .build()
         .unwrap();
-    let mut out = Vec::new();
     for batch in reader {
         let batch = batch.unwrap();
         let ent_idx = batch.schema().index_of("ENTITY1").unwrap();
@@ -7515,6 +7544,7 @@ fn read_tt_entity_ts_pairs(path: &Path) -> Vec<(String, i64)> {
         for i in 0..batch.num_rows() {
             out.push((stringify(i), ts.value(i) / 1_000_000_000));
         }
+    }
     }
     out
 }
@@ -8394,7 +8424,7 @@ fn integ_e2e_array_link_random_split_regroup_writes_split_bin() {
     //     across all three stages' parts. With a 3-way ratio (all > 0), every
     //     link is assigned (none UNUSED), so the total equals the number of
     //     link-cells in the monolith.
-    let mono = std::fs::File::open(&output.tt_parquet_path).unwrap();
+    let mono = std::fs::File::open(first_tt_part(&output.tt_parquet_path)).unwrap();
     let mono_reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(mono)
         .unwrap()
         .build()
@@ -8469,7 +8499,7 @@ fn integ_e2e_array_link_random_split_regroup_emits_manifest() {
     // (split=None, stage_counts=None, split_mode="none"); split_kind is still
     // populated, and the per-stage counts live in stage_gen_infos.
     let manifest = diskgraph_train_table::manifest::read_manifest(&output.manifest_path).unwrap();
-    assert_eq!(manifest.version, 2);
+    assert_eq!(manifest.version, 3);
     assert_eq!(manifest.source_mode, "pquery");
     assert_eq!(manifest.split_kind.as_deref(), Some("RandomLinkSplit"));
     assert_eq!(manifest.split_mode, "none");
@@ -8506,7 +8536,7 @@ fn integ_e2e_manifest_pq_source_basic() {
         "manifest.json must be written"
     );
     let m = diskgraph_train_table::manifest::read_manifest(&output.manifest_path).unwrap();
-    assert_eq!(m.version, 2);
+    assert_eq!(m.version, 3);
     assert_eq!(m.source_mode, "pquery");
     assert_eq!(m.row_count, output.rows_written);
     // No split → no split.bin, no stage_counts.
@@ -8723,7 +8753,7 @@ fn integ_manifest_schema_matches_kumo_expectations_e2e() {
         !obj.contains_key("split"),
         "TT-NG path must not emit a split ArtifactRef"
     );
-    assert_eq!(obj["version"].as_u64(), Some(2));
+    assert_eq!(obj["version"].as_u64(), Some(3));
     let tt = obj["train_table"].as_object().unwrap();
     assert_eq!(
         tt["format"].as_str(),
@@ -8732,8 +8762,13 @@ fn integ_manifest_schema_matches_kumo_expectations_e2e() {
     assert!(tt.contains_key("path"));
     assert_eq!(
         tt["size_bytes"].as_u64(),
-        Some(std::fs::metadata(&output.tt_parquet_path).unwrap().len())
+        Some(tt_dataset_size(&output.tt_parquet_path))
     );
+    let parts = tt["parts"].as_array().expect("train_table.parts array");
+    assert!(!parts.is_empty());
+    assert!(parts.iter().all(|part| part["path"]
+        .as_str()
+        .is_some_and(|path| path.starts_with("tt.parquet/part-") && path.ends_with(".parquet"))));
     let st = obj["stats"].as_object().unwrap();
     assert_eq!(
         st["format"].as_str(),
@@ -8825,15 +8860,30 @@ fn integ_tt_forecasting_target_extraction() {
     )
     .unwrap();
 
-    let pq = output.tt_parquet_path;
-    let file = std::fs::File::open(&pq).unwrap();
-    let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file).unwrap().build().unwrap();
     let mut map = std::collections::HashMap::new();
 
+    for part in diskgraph_train_table::parquet_dataset::ordered_tt_dataset_parts(
+        &output.tt_parquet_path,
+    )
+    .unwrap()
+    {
+        let file = std::fs::File::open(part).unwrap();
+        let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(file)
+            .unwrap()
+            .build()
+            .unwrap();
     for batch_res in reader {
         let b = batch_res.unwrap();
-        let entities = b.column(0).as_any().downcast_ref::<arrow_array::Int64Array>().unwrap();
-        let timestamps = b.column(1).as_any().downcast_ref::<arrow_array::TimestampNanosecondArray>().unwrap();
+            let entities = b
+                .column(0)
+                .as_any()
+                .downcast_ref::<arrow_array::Int64Array>()
+                .unwrap();
+            let timestamps = b
+                .column(1)
+                .as_any()
+                .downcast_ref::<arrow_array::TimestampNanosecondArray>()
+                .unwrap();
 
         let schema = b.schema();
         let tgt_idx = schema.index_of("TARGET1").unwrap();
@@ -8845,18 +8895,30 @@ fn integ_tt_forecasting_target_extraction() {
             "forecast TARGET1 must use the aggregate dtype, not the dummy entity-column dtype",
         );
 
-        let targets = b.column(tgt_idx).as_any().downcast_ref::<arrow_array::Float64Array>().unwrap();
-        let autoreg = b.column(ar_idx).as_any().downcast_ref::<arrow_array::ListArray>().unwrap();
+            let targets = b
+                .column(tgt_idx)
+                .as_any()
+                .downcast_ref::<arrow_array::Float64Array>()
+                .unwrap();
+            let autoreg = b
+                .column(ar_idx)
+                .as_any()
+                .downcast_ref::<arrow_array::ListArray>()
+                .unwrap();
 
         for i in 0..b.num_rows() {
             let e = entities.value(i);
             let ts = timestamps.value(i) / 1_000_000_000;
             let tgt = targets.value(i);
             let ar_list = autoreg.value(i);
-            let ar_f64 = ar_list.as_any().downcast_ref::<arrow_array::Float64Array>().unwrap();
+                let ar_f64 = ar_list
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float64Array>()
+                    .unwrap();
             let ar_val = ar_f64.value(0);
             map.insert((e, ts), (tgt, ar_val));
         }
+    }
     }
 
     let alice_1000 = map.get(&(0, 1000)).unwrap();
@@ -9679,7 +9741,7 @@ fn integ_forecasting_empty_count_distinct_target_is_zero() {
     .unwrap();
 
     assert_eq!(output.rows_written, 5);
-    let file = std::fs::File::open(output.tt_parquet_path).unwrap();
+    let file = std::fs::File::open(first_tt_part(&output.tt_parquet_path)).unwrap();
     let reader = ParquetRecordBatchReaderBuilder::try_new(file)
         .unwrap()
         .build()

@@ -101,6 +101,7 @@
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tt.parquet");
+        std::fs::create_dir(&path).unwrap();
         let schema = StdArc::new(Schema::new(vec![
             Field::new("a", DataType::Int64, false),
             Field::new("b", DataType::Utf8, false),
@@ -113,15 +114,17 @@
             ],
         )
         .unwrap();
-        let f = File::create(&path).unwrap();
+        let f = File::create(path.join("part-00000.parquet")).unwrap();
         let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
         w.write(&batch).unwrap();
         w.close().unwrap();
 
         // Construct iterator (lazy) and immediately drop. Should not panic.
         let mut it = TTParquetBatchIterator {
-            parquet_path: path.to_string_lossy().into_owned(),
+            dataset_path: path.to_string_lossy().into_owned(),
             columns: None,
+            parquet_paths: None,
+            next_part: 0,
             reader: None,
             schema: None,
         };
@@ -143,6 +146,7 @@
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tt.parquet");
+        std::fs::create_dir(&path).unwrap();
         let schema = StdArc::new(Schema::new(vec![
             Field::new("a", DataType::Int64, false),
             Field::new("b", DataType::Utf8, false),
@@ -157,14 +161,16 @@
             ],
         )
         .unwrap();
-        let f = File::create(&path).unwrap();
+        let f = File::create(path.join("part-00000.parquet")).unwrap();
         let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
         w.write(&batch).unwrap();
         w.close().unwrap();
 
         let mut it = TTParquetBatchIterator {
-            parquet_path: path.to_string_lossy().into_owned(),
+            dataset_path: path.to_string_lossy().into_owned(),
             columns: Some(vec!["a".to_string(), "c".to_string()]),
+            parquet_paths: None,
+            next_part: 0,
             reader: None,
             schema: None,
         };
@@ -186,6 +192,58 @@
     }
 
     #[test]
+    fn test_read_tt_parquet_batches_walks_parts_in_order() {
+        use arrow_array::Int64Array;
+        use arrow_schema::{DataType, Field, Schema};
+        use parquet::arrow::ArrowWriter;
+        use std::sync::Arc as StdArc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tt.parquet");
+        std::fs::create_dir(&path).unwrap();
+        let schema = StdArc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        for (part_index, values) in [(0, vec![1, 2]), (1, vec![3, 4])] {
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![StdArc::new(Int64Array::from(values))],
+            )
+            .unwrap();
+            let file = File::create(path.join(format!("part-{part_index:05}.parquet"))).unwrap();
+            let mut writer = ArrowWriter::try_new(file, schema.clone(), None).unwrap();
+            writer.write(&batch).unwrap();
+            writer.close().unwrap();
+        }
+
+        let mut iterator = TTParquetBatchIterator {
+            dataset_path: path.to_string_lossy().into_owned(),
+            columns: None,
+            parquet_paths: None,
+            next_part: 0,
+            reader: None,
+            schema: None,
+        };
+        let mut values = Vec::new();
+        loop {
+            if !iterator.ensure_reader().unwrap() {
+                break;
+            }
+            match iterator.reader.as_mut().unwrap().next() {
+                Some(Ok(batch)) => {
+                    let column = batch
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap();
+                    values.extend((0..column.len()).map(|row| column.value(row)));
+                }
+                Some(Err(error)) => panic!("failed to read test batch: {error}"),
+                None => iterator.reader = None,
+            }
+        }
+        assert_eq!(values, [1, 2, 3, 4]);
+    }
+
+    #[test]
     fn test_read_tt_parquet_batches_missing_column_errors() {
         // Constructing a `DiskgraphDataError` requires the Python interpreter,
         // so we test the underlying behavior by initializing the interpreter
@@ -201,20 +259,23 @@
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tt.parquet");
+        std::fs::create_dir(&path).unwrap();
         let schema = StdArc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![StdArc::new(Int64Array::from(vec![1i64]))],
         )
         .unwrap();
-        let f = File::create(&path).unwrap();
+        let f = File::create(path.join("part-00000.parquet")).unwrap();
         let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
         w.write(&batch).unwrap();
         w.close().unwrap();
 
         let mut it = TTParquetBatchIterator {
-            parquet_path: path.to_string_lossy().into_owned(),
+            dataset_path: path.to_string_lossy().into_owned(),
             columns: Some(vec!["does_not_exist".to_string()]),
+            parquet_paths: None,
+            next_part: 0,
             reader: None,
             schema: None,
         };
@@ -323,9 +384,32 @@
 
     fn t_write_fixed_staging_artifacts(root: &Path) {
         std::fs::create_dir_all(root).unwrap();
-        for name in [TT_INGEST_SPEC_FILENAME, "tt.parquet", "manifest.json"] {
+        for name in [TT_INGEST_SPEC_FILENAME, "manifest.json"] {
             std::fs::write(root.join(name), b"artifact").unwrap();
         }
+        let dataset = root.join("tt.parquet");
+        std::fs::create_dir(&dataset).unwrap();
+        std::fs::write(dataset.join("part-00000.parquet"), b"artifact").unwrap();
+    }
+
+    #[test]
+    fn test_no_split_stage_consumes_all_dataset_parts_in_order() {
+        let root = tempfile::tempdir().unwrap();
+        let dataset = root.path().join("tt.parquet");
+        std::fs::create_dir(&dataset).unwrap();
+        t_write_stage_rows(&dataset.join("part-00000.parquet"), 2);
+        t_write_stage_rows(&dataset.join("part-00001.parquet"), 3);
+
+        let stages = resolve_ingest_stages(root.path(), &dataset, "predict", None).unwrap();
+        assert_eq!(stages.len(), 1);
+        assert_eq!(
+            stages[0]
+                .parquet_paths
+                .iter()
+                .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["part-00000.parquet", "part-00001.parquet"]
+        );
     }
 
     #[cfg(unix)]
@@ -399,7 +483,7 @@
     }
 
     #[test]
-    fn test_v2_inventory_is_additive_and_requires_fleet_wide_consumer_rollout() {
+    fn test_v3_inventory_is_additive_and_requires_fleet_wide_consumer_rollout() {
         use diskgraph_train_table::ttgen_executor::{
             StageArtifactInventory, StagePartArtifact,
         };
@@ -527,7 +611,7 @@
     }
 
     #[test]
-    fn test_ingest_spec_v2_requires_stage_artifact_inventory() {
+    fn test_ingest_spec_v3_requires_stage_artifact_inventory() {
         let mut spec = TtIngestSpec::from_plan("tt", &t_node_plan(true));
         spec.split_stages = Some(vec![t_stage_info(
             "train_seeds/part-00000.parquet",

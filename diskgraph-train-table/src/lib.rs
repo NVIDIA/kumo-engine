@@ -9,6 +9,7 @@ pub mod ttgen_traversal;
 pub mod tt_stage_ingest;
 pub mod errors;
 pub mod pass_b;
+pub mod parquet_dataset;
 pub mod split_decider;
 pub mod custom_tt_chunk_processor;
 pub mod regroup;

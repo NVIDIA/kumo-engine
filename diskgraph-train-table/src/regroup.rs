@@ -15,12 +15,15 @@
 use std::fs::File;
 use std::path::Path;
 
-use arrow_array::{Array, BooleanArray, ListArray, RecordBatch};
+#[cfg(test)]
+use arrow_array::RecordBatch;
+use arrow_array::{Array, BooleanArray, ListArray, RecordBatchReader};
 use arrow_schema::DataType;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
 
 use crate::errors::{TTGenError, TTGenResult};
+use crate::parquet_dataset::ordered_tt_dataset_parts;
 
 /// Drop empty-target anchor rows from an array-LP `tt.parquet` in place,
 /// returning the per-row keep mask (`keep[i] == true` ⇔ row `i` survived).
@@ -28,33 +31,22 @@ use crate::errors::{TTGenError, TTGenResult};
 /// Used only on the no-split (prediction) LP path. Split LP is handled
 /// implicitly by the fused pass-B router — an anchor with an empty TARGET
 /// list produces zero sub-batches and is never written to any stage part.
-/// The no-split path writes the monolith `tt.parquet` before routing, so
+/// The no-split path writes the `tt.parquet` dataset before routing, so
 /// empty-target rows must be pruned here after pass A completes.
 ///
 /// `TARGET1` must be a `List`-typed column. Returns the keep mask (length =
-/// original row count). The rewritten parquet has `keep.iter().filter(|k|
-/// **k).count()` rows. Empty input → empty mask, file left as-is.
+/// original row count). The rewritten dataset has `keep.iter().filter(|k|
+/// **k).count()` rows. Empty input → empty mask, dataset left as-is.
 ///
 /// MUST only be called for LP array tasks — non-LP array tasks (e.g.
 /// multilabel/forecasting) may legitimately carry empty list cells.
 pub(crate) fn drop_empty_target_rows_in_place(tt_parquet_path: &Path) -> TTGenResult<Vec<bool>> {
     use arrow_select::filter::filter_record_batch;
 
-    let file = File::open(tt_parquet_path)?;
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
-    let mut batches: Vec<RecordBatch> = Vec::new();
-    for batch_res in reader {
-        let batch = batch_res.map_err(|e| {
-            TTGenError::Parquet(format!("drop_empty_target_rows: reading tt.parquet: {e}"))
-        })?;
-        batches.push(batch);
-    }
-    let first = match batches.first() {
-        Some(b) => b,
-        // Empty parquet (zero batches): nothing to drop.
-        None => return Ok(Vec::new()),
-    };
-    let schema = first.schema();
+    let mut keep: Vec<bool> = Vec::new();
+    for part_path in ordered_tt_dataset_parts(tt_parquet_path)? {
+        let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(&part_path)?)?.build()?;
+        let schema = reader.schema();
     let target_idx = schema.index_of("TARGET1").map_err(|_| {
         TTGenError::SystemError("drop_empty_target_rows: requires TARGET1 column".to_string())
     })?;
@@ -64,9 +56,12 @@ pub(crate) fn drop_empty_target_rows_in_place(tt_parquet_path: &Path) -> TTGenRe
         ));
     }
 
-    let mut keep: Vec<bool> = Vec::new();
-    let mut filtered_batches: Vec<RecordBatch> = Vec::with_capacity(batches.len());
-    for batch in &batches {
+        let tmp_path = part_path.with_extension("parquet.tmp");
+        let mut writer = ArrowWriter::try_new(File::create(&tmp_path)?, schema.clone(), None)?;
+        for batch_res in reader {
+            let batch = batch_res.map_err(|e| {
+                TTGenError::Parquet(format!("drop_empty_target_rows: reading tt.parquet: {e}"))
+            })?;
         let target_list = batch
             .column(target_idx)
             .as_any()
@@ -79,30 +74,22 @@ pub(crate) fn drop_empty_target_rows_in_place(tt_parquet_path: &Path) -> TTGenRe
         let offsets = target_list.value_offsets();
         let mask_vals: Vec<Option<bool>> = (0..batch.num_rows())
             .map(|i| {
-                // A row survives iff its TARGET1 list has >= 1 element AND the
-                // list cell is non-null. A null list cell is treated as empty.
-                let non_empty =
-                    !target_list.is_null(i) && (offsets[i + 1] - offsets[i]) > 0;
+                    let non_empty = !target_list.is_null(i) && (offsets[i + 1] - offsets[i]) > 0;
                 keep.push(non_empty);
                 Some(non_empty)
             })
             .collect();
-        let mask = BooleanArray::from(mask_vals);
-        let filtered = filter_record_batch(batch, &mask).map_err(|e| {
+            let filtered =
+                filter_record_batch(&batch, &BooleanArray::from(mask_vals)).map_err(|e| {
             TTGenError::SystemError(format!("drop_empty_target_rows: filter failed: {e}"))
         })?;
-        filtered_batches.push(filtered);
-    }
-
-    // Rewrite tt.parquet with only the surviving rows.
-    let out_file = File::create(tt_parquet_path)?;
-    let mut writer = ArrowWriter::try_new(out_file, schema, None)?;
-    for fb in &filtered_batches {
-        if fb.num_rows() > 0 {
-            writer.write(fb)?;
+            if filtered.num_rows() > 0 {
+                writer.write(&filtered)?;
         }
     }
     writer.close()?;
+        std::fs::rename(tmp_path, part_path)?;
+    }
 
     Ok(keep)
 }
@@ -113,7 +100,9 @@ pub(crate) fn drop_empty_target_rows_in_place(tt_parquet_path: &Path) -> TTGenRe
 #[allow(clippy::type_complexity)]
 mod tests {
     use super::*;
-    use arrow_array::builder::{Int64Builder, ListBuilder, StringBuilder, TimestampNanosecondBuilder};
+    use arrow_array::builder::{
+        Int64Builder, ListBuilder, StringBuilder, TimestampNanosecondBuilder,
+    };
     use arrow_array::Int64Array;
     use arrow_schema::{Field, Schema, TimeUnit};
     use parquet::arrow::ArrowWriter;
@@ -124,6 +113,7 @@ mod tests {
     ///            __kumo_internal_frequency_column__:List<Int64>).
     /// Each row has the given list of (target, freq) pairs.
     fn write_lp_array_parquet(path: &Path, rows: &[(i64, i64, Vec<(&str, i64)>)]) {
+        std::fs::create_dir(path).unwrap();
         let mut entity = Int64Builder::new();
         let mut ts_b = TimestampNanosecondBuilder::new();
         let mut target_lb = ListBuilder::new(StringBuilder::new());
@@ -166,19 +156,24 @@ mod tests {
             ],
         )
         .unwrap();
-        let f = File::create(path).unwrap();
+        let f = File::create(path.join(crate::parquet_dataset::part_name(0))).unwrap();
         let mut w = ArrowWriter::try_new(f, schema, None).unwrap();
         w.write(&batch).unwrap();
         w.close().unwrap();
     }
 
     fn read_back(path: &Path) -> Vec<RecordBatch> {
-        let f = File::open(path).unwrap();
-        let r = ParquetRecordBatchReaderBuilder::try_new(f)
+        crate::parquet_dataset::ordered_tt_dataset_parts(path)
+            .unwrap()
+            .into_iter()
+            .flat_map(|part| {
+                ParquetRecordBatchReaderBuilder::try_new(File::open(part).unwrap())
             .unwrap()
             .build()
-            .unwrap();
-        r.into_iter().map(|b| b.unwrap()).collect()
+                    .unwrap()
+                    .map(|batch| batch.unwrap())
+            })
+            .collect()
     }
 
     // ── Empty-target drop (split-kind-agnostic; temporal-LP path) ──────────

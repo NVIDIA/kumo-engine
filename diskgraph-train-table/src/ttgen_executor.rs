@@ -2,8 +2,8 @@
 //!
 //! Entry point: [`execute_tt_pass`] takes a `DiskGraphTTPlan<U>`, an index
 //! path, and an output directory. It runs the executor end-to-end and writes
-//! `tt.parquet` directly to the output directory. No streaming exposure; the
-//! caller reads the file back if it needs to inspect rows.
+//! a `tt.parquet` directory dataset directly to the output directory. No
+//! streaming exposure; the caller reads the parts back to inspect rows.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use crate::errors::{TTGenError, TTGenResult};
 use arrow_schema::DataType;
-use crossbeam_channel::{bounded, Sender};
+use crossbeam_channel::{bounded, Receiver, Sender};
 use diskgraph_core::accumulators::{
     for_each_split_ascii_byte, HyperLogLog, LocalColumnCounts, SharedColumnCounts,
     TDigestEstimator, WelfordAccumulator,
@@ -21,16 +21,19 @@ use diskgraph_core::time::{add_calendar_months, dur_from_unit, Abs, Dur, TimeUni
 use diskgraph_core::tt_builder::*;
 use diskgraph_index::graph::GraphIndexReader;
 use parquet::arrow::ArrowWriter;
+use parquet::file::properties::WriterProperties;
 use rayon::prelude::*;
 
 use crate::manifest::{
-    sha256_file, write_manifest, write_stats_artifact, ArtifactRef, ManifestChecksums,
-    TrainTableArtifactRef, TTManifest, SPLIT_STATS_FORMAT, STATS_FORMAT, TT_MANIFEST_VERSION,
-    TT_PARQUET_FORMAT,
+    sha256_file, write_manifest, write_stats_artifact, ArtifactRef, ManifestChecksums, TTManifest,
+    TrainTableArtifactRef, TrainTablePartRef, SPLIT_STATS_FORMAT, STATS_FORMAT,
+    TT_MANIFEST_VERSION, TT_PARQUET_FORMAT,
 };
-use crate::pass_b::{
-    run_pass_b_per_anchor, run_pass_b_per_link, StagePartsOut, STAGE_TABLE_NAMES,
+use crate::parquet_dataset::{
+    first_tt_dataset_schema, ordered_tt_dataset_parts, part_name, TT_DATASET_DIR, TT_PART_MAX_ROWS,
+    TT_PART_ROW_GROUP_ROWS,
 };
+use crate::pass_b::{run_pass_b_per_anchor, run_pass_b_per_link, StagePartsOut, STAGE_TABLE_NAMES};
 use crate::route::{per_link_output_schema, LinkAssigner};
 use crate::split_decider::{
     ApproxDateOffsetDecider, BacktestingDecider, ColumnDeciderManual, ColumnDeciderRatioNumeric,
@@ -45,20 +48,14 @@ use crate::ttgen_output::{
     BatchMessage, ChannelBatchWriter, ExtraColumnOutput, ExtraValueRef, OutputMode,
 };
 use crate::ttgen_resolve::*;
-use crate::ttgen_stats::{
-    ChunkStats, RowProcessor, StatsMerger, TTRowRef, TrainTableStatsPayload,
-};
+use crate::ttgen_stats::{ChunkStats, RowProcessor, StatsMerger, TTRowRef, TrainTableStatsPayload};
 use crate::ttgen_traversal::*;
 
 /// Returned by `run_pass_a_then_pass_b`: total rows, merged chunk-stats, and
 /// the fused pass-B per-stage parts (`Some` only for the per-anchor Compute
 /// arms, which own the `D`-generic merged decider; deferred modes run pass-B
 /// in the executor body). Per-row weights ride in the `WEIGHT` column, not here.
-type PassAOutputs<U> = (
-    u64,
-    StatsMerger<U>,
-    Option<[StagePartsOut; 3]>,
-);
+type PassAOutputs<U> = (u64, StatsMerger<U>, Option<[StagePartsOut; 3]>);
 
 /// Node-task train-table targets require a complete vocabulary and have no
 /// hash-encoder fallback. Link-prediction targets are graph node IDs and do
@@ -68,10 +65,7 @@ const MAX_TRAIN_TABLE_TARGET_CATEGORIES: u64 = 250_000_000;
 fn category_count_accumulators(
     target_is_categorical: bool,
     is_link_prediction: bool,
-) -> (
-    Option<Arc<SharedColumnCounts>>,
-    Arc<SharedColumnCounts>,
-) {
+) -> (Option<Arc<SharedColumnCounts>>, Arc<SharedColumnCounts>) {
     let collect_exact_target_categories = target_is_categorical && !is_link_prediction;
     let target = collect_exact_target_categories.then(|| {
         Arc::new(SharedColumnCounts::new_hashed_with_max_categories(
@@ -104,10 +98,7 @@ fn drain_required_target_category_counts(
 pub const STAGE_ARTIFACT_INVENTORY_SCHEMA_VERSION: &str =
     "diskgraph.tt_stage_artifact_inventory.v1";
 
-fn stage_part_artifact(
-    output_dir: &Path,
-    relative_path: &str,
-) -> TTGenResult<StagePartArtifact> {
+fn stage_part_artifact(output_dir: &Path, relative_path: &str) -> TTGenResult<StagePartArtifact> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
     let path = output_dir.join(relative_path);
@@ -164,22 +155,124 @@ fn stage_gen_infos_from_parts(
         .collect()
 }
 
-/// Probe the arrow schema of a tt.parquet file (the `out_schema` for the
+/// Probe the arrow schema of a tt.parquet dataset (the `out_schema` for the
 /// fused pass-B per-anchor / use-bin / RandomLink modes).
 fn probe_tt_schema(tt_parquet: &Path) -> TTGenResult<arrow_schema::SchemaRef> {
+    first_tt_dataset_schema(tt_parquet)
+}
+
+fn write_tt_dataset(
+    receiver: Receiver<BatchMessage>,
+    dataset_path: &Path,
+    max_rows_per_part: usize,
+) -> TTGenResult<u64> {
+    if max_rows_per_part == 0 {
+        return Err(TTGenError::InvalidPlan(
+            "training table max rows per part must be positive".to_string(),
+        ));
+    }
+    std::fs::create_dir(dataset_path)?;
+
+    let properties = WriterProperties::builder()
+        .set_max_row_group_row_count(Some(TT_PART_ROW_GROUP_ROWS))
+        .build();
+    let mut writer: Option<ArrowWriter<File>> = None;
+    let mut part_index = 0usize;
+    let mut rows_in_part = 0usize;
+    let mut total_rows = 0u64;
+
+    for batch in receiver.iter() {
+        let mut batch_offset = 0usize;
+        while batch_offset < batch.num_rows() {
+            if rows_in_part == max_rows_per_part {
+                writer
+                    .take()
+                    .expect("non-empty part has a writer")
+                    .close()?;
+                part_index += 1;
+                rows_in_part = 0;
+            }
+            if writer.is_none() {
+                let file = File::create(dataset_path.join(part_name(part_index)))?;
+                writer = Some(ArrowWriter::try_new(
+                    file,
+                    batch.schema(),
+                    Some(properties.clone()),
+                )?);
+            }
+            let rows = (batch.num_rows() - batch_offset).min(max_rows_per_part - rows_in_part);
+            writer
+                .as_mut()
+                .expect("writer was initialized")
+                .write(&batch.slice(batch_offset, rows))?;
+            batch_offset += rows;
+            rows_in_part += rows;
+            total_rows += rows as u64;
+        }
+    }
+    if let Some(writer) = writer {
+        writer.close()?;
+    }
+    Ok(total_rows)
+}
+
+fn train_table_parts(
+    dataset_path: &Path,
+    expected_rows: u64,
+) -> TTGenResult<(u64, Vec<TrainTablePartRef>)> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-    let file = File::open(tt_parquet)?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-    Ok(builder.schema().clone())
+
+    let mut size_bytes = 0u64;
+    let mut row_count = 0u64;
+    let mut schema = None;
+    let mut parts = Vec::new();
+    for path in ordered_tt_dataset_parts(dataset_path)? {
+        let part_size = std::fs::metadata(&path)?.len();
+        let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(&path)?)?;
+        if let Some(expected_schema) = schema.as_ref() {
+            if builder.schema().as_ref() != expected_schema {
+                return Err(TTGenError::SchemaError(format!(
+                    "training table part schema mismatch: {}",
+                    path.display()
+                )));
+            }
+        } else {
+            schema = Some(builder.schema().as_ref().clone());
+        }
+        let part_rows =
+            u64::try_from(builder.metadata().file_metadata().num_rows()).map_err(|_| {
+                TTGenError::SystemError(format!(
+                    "training table part has negative row count: {}",
+                    path.display()
+                ))
+            })?;
+        size_bytes = size_bytes.checked_add(part_size).ok_or_else(|| {
+            TTGenError::SystemError("training table byte count overflow".to_string())
+        })?;
+        row_count = row_count.checked_add(part_rows).ok_or_else(|| {
+            TTGenError::SystemError("training table row count overflow".to_string())
+        })?;
+        parts.push(TrainTablePartRef {
+            path: Path::new(TT_DATASET_DIR)
+                .join(path.file_name().expect("dataset part has a filename"))
+                .to_string_lossy()
+                .into_owned(),
+            row_count: part_rows,
+            size_bytes: part_size,
+        });
+    }
+    if row_count != expected_rows {
+        return Err(TTGenError::SystemError(format!(
+            "training table parts contain {row_count} rows but pass A reported {expected_rows}"
+        )));
+    }
+    Ok((size_bytes, parts))
 }
 
 /// Return `schema` with the field named `col` removed. Used to drop the
 /// custom-TT split column from the per-stage seed output schema. A no-op
 /// (clone) if the column is absent.
-fn schema_without_column(
-    schema: &arrow_schema::SchemaRef,
-    col: &str,
-) -> arrow_schema::SchemaRef {
+fn schema_without_column(schema: &arrow_schema::SchemaRef, col: &str) -> arrow_schema::SchemaRef {
     let fields: Vec<arrow_schema::Field> = schema
         .fields()
         .iter()
@@ -246,7 +339,7 @@ pub struct StageGenInfo {
     pub artifact_inventory: Option<StageArtifactInventory>,
 }
 
-/// Output of a single TT-gen pass: tt.parquet, the per-stage seed parquets
+/// Output of a single TT-gen pass: the tt.parquet dataset, per-stage seed parquets
 /// (split path), and the finalized stats payload.
 ///
 /// `stage_gen_infos` is `Some([train, val, test])` when the plan's split family
@@ -256,7 +349,7 @@ pub struct StageGenInfo {
 pub struct TTPassOutput {
     /// Total rows written to `tt_parquet_path`.
     pub rows_written: u64,
-    /// Absolute path to the produced parquet file (`output_dir/tt.parquet`).
+    /// Absolute path to the produced parquet dataset (`output_dir/tt.parquet`).
     pub tt_parquet_path: PathBuf,
     /// Finalized per-column stats payload (entity / timestamp / target /
     /// frequency / split). `None` only when the executor produced no rows
@@ -358,9 +451,8 @@ fn determine_split_mode<U: UnitSystem>(plan: &DiskGraphTTPlan<U>) -> SplitMode {
 ///
 /// Drives the existing rayon-parallel pass A (one writer thread, one
 /// `bounded(16)` channel, per-worker `RowProcessor`) and writes the produced
-/// `RecordBatch`es to `output_dir/tt.parquet` via [`parquet::arrow::ArrowWriter`].
-/// Returns a [`TTPassOutput`] with the row count, parquet path, and finalized
-/// stats payload.
+/// `RecordBatch`es to ordered parts under `output_dir/tt.parquet`. Returns a
+/// [`TTPassOutput`] with the row count, dataset path, and finalized stats payload.
 ///
 /// `output_dir` must exist (the caller is responsible for creation/cleanup).
 /// The function does not write `manifest.json` or `split.bin` — those are
@@ -441,7 +533,7 @@ where
 
     // Bounded channel: buffer up to 16 batches (~1MB each) for back-pressure.
     // The writer thread (on the receiver side) terminates the channel by
-    // writing batches to the parquet file on disk. No batches are exposed to
+    // writing batches to the parquet dataset on disk. No batches are exposed to
     // any caller — this is a fully internal pipeline.
     let (sender, receiver) = bounded::<BatchMessage>(16);
 
@@ -555,43 +647,17 @@ where
         category_count_accumulators(target_is_categorical, is_link_prediction);
 
     // ── Writer thread ────────────────────────────────────────────────────
-    // Reads from the bounded(16) channel and writes to tt.parquet on disk.
+    // Reads from the bounded(16) channel and writes the tt.parquet dataset.
     // Schema is inferred from the first batch (lazy ArrowWriter construction).
     // Runs concurrently with rayon workers; back-pressure stays via the
     // bounded channel so we don't change the concurrency model.
-    let tt_parquet_path = output_dir.join("tt.parquet");
+    let tt_parquet_path = output_dir.join(TT_DATASET_DIR);
     let writer_path = tt_parquet_path.clone();
     // Writer thread output: total_rows. Per-row training weights (custom-TT)
     // ride inside each batch as the reserved `WEIGHT` column, so they flow to
     // `tt.parquet` automatically — no separate accumulation here.
     let writer_thread: std::thread::JoinHandle<TTGenResult<u64>> =
-        std::thread::spawn(move || {
-            let file = File::create(&writer_path)?;
-            let mut arrow_writer: Option<ArrowWriter<File>> = None;
-            let mut total_rows: u64 = 0;
-            for batch in receiver.iter() {
-                if arrow_writer.is_none() {
-                    arrow_writer = Some(ArrowWriter::try_new(
-                        file.try_clone()?,
-                        batch.schema(),
-                        None,
-                    )?);
-                }
-                if let Some(w) = arrow_writer.as_mut() {
-                    w.write(&batch)?;
-                }
-                total_rows += batch.num_rows() as u64;
-            }
-            if let Some(w) = arrow_writer {
-                w.close()?;
-            } else {
-                // Zero batches arrived → produce an empty file. Drop `file`
-                // here to flush; the caller can detect zero rows via the
-                // returned count.
-                drop(file);
-            }
-            Ok(total_rows)
-        });
+        std::thread::spawn(move || write_tt_dataset(receiver, &writer_path, TT_PART_MAX_ROWS));
 
     // ── Pass A + Pass B dispatch ─────────────────────────────────────────
     // Dispatch on the resolved split family to pick the per-row
@@ -620,7 +686,7 @@ where
 
     let pass_outputs: TTGenResult<PassAOutputs<U>> = if is_per_link_split {
         // Pass A only (NoSplitDecider). The fused per-link pass-B runs in the
-        // executor body once the writer thread has drained the monolith.
+        // executor body once the writer thread has drained the dataset.
         run_pass_a_then_pass_b::<U, NoSplitDecider>(
             &resolved,
             sender,
@@ -652,7 +718,10 @@ where
                     decider,
                     &tt_parquet_path,
                     writer_thread,
-                    PassBMode::PerAnchor { is_array_lp, drop_split_column: None },
+                    PassBMode::PerAnchor {
+                        is_array_lp,
+                        drop_split_column: None,
+                    },
                     custom_tt_source_ref,
                 )
             }
@@ -673,7 +742,10 @@ where
                     decider,
                     &tt_parquet_path,
                     writer_thread,
-                    PassBMode::PerAnchor { is_array_lp, drop_split_column: None },
+                    PassBMode::PerAnchor {
+                        is_array_lp,
+                        drop_split_column: None,
+                    },
                     custom_tt_source_ref,
                 )
             }
@@ -713,7 +785,10 @@ where
                     decider,
                     &tt_parquet_path,
                     writer_thread,
-                    PassBMode::PerAnchor { is_array_lp, drop_split_column: None },
+                    PassBMode::PerAnchor {
+                        is_array_lp,
+                        drop_split_column: None,
+                    },
                     custom_tt_source_ref,
                 )
             }
@@ -732,7 +807,10 @@ where
                     decider,
                     &tt_parquet_path,
                     writer_thread,
-                    PassBMode::PerAnchor { is_array_lp, drop_split_column: None },
+                    PassBMode::PerAnchor {
+                        is_array_lp,
+                        drop_split_column: None,
+                    },
                     custom_tt_source_ref,
                 )
             }
@@ -750,7 +828,10 @@ where
                     decider,
                     &tt_parquet_path,
                     writer_thread,
-                    PassBMode::PerAnchor { is_array_lp, drop_split_column: None },
+                    PassBMode::PerAnchor {
+                        is_array_lp,
+                        drop_split_column: None,
+                    },
                     custom_tt_source_ref,
                 )
             }
@@ -767,7 +848,10 @@ where
                     decider,
                     &tt_parquet_path,
                     writer_thread,
-                    PassBMode::PerAnchor { is_array_lp, drop_split_column: None },
+                    PassBMode::PerAnchor {
+                        is_array_lp,
+                        drop_split_column: None,
+                    },
                     custom_tt_source_ref,
                 )
             }
@@ -784,7 +868,10 @@ where
                     decider,
                     &tt_parquet_path,
                     writer_thread,
-                    PassBMode::PerAnchor { is_array_lp, drop_split_column: None },
+                    PassBMode::PerAnchor {
+                        is_array_lp,
+                        drop_split_column: None,
+                    },
                     custom_tt_source_ref,
                 )
             }
@@ -792,8 +879,8 @@ where
                 // Month/year offsets stay symbolic (OffsetUnit::Months) — calendar
                 // arithmetic needs the anchor, resolved later in derive_cutoffs.
                 // Fixed offsets + timeframe/anchor are Dur<U>.
-                let (anchor, timeframe, flexible, tf_step) = date_offset_semantics
-                    .unwrap_or((Dur::<U>::zero(), None, true, None));
+                let (anchor, timeframe, flexible, tf_step) =
+                    date_offset_semantics.unwrap_or((Dur::<U>::zero(), None, true, None));
                 let decider = if let Some(months) = split_month_offsets.clone() {
                     let units: Vec<OffsetUnit<U>> =
                         months.into_iter().map(OffsetUnit::Months).collect();
@@ -813,7 +900,10 @@ where
                     decider,
                     &tt_parquet_path,
                     writer_thread,
-                    PassBMode::PerAnchor { is_array_lp, drop_split_column: None },
+                    PassBMode::PerAnchor {
+                        is_array_lp,
+                        drop_split_column: None,
+                    },
                     custom_tt_source_ref,
                 )
             }
@@ -830,7 +920,10 @@ where
                     decider,
                     &tt_parquet_path,
                     writer_thread,
-                    PassBMode::PerAnchor { is_array_lp, drop_split_column: None },
+                    PassBMode::PerAnchor {
+                        is_array_lp,
+                        drop_split_column: None,
+                    },
                     custom_tt_source_ref,
                 )
             }
@@ -854,10 +947,12 @@ where
             //       can't peek the rowpack dtype here, so the runtime check
             //       happens via `value_to_f64` returning `None` for non-numeric
             //       Values (rows with string column values become UNUSED).
-            (SplitMode::Compute, Some("ColumnSplit")) | (SplitMode::Compute, Some("ManualSplit")) => {
+            (SplitMode::Compute, Some("ColumnSplit"))
+            | (SplitMode::Compute, Some("ManualSplit")) => {
                 let column_name = split_column.clone().ok_or_else(|| {
                     TTGenError::InvalidPlan(
-                        "ColumnSplit / ManualSplit-on-column requires split.split_column".to_string(),
+                        "ColumnSplit / ManualSplit-on-column requires split.split_column"
+                            .to_string(),
                     )
                 })?;
                 // The split column is read from `tt.parquet` under the split
@@ -882,8 +977,7 @@ where
                     let train = manual_train_values.clone().unwrap_or_default();
                     let val = manual_val_values.clone().unwrap_or_default();
                     let test = manual_test_values.clone().unwrap_or_default();
-                    let decider =
-                        ColumnDeciderManual::new(drop_col.clone(), train, val, test);
+                    let decider = ColumnDeciderManual::new(drop_col.clone(), train, val, test);
                     run_pass_a_then_pass_b::<U, _>(
                         &resolved,
                         sender,
@@ -948,13 +1042,13 @@ where
     };
 
     let (mut total_rows, stats, per_anchor_parts) = pass_outputs?;
-    // `total_rows` = the monolith row count pass A wrote. SPLIT plans fold the
+    // `total_rows` = the dataset row count pass A wrote. SPLIT plans fold the
     // array-LP empty-target drop into the route kernels (empty rows route to no
     // stage), leaving it immutable.
 
-    // No-split (prediction) array-LP empty-target drop: the monolith IS the
+    // No-split (prediction) array-LP empty-target drop: the dataset IS the
     // single ingest input, so drop empty rows in place here. Gated to array LP,
-    // no split of any kind, and a non-empty monolith; non-LP array tasks may
+    // no split of any kind, and a non-empty dataset; non-LP array tasks may
     // legitimately carry empty lists.
     // Predict LP bundles carry no TARGET1 column (entities + time only), so
     // there is nothing to drop — skip the empty-target filter for predict.
@@ -1085,7 +1179,8 @@ where
 
     // The parquet writer and any in-place regroup/drop pass have completed.
     // Freeze the exact closed-file size without an additional full-file read.
-    let train_table_size_bytes = std::fs::metadata(&tt_parquet_path)?.len();
+    let (train_table_size_bytes, train_table_parts) =
+        train_table_parts(&tt_parquet_path, total_rows)?;
     let stats_sha = sha256_file(&stats_path)?;
 
     // TT-NG carries stage row-counts + seed-times per-stage in the ingest-output
@@ -1105,7 +1200,9 @@ where
                 .to_string_lossy()
                 .into_owned(),
             TT_PARQUET_FORMAT,
+            total_rows,
             train_table_size_bytes,
+            train_table_parts,
         ),
         split: None,
         stats: ArtifactRef::new(
@@ -1263,7 +1360,10 @@ fn run_pass_a_then_pass_b<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
     // decider); deferred modes (per-link / use-bin / no-split) run it in the
     // executor body.
     let stage_parts = match pass_b_mode {
-        PassBMode::PerAnchor { is_array_lp, drop_split_column } => {
+        PassBMode::PerAnchor {
+            is_array_lp,
+            drop_split_column,
+        } => {
             // Output schema = tt.parquet schema minus the split column (when the
             // custom-TT split-column path asked to drop it). Used both for the
             // per-stage sub-batch projection and for empty-stage 0-row parts.
@@ -1293,12 +1393,14 @@ fn run_pass_a_then_pass_b<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
 /// The directory containing `tt.parquet` — the staging dir where per-stage
 /// parts are written.
 fn output_dir_of(tt_parquet_path: &Path) -> TTGenResult<&Path> {
-    tt_parquet_path.parent().ok_or_else(|| {
-        TTGenError::SystemError("tt_parquet_path has no parent dir".to_string())
-    })
+    tt_parquet_path
+        .parent()
+        .ok_or_else(|| TTGenError::SystemError("tt_parquet_path has no parent dir".to_string()))
 }
 
-fn forecasting_horizon_config<U: UnitSystem>(plan: &ResolvedPlan<U>) -> TTGenResult<Option<(i64, i64)>> {
+fn forecasting_horizon_config<U: UnitSystem>(
+    plan: &ResolvedPlan<U>,
+) -> TTGenResult<Option<(i64, i64)>> {
     if !matches!(plan.prediction_type, PredictionType::Forecasting) || plan.is_prediction {
         return Ok(None);
     }
@@ -1525,7 +1627,9 @@ pub(crate) fn output_mode_from_prediction_type<U: UnitSystem>(
     plan: &ResolvedPlan<U>,
 ) -> OutputMode {
     match &plan.prediction_type {
-        PredictionType::Node => OutputMode::Node { target_dtypes: plan.target_dtypes.clone() },
+        PredictionType::Node => OutputMode::Node {
+            target_dtypes: plan.target_dtypes.clone(),
+        },
         // FK-free / array LP is the only link-prediction output mode: every
         // Link plan emits LinkArray.
         PredictionType::Link { include_frequency } => OutputMode::LinkArray {
@@ -2417,8 +2521,8 @@ fn execute_target_sequence<U: UnitSystem>(
     offsets: &[Dur<U>],
 ) -> Vec<Option<Value>> {
     let mut results = Vec::with_capacity(offsets.len());
-    let can_optimize = agg.path.len() == 1
-        && matches!(agg.window, Some(ResolvedWindow::Fixed { .. }));
+    let can_optimize =
+        agg.path.len() == 1 && matches!(agg.window, Some(ResolvedWindow::Fixed { .. }));
 
     if !can_optimize {
         for &offset in offsets {
@@ -2437,7 +2541,12 @@ fn execute_target_sequence<U: UnitSystem>(
         return results;
     }
 
-    let ResolvedWindow::Fixed { offset_lo, offset_hi, encoder } = agg.window.as_ref().unwrap() else {
+    let ResolvedWindow::Fixed {
+        offset_lo,
+        offset_hi,
+        encoder,
+    } = agg.window.as_ref().unwrap()
+    else {
         unreachable!()
     };
     let windows: Vec<(u64, u64)> = offsets
@@ -2481,7 +2590,9 @@ fn execute_target_sequence<U: UnitSystem>(
                 let mut oldest = None;
                 for e in slice.iter().rev() {
                     if let Some(ref f) = agg.row_filter {
-                        if !eval_row_filter(f, e.dst_node, dst_table, entity_cols) { continue; }
+                        if !eval_row_filter(f, e.dst_node, dst_table, entity_cols) {
+                            continue;
+                        }
                     }
                     if let Some(v) = read_column_value(dst_table, e.dst_node, col_idx) {
                         oldest = Some(v);
@@ -2494,7 +2605,9 @@ fn execute_target_sequence<U: UnitSystem>(
                 let mut newest = None;
                 for e in slice {
                     if let Some(ref f) = agg.row_filter {
-                        if !eval_row_filter(f, e.dst_node, dst_table, entity_cols) { continue; }
+                        if !eval_row_filter(f, e.dst_node, dst_table, entity_cols) {
+                            continue;
+                        }
                     }
                     if let Some(v) = read_column_value(dst_table, e.dst_node, col_idx) {
                         newest = Some(v);
@@ -2507,7 +2620,9 @@ fn execute_target_sequence<U: UnitSystem>(
                 let mut acc = Accumulator::new(agg.func, agg.limit);
                 for e in slice {
                     if let Some(ref f) = agg.row_filter {
-                        if !eval_row_filter(f, e.dst_node, dst_table, entity_cols) { continue; }
+                        if !eval_row_filter(f, e.dst_node, dst_table, entity_cols) {
+                            continue;
+                        }
                     }
                     match &mut acc {
                         Accumulator::Count(n) => *n += 1,
@@ -2541,7 +2656,9 @@ fn execute_target_sequence<U: UnitSystem>(
                                 let h = crate::ttgen_accumulator::hash_value(&v);
                                 if set.insert(h) {
                                     if let Some(l) = limit {
-                                        if values.len() >= *l as usize { continue; }
+                                        if values.len() >= *l as usize {
+                                            continue;
+                                        }
                                     }
                                     values.push(v);
                                 }
@@ -3163,6 +3280,54 @@ fn execute_aggregate<U: UnitSystem>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pass_a_writer_rotates_into_ordered_parts() {
+        use arrow_array::{Int64Array, RecordBatch};
+        use arrow_schema::{Field, Schema};
+
+        let dir = tempfile::tempdir().unwrap();
+        let dataset = dir.path().join(TT_DATASET_DIR);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "ENTITY1",
+            DataType::Int64,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int64Array::from(vec![0, 1, 2, 3, 4, 5, 6]))],
+        )
+        .unwrap();
+        let (sender, receiver) = bounded(1);
+        sender.send(batch).unwrap();
+        drop(sender);
+
+        assert_eq!(write_tt_dataset(receiver, &dataset, 3).unwrap(), 7);
+        let parts = ordered_tt_dataset_parts(&dataset).unwrap();
+        assert_eq!(
+            parts
+                .iter()
+                .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec![
+                "part-00000.parquet",
+                "part-00001.parquet",
+                "part-00002.parquet"
+            ]
+        );
+        let rows = parts
+            .into_iter()
+            .map(|path| {
+                let builder =
+                    parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+                        File::open(path).unwrap(),
+                    )
+                    .unwrap();
+                builder.metadata().file_metadata().num_rows()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(rows, vec![3, 3, 1]);
+    }
     use diskgraph_core::time::Seconds;
 
     #[test]
@@ -3176,10 +3341,7 @@ mod tests {
             DataType::Int64,
             false,
         )]));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(Int64Array::from(vec![1]))],
-        )
+        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(Int64Array::from(vec![1]))])
         .unwrap();
         let parts = std::array::from_fn(|stage| {
             let table = STAGE_TABLE_NAMES[stage];
@@ -3213,7 +3375,14 @@ mod tests {
             assert_eq!(info.seed_time, Some([stage as i64, stage as i64 + 18]));
             let inventory = info.artifact_inventory.as_ref().unwrap();
             assert_eq!(inventory.parts.len(), 19);
-            assert_eq!(inventory.parts.iter().map(|part| part.row_count).sum::<u64>(), 19);
+            assert_eq!(
+                inventory
+                    .parts
+                    .iter()
+                    .map(|part| part.row_count)
+                    .sum::<u64>(),
+                19
+            );
         }
 
         let encoded = serde_json::to_value(&infos).unwrap();
@@ -3228,9 +3397,7 @@ mod tests {
     fn train_table_category_counts_use_target_specific_limit_without_string_budget() {
         let (limit_target, _) = category_count_accumulators(true, false);
         let limit_target = limit_target.expect("categorical target accumulator");
-        limit_target
-            .unique_count
-            .store(
+        limit_target.unique_count.store(
                 MAX_TRAIN_TABLE_TARGET_CATEGORIES - 1,
                 std::sync::atomic::Ordering::Relaxed,
             );
@@ -3252,16 +3419,10 @@ mod tests {
         target.merge_local_batch(&mut target_local);
         assert!(!target.is_aborted());
         assert_eq!(
-            target
-                .drain_to_map()
-                .expect("complete target counts")
-                .len(),
+            target.drain_to_map().expect("complete target counts").len(),
             NUM_TARGETS
         );
-        assert_eq!(
-            entity.drain_to_map().expect("empty entity counts").len(),
-            0
-        );
+        assert_eq!(entity.drain_to_map().expect("empty entity counts").len(), 0);
     }
 
     #[test]
@@ -3269,10 +3430,7 @@ mod tests {
         let (target, entity) = category_count_accumulators(true, true);
 
         assert!(target.is_none());
-        assert_eq!(
-            entity.drain_to_map().expect("empty entity counts").len(),
-            0
-        );
+        assert_eq!(entity.drain_to_map().expect("empty entity counts").len(), 0);
     }
 
     #[test]
@@ -3295,10 +3453,7 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("refusing to publish"), "{message}");
-        assert_eq!(
-            entity.drain_to_map().expect("empty entity counts").len(),
-            0
-        );
+        assert_eq!(entity.drain_to_map().expect("empty entity counts").len(), 0);
     }
 
     // ─── HLL hash-basis consistency (LP train-table stat over-count fix) ─────

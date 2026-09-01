@@ -10,8 +10,8 @@
 //! Two shapes:
 //!   * **Split** (training): per-stage seed parts present → ingest
 //!     `train_seeds` / `val_seeds` / `test_seeds` stages.
-//!   * **No split** (prediction / PassThrough): no seed parts → the whole
-//!     `tt.parquet` is a single `predict` stage.
+//!   * **No split** (prediction / PassThrough): no seed parts → the ordered
+//!     `tt.parquet` parts form a single `predict` stage.
 //!
 //! This mirrors the PQL training path in
 //! `diskgraph-pybind/src/tt_executor.rs::execute_tt_plan`
@@ -103,7 +103,7 @@ fn ingest_stage_set(
 ///   dirs that are renamed/removed.
 /// * Split plans (split.bin present) ingest `train_seeds` / `val_seeds` /
 ///   `test_seeds`. No-split plans ingest a single `predict` stage from the
-///   whole `tt.parquet` (no demux, no split.bin).
+///   whole `tt.parquet` dataset (no demux, no split.bin).
 pub fn ingest_and_publish_tt_extension(
     dataset_name: &str,
     pass_output: &TTPassOutput,
@@ -145,12 +145,17 @@ pub fn ingest_and_publish_tt_extension(
             plan,
         )?
     } else {
-        // No-split path: the whole tt.parquet is a single `predict` stage.
-        let columns = infer_stage_columns(&pass_output.tt_parquet_path)
+        // No-split path: all tt.parquet parts form one `predict` stage.
+        let parquet_paths =
+            crate::parquet_dataset::ordered_tt_dataset_parts(&pass_output.tt_parquet_path)?;
+        let first_part = parquet_paths.first().ok_or_else(|| {
+            TTGenError::InvalidPlan("no-split training table dataset is empty".to_string())
+        })?;
+        let columns = infer_stage_columns(first_part)
             .map_err(|e| TTGenError::SchemaError(format!("TT stage column inference: {e:#}")))?;
         let stages = [StageSpec {
             stage_table_name: "predict".to_string(),
-            parquet_paths: vec![pass_output.tt_parquet_path.clone()],
+            parquet_paths,
         }];
         ingest_stage_set(
             dataset_name,

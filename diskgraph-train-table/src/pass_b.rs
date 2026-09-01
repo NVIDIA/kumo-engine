@@ -1,5 +1,6 @@
-//! Fused pass-B: parallel-over-row-group router that reads `tt.parquet` and
-//! writes per-stage seed parts directly (`<stage_table>/part-NNNNN.parquet`).
+//! Fused pass-B: parallel-over-row-group router that reads the `tt.parquet`
+//! directory dataset and writes per-stage seed parts directly
+//! (`<stage_table>/part-NNNNN.parquet`).
 //! Replaces the old split.bin + demux: routing and per-stage parquet write
 //! are fused into one pass.
 //!
@@ -28,6 +29,7 @@ use parquet::arrow::ArrowWriter;
 use rayon::prelude::*;
 
 use crate::errors::{TTGenError, TTGenResult};
+use crate::parquet_dataset::ordered_tt_dataset_parts;
 use crate::route::{
     assign_per_anchor_stages, route_per_anchor, route_per_link, ForecastingHorizonPolicy,
     LinkAssigner,
@@ -83,6 +85,14 @@ struct WorkerStageResult {
     row_count: u64,
     seed_time: Option<(i64, i64)>,
     split_stats: KumoStageStats,
+}
+
+#[derive(Clone)]
+struct SourceRowGroup {
+    path: std::path::PathBuf,
+    row_group_index: usize,
+    row_offset: u64,
+    row_count: u64,
 }
 
 /// Relative part path for a stage group, e.g.
@@ -141,12 +151,33 @@ where
         ]);
     }
 
-    // Probe metadata once on the main thread for per-row-group offsets.
-    let meta_file = File::open(tt_parquet)?;
-    let probe_builder = ParquetRecordBatchReaderBuilder::try_new(meta_file)?;
-    let metadata = probe_builder.metadata().clone();
-    let row_groups = metadata.row_groups();
-    let num_row_groups = row_groups.len();
+    // Flatten the ordered directory dataset into one logical row-group stream.
+    // Each descriptor carries its global row offset so deciders behave exactly
+    // as they did with a single parquet file.
+    let mut source_row_groups = Vec::new();
+    let mut computed_total = 0u64;
+    for path in ordered_tt_dataset_parts(tt_parquet)? {
+        let probe_builder = ParquetRecordBatchReaderBuilder::try_new(File::open(&path)?)?;
+        for (row_group_index, row_group) in probe_builder.metadata().row_groups().iter().enumerate()
+        {
+            let row_count = u64::try_from(row_group.num_rows()).map_err(|_| {
+                TTGenError::Parquet(format!(
+                    "negative row count in training table part {}",
+                    path.display()
+                ))
+            })?;
+            source_row_groups.push(SourceRowGroup {
+                path: path.clone(),
+                row_group_index,
+                row_offset: computed_total,
+                row_count,
+            });
+            computed_total = computed_total
+                .checked_add(row_count)
+                .ok_or_else(|| TTGenError::SystemError("pass_b row count overflow".to_string()))?;
+        }
+    }
+    let num_row_groups = source_row_groups.len();
     let source_row_groups_per_part = source_row_groups_per_part_override
         .unwrap_or_else(|| source_row_groups_per_part(num_row_groups));
     if source_row_groups_per_part == 0 {
@@ -155,20 +186,12 @@ where
         ));
     }
 
-    let mut cum_offsets: Vec<u64> = Vec::with_capacity(num_row_groups + 1);
-    cum_offsets.push(0);
-    for rg in row_groups {
-        let prev = *cum_offsets.last().unwrap();
-        cum_offsets.push(prev + rg.num_rows() as u64);
-    }
-    let computed_total = *cum_offsets.last().unwrap();
     if computed_total != total_rows {
         return Err(TTGenError::SystemError(format!(
             "pass_b: parquet has {computed_total} rows but pass A reported {total_rows}"
         )));
     }
 
-    let tt_parquet = tt_parquet.to_path_buf();
     let output_dir = output_dir.to_path_buf();
 
     // One worker per contiguous group; each returns its per-stage result.
@@ -179,12 +202,9 @@ where
             let start_rg = group_idx * source_row_groups_per_part;
             let end_rg = (start_rg + source_row_groups_per_part).min(num_row_groups);
             run_pass_b_row_group_span(
-                &tt_parquet,
+                &source_row_groups[start_rg..end_rg],
                 &output_dir,
                 group_idx,
-                start_rg,
-                end_rg,
-                cum_offsets[start_rg],
                 &route,
             )
         })
@@ -227,12 +247,9 @@ where
 /// Per-group worker: read a contiguous source row-group span (all columns),
 /// route batches in source order, and write each non-empty stage to one part.
 fn run_pass_b_row_group_span<F>(
-    tt_parquet: &Path,
+    source_row_groups: &[SourceRowGroup],
     output_dir: &Path,
     group_idx: usize,
-    start_rg: usize,
-    end_rg: usize,
-    row_offset: u64,
     route: &F,
 ) -> TTGenResult<[WorkerStageResult; 3]>
 where
@@ -244,17 +261,17 @@ where
     let mut seed_times: [Option<(i64, i64)>; 3] = [None, None, None];
     let mut split_stats: [KumoStageStats; 3] = Default::default();
 
-    let mut local_idx: u64 = 0;
-    for rg_idx in start_rg..end_rg {
-        let file = File::open(tt_parquet)?;
+    for source in source_row_groups {
+        let file = File::open(&source.path)?;
         let reader = ParquetRecordBatchReaderBuilder::try_new(file)?
-            .with_row_groups(vec![rg_idx])
+            .with_row_groups(vec![source.row_group_index])
             .build()?;
+        let mut row_group_offset = 0u64;
         for batch_res in reader {
             let batch =
                 batch_res.map_err(|e| TTGenError::Parquet(format!("pass_b reader: {e}")))?;
             let nrows = batch.num_rows() as u64;
-            let sub_batches = route(&batch, row_offset + local_idx)?;
+            let sub_batches = route(&batch, source.row_offset + row_group_offset)?;
             for (stage, sub) in sub_batches.into_iter().enumerate() {
                 if sub.num_rows() == 0 {
                     continue;
@@ -274,8 +291,9 @@ where
                 };
                 writer.write(&sub)?;
             }
-            local_idx += nrows;
+            row_group_offset += nrows;
         }
+        debug_assert_eq!(row_group_offset, source.row_count);
 
         // Preserve each source row-group boundary inside the coalesced file.
         // This bounds decode size and resets dictionaries at the same locality
@@ -323,10 +341,7 @@ where
 /// Fold the TIMESTAMP column of `batch` into `acc` as a running (min,max).
 /// Null/absent timestamps are skipped. Errors if TIMESTAMP is present but not
 /// `TimestampNanosecondArray` (tt.parquet always emits ns).
-fn observe_seed_time(
-    batch: &RecordBatch,
-    acc: &mut Option<(i64, i64)>,
-) -> TTGenResult<()> {
+fn observe_seed_time(batch: &RecordBatch, acc: &mut Option<(i64, i64)>) -> TTGenResult<()> {
     let Some((idx, _)) = batch.schema_ref().column_with_name(TIMESTAMP_COL) else {
         return Ok(());
     };
@@ -426,14 +441,15 @@ fn stage_max_timestamps<U: UnitSystem, D: SplitDecider<U>>(
     decider: &D,
     is_array_lp: bool,
 ) -> TTGenResult<[Option<i64>; 3]> {
-    let file = File::open(tt_parquet)?;
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
     let mut max_ts: [Option<i64>; 3] = [None, None, None];
     let mut offset = 0u64;
+    for path in ordered_tt_dataset_parts(tt_parquet)? {
+        let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?.build()?;
     for batch_res in reader {
         let batch =
             batch_res.map_err(|e| TTGenError::Parquet(format!("pass_b reader: {e}")))?;
-        let stages = assign_per_anchor_stages::<U, D>(&batch, decider, offset, is_array_lp, None)?;
+            let stages =
+                assign_per_anchor_stages::<U, D>(&batch, decider, offset, is_array_lp, None)?;
         let ts = timestamp_ns_array(&batch)?;
         for (row, stage) in stages.into_iter().enumerate() {
             if (stage as usize) < 3 {
@@ -444,13 +460,15 @@ fn stage_max_timestamps<U: UnitSystem, D: SplitDecider<U>>(
         }
         offset += batch.num_rows() as u64;
     }
+    }
     Ok(max_ts)
 }
 
 fn timestamp_ns_array(batch: &RecordBatch) -> TTGenResult<&TimestampNanosecondArray> {
-    let (idx, _) = batch.schema_ref().column_with_name(TIMESTAMP_COL).ok_or_else(|| {
-        TTGenError::SystemError("pass_b: TIMESTAMP column missing".to_string())
-    })?;
+    let (idx, _) = batch
+        .schema_ref()
+        .column_with_name(TIMESTAMP_COL)
+        .ok_or_else(|| TTGenError::SystemError("pass_b: TIMESTAMP column missing".to_string()))?;
     batch
         .column(idx)
         .as_any()
@@ -488,7 +506,9 @@ mod tests {
     use super::*;
     use crate::split_decider::{NoSplitDecider, TimeRangeDecider};
     use crate::split_stats::write_kumo_split_stats_artifact;
-    use arrow_array::builder::{Int64Builder, ListBuilder, StringBuilder, TimestampNanosecondBuilder};
+    use arrow_array::builder::{
+        Int64Builder, ListBuilder, StringBuilder, TimestampNanosecondBuilder,
+    };
     use arrow_array::{Int64Array, RecordBatch, TimestampNanosecondArray};
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use diskgraph_core::time::{Abs, Seconds};
@@ -501,11 +521,26 @@ mod tests {
     /// Write a tiny tt-parquet (ENTITY1:Int64, TIMESTAMP:ts(ns)) with optional
     /// row-group size and return its schema.
     fn write_tt_parquet(path: &Path, ts_secs: &[i64], max_rg_rows: Option<usize>) -> SchemaRef {
-        let entities: Vec<i64> = (0..ts_secs.len() as i64).collect();
+        std::fs::create_dir(path).unwrap();
+        write_tt_part(path, 0, 0, ts_secs, max_rg_rows)
+    }
+
+    fn write_tt_part(
+        path: &Path,
+        part_index: usize,
+        entity_offset: i64,
+        ts_secs: &[i64],
+        max_rg_rows: Option<usize>,
+    ) -> SchemaRef {
+        let entities: Vec<i64> = (entity_offset..entity_offset + ts_secs.len() as i64).collect();
         let ts_nanos: Vec<i64> = ts_secs.iter().map(|s| s * 1_000_000_000).collect();
         let schema = StdArc::new(Schema::new(vec![
             Field::new("ENTITY1", DataType::Int64, false),
-            Field::new("TIMESTAMP", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+            Field::new(
+                "TIMESTAMP",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
         ]));
         let batch = RecordBatch::try_new(
             schema.clone(),
@@ -515,7 +550,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let file = File::create(path).unwrap();
+        let file = File::create(path.join(crate::parquet_dataset::part_name(part_index))).unwrap();
         let mut props = parquet::file::properties::WriterProperties::builder();
         if let Some(n) = max_rg_rows {
             props = props.set_max_row_group_row_count(Some(n));
@@ -527,6 +562,7 @@ mod tests {
     }
 
     fn write_numeric_tt_parquet(path: &Path, ts_secs: &[i64], max_rg_rows: usize) -> SchemaRef {
+        std::fs::create_dir(path).unwrap();
         let entities = (0..ts_secs.len() as i64).collect::<Vec<_>>();
         let ts_nanos = ts_secs
             .iter()
@@ -553,7 +589,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let file = File::create(path).unwrap();
+        let file = File::create(path.join(crate::parquet_dataset::part_name(0))).unwrap();
         let props = parquet::file::properties::WriterProperties::builder()
             .set_max_row_group_row_count(Some(max_rg_rows))
             .build();
@@ -570,6 +606,7 @@ mod tests {
         rows: &[(i64, i64, Vec<(&str, i64)>)],
         max_rg_rows: Option<usize>,
     ) -> SchemaRef {
+        std::fs::create_dir(path).unwrap();
         let mut entity = Int64Builder::new();
         let mut ts_b = TimestampNanosecondBuilder::new();
         let mut target_lb = ListBuilder::new(StringBuilder::new());
@@ -586,7 +623,11 @@ mod tests {
         }
         let schema = StdArc::new(Schema::new(vec![
             Field::new("ENTITY1", DataType::Int64, false),
-            Field::new("TIMESTAMP", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+            Field::new(
+                "TIMESTAMP",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
             Field::new(
                 "TARGET1",
                 DataType::List(StdArc::new(Field::new("item", DataType::Utf8, true))),
@@ -608,7 +649,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let file = File::create(path).unwrap();
+        let file = File::create(path.join(crate::parquet_dataset::part_name(0))).unwrap();
         let mut props = parquet::file::properties::WriterProperties::builder();
         if let Some(n) = max_rg_rows {
             props = props.set_max_row_group_row_count(Some(n));
@@ -631,7 +672,11 @@ mod tests {
             for batch in reader {
                 let batch = batch.unwrap();
                 let idx = batch.schema().index_of("ENTITY1").unwrap();
-                let arr = batch.column(idx).as_any().downcast_ref::<Int64Array>().unwrap();
+                let arr = batch
+                    .column(idx)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap();
                 out.extend((0..arr.len()).map(|i| arr.value(i)));
             }
         }
@@ -762,6 +807,57 @@ mod tests {
     }
 
     #[test]
+    fn cross_file_routing_uses_global_offsets_and_preserves_order() {
+        use arrow_array::BooleanArray;
+        use arrow_select::filter::filter_record_batch;
+
+        let source = tempfile::tempdir().unwrap();
+        let tt = source.path().join("tt.parquet");
+        std::fs::create_dir(&tt).unwrap();
+        let schema = write_tt_part(&tt, 0, 0, &[10, 20], None);
+        write_tt_part(&tt, 1, 2, &[30, 40], None);
+        let output = tempfile::tempdir().unwrap();
+        let parts = run_pass_b_routed_impl(
+            &tt,
+            output.path(),
+            4,
+            &schema,
+            Some(1),
+            |batch, global_offset| {
+                let masks: [BooleanArray; 3] = std::array::from_fn(|stage| {
+                    BooleanArray::from(
+                        (0..batch.num_rows())
+                            .map(|row| ((global_offset + row as u64) % 3) as usize == stage)
+                            .collect::<Vec<_>>(),
+                    )
+                });
+                Ok([
+                    filter_record_batch(batch, &masks[0]).unwrap(),
+                    filter_record_batch(batch, &masks[1]).unwrap(),
+                    filter_record_batch(batch, &masks[2]).unwrap(),
+                ])
+            },
+        )
+        .unwrap();
+
+        assert_eq!(stage_entities(output.path(), &parts[0].parts), vec![0, 3]);
+        assert_eq!(stage_entities(output.path(), &parts[1].parts), vec![1]);
+        assert_eq!(stage_entities(output.path(), &parts[2].parts), vec![2]);
+        assert_eq!(parts.iter().map(|part| part.row_count).sum::<u64>(), 4);
+        let stats: serde_json::Value =
+            serde_json::from_slice(&write_split_stats(output.path(), &parts)).unwrap();
+        assert_eq!(
+            stats["train_table_stats"]["num_train_rows"].as_u64(),
+            Some(2)
+        );
+        assert_eq!(stats["val_table_stats"]["num_train_rows"].as_u64(), Some(1));
+        assert_eq!(
+            stats["test_table_stats"]["num_train_rows"].as_u64(),
+            Some(1)
+        );
+    }
+
+    #[test]
     fn production_grouping_is_thread_count_and_byte_invariant() {
         let source = tempfile::tempdir().unwrap();
         let tt = source.path().join("tt.parquet");
@@ -818,7 +914,14 @@ mod tests {
         let schema = write_tt_parquet(&tt, &ts_secs, None);
         let d = time_range_decider();
         let out = run_pass_b_per_anchor::<Seconds, _>(
-            &tt, &d, dir.path(), ts_secs.len() as u64, false, None, &schema, None,
+            &tt,
+            &d,
+            dir.path(),
+            ts_secs.len() as u64,
+            false,
+            None,
+            &schema,
+            None,
         )
         .unwrap();
         assert_eq!(out[0].row_count, 2);
@@ -835,7 +938,10 @@ mod tests {
             }
         }
         // Seed-time of train = (min,max) over ts 10,50 (in ns).
-        assert_eq!(out[0].seed_time, Some([10 * 1_000_000_000, 50 * 1_000_000_000]));
+        assert_eq!(
+            out[0].seed_time,
+            Some([10 * 1_000_000_000, 50 * 1_000_000_000])
+        );
     }
 
     #[test]
@@ -847,13 +953,24 @@ mod tests {
         let schema = write_tt_parquet(&tt, &ts_secs, None);
         let d = time_range_decider();
         let out = run_pass_b_per_anchor::<Seconds, _>(
-            &tt, &d, dir.path(), ts_secs.len() as u64, false, None, &schema, None,
+            &tt,
+            &d,
+            dir.path(),
+            ts_secs.len() as u64,
+            false,
+            None,
+            &schema,
+            None,
         )
         .unwrap();
         assert_eq!(out[0].row_count, 3);
         for stage in 1..3 {
             assert_eq!(out[stage].row_count, 0);
-            assert_eq!(out[stage].parts.len(), 1, "empty stage → single schema-only part");
+            assert_eq!(
+                out[stage].parts.len(),
+                1,
+                "empty stage → single schema-only part"
+            );
             assert_eq!(part_row_count(dir.path(), &out[stage].parts[0]), 0);
             assert!(out[stage].seed_time.is_none());
         }
@@ -865,11 +982,22 @@ mod tests {
         let tt = dir.path().join("tt.parquet"); // never created
         let schema = StdArc::new(Schema::new(vec![
             Field::new("ENTITY1", DataType::Int64, false),
-            Field::new("TIMESTAMP", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+            Field::new(
+                "TIMESTAMP",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
         ]));
         let d = NoSplitDecider;
         let out = run_pass_b_per_anchor::<Seconds, NoSplitDecider>(
-            &tt, &d, dir.path(), 0, false, None, &schema, None,
+            &tt,
+            &d,
+            dir.path(),
+            0,
+            false,
+            None,
+            &schema,
+            None,
         )
         .unwrap();
         for s in &out {
@@ -888,12 +1016,26 @@ mod tests {
         let schema = write_tt_parquet(&tt, &ts_secs, Some(3));
         let d = time_range_decider();
         let out = run_pass_b_per_anchor::<Seconds, _>(
-            &tt, &d, dir.path(), ts_secs.len() as u64, false, None, &schema, None,
+            &tt,
+            &d,
+            dir.path(),
+            ts_secs.len() as u64,
+            false,
+            None,
+            &schema,
+            None,
         )
         .unwrap();
         assert_eq!(out[0].row_count, 10);
-        assert!(out[0].parts.len() > 1, "multi-rowgroup → >1 part for non-empty stage");
-        let sum: u64 = out[0].parts.iter().map(|p| part_row_count(dir.path(), p)).sum();
+        assert!(
+            out[0].parts.len() > 1,
+            "multi-rowgroup → >1 part for non-empty stage"
+        );
+        let sum: u64 = out[0]
+            .parts
+            .iter()
+            .map(|p| part_row_count(dir.path(), p))
+            .sum();
         assert_eq!(sum, out[0].row_count);
         // Parts are sorted (part-00000, part-00001, ...).
         let mut sorted = out[0].parts.clone();
@@ -913,14 +1055,24 @@ mod tests {
         let schema = write_lp_parquet(&tt, &rows, None);
         let d = time_range_decider();
         let out = run_pass_b_per_anchor::<Seconds, _>(
-            &tt, &d, dir.path(), rows.len() as u64, true, None, &schema, None,
+            &tt,
+            &d,
+            dir.path(),
+            rows.len() as u64,
+            true,
+            None,
+            &schema,
+            None,
         )
         .unwrap();
         assert_eq!(out[0].row_count, 1);
         assert_eq!(out[1].row_count, 1);
         assert_eq!(out[0].row_count + out[1].row_count + out[2].row_count, 2);
         // Empty-target row (ts=50) does NOT contribute to any seed-time.
-        assert_eq!(out[0].seed_time, Some([10 * 1_000_000_000, 10 * 1_000_000_000]));
+        assert_eq!(
+            out[0].seed_time,
+            Some([10 * 1_000_000_000, 10 * 1_000_000_000])
+        );
     }
 
     /// Custom-TT split-column drop: the configured split column is projected
@@ -941,7 +1093,11 @@ mod tests {
         let split = StringArray::from(vec!["0", "1", "2", "0"]);
         let in_schema = StdArc::new(Schema::new(vec![
             Field::new("ENTITY1", DataType::Int64, false),
-            Field::new("TIMESTAMP", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+            Field::new(
+                "TIMESTAMP",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
             Field::new("split_col", DataType::Utf8, true),
         ]));
         let batch = RecordBatch::try_new(
@@ -949,7 +1105,8 @@ mod tests {
             vec![StdArc::new(entities), StdArc::new(ts), StdArc::new(split)],
         )
         .unwrap();
-        let file = File::create(&tt).unwrap();
+        std::fs::create_dir(&tt).unwrap();
+        let file = File::create(tt.join(crate::parquet_dataset::part_name(0))).unwrap();
         let mut w = ArrowWriter::try_new(file, in_schema.clone(), None).unwrap();
         w.write(&batch).unwrap();
         w.close().unwrap();
@@ -957,7 +1114,11 @@ mod tests {
         // out_schema with split_col dropped (the caller's responsibility).
         let out_schema = StdArc::new(Schema::new(vec![
             Field::new("ENTITY1", DataType::Int64, false),
-            Field::new("TIMESTAMP", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+            Field::new(
+                "TIMESTAMP",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
         ]));
         let d = crate::split_decider::ColumnDeciderManual::new(
             "split_col".to_string(),
@@ -1012,7 +1173,11 @@ mod tests {
             for batch in reader {
                 let batch = batch.unwrap();
                 let eidx = batch.schema().index_of("ENTITY1").unwrap();
-                let earr = batch.column(eidx).as_any().downcast_ref::<Int64Array>().unwrap();
+                let earr = batch
+                    .column(eidx)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap();
                 let tidx = batch.schema().index_of("TARGET1").unwrap();
                 let tlist = batch
                     .column(tidx)
@@ -1069,7 +1234,10 @@ mod tests {
             );
             let m1 = stage_membership(dir1.path(), &out1[stage].parts);
             let m2 = stage_membership(dir2.path(), &out2[stage].parts);
-            assert_eq!(m1, m2, "stage {stage} membership differs across row-group sizes");
+            assert_eq!(
+                m1, m2,
+                "stage {stage} membership differs across row-group sizes"
+            );
         }
         // The shared production entry bounds all physical paths to 16 groups;
         // summing their rows still yields the exact routed stage count.

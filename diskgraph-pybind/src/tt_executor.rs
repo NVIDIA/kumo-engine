@@ -25,7 +25,7 @@ use std::io::Write;
 use std::path::{Component, Path};
 
 use arrow::pyarrow::ToPyArrow;
-use arrow_array::RecordBatch;
+use arrow_array::{RecordBatch, RecordBatchReader};
 use arrow_schema::SchemaRef;
 use diskgraph_core::time::Seconds;
 use diskgraph_core::tt_builder::{DiskGraphTTPlan, RefResolveKind, RefResolveSpec, TTFKeySpec};
@@ -51,7 +51,7 @@ use crate::artifact_helpers::{
 
 /// Schema version stamped into `tt_ingest_spec.json`. Bump when the on-disk
 /// contract changes incompatibly.
-pub(crate) const TT_INGEST_SPEC_SCHEMA_VERSION: &str = "diskgraph.tt_ingest_spec.v2";
+pub(crate) const TT_INGEST_SPEC_SCHEMA_VERSION: &str = "diskgraph.tt_ingest_spec.v3";
 
 /// DG's own cross-job hand-off contract, written by [`execute_tt_gen`] into the
 /// staging dir (sibling of `tt.parquet`) and read back by [`execute_tt_ingest`].
@@ -278,7 +278,7 @@ pub(crate) const TT_INGEST_SPEC_FILENAME: &str = "tt_ingest_spec.json";
 
 /// One ingest stage: manifest key, seed-table name, parquet part(s), and
 /// seed-time `(min,max)`. The predict path leaves `seed_time` `None` with a
-/// single part (`tt.parquet`); the split path may carry several
+/// ordered parts under `tt.parquet`; the split path may carry several
 /// `part-*.parquet` files into one stage table. Row count is read back
 /// post-ingest as the surviving `node_count` (gen-time counts go stale after
 /// orphan drops).
@@ -297,7 +297,8 @@ fn invalid_stage(
     message: impl std::fmt::Display,
 ) -> diskgraph_train_table::errors::TTGenError {
     diskgraph_train_table::errors::TTGenError::InvalidPlan(format!(
-        "stage {} artifact contract is invalid: {message}", info.key
+        "stage {} artifact contract is invalid: {message}",
+        info.key
     ))
 }
 
@@ -366,9 +367,12 @@ fn validate_staging_artifact_types(
             staging_dir.display()
         )));
     }
-    for artifact in [TT_INGEST_SPEC_FILENAME, "tt.parquet", "manifest.json"] {
+    for artifact in [TT_INGEST_SPEC_FILENAME, "manifest.json"] {
         require_regular_staging_file(staging_dir, Path::new(artifact))?;
     }
+    diskgraph_train_table::parquet_dataset::ordered_tt_dataset_parts(
+        &staging_dir.join(diskgraph_train_table::parquet_dataset::TT_DATASET_DIR),
+    )?;
     Ok(())
 }
 
@@ -388,6 +392,80 @@ fn weight_col_is_per_element(parts: &[std::path::PathBuf]) -> bool {
         .is_some_and(|(_, f)| matches!(f.data_type(), arrow_schema::DataType::List(_)))
 }
 
+fn validate_train_table_inventory(
+    staging_dir: &Path,
+) -> diskgraph_train_table::errors::TTGenResult<Vec<std::path::PathBuf>> {
+    let manifest =
+        diskgraph_train_table::manifest::read_manifest(&staging_dir.join("manifest.json"))?;
+    if manifest.train_table.path != diskgraph_train_table::parquet_dataset::TT_DATASET_DIR {
+        return Err(invalid_staging(format!(
+            "manifest train_table.path must be {:?}, got {:?}",
+            diskgraph_train_table::parquet_dataset::TT_DATASET_DIR,
+            manifest.train_table.path
+        )));
+    }
+    if manifest.train_table.format != diskgraph_train_table::manifest::TT_PARQUET_FORMAT {
+        return Err(invalid_staging(format!(
+            "manifest train_table.format must be {:?}, got {:?}",
+            diskgraph_train_table::manifest::TT_PARQUET_FORMAT,
+            manifest.train_table.format
+        )));
+    }
+    let dataset_path = staging_dir.join(&manifest.train_table.path);
+    let paths = diskgraph_train_table::parquet_dataset::ordered_tt_dataset_parts(&dataset_path)?;
+    if paths.len() != manifest.train_table.parts.len() {
+        return Err(invalid_staging("manifest train-table part count mismatch"));
+    }
+    let mut rows = 0u64;
+    let mut bytes = 0u64;
+    for (path, declared) in paths.iter().zip(&manifest.train_table.parts) {
+        let actual_relative = Path::new(&manifest.train_table.path)
+            .join(path.file_name().expect("dataset part has a filename"));
+        if actual_relative != Path::new(&declared.path) {
+            return Err(invalid_staging(format!(
+                "manifest train-table part {:?} does not match {:?}",
+                declared.path, actual_relative
+            )));
+        }
+        let size = std::fs::metadata(path)?.len();
+        if size != declared.size_bytes {
+            return Err(invalid_staging(format!(
+                "train-table part size mismatch for {}: expected={} actual={size}",
+                path.display(),
+                declared.size_bytes
+            )));
+        }
+        let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?;
+        let part_rows = u64::try_from(builder.metadata().file_metadata().num_rows())
+            .map_err(|_| invalid_staging(format!("negative row count in {}", path.display())))?;
+        if part_rows != declared.row_count {
+            return Err(invalid_staging(format!(
+                "train-table part row mismatch for {}: expected={} actual={part_rows}",
+                path.display(),
+                declared.row_count
+            )));
+        }
+        rows = rows
+            .checked_add(part_rows)
+            .ok_or_else(|| invalid_staging("row count overflow"))?;
+        bytes = bytes
+            .checked_add(size)
+            .ok_or_else(|| invalid_staging("byte count overflow"))?;
+    }
+    if rows != manifest.train_table.row_count
+        || rows != manifest.row_count
+        || bytes != manifest.train_table.size_bytes
+    {
+        return Err(invalid_staging(format!(
+            "train-table aggregate mismatch: rows={rows} manifest_rows={} root_rows={} bytes={bytes} manifest_bytes={}",
+            manifest.train_table.row_count,
+            manifest.row_count,
+            manifest.train_table.size_bytes
+        )));
+    }
+    Ok(paths)
+}
+
 fn validate_stage_parts(
     staging_dir: &Path,
     info: &StageGenInfo,
@@ -405,7 +483,10 @@ fn validate_stage_parts(
                 .components()
                 .any(|component| !matches!(component, Component::Normal(_)))
         {
-            return Err(invalid_stage(info, format!("unsafe relative path {part:?}")));
+            return Err(invalid_stage(
+                info,
+                format!("unsafe relative path {part:?}"),
+            ));
         }
         if !seen.insert(part.as_str()) {
             return Err(invalid_stage(info, format!("duplicate part path {part:?}")));
@@ -420,7 +501,10 @@ fn validate_stage_parts(
     if inventory.schema_version != STAGE_ARTIFACT_INVENTORY_SCHEMA_VERSION {
         return Err(invalid_stage(
             info,
-            format!("unsupported inventory schema {:?}", inventory.schema_version),
+            format!(
+                "unsupported inventory schema {:?}",
+                inventory.schema_version
+            ),
         ));
     }
     if inventory.parts.len() != info.parts.len() {
@@ -444,10 +528,8 @@ fn validate_stage_parts(
             ));
         }
 
-        let size_bytes = require_regular_staging_file(
-            staging_dir,
-            Path::new(&info.parts[part_index]),
-        )
+        let size_bytes =
+            require_regular_staging_file(staging_dir, Path::new(&info.parts[part_index]))
             .map_err(|error| invalid_stage(info, error))?
             .len();
         if size_bytes != declared_part.size_bytes {
@@ -455,7 +537,8 @@ fn validate_stage_parts(
                 info,
                 format!(
                     "size mismatch for {}: expected={} actual={size_bytes}",
-                    path.display(), declared_part.size_bytes
+                    path.display(),
+                    declared_part.size_bytes
                 ),
             ));
         }
@@ -466,7 +549,10 @@ fn validate_stage_parts(
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|error| {
             invalid_stage(
                 info,
-                format!("cannot read parquet metadata for {}: {error}", path.display()),
+                format!(
+                    "cannot read parquet metadata for {}: {error}",
+                    path.display()
+                ),
             )
         })?;
         let metadata = builder.metadata();
@@ -513,13 +599,14 @@ fn validate_stage_parts(
                 info,
                 format!(
                     "row_count mismatch for {}: expected={} actual={footer_rows}",
-                    path.display(), declared_part.row_count
+                    path.display(),
+                    declared_part.row_count
                 ),
             ));
         }
-        observed_stage_rows = observed_stage_rows.checked_add(footer_rows).ok_or_else(|| {
-            invalid_stage(info, "stage row count overflow")
-        })?;
+        observed_stage_rows = observed_stage_rows
+            .checked_add(footer_rows)
+            .ok_or_else(|| invalid_stage(info, "stage row count overflow"))?;
     }
 
     if observed_stage_rows != info.row_count {
@@ -536,18 +623,20 @@ fn validate_stage_parts(
 
 fn validate_ingest_spec(spec: &TtIngestSpec) -> diskgraph_train_table::errors::TTGenResult<()> {
     if spec.schema_version != TT_INGEST_SPEC_SCHEMA_VERSION {
-        return Err(diskgraph_train_table::errors::TTGenError::InvalidPlan(format!(
+        return Err(diskgraph_train_table::errors::TTGenError::InvalidPlan(
+            format!(
             "unsupported tt_ingest_spec schema_version {:?}",
             spec.schema_version
-        )));
+            ),
+        ));
     }
-    if spec
-        .split_stages
-        .as_ref()
-        .is_some_and(|stages| stages.iter().any(|stage| stage.artifact_inventory.is_none()))
-    {
+    if spec.split_stages.as_ref().is_some_and(|stages| {
+        stages
+            .iter()
+            .any(|stage| stage.artifact_inventory.is_none())
+    }) {
         return Err(diskgraph_train_table::errors::TTGenError::InvalidPlan(
-            "tt_ingest_spec.v2 split stage is missing its artifact inventory".to_string(),
+            "tt_ingest_spec.v3 split stage is missing its artifact inventory".to_string(),
         ));
     }
     Ok(())
@@ -556,7 +645,7 @@ fn validate_ingest_spec(spec: &TtIngestSpec) -> diskgraph_train_table::errors::T
 /// THE single split/predict fork. With per-stage seed parquets
 /// (`stage_gen_infos`), build a [`StageSpec`] per stage from its
 /// `part-*.parquet` files under `<staging_dir>`; otherwise (no-split predict)
-/// emit one `<predict_key>_seeds` stage covering the whole `tt.parquet`.
+/// emit one `<predict_key>_seeds` stage covering the whole `tt.parquet` dataset.
 pub(crate) fn resolve_ingest_stages(
     staging_dir: &Path,
     tt_parquet: &Path,
@@ -600,8 +689,10 @@ pub(crate) fn resolve_ingest_stages(
         None => Ok(vec![StageSpec {
             key: predict_key.to_string(),
             table_name: format!("{predict_key}_seeds"),
-            // No-split (predict) path: the single `tt.parquet` is the one part.
-            parquet_paths: vec![tt_parquet.to_path_buf()],
+            // No-split (predict) path: the ordered dataset parts form one stage.
+            parquet_paths: diskgraph_train_table::parquet_dataset::ordered_tt_dataset_parts(
+                tt_parquet,
+            )?,
             seed_time: None,
             binary_label_column: None,
             sample_weight_column: None,
@@ -741,7 +832,7 @@ pub fn execute_tt_ingest(
     index_path: &str,
     tt_id: &str,
     // Stage name used ONLY on the no-split (prediction) path: the whole
-    // tt.parquet is ingested as a single stage whose manifest key + on-disk
+    // The tt.parquet parts are ingested as one stage whose manifest key + on-disk
     // seed-table name derive from this. Ignored on the split path (which always
     // emits train/val/test). Defaults to "predict".
     predict_stage_name: Option<String>,
@@ -775,6 +866,7 @@ pub fn execute_tt_ingest(
             let index_root = Path::new(&idx);
             let staging_dir = Path::new(&staging_dir_owned).to_path_buf();
             validate_staging_artifact_types(&staging_dir)?;
+            validate_train_table_inventory(&staging_dir)?;
             // The well-known `tt.parquet` inside the staging dir.
             let tt_parquet = staging_dir.join("tt.parquet");
             let tt_parquet = tt_parquet.as_path();
@@ -1330,8 +1422,8 @@ pub fn execute_bp_plan(
             })?;
             std::fs::create_dir_all(output_parent)?;
 
-            // Stage the pass in a hidden sibling dir, then move just tt.parquet
-            // into place (the rest of the pass output is dropped with the dir).
+            // Stage the pass in a hidden sibling dir, then move the tt.parquet
+            // dataset into place (the rest of the pass output is dropped).
             let stem = output
                 .file_name()
                 .and_then(|s| s.to_str())
@@ -1392,10 +1484,8 @@ pub(crate) fn ingest_stage_parquets_into_extension(
             parquet_paths: s.parquet_paths.clone(),
         })
         .collect();
-    let stage_sidecars: std::collections::HashMap<
-        String,
-        diskgraph_ingest::StageSidecarColumns,
-    > = stages_in
+    let stage_sidecars: std::collections::HashMap<String, diskgraph_ingest::StageSidecarColumns> =
+        stages_in
         .iter()
         .filter_map(|s| {
             if s.binary_label_column.is_none() && s.sample_weight_column.is_none() {
@@ -2014,7 +2104,7 @@ fn stages_have_weight_column(tt_extension_path: &str, stages: &[ManifestStage]) 
     false
 }
 
-/// Copy the published TT artifacts into the (unpublished) extension: tt.parquet,
+/// Copy the published TT artifacts into the (unpublished) extension: tt.parquet parts,
 /// manifest, each stage's seed parquet part(s) under `<table_name>/part-*.parquet`,
 /// and the kumo-contract stats sidecars.
 fn copy_stage_artifacts(
@@ -2022,7 +2112,16 @@ fn copy_stage_artifacts(
     stages: &[StageSpec],
     tt_root: &Path,
 ) -> diskgraph_train_table::errors::TTGenResult<()> {
-    std::fs::copy(&artifacts.tt_parquet_path, tt_root.join("tt.parquet"))?;
+    let published_dataset = tt_root.join("tt.parquet");
+    std::fs::create_dir(&published_dataset)?;
+    for part in diskgraph_train_table::parquet_dataset::ordered_tt_dataset_parts(
+        &artifacts.tt_parquet_path,
+    )? {
+        std::fs::copy(
+            &part,
+            published_dataset.join(part.file_name().expect("dataset part has a filename")),
+        )?;
+    }
     std::fs::copy(&artifacts.manifest_path, tt_root.join("manifest.json"))?;
     for stage in stages {
         let stage_dir = tt_root.join(&stage.table_name);
@@ -2049,7 +2148,7 @@ fn copy_stage_artifacts(
 
 // ─── read_tt_parquet_batches ─────────────────────────────────────────────────
 
-/// Iterator over `RecordBatch`es of a TT parquet file. Yields
+/// Iterator over `RecordBatch`es of a TT parquet directory dataset. Yields
 /// `pyarrow.RecordBatch` objects. Created via [`read_tt_parquet_batches`].
 ///
 /// The reader is opened lazily on the first `__next__` call so that
@@ -2062,30 +2161,47 @@ fn copy_stage_artifacts(
 /// for a single-pass iterator anyway.
 #[pyclass(unsendable)]
 pub struct TTParquetBatchIterator {
-    parquet_path: String,
+    dataset_path: String,
     columns: Option<Vec<String>>,
+    parquet_paths: Option<Vec<std::path::PathBuf>>,
+    next_part: usize,
     reader: Option<ParquetRecordBatchReader>,
     schema: Option<SchemaRef>,
 }
 
 impl TTParquetBatchIterator {
-    fn ensure_reader(&mut self) -> PyResult<()> {
+    fn ensure_reader(&mut self) -> PyResult<bool> {
         if self.reader.is_some() {
-            return Ok(());
+            return Ok(true);
         }
-        let file = File::open(&self.parquet_path).map_err(|e| {
+        if self.parquet_paths.is_none() {
+            self.parquet_paths = Some(
+                diskgraph_train_table::parquet_dataset::ordered_tt_dataset_parts(Path::new(
+                    &self.dataset_path,
+                ))
+                .map_err(crate::map_ttgen_err)?,
+            );
+        }
+        let paths = self
+            .parquet_paths
+            .as_ref()
+            .expect("dataset parts initialized");
+        let Some(path) = paths.get(self.next_part) else {
+            return Ok(false);
+        };
+        self.next_part += 1;
+        let file = File::open(path).map_err(|e| {
             crate::DiskgraphSystemError::new_err(format!(
                 "cannot open {} for read: {e}",
-                self.parquet_path
+                path.display()
             ))
         })?;
         let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|e| {
             crate::DiskgraphSystemError::new_err(format!(
                 "cannot read parquet metadata for {}: {e}",
-                self.parquet_path
+                path.display()
             ))
         })?;
-        let schema = builder.schema().clone();
         let builder = if let Some(cols) = &self.columns {
             let parquet_schema = builder.parquet_schema();
             let mut indices = Vec::with_capacity(cols.len());
@@ -2094,7 +2210,7 @@ impl TTParquetBatchIterator {
                 let idx = arrow_schema.index_of(col).map_err(|_| {
                     crate::DiskgraphDataError::new_err(format!(
                         "column not found in {}: {col}",
-                        self.parquet_path
+                        path.display()
                     ))
                 })?;
                 indices.push(idx);
@@ -2107,12 +2223,23 @@ impl TTParquetBatchIterator {
         let reader = builder.build().map_err(|e| {
             crate::DiskgraphSystemError::new_err(format!(
                 "cannot build parquet reader for {}: {e}",
-                self.parquet_path
+                path.display()
             ))
         })?;
+        let schema = reader.schema().clone();
+        if self
+            .schema
+            .as_ref()
+            .is_some_and(|expected| expected != &schema)
+        {
+            return Err(crate::DiskgraphDataError::new_err(format!(
+                "training table part schema mismatch: {}",
+                path.display()
+            )));
+        }
         self.reader = Some(reader);
         self.schema = Some(schema);
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -2123,30 +2250,35 @@ impl TTParquetBatchIterator {
     }
 
     fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        self.ensure_reader()?;
-        let next = match self.reader.as_mut() {
-            Some(r) => r.next(),
-            None => return Ok(None),
-        };
-        match next {
-            None => {
-                self.reader = None;
-                Ok(None)
+        loop {
+            if !self.ensure_reader()? {
+                return Ok(None);
             }
+            let next = self.reader.as_mut().expect("reader initialized").next();
+            match next {
+                None => self.reader = None,
             Some(Ok(batch)) => {
                 let py_obj = batch.to_pyarrow(py)?;
-                Ok(Some(py_obj.into()))
+                    return Ok(Some(py_obj.into()));
             }
-            Some(Err(e)) => Err(crate::DiskgraphSystemError::new_err(format!(
+                Some(Err(e)) => {
+                    return Err(crate::DiskgraphSystemError::new_err(format!(
                 "parquet read error: {e}"
-            ))),
+                    )))
+                }
+            }
         }
     }
 
     /// Pyarrow schema of the underlying file (after column projection if
     /// supplied at construction). Forces opening the file.
     fn schema(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        self.ensure_reader()?;
+        if !self.ensure_reader()? {
+            return Err(crate::DiskgraphDataError::new_err(format!(
+                "training table dataset is empty: {}",
+                self.dataset_path
+            )));
+        }
         let schema = self
             .schema
             .as_ref()
@@ -2175,8 +2307,10 @@ pub fn read_tt_parquet_batches(
     columns: Option<Vec<String>>,
 ) -> PyResult<TTParquetBatchIterator> {
     Ok(TTParquetBatchIterator {
-        parquet_path: parquet_path.to_owned(),
+        dataset_path: parquet_path.to_owned(),
         columns,
+        parquet_paths: None,
+        next_part: 0,
         reader: None,
         schema: None,
     })

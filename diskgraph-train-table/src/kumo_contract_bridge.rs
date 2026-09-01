@@ -220,7 +220,7 @@ mod tests {
 
     fn baseline_manifest() -> TTManifest {
         TTManifest {
-            version: 2,
+            version: crate::manifest::TT_MANIFEST_VERSION,
             row_count: 1623,
             source_mode: "pquery".into(),
             split_mode: "compute".into(),
@@ -229,7 +229,13 @@ mod tests {
             train_table: crate::manifest::TrainTableArtifactRef::new(
                 "tt.parquet",
                 TT_PARQUET_FORMAT,
+                1623,
                 1234,
+                vec![crate::manifest::TrainTablePartRef {
+                    path: "tt.parquet/part-00000.parquet".into(),
+                    row_count: 1623,
+                    size_bytes: 1234,
+                }],
             ),
             split: Some(ArtifactRef::new("split.bin", SPLIT_FORMAT)),
             stats: ArtifactRef::new("stats.json", STATS_FORMAT),
