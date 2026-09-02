@@ -35,6 +35,7 @@ use serde::{Deserialize, Serialize};
 
 use diskgraph_fs::{CloudTransfer, CloudTransferTicket};
 
+use crate::diagnostics::{restrict, DiagnosticCategory};
 use crate::io::{build_object_store_for_path, object_path_for_path};
 use crate::success_marker::{write_success_marker, SUCCESS_MARKER_FILENAME};
 
@@ -100,10 +101,22 @@ impl SnapshotMirror {
     /// the local prefix dir if missing (cloud buckets are pre-existing,
     /// so the cloud branch is a no-op for that step).
     pub fn new(dataplane_dir: &str) -> Result<Self> {
-        let store = build_object_store_for_path(dataplane_dir)
-            .with_context(|| format!("build object store for dataplane dir {dataplane_dir}"))?;
-        let dest_dir = object_path_for_path(dataplane_dir)
-            .with_context(|| format!("derive dest ObjectPath for {dataplane_dir}"))?;
+        let store = restrict(
+            build_object_store_for_path(dataplane_dir),
+            "dataplane.client_failed",
+            "DiskGraph could not prepare the snapshot dataplane destination",
+            "open_dataplane_destination",
+            DiagnosticCategory::Provider,
+            true,
+        )?;
+        let dest_dir = restrict(
+            object_path_for_path(dataplane_dir),
+            "dataplane.path_failed",
+            "DiskGraph could not interpret the snapshot dataplane destination",
+            "open_dataplane_destination",
+            DiagnosticCategory::Provider,
+            false,
+        )?;
         let transfer = CloudTransfer::new(store, diskgraph_fs::CloudTransferConfig::from_env());
         Ok(Self {
             transfer,
@@ -137,9 +150,15 @@ impl SnapshotMirror {
     /// crash window where remote `_SUCCESS` was durable but the local marker
     /// used as the supervisor's terminal signal had not yet been renamed.
     pub(crate) fn invalidate_success_marker(&self) -> Result<()> {
-        self.transfer
-            .delete_blocking(self.dest_path(SUCCESS_MARKER_FILENAME))
-            .context("invalidate dataplane _SUCCESS")
+        restrict(
+            self.transfer
+                .delete_blocking(self.dest_path(SUCCESS_MARKER_FILENAME)),
+            "dataplane.invalidate_failed",
+            "DiskGraph could not invalidate the prior dataplane publication marker",
+            "invalidate_dataplane_snapshot",
+            DiagnosticCategory::Provider,
+            true,
+        )
     }
 
     /// Submit an upload of `bytes` to `<dest_dir>/<rel_path>`. The upload
@@ -147,7 +166,14 @@ impl SnapshotMirror {
     /// is captured for the end-of-ingest drain. Errors at submit time
     /// (queue closed) propagate immediately.
     pub fn submit(&self, rel_path: &str, bytes: Vec<u8>) -> Result<()> {
-        let ticket = self.transfer.submit_upload(self.dest_path(rel_path), bytes)?;
+        let ticket = restrict(
+            self.transfer.submit_upload(self.dest_path(rel_path), bytes),
+            "dataplane.upload_submit_failed",
+            "DiskGraph could not queue a snapshot dataplane upload",
+            "upload_dataplane_snapshot",
+            DiagnosticCategory::Provider,
+            true,
+        )?;
         self.tickets.lock().push(ticket);
         Ok(())
     }
@@ -161,9 +187,15 @@ impl SnapshotMirror {
     /// `submit_upload_from_path` bounds peak RSS to
     /// `part_size × inflight_parts` per CloudTransfer.
     pub fn submit_from_path(&self, rel_path: &str, src_path: &std::path::Path) -> Result<()> {
-        let ticket = self
-            .transfer
-            .submit_upload_from_path(self.dest_path(rel_path), src_path.to_path_buf())?;
+        let ticket = restrict(
+            self.transfer
+                .submit_upload_from_path(self.dest_path(rel_path), src_path.to_path_buf()),
+            "dataplane.upload_submit_failed",
+            "DiskGraph could not queue a snapshot dataplane upload",
+            "upload_dataplane_snapshot",
+            DiagnosticCategory::Provider,
+            true,
+        )?;
         self.tickets.lock().push(ticket);
         Ok(())
     }
@@ -182,7 +214,14 @@ impl SnapshotMirror {
             }
         }
         if let Some(err) = first_err {
-            return Err(err.context("wait_all_pending: at least one upload failed"));
+            return restrict(
+                Err::<(), _>(err),
+                "dataplane.upload_failed",
+                "DiskGraph could not upload the snapshot to its dataplane destination",
+                "upload_dataplane_snapshot",
+                DiagnosticCategory::Provider,
+                true,
+            );
         }
         Ok(())
     }
@@ -191,10 +230,16 @@ impl SnapshotMirror {
     /// markers, which the controller writes strictly after every other
     /// upload has drained — so the natural API is "submit and wait now".
     pub fn upload_blocking(&self, rel_path: &str, bytes: Vec<u8>) -> Result<()> {
-        self.transfer
-            .submit_upload(self.dest_path(rel_path), bytes)?
-            .wait()
-            .with_context(|| format!("upload_blocking: failed uploading {rel_path}"))
+        restrict(
+            self.transfer
+                .submit_upload(self.dest_path(rel_path), bytes)
+                .and_then(|ticket| ticket.wait()),
+            "dataplane.upload_failed",
+            "DiskGraph could not upload the snapshot to its dataplane destination",
+            "upload_dataplane_snapshot",
+            DiagnosticCategory::Provider,
+            true,
+        )
     }
 }
 

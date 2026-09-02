@@ -8,6 +8,11 @@ use std::time::{Duration, SystemTime};
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use diskgraph_ingest::config::{PeakMemStats, PEAK_MEM_STAGE_COUNT};
+use diskgraph_ingest::diagnostics::{
+    render_diagnostic, render_process_fallback, restrict, write_diagnostic_atomically,
+    DiagnosticCategory, DiagnosticEnvelope, RestrictedDiagnostic, DIAGNOSTIC_FILENAME,
+    WORKER_DIAGNOSTIC_FILENAME,
+};
 use diskgraph_ingest::progress::{build_progress, format_bytes, format_duration};
 use diskgraph_ingest::stats_publish::{
     default_run_id, fetch_perf_baseline, publish_stats, PublishConfig, PublishOutcome,
@@ -208,27 +213,63 @@ fn main() -> Result<()> {
         return Ok(());
     }
     if !args.worker {
-        return supervise_ingest(&args);
+        let diagnostic_paths = local_diagnostic_paths(&args);
+        if let Some((final_path, worker_path)) = &diagnostic_paths {
+            remove_diagnostic(final_path);
+            remove_diagnostic(worker_path);
+        }
+        let result = supervise_ingest(&args);
+        if let Some((final_path, worker_path)) = &diagnostic_paths {
+            remove_diagnostic(worker_path);
+            if result.is_ok() {
+                remove_diagnostic(final_path);
+            } else if !final_path.is_file() {
+                let diagnostic = render_process_fallback(
+                    0,
+                    "supervisor",
+                    None,
+                    None,
+                    false,
+                    false,
+                );
+                persist_diagnostic(final_path, &diagnostic);
+            }
+        }
+        return result;
     }
-    let worker_error_path = if matches!(args.dest, DestArg::Local) {
+    let worker_diagnostic_path = if matches!(args.dest, DestArg::Local) {
         args.output
             .as_deref()
             .map(PathBuf::from)
-            .map(|output| output.join(WORKER_ERROR_FILENAME))
+            .map(|output| output.join(WORKER_DIAGNOSTIC_FILENAME))
     } else {
         None
     };
-    if let Some(path) = &worker_error_path {
-        let _ = fs::remove_file(path);
+    if let Some(path) = &worker_diagnostic_path {
+        remove_diagnostic(path);
     }
+    let worker_output = args.output.as_deref().map(PathBuf::from);
     match run_worker(args) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            let public_envelope = diskgraph_ingest::public_ingest_error_envelope(&error);
-            if let (Some(path), Some(envelope)) = (&worker_error_path, &public_envelope) {
-                persist_worker_error(path, envelope);
+        Ok(()) => {
+            if let Some(path) = &worker_diagnostic_path {
+                remove_diagnostic(path);
             }
-            if public_envelope.is_some() {
+            Ok(())
+        }
+        Err(error) => {
+            if let Some(path) = &worker_diagnostic_path {
+                let attempt = std::env::var("DISKGRAPH_SUPERVISOR_ATTEMPT")
+                    .ok()
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .unwrap_or(1);
+                let phase = worker_output
+                    .as_deref()
+                    .and_then(|output| diskgraph_ingest::first_incomplete_phase(output).ok())
+                    .map_or("worker", |phase| phase.name());
+                let diagnostic = render_diagnostic(&error, attempt, phase);
+                persist_diagnostic(path, &diagnostic);
+            }
+            if diskgraph_ingest::is_non_retryable_ingest_error(&error) {
                 eprintln!("Error: {error:?}");
                 std::process::exit(NON_RETRYABLE_WORKER_EXIT_CODE);
             }
@@ -248,7 +289,14 @@ fn run_worker(args: Args) -> Result<()> {
         source.clone()
     };
     if !is_cloud_url(&source_str) && !source_path.is_file() {
-        anyhow::bail!("diskgraph config not found at {}", source_path.display());
+        return Err(anyhow::Error::new(RestrictedDiagnostic::new(
+            "config.not_found",
+            "DiskGraph ingest configuration was not found",
+            "read_ingest_config",
+            DiagnosticCategory::Io,
+            false,
+            anyhow::anyhow!("diskgraph config not found at {}", source_path.display()),
+        )));
     }
     if args.profile.is_some() && cfg!(debug_assertions) && cfg!(target_arch = "aarch64") {
         anyhow::bail!(
@@ -319,14 +367,28 @@ fn run_worker(args: Args) -> Result<()> {
     let marker = args.success_marker_content.as_deref();
     let (_metadata, stats) = if is_cloud_url(&source_str) {
         let config_url = ensure_config_url(&source_str);
-        let metadata_bytes = download_cloud_config_bytes(&config_url)?;
+        let metadata_bytes = restrict(
+            download_cloud_config_bytes(&config_url),
+            "object_store.config_read_failed",
+            "DiskGraph could not read its ingest configuration from object storage",
+            "read_ingest_config",
+            DiagnosticCategory::Provider,
+            true,
+        )?;
         let source: GraphConfig = serde_json::from_slice(&metadata_bytes)?;
         ingest_with_stats_from_source(
             source, None, &output, dest, options, dataplane, marker,
         )?
     } else {
-        let metadata_bytes = fs::read(&source_path)
-            .map_err(|e| anyhow::anyhow!("read {}: {e}", source_path.display()))?;
+        let metadata_bytes = restrict(
+            fs::read(&source_path)
+                .map_err(|error| anyhow::anyhow!("read {}: {error}", source_path.display())),
+            "filesystem.config_read_failed",
+            "DiskGraph could not read its ingest configuration",
+            "read_ingest_config",
+            DiagnosticCategory::Io,
+            false,
+        )?;
         let source: GraphConfig = serde_json::from_slice(&metadata_bytes)?;
         let base_dir = source_path.parent();
         ingest_with_stats_from_source(
@@ -339,7 +401,14 @@ fn run_worker(args: Args) -> Result<()> {
         Ok(outcome) => outcome,
         Err(err) => {
             if args.stats_required {
-                return Err(err);
+                return Err(anyhow::Error::new(RestrictedDiagnostic::new(
+                    "stats.publish_failed",
+                    "DiskGraph could not publish required ingest statistics",
+                    "publish_ingest_stats",
+                    DiagnosticCategory::Provider,
+                    true,
+                    err,
+                )));
             }
             tracing::warn!("stats publish failed: {err}");
             None
@@ -636,28 +705,68 @@ fn run_worker(args: Args) -> Result<()> {
 }
 
 const SUPERVISOR_RESUME_ENV: &str = "DISKGRAPH_SUPERVISOR_RESUME_PHASE";
-const WORKER_ERROR_FILENAME: &str = ".ingest_error";
 // EX_CONFIG: the worker validated its input and a retry cannot change it.
 const NON_RETRYABLE_WORKER_EXIT_CODE: i32 = 78;
 
-fn persist_worker_error(path: &Path, error: &str) {
-    if let Some(parent) = path.parent() {
-        if let Err(write_error) = fs::create_dir_all(parent) {
-            tracing::warn!(
-                path = %path.display(),
-                error = %write_error,
-                "failed to recreate ingest output directory for worker error"
-            );
-            return;
-        }
+fn local_diagnostic_paths(args: &Args) -> Option<(PathBuf, PathBuf)> {
+    if !matches!(args.dest, DestArg::Local) {
+        return None;
     }
-    if let Err(write_error) = fs::write(path, error) {
-        tracing::warn!(
-            path = %path.display(),
-            error = %write_error,
-            "failed to persist worker error"
-        );
+    let output = PathBuf::from(args.output.as_deref()?);
+    Some((
+        output.join(DIAGNOSTIC_FILENAME),
+        output.join(WORKER_DIAGNOSTIC_FILENAME),
+    ))
+}
+
+fn remove_diagnostic(path: &Path) {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => tracing::warn!("failed to remove a stale DiskGraph diagnostic"),
     }
+}
+
+fn persist_diagnostic(path: &Path, diagnostic: &DiagnosticEnvelope) {
+    if write_diagnostic_atomically(path, diagnostic).is_err() {
+        tracing::warn!("failed to persist a DiskGraph diagnostic");
+    }
+}
+
+fn exit_status_parts(status: ExitStatus) -> (Option<i32>, Option<i32>) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        (status.code(), status.signal())
+    }
+    #[cfg(not(unix))]
+    {
+        (status.code(), None)
+    }
+}
+
+fn publish_terminal_diagnostic(
+    final_path: &Path,
+    worker_path: &Path,
+    attempt: u32,
+    phase: diskgraph_ingest::IngestPhase,
+    status: ExitStatus,
+    oom: bool,
+) {
+    remove_diagnostic(final_path);
+    if fs::rename(worker_path, final_path).is_ok() {
+        return;
+    }
+    let (exit_code, signal) = exit_status_parts(status);
+    let fallback = render_process_fallback(
+        attempt,
+        phase.name(),
+        exit_code,
+        signal,
+        oom,
+        false,
+    );
+    persist_diagnostic(final_path, &fallback);
 }
 
 fn supervisor_thread_override(phase: &str) -> Option<usize> {
@@ -754,8 +863,8 @@ fn supervise_ingest(args: &Args) -> Result<()> {
     let mut edges_map = args.edges_map_threads.unwrap_or(default_threads).max(1);
     let mut index = args.index_threads.unwrap_or(default_threads).max(1);
     let output = PathBuf::from(args.output.as_deref().expect("output is required"));
-    let worker_error_path = output.join(WORKER_ERROR_FILENAME);
-    let mut first_worker_error = None;
+    let diagnostic_path = output.join(DIAGNOSTIC_FILENAME);
+    let worker_diagnostic_path = output.join(WORKER_DIAGNOSTIC_FILENAME);
     let mut resume_override = args.resume_from_phase.map(Into::into);
     if resume_override.is_none() && matches!(args.dest, DestArg::Local) {
         resume_override = diskgraph_ingest::initial_resume_phase(&output)?;
@@ -776,6 +885,7 @@ fn supervise_ingest(args: &Args) -> Result<()> {
                 edges_map.to_string(),
             )
             .env("DISKGRAPH_SUPERVISOR_INDEX_THREADS", index.to_string())
+            .env("DISKGRAPH_SUPERVISOR_ATTEMPT", (attempt + 1).to_string())
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
@@ -832,6 +942,8 @@ fn supervise_ingest(args: &Args) -> Result<()> {
         let child_pid = child.id();
         let status = child.wait()?;
         if status.success() {
+            remove_diagnostic(&diagnostic_path);
+            remove_diagnostic(&worker_diagnostic_path);
             return Ok(());
         }
 
@@ -839,6 +951,8 @@ fn supervise_ingest(args: &Args) -> Result<()> {
             // Publication is the terminal commit. A worker killed between
             // that commit and process exit must never reopen Encode or mutate
             // a graph already advertised as complete.
+            remove_diagnostic(&diagnostic_path);
+            remove_diagnostic(&worker_diagnostic_path);
             return Ok(());
         }
 
@@ -849,17 +963,19 @@ fn supervise_ingest(args: &Args) -> Result<()> {
             libc::kill(-(child_pid as i32), libc::SIGKILL);
         }
 
-        if first_worker_error.is_none() {
-            first_worker_error = fs::read_to_string(&worker_error_path).ok();
-        }
         let oom = is_oom_exit(status);
         let incomplete_phase = diskgraph_ingest::first_incomplete_phase(&output)?;
         let Some(phase) =
             retry_phase_for_exit(oom, is_non_retryable_exit(status), incomplete_phase)
         else {
-            if let Some(error) = &first_worker_error {
-                persist_worker_error(&worker_error_path, error);
-            }
+            publish_terminal_diagnostic(
+                &diagnostic_path,
+                &worker_diagnostic_path,
+                (attempt + 1) as u32,
+                incomplete_phase,
+                status,
+                oom,
+            );
             if is_non_retryable_exit(status) {
                 std::process::exit(NON_RETRYABLE_WORKER_EXIT_CODE);
             }
@@ -869,14 +985,21 @@ fn supervise_ingest(args: &Args) -> Result<()> {
             if phase == diskgraph_ingest::IngestPhase::Encode {
                 diskgraph_ingest::discard_provisional_encode_outputs(&output)?;
             }
-            if let Some(error) = &first_worker_error {
-                persist_worker_error(&worker_error_path, error);
-            }
+            publish_terminal_diagnostic(
+                &diagnostic_path,
+                &worker_diagnostic_path,
+                (attempt + 1) as u32,
+                phase,
+                status,
+                oom,
+            );
             anyhow::bail!(
                 "DiskGraph ingest exhausted {} worker retries",
                 args.oom_retries
             );
         }
+
+        remove_diagnostic(&worker_diagnostic_path);
 
         match phase {
             diskgraph_ingest::IngestPhase::Encode => {
@@ -1534,5 +1657,48 @@ mod supervisor_tests {
             NON_RETRYABLE_WORKER_EXIT_CODE << 8
         )));
         assert!(!is_non_retryable_exit(ExitStatus::from_raw(1 << 8)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_publication_promotes_worker_detail_or_synthesizes_process_fallback() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let final_path = directory.path().join(DIAGNOSTIC_FILENAME);
+        let worker_path = directory.path().join(WORKER_DIAGNOSTIC_FILENAME);
+        let error = anyhow::anyhow!("actionable internal invariant");
+        let diagnostic = render_diagnostic(&error, 1, "encode");
+        write_diagnostic_atomically(&worker_path, &diagnostic).unwrap();
+
+        publish_terminal_diagnostic(
+            &final_path,
+            &worker_path,
+            1,
+            diskgraph_ingest::IngestPhase::Encode,
+            ExitStatus::from_raw(1 << 8),
+            false,
+        );
+
+        let promoted: serde_json::Value =
+            serde_json::from_slice(&fs::read(&final_path).unwrap()).unwrap();
+        assert_eq!(promoted["visibility"], "ordinary");
+        assert_eq!(promoted["summary"], "actionable internal invariant");
+        assert!(!worker_path.exists());
+
+        remove_diagnostic(&final_path);
+        publish_terminal_diagnostic(
+            &final_path,
+            &worker_path,
+            2,
+            diskgraph_ingest::IngestPhase::PkMap,
+            ExitStatus::from_raw(libc::SIGKILL),
+            true,
+        );
+        let fallback: serde_json::Value =
+            serde_json::from_slice(&fs::read(&final_path).unwrap()).unwrap();
+        assert_eq!(fallback["visibility"], "restricted");
+        assert_eq!(fallback["code"], "ingest.worker_memory_pressure");
+        assert_eq!(fallback["fields"]["signal"], libc::SIGKILL);
     }
 }

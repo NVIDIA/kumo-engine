@@ -3722,17 +3722,19 @@ fn ingest_binary_propagates_public_validation_without_retry() -> Result<()> {
         "the supervisor must not restart a deterministic validation failure: {stderr}"
     );
     let envelope: serde_json::Value =
-        serde_json::from_slice(&fs::read(output_root.join(".ingest_error"))?)?;
+        serde_json::from_slice(&fs::read(output_root.join(".diagnostic.json"))?)?;
+    assert_eq!(envelope["version"], 1);
+    assert_eq!(envelope["event"], "diskgraph.ingest_failed");
+    assert_eq!(envelope["operation"], "validate_input");
     assert_eq!(
-        envelope,
+        envelope["public"],
         serde_json::json!({
-            "version": 1,
             "code": "diskgraph_ingest_validation",
-            "public_message": "table Nodes source schema is missing column 'value'",
-            "native_type": "PublicIngestError",
+            "message": "table Nodes source schema is missing column 'value'",
             "non_retryable": true,
         })
     );
+    assert!(!output_root.join(".ingest_error").exists());
 
     Ok(())
 }
@@ -3794,8 +3796,8 @@ fn ingest_binary_rejects_corrupt_parquet_metadata_after_one_attempt() -> Result<
     );
     assert!(!stderr.contains("do-not-publish-this-path"));
     let envelope: serde_json::Value =
-        serde_json::from_slice(&fs::read(output_root.join(".ingest_error"))?)?;
-    assert_eq!(envelope["public_message"], public_message);
+        serde_json::from_slice(&fs::read(output_root.join(".diagnostic.json"))?)?;
+    assert_eq!(envelope["public"]["message"], public_message);
 
     Ok(())
 }
@@ -3852,7 +3854,9 @@ fn ingest_binary_retries_local_source_open_failure_nine_times() -> Result<()> {
         "the initial worker and eight retries must all attempt the transient source: {stderr}"
     );
     assert!(stderr.contains("exhausted 8 worker retries"), "{stderr}");
-    assert!(!output_root.join(".ingest_error").exists());
+    let diagnostic: serde_json::Value =
+        serde_json::from_slice(&fs::read(output_root.join(".diagnostic.json"))?)?;
+    assert!(diagnostic["public"].is_null());
 
     Ok(())
 }
@@ -3915,7 +3919,9 @@ fn ingest_binary_retries_successful_local_short_read_nine_times() -> Result<()> 
         "the initial worker and eight retries must all observe the short local source: {stderr}"
     );
     assert!(stderr.contains("exhausted 8 worker retries"), "{stderr}");
-    assert!(!output_root.join(".ingest_error").exists());
+    let diagnostic: serde_json::Value =
+        serde_json::from_slice(&fs::read(output_root.join(".diagnostic.json"))?)?;
+    assert!(diagnostic["public"].is_null());
 
     Ok(())
 }

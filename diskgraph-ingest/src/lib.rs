@@ -9,6 +9,7 @@ pub mod config;
 pub mod config_converter;
 pub mod consts;
 pub mod databricks;
+pub mod diagnostics;
 pub mod disk_manager;
 pub mod errors;
 pub mod graph_config;
@@ -31,6 +32,7 @@ pub mod utils;
 
 pub use crate::column_inference::infer_stage_columns;
 use crate::config::PeakMemStats;
+use crate::diagnostics::{restrict, DiagnosticCategory, RestrictedDiagnostic};
 pub use crate::config::{IngestOptions, IngestPhase, ResolveColumnSpec, ResolveKind, ALL_PHASES};
 use crate::consts::*;
 pub use crate::errors::{
@@ -394,6 +396,18 @@ fn parquet_inputs(table: &TableSpec) -> Vec<ParquetInput> {
         .collect()
 }
 
+/// Keep provider-controlled transfer failures restricted at their construction boundary.
+fn restricted_input_transfer_for_table(table: &TableSpec) -> Result<Option<CloudTransfer>> {
+    restrict(
+        build_input_transfer_for_table(table),
+        "object_store.client_failed",
+        "DiskGraph could not prepare access to source object storage",
+        "open_source_object_store",
+        DiagnosticCategory::Provider,
+        true,
+    )
+}
+
 /// Preserve the legacy `parquet.paths` cloud contract without preserving a
 /// second Parquet reader. Capture one exact identity per path, in caller order,
 /// then route schema inspection and Encode through the manifest-aware resident
@@ -408,7 +422,7 @@ fn promote_legacy_cloud_parquet_sources(source: &mut GraphConfig) -> Result<()> 
         if !should_promote {
             continue;
         }
-        let transfer = build_input_transfer_for_table(table)?
+        let transfer = restricted_input_transfer_for_table(table)?
             .ok_or_else(|| anyhow!("cloud input transfer unavailable for table {}", table.name))?;
         promote_legacy_cloud_parquet_table(table, &transfer)?;
     }
@@ -469,7 +483,7 @@ fn load_parquet_source_schemas(
     if inputs.is_empty() {
         return Ok(Vec::new());
     }
-    let transfer = build_input_transfer_for_table(table)?;
+    let transfer = restricted_input_transfer_for_table(table)?;
     let slots = Arc::new(std::sync::Mutex::new(vec![None; inputs.len()]));
     let tasks = inputs
         .into_iter()
@@ -490,8 +504,12 @@ fn load_parquet_source_schemas(
                     )
                     .map_err(|error| {
                         if error
-                            .downcast_ref::<InvalidParquetMetadataError>()
-                            .is_some()
+                            .chain()
+                            .any(|source| {
+                                source
+                                    .downcast_ref::<InvalidParquetMetadataError>()
+                                    .is_some()
+                            })
                         {
                             anyhow::Error::new(PublicIngestError::new(format!(
                                 "table {} Parquet input {} has an invalid footer or metadata; regenerate the source file",
@@ -2945,17 +2963,7 @@ pub struct PublicIngestError {
     message: String,
 }
 
-const PUBLIC_INGEST_ERROR_CODE: &str = "diskgraph_ingest_validation";
-const PUBLIC_INGEST_ERROR_MESSAGE_MAX_BYTES: usize = 2 * 1024;
-
-#[derive(serde::Serialize)]
-struct PublicIngestErrorEnvelope<'a> {
-    version: u8,
-    code: &'static str,
-    public_message: &'a str,
-    native_type: &'static str,
-    non_retryable: bool,
-}
+pub(crate) const PUBLIC_INGEST_ERROR_CODE: &str = "diskgraph_ingest_validation";
 
 impl PublicIngestError {
     fn new(message: String) -> Self {
@@ -2982,26 +2990,6 @@ pub fn public_ingest_error_message(error: &anyhow::Error) -> Option<String> {
     error
         .downcast_ref::<PublicIngestError>()
         .map(ToString::to_string)
-}
-
-/// Serialize the allowlisted worker error contract consumed by supervisors.
-pub fn public_ingest_error_envelope(error: &anyhow::Error) -> Option<String> {
-    let error = error.downcast_ref::<PublicIngestError>()?;
-    let mut message_end = error
-        .message
-        .len()
-        .min(PUBLIC_INGEST_ERROR_MESSAGE_MAX_BYTES);
-    while !error.message.is_char_boundary(message_end) {
-        message_end -= 1;
-    }
-    serde_json::to_string(&PublicIngestErrorEnvelope {
-        version: 1,
-        code: PUBLIC_INGEST_ERROR_CODE,
-        public_message: &error.message[..message_end],
-        native_type: "PublicIngestError",
-        non_retryable: true,
-    })
-    .ok()
 }
 
 pub fn is_non_retryable_ingest_error(error: &anyhow::Error) -> bool {
@@ -3547,7 +3535,7 @@ mod resident_parquet_tests {
     }
 
     #[test]
-    fn corrupt_pinned_remote_metadata_is_structural() {
+    fn corrupt_pinned_remote_metadata_is_an_ordinary_parser_failure() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let object_path = object_store::path::Path::from("data/corrupt.parquet");
         let store = Arc::new(InMemory::new());
@@ -3574,9 +3562,31 @@ mod resident_parquet_tests {
         .expect("corrupt remote metadata should fail");
 
         assert!(error
-            .downcast_ref::<InvalidParquetMetadataError>()
-            .is_some());
+            .chain()
+            .any(|source| source.downcast_ref::<InvalidParquetMetadataError>().is_some()));
         assert!(!is_non_retryable_ingest_error(&error));
+        let operator = serde_json::to_string(&crate::diagnostics::render_diagnostic(
+            &error, 1, "encode",
+        ))
+        .unwrap();
+        assert!(operator.contains("\"visibility\":\"ordinary\""));
+        assert!(operator.contains("Parquet footer or metadata is invalid"));
+        assert!(operator.contains("Parquet error"));
+    }
+
+    #[test]
+    fn source_loader_panic_is_an_ordinary_internal_failure() {
+        let error = catch_source_worker_panic(|| -> Result<()> {
+            panic!("loader invariant detail canary");
+        })
+        .unwrap_err();
+
+        let operator = serde_json::to_string(&crate::diagnostics::render_diagnostic(
+            &error, 1, "encode",
+        ))
+        .unwrap();
+        assert!(operator.contains("\"visibility\":\"ordinary\""));
+        assert!(operator.contains("loader invariant detail canary"));
     }
 
     #[test]
@@ -3608,15 +3618,26 @@ mod resident_parquet_tests {
         .err()
         .expect("changed remote object should fail");
 
-        assert!(error
-            .chain()
-            .any(|source| source.to_string().contains("precondition failure")),
+        assert!(
+            error
+                .chain()
+                .any(|source| source.to_string().contains("precondition failure")),
             "unexpected error chain: {error:#}"
         );
         assert!(error
             .downcast_ref::<InvalidParquetMetadataError>()
             .is_none());
         assert!(public_ingest_error_message(&error).is_none());
+        let operator = serde_json::to_string(&crate::diagnostics::render_diagnostic(
+            &error, 1, "encode",
+        ))
+        .unwrap();
+        assert!(
+            operator.contains("\"visibility\":\"restricted\""),
+            "unexpected operator diagnostic: {operator}; error chain: {error:#}"
+        );
+        assert!(!operator.contains("precondition failure"));
+        assert!(!operator.contains("s3://bucket"));
     }
 
     #[test]
@@ -3635,6 +3656,12 @@ mod resident_parquet_tests {
             .downcast_ref::<InvalidParquetMetadataError>()
             .is_none());
         assert!(public_ingest_error_message(&error).is_none());
+        let operator = serde_json::to_string(&crate::diagnostics::render_diagnostic(
+            &error, 1, "encode",
+        ))
+        .unwrap();
+        assert!(operator.contains("\"visibility\":\"restricted\""));
+        assert!(!operator.contains("/definitely/missing/source.parquet"));
     }
 
     struct ShortReadFixture;
@@ -3903,7 +3930,7 @@ mod resident_parquet_tests {
 
 #[cfg(test)]
 #[test]
-fn only_explicit_public_ingest_errors_are_publishable() {
+fn only_explicit_public_ingest_errors_are_classified_as_public() {
     let public_error =
         anyhow::Error::new(PublicIngestError::new("safe validation detail".to_string()))
             .context("internal worker context");
@@ -3912,20 +3939,7 @@ fn only_explicit_public_ingest_errors_are_publishable() {
         Some("safe validation detail")
     );
     assert!(is_non_retryable_ingest_error(&public_error));
-    let envelope: JsonValue =
-        serde_json::from_str(&public_ingest_error_envelope(&public_error).unwrap()).unwrap();
-    assert_eq!(
-        envelope,
-        serde_json::json!({
-            "version": 1,
-            "code": "diskgraph_ingest_validation",
-            "public_message": "safe validation detail",
-            "native_type": "PublicIngestError",
-            "non_retryable": true,
-        })
-    );
     assert!(public_ingest_error_message(&anyhow!("provider secret detail")).is_none());
-    assert!(public_ingest_error_envelope(&anyhow!("provider secret detail")).is_none());
     assert!(!is_non_retryable_ingest_error(&anyhow!(
         "provider secret detail"
     )));
@@ -3962,6 +3976,7 @@ const FILE_DECODE_READ_BUFFER_BYTES: usize = 64 * 1024;
 /// record rejects before the decoder can grow again.
 struct BoundedCsvBatchReader {
     reader: Box<dyn Read + Send>,
+    restricted_read_errors: bool,
     decoder: arrow_csv::reader::Decoder,
     buffer: Vec<u8>,
     buffer_start: usize,
@@ -3973,7 +3988,12 @@ struct BoundedCsvBatchReader {
 }
 
 impl BoundedCsvBatchReader {
-    fn new(reader: Box<dyn Read + Send>, schema: Schema, max_decode_bytes: u64) -> Result<Self> {
+    fn new(
+        reader: Box<dyn Read + Send>,
+        schema: Schema,
+        max_decode_bytes: u64,
+        restricted_read_errors: bool,
+    ) -> Result<Self> {
         // The decoder retains raw fields while Arrow arrays are built. Limit
         // raw CSV to one quarter of the permit, leaving space for the copied
         // Arrow values, offsets/validity, and parser/read buffers.
@@ -3992,6 +4012,7 @@ impl BoundedCsvBatchReader {
             .min(usize::try_from((max_decode_bytes / 16).max(1024)).unwrap_or(usize::MAX));
         Ok(Self {
             reader,
+            restricted_read_errors,
             decoder: arrow_csv::ReaderBuilder::new(Arc::new(schema))
                 .with_header(true)
                 .with_batch_size(batch_rows)
@@ -4018,7 +4039,14 @@ impl BoundedCsvBatchReader {
             }
             Err(error) => {
                 self.finished = true;
-                Some(Err(anyhow::Error::from(error)))
+                Some(Err(anyhow::Error::new(RestrictedDiagnostic::new(
+                    "source.csv_decode_failed",
+                    "DiskGraph could not decode a CSV source batch",
+                    "decode_source_batch",
+                    DiagnosticCategory::Validation,
+                    false,
+                    error,
+                ))))
             }
         }
     }
@@ -4052,14 +4080,26 @@ impl Iterator for BoundedCsvBatchReader {
                     }
                     Err(error) => {
                         self.finished = true;
-                        return Some(Err(anyhow::Error::from(error)));
+                        let error = if self.restricted_read_errors {
+                            anyhow::Error::new(restricted_remote_read_error(error.into()))
+                        } else {
+                            error.into()
+                        };
+                        return Some(Err(error));
                     }
                 }
             }
             if self.buffer_start == self.buffer_end && self.eof {
                 if let Err(error) = self.decoder.decode(&[]) {
                     self.finished = true;
-                    return Some(Err(anyhow::Error::from(error)));
+                    return Some(Err(anyhow::Error::new(RestrictedDiagnostic::new(
+                        "source.csv_decode_failed",
+                        "DiskGraph could not decode a CSV source batch",
+                        "decode_source_batch",
+                        DiagnosticCategory::Validation,
+                        false,
+                        error,
+                    ))));
                 }
                 self.finished = true;
                 return self.flush();
@@ -4085,7 +4125,14 @@ impl Iterator for BoundedCsvBatchReader {
                 }
                 Err(error) => {
                     self.finished = true;
-                    return Some(Err(anyhow::Error::from(error)));
+                    return Some(Err(anyhow::Error::new(RestrictedDiagnostic::new(
+                        "source.csv_decode_failed",
+                        "DiskGraph could not decode a CSV source batch",
+                        "decode_source_batch",
+                        DiagnosticCategory::Validation,
+                        false,
+                        error,
+                    ))));
                 }
             }
         }
@@ -4656,14 +4703,23 @@ impl BoundedParquetBatchReader {
             .parquet_metadata
             .as_ref()
             .ok_or_else(|| anyhow!("missing Parquet metadata"))?;
-        let reader = ParquetRecordBatchReaderBuilder::new_with_metadata(
-            self.resident.source.reader(false)?,
-            metadata.clone(),
-        )
-        .with_row_groups(vec![memory.row_group_index])
-        .with_batch_size(memory.batch_size)
-        .build()?
-        .map(|batch| batch.map_err(anyhow::Error::from));
+        let source_reader = restrict(
+            self.resident.source.reader(false),
+            "source.parquet_read_failed",
+            "DiskGraph could not read a Parquet source object",
+            "read_source_object",
+            DiagnosticCategory::Io,
+            true,
+        )?;
+        // Encode admits Parquet sources as local files or complete pooled cloud
+        // downloads. Remote range reads are used only by metadata inspection,
+        // where `ResidentFile::load` classifies I/O before parser errors.
+        let reader =
+            ParquetRecordBatchReaderBuilder::new_with_metadata(source_reader, metadata.clone())
+                .with_row_groups(vec![memory.row_group_index])
+                .with_batch_size(memory.batch_size)
+                .build()?
+                .map(|batch| batch.map_err(anyhow::Error::from));
         self.current_output_bound = memory.arrow_output_bytes;
         self.current = Some(Box::new(reader));
         Ok(true)
@@ -4897,6 +4953,17 @@ struct RemoteObject {
     condition: Option<CloudObjectCondition>,
 }
 
+fn restricted_remote_read_error(source: anyhow::Error) -> RestrictedDiagnostic {
+    RestrictedDiagnostic::new(
+        "source.range_read_failed",
+        "DiskGraph could not read a source object range",
+        "read_source_object",
+        DiagnosticCategory::Provider,
+        true,
+        source,
+    )
+}
+
 impl RemoteObject {
     fn read_range(&self, start: u64, end: u64) -> Result<Bytes> {
         if start > end || end > self.size {
@@ -5127,31 +5194,73 @@ impl ResidentFile {
         condition: Option<CloudObjectCondition>,
     ) -> Result<Self> {
         let source = if is_cloud_path(path) {
-            let transfer =
-                transfer.ok_or_else(|| anyhow!("cloud input transfer unavailable for {path}"))?;
-            let object_path = object_path_from_cloud_url(path)?;
-            ensure!(
-                format != TableFormat::Parquet || condition.is_some(),
-                "cloud Parquet object {path} was not pinned before loading"
-            );
+            let transfer = restrict(
+                transfer.ok_or_else(|| anyhow!("cloud input transfer unavailable for {path}")),
+                "source.open_failed",
+                "DiskGraph could not prepare access to a source object",
+                "open_source_object",
+                DiagnosticCategory::Provider,
+                true,
+            )?;
+            let object_path = restrict(
+                object_path_from_cloud_url(path),
+                "source.path_failed",
+                "DiskGraph could not interpret a source object path",
+                "open_source_object",
+                DiagnosticCategory::Provider,
+                false,
+            )?;
+            if format == TableFormat::Parquet && condition.is_none() {
+                return restrict(
+                    Err(anyhow!(
+                        "cloud Parquet object {path} was not pinned before loading"
+                    )),
+                    "source.identity_missing",
+                    "DiskGraph could not verify the source object identity",
+                    "open_source_object",
+                    DiagnosticCategory::Provider,
+                    false,
+                );
+            }
             let size = match condition
                 .as_ref()
                 .and_then(CloudObjectCondition::pinned_size)
             {
                 Some(size) => size,
-                None => transfer.head_blocking(object_path.clone())?.size,
+                None => restrict(
+                    transfer.head_blocking(object_path.clone()),
+                    "source.metadata_failed",
+                    "DiskGraph could not inspect a source object",
+                    "open_source_object",
+                    DiagnosticCategory::Provider,
+                    true,
+                )?
+                .size,
             };
             match (&format, resident_budget) {
                 (TableFormat::Parquet, Some(resident_budget)) => {
                     let permit = resident_budget.acquire_resident_object(size)?;
-                    let bytes =
+                    let bytes = restrict(
                         download_cloud_bytes_condition(transfer, path, condition.clone())
-                            .with_context(|| format!("download resident Parquet object {path}"))?;
+                            .with_context(|| format!("download resident Parquet object {path}")),
+                        "source.download_failed",
+                        "DiskGraph could not download a source object",
+                        "read_source_object",
+                        DiagnosticCategory::Provider,
+                        true,
+                    )?;
                     let received_size = bytes.bytes().len() as u64;
                     if received_size != size {
-                        return Err(anyhow!(
-                            "resident Parquet object {path} changed size while downloading: expected {size} bytes, received {received_size}"
-                        ));
+                        return restrict(
+                            Err(anyhow!(
+                                "resident Parquet object {path} changed size while downloading: expected {size} bytes, received {received_size}"
+                            )),
+                            "source.identity_changed",
+                            "A source object changed while DiskGraph was reading it",
+                            "read_source_object",
+                            DiagnosticCategory::Provider,
+                            true,
+                        );
                     }
                     ResidentSource::Cloud {
                         bytes,
@@ -5166,14 +5275,39 @@ impl ResidentFile {
                 })),
             }
         } else {
-            fs::metadata(path).with_context(|| format!("stat {path}"))?;
+            restrict(
+                fs::metadata(path).with_context(|| format!("stat {path}")),
+                "source.metadata_failed",
+                "DiskGraph could not inspect a source object",
+                "open_source_object",
+                DiagnosticCategory::Io,
+                true,
+            )?;
             ResidentSource::Local(PathBuf::from(path))
         };
         let parquet_metadata = if format == TableFormat::Parquet {
             // Advise the local file once while loading metadata. Partition
             // readers must not repeatedly prefetch the complete file.
-            let reader = source.reader(true)?;
-            Some(load_parquet_metadata(reader)?)
+            let reader = restrict(
+                source.reader(true),
+                "source.open_failed",
+                "DiskGraph could not open a source object",
+                "open_source_object",
+                DiagnosticCategory::Io,
+                true,
+            )?;
+            let metadata = match load_parquet_metadata(reader) {
+                Err(error)
+                    if matches!(&source, ResidentSource::Remote(_))
+                        && error
+                            .downcast_ref::<InvalidParquetMetadataError>()
+                            .is_none() =>
+                {
+                    return Err(anyhow::Error::new(restricted_remote_read_error(error)));
+                }
+                result => result?,
+            };
+            Some(metadata)
         } else {
             None
         };
@@ -5646,10 +5780,20 @@ fn open_resident_csv_batch_reader(
     max_decode_bytes: u64,
 ) -> Result<BoundedCsvBatchReader> {
     let resident = ResidentFile::load(path, TableFormat::Csv, transfer, None, None)?;
+    let restricted_read_errors = matches!(&resident.source, ResidentSource::Remote(_));
+    let source_reader = restrict(
+        resident.source.reader(true),
+        "source.open_failed",
+        "DiskGraph could not open a source object",
+        "open_source_object",
+        DiagnosticCategory::Io,
+        true,
+    )?;
     BoundedCsvBatchReader::new(
-        resident.source.reader(true)?.get_read(0)?,
+        source_reader.get_read(0)?,
         schema,
         max_decode_bytes,
+        restricted_read_errors,
     )
 }
 
@@ -5716,13 +5860,72 @@ mod bounded_file_decoder_tests {
         csv.push(b'\n');
         let schema = Schema::new(vec![Field::new("value", DataType::Utf8, true)]);
         let mut reader =
-            BoundedCsvBatchReader::new(Box::new(Cursor::new(csv)), schema, max_decode_bytes)
+            BoundedCsvBatchReader::new(Box::new(Cursor::new(csv)), schema, max_decode_bytes, false)
                 .unwrap();
         let error = reader.next().unwrap().unwrap_err();
         assert!(error
             .to_string()
             .contains("CSV record batch exceeds the bounded Encode decode chunk"));
         assert!(reader.next().is_none());
+    }
+
+    #[test]
+    fn csv_value_parse_failure_does_not_expose_the_source_row() {
+        let max_decode_bytes = 256 * 1024;
+        let csv = b"value\nsource-row-secret-canary\n".to_vec();
+        let schema = Schema::new(vec![Field::new("value", DataType::Int64, true)]);
+        let mut reader =
+            BoundedCsvBatchReader::new(Box::new(Cursor::new(csv)), schema, max_decode_bytes, false)
+                .unwrap();
+
+        let error = reader.next().unwrap().unwrap_err();
+        let operator = serde_json::to_string(&crate::diagnostics::render_diagnostic(
+            &error, 1, "encode",
+        ))
+        .unwrap();
+        assert!(operator.contains("\"visibility\":\"restricted\""));
+        assert!(!operator.contains("source-row-secret-canary"));
+    }
+
+    #[test]
+    fn csv_read_failure_respects_source_provenance() {
+        struct FailingReader;
+
+        impl Read for FailingReader {
+            fn read(&mut self, _output: &mut [u8]) -> std_io::Result<usize> {
+                Err(std_io::Error::other("provider-response-secret-canary"))
+            }
+        }
+
+        let read_error = |restricted_read_errors| {
+            let schema = Schema::new(vec![Field::new("value", DataType::Utf8, true)]);
+            let mut reader = BoundedCsvBatchReader::new(
+                Box::new(FailingReader),
+                schema,
+                256 * 1024,
+                restricted_read_errors,
+            )
+            .unwrap();
+            reader.next().unwrap().unwrap_err()
+        };
+
+        let local = serde_json::to_string(&crate::diagnostics::render_diagnostic(
+            &read_error(false),
+            1,
+            "encode",
+        ))
+        .unwrap();
+        assert!(local.contains("\"visibility\":\"ordinary\""));
+        assert!(local.contains("provider-response-secret-canary"));
+
+        let remote = serde_json::to_string(&crate::diagnostics::render_diagnostic(
+            &read_error(true),
+            1,
+            "encode",
+        ))
+        .unwrap();
+        assert!(remote.contains("\"visibility\":\"restricted\""));
+        assert!(!remote.contains("provider-response-secret-canary"));
     }
 
     #[test]
@@ -7289,7 +7492,7 @@ impl IngestContext {
                     .cloned()
                     .unwrap_or_default();
                 let validation = SourceValidationState::new(table, synthetic_columns.clone());
-                let input_transfer = build_input_transfer_for_table(table)?;
+                let input_transfer = restricted_input_transfer_for_table(table)?;
                 let stream_inner = match &table.source {
                     graph_config::DataSource::Parquet { .. }
                     | graph_config::DataSource::ObjectStoreParquet { .. } => {
