@@ -4,14 +4,22 @@
     clippy::too_many_arguments
 )]
 
-use arrow::pyarrow::ToPyArrow;
+use arrow::array::{
+    make_array, ArrayData, BinaryArray, BinaryViewArray, Decimal128Array, Decimal256Array,
+    FixedSizeBinaryArray, Int16Array, Int32Array, Int64Array, Int8Array, LargeBinaryArray,
+    LargeStringArray, StringArray, StringViewArray, UInt16Array, UInt32Array, UInt64Array,
+    UInt8Array,
+};
+use arrow::datatypes::DataType;
+use arrow::pyarrow::{FromPyArrow, ToPyArrow};
 use arrow_array::builder::{ArrayBuilder, UInt64Builder};
 use arrow_array::{Array, RecordBatch};
 use crossbeam_channel::{bounded, Receiver, Sender};
+use diskgraph_index::pkmap::{Key, KeyType};
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyString, PyTuple};
+use pyo3::types::{PyAny, PyDict, PyList, PyString, PyTuple};
 
 create_exception!(diskgraph, DiskgraphDataError, PyException);
 create_exception!(
@@ -474,9 +482,167 @@ impl OutputHandler for PyOutputHandler {
 
 #[pyclass]
 pub struct SamplerEngine {
+    reader: Arc<diskgraph_index::graph::GraphIndexReader>,
     engine: Arc<DiskGraphEngine>,
     pool: StatePool,
     sample_count: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+fn fixed_primary_key_bytes<const N: usize>(value: &[u8], key_type: &str) -> PyResult<[u8; N]> {
+    value.try_into().map_err(|_| {
+        DiskgraphDataError::new_err(format!(
+            "{key_type} primary keys must contain exactly {N} bytes"
+        ))
+    })
+}
+
+fn primary_key_type_error(key_type: KeyType, data_type: &DataType) -> PyErr {
+    pyo3::exceptions::PyTypeError::new_err(format!(
+        "{key_type:?} primary keys are incompatible with Arrow type {data_type}"
+    ))
+}
+
+fn canonical_node_mask_with<F>(
+    table: &diskgraph_index::graph::TableReader,
+    values: &dyn Array,
+    node_ids: Vec<u64>,
+    mut primary_key_at: F,
+) -> PyResult<Vec<bool>>
+where
+    F: FnMut(usize) -> PyResult<Key>,
+{
+    node_ids.into_iter().enumerate().map(|(index, node_id)| {
+        if values.is_null(index) {
+            return Err(DiskgraphDataError::new_err(format!(
+                "null primary key at batch offset {index}"
+            )));
+        }
+        let key = primary_key_at(index)?;
+        table
+            .node_id_from_pk(&key)
+            .map(|canonical| canonical == Some(node_id))
+            .map_err(|e| DiskgraphSystemError::new_err(e.to_string()))
+    }).collect()
+}
+
+fn canonical_node_mask_from_arrow(
+    table: &diskgraph_index::graph::TableReader,
+    values: &dyn Array,
+    node_ids: Vec<u64>,
+) -> PyResult<Vec<bool>> {
+    let key_type = table
+        .pk_map()
+        .ok_or_else(|| DiskgraphConfigError::new_err("table has no primary-key index"))?
+        .key_type();
+
+    macro_rules! mask_array {
+        ($array_type:ty, |$array:ident, $index:ident| $key:expr) => {{
+            let $array = values.as_any().downcast_ref::<$array_type>().unwrap();
+            canonical_node_mask_with(table, $array, node_ids, |$index| $key)
+        }};
+    }
+    macro_rules! mask_uuid_like {
+        ($variant:ident, $size:literal, $label:literal) => {{
+            match values.data_type() {
+                DataType::Utf8 => mask_array!(StringArray, |array, index| table
+                    .parse_pk_key(array.value(index))
+                    .map_err(|e| DiskgraphDataError::new_err(e.to_string()))),
+                DataType::LargeUtf8 => mask_array!(LargeStringArray, |array, index| table
+                    .parse_pk_key(array.value(index))
+                    .map_err(|e| DiskgraphDataError::new_err(e.to_string()))),
+                DataType::Utf8View => mask_array!(StringViewArray, |array, index| table
+                    .parse_pk_key(array.value(index))
+                    .map_err(|e| DiskgraphDataError::new_err(e.to_string()))),
+                DataType::Binary => mask_array!(BinaryArray, |array, index| Ok(Key::$variant(
+                    fixed_primary_key_bytes::<$size>(array.value(index), $label)?
+                ))),
+                DataType::LargeBinary => mask_array!(LargeBinaryArray, |array, index| Ok(
+                    Key::$variant(fixed_primary_key_bytes::<$size>(
+                        array.value(index), $label
+                    )?)
+                )),
+                DataType::BinaryView => mask_array!(BinaryViewArray, |array, index| Ok(
+                    Key::$variant(fixed_primary_key_bytes::<$size>(
+                        array.value(index), $label
+                    )?)
+                )),
+                DataType::FixedSizeBinary(_) => mask_array!(FixedSizeBinaryArray,
+                    |array, index| Ok(Key::$variant(fixed_primary_key_bytes::<$size>(
+                        array.value(index), $label
+                    )?))),
+                data_type => Err(primary_key_type_error(key_type, data_type)),
+            }
+        }};
+    }
+
+    match key_type {
+        KeyType::Int64 => match values.data_type() {
+            DataType::Int8 => mask_array!(Int8Array, |array, index| Ok(Key::Int(
+                array.value(index) as i64 as u64))),
+            DataType::Int16 => mask_array!(Int16Array, |array, index| Ok(Key::Int(
+                array.value(index) as i64 as u64))),
+            DataType::Int32 => mask_array!(Int32Array, |array, index| Ok(Key::Int(
+                array.value(index) as i64 as u64))),
+            DataType::Int64 => mask_array!(Int64Array, |array, index| Ok(Key::Int(
+                array.value(index) as u64))),
+            DataType::UInt8 => mask_array!(UInt8Array, |array, index| Ok(Key::Int(
+                array.value(index) as u64))),
+            DataType::UInt16 => mask_array!(UInt16Array, |array, index| Ok(Key::Int(
+                array.value(index) as u64))),
+            DataType::UInt32 => mask_array!(UInt32Array, |array, index| Ok(Key::Int(
+                array.value(index) as u64))),
+            DataType::UInt64 => mask_array!(UInt64Array, |array, index| Ok(Key::Int(
+                array.value(index)))),
+            DataType::Decimal128(_, scale) => {
+                let scale = *scale;
+                mask_array!(Decimal128Array, |array, index| {
+                    let mut value = array.value(index);
+                    if scale > 0 {
+                        if let Some(divisor) = 10i128.checked_pow(scale as u32) {
+                            value /= divisor;
+                        }
+                    }
+                    let value = i64::try_from(value).map_err(|_| {
+                        DiskgraphDataError::new_err(format!(
+                            "decimal128 primary key at batch offset {index} exceeds int64 range"
+                        ))
+                    })?;
+                    Ok(Key::Int(value as u64))
+                })
+            }
+            data_type => Err(primary_key_type_error(key_type, data_type)),
+        },
+        KeyType::VarBytes => match values.data_type() {
+            DataType::Utf8 => mask_array!(StringArray, |array, index| Ok(Key::Bytes(
+                array.value(index).as_bytes().to_vec()))),
+            DataType::LargeUtf8 => mask_array!(LargeStringArray, |array, index| Ok(Key::Bytes(
+                array.value(index).as_bytes().to_vec()))),
+            DataType::Utf8View => mask_array!(StringViewArray, |array, index| Ok(Key::Bytes(
+                array.value(index).as_bytes().to_vec()))),
+            DataType::Binary => mask_array!(BinaryArray, |array, index| Ok(Key::Bytes(
+                array.value(index).to_vec()))),
+            DataType::LargeBinary => mask_array!(LargeBinaryArray, |array, index| Ok(Key::Bytes(
+                array.value(index).to_vec()))),
+            DataType::BinaryView => mask_array!(BinaryViewArray, |array, index| Ok(Key::Bytes(
+                array.value(index).to_vec()))),
+            DataType::FixedSizeBinary(_) => mask_array!(FixedSizeBinaryArray,
+                |array, index| Ok(Key::Bytes(array.value(index).to_vec()))),
+            DataType::Decimal256(_, _) => mask_array!(Decimal256Array, |array, index| {
+                let value = array.value_as_string(index);
+                let bytes = diskgraph_core::decimal_key::normalize_base10_key(value.as_bytes())
+                    .map_err(|error| {
+                        DiskgraphDataError::new_err(format!(
+                            "invalid decimal256 primary key at batch offset {index}: {error}"
+                        ))
+                    })?;
+                Ok(Key::Bytes(bytes))
+            }),
+            data_type => Err(primary_key_type_error(key_type, data_type)),
+        },
+        KeyType::Uuid => mask_uuid_like!(Uuid, 16, "UUID"),
+        KeyType::Uuid256 => mask_uuid_like!(Uuid256, 32, "UUID256"),
+        KeyType::Ip => mask_uuid_like!(Ip, 16, "IP"),
+    }
 }
 
 #[pymethods]
@@ -485,14 +651,49 @@ impl SamplerEngine {
     #[pyo3(signature = (path, random_seed=None, num_threads=None))]
     #[tracing::instrument(level = "info", skip(path), fields(index_path = %path))]
     pub fn new(path: String, random_seed: Option<u64>, num_threads: Option<usize>) -> PyResult<Self> {
-        let engine = DiskGraphEngine::load(std::path::Path::new(&path), random_seed, num_threads)
+        let root = std::path::Path::new(&path);
+        let reader = Arc::new(
+            diskgraph_index::graph::GraphIndexReader::open(&root.join("index_metadata.json"), root)
+                .map_err(|e| DiskgraphSystemError::new_err(e.to_string()))?,
+        );
+        let engine = DiskGraphEngine::from_reader(Arc::clone(&reader), random_seed, num_threads)
             .map_err(map_engine_err)?;
         info!("SamplerEngine initialized successfully");
         Ok(Self {
+            reader,
             engine: Arc::new(engine),
             pool: StatePool::new(),
             sample_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         })
+    }
+
+    /// Return whether each supplied node ID is the PK map's canonical row.
+    /// The caller already fetched the aligned primary-key values, so this is a
+    /// bounded lookup-only bridge over `TableReader::node_id_from_pk`.
+    pub fn canonical_node_mask(
+        &self,
+        py: Python<'_>,
+        node_type: String,
+        node_ids: Vec<u64>,
+        primary_keys: &Bound<'_, PyAny>,
+    ) -> PyResult<Vec<bool>> {
+        let primary_keys = make_array(ArrayData::from_pyarrow_bound(primary_keys)?);
+        if node_ids.len() != primary_keys.len() {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "node_ids and primary_keys must have equal length: {} != {}",
+                node_ids.len(),
+                primary_keys.len()
+            )));
+        }
+        let table = self.reader.table(&node_type).ok_or_else(|| {
+            DiskgraphConfigError::new_err(format!("unknown node type: {node_type}"))
+        })?;
+        if table.pk_map().is_none() {
+            return Err(DiskgraphConfigError::new_err(format!(
+                "node type {node_type} has no primary-key index"
+            )));
+        }
+        py.detach(move || canonical_node_mask_from_arrow(&table, primary_keys.as_ref(), node_ids))
     }
 
     #[pyo3(signature = (seed_nodes, plan_json, fused, seed_timestamps=None, swap_edge_direction=None, seed_timestamp_unit=None))]

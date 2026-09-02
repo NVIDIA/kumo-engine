@@ -9,6 +9,7 @@
 
 pub mod accumulators;
 pub mod dataset;
+pub mod decimal_key;
 pub mod errors;
 pub mod features;
 pub mod metadata;

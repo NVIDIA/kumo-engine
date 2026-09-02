@@ -306,8 +306,8 @@ impl PkHashTable {
 pub fn key_type_from_metadata(pk: &PrimaryKeyMap) -> Result<KeyType> {
     match pk.dtype.as_str() {
         "int64" | "int32" | "int16" | "int8" | "uint64" | "uint32" | "uint16" | "uint8"
-        | "float64" | "float32" | "decimal128" | "decimal256" => Ok(KeyType::Int64),
-        "string" | "bytes" => Ok(KeyType::VarBytes),
+        | "float64" | "float32" | "decimal128" => Ok(KeyType::Int64),
+        "string" | "bytes" | "decimal256" => Ok(KeyType::VarBytes),
         "uuid" => Ok(KeyType::Uuid),
         "uuid256" => Ok(KeyType::Uuid256),
         "ip" => Ok(KeyType::Ip),

@@ -16972,41 +16972,20 @@ fn write_normalized_numeric_bytes(
 }
 
 fn write_normalized_base10_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> KeyParseResult<usize> {
-    let s = std::str::from_utf8(bytes).map_err(|_| KeyParseError::NotUtf8)?;
-    if s.is_empty() {
-        return Err(KeyParseError::Empty);
-    }
-    let mut parts = s.split('.');
-    let int_part = parts.next().unwrap();
-    if int_part.is_empty() {
-        return Err(KeyParseError::NotBase10);
-    }
-    let frac_part = parts.next();
-    if parts.next().is_some() {
-        return Err(KeyParseError::NotBase10);
-    }
-    if !int_part.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(KeyParseError::NotBase10);
-    }
-    if let Some(frac) = frac_part {
-        if !frac.bytes().all(|b| b.is_ascii_digit()) {
-            return Err(KeyParseError::NotBase10);
-        }
-    }
-    let int_trimmed = int_part.trim_start_matches('0');
-    let int_out = if int_trimmed.is_empty() {
-        "0"
-    } else {
-        int_trimmed
-    };
-    let frac_out = frac_part.unwrap_or("").trim_end_matches('0');
-    out.extend_from_slice(int_out.as_bytes());
-    if frac_out.is_empty() {
-        return Ok(int_out.len());
-    }
-    out.push(b'.');
-    out.extend_from_slice(frac_out.as_bytes());
-    Ok(int_out.len() + 1 + frac_out.len())
+    diskgraph_core::decimal_key::normalize_base10_key_into(out, bytes).map_err(|error| match error {
+        diskgraph_core::decimal_key::DecimalKeyError::Empty => KeyParseError::Empty,
+        diskgraph_core::decimal_key::DecimalKeyError::NotBase10 => KeyParseError::NotBase10,
+        diskgraph_core::decimal_key::DecimalKeyError::NotUtf8 => KeyParseError::NotUtf8,
+    })
+}
+
+/// Normalize a base-10 key exactly as the ingest PK writer does.
+pub fn normalized_base10_key_bytes(bytes: &[u8]) -> KeyParseResult<Vec<u8>> {
+    diskgraph_core::decimal_key::normalize_base10_key(bytes).map_err(|error| match error {
+        diskgraph_core::decimal_key::DecimalKeyError::Empty => KeyParseError::Empty,
+        diskgraph_core::decimal_key::DecimalKeyError::NotBase10 => KeyParseError::NotBase10,
+        diskgraph_core::decimal_key::DecimalKeyError::NotUtf8 => KeyParseError::NotUtf8,
+    })
 }
 
 struct VecWrite<'a> {

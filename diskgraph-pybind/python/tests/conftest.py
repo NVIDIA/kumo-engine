@@ -5,6 +5,7 @@ import os
 import json
 import platform
 import subprocess
+from decimal import Decimal
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -205,6 +206,79 @@ def list_features_graph(tmp_path_factory):
         )
     except subprocess.CalledProcessError as e:
         pytest.fail(f"list_features ingest failed with exit code {e.returncode}")
+
+    return str(index_dir)
+
+
+@pytest.fixture(scope="session")
+def typed_primary_key_graph(tmp_path_factory):
+    """Graph covering every Python representation used by PK catalog scans."""
+    root = tmp_path_factory.mktemp("typed_primary_keys")
+    data_dir = root / "data"
+    data_dir.mkdir()
+    index_dir = root / "index"
+
+    table_specs = [
+        ("signed_ids", pa.array([-5, 7, 7], type=pa.int64()),
+         {"ingested_dtype": "int64"}),
+        ("unsigned_ids", pa.array([7, 2**63 + 1], type=pa.uint64()),
+         {"ingested_dtype": "u_int64"}),
+        ("string_ids", pa.array(["  a ", "0xAB"]),
+         {"ingested_dtype": "string"}),
+        ("bytes_ids", pa.array([b"\x00\xff", b"raw"], type=pa.binary()),
+         {"ingested_dtype": "bytes"}),
+        ("uuid_ids",
+         pa.array([
+             "00000000-0000-0000-0000-000000000001",
+             "00000000-0000-0000-0000-000000000002",
+         ]), {"ingested_dtype": "uuid"}),
+        ("uuid256_ids",
+         pa.array(["01" * 32, "02" * 32]),
+         {"ingested_dtype": "uuid256"}),
+        ("ip_ids", pa.array(["192.0.2.1", "2001:db8::1"]),
+         {"ingested_dtype": "ip"}),
+        ("decimal128_ids",
+         pa.array([Decimal("123.00"), Decimal("7.00"), Decimal("7.00")],
+                  type=pa.decimal128(38, 2)),
+         {"ingested_dtype": "decimal128", "precision": 38, "scale": 2}),
+        ("decimal256_ids",
+         pa.array([Decimal("123.00"), Decimal("7.00"), Decimal("7.00")],
+                  type=pa.decimal256(76, 2)),
+         {"ingested_dtype": "decimal256", "precision": 76, "scale": 2}),
+    ]
+    tables = []
+    for name, values, column_config in table_specs:
+        path = str(data_dir / f"{name}.parquet")
+        pq.write_table(pa.table({"id": values}), path)
+        tables.append({
+            "name": name,
+            "columns": [{"name": "id", **column_config}],
+            "primary_key": "id",
+            "source": {"type": "parquet", "paths": [path]},
+        })
+
+    config_path = root / "config.json"
+    with open(config_path, "w") as f:
+        json.dump({
+            "dataset_name": "typed_primary_keys_test",
+            "num_shards": 1,
+            "tables": tables,
+        }, f)
+
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+    env = _append_portable_rustflags(dict(os.environ))
+    try:
+        subprocess.run(
+            ["cargo", "run", "--release", "--bin", "ingest", "--",
+             "--source", str(config_path),
+             "--dest", "local",
+             "--output", str(index_dir)],
+            cwd=project_root,
+            check=True,
+            env=env,
+        )
+    except subprocess.CalledProcessError as e:
+        pytest.fail(f"typed primary-key ingest failed with exit code {e.returncode}")
 
     return str(index_dir)
 

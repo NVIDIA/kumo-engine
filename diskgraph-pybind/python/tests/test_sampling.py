@@ -7,10 +7,158 @@ from diskgraph import DiskgraphConfigError
 import pyarrow as pa
 import threading
 import time
+from decimal import Decimal
 
 def test_load(ifood_graph):
     dg = diskgraph_py.SamplerEngine(ifood_graph)
     assert dg is not None
+
+
+def test_canonical_node_mask_uses_typed_primary_keys(ifood_graph,
+                                                     list_features_graph,
+                                                     typed_primary_key_graph):
+    string_engine = diskgraph_py.SamplerEngine(ifood_graph)
+    assert string_engine.canonical_node_mask(
+        "users", [0, 1, 0], pa.array(["u1", "u2", "u2"])
+    ) == [True, True, False]
+
+    integer_engine = diskgraph_py.SamplerEngine(list_features_graph)
+    assert integer_engine.canonical_node_mask(
+        "items", [0, 1, 1], pa.array([0, 1, 2], type=pa.int64())
+    ) == [True, True, False]
+
+    typed_engine = diskgraph_py.SamplerEngine(typed_primary_key_graph)
+    assert typed_engine.canonical_node_mask(
+        "signed_ids", [0, 1, 2], pa.array([-5, 7, 7], type=pa.int64())
+    ) == [True, True, False]
+    assert typed_engine.canonical_node_mask(
+        "unsigned_ids", [0, 1, 0],
+        pa.array([7, 2**63 + 1, 2**63 + 1], type=pa.uint64()),
+    ) == [True, True, False]
+    assert typed_engine.canonical_node_mask(
+        "string_ids", [0, 1, 0], pa.array(["  a ", "0xAB", "0xAB"])
+    ) == [True, True, False]
+    assert typed_engine.canonical_node_mask(
+        "bytes_ids", [0, 1, 0],
+        pa.array([b"\x00\xff", b"raw", b"raw"], type=pa.binary()),
+    ) == [True, True, False]
+
+    uuid_one = bytes.fromhex("00" * 15 + "01")
+    assert typed_engine.canonical_node_mask(
+        "uuid_ids", [0], pa.array([uuid_one], type=pa.binary()),
+    ) == [True]
+    assert typed_engine.canonical_node_mask(
+        "uuid_ids", [1],
+        pa.array(["00000000-0000-0000-0000-000000000002"]),
+    ) == [True]
+    assert typed_engine.canonical_node_mask(
+        "uuid256_ids", [0], pa.array([bytes([1]) * 32], type=pa.binary())
+    ) == [True]
+    assert typed_engine.canonical_node_mask(
+        "uuid256_ids", [1], pa.array(["02" * 32])
+    ) == [True]
+    ipv4_mapped = b"\x00" * 10 + b"\xff\xff\xc0\x00\x02\x01"
+    assert typed_engine.canonical_node_mask(
+        "ip_ids", [0], pa.array([ipv4_mapped], type=pa.binary())
+    ) == [True]
+    assert typed_engine.canonical_node_mask(
+        "ip_ids", [1], pa.array(["2001:db8::1"])
+    ) == [True]
+    assert typed_engine.canonical_node_mask(
+        "decimal128_ids", [0, 1, 2, 0],
+        pa.array([
+            Decimal("123.0000"), Decimal("7.0000"),
+            Decimal("7.0000"), Decimal("999.0000"),
+        ], type=pa.decimal128(38, 4)),
+    ) == [True, True, False, False]
+    assert typed_engine.canonical_node_mask(
+        "decimal256_ids", [0, 1, 2, 0],
+        pa.array([
+            Decimal("123.0000"), Decimal("7.0000"),
+            Decimal("7.0000"), Decimal("999.0000"),
+        ], type=pa.decimal256(76, 4)),
+    ) == [True, True, False, False]
+
+    with pytest.raises(TypeError, match="incompatible with Arrow type"):
+        integer_engine.canonical_node_mask("items", [0], pa.array(["0"]))
+    with pytest.raises(DiskgraphDataError, match="exactly 16 bytes"):
+        typed_engine.canonical_node_mask(
+            "uuid_ids", [0], pa.array([b"short"], type=pa.binary())
+        )
+
+
+def test_canonical_node_mask_two_50k_typed_batches(typed_primary_key_graph):
+    engine = diskgraph_py.SamplerEngine(typed_primary_key_graph)
+    cases = [
+        ("signed_ids", [-5, 7, 7, 999], [0, 1, 2, 0], pa.int64(), 8_334),
+        (
+            "unsigned_ids",
+            [7, 2**63 + 1, 99, 7],
+            [0, 1, 0, 1],
+            pa.uint64(),
+            8_334,
+        ),
+        (
+            "string_ids",
+            ["  a ", "0xAB", "missing", "  a "],
+            [0, 1, 0, 1],
+            pa.string(),
+            8_333,
+        ),
+        (
+            "bytes_ids",
+            [b"\x00\xff", b"raw", b"missing", b"\x00\xff"],
+            [0, 1, 0, 1],
+            pa.binary(),
+            8_333,
+        ),
+        (
+            "decimal128_ids",
+            [
+                Decimal("123.0000"),
+                Decimal("7.0000"),
+                Decimal("7.0000"),
+                Decimal("999.0000"),
+            ],
+            [0, 1, 2, 0],
+            pa.decimal128(38, 4),
+            8_333,
+        ),
+        (
+            "decimal256_ids",
+            [
+                Decimal("123.0000"),
+                Decimal("7.0000"),
+                Decimal("7.0000"),
+                Decimal("999.0000"),
+            ],
+            [0, 1, 2, 0],
+            pa.decimal256(76, 4),
+            8_333,
+        ),
+    ]
+    expected_pattern = [True, True, False, False]
+    assert sum(case[-1] for case in cases) == 50_000
+
+    for batch_index in range(2):
+        for node_type, key_pattern, node_pattern, data_type, count in cases:
+            order = [(index + batch_index) % 4 for index in range(count)]
+            expected = [expected_pattern[index] for index in order]
+            keys = pa.array([key_pattern[index] for index in order], type=data_type)
+            node_ids = [node_pattern[index] for index in order]
+            actual = engine.canonical_node_mask(node_type, node_ids, keys)
+            assert len(actual) == count
+            assert all(got == want for got, want in zip(actual, expected)), (
+                f"{node_type} batch {batch_index} returned an incorrect canonical mask"
+            )
+
+
+def test_decimal256_pk_table_does_not_block_sampler_initialization(
+        typed_primary_key_graph):
+    engine = diskgraph_py.SamplerEngine(typed_primary_key_graph)
+    assert engine.canonical_node_mask(
+        "signed_ids", [0], pa.array([-5], type=pa.int64())
+    ) == [True]
 
 def test_schema_mapping(ifood_graph):
     dg = diskgraph_py.SamplerEngine(ifood_graph)
@@ -253,4 +401,3 @@ def test_temporal_sampling(ifood_graph):
     stats_event = next(e for e in events if e["type"] == "stats")
     stats = json.loads(stats_event["stats"])
     assert "total_nodes" in stats
-

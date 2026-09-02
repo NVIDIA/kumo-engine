@@ -135,14 +135,14 @@ fn test_decimal256_key_as_string() {
         timestamp_format: None,
         timestamp_unit: None,
         precision: Some(76),
-        scale: Some(0),
+        scale: Some(2),
         semantic_type: None,
         multicategorical_delimiter: None,
     };
 
-    let val = arrow_buffer::i256::from_i128(12345);
+    let val = arrow_buffer::i256::from_i128(-1234500);
     let array = Decimal256Array::from_iter_values([val])
-        .with_precision_and_scale(76, 0)
+        .with_precision_and_scale(76, 2)
         .unwrap();
     let arrays: Vec<ArrayRef> = vec![Arc::new(array)];
 
@@ -150,7 +150,7 @@ fn test_decimal256_key_as_string() {
     let hints = vec![RowAccessHints {
         timestamp_format: None,
         timestamp_unit: None,
-        decimal_scale: Some(0),
+        decimal_scale: Some(2),
         binary_string_hint: BinaryStringHint::Utf8,
         multicategorical_delimiter: None,
         column_name: None,
@@ -163,7 +163,7 @@ fn test_decimal256_key_as_string() {
     let mut key_buf = Vec::new();
     key_from_access_into_buf(&mut access, 0, &col, &col.ingested_dtype, &mut key_buf).unwrap();
 
-    let expected = b"12345".to_vec();
+    let expected = b"-12345".to_vec();
     assert_eq!(key_buf, expected);
 }
 
