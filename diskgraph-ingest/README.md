@@ -253,7 +253,7 @@ Flags:
 - `--col-stats`: collect per-column statistics during encode. See `diskgraph-ingest/col_stats.md`.
 - `--cat-count-strategy`: category counting strategy: `none` (default), `hybrid` (exact counts), `graduation` (approximate).
 - `--row-subsample`: enable per-row 30% subsampling for category counts (experimental).
-- `--profile [dir]`: enable CPU profiling and emit `*-profile.pb`/`*-profile.svg`.
+- `--profile [dir]`: enable CPU profiling and emit `*-profile.pb`. Build with `--features flamegraph` to also emit `*-profile.svg`.
 - `-m, --mem-profile`: enable jemalloc heap dump watchdog.
 - `--stats-dest`: stats destination root (s3://, gs://, az://, or local path) for publishing.
 - `--stats-dataset`, `--stats-run-id`: identifiers for stats publishing.

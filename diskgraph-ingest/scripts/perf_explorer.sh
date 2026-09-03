@@ -100,4 +100,4 @@ stats_env=()
 if [[ -n "${STATS_DEST}" ]]; then
   stats_env+=(DISKGRAPH_STATS_DEST="${STATS_DEST}")
 fi
-env ${stats_env[@]+"${stats_env[@]}"} cargo run -p diskgraph-ingest --bin ingest_tui -- "${args[@]}"
+env ${stats_env[@]+"${stats_env[@]}"} cargo run -p diskgraph-ingest --bin ingest_tui --features ingest-tui -- "${args[@]}"

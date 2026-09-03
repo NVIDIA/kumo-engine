@@ -1687,7 +1687,6 @@ dependencies = [
  "libc",
  "lz4_flex 0.12.2",
  "memmap2",
- "pprof",
  "rustyline",
  "serde",
  "serde_json",
