@@ -61,6 +61,95 @@ use crate::ttgen_resolve::{
 };
 use crate::ttgen_stats::{ChunkStats, RowProcessor, TTRowRef};
 
+// ─── The custom-TT column contract ──────────────────────────────────────────
+//
+// The names this reader looks up and the Arrow types it reads, named once so
+// that a caller validating a supplied training table before it reaches here
+// checks against what this reader accepts rather than against a second
+// spelling of it. Exported to Python as `diskgraph.CUSTOM_TT_CONTRACT`.
+//
+// Every list is enforced against the reader it describes by
+// `the_contract_is_what_the_readers_accept`, which walks a corpus of Arrow
+// types and asserts that acceptance is *exactly* membership. An arm added to
+// a reader without an entry here fails that test, and so does an entry with
+// no arm behind it. Each token is a `pyarrow.types.is_<token>` predicate.
+
+/// Entity key columns are `ENTITY1`, `ENTITY2`, ... -- one per entity primary
+/// key, looked up by position. `TIMESTAMP` is the anchor.
+pub const ENTITY_COLUMN_PREFIX: &str = "ENTITY";
+/// Target columns are `TARGET1`, `TARGET2`, ....
+pub const TARGET_COLUMN_PREFIX: &str = "TARGET";
+/// The per-row anchor. Optional: a static task omits it and this reader fills
+/// the entity table's default instead.
+pub const TIMESTAMP_COLUMN: &str = "TIMESTAMP";
+/// The weight column this reader *emits*. What it reads is named by the
+/// caller, not fixed.
+pub const WEIGHT_OUTPUT_COLUMN: &str = "WEIGHT";
+
+/// The `k`-th entity key column, by the name this reader looks it up under.
+/// `slot` is 0-based; the column names are 1-based.
+pub fn entity_column(slot: usize) -> String {
+    format!("{ENTITY_COLUMN_PREFIX}{}", slot + 1)
+}
+
+/// The `k`-th target column, by the name this reader looks it up under.
+pub fn target_column(slot: usize) -> String {
+    format!("{TARGET_COLUMN_PREFIX}{}", slot + 1)
+}
+
+/// What an `ENTITY{k}` column may be, for *some* graph. Narrower than
+/// [`SCALAR_TYPES`] because an entity value has to survive `value_to_pk_key`
+/// as well as `cell_to_value`: a `Boolean` reads fine and then resolves to no
+/// key, so every row of a boolean entity column is silently skipped.
+///
+/// **Necessary, not sufficient.** `value_to_pk_key` matches on the *pair*
+/// (column type, the graph's own primary-key `KeyType`), and this list is the
+/// union over every key type -- so a consumer that checks a column against
+/// this list alone has established a necessary condition, not a sufficient
+/// one. Concretely: a `string` column against an `Int64`-keyed graph resolves
+/// nothing, an `int64` column against a `VarBytes`-keyed one resolves
+/// nothing, and against a graph keyed by `Uuid`, `Uuid256` or `Ip` *no*
+/// column type resolves at all. Each of those is the same silent total row
+/// drop the `Boolean` note above describes: every row skipped, the run
+/// reporting success over nothing.
+pub const ENTITY_TYPES: &[&str] = &["int64", "float64", "string"];
+
+/// What `cell_to_value` reads: a scalar `TARGET{k}`, and a split column.
+pub const SCALAR_TYPES: &[&str] = &["int64", "float64", "string", "boolean"];
+
+/// The container a list-valued `TARGET{k}` may be. `read_list_values`
+/// downcasts to `ListArray` alone, so a `large_list` or `fixed_size_list`
+/// target reads as an empty target list rather than as an error.
+pub const LIST_TARGET_CONTAINERS: &[&str] = &["list"];
+
+/// What may be inside a list-valued `TARGET{k}`.
+pub const LIST_TARGET_ITEM_TYPES: &[&str] = &["int64", "float64", "string"];
+
+/// What a `TIMESTAMP` column may be. A typed timestamp self-describes its
+/// unit; an `int64` carries none and is read in the unit the caller declares.
+pub const TIMESTAMP_TYPES: &[&str] = &["timestamp", "int64"];
+
+/// What a scalar weight column may be, per `read_weight_f64`.
+pub const WEIGHT_TYPES: &[&str] = &[
+    "int8",
+    "int16",
+    "int32",
+    "int64",
+    "float32",
+    "float64",
+    "decimal128",
+];
+
+/// The container a per-element weight may be, beside a list-valued target.
+/// Wider than [`LIST_TARGET_CONTAINERS`]: `read_weight_list_f64` takes a
+/// `large_list` where the target reader does not.
+pub const WEIGHT_LIST_CONTAINERS: &[&str] = &["list", "large_list"];
+
+/// What may be inside a per-element weight, per `weight_slice_f64`. Narrower
+/// than [`WEIGHT_TYPES`]: there is no `decimal128` arm in the list path.
+pub const WEIGHT_LIST_ITEM_TYPES: &[&str] =
+    &["int8", "int16", "int32", "int64", "float32", "float64"];
+
 /// Read a declared custom-training weight without narrowing precision.
 ///
 /// Databricks scalar numeric columns arrive through Arrow as one of these
@@ -157,7 +246,7 @@ fn output_mode_for_custom_tt<U: UnitSystem>(
                 // parquet doesn't carry it.
                 (0..plan.target_alias_indices.len())
                     .map(|i| {
-                        let parquet_name = format!("TARGET{}", i + 1);
+                        let parquet_name = target_column(i);
                         lookup(&parquet_name)
                             .map(|f| f.data_type().clone())
                             .unwrap_or_else(|| {
@@ -179,7 +268,7 @@ fn output_mode_for_custom_tt<U: UnitSystem>(
             } else {
                 (0..plan.target_alias_indices.len())
                     .map(|i| {
-                        let parquet_name = format!("TARGET{}", i + 1);
+                        let parquet_name = target_column(i);
                         let field = lookup(&parquet_name).ok_or_else(|| {
                             TTGenError::SchemaError(format!(
                                 "custom-TT LP parquet missing required list target column '{parquet_name}'"
@@ -470,8 +559,9 @@ pub(crate) fn populate_aliases_from_record<U: UnitSystem>(
     let schema = batch.schema();
     for (col_idx, field) in schema.fields().iter().enumerate() {
         let name = field.name().as_str();
+        let primary_target = target_column(0);
         let target_slot = match name {
-            "TARGET1" => Some(plan.primary_target_alias_idx()),
+            n if n == primary_target => Some(plan.primary_target_alias_idx()),
             n if n == AUTOREGRESSION_OUTPUT_ALIAS => plan.autoregression_alias_idx,
             n if n == FUTURE_LABELS_OUTPUT_ALIAS => plan.future_labels_alias_idx,
             n if n == YOY_OUTPUT_ALIAS => plan.yoy_alias_idx,
@@ -533,7 +623,7 @@ pub(crate) fn custom_tt_chunk_processor<U: UnitSystem, D: SplitDecider<U> + Clon
         .entity_table_spec
         .output_time_col_name
         .as_deref()
-        .unwrap_or("TIMESTAMP");
+        .unwrap_or(TIMESTAMP_COLUMN);
     let mut writer = ChannelBatchWriter::new(
         sender.clone(),
         mode,
@@ -644,7 +734,7 @@ pub(crate) fn custom_tt_chunk_processor<U: UnitSystem, D: SplitDecider<U> + Clon
         // panic.) TIMESTAMP is NOT required: STATIC custom tasks omit it and
         // `process_batch` synthesizes the native-static sentinel per row.
         for i in 0..plan.entity_pk_col_indices.len() {
-            let name = format!("ENTITY{}", i + 1);
+            let name = entity_column(i);
             parquet_schema
                 .columns()
                 .iter()
@@ -723,7 +813,7 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
     // parquet doesn't carry them.
     let entity_col_indices: Vec<usize> = (0..plan.entity_pk_col_indices.len())
         .map(|i| {
-            let name = format!("ENTITY{}", i + 1);
+            let name = entity_column(i);
             schema.index_of(&name).map_err(|_| {
                 TTGenError::SchemaError(format!(
                     "custom-TT parquet missing required column '{name}'"
@@ -738,7 +828,7 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
     // or raw 0 in the plan's unit when unset. Absence of TIMESTAMP ⟹
     // synthesize, for both train and predict; a present column is used as-is
     // (temporal tasks always carry a real TIMESTAMP, enforced by kumo).
-    let ts_col_idx = schema.index_of("TIMESTAMP").ok();
+    let ts_col_idx = schema.index_of(TIMESTAMP_COLUMN).ok();
     let ts_arr = ts_col_idx.map(|idx| batch.column(idx).clone());
     let sentinel_ts: Abs<U> = plan
         .entity_table_spec
@@ -756,12 +846,16 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
         .enumerate()
         .filter(|(_, field)| {
             let name = field.name().as_str();
+            // The bare prefixes are the legacy singular spellings; a custom
+            // table naming one is a feature column, not an entity or target.
             !matches!(
                 name,
-                "ENTITY" | "TARGET" | "__kumo_internal_frequency_column__" | "ENTITY_INCLUDE_BIT"
-            ) && !name.starts_with("ENTITY")
-              && !name.starts_with("TARGET")
-              && name != "TIMESTAMP"
+                "__kumo_internal_frequency_column__" | "ENTITY_INCLUDE_BIT"
+            ) && name != ENTITY_COLUMN_PREFIX
+              && name != TARGET_COLUMN_PREFIX
+              && !name.starts_with(ENTITY_COLUMN_PREFIX)
+              && !name.starts_with(TARGET_COLUMN_PREFIX)
+              && name != TIMESTAMP_COLUMN
               && name != AUTOREGRESSION_OUTPUT_ALIAS
               && name != FUTURE_LABELS_OUTPUT_ALIAS
               && name != YOY_OUTPUT_ALIAS
@@ -775,7 +869,7 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
     // we read one TARGETk per declared target slot; missing TARGETk falls
     // back to NaN (matches the previous behavior for slot 1).
     let target_col_indices: Vec<Option<usize>> = (0..plan.target_alias_indices.len())
-        .map(|i| schema.index_of(&format!("TARGET{}", i + 1)).ok())
+        .map(|i| schema.index_of(&target_column(i)).ok())
         .collect();
     let frequency_col_idx = schema.index_of("__kumo_internal_frequency_column__").ok();
     let autoreg_col_idx = schema.index_of(AUTOREGRESSION_OUTPUT_ALIAS).ok();
@@ -1282,6 +1376,299 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
     let _ = link_frequencies; // unused while custom-TT reads compact LP lists directly
     let _ = aliases; // unused while custom-TT path supports empty stages only
     Ok(())
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    use arrow_array::builder::{
+        Decimal128Builder, FixedSizeListBuilder, Float32Builder, Float64Builder, Int16Builder,
+        Int32Builder, Int64Builder, Int8Builder, LargeListBuilder, ListBuilder, StringBuilder,
+        UInt64Builder,
+    };
+    use arrow_array::{
+        ArrayRef, BinaryArray, BooleanArray, Date32Array, DictionaryArray, LargeStringArray,
+        UInt64Array,
+    };
+    use std::sync::Arc;
+
+    /// One single-row array per Arrow type worth asking about, tagged with the
+    /// contract token it answers to -- or `None` for a type the contract names
+    /// nowhere, which every reader must therefore refuse.
+    ///
+    /// This corpus is what makes the constants above *derived* rather than
+    /// restated: the assertions below are `accepted == listed` in both
+    /// directions, so an arm added to a reader without a matching entry fails
+    /// here, and so does an entry with no arm behind it.
+    fn scalar_corpus() -> Vec<(Option<&'static str>, ArrayRef)> {
+        let dict_keys = Int32Array::from(vec![0]);
+        let dict_values = Arc::new(StringArray::from(vec!["a"])) as ArrayRef;
+        vec![
+            (Some("int8"), Arc::new(Int8Array::from(vec![1i8]))),
+            (Some("int16"), Arc::new(Int16Array::from(vec![1i16]))),
+            (Some("int32"), Arc::new(Int32Array::from(vec![1i32]))),
+            (Some("int64"), Arc::new(Int64Array::from(vec![1i64]))),
+            (Some("float32"), Arc::new(Float32Array::from(vec![1.0f32]))),
+            (Some("float64"), Arc::new(Float64Array::from(vec![1.0f64]))),
+            (Some("string"), Arc::new(StringArray::from(vec!["k"]))),
+            (Some("boolean"), Arc::new(BooleanArray::from(vec![true]))),
+            (
+                Some("decimal128"),
+                Arc::new(
+                    Decimal128Array::from(vec![100i128])
+                        .with_precision_and_scale(10, 2)
+                        .unwrap(),
+                ),
+            ),
+            (
+                Some("timestamp"),
+                Arc::new(TimestampNanosecondArray::from(vec![1_700_000_000_000_000_000i64])),
+            ),
+            (
+                Some("timestamp"),
+                Arc::new(TimestampMicrosecondArray::from(vec![1_700_000_000_000_000i64])),
+            ),
+            (
+                Some("timestamp"),
+                Arc::new(TimestampMillisecondArray::from(vec![1_700_000_000_000i64])),
+            ),
+            (
+                Some("timestamp"),
+                Arc::new(TimestampSecondArray::from(vec![1_700_000_000i64])),
+            ),
+            // Time-zone-aware: the zone lives in the `DataType`, while the
+            // reader downcasts on the Rust array type, so this has to behave
+            // exactly as the naive one does. Asserted rather than assumed
+            // because the Python side decodes this token as
+            // `pa.types.is_timestamp`, which is true for tz-aware too.
+            (
+                Some("timestamp"),
+                Arc::new(
+                    TimestampNanosecondArray::from(vec![1_700_000_000_000_000_000i64])
+                        .with_timezone("Etc/UTC"),
+                ),
+            ),
+            // Named nowhere in the contract, and so refused everywhere.
+            (None, Arc::new(UInt64Array::from(vec![1u64]))),
+            (None, Arc::new(LargeStringArray::from(vec!["k"]))),
+            (None, Arc::new(Date32Array::from(vec![1i32]))),
+            (None, Arc::new(BinaryArray::from(vec![&b"k"[..]]))),
+            (
+                None,
+                Arc::new(DictionaryArray::<arrow_array::types::Int32Type>::try_new(
+                    dict_keys,
+                    dict_values,
+                )
+                .unwrap()),
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_scalar_target_reads_exactly_the_contract_types() {
+        for (token, array) in scalar_corpus() {
+            let listed = token.is_some_and(|t| SCALAR_TYPES.contains(&t));
+            assert_eq!(
+                cell_to_value(array.as_ref(), 0).is_some(),
+                listed,
+                "SCALAR_TYPES disagrees with cell_to_value for {}",
+                array.data_type()
+            );
+        }
+    }
+
+    /// Every `KeyType` a graph's primary key can have, paired with the
+    /// contract's snake-case name for it. Exhaustive on purpose: the three
+    /// that resolve nothing are the reason the pairing is exported.
+    fn all_key_types() -> Vec<(&'static str, pkmap::KeyType)> {
+        let all = vec![
+            ("int64", pkmap::KeyType::Int64),
+            ("var_bytes", pkmap::KeyType::VarBytes),
+            ("uuid", pkmap::KeyType::Uuid),
+            ("uuid256", pkmap::KeyType::Uuid256),
+            ("ip", pkmap::KeyType::Ip),
+        ];
+        // Compile-time exhaustiveness: adding a variant to `KeyType` without
+        // adding it here fails to compile rather than silently narrowing the
+        // corpus.
+        for (_, kt) in &all {
+            match kt {
+                pkmap::KeyType::Int64
+                | pkmap::KeyType::VarBytes
+                | pkmap::KeyType::Uuid
+                | pkmap::KeyType::Uuid256
+                | pkmap::KeyType::Ip => {}
+            }
+        }
+        all
+    }
+
+    #[test]
+    fn an_entity_key_reads_exactly_the_contract_types() {
+        // An entity value has to survive both reads: `cell_to_value` and then
+        // `value_to_pk_key` against the index's own key type. `ENTITY_TYPES`
+        // is the union over every key type, so it is asserted as such.
+        for (token, array) in scalar_corpus() {
+            let listed = token.is_some_and(|t| ENTITY_TYPES.contains(&t));
+            let resolves = cell_to_value(array.as_ref(), 0).is_some_and(|value| {
+                all_key_types()
+                    .iter()
+                    .any(|(_, kt)| value_to_pk_key(&value, *kt).is_some())
+            });
+            assert_eq!(
+                resolves, listed,
+                "ENTITY_TYPES disagrees with value_to_pk_key for {}",
+                array.data_type()
+            );
+        }
+    }
+
+    #[test]
+    fn the_entity_union_hides_which_key_types_accept_nothing() {
+        // What the `ENTITY_TYPES` doc comment warns about, asserted so the
+        // warning cannot go stale: acceptance is a property of the pair, and
+        // three of the five key types accept no entity column at all.
+        let accepting: Vec<&str> = all_key_types()
+            .into_iter()
+            .filter(|(_, key_type)| {
+                scalar_corpus().iter().any(|(_, array)| {
+                    cell_to_value(array.as_ref(), 0)
+                        .is_some_and(|value| value_to_pk_key(&value, *key_type).is_some())
+                })
+            })
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(accepting, vec!["int64", "var_bytes"]);
+    }
+
+    #[test]
+    fn an_anchor_reads_exactly_the_contract_types() {
+        for (token, array) in scalar_corpus() {
+            let listed = token.is_some_and(|t| TIMESTAMP_TYPES.contains(&t));
+            assert_eq!(
+                read_timestamp_secs(array.as_ref(), 0, TimeUnit::Nanoseconds).is_some(),
+                listed,
+                "TIMESTAMP_TYPES disagrees with read_timestamp_secs for {}",
+                array.data_type()
+            );
+        }
+    }
+
+    #[test]
+    fn a_scalar_weight_reads_exactly_the_contract_types() {
+        for (token, array) in scalar_corpus() {
+            let listed = token.is_some_and(|t| WEIGHT_TYPES.contains(&t));
+            assert_eq!(
+                read_weight_f64(array.as_ref(), 0).is_ok(),
+                listed,
+                "WEIGHT_TYPES disagrees with read_weight_f64 for {}",
+                array.data_type()
+            );
+        }
+    }
+
+    /// `List` of each contract token, plus the two other list containers, so
+    /// that both the item types and the container are asserted.
+    fn list_corpus() -> Vec<(Option<&'static str>, &'static str, ArrayRef)> {
+        let mut int64 = ListBuilder::new(Int64Builder::new());
+        int64.values().append_value(1);
+        int64.append(true);
+        let mut float64 = ListBuilder::new(Float64Builder::new());
+        float64.values().append_value(1.0);
+        float64.append(true);
+        let mut string = ListBuilder::new(StringBuilder::new());
+        string.values().append_value("k");
+        string.append(true);
+        let mut int8 = ListBuilder::new(Int8Builder::new());
+        int8.values().append_value(1);
+        int8.append(true);
+        let mut int16 = ListBuilder::new(Int16Builder::new());
+        int16.values().append_value(1);
+        int16.append(true);
+        let mut int32 = ListBuilder::new(Int32Builder::new());
+        int32.values().append_value(1);
+        int32.append(true);
+        let mut float32 = ListBuilder::new(Float32Builder::new());
+        float32.values().append_value(1.0);
+        float32.append(true);
+        let mut boolean = ListBuilder::new(arrow_array::builder::BooleanBuilder::new());
+        boolean.values().append_value(true);
+        boolean.append(true);
+        let mut decimal = ListBuilder::new(
+            Decimal128Builder::new()
+                .with_precision_and_scale(10, 2)
+                .unwrap(),
+        );
+        decimal.values().append_value(100);
+        decimal.append(true);
+        let mut unsigned = ListBuilder::new(UInt64Builder::new());
+        unsigned.values().append_value(1);
+        unsigned.append(true);
+        let mut large_f64 = LargeListBuilder::new(Float64Builder::new());
+        large_f64.values().append_value(1.0);
+        large_f64.append(true);
+        let mut large_str = LargeListBuilder::new(StringBuilder::new());
+        large_str.values().append_value("k");
+        large_str.append(true);
+        let mut fixed = FixedSizeListBuilder::new(Float64Builder::new(), 1);
+        fixed.values().append_value(1.0);
+        fixed.append(true);
+        vec![
+            (Some("int64"), "list", Arc::new(int64.finish())),
+            (Some("float64"), "list", Arc::new(float64.finish())),
+            (Some("string"), "list", Arc::new(string.finish())),
+            (Some("int8"), "list", Arc::new(int8.finish())),
+            (Some("int16"), "list", Arc::new(int16.finish())),
+            (Some("int32"), "list", Arc::new(int32.finish())),
+            (Some("float32"), "list", Arc::new(float32.finish())),
+            (Some("boolean"), "list", Arc::new(boolean.finish())),
+            (Some("decimal128"), "list", Arc::new(decimal.finish())),
+            (None, "list", Arc::new(unsigned.finish())),
+            (Some("float64"), "large_list", Arc::new(large_f64.finish())),
+            (Some("string"), "large_list", Arc::new(large_str.finish())),
+            (Some("float64"), "fixed_size_list", Arc::new(fixed.finish())),
+        ]
+    }
+
+    #[test]
+    fn a_list_target_reads_exactly_the_contract_container_and_items() {
+        for (token, container, array) in list_corpus() {
+            let listed = LIST_TARGET_CONTAINERS.contains(&container)
+                && token.is_some_and(|t| LIST_TARGET_ITEM_TYPES.contains(&t));
+            assert_eq!(
+                read_list_values(array.as_ref(), 0).is_some(),
+                listed,
+                "LIST_TARGET_* disagrees with read_list_values for {}",
+                array.data_type()
+            );
+        }
+    }
+
+    #[test]
+    fn a_list_weight_reads_exactly_the_contract_container_and_items() {
+        for (token, container, array) in list_corpus() {
+            let listed = WEIGHT_LIST_CONTAINERS.contains(&container)
+                && token.is_some_and(|t| WEIGHT_LIST_ITEM_TYPES.contains(&t));
+            assert_eq!(
+                read_weight_list_f64(array.as_ref(), 0).is_ok(),
+                listed,
+                "WEIGHT_LIST_* disagrees with read_weight_list_f64 for {}",
+                array.data_type()
+            );
+        }
+    }
+
+    #[test]
+    fn a_scalar_column_is_not_a_list_and_the_reverse() {
+        // The two families do not overlap, which is what lets a caller test
+        // the container first and the item type second.
+        for (_, array) in scalar_corpus() {
+            assert!(read_list_values(array.as_ref(), 0).is_none());
+        }
+        for (_, _, array) in list_corpus() {
+            assert!(cell_to_value(array.as_ref(), 0).is_none());
+        }
+    }
 }
 
 #[cfg(test)]

@@ -185,6 +185,7 @@ mod custom_tt_entry;
 mod index_metadata;
 mod success_marker;
 mod runtime_batch_iterator;
+mod custom_tt_contract;
 mod temporal;
 mod tt_builder;
 mod tt_executor;
@@ -1616,5 +1617,6 @@ fn diskgraph_pybind(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     temporal::register(m)?;
+    custom_tt_contract::register(m)?;
     Ok(())
 }

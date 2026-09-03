@@ -42,6 +42,7 @@ from ._c import (
     multicat_delimiter_is_proven,
     TIMESTAMP_FORMATS,
     MULTICAT_DELIMITERS,
+    CUSTOM_TT_CONTRACT,
 )
 from ._exceptions import DiskgraphTaskError
 
@@ -168,4 +169,5 @@ __all__ = [
     "DiskgraphTaskError",
     "DiskgraphCorruptionError",
     "verify_snapshot_integrity",
+    "CUSTOM_TT_CONTRACT",
 ]
