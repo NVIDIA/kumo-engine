@@ -22,7 +22,7 @@ use std::sync::Arc;
 use arrow_array::builder::*;
 use arrow_array::{Array, Float64Array, Int64Array, ListArray, RecordBatch, TimestampNanosecondArray};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use diskgraph_core::time::{Abs, Seconds};
+use diskgraph_core::time::{Abs, Dur, Seconds};
 use diskgraph_core::tt_builder::*;
 use diskgraph_train_table::ttgen_resolve::{AUTOREGRESSION_OUTPUT_ALIAS, YOY_OUTPUT_ALIAS};
 use diskgraph_ingest::coercion::CoercionMode;
@@ -624,6 +624,30 @@ fn make_custom_tt_complete_forecasting_plan() -> DiskGraphTTPlan<Seconds> {
     }
 }
 
+fn date_offset_split_spec() -> SplitSpec<Seconds> {
+    SplitSpec::<Seconds> {
+        ratio: None,
+        kind: Some("DateOffsetSplit".to_string()),
+        rnd_seed: None,
+        is_temporal: Some(true),
+        offsets: Some(vec![Dur::from_raw(-200), Dur::from_raw(-100)]),
+        offset_unit: Some("seconds".to_string()),
+        unit: Some("seconds".to_string()),
+        timeframe: Some(100),
+        anchor_start_offset: Some(0),
+        ranges: None,
+        backtesting_timestamp: None,
+        split_column: None,
+        split_output_column: None,
+        manual_train_values: None,
+        manual_val_values: None,
+        manual_test_values: None,
+        month_offsets: None,
+        flexible_boundaries: Some(false),
+        timeframe_step: None,
+    }
+}
+
 /// Plan for "custom-TT target-only" Node prediction: parquet has only
 /// ENTITY1+TIMESTAMP+TARGET1. No autoregression / yoy ops. Empty stages.
 fn make_custom_tt_target_only_node_plan() -> DiskGraphTTPlan<Seconds> {
@@ -1052,6 +1076,43 @@ fn test_custom_tt_complete_forecasting_passthrough() {
     let stats = outer.get("stats").unwrap().as_object().unwrap();
     let has_target_stats = stats.keys().any(|k| k.starts_with("TARGET1__"));
     assert!(has_target_stats, "TARGET1 stats must be present in parsed_train_table_col_stats");
+}
+
+#[test]
+fn test_custom_tt_forecasting_date_offset_split_routes_all_stages() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_users_only_graph(dir.path(), 5);
+
+    let pq = dir.path().join("custom_tt_forecasting_date_offset.parquet");
+    let spec = CustomTtFixtureSpec {
+        n_rows: 5,
+        entity_pks: (0..5).collect(),
+        anchor_ts_secs: vec![0, 100, 200, 300, 400],
+        has_target: true,
+        has_autoreg: true,
+        has_yoy: false,
+    };
+    synth_custom_tt_parquet(&pq, &spec);
+
+    let mut plan = make_custom_tt_complete_forecasting_plan();
+    plan.split = Some(date_offset_split_spec());
+    let out_dir = tempfile::tempdir().unwrap();
+    let custom = CustomTtSource {
+        parquet_path: pq,
+        input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+    };
+    let output =
+        execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
+
+    assert_eq!(output.rows_written, 5);
+    let infos = output
+        .stage_gen_infos
+        .as_ref()
+        .expect("DateOffsetSplit must produce stage seeds for forecasting CTT rows");
+    let count = |key: &str| infos.iter().find(|info| info.key == key).unwrap().row_count;
+    assert_eq!(count("train"), 2);
+    assert_eq!(count("val"), 1);
+    assert_eq!(count("test"), 2);
 }
 
 /// Unknown entity PK → rows skipped (documented behavior). Customer parquet

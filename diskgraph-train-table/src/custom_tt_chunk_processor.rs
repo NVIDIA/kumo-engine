@@ -55,7 +55,6 @@ use parquet::arrow::ProjectionMask;
 use crate::errors::{TTGenError, TTGenResult};
 use crate::split_decider::SplitDecider;
 use crate::ttgen_accumulator::hash_value;
-use crate::ttgen_executor::update_exact_stats;
 use crate::ttgen_output::{ChannelBatchWriter, ExtraColumnOutput, ExtraValueRef, OutputMode};
 use crate::ttgen_resolve::{
     ResolvedPlan, AUTOREGRESSION_OUTPUT_ALIAS, FUTURE_LABELS_OUTPUT_ALIAS, YOY_OUTPUT_ALIAS,
@@ -995,15 +994,18 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                 )?;
                 if !plan.is_prediction {
                     if let Some(tgt) = target_val.as_ref() {
-                        update_exact_stats(
-                            &mut processor.stats,
-                            &entity_pk,
+                        let row = TTRowRef {
+                            entity_pk: &entity_pk,
                             ts,
-                            tgt,
-                            None,
+                            target: tgt,
+                            frequency: None,
                             target_is_numerical,
                             target_is_categorical,
                             target_stype,
+                            split_column_value: split_value.as_ref(),
+                        };
+                        processor.observe(
+                            &row,
                             local_target_counts,
                             local_entity_counts,
                         );
