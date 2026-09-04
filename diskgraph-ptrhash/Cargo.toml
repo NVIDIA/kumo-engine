@@ -10,7 +10,7 @@ description = "A high-throughput minimal perfect hash function"
 readme = "README.md"
 keywords = ["hashing", "minimal", "perfect", "mphf"]
 categories = ["data-structures", "science"]
-include = ["src/**/*", "README.md"]
+include = ["src/**/*", "README.md", "LICENSE"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
