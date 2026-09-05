@@ -231,9 +231,9 @@ fn resolve_remote_value(
         current = (val & segment.layout.dst_mask as u128) as u64;
     }
 
-    // Read column from final destination
+    // Read column from final destination, preserving NULL as None.
     let dst_table = &path.last()?.dst_table;
-    Some(read_column_value(dst_table, current, col_idx).unwrap_or(Value::Int(0)))
+    read_column_value(dst_table, current, col_idx)
 }
 
 // ─── Stage filter evaluation (per entity-timestamp, between stages) ──────────
@@ -306,6 +306,16 @@ fn resolve_stage_rhs(
 
 /// Compare two values with a comparison operator.
 pub fn compare_values(lhs: &Value, op: &CompareOp, rhs: &Value) -> bool {
+    if let CompareOp::In = op {
+        return match (lhs, rhs) {
+            (Value::List(_), _) => false,
+            // Match scalar equality semantics, including Int/Float coercion.
+            // Multicategorical left-hand sides use the separate CONTAINS op.
+            (_, Value::List(values)) => values.iter().any(|value| values_equal(lhs, value)),
+            _ => false,
+        };
+    }
+
     match (lhs, rhs) {
         (Value::Int(a), Value::Int(b)) => compare_ord(a, b, op),
         (Value::Float(a), Value::Float(b)) => compare_f64(*a, *b, op),
@@ -346,6 +356,7 @@ fn compare_str(a: &str, b: &str, op: &CompareOp) -> bool {
         CompareOp::EndsWith => a.ends_with(b),
         CompareOp::Contains => a.contains(b),
         CompareOp::NotContains => !a.contains(b),
+        CompareOp::In => false,
         CompareOp::IsNull | CompareOp::IsNotNull => unreachable!("null checks handled in eval_filter"),
     }
 }
@@ -361,7 +372,8 @@ fn compare_ord<T: Ord>(a: &T, b: &T, op: &CompareOp) -> bool {
         CompareOp::StartsWith
         | CompareOp::EndsWith
         | CompareOp::Contains
-        | CompareOp::NotContains => false,
+        | CompareOp::NotContains
+        | CompareOp::In => false,
         CompareOp::IsNull | CompareOp::IsNotNull => unreachable!("null checks handled in eval_filter"),
     }
 }
@@ -377,7 +389,8 @@ fn compare_f64(a: f64, b: f64, op: &CompareOp) -> bool {
         CompareOp::StartsWith
         | CompareOp::EndsWith
         | CompareOp::Contains
-        | CompareOp::NotContains => false,
+        | CompareOp::NotContains
+        | CompareOp::In => false,
         CompareOp::IsNull | CompareOp::IsNotNull => unreachable!("null checks handled in eval_filter"),
     }
 }
@@ -569,6 +582,38 @@ mod tests {
             &list,
             &CompareOp::NotContains,
             &Value::Bool(true)
+        ));
+    }
+
+    #[test]
+    fn test_compare_scalar_in_list() {
+        let ints = Value::List(vec![Value::Int(1), Value::Int(2)]);
+        assert!(compare_values(&Value::Int(2), &CompareOp::In, &ints));
+        assert!(compare_values(&Value::Float(2.0), &CompareOp::In, &ints));
+        assert!(!compare_values(&Value::Int(3), &CompareOp::In, &ints));
+
+        let strings = Value::List(vec![Value::Str("open".into()), Value::Str("closed".into())]);
+        assert!(compare_values(
+            &Value::Str("open".into()),
+            &CompareOp::In,
+            &strings
+        ));
+        assert!(!compare_values(
+            &Value::Str("pending".into()),
+            &CompareOp::In,
+            &strings
+        ));
+
+        assert!(!compare_values(
+            &Value::Int(1),
+            &CompareOp::In,
+            &Value::List(vec![])
+        ));
+        assert!(!compare_values(&ints, &CompareOp::In, &ints));
+        assert!(!compare_values(
+            &Value::Int(1),
+            &CompareOp::In,
+            &Value::Int(1)
         ));
     }
 

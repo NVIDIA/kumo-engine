@@ -13,7 +13,7 @@ from kumoapi.pquery.AST import (
     LogicalOperation,
     DateOffsetRange,
 )
-from kumoapi.typing import AggregationType, BoolOp, RelOp, StrOp
+from kumoapi.typing import AggregationType, BoolOp, MemberOp, RelOp, StrOp
 from diskgraph import DiskgraphConfigError, DiskGraphPlanCompiler, SplitSpec, TimeUnit
 from diskgraph.compiler import (
     AUTOREGRESSION_OUTPUT_ALIAS,
@@ -323,6 +323,48 @@ def test_compiler_with_row_filter():
     assert row_filter["rhs"]["constant"]["str"] == "paid"
 
 
+@pytest.mark.parametrize("member_op", [MemberOp.IN, MemberOp.IS_IN])
+def test_compiler_with_in_row_filter(member_op):
+    target_ast = Aggregation(
+        target=Filter(
+            target=Column(fqn="transactions.transaction_id"),
+            condition=Condition(
+                target=Column(fqn="transactions.status"),
+                op=member_op,
+                value=Constant.from_value(["paid", "pending"]),
+            ),
+        ),
+        aggr=AggregationType.COUNT,
+    )
+    target_ast.target.target = Join(
+        rhs_target=Column(fqn="transactions.transaction_id"),
+        lhs_key="users.user_id",
+        rhs_key="transactions.user_id",
+    )
+    query = ValidatedPredictiveQuery(
+        entity_ast=Column(fqn="users.user_id"),
+        target_ast=target_ast,
+    )
+    query._query_type = "STATIC"
+
+    plan = json.loads(
+        DiskGraphPlanCompiler().compile(
+            query=query,
+            timestamps=[],
+            task_type="binary_classification",
+            target_stype="categorical",
+            input_timestamp_unit=TimeUnit.Seconds,
+        )
+    )
+
+    row_filter = plan["stages"][0]["ops"][0]["aggregate"]["row_filter"]["compare"]
+    assert row_filter["op"] == "in"
+    assert row_filter["rhs"]["constant"]["list"] == [
+        {"str": "paid"},
+        {"str": "pending"},
+    ]
+
+
 def test_compiler_with_starts_with_row_filter():
     target_ast = Aggregation(
         target=Filter(
@@ -471,6 +513,80 @@ def test_compiler_stage_filter():
     # Stage 2: The final SUM target
     stage2 = plan["stages"][1]
     assert stage2["ops"][0]["aggregate"]["func"] == "sum"
+
+
+def test_compiler_with_in_stage_filter():
+    agg = Aggregation(
+        target=Column(fqn="transactions.transaction_id"),
+        aggr=AggregationType.COUNT,
+    )
+    agg.target = Join(
+        rhs_target=Column(fqn="transactions.transaction_id"),
+        lhs_key="users.user_id",
+        rhs_key="transactions.user_id",
+    )
+    entity_ast = Filter(
+        target=Column(fqn="users.user_id"),
+        condition=Condition(
+            target=agg,
+            op=MemberOp.IN,
+            value=Constant.from_value([1, 3]),
+        ),
+    )
+    query = ValidatedPredictiveQuery(
+        entity_ast=entity_ast,
+        target_ast=Column(fqn="users.status"),
+    )
+    query._query_type = "STATIC"
+
+    plan = json.loads(
+        DiskGraphPlanCompiler().compile(
+            query=query,
+            timestamps=[],
+            task_type="binary_classification",
+            target_stype="categorical",
+            input_timestamp_unit=TimeUnit.Seconds,
+        )
+    )
+
+    stage_filter = plan["stages"][0]["filter"]["compare"]
+    assert stage_filter["op"] == "in"
+    assert stage_filter["rhs"]["constant"]["list"] == [{"int": 1}, {"int": 3}]
+
+
+def test_compiler_with_in_target_condition():
+    agg = Aggregation(
+        target=Column(fqn="transactions.transaction_id"),
+        aggr=AggregationType.COUNT,
+    )
+    agg.target = Join(
+        rhs_target=Column(fqn="transactions.transaction_id"),
+        lhs_key="users.user_id",
+        rhs_key="transactions.user_id",
+    )
+    query = ValidatedPredictiveQuery(
+        entity_ast=Column(fqn="users.user_id"),
+        target_ast=Condition(
+            target=agg,
+            op=MemberOp.IN,
+            value=Constant.from_value([1, 3]),
+        ),
+    )
+    query._query_type = "STATIC"
+
+    plan = json.loads(
+        DiskGraphPlanCompiler().compile(
+            query=query,
+            timestamps=[],
+            task_type="binary_classification",
+            target_stype="categorical",
+            input_timestamp_unit=TimeUnit.Seconds,
+        )
+    )
+
+    compare = plan["stages"][0]["ops"][1]["compare"]
+    assert compare["op"] == "in"
+    assert compare["rhs"]["list"] == [{"int": 1}, {"int": 3}]
 
 def test_compiler_pql_e2e():
     kumopql = pytest.importorskip("kumopql", reason="kumopql not installed")

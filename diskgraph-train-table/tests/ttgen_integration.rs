@@ -17,7 +17,10 @@ use crossbeam_channel::Receiver;
 use diskgraph_core::time::{Abs, Dur, Seconds};
 use diskgraph_core::tt_builder::*;
 use diskgraph_ingest::coercion::CoercionMode;
-use diskgraph_train_table::ttgen_resolve::{AUTOREGRESSION_OUTPUT_ALIAS, FUTURE_LABELS_OUTPUT_ALIAS, YOY_OUTPUT_ALIAS};
+use diskgraph_train_table::ttgen_resolve::{
+    resolve_plan, AUTOREGRESSION_OUTPUT_ALIAS, FUTURE_LABELS_OUTPUT_ALIAS,
+    YOY_OUTPUT_ALIAS,
+};
 use diskgraph_ingest::config::IngestOptions;
 use diskgraph_ingest::graph_config::*;
 use diskgraph_ingest::io::Dest;
@@ -470,11 +473,11 @@ fn assert_target_eq(actual: f64, expected: f64, msg: &str) {
 //   4     eve     5      10.0    500        true    1000      null
 //
 // products (4 rows):
-//   node  brand   rating  category
-//   0     Nike    4.5     shoes
-//   1     Adidas  3.0     shoes
-//   2     Nike    5.0     clothing
-//   3     Puma    2.0     accessories
+//   node  brand   rating  category     segment  labels
+//   0     Nike    4.5     shoes        null     [sale]
+//   1     Adidas  3.0     shoes        0        [new]
+//   2     Nike    5.0     clothing     1        [sale, clearance]
+//   3     Puma    2.0     accessories  0        []
 //
 // orders (10 rows, FK: user_id→users, product_id→products):
 //   id  user_id  product_id  price   quantity  ts    status
@@ -564,17 +567,34 @@ fn build_graph1(root: &Path) -> PathBuf {
     let mut brand = StringBuilder::new();
     let mut rating = Float64Builder::new();
     let mut category = StringBuilder::new();
+    let mut segment = Int64Builder::new();
+    let mut labels = ListBuilder::new(StringBuilder::new());
 
-    for (pid, b, r, c) in [
-        (0i64, "Nike", 4.5, "shoes"),
-        (1, "Adidas", 3.0, "shoes"),
-        (2, "Nike", 5.0, "clothing"),
-        (3, "Puma", 2.0, "accessories"),
+    for (pid, b, r, c, s, row_labels) in [
+        (0i64, "Nike", 4.5, "shoes", None, vec!["sale"]),
+        (1, "Adidas", 3.0, "shoes", Some(0), vec!["new"]),
+        (
+            2,
+            "Nike",
+            5.0,
+            "clothing",
+            Some(1),
+            vec!["sale", "clearance"],
+        ),
+        (3, "Puma", 2.0, "accessories", Some(0), vec![]),
     ] {
         product_id.append_value(pid);
         brand.append_value(b);
         rating.append_value(r);
         category.append_value(c);
+        match s {
+            Some(value) => segment.append_value(value),
+            None => segment.append_null(),
+        }
+        for label in row_labels {
+            labels.values().append_value(label);
+        }
+        labels.append(true);
     }
 
     let products_schema = Schema::new(vec![
@@ -582,6 +602,12 @@ fn build_graph1(root: &Path) -> PathBuf {
         Field::new("brand", DataType::Utf8, false),
         Field::new("rating", DataType::Float64, false),
         Field::new("category", DataType::Utf8, false),
+        Field::new("segment", DataType::Int64, true),
+        Field::new(
+            "labels",
+            DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+            false,
+        ),
     ]);
     let products_batch = RecordBatch::try_new(
         Arc::new(products_schema),
@@ -590,6 +616,8 @@ fn build_graph1(root: &Path) -> PathBuf {
             Arc::new(brand.finish()),
             Arc::new(rating.finish()),
             Arc::new(category.finish()),
+            Arc::new(segment.finish()),
+            Arc::new(labels.finish()),
         ],
     )
     .unwrap();
@@ -688,6 +716,19 @@ fn build_graph1(root: &Path) -> PathBuf {
                     mk_col("brand", IngestedType::String),
                     mk_col("rating", IngestedType::Float64),
                     mk_col("category", IngestedType::String),
+                    mk_col("segment", IngestedType::Int64),
+                    ColumnSpec {
+                        name: "labels".to_string(),
+                        source_dtype: None,
+                        ingested_dtype: IngestedType::StringArray,
+                        fixed_len: None,
+                        timestamp_format: None,
+                        timestamp_unit: None,
+                        precision: None,
+                        scale: None,
+                        semantic_type: Some(SemanticType::Multicategorical),
+                        multicategorical_delimiter: None,
+                    },
                 ],
                 primary_key: Some("product_id".to_string()),
                 create_time: None,
@@ -1303,6 +1344,44 @@ fn integ_count_with_row_filter() {
 }
 
 #[test]
+fn integ_count_with_in_row_filter() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+
+    let plan = g1_temporal(
+        vec![Stage::<Seconds> {
+            ops: vec![Op::Aggregate {
+                alias: "cnt".to_string(),
+                path: vec![u2o_edge()],
+                func: AggFunc::Count,
+                target_col: None,
+                time_col: None,
+                window: Some((0, 5000)),
+                window_unit: Some(TimeUnit::Seconds),
+                row_filter: Some(RowFilter::Compare {
+                    lhs: RowFilterLhs::Column("status".to_string()),
+                    op: CompareOp::In,
+                    rhs: RowFilterRhs::Constant(Value::List(vec![
+                        Value::Str("shipped".to_string()),
+                        Value::Str("pending".to_string()),
+                    ])),
+                }),
+                limit: None,
+                target_entity_table: None,
+            }],
+            filter: None,
+        }],
+        vec![0],
+    );
+    let groups = execute_and_group(&plan, &index);
+    assert_target_eq(groups[&0][0].1, 3.0, "alice");
+    assert_target_eq(groups[&1][0].1, 1.0, "bob");
+    assert_target_eq(groups[&2][0].1, 1.0, "carol");
+    assert_target_eq(groups[&3][0].1, 3.0, "dave");
+    assert_target_eq(groups[&4][0].1, 0.0, "eve");
+}
+
+#[test]
 fn integ_sum_with_row_filter() {
     // SUM(orders.price WHERE status = 'shipped', 0, 5000)
     let dir = tempfile::tempdir().unwrap();
@@ -1690,6 +1769,48 @@ fn integ_filter_remote_lhs() {
     assert_target_eq(groups[&1][0].1, 2.0, "bob");
     assert_target_eq(groups[&2][0].1, 0.0, "carol");
     assert_target_eq(groups[&3][0].1, 2.0, "dave");
+    assert_target_eq(groups[&4][0].1, 0.0, "eve");
+}
+
+#[test]
+fn integ_filter_remote_nullable_lhs_in_excludes_null() {
+    // COUNT WHERE orders.PRODUCTS.segment IN (0). Product 0 has a NULL
+    // segment and must not be treated as integer zero.
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+
+    let plan = g1_temporal(
+        vec![Stage::<Seconds> {
+            ops: vec![Op::Aggregate {
+                alias: "cnt".to_string(),
+                path: vec![u2o_edge()],
+                func: AggFunc::Count,
+                target_col: None,
+                time_col: None,
+                window: Some((0, 5000)),
+                window_unit: Some(TimeUnit::Seconds),
+                row_filter: Some(RowFilter::Compare {
+                    lhs: RowFilterLhs::Remote {
+                        path: vec![o2p_edge()],
+                        column: "segment".to_string(),
+                    },
+                    op: CompareOp::In,
+                    rhs: RowFilterRhs::Constant(Value::List(vec![Value::Int(0)])),
+                }),
+                limit: None,
+                target_entity_table: None,
+            }],
+            filter: None,
+        }],
+        vec![0],
+    );
+    let groups = execute_and_group(&plan, &index);
+
+    // Products 1 and 3 have segment 0; product 0 is NULL and product 2 is 1.
+    assert_target_eq(groups[&0][0].1, 2.0, "alice");
+    assert_target_eq(groups[&1][0].1, 1.0, "bob");
+    assert_target_eq(groups[&2][0].1, 0.0, "carol");
+    assert_target_eq(groups[&3][0].1, 1.0, "dave");
     assert_target_eq(groups[&4][0].1, 0.0, "eve");
 }
 
@@ -5488,6 +5609,51 @@ fn integ_bp_pass_through_entity_is_null_filter() {
 }
 
 #[test]
+fn integ_bp_pass_through_entity_in_filter_excludes_nulls() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+
+    let plan = DiskGraphTTPlan::<Seconds> {
+        is_prediction: true,
+        entity: EntitySpec::<Seconds> {
+            table: "users".to_string(),
+            column: "user_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
+            time_col: None,
+            valid_to_col: None,
+            filter: Some(RowFilter::Compare {
+                lhs: RowFilterLhs::Column("split_bucket".to_string()),
+                op: CompareOp::In,
+                rhs: RowFilterRhs::Constant(Value::List(vec![
+                    Value::Int(0),
+                    Value::Int(2),
+                ])),
+            }),
+        },
+        temporal: Some(TemporalSpec::<Seconds> {
+            timestamps: vec![Abs::from_raw(1234)],
+            forecast_length: 1,
+            lag_timesteps: None,
+        }),
+        prediction_type: PredictionType::PassThrough,
+        stages: vec![],
+        split: None,
+        target_stype: Some("numerical".to_string()),
+        weight_col: None,
+        fkey_mapping: None,
+        lp_resolution: None,
+        lp_rhs_is_temporal: false,
+    };
+
+    let (receiver, handle) = execute(&plan, &index).unwrap();
+    let (rows, _) = read_output_rows_pass_through(receiver);
+    handle.join().unwrap().unwrap();
+
+    assert_eq!(rows, vec![(0, 1234), (3, 1234)]);
+}
+
+#[test]
 fn integ_bp_pseudo_time_injection() {
     let dir = tempfile::tempdir().unwrap();
     let index = build_graph1(dir.path());
@@ -9225,7 +9391,7 @@ fn build_canonical_multicat_graph(
 }
 
 /// COUNT(orders.* WHERE orders.tags <op> token, 0..5000)
-fn count_orders_tags_membership(op: CompareOp, token: &str) -> Op<Seconds> {
+fn count_orders_tags_membership(op: CompareOp, rhs: Value) -> Op<Seconds> {
     Op::Aggregate {
         alias: "cnt".to_string(),
         path: vec![u2o_edge()],
@@ -9237,7 +9403,7 @@ fn count_orders_tags_membership(op: CompareOp, token: &str) -> Op<Seconds> {
         row_filter: Some(RowFilter::Compare {
             lhs: RowFilterLhs::Column("tags".to_string()),
             op,
-            rhs: RowFilterRhs::Constant(Value::Str(token.to_string())),
+            rhs: RowFilterRhs::Constant(rhs),
         }),
         limit: None,
         target_entity_table: None,
@@ -9250,12 +9416,104 @@ fn run_membership_count(op: CompareOp, token: &str) -> HashMap<i64, Vec<(i64, f6
         build_canonical_multicat_graph(dir.path(), MulticatShape::StringList);
     let plan = g1_temporal(
         vec![Stage::<Seconds> {
-            ops: vec![count_orders_tags_membership(op, token)],
+            ops: vec![count_orders_tags_membership(
+                op,
+                Value::Str(token.to_string()),
+            )],
             filter: None,
         }],
         vec![0],
     );
     execute_and_group(&plan, &index)
+}
+
+#[test]
+fn integ_multicat_in_row_filter_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let (index, _) = build_canonical_multicat_graph(dir.path(), MulticatShape::StringList);
+    let plan = g1_temporal(
+        vec![Stage::<Seconds> {
+            ops: vec![count_orders_tags_membership(
+                CompareOp::In,
+                Value::List(vec![Value::Str("a".to_string())]),
+            )],
+            filter: None,
+        }],
+        vec![0],
+    );
+
+    let reader = diskgraph_index::graph::GraphIndexReader::open(
+        &index.join("index_metadata.json"),
+        &index,
+    )
+    .unwrap();
+    let resolve_err = match resolve_plan(&plan, &reader) {
+        Ok(_) => panic!("expected multicategorical IN resolution to fail"),
+        Err(err) => err,
+    };
+    assert!(matches!(resolve_err, TTGenError::InvalidPlan(_)));
+    assert!(resolve_err
+        .to_string()
+        .contains("resolving aggregate row filter: IN requires a scalar left-hand side"));
+
+    let err = match execute(&plan, &index) {
+        Ok((receiver, handle)) => {
+            drop(receiver);
+            let _ = handle.join();
+            panic!("expected multicategorical IN validation to fail")
+        }
+        Err(err) => err,
+    };
+    assert!(matches!(err, TTGenError::InvalidPlan(_)));
+    assert!(err
+        .to_string()
+        .contains("IN requires a scalar left-hand side; use CONTAINS"));
+}
+
+#[test]
+fn integ_remote_multicat_in_row_filter_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+    let plan = g1_temporal(
+        vec![Stage::<Seconds> {
+            ops: vec![Op::Aggregate {
+                alias: "cnt".to_string(),
+                path: vec![u2o_edge()],
+                func: AggFunc::Count,
+                target_col: None,
+                time_col: None,
+                window: Some((0, 5000)),
+                window_unit: Some(TimeUnit::Seconds),
+                row_filter: Some(RowFilter::Compare {
+                    lhs: RowFilterLhs::Remote {
+                        path: vec![o2p_edge()],
+                        column: "labels".to_string(),
+                    },
+                    op: CompareOp::In,
+                    rhs: RowFilterRhs::Constant(Value::List(vec![Value::Str(
+                        "sale".to_string(),
+                    )])),
+                }),
+                limit: None,
+                target_entity_table: None,
+            }],
+            filter: None,
+        }],
+        vec![0],
+    );
+
+    let err = match execute(&plan, &index) {
+        Ok((receiver, handle)) => {
+            drop(receiver);
+            let _ = handle.join();
+            panic!("expected remote multicategorical IN validation to fail")
+        }
+        Err(err) => err,
+    };
+    assert!(matches!(err, TTGenError::InvalidPlan(_)));
+    assert!(err
+        .to_string()
+        .contains("IN requires a scalar left-hand side; use CONTAINS"));
 }
 
 #[test]
@@ -9660,7 +9918,10 @@ fn integ_multicat_not_contains_empty_list_tristate() {
     let run = |op: CompareOp, token: &str| -> HashMap<i64, Vec<(i64, f64)>> {
         let plan = g1_temporal(
             vec![Stage::<Seconds> {
-                ops: vec![count_orders_tags_membership(op, token)],
+                ops: vec![count_orders_tags_membership(
+                    op,
+                    Value::Str(token.to_string()),
+                )],
                 filter: None,
             }],
             vec![0],

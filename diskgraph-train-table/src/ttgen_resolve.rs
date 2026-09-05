@@ -539,7 +539,8 @@ pub fn resolve_plan<U: UnitSystem>(
         .filter
         .as_ref()
         .map(|f| resolve_row_filter(f, reader, &entity_table, &entity_ctx, &entity_col_indices))
-        .transpose().map_err(|e| TTGenError::SchemaError(format!("resolving entity filter: {}", e)))?;
+        .transpose()
+        .map_err(|e| e.with_context("resolving entity filter"))?;
 
     let lag_timesteps = plan
         .temporal
@@ -1013,7 +1014,8 @@ fn resolve_op<U: UnitSystem>(
             let resolved_filter = row_filter
                 .as_ref()
                 .map(|f| resolve_row_filter(f, reader, dst_table, &dst_ctx, entity_col_indices))
-                .transpose().map_err(|e| TTGenError::SchemaError(format!("resolving aggregate row filter: {}", e)))?;
+                .transpose()
+                .map_err(|e| e.with_context("resolving aggregate row filter"))?;
 
             // For LP `ListDistinct`: look up the target entity table whose PK
             // map should be consulted for orphan filtering. The plan's
@@ -1220,7 +1222,8 @@ fn resolve_op<U: UnitSystem>(
             let resolved_filter = row_filter
                 .as_ref()
                 .map(|f| resolve_row_filter(f, reader, dst_table, &dst_ctx, entity_col_indices))
-                .transpose().map_err(|e| TTGenError::SchemaError(format!("resolving has_edges row filter: {}", e)))?;
+                .transpose()
+                .map_err(|e| e.with_context("resolving has_edges row filter"))?;
 
             Ok(ResolvedOp::HasEdges(ResolvedHasEdges {
                 alias_idx,
@@ -1443,6 +1446,14 @@ fn resolve_row_filter(
                     let semantic_type = reader
                         .column_semantic_type(current_table.node_type(), col)
                         .map(String::from);
+                    if matches!(op, CompareOp::In)
+                        && semantic_type.as_deref() == Some("multicategorical")
+                    {
+                        return Err(TTGenError::InvalidPlan(
+                            "IN requires a scalar left-hand side; use CONTAINS for multicategorical columns"
+                                .to_string(),
+                        ));
+                    }
                     ResolvedRowFilterLhs::Column {
                         col_idx: idx,
                         semantic_type,
@@ -1453,6 +1464,17 @@ fn resolve_row_filter(
                     let dst_table = &resolved_path.last().unwrap().dst_table;
                     let dst_ctx = dst_table.node_data_decoder().map(|d| d.context().clone());
                     let col_idx = find_col_idx_in_context(&dst_ctx, column)?;
+                    let semantic_type = reader
+                        .column_semantic_type(dst_table.node_type(), column)
+                        .map(String::from);
+                    if matches!(op, CompareOp::In)
+                        && semantic_type.as_deref() == Some("multicategorical")
+                    {
+                        return Err(TTGenError::InvalidPlan(
+                            "IN requires a scalar left-hand side; use CONTAINS for multicategorical columns"
+                                .to_string(),
+                        ));
+                    }
                     ResolvedRowFilterLhs::Remote {
                         path: resolved_path,
                         col_idx,

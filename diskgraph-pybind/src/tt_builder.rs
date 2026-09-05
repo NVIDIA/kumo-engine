@@ -11,6 +11,7 @@
 //! ```
 
 use pyo3::prelude::*;
+use pyo3::types::PyList;
 
 use diskgraph_core::time::{abs_from_unit, dur_from_unit, Abs, Seconds};
 use diskgraph_core::tt_builder as tt;
@@ -707,6 +708,7 @@ fn parse_compare_op(op: &str) -> PyResult<tt::CompareOp> {
         "endswith" | "ends_with" => Ok(tt::CompareOp::EndsWith),
         "contains" => Ok(tt::CompareOp::Contains),
         "notcontains" | "not_contains" => Ok(tt::CompareOp::NotContains),
+        "in" | "is_in" => Ok(tt::CompareOp::In),
         _ => Err(crate::DiskgraphConfigError::new_err(format!(
             "unknown compare op: {op}"
         ))),
@@ -1063,9 +1065,18 @@ fn extract_value(value: &Bound<'_, PyAny>) -> PyResult<tt::Value> {
         Ok(tt::Value::Int(days_since_epoch * 86_400))
     } else if let Ok(s) = value.extract::<String>() {
         Ok(tt::Value::Str(s))
+    } else if let Ok(values) = value.cast::<PyList>() {
+        // Validated PQuery constants reject NULL list members, and the TT IR
+        // has no NULL Value variant. Recurse so direct builder calls fail loud
+        // instead of silently dropping a NULL member.
+        let values = values
+            .iter()
+            .map(|item| extract_value(&item))
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok(tt::Value::List(values))
     } else {
         Err(crate::DiskgraphConfigError::new_err(
-            "value must be bool, int, float, str, datetime.datetime, or datetime.date",
+            "value must be bool, int, float, str, datetime.datetime, datetime.date, or list",
         ))
     }
 }
@@ -1114,6 +1125,12 @@ fn extract_edge_path(path: &Bound<'_, PyAny>) -> PyResult<Vec<tt::EdgeRef>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_in_compare_ops() {
+        assert_eq!(parse_compare_op("in").unwrap(), tt::CompareOp::In);
+        assert_eq!(parse_compare_op("IS IN").unwrap(), tt::CompareOp::In);
+    }
 
     #[test]
     fn time_range_split_preserves_temporal_boundary_semantics() {

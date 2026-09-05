@@ -153,9 +153,9 @@ types), and executability (the backend needs no further analysis).
 Direct encoding of grammar terminals:
 
 ```rust
-enum Value { Int(i64), Float(f64), Str(String), Bool(bool) }
+enum Value { Int(i64), Float(f64), Str(String), Bool(bool), List(Vec<Value>) }
 enum AggFunc { Count, Sum, Avg, Min, Max, CountDistinct, ListDistinct }
-enum CompareOp { Eq, Neq, Gt, Gte, Lt, Lte, IsNull, IsNotNull, StartsWith, EndsWith, Contains, NotContains }
+enum CompareOp { Eq, Neq, Gt, Gte, Lt, Lte, IsNull, IsNotNull, StartsWith, EndsWith, Contains, NotContains, In }
 enum TimeUnit { Seconds, Minutes, Hours, Days, Weeks, Months, Years }
 ```
 

@@ -416,6 +416,7 @@ pub enum CompareOp {
     EndsWith,
     Contains,
     NotContains,
+    In,
 }
 
 /// Dynamically-typed scalar for filter comparisons.

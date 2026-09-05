@@ -57,6 +57,8 @@ def _map_op(op: str) -> str:
         return 'contains'
     if op == 'NOT CONTAINS':
         return 'not_contains'
+    if op in ('IN', 'IS IN'):
+        return 'in'
     return op
 
 def _validate_lp_layout(name: str, value: Optional[str], allowed: set[str]) -> None:

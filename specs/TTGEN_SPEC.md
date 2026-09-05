@@ -147,7 +147,7 @@ EdgeRef {
 
 ### CompareOp
 
-`Eq`, `Neq`, `Gt`, `Gte`, `Lt`, `Lte`, `IsNull`, `IsNotNull`, `StartsWith`, `EndsWith`, `Contains`, `NotContains`
+`Eq`, `Neq`, `Gt`, `Gte`, `Lt`, `Lte`, `IsNull`, `IsNotNull`, `StartsWith`, `EndsWith`, `Contains`, `NotContains`, `In`
 
 ### Value
 
