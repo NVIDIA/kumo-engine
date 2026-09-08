@@ -973,53 +973,9 @@ mod new_schema_types {
     }
 
     #[test]
-    fn datasource_databricks_serialize() {
-        let source = DataSource::Databricks {
-            server_hostname: "adb.example.net".into(),
-            warehouse_id: "warehouse".into(),
-            catalog: "main".into(),
-            schema: "default".into(),
-            sql: "SELECT id FROM main.default.events".into(),
-            auth_profile: Some("db_conn".into()),
-        };
-        let json = serde_json::to_string(&source).unwrap();
-        assert!(json.contains(r#""type":"databricks""#));
-        assert!(json.contains(r#""server_hostname":"adb.example.net""#));
-        assert!(json.contains(r#""warehouse_id":"warehouse""#));
-        assert!(json.contains(r#""catalog":"main""#));
-        assert!(json.contains(r#""schema":"default""#));
-        assert!(json.contains(r#""sql":"SELECT id FROM main.default.events""#));
-        assert!(json.contains(r#""auth_profile":"db_conn""#));
-    }
-
-    #[test]
-    fn datasource_databricks_deserialize() {
-        let json = r#"{"type":"databricks","server_hostname":"adb.example.net","warehouse_id":"wh","catalog":"cat","schema":"sch","sql":"SELECT id FROM cat.sch.tbl","auth_profile":"DATABRICKS"}"#;
-        let source: DataSource = serde_json::from_str(json).unwrap();
-        match source {
-            DataSource::Databricks {
-                server_hostname,
-                warehouse_id,
-                catalog,
-                schema,
-                sql,
-                auth_profile,
-            } => {
-                assert_eq!(server_hostname, "adb.example.net");
-                assert_eq!(warehouse_id, "wh");
-                assert_eq!(catalog, "cat");
-                assert_eq!(schema, "sch");
-                assert_eq!(sql, "SELECT id FROM cat.sch.tbl");
-                assert_eq!(auth_profile.as_deref(), Some("DATABRICKS"));
-            }
-            _ => panic!("expected Databricks variant"),
-        }
-    }
-
-    #[test]
     fn documented_utf8_dtype_deserializes_as_string() {
         let column: ColumnSpec = serde_json::from_str(r#"{"name":"id","dtype":"utf8"}"#)
-            .expect("the documented Databricks dtype must deserialize");
+            .expect("the documented utf8 dtype must deserialize");
         assert_eq!(column.ingested_dtype, IngestedType::String);
     }
 
@@ -1451,21 +1407,6 @@ mod new_schema_types {
     }
 
     #[test]
-    fn datasource_roundtrip_databricks() {
-        let original = DataSource::Databricks {
-            server_hostname: "adb.example.net".into(),
-            warehouse_id: "wh".into(),
-            catalog: "cat".into(),
-            schema: "sch".into(),
-            sql: "SELECT id FROM cat.sch.tbl".into(),
-            auth_profile: Some("db_conn".into()),
-        };
-        let json = serde_json::to_string(&original).unwrap();
-        let parsed: DataSource = serde_json::from_str(&json).unwrap();
-        assert_eq!(original, parsed);
-    }
-
-    #[test]
     fn datasource_roundtrip_bigquery() {
         let original = DataSource::BigQuery {
             connection_id: "conn".into(),
@@ -1567,49 +1508,3 @@ fn group_by_timestamp_present_when_true() {
     assert!(back.group_by_timestamp);
 }
 
-#[test]
-fn databricks_auth_profile_is_persisted() {
-    let mut config = GraphConfig {
-        dataset_name: "dataset".into(),
-        tables: vec![base_table("customers")],
-        rowpack: None,
-        num_shards: None,
-        edge_format: None,
-        coercion_mode: Default::default(),
-    };
-    config.tables[0].source = DataSource::Databricks {
-        server_hostname: "adb.example.net".into(),
-        warehouse_id: "wh".into(),
-        catalog: "main".into(),
-        schema: "default".into(),
-        sql: "SELECT id FROM main.default.customers".into(),
-        auth_profile: Some("production".into()),
-    };
-
-    let persisted = serde_json::to_string(&config).unwrap();
-    assert!(persisted.contains(r#""auth_profile":"production""#));
-    assert!(persisted.contains("SELECT id FROM main.default.customers"));
-}
-
-#[test]
-fn databricks_auth_profile_cannot_be_empty() {
-    let mut config = GraphConfig {
-        dataset_name: "dataset".into(),
-        tables: vec![base_table("customers")],
-        rowpack: None,
-        num_shards: None,
-        edge_format: None,
-        coercion_mode: Default::default(),
-    };
-    config.tables[0].source = DataSource::Databricks {
-        server_hostname: "adb.example.net".into(),
-        warehouse_id: "wh".into(),
-        catalog: "main".into(),
-        schema: "default".into(),
-        sql: "SELECT id FROM main.default.customers".into(),
-        auth_profile: Some(String::new()),
-    };
-
-    let error = config.validate().unwrap_err().to_string();
-    assert!(error.contains("auth_profile cannot be empty"));
-}

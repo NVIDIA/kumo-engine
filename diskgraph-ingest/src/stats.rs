@@ -237,12 +237,6 @@ pub struct PerfStats {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_total_bytes: Option<u64>,
     #[serde(default)]
-    pub databricks_wire_bytes: u64,
-    #[serde(default)]
-    pub databricks_decoded_ipc_bytes: u64,
-    #[serde(default)]
-    pub databricks_query_startup_nanos: u64,
-    #[serde(default)]
     pub encode_memory_high_water_bytes: u64,
     #[serde(default)]
     pub source_rows: u64,

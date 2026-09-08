@@ -16,8 +16,6 @@ struct ByteBudgetState {
     input_bytes: u64,
     working_bytes: u64,
     high_water_bytes: u64,
-    next_ticket: u64,
-    serving_ticket: u64,
 }
 
 impl ByteBudget {
@@ -146,61 +144,6 @@ impl ByteBudget {
         })
     }
 
-    pub(crate) fn issue_ticket(&self, bytes: u64) -> Result<u64> {
-        if bytes > self.max_single_bytes {
-            bail!("Encode allocation exceeds the memory budget");
-        }
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow!("Encode memory budget lock was poisoned"))?;
-        let ticket = state.next_ticket;
-        state.next_ticket = state
-            .next_ticket
-            .checked_add(1)
-            .ok_or_else(|| anyhow!("Encode memory budget ticket overflowed"))?;
-        Ok(ticket)
-    }
-
-    pub(crate) fn acquire_ticket(self: &Arc<Self>, ticket: u64, bytes: u64) -> Result<BytePermit> {
-        if bytes > self.max_single_bytes {
-            bail!("Encode input chunk exceeds the oversized chunk limit");
-        }
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow!("Encode memory budget lock was poisoned"))?;
-        while ticket != state.serving_ticket || {
-            let input_limit = if state.input_bytes == 0 {
-                // The first input object may use the explicit oversized escape
-                // together with retained consumer scratch. Later input
-                // lookahead objects remain within the normal input budget.
-                self.max_single_bytes
-            } else {
-                self.max_bytes
-            };
-            state.input_bytes > input_limit.saturating_sub(bytes)
-        } {
-            state = self
-                .available
-                .wait(state)
-                .map_err(|_| anyhow!("Encode memory budget lock was poisoned"))?;
-        }
-        state.used_bytes += bytes;
-        state.input_bytes += bytes;
-        state.high_water_bytes = state.high_water_bytes.max(state.used_bytes);
-        state.serving_ticket = state
-            .serving_ticket
-            .checked_add(1)
-            .ok_or_else(|| anyhow!("Encode memory budget ticket overflowed"))?;
-        self.available.notify_all();
-        Ok(BytePermit {
-            budget: Arc::clone(self),
-            bytes,
-            input: true,
-        })
-    }
-
     pub(crate) fn high_water_bytes(&self) -> u64 {
         self.state
             .lock()
@@ -225,10 +168,6 @@ pub(crate) struct BytePermit {
 }
 
 impl BytePermit {
-    pub(crate) fn max_input_chunk_bytes(&self) -> u64 {
-        self.budget.max_single_bytes
-    }
-
     pub(crate) fn shrink_to(&mut self, bytes: u64) {
         debug_assert!(bytes <= self.bytes);
         let released = self.bytes.saturating_sub(bytes);
@@ -294,7 +233,6 @@ mod tests {
     fn single_input_limit_can_be_below_the_normal_budget() {
         let budget = ByteBudget::with_oversized_limit(20, 10).unwrap();
         assert!(budget.acquire(20).is_ok());
-        assert!(budget.issue_ticket(11).is_err());
         assert!(budget.acquire_input_chunk(11).is_err());
     }
 

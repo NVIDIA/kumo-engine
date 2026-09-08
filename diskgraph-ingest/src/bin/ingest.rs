@@ -66,9 +66,6 @@ struct Args {
     /// Max bytes of index-build edge sort memory allowed across workers.
     #[arg(long, value_name = "BYTES")]
     index_mem_budget_bytes: Option<u64>,
-    /// Optional mode-0600 Databricks unified-authentication config file.
-    #[arg(long, value_name = "FILE")]
-    databricks_config_file: Option<PathBuf>,
     /// Stats destination root (s3://, gs://, az://, or local path).
     #[arg(long, value_name = "URL")]
     stats_dest: Option<String>,
@@ -96,8 +93,7 @@ struct Args {
     #[arg(long, value_enum, value_name = "PHASE")]
     resume_from_phase: Option<PhaseArg>,
     /// Override concurrent source loaders/downloads during Encode.
-    /// By default Databricks uses four downloads per cgroup-aware worker,
-    /// capped at 512.
+    /// Default: four loaders per cgroup-aware worker, capped at 512.
     #[arg(long)]
     context_threads: Option<usize>,
     /// Override Encode worker concurrency
@@ -323,7 +319,6 @@ fn run_worker(args: Args) -> Result<()> {
     let peak_tracker = PeakMemTracker::start();
     let options = IngestOptions {
         profile_dir: args.profile.clone(),
-        databricks_config_file: args.databricks_config_file.clone(),
         progress: build_progress(),
         parallel: args.parallel,
         index_mem_budget_bytes: args.index_mem_budget_bytes,
@@ -856,7 +851,7 @@ fn supervise_ingest(args: &Args) -> Result<()> {
     let executable = std::env::current_exe()?;
     let raw_args = std::env::args_os().skip(1).collect::<Vec<_>>();
     let default_threads = diskgraph_ingest::default_worker_threads().max(1);
-    let default_source_loader = diskgraph_ingest::databricks::default_download_parallelism();
+    let default_source_loader = diskgraph_ingest::default_source_loader_threads();
     let mut source_loader = args.context_threads.map(|threads| threads.max(1));
     let mut source_encoder = args.encode_threads.unwrap_or(default_threads).max(1);
     let mut pk_map = args.pk_map_threads.unwrap_or(default_threads).max(1);

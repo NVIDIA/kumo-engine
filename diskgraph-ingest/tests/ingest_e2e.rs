@@ -401,7 +401,6 @@ fn ingest_parquet_with_edges_and_rowpack() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
-            databricks_config_file: None,
             profile_dir: None,
             progress: None,
             parallel: true,
@@ -643,7 +642,6 @@ fn ingest_parquet_multi_file_table_with_two_shards() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
-            databricks_config_file: None,
             profile_dir: None,
             progress: None,
             parallel: true,
@@ -773,7 +771,6 @@ fn ingest_parquet_with_sorted_mapping() -> Result<()> {
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
 
     let options = IngestOptions {
-        databricks_config_file: None,
         profile_dir: None,
         progress: None,
         parallel: true,
@@ -940,7 +937,6 @@ fn ingest_parquet_with_int_pk_lookup() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
-            databricks_config_file: None,
             profile_dir: None,
             progress: None,
             parallel: true,
@@ -1057,7 +1053,6 @@ fn ingest_csv_with_bytes_pk_mapping() -> Result<()> {
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
 
     let options = IngestOptions {
-        databricks_config_file: None,
         profile_dir: None,
         progress: None,
         parallel: true,
@@ -1146,7 +1141,6 @@ fn ingest_pk_map_header_has_expected_format() -> Result<()> {
     fs::write(&source_path, serde_json::to_vec_pretty(&source)?)?;
 
     let options = IngestOptions {
-        databricks_config_file: None,
         profile_dir: None,
         progress: None,
         parallel: true,
@@ -1347,7 +1341,6 @@ fn ingest_relationship_uses_dest_timestamp_sort_key() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
-            databricks_config_file: None,
             profile_dir: None,
             progress: None,
             parallel: true,
@@ -1634,7 +1627,6 @@ fn ingest_edge_table_mixed_sort_keys() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
-            databricks_config_file: None,
             profile_dir: None,
             progress: None,
             parallel: true,
@@ -2166,7 +2158,6 @@ fn ingest_weight_expr_with_backticks() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
-            databricks_config_file: None,
             profile_dir: None,
             progress: None,
             parallel: true,
@@ -2271,7 +2262,6 @@ fn ingest_weight_expr_with_log_and_abs() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
-            databricks_config_file: None,
             profile_dir: None,
             progress: None,
             parallel: true,
@@ -4104,7 +4094,6 @@ fn ingest_survives_empty_shards() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
-            databricks_config_file: None,
             profile_dir: None,
             progress: None,
             parallel: true,

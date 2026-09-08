@@ -4,7 +4,7 @@
 
 ## Overview
 
-Ingest converts raw data (parquet, CSV, Snowflake, Databricks) into the DiskGraph index — a memory-mapped, sharded graph representation optimized for O(1) node lookup and sequential edge traversal.
+Ingest converts raw data (parquet, CSV) into the DiskGraph index — a memory-mapped, sharded graph representation optimized for O(1) node lookup and sequential edge traversal.
 
 The pipeline is streaming and single-pass over the data. No intermediate materialization to disk except final output and temporary shard files. Everything is parallel by default.
 
@@ -42,7 +42,7 @@ Each table defines its source, schema, keys, and relationships:
 ```rust
 TableSpec {
     name: String,                   // Logical table name
-    source: DataSource,             // Parquet paths, Snowflake, Databricks, etc.
+    source: DataSource,             // Parquet paths (local or cloud manifest), CSV
     columns: Vec<ColumnSpec>,       // Column names, types, encoding hints
     primary_key: Option<String>,    // PK column (enables MPHF construction)
     create_time: Option<String>,    // Entity creation timestamp (for temporal filtering)
@@ -66,8 +66,10 @@ TableSpec {
 DataSource::Parquet { paths }     // Local, including staged/normalized inputs
 DataSource::ObjectStoreParquet { objects, auth_profile } // Exact cloud manifest
 DataSource::Csv { paths }         // Local or cloud compatibility path
+
+// Declared but not implemented: ingest rejects these at validation. Kumo
+// stages every warehouse table to parquet before it reaches the engine.
 DataSource::Snowflake { connection_id, table_or_view }
-DataSource::Databricks { connection_id, catalog, schema, table }
 DataSource::BigQuery { connection_id, ... }
 ```
 

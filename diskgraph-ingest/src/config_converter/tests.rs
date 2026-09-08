@@ -1325,7 +1325,7 @@ fn test_table_data_versions_none_uses_inline() {
 fn test_source_spec_bypasses_file_path_expansion() {
     let kumo_table = KumoTable {
         table_name: "users".to_string(),
-        data_source: Some("databricks".to_string()),
+        data_source: Some("warehouse".to_string()),
         source_name: Some("users".to_string()),
         data_version: Some("version_1".to_string()),
         pkey: Some(KumoPrimaryKey {
@@ -1340,13 +1340,15 @@ fn test_source_spec_bypasses_file_path_expansion() {
         end_time_col: None,
     };
     let kumo_config = make_kumo_config(vec![kumo_table]);
-    let source = crate::graph_config::DataSource::Databricks {
-        server_hostname: "workspace.cloud.databricks.com".to_string(),
-        warehouse_id: "warehouse".to_string(),
-        catalog: "main".to_string(),
-        schema: "default".to_string(),
-        sql: "SELECT `id` FROM `main`.`default`.`users`".to_string(),
-        auth_profile: Some("kumo_connector".to_string()),
+    let source = crate::graph_config::DataSource::ObjectStoreParquet {
+        objects: vec![crate::graph_config::ObjectStoreObject {
+            path: "s3://staging-bucket/users/part-00000.parquet".to_string(),
+            size: 123_456,
+            e_tag: Some("d41d8cd98f00b204e9800998ecf8427e".to_string()),
+            version: None,
+        }],
+        auth_profile: "ambient".to_string(),
+        authority: None,
     };
     let source_size = 123_456;
     let options = ConvertOptions {

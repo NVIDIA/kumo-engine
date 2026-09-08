@@ -1178,7 +1178,6 @@ pub fn convert_kumo_config(
     edges_map_threads=None,
     index_threads=None,
     parent_index_path=None,
-    databricks_config_file=None,
 ))]
 #[tracing::instrument(
     level = "info",
@@ -1204,7 +1203,6 @@ pub fn ingest(
     edges_map_threads: Option<usize>,
     index_threads: Option<usize>,
     parent_index_path: Option<&str>,
-    databricks_config_file: Option<&str>,
 ) -> PyResult<String> {
     let start_time = std::time::Instant::now();
     info!(
@@ -1242,7 +1240,6 @@ pub fn ingest(
 
     let options = diskgraph_ingest::IngestOptions {
         profile_dir: None,
-        databricks_config_file: databricks_config_file.map(std::path::PathBuf::from),
         progress: diskgraph_ingest::progress::build_progress(),
         parallel: true,
         index_mem_budget_bytes: None,

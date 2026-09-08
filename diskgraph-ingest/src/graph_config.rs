@@ -526,25 +526,6 @@ pub enum DataSource {
         /// Table or view name in Snowflake.
         table_or_view: String,
     },
-    /// Databricks.
-    Databricks {
-        /// Databricks workspace hostname, without an HTTP path.
-        server_hostname: String,
-        /// SQL warehouse identifier.
-        warehouse_id: String,
-        /// Catalog name.
-        catalog: String,
-        /// Schema name.
-        schema: String,
-        /// Final validated read-only SQL executed by the helper. Result column
-        /// names, including aliases, must match `ColumnSpec::name`.
-        sql: String,
-        /// Optional Databricks unified-authentication profile. When omitted,
-        /// the SDK uses notebook-native authentication, standard environment
-        /// variables, or the default local profile.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        auth_profile: Option<String>,
-    },
     /// Google BigQuery.
     BigQuery {
         /// Connection identifier referencing a connection config.
@@ -842,44 +823,6 @@ impl GraphConfig {
                 DataSource::ObjectStoreParquet { .. } => {
                     if let Err(error) = table.validate_object_store_manifest() {
                         errors.push(error.to_string());
-                    }
-                }
-                DataSource::Databricks {
-                    server_hostname,
-                    warehouse_id,
-                    catalog,
-                    schema,
-                    sql,
-                    auth_profile,
-                } => {
-                    for (field, value) in [
-                        ("server_hostname", server_hostname),
-                        ("warehouse_id", warehouse_id),
-                        ("catalog", catalog),
-                        ("schema", schema),
-                        ("sql", sql),
-                    ] {
-                        if value.trim().is_empty() {
-                            errors.push(format!(
-                                "table {} Databricks {} cannot be empty",
-                                table.name, field
-                            ));
-                        }
-                    }
-                    if server_hostname.contains('/') || server_hostname.contains(':') {
-                        errors.push(format!(
-                            "table {} Databricks server_hostname must be a hostname without scheme or path",
-                            table.name
-                        ));
-                    }
-                    if auth_profile
-                        .as_ref()
-                        .is_some_and(|profile| profile.trim().is_empty())
-                    {
-                        errors.push(format!(
-                            "table {} Databricks auth_profile cannot be empty",
-                            table.name
-                        ));
                     }
                 }
                 DataSource::Snowflake { .. } | DataSource::BigQuery { .. } => {

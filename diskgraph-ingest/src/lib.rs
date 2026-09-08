@@ -8,7 +8,6 @@ pub mod column_inference;
 pub mod config;
 pub mod config_converter;
 pub mod consts;
-pub mod databricks;
 pub mod diagnostics;
 pub mod disk_manager;
 pub mod errors;
@@ -233,24 +232,6 @@ fn physical_schema_signature(schema: &Schema) -> Vec<PhysicalFieldSignature> {
             nullable: field.is_nullable(),
         })
         .collect()
-}
-
-fn start_databricks_helper(
-    source: &GraphConfig,
-) -> Result<Option<crate::databricks::DatabricksHelper>> {
-    if !source
-        .tables
-        .iter()
-        .any(|table| matches!(table.source, graph_config::DataSource::Databricks { .. }))
-    {
-        return Ok(None);
-    }
-    let mut helper = crate::databricks::DatabricksHelper::spawn()?;
-    let hello = helper.hello()?;
-    if hello.protocol != 1 || hello.connector != "4.3.0" || hello.thrift != "0.22.0" {
-        return Err(anyhow!("Databricks helper protocol version mismatch"));
-    }
-    Ok(Some(helper))
 }
 
 struct ParquetInput {
@@ -558,8 +539,6 @@ fn load_parquet_source_schemas(
 
 fn visit_source_schemas(
     source: &GraphConfig,
-    databricks_config_file: Option<&Path>,
-    helper: &mut Option<crate::databricks::DatabricksHelper>,
     mut visit: impl FnMut(&TableSpec, &Schema) -> Result<()>,
 ) -> Result<()> {
     for table in &source.tables {
@@ -571,13 +550,6 @@ fn visit_source_schemas(
                 }
             }
             graph_config::DataSource::Csv { .. } => visit(table, &table_schema(table)?)?,
-            graph_config::DataSource::Databricks { .. } => {
-                let schema = helper
-                    .as_mut()
-                    .ok_or_else(|| anyhow!("Databricks helper was not initialized"))?
-                    .schema(&table.source, databricks_config_file)?;
-                visit(table, schema.as_ref())?;
-            }
             _ => return Err(anyhow!("table {} source is not implemented", table.name)),
         }
     }
@@ -585,42 +557,33 @@ fn visit_source_schemas(
 }
 
 /// Resolve the complete physical source schema without scanning source rows.
-/// The hardening benchmark uses this to compare the legacy materialized path
-/// with direct Databricks input for field order, type, and nullability.
 pub fn inspect_source_schema(
     mut source: GraphConfig,
     base_dir: Option<&Path>,
-    databricks_config_file: Option<&Path>,
 ) -> Result<SourceSchemaSignature> {
     if let Some(base_dir) = base_dir {
         resolve_local_paths(&mut source, base_dir);
     }
     source.normalize_multicat_pseudo_list();
     promote_legacy_cloud_parquet_sources(&mut source)?;
-    let mut helper = start_databricks_helper(&source)?;
     let mut tables = BTreeMap::new();
     for table in &source.tables {
         if tables.insert(table.name.clone(), None).is_some() {
             return Err(anyhow!("duplicate table {}", table.name));
         }
     }
-    visit_source_schemas(
-        &source,
-        databricks_config_file,
-        &mut helper,
-        |table, schema| {
-            let current = physical_schema_signature(schema);
-            let expected = tables.get_mut(&table.name).expect("validated table name");
-            if expected.as_ref().is_some_and(|prior| prior != &current) {
-                return Err(anyhow!(
-                    "table {} has inconsistent physical schemas across source files",
-                    table.name
-                ));
-            }
-            *expected = Some(current);
-            Ok(())
-        },
-    )?;
+    visit_source_schemas(&source, |table, schema| {
+        let current = physical_schema_signature(schema);
+        let expected = tables.get_mut(&table.name).expect("validated table name");
+        if expected.as_ref().is_some_and(|prior| prior != &current) {
+            return Err(anyhow!(
+                "table {} has inconsistent physical schemas across source files",
+                table.name
+            ));
+        }
+        *expected = Some(current);
+        Ok(())
+    })?;
     let tables = tables
         .into_iter()
         .map(|(table, signature)| {
@@ -651,7 +614,6 @@ pub struct FkEdgeTarget {
 }
 
 const DEFAULT_INDEX_MEM_BUDGET_FRAC: f64 = 0.7;
-const EPHEMERAL_DATABRICKS_CONFIG_ENV: &str = "DISKGRAPH_EPHEMERAL_DATABRICKS_CONFIG";
 
 pub fn ingest(
     graph_config_path: &Path,
@@ -1133,8 +1095,8 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     );
     let wall_time = wall_start.elapsed();
     // Preserve the existing Kumo SOURCE_SIZE contract: logical Arrow bytes
-    // observed by the one shared consumer, not compressed files, IPC framing,
-    // or Cloud Fetch wire bytes.
+    // observed by the one shared consumer, not compressed files or IPC
+    // framing.
     let source_total_bytes = Some(ctx.logical_arrow_source_bytes);
     let bytes_read = ctx.logical_arrow_source_bytes;
     let bytes_written = match &*ctx.target {
@@ -1154,9 +1116,6 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
         bytes_read,
         bytes_written,
         source_total_bytes,
-        databricks_wire_bytes: ctx.databricks_wire_bytes,
-        databricks_decoded_ipc_bytes: ctx.databricks_decoded_ipc_bytes,
-        databricks_query_startup_nanos: ctx.databricks_query_startup_nanos,
         encode_memory_high_water_bytes: ctx.encode_memory_high_water_bytes,
         source_rows: ctx.logical_source_rows,
         temp_edges_src_bytes: ctx.temp_edges_src_bytes,
@@ -1489,17 +1448,6 @@ mod tests_resume_phase {
     }
 
     #[test]
-    fn ephemeral_databricks_config_removal_is_idempotent() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("databricks.cfg");
-        fs::write(&path, b"[profile]\ntoken = secret\n").unwrap();
-
-        remove_ephemeral_databricks_config_path(&path).unwrap();
-        assert!(!path.exists());
-        remove_ephemeral_databricks_config_path(&path).unwrap();
-    }
-
-    #[test]
     fn wipe_phase_outputs_removes_marker_and_dirs() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -1804,8 +1752,6 @@ mod tests_repopulate_helpers {
             source,
             target,
             profile_dir: None,
-            databricks_config_file: None,
-            databricks_helper: None,
             parallel: false,
             source_loader_threads: None,
             source_encoder_threads: None,
@@ -1848,9 +1794,6 @@ mod tests_repopulate_helpers {
             temp_fkeys_bytes: 0,
             temp_edges_map_bytes: 0,
             temp_node_data_bytes: 0,
-            databricks_wire_bytes: 0,
-            databricks_decoded_ipc_bytes: 0,
-            databricks_query_startup_nanos: 0,
             logical_arrow_source_bytes: 0,
             logical_arrow_source_bytes_by_table: HashMap::new(),
             source_input_wait_nanos: 0,
@@ -2606,8 +2549,6 @@ struct IngestContext {
     source: GraphConfig,
     target: std::sync::Arc<OutputTarget>,
     profile_dir: Option<PathBuf>,
-    databricks_config_file: Option<PathBuf>,
-    databricks_helper: Option<crate::databricks::DatabricksHelper>,
     parallel: bool,
     source_loader_threads: Option<usize>,
     source_encoder_threads: Option<usize>,
@@ -2664,9 +2605,6 @@ struct IngestContext {
     temp_fkeys_bytes: u64,
     temp_edges_map_bytes: u64,
     temp_node_data_bytes: u64,
-    databricks_wire_bytes: u64,
-    databricks_decoded_ipc_bytes: u64,
-    databricks_query_startup_nanos: u64,
     logical_arrow_source_bytes: u64,
     logical_arrow_source_bytes_by_table: HashMap<String, u64>,
     source_input_wait_nanos: u64,
@@ -2730,9 +2668,6 @@ struct EncodeState {
     temp_edges_src_bytes: u64,
     temp_fkeys_bytes: u64,
     temp_node_data_bytes: u64,
-    databricks_wire_bytes: u64,
-    databricks_decoded_ipc_bytes: u64,
-    databricks_query_startup_nanos: u64,
     logical_arrow_source_bytes: u64,
     logical_arrow_source_bytes_by_table: HashMap<String, u64>,
     #[serde(default)]
@@ -3000,9 +2935,6 @@ enum SourceBatchRetention {
     Budget {
         _permit: crate::source_memory::BytePermit,
     },
-    Databricks {
-        _lease: crate::databricks::DatabricksBatchLease,
-    },
     ResidentParquet {
         _permit: Arc<crate::source_memory::BytePermit>,
     },
@@ -3019,15 +2951,6 @@ impl SourceBatch {
         Self {
             batch,
             _retention: SourceBatchRetention::Budget { _permit: permit },
-            observed: false,
-        }
-    }
-
-    fn databricks(batch: crate::databricks::DatabricksBatch) -> Self {
-        let (batch, lease) = batch.into_parts();
-        Self {
-            batch,
-            _retention: SourceBatchRetention::Databricks { _lease: lease },
             observed: false,
         }
     }
@@ -3789,7 +3712,7 @@ mod resident_parquet_tests {
             }]
         }))
         .unwrap();
-        let signature = inspect_source_schema(source, None, None).unwrap();
+        let signature = inspect_source_schema(source, None).unwrap();
         assert_eq!(signature.tables["nodes"][0].name, "physical_id");
     }
 
@@ -3810,7 +3733,7 @@ mod resident_parquet_tests {
             }]
         }))
         .unwrap();
-        let signature = inspect_source_schema(source, None, None).unwrap();
+        let signature = inspect_source_schema(source, None).unwrap();
         assert!(!signature.tables["articles"].is_empty());
     }
 
@@ -3840,7 +3763,7 @@ mod resident_parquet_tests {
             }]
         }))
         .unwrap();
-        let signature = inspect_source_schema(source, None, None).unwrap();
+        let signature = inspect_source_schema(source, None).unwrap();
         assert!(!signature.tables["articles"].is_empty());
     }
 
@@ -5599,14 +5522,13 @@ impl Drop for ResidentParquetWorkStream {
     }
 }
 
-enum TableSourceStreamInner<'a> {
+enum TableSourceStreamInner {
     Csv(Box<CsvBatchStream>),
-    Databricks(Box<crate::databricks::DatabricksQueryStream<'a>>),
     Parquet(ResidentParquetWorkStream),
 }
 
-struct TableSourceStream<'a> {
-    inner: TableSourceStreamInner<'a>,
+struct TableSourceStream {
+    inner: TableSourceStreamInner,
     source_budget: Arc<crate::source_memory::ByteBudget>,
     validation: Arc<SourceValidationState>,
     active_context_reader: Option<(
@@ -5617,9 +5539,9 @@ struct TableSourceStream<'a> {
     input_wait_nanos: u64,
 }
 
-impl<'a> TableSourceStream<'a> {
+impl TableSourceStream {
     fn new(
-        inner: TableSourceStreamInner<'a>,
+        inner: TableSourceStreamInner,
         source_budget: Arc<crate::source_memory::ByteBudget>,
         validation: Arc<SourceValidationState>,
     ) -> Self {
@@ -5636,9 +5558,6 @@ impl<'a> TableSourceStream<'a> {
         let input_start = std::time::Instant::now();
         let next = match &mut self.inner {
             TableSourceStreamInner::Csv(stream) => stream.next(),
-            TableSourceStreamInner::Databricks(stream) => stream
-                .next()
-                .map(|result| result.map(SourceBatch::databricks)),
             TableSourceStreamInner::Parquet(_) => {
                 return Some(Err(anyhow!(
                     "Parquet source requested as a materialized batch"
@@ -5720,19 +5639,12 @@ impl<'a> TableSourceStream<'a> {
         }
     }
 
-    fn databricks_metrics(&self) -> Option<crate::databricks::QueryMetrics> {
-        match &self.inner {
-            TableSourceStreamInner::Databricks(stream) => Some(stream.metrics()),
-            TableSourceStreamInner::Csv(_) | TableSourceStreamInner::Parquet(_) => None,
-        }
-    }
-
     fn input_wait_nanos(&self) -> u64 {
         self.input_wait_nanos
     }
 }
 
-impl Iterator for TableSourceStream<'_> {
+impl Iterator for TableSourceStream {
     type Item = Result<SourceWork>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -6926,26 +6838,10 @@ fn build_sort_key_batchers_for_edge_table(
 }
 
 const BASE_ENCODE_MEMORY_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
-const MAX_DATABRICKS_ENCODE_MEMORY_BUDGET_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const MAX_RESIDENT_PARQUET_ENCODE_MEMORY_BUDGET_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
-fn encode_memory_budget_bytes(
-    has_databricks: bool,
-    has_resident_parquet: bool,
-    total_memory: Option<u64>,
-) -> u64 {
+fn encode_memory_budget_bytes(has_resident_parquet: bool, total_memory: Option<u64>) -> u64 {
     let mut budget = BASE_ENCODE_MEMORY_BUDGET_BYTES;
-    if has_databricks {
-        budget = budget.max(
-            total_memory
-                .map(|bytes| bytes / 64)
-                .unwrap_or(BASE_ENCODE_MEMORY_BUDGET_BYTES)
-                .clamp(
-                    BASE_ENCODE_MEMORY_BUDGET_BYTES,
-                    MAX_DATABRICKS_ENCODE_MEMORY_BUDGET_BYTES,
-                ),
-        );
-    }
     if has_resident_parquet {
         // Resident Parquet decodes row groups in the shared Encode pool. Give
         // each CPU enough bounded decoder/output memory while CloudTransfer
@@ -6967,13 +6863,13 @@ fn encode_memory_budget_bytes(
 mod encode_memory_budget_tests {
     use super::{
         encode_memory_budget_bytes, BASE_ENCODE_MEMORY_BUDGET_BYTES,
-        MAX_DATABRICKS_ENCODE_MEMORY_BUDGET_BYTES, MAX_RESIDENT_PARQUET_ENCODE_MEMORY_BUDGET_BYTES,
+        MAX_RESIDENT_PARQUET_ENCODE_MEMORY_BUDGET_BYTES,
     };
 
     #[test]
-    fn non_databricks_budget_does_not_scale() {
+    fn budget_does_not_scale_without_resident_parquet() {
         assert_eq!(
-            encode_memory_budget_bytes(false, false, Some(1024 * 1024 * 1024 * 1024)),
+            encode_memory_budget_bytes(false, Some(1024 * 1024 * 1024 * 1024)),
             BASE_ENCODE_MEMORY_BUDGET_BYTES
         );
     }
@@ -6981,28 +6877,12 @@ mod encode_memory_budget_tests {
     #[test]
     fn resident_parquet_budget_scales_for_parallel_row_group_decode() {
         assert_eq!(
-            encode_memory_budget_bytes(false, true, Some(64 * 1024 * 1024 * 1024)),
+            encode_memory_budget_bytes(true, Some(64 * 1024 * 1024 * 1024)),
             4 * 1024 * 1024 * 1024
         );
         assert_eq!(
-            encode_memory_budget_bytes(false, true, Some(512 * 1024 * 1024 * 1024)),
+            encode_memory_budget_bytes(true, Some(512 * 1024 * 1024 * 1024)),
             MAX_RESIDENT_PARQUET_ENCODE_MEMORY_BUDGET_BYTES
-        );
-    }
-
-    #[test]
-    fn databricks_budget_scales_between_laptop_floor_and_vm_cap() {
-        assert_eq!(
-            encode_memory_budget_bytes(true, false, Some(24 * 1024 * 1024 * 1024)),
-            BASE_ENCODE_MEMORY_BUDGET_BYTES
-        );
-        assert_eq!(
-            encode_memory_budget_bytes(true, false, Some(512 * 1024 * 1024 * 1024)),
-            8 * 1024 * 1024 * 1024
-        );
-        assert_eq!(
-            encode_memory_budget_bytes(true, false, Some(4 * 1024 * 1024 * 1024 * 1024)),
-            MAX_DATABRICKS_ENCODE_MEMORY_BUDGET_BYTES
         );
     }
 }
@@ -7264,8 +7144,6 @@ impl IngestContext {
             source,
             target,
             profile_dir: options.profile_dir,
-            databricks_config_file: options.databricks_config_file,
-            databricks_helper: None,
             parallel: options.parallel,
             source_loader_threads: options.source_loader_threads,
             source_encoder_threads: options.source_encoder_threads,
@@ -7308,9 +7186,6 @@ impl IngestContext {
             temp_fkeys_bytes: 0,
             temp_edges_map_bytes: 0,
             temp_node_data_bytes: 0,
-            databricks_wire_bytes: 0,
-            databricks_decoded_ipc_bytes: 0,
-            databricks_query_startup_nanos: 0,
             logical_arrow_source_bytes: 0,
             logical_arrow_source_bytes_by_table: HashMap::new(),
             source_input_wait_nanos: 0,
@@ -7334,26 +7209,16 @@ impl IngestContext {
     }
 
     /// Resolve every physical schema before the Encode marker/timer begins.
-    /// Databricks uses a LIMIT 0 metadata query on the same reusable helper
-    /// connection, so preparation does not add a full source scan.
     fn prepare_input_schemas(&mut self) -> Result<()> {
-        let mut helper = start_databricks_helper(&self.source)?;
-        visit_source_schemas(
-            &self.source,
-            self.databricks_config_file.as_deref(),
-            &mut helper,
-            |table, schema| {
-                let synthetic_columns = self
-                    .resolve_columns
-                    .iter()
-                    .filter(|resolution| resolution.table == table.name)
-                    .map(|resolution| resolution.node_id_col.clone())
-                    .collect::<HashSet<_>>();
-                validate_source_schema(table, schema, &synthetic_columns)
-            },
-        )?;
-        self.databricks_helper = helper;
-        Ok(())
+        visit_source_schemas(&self.source, |table, schema| {
+            let synthetic_columns = self
+                .resolve_columns
+                .iter()
+                .filter(|resolution| resolution.table == table.name)
+                .map(|resolution| resolution.node_id_col.clone())
+                .collect::<HashSet<_>>();
+            validate_source_schema(table, schema, &synthetic_columns)
+        })
     }
 
     fn build_temp_shards(&mut self) -> Result<()> {
@@ -7364,9 +7229,6 @@ impl IngestContext {
         const ENCODE_MAX_OVERSIZED_CHUNK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
         let mut tables = self.source.tables.clone();
         let encode_memory_budget_bytes = encode_memory_budget_bytes(
-            tables
-                .iter()
-                .any(|table| matches!(table.source, graph_config::DataSource::Databricks { .. })),
             tables.iter().any(|table| {
                 matches!(
                     table.source,
@@ -7466,7 +7328,6 @@ impl IngestContext {
         // node/edge consumers. Context sampling remains single-threaded;
         // replay and all later batches may be encoded by any worker.
         {
-            let mut helper = self.databricks_helper.take();
             for table in &mut tables {
                 let table_encode_start = std::time::Instant::now();
                 tracing::info!(phase = "encode", table = %table.name, "table started");
@@ -7524,34 +7385,6 @@ impl IngestContext {
                             input_transfer.as_ref(),
                             Arc::clone(&source_budget),
                         )?))
-                    }
-                    graph_config::DataSource::Databricks { .. } => {
-                        let mut query_options = crate::databricks::QueryStreamOptions::default();
-                        if let Some(loaders) = self.source_loader_threads {
-                            query_options.max_concurrent_downloads = loaders.max(1);
-                        }
-                        if std::env::var_os("DISKGRAPH_DATABRICKS_BENCHMARK_ALLOW_HTTP_LOOPBACK")
-                            .is_some_and(|value| value == "1")
-                        {
-                            query_options.allow_loopback_http_for_benchmark();
-                        }
-                        if std::env::var_os("DISKGRAPH_DATABRICKS_BENCHMARK_ISOLATE_CONSUMER")
-                            .is_some_and(|value| value == "1")
-                        {
-                            query_options.max_concurrent_downloads = 1;
-                            query_options.pause_download_while_batch_active();
-                        }
-                        TableSourceStreamInner::Databricks(Box::new(
-                            crate::databricks::DatabricksQueryStream::open_with_shared_budget(
-                                helper.as_mut().ok_or_else(|| {
-                                    anyhow!("Databricks helper was not initialized")
-                                })?,
-                                &table.source,
-                                self.databricks_config_file.as_deref(),
-                                query_options,
-                                Arc::clone(&source_budget),
-                            )?,
-                        ))
                     }
                     _ => return Err(anyhow!("table {} source is not implemented", table.name)),
                 };
@@ -7914,17 +7747,6 @@ impl IngestContext {
                     elapsed_ms = table_encode_start.elapsed().as_millis(),
                     "table producers complete"
                 );
-                if let Some(metrics) = stream.databricks_metrics() {
-                    self.databricks_wire_bytes = self
-                        .databricks_wire_bytes
-                        .saturating_add(metrics.wire_bytes);
-                    self.databricks_decoded_ipc_bytes = self
-                        .databricks_decoded_ipc_bytes
-                        .saturating_add(metrics.decoded_ipc_bytes);
-                    self.databricks_query_startup_nanos = self
-                        .databricks_query_startup_nanos
-                        .saturating_add(metrics.query_startup_nanos);
-                }
                 if let Some(callback) = &self.progress {
                     callback(ProgressEvent {
                         phase: ProgressPhase::Encode,
@@ -8069,9 +7891,6 @@ impl IngestContext {
             temp_edges_src_bytes: self.temp_edges_src_bytes,
             temp_fkeys_bytes: self.temp_fkeys_bytes,
             temp_node_data_bytes: self.temp_node_data_bytes,
-            databricks_wire_bytes: self.databricks_wire_bytes,
-            databricks_decoded_ipc_bytes: self.databricks_decoded_ipc_bytes,
-            databricks_query_startup_nanos: self.databricks_query_startup_nanos,
             logical_arrow_source_bytes: self.logical_arrow_source_bytes,
             logical_arrow_source_bytes_by_table: self.logical_arrow_source_bytes_by_table.clone(),
             source_input_wait_nanos: self.source_input_wait_nanos,
@@ -8123,9 +7942,6 @@ impl IngestContext {
         self.temp_edges_src_bytes = state.temp_edges_src_bytes;
         self.temp_fkeys_bytes = state.temp_fkeys_bytes;
         self.temp_node_data_bytes = state.temp_node_data_bytes;
-        self.databricks_wire_bytes = state.databricks_wire_bytes;
-        self.databricks_decoded_ipc_bytes = state.databricks_decoded_ipc_bytes;
-        self.databricks_query_startup_nanos = state.databricks_query_startup_nanos;
         self.logical_arrow_source_bytes = state.logical_arrow_source_bytes;
         self.logical_arrow_source_bytes_by_table = state.logical_arrow_source_bytes_by_table;
         self.source_input_wait_nanos = state.source_input_wait_nanos;
@@ -13139,26 +12955,7 @@ fn run_phase_with_marker_payload(
         f()?;
     }
     write_phase_marker_payload(root, name, marker_payload)?;
-    if name == "encode" {
-        remove_ephemeral_databricks_config()?;
-    }
     Ok(())
-}
-
-fn remove_ephemeral_databricks_config() -> Result<()> {
-    let Some(path) = std::env::var_os(EPHEMERAL_DATABRICKS_CONFIG_ENV) else {
-        return Ok(());
-    };
-    remove_ephemeral_databricks_config_path(&PathBuf::from(path))
-}
-
-fn remove_ephemeral_databricks_config_path(path: &Path) -> Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error)
-            .with_context(|| format!("remove ephemeral Databricks config: {}", path.display())),
-    }
 }
 
 fn edge_id_width(max_id: u64) -> u8 {
@@ -16184,6 +15981,36 @@ pub fn default_worker_threads() -> usize {
         .saturating_mul(105)
         .saturating_add(99)
         / 100
+}
+
+const LOADERS_PER_WORKER: usize = 4;
+// Source loading currently uses one blocking OS thread per active object.
+// Keep that model bounded even on hosts with hundreds of cores.
+const MAX_SOURCE_LOADER_THREADS: usize = 512;
+
+fn source_loader_threads(workers: usize) -> usize {
+    workers
+        .max(1)
+        .saturating_mul(LOADERS_PER_WORKER)
+        .min(MAX_SOURCE_LOADER_THREADS)
+}
+
+/// Default concurrent source loaders when `--context-threads` is unset.
+pub fn default_source_loader_threads() -> usize {
+    source_loader_threads(default_worker_threads())
+}
+
+#[cfg(test)]
+mod source_loader_thread_tests {
+    use super::{source_loader_threads, MAX_SOURCE_LOADER_THREADS};
+
+    #[test]
+    fn source_loader_threads_scale_from_laptops_to_large_vms() {
+        assert_eq!(source_loader_threads(1), 4);
+        assert_eq!(source_loader_threads(11), 44);
+        assert_eq!(source_loader_threads(128), MAX_SOURCE_LOADER_THREADS);
+        assert_eq!(source_loader_threads(usize::MAX), MAX_SOURCE_LOADER_THREADS);
+    }
 }
 
 fn run_tasks<S: Default + Send + 'static>(

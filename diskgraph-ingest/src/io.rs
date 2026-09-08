@@ -132,9 +132,7 @@ pub(crate) fn build_input_transfer_for_table(table: &TableSpec) -> Result<Option
         }
         DataSource::Parquet { paths } => build_input_transfer_for_cloud_paths(table, paths),
         DataSource::Csv { paths } => build_input_transfer_for_cloud_paths(table, paths),
-        DataSource::Snowflake { .. }
-        | DataSource::Databricks { .. }
-        | DataSource::BigQuery { .. } => Ok(None),
+        DataSource::Snowflake { .. } | DataSource::BigQuery { .. } => Ok(None),
     }
 }
 

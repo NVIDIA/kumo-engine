@@ -147,9 +147,6 @@ pub struct ResolveColumnSpec {
 #[derive(Clone)]
 pub struct IngestOptions {
     pub profile_dir: Option<PathBuf>,
-    /// Optional mode-0600 `.databrickscfg` file handed only to the Databricks
-    /// helper during Encode. Its profiles and credentials are never persisted.
-    pub databricks_config_file: Option<PathBuf>,
     pub progress: Option<ProgressCallback>,
     pub parallel: bool,
     pub index_mem_budget_bytes: Option<u64>,
@@ -165,8 +162,7 @@ pub struct IngestOptions {
     /// own outputs are wiped on entry to clear partial state from a prior crash.
     /// `None` (default) preserves today's behaviour: run all phases unconditionally.
     pub resume_from_phase: Option<IngestPhase>,
-    /// Maximum concurrent source loaders/downloads during Encode. Databricks
-    /// uses this as its bounded Cloud Fetch link lookahead.
+    /// Maximum concurrent source loaders/downloads during Encode.
     pub source_loader_threads: Option<usize>,
     /// Maximum Encode workers shared by node and edge tables.
     pub source_encoder_threads: Option<usize>,
@@ -187,7 +183,6 @@ impl Default for IngestOptions {
     fn default() -> Self {
         Self {
             profile_dir: None,
-            databricks_config_file: None,
             progress: None,
             parallel: true,
             index_mem_budget_bytes: None,

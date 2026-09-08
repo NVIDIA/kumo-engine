@@ -56,7 +56,7 @@ Notes:
 ```
 
 Rules:
-- `source`: data source definition. Supported types: `parquet` (local or `s3://`, `gs://`, `az://`), `csv`, `snowflake`, `databricks`, `bigquery`.
+- `source`: data source definition. Supported types: `parquet` (local or `s3://`, `gs://`, `az://`), `object_store_parquet` (exact cloud manifest), `csv`.
 - `primary_key` (optional): numeric or string/bytes column. Enables MPHF construction for O(1) PK → node ID lookups.
 - `create_time` (optional): `date` or `timestamp` column. Used for temporal entity filtering (skip entities created after seed timestamp).
 - `end_time` (optional): `date` or `timestamp` column. Used for temporal entity expiry (skip entities that expired before seed timestamp).
