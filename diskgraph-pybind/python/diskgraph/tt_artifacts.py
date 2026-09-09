@@ -136,6 +136,7 @@ def build_train_table_artifacts_for_existing_table(
     target_entity_table: Optional[str] = None,
     task_type: Optional[str] = None,
     lp_rhs_is_temporal: bool = False,
+    allow_new_target_entities: bool = False,
 ) -> dict:
     """Rebuild TT artifacts (manifest + sidecars) for an existing
     training-table parquet.
@@ -174,6 +175,8 @@ def build_train_table_artifacts_for_existing_table(
         lp_rhs_is_temporal: Whether LP target/RHS table has time/end-time
             columns. Temporal-RHS LP CTT ingest uses this to emit per-stage
             timestamp bucket indexes, matching the native TT-gen path.
+        allow_new_target_entities: Preserve targets created after the anchor;
+            downstream LP resolution still validates every target PK.
 
     Returns:
         dict describing the durable GEN-ONLY bundle (mirrors
@@ -218,6 +221,7 @@ def build_train_table_artifacts_for_existing_table(
         target_entity_table=target_entity_table,
         task_type=task_type,
         lp_rhs_is_temporal=bool(lp_rhs_is_temporal),
+        allow_new_target_entities=bool(allow_new_target_entities),
     )
 
 

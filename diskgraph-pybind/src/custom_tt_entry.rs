@@ -121,6 +121,7 @@ fn path_with_suffix(base: &Path, suffix: &str) -> PathBuf {
     target_entity_table = None,
     task_type = None,
     lp_rhs_is_temporal = false,
+    allow_new_target_entities = false,
 ))]
 pub fn build_train_table_artifacts_for_existing_table(
     py: Python<'_>,
@@ -136,6 +137,7 @@ pub fn build_train_table_artifacts_for_existing_table(
     target_entity_table: Option<&str>,
     task_type: Option<&str>,
     lp_rhs_is_temporal: bool,
+    allow_new_target_entities: bool,
 ) -> PyResult<Py<PyAny>> {
     build_bundle_for_existing_table(
         py,
@@ -151,6 +153,7 @@ pub fn build_train_table_artifacts_for_existing_table(
         target_entity_table,
         task_type,
         lp_rhs_is_temporal,
+        allow_new_target_entities,
         /* is_prediction */ false,
     )
 }
@@ -214,30 +217,36 @@ pub fn build_prediction_table_artifacts_for_existing_table(
         // Predict has no split/grouping, so RHS temporality is irrelevant here.
         /* lp_rhs_is_temporal */
         false,
+        /* allow_new_target_entities */
+        false,
         /* is_prediction */ true,
     )
 }
 
 /// Build the plan's `fkey_mapping`: always the LHS `ENTITY1 → entity_table`
-/// entry, plus a `TARGET1 → target_table` entry for LP TRAIN only.
+/// entry, plus a `TARGET1 → target_table` entry for LP TRAIN unless Kumo's
+/// model plan explicitly allows targets created after the anchor.
 ///
 /// A PREDICTION seed table has NO TARGET1 column (just LHS entities +
 /// TIMESTAMP), so the TARGET1 entry is suppressed for predict — otherwise
-/// ingest would error looking up a nonexistent `TARGET1` source column. This
-/// matches the native PQL LP predict bundle, whose seed table also carries only
-/// entity resolution. The RHS node type for inference is carried by kumo's
-/// task-dataset spec, not by a seed-table column.
+/// ingest would error looking up a nonexistent `TARGET1` source column.
+/// With `allow_new_target_entities`, the gen-time TARGET1 mapping is omitted so
+/// the custom chunk processor does not apply anchor-time validity. The
+/// independent `lp_resolution` mapping remains present and validates every PK
+/// during ingest. The PREDICT case likewise suppresses TARGET1 because that
+/// source column is absent; its RHS type is carried by the task-dataset spec.
 fn build_fkey_mapping(
     entity_table_name: &str,
     target_entity_table: Option<&str>,
     is_prediction: bool,
+    allow_new_target_entities: bool,
 ) -> Vec<diskgraph_core::tt_builder::TTFKeySpec> {
     let mut mapping = vec![diskgraph_core::tt_builder::TTFKeySpec {
         src_col: PRIMARY_ENTITY_COL.to_string(),
         dst_table: entity_table_name.to_string(),
     }];
     if let Some(target_table) = target_entity_table {
-        if !is_prediction {
+        if !is_prediction && !allow_new_target_entities {
             mapping.push(diskgraph_core::tt_builder::TTFKeySpec {
                 src_col: PRIMARY_TARGET_COL.to_string(),
                 dst_table: target_table.to_string(),
@@ -315,6 +324,7 @@ fn build_bundle_for_existing_table(
     target_entity_table: Option<&str>,
     task_type: Option<&str>,
     lp_rhs_is_temporal: bool,
+    allow_new_target_entities: bool,
     is_prediction: bool,
 ) -> PyResult<Py<PyAny>> {
     validate_tt_id(tt_id)?;
@@ -382,6 +392,7 @@ fn build_bundle_for_existing_table(
             entity_table_name,
             target_entity_table,
             is_prediction,
+            allow_new_target_entities,
         )),
         lp_resolution: build_lp_resolution(
             entity_table_name,
@@ -521,8 +532,13 @@ mod tests {
     #[test]
     fn lp_train_plan_resolves_entity_and_target() {
         // TRAIN LP: both ENTITY1 (scalar) and TARGET1 (list) resolve, and both
-        // appear in fkey_mapping. This must stay byte-identical to pre-fix.
-        let fkeys = build_fkey_mapping("users", Some("products"), /* is_prediction */ false);
+        // appear in fkey_mapping unless new targets are explicitly allowed.
+        let fkeys = build_fkey_mapping(
+            "users",
+            Some("products"),
+            /* is_prediction */ false,
+            /* allow_new_target_entities */ false,
+        );
         assert_eq!(fkeys.len(), 2);
         assert_eq!(fkeys[0].src_col, PRIMARY_ENTITY_COL);
         assert_eq!(fkeys[1].src_col, PRIMARY_TARGET_COL);
@@ -536,6 +552,15 @@ mod tests {
         assert_eq!(res[1].src_col, PRIMARY_TARGET_COL);
         assert_eq!(res[1].kind, RefResolveKind::List);
         assert_eq!(res[1].dst_table, "products");
+
+        let allowed_fkeys = build_fkey_mapping(
+            "users",
+            Some("products"),
+            /* is_prediction */ false,
+            /* allow_new_target_entities */ true,
+        );
+        assert_eq!(allowed_fkeys.len(), 1);
+        assert_eq!(allowed_fkeys[0].src_col, PRIMARY_ENTITY_COL);
     }
 
     #[test]
@@ -543,7 +568,12 @@ mod tests {
         // PREDICT LP: a prediction seed table has NO TARGET1 column, so neither
         // fkey_mapping nor lp_resolution may reference TARGET1 (ingest would
         // otherwise fail resolving a nonexistent column). Only ENTITY1 remains.
-        let fkeys = build_fkey_mapping("users", Some("products"), /* is_prediction */ true);
+        let fkeys = build_fkey_mapping(
+            "users",
+            Some("products"),
+            /* is_prediction */ true,
+            /* allow_new_target_entities */ false,
+        );
         assert_eq!(fkeys.len(), 1);
         assert_eq!(fkeys[0].src_col, PRIMARY_ENTITY_COL);
         assert!(fkeys.iter().all(|f| f.src_col != PRIMARY_TARGET_COL));
@@ -589,7 +619,7 @@ mod tests {
         // Node/forecasting (no target_entity_table): entity-only fkey, no
         // lp_resolution, for both train and predict.
         for is_prediction in [false, true] {
-            let fkeys = build_fkey_mapping("users", None, is_prediction);
+            let fkeys = build_fkey_mapping("users", None, is_prediction, false);
             assert_eq!(fkeys.len(), 1);
             assert_eq!(fkeys[0].src_col, PRIMARY_ENTITY_COL);
             assert!(build_lp_resolution("users", None, is_prediction, true).is_none());

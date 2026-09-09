@@ -1986,6 +1986,7 @@
                     None,
                     None,
                     false,
+                    false,
                 )
                 .unwrap();
                 let d = d.bind(py);
@@ -2184,6 +2185,7 @@
                 None,
                 None,
                 false,
+                false,
             )
             .expect("custom gen build should succeed");
         });
@@ -2255,6 +2257,7 @@
                 None,
                 None,
                 false,
+                false,
             )
             .expect("custom gen build (split) should succeed");
         });
@@ -2325,6 +2328,7 @@
                 None,
                 Some("orders"), // target_entity_table ⇒ LP mode
                 None,           // task_type
+                false,
                 false,
             )
         });
@@ -2408,6 +2412,7 @@
                 None,
                 None,
                 None,
+                false,
                 false,
             )
             .expect("custom gen build should succeed");
@@ -2502,6 +2507,7 @@
                 None,
                 None,
                 None,
+                false,
                 false,
             )
             .expect("gen build should succeed");
