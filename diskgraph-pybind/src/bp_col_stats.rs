@@ -17,7 +17,7 @@ use rayon::prelude::*;
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 
 use diskgraph_core::accumulators::{
-    kumo_entry, kumo_key, CategoryCountStrategy, WelfordAccumulator,
+    kumo_entry, kumo_key, CategoryCountStrategy, WelfordAccumulator, MAX_CATEGORIES,
 };
 use diskgraph_ingest::col_stats::{minify_kumo_stats, FileColStats, TableCategoryCounts};
 use diskgraph_ingest::graph_config::{ColumnSpec, IngestedType, SemanticType, TimestampUnit};
@@ -848,6 +848,26 @@ pub fn compute_parquet_col_stats(
     columns: &[ColumnSpec],
     data_version: &str,
 ) -> Result<(String, String)> {
+    compute_parquet_col_stats_with_max_categories(
+        parquet_paths,
+        columns,
+        data_version,
+        MAX_CATEGORIES,
+    )
+}
+
+/// Test-focused variant of [`compute_parquet_col_stats`] with an injectable
+/// retained-vocabulary limit. Production callers always use
+/// [`MAX_CATEGORIES`] through the public wrapper above.
+pub(crate) fn compute_parquet_col_stats_with_max_categories(
+    parquet_paths: &[&Path],
+    columns: &[ColumnSpec],
+    data_version: &str,
+    max_categories: u64,
+) -> Result<(String, String)> {
+    if max_categories == 0 {
+        bail!("category count limit must be greater than zero");
+    }
     let names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
     let types: Vec<IngestedType> = columns.iter().map(|c| c.ingested_dtype.clone()).collect();
     let stypes: Vec<_> = columns.iter().map(|c| c.semantic_type).collect();
@@ -856,10 +876,11 @@ pub fn compute_parquet_col_stats(
     }
 
     // Hybrid counting bounds memory for high-cardinality columns.
-    let table_cat = Arc::new(TableCategoryCounts::new(
+    let table_cat = Arc::new(TableCategoryCounts::new_with_max_categories(
         CategoryCountStrategy::Hybrid,
         &stypes,
         /*row_subsample=*/ false,
+        max_categories,
     ));
 
     let mut work: Vec<(usize, usize)> = Vec::new();
@@ -1222,6 +1243,54 @@ mod tests {
         m[key]["value"].clone()
     }
 
+    #[test]
+    fn configurable_small_category_cap_keeps_capping_internal() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("capped.parquet");
+        write_parquet(
+            &path,
+            Schema::new(vec![Field::new("status", DataType::Utf8, false)]),
+            vec![StdArc::new(StringArray::from(vec![
+                "red", "blue", "green", "red", "blue", "red",
+            ])) as ArrayRef],
+            100,
+        );
+        let columns = vec![col(
+            "status",
+            IngestedType::String,
+            SemanticType::Categorical,
+        )];
+
+        let (full, _) =
+            compute_parquet_col_stats_with_max_categories(&[path.as_path()], &columns, "v1", 2)
+                .unwrap();
+        assert_eq!(
+            val(&full, "status__kumo.categorical__CATEGORY_COUNTS__False"),
+            json!([["red", 3], ["blue", 2]])
+        );
+        let full: JsonMap<String, JsonValue> = serde_json::from_str(&full).unwrap();
+        assert!(full
+            .keys()
+            .all(|key| !key.contains("CATEGORY_COUNTS_CAPPED")));
+        assert!(!full.contains_key("status__kumo.categorical__NUM_UNIQUE__True"));
+        let num_unique = &full["status__kumo.categorical__NUM_UNIQUE__False"];
+        assert_eq!(num_unique["value"], json!(3));
+        assert_eq!(num_unique["approx"], json!(false));
+        assert!(!full.contains_key("status__kumo.categorical__UNIQUE_FRACTION__True"));
+        assert_eq!(
+            full["status__kumo.categorical__UNIQUE_FRACTION__False"]["approx"],
+            json!(false)
+        );
+    }
+
+    #[test]
+    fn configurable_category_cap_rejects_zero() {
+        let error = compute_parquet_col_stats_with_max_categories(&[], &[], "v1", 0).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("category count limit must be greater than zero"));
+    }
+
     /// Multi-row-group single file → parallel workers + merge must equal truth.
     #[test]
     fn parallel_row_groups_match_truth() {
@@ -1284,7 +1353,9 @@ mod tests {
             3u64
         );
 
-        // entity num_unique == n EXACT (1000 distinct, well under the 1M cap).
+        // entity is an `Id` column: its category counts are collected (capped at
+        // MAX_CATEGORIES), so with n well under the cap the map is complete and
+        // NUM_UNIQUE is exact rather than an HLL estimate.
         assert_eq!(val(&full, "entity__kumo.ID__NUM_UNIQUE__False"), n as u64);
 
         // CLASS category counts populated (new_with_categories).

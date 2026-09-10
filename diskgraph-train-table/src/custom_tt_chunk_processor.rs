@@ -598,7 +598,6 @@ pub(crate) fn custom_tt_chunk_processor<U: UnitSystem, D: SplitDecider<U> + Clon
     sender: &Sender<crate::ttgen_output::BatchMessage>,
     decider_template: &D,
     shared_target_counts: Option<Arc<SharedColumnCounts>>,
-    shared_entity_counts: Arc<SharedColumnCounts>,
     input_timestamp_unit: TimeUnit,
 ) -> TTGenResult<(u64, RowProcessor<U, D>)> {
     // Build OutputMode from the customer parquet's *schema* (not the
@@ -702,16 +701,14 @@ pub(crate) fn custom_tt_chunk_processor<U: UnitSystem, D: SplitDecider<U> + Clon
 
     let mut processor: RowProcessor<U, D> =
         RowProcessor::new(stats, decider_template.clone());
-    let mut local_target_counts: Option<LocalColumnCounts> = if target_is_categorical {
-        Some(LocalColumnCounts::with_capacity(5000))
-    } else {
-        None
-    };
-    // Entity CATEGORY_COUNTS has no downstream reader (the entity column is a
-    // FK/pkey resolved to node ids, never encoded), so it is not collected --
-    // only entity cardinality via the HLL (NUM_UNIQUE) is retained. See the
-    // parallel comment in `ttgen_executor::run_pass_a`.
-    let mut local_entity_counts: Option<LocalColumnCounts> = None;
+    // Only allocate the per-worker target map when there is a shared accumulator
+    // to flush into (mirrors `execute_chunk`): LP targets have no exact-vocabulary
+    // consumer (`shared_target_counts` is None), so collecting them is dead work.
+    // Entity category counts are never collected (the entity column is a graph
+    // FK/pkey with no consumer); only its HLL cardinality is retained.
+    let mut local_target_counts: Option<LocalColumnCounts> = shared_target_counts
+        .is_some()
+        .then(|| LocalColumnCounts::with_capacity(5000));
 
     // ── Read assigned row groups ─────────────────────────────────────────
     if !row_groups.is_empty() {
@@ -758,7 +755,6 @@ pub(crate) fn custom_tt_chunk_processor<U: UnitSystem, D: SplitDecider<U> + Clon
                 target_is_categorical,
                 target_stype,
                 &mut local_target_counts,
-                &mut local_entity_counts,
                 &mut writer,
                 &mut processor,
                 input_timestamp_unit,
@@ -766,17 +762,11 @@ pub(crate) fn custom_tt_chunk_processor<U: UnitSystem, D: SplitDecider<U> + Clon
         }
     }
 
-
-    // Flush local counts to shared.
+    // Flush local target counts to shared.
     if let (Some(ref shared), Some(ref mut local)) =
         (&shared_target_counts, &mut local_target_counts)
     {
         shared.merge_local_batch(local);
-    }
-    // Entity counts are not collected (see `local_entity_counts` above), so the
-    // shared accumulator stays empty and consumes none of the string budget.
-    if let Some(ref mut local) = local_entity_counts {
-        shared_entity_counts.merge_local_batch(local);
     }
 
     let rows = writer.finish()?;
@@ -802,7 +792,6 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
     target_is_categorical: bool,
     target_stype: &str,
     local_target_counts: &mut Option<LocalColumnCounts>,
-    local_entity_counts: &mut Option<LocalColumnCounts>,
     writer: &mut ChannelBatchWriter<U>,
     processor: &mut RowProcessor<U, D>,
     input_timestamp_unit: TimeUnit,
@@ -1009,7 +998,7 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                     // Custom-TT split column (e.g. ManualSplit on `split_col`).
                     split_column_value: split_value.as_ref(),
                 };
-                processor.observe(&row, local_target_counts, local_entity_counts);
+                processor.observe(&row, local_target_counts);
                 processor.stats.include_true_count += 1;
                 processor.stats.num_train_rows += 1;
             }
@@ -1098,11 +1087,7 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                             target_stype,
                             split_column_value: split_value.as_ref(),
                         };
-                        processor.observe(
-                            &row,
-                            local_target_counts,
-                            local_entity_counts,
-                        );
+                        processor.observe(&row, local_target_counts);
                     }
                 }
                 processor.stats.include_true_count += 1;
@@ -1188,7 +1173,7 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                         // `split_col`): the per-row value drives split-stats.
                         split_column_value: split_value.as_ref(),
                     };
-                    processor.observe(&row, local_target_counts, local_entity_counts);
+                    processor.observe(&row, local_target_counts);
                 }
                 processor.stats.include_true_count += 1;
                 processor.stats.num_train_rows += 1;
@@ -1322,7 +1307,7 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                             target_stype,
                             split_column_value: split_value.as_ref(),
                         };
-                        processor.observe(&row, local_target_counts, local_entity_counts);
+                        processor.observe(&row, local_target_counts);
                         for (idx, tgt) in targets.iter().enumerate().skip(1) {
                             let freq = if *include_frequency {
                                 freqs.get(idx).copied()

@@ -188,7 +188,7 @@ pub fn compute_text_sample_stats(values: &[&str]) -> TextSampleStats {
 
 pub use diskgraph_core::accumulators::{
     build_multicat_emit_stats, compute_min_occ, isqrt, kumo_entry, kumo_key, kumo_safe_div,
-    CategoryCountStrategy, CategoryStringBudget, CountStorage, IdentityBuildHasher, IdentityHasher,
+    CategoryCountStrategy, CountStorage, IdentityBuildHasher, IdentityHasher,
     LocalColumnCounts, MulticatInputKind, SharedColumnCounts, MAX_CATEGORIES,
 };
 
@@ -204,89 +204,62 @@ pub struct TableCategoryCounts {
     pub columns: Vec<Option<Arc<SharedColumnCounts>>>,
     /// Whether per-row subsampling is enabled (30% sampling, scale ÷0.3).
     pub row_subsample: bool,
-    string_budgeted: bool,
     /// Monotonic file counter for PRNG seeding (unique seed per file).
     file_counter: AtomicU64,
 }
 
 impl TableCategoryCounts {
     /// Create shared state for a table given its column semantic types.
-    /// Categorical, Id, and Multicategorical columns get category count collection.
-    /// Multicategorical reuses the same machinery: one DashMap entry per distinct
-    /// *token* (not per row), fed by the per-input-kind tokenization paths in
-    /// `ColumnStatsCollector::Multicategorical`.
+    /// Categorical, Id, and Multicategorical columns get category count
+    /// collection, each capped at `MAX_CATEGORIES` uniques so Encode memory
+    /// stays bounded. Multicategorical reuses the same machinery: one DashMap
+    /// entry per distinct *token* (not per row), fed by the per-input-kind
+    /// tokenization paths in `ColumnStatsCollector::Multicategorical`.
     pub fn new(
         strategy: CategoryCountStrategy,
         semantic_types: &[Option<SemanticType>],
         row_subsample: bool,
     ) -> Self {
-        Self::new_inner(strategy, semantic_types, row_subsample, None)
+        Self::new_with_max_categories(strategy, semantic_types, row_subsample, MAX_CATEGORIES)
     }
 
-    pub fn new_with_string_budget(
+    /// Construct table counts with an injectable Hybrid feature cap.
+    /// Production uses [`MAX_CATEGORIES`]; focused tests use a small cap while
+    /// exercising the same observation and publication paths.
+    pub fn new_with_max_categories(
         strategy: CategoryCountStrategy,
         semantic_types: &[Option<SemanticType>],
         row_subsample: bool,
-        string_budget: Arc<CategoryStringBudget>,
+        max_categories: u64,
     ) -> Self {
-        Self::new_inner(strategy, semantic_types, row_subsample, Some(string_budget))
-    }
-
-    fn new_inner(
-        strategy: CategoryCountStrategy,
-        semantic_types: &[Option<SemanticType>],
-        row_subsample: bool,
-        string_budget: Option<Arc<CategoryStringBudget>>,
-    ) -> Self {
+        assert!(
+            strategy != CategoryCountStrategy::Hybrid || !row_subsample,
+            "Hybrid category counts require row_subsample=false so retained occurrence counts are exact"
+        );
         let columns = semantic_types
             .iter()
             .map(|stype| match stype {
+                // Id columns are counted alongside Categorical: some models
+                // consume their category counts, and the shared map is capped
+                // so there is no memory reason to skip them.
                 Some(SemanticType::Categorical) | Some(SemanticType::Id) => {
-                    if string_budget
-                        .as_ref()
-                        .is_some_and(|budget| !budget.try_reserve_column())
-                    {
-                        return None;
-                    }
-                    let shared = match (strategy, string_budget.as_ref()) {
-                        (CategoryCountStrategy::Graduation, Some(budget)) => {
-                            SharedColumnCounts::new_graduation_with_string_budget(Arc::clone(
-                                budget,
-                            ))
-                        }
-                        (CategoryCountStrategy::Graduation, None) => {
-                            SharedColumnCounts::new_graduation()
-                        }
-                        (_, Some(budget)) => {
-                            SharedColumnCounts::new_hashed_with_string_budget(Arc::clone(budget))
-                        }
-                        (_, None) => SharedColumnCounts::new_hashed(),
+                    let shared = match strategy {
+                        CategoryCountStrategy::Graduation => SharedColumnCounts::new_graduation(),
+                        _ => SharedColumnCounts::new_hashed_capped_with_max_categories(
+                            max_categories,
+                        ),
                     };
                     Some(Arc::new(shared))
                 }
                 Some(SemanticType::Multicategorical) => {
-                    if string_budget
-                        .as_ref()
-                        .is_some_and(|budget| !budget.try_reserve_column())
-                    {
-                        return None;
-                    }
                     // Token cardinality can be proportional to the complete
-                    // input. Use the same bounded/abort policy as scalar
-                    // categorical columns so Encode memory remains capped.
-                    let shared = match (strategy, string_budget.as_ref()) {
-                        (CategoryCountStrategy::Graduation, Some(budget)) => {
-                            SharedColumnCounts::new_graduation_with_string_budget(Arc::clone(
-                                budget,
-                            ))
-                        }
-                        (CategoryCountStrategy::Graduation, None) => {
-                            SharedColumnCounts::new_graduation_uncapped()
-                        }
-                        (_, Some(budget)) => {
-                            SharedColumnCounts::new_hashed_with_string_budget(Arc::clone(budget))
-                        }
-                        (_, None) => SharedColumnCounts::new_hashed_uncapped(),
+                    // input. Use the same capped/abort policy as scalar
+                    // categorical columns so Encode memory remains bounded.
+                    let shared = match strategy {
+                        CategoryCountStrategy::Graduation => SharedColumnCounts::new_graduation(),
+                        _ => SharedColumnCounts::new_hashed_capped_with_max_categories(
+                            max_categories,
+                        ),
                     };
                     Some(Arc::new(shared))
                 }
@@ -297,7 +270,6 @@ impl TableCategoryCounts {
             strategy,
             columns,
             row_subsample,
-            string_budgeted: string_budget.is_some(),
             file_counter: AtomicU64::new(0),
         }
     }
@@ -755,13 +727,9 @@ impl FileColStats {
                 .columns
                 .iter()
                 .map(|shared| {
-                    shared.as_ref().map(|_| {
-                        LocalColumnCounts::with_capacity(if table_cat.string_budgeted {
-                            0
-                        } else {
-                            HYBRID_LOCAL_CAP
-                        })
-                    })
+                    shared
+                        .as_ref()
+                        .map(|_| LocalColumnCounts::with_capacity(HYBRID_LOCAL_CAP))
                 })
                 .collect(),
             _ => (0..columns.len()).map(|_| None).collect(),
@@ -908,6 +876,19 @@ impl FileColStats {
                 get_category_counts_for_col(self.cat_strategy, &self.cat_local, table_cat, col_idx)
             })
             .collect();
+        let cat_capped: Vec<Option<bool>> = (0..self.cols.len())
+            .map(|col_idx| {
+                (self.cat_strategy == CategoryCountStrategy::Hybrid)
+                    .then(|| {
+                        table_cat?
+                            .columns
+                            .get(col_idx)?
+                            .as_ref()
+                            .map(|shared| shared.is_capped())
+                    })
+                    .flatten()
+            })
+            .collect();
 
         let mut map = serde_json::Map::new();
         for (col_idx, (col, name)) in self.cols.iter_mut().zip(column_names.iter()).enumerate() {
@@ -919,8 +900,10 @@ impl FileColStats {
                         let is_int = ingested_types
                             .get(col_idx)
                             .is_some_and(|t| t.is_integer_like());
-                        let json_counts: Vec<JsonValue> = cc
-                            .iter()
+                        let mut sorted: Vec<_> = cc.iter().collect();
+                        sorted.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+                        let json_counts: Vec<JsonValue> = sorted
+                            .into_iter()
                             .map(|(k, v)| {
                                 let key_val = if is_int {
                                     k.parse::<i64>()
@@ -933,6 +916,9 @@ impl FileColStats {
                             })
                             .collect();
                         obj.insert("category_counts".to_string(), JsonValue::Array(json_counts));
+                        if let Some(capped) = cat_capped[col_idx] {
+                            obj.insert("category_counts_capped".to_string(), json!(capped));
+                        }
                     }
                 }
                 // Merge text sample stats (from context phase) for text columns.
@@ -1522,8 +1508,10 @@ fn build_cat_count_json(
             | Some(IngestedType::Float32Array)
             | Some(IngestedType::Float64Array)
     );
-    let pairs: Vec<JsonValue> = cc
-        .iter()
+    let mut sorted: Vec<_> = cc.iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+    let pairs: Vec<JsonValue> = sorted
+        .into_iter()
         .map(|(k, v)| {
             let key_val = if is_bool {
                 // Emit JSON bools to match Spark's True/False representation.
@@ -1597,6 +1585,26 @@ impl FileColStats {
                 get_category_counts_for_col(self.cat_strategy, &self.cat_local, table_cat, col_idx)
             })
             .collect();
+        let cat_capped: Vec<Option<bool>> = (0..self.cols.len())
+            .map(|col_idx| {
+                (self.cat_strategy == CategoryCountStrategy::Hybrid)
+                    .then(|| {
+                        table_cat?
+                            .columns
+                            .get(col_idx)?
+                            .as_ref()
+                            .map(|shared| shared.is_capped())
+                    })
+                    .flatten()
+            })
+            .collect();
+
+        // The category map enumerates every distinct value only under
+        // non-subsampled Hybrid. Graduation drops sub-threshold categories and
+        // subsampling only sees a fraction, so those paths cannot use the map's
+        // length as the exact unique count.
+        let cat_map_is_exhaustive =
+            self.cat_strategy == CategoryCountStrategy::Hybrid && !self.row_subsample;
 
         let mut map = serde_json::Map::new();
         let dv = data_version;
@@ -1726,18 +1734,20 @@ impl FileColStats {
                         kumo_key(name, sk, "CATEGORY_COUNTS", false),
                         kumo_entry(values, false, dv, total),
                     );
-                    // Prefer the exact distinct count from the
-                    // memory-bounded category map when it is complete; fall
-                    // back to the HLL estimate only when the map aborted
-                    // (cardinality exceeded MAX_CATEGORIES). A present Hybrid
-                    // map is exhaustive, so it overrides HLL rather than
-                    // max()-ing with it. Non-category columns (e.g. Text)
-                    // have no map → always HLL, behavior unchanged.
+                    let capped = cat_capped[col_idx].unwrap_or(false);
+                    // Use the exact distinct count from the count-capped
+                    // category map only when it is exhaustive (non-subsampled
+                    // Hybrid). Graduation drops sub-threshold categories,
+                    // subsampling sees only a fraction, and an aborted or
+                    // absent map is None — all fall back to the HLL estimate.
+                    let use_hll = !cat_map_is_exhaustive || capped;
                     let num_unique = match &cat_counts[col_idx] {
-                        Some(cc) => cc.len() as u64,
-                        None => hll.estimate() as u64,
+                        Some(cc) if !use_hll => cc.len() as u64,
+                        _ => hll.estimate() as u64,
                     }
                     .min(total);
+                    // Compatibility debt: scalar cardinality has historically
+                    // used False keys and flags even when sourced from HLL.
                     map.insert(
                         kumo_key(name, sk, "NUM_UNIQUE", false),
                         kumo_entry(json!(num_unique), false, dv, total),
@@ -1774,18 +1784,20 @@ impl FileColStats {
                         kumo_key(name, sk, "CATEGORY_COUNTS", false),
                         kumo_entry(values, false, dv, total),
                     );
-                    // Prefer the exact distinct count from the
-                    // memory-bounded category map when it is complete; fall
-                    // back to the HLL estimate only when the map aborted
-                    // (cardinality exceeded MAX_CATEGORIES). A present Hybrid
-                    // map is exhaustive, so it overrides HLL rather than
-                    // max()-ing with it. Non-category columns (e.g. Text)
-                    // have no map → always HLL, behavior unchanged.
+                    let capped = cat_capped[col_idx].unwrap_or(false);
+                    // Use the exact distinct count from the count-capped
+                    // category map only when it is exhaustive (non-subsampled
+                    // Hybrid). Graduation drops sub-threshold categories,
+                    // subsampling sees only a fraction, and an aborted or
+                    // absent map is None — all fall back to the HLL estimate.
+                    let use_hll = !cat_map_is_exhaustive || capped;
                     let num_unique = match &cat_counts[col_idx] {
-                        Some(cc) => cc.len() as u64,
-                        None => hll.estimate() as u64,
+                        Some(cc) if !use_hll => cc.len() as u64,
+                        _ => hll.estimate() as u64,
                     }
                     .min(total);
+                    // Compatibility debt: scalar cardinality has historically
+                    // used False keys and flags even when sourced from HLL.
                     map.insert(
                         kumo_key(name, sk, "NUM_UNIQUE", false),
                         kumo_entry(json!(num_unique), false, dv, total),
@@ -1836,16 +1848,14 @@ impl FileColStats {
                             kumo_entry(json!(tss.glove_overlap), true, dv, total),
                         );
                     }
-                    // Prefer the exact distinct count from the
-                    // memory-bounded category map when it is complete; fall
-                    // back to the HLL estimate only when the map aborted
-                    // (cardinality exceeded MAX_CATEGORIES). A present Hybrid
-                    // map is exhaustive, so it overrides HLL rather than
-                    // max()-ing with it. Non-category columns (e.g. Text)
-                    // have no map → always HLL, behavior unchanged.
+                    // Use the exact distinct count from the count-capped
+                    // category map only when it is exhaustive (non-subsampled
+                    // Hybrid). Graduation drops sub-threshold categories,
+                    // subsampling sees only a fraction, and an aborted or
+                    // absent map is None — all fall back to the HLL estimate.
                     let num_unique = match &cat_counts[col_idx] {
-                        Some(cc) => cc.len() as u64,
-                        None => hll.estimate() as u64,
+                        Some(cc) if cat_map_is_exhaustive => cc.len() as u64,
+                        _ => hll.estimate() as u64,
                     }
                     .min(total);
                     map.insert(
@@ -2070,18 +2080,19 @@ impl FileColStats {
             CategoryCountStrategy::Hybrid => {
                 if let Some(ref shared) = self.cat_shared {
                     if let Some(ref col_shared) = shared.columns[col_idx] {
-                        if col_shared.is_aborted() {
-                            return;
-                        }
                         if let Some(ref mut local) = self.cat_local[col_idx] {
-                            if local.counts.contains_key(&hash) {
-                                *local.counts.get_mut(&hash).unwrap() += 1;
-                            } else if local.len() < HYBRID_LOCAL_CAP {
-                                if col_shared.reserve_string_bytes(value.len()) {
-                                    local.observe(hash, value);
-                                }
-                            } else {
-                                col_shared.observe_hashed(hash, value);
+                            if local.increment_if_present(hash, value) {
+                                return;
+                            }
+                            // Shared state owns membership: count/admit the
+                            // first occurrence before caching only future
+                            // unmerged deltas locally. This prevents a hot
+                            // early value from being stranded in a worker map
+                            // while unrelated workers fill the global cap.
+                            if col_shared.observe_hashed(hash, value)
+                                && local.len() < HYBRID_LOCAL_CAP
+                            {
+                                local.cache_admitted(hash, value);
                             }
                         }
                     }
@@ -2104,17 +2115,13 @@ impl FileColStats {
                             if local.counts.contains_key(&hash) {
                                 *local.counts.get_mut(&hash).unwrap() += 1;
                             } else if local.len() < HYBRID_LOCAL_CAP {
-                                if col_shared.reserve_string_bytes(value.len()) {
-                                    local.observe(hash, value);
-                                }
+                                local.observe(hash, value);
                             } else {
                                 let snap = col_shared.merge_local_batch_graduation(local);
                                 local.clear();
                                 // Refresh graduated snapshot
                                 self.grad_snapshots[col_idx] = Some(snap);
-                                if col_shared.reserve_string_bytes(value.len()) {
-                                    local.observe(hash, value);
-                                }
+                                local.observe(hash, value);
                             }
                         }
                     }
@@ -2142,29 +2149,14 @@ impl FileColStats {
             CategoryCountStrategy::Hybrid => {
                 if let Some(ref shared) = self.cat_shared {
                     if let Some(ref col_shared) = shared.columns[col_idx] {
-                        if col_shared.is_aborted() {
-                            return;
-                        }
                         if let Some(ref mut local) = self.cat_local[col_idx] {
-                            if local.counts.contains_key(&hash) {
-                                *local.counts.get_mut(&hash).unwrap() += 1;
-                            } else if local.len() < HYBRID_LOCAL_CAP {
-                                use std::collections::hash_map::Entry;
-                                match local.counts.entry(hash) {
-                                    Entry::Occupied(mut e) => *e.get_mut() += 1,
-                                    Entry::Vacant(e) => {
-                                        let string = value.to_string();
-                                        if col_shared.reserve_string_bytes(string.len()) {
-                                            e.insert(1);
-                                            local.strings.insert(hash, string);
-                                        }
-                                    }
-                                }
-                            } else {
-                                // Spill to the shared map through its byte-
-                                // budgeted insertion path.
-                                let string = value.to_string();
-                                col_shared.observe_hashed(hash, &string);
+                            if local.increment_i64_if_present(hash, value) {
+                                return;
+                            }
+                            if col_shared.observe_hashed_i64(hash, value)
+                                && local.len() < HYBRID_LOCAL_CAP
+                            {
+                                local.cache_admitted_i64(hash, value);
                             }
                         }
                     }
@@ -2191,11 +2183,8 @@ impl FileColStats {
                                 match local.counts.entry(hash) {
                                     Entry::Occupied(mut e) => *e.get_mut() += 1,
                                     Entry::Vacant(e) => {
-                                        let string = value.to_string();
-                                        if col_shared.reserve_string_bytes(string.len()) {
-                                            e.insert(1);
-                                            local.strings.insert(hash, string);
-                                        }
+                                        e.insert(1);
+                                        local.strings.insert(hash, value.to_string());
                                     }
                                 }
                             } else {
@@ -2207,11 +2196,8 @@ impl FileColStats {
                                 match local.counts.entry(hash) {
                                     Entry::Occupied(mut e) => *e.get_mut() += 1,
                                     Entry::Vacant(e) => {
-                                        let string = value.to_string();
-                                        if col_shared.reserve_string_bytes(string.len()) {
-                                            e.insert(1);
-                                            local.strings.insert(hash, string);
-                                        }
+                                        e.insert(1);
+                                        local.strings.insert(hash, value.to_string());
                                     }
                                 }
                             }
@@ -2356,10 +2342,18 @@ impl ColumnValueObserver for FileColStats {
 
     #[inline]
     fn observe_f64(&mut self, col_idx: usize, value: f64) {
-        // Pre-compute hash for categorical/id (shared between HLL and category counts).
-        let cat_hash = match &self.cols[col_idx] {
+        // Canonicalize categorical floats exactly as they are serialized. This
+        // keeps HLL membership, retained counts, and JSON identity aligned for
+        // values such as signed zero and non-finite float spellings.
+        let cat_value = match &self.cols[col_idx] {
             ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. } => {
-                Some(HyperLogLog::hash_f64(value))
+                // The mapper treats both IEEE signed-zero encodings as the
+                // same scalar key, so category statistics must do the same.
+                // Multicategorical float-token spelling is intentionally
+                // unchanged and continues through `observe_float_list`.
+                let canonical = if value == 0.0 { 0.0 } else { value };
+                let string = canonical.to_string();
+                Some((HyperLogLog::hash_bytes(string.as_bytes()), string))
             }
             _ => None,
         };
@@ -2382,19 +2376,18 @@ impl ColumnValueObserver for FileColStats {
             }
             ColumnStatsCollector::Categorical { count, hll, .. } => {
                 *count += 1;
-                hll.observe_hash(cat_hash.unwrap());
+                hll.observe_hash(cat_value.as_ref().unwrap().0);
             }
             ColumnStatsCollector::Id { count, hll, .. } => {
                 *count += 1;
-                hll.observe_hash(cat_hash.unwrap());
+                hll.observe_hash(cat_value.as_ref().unwrap().0);
             }
             _ => {}
         }
 
         // Category counts — after releasing the borrow on self.cols
-        if let Some(hash) = cat_hash {
-            let str_value = value.to_string();
-            self.observe_category_string(col_idx, hash, &str_value);
+        if let Some((hash, string)) = cat_value {
+            self.observe_category_string(col_idx, hash, &string);
         }
     }
 
@@ -3052,23 +3045,24 @@ mod tests {
 
     #[test]
     fn test_shared_counts_cap_policy() {
-        let capped = SharedColumnCounts::new_hashed();
-        capped.unique_count.store(MAX_CATEGORIES, Ordering::Relaxed);
-        capped.record_new_unique();
-        assert!(capped.is_aborted());
-        assert!(capped.drain_to_map().is_none());
+        let capped = SharedColumnCounts::new_hashed_capped_with_max_categories(2);
+        assert!(capped.observe_hashed(HyperLogLog::hash_bytes(b"a"), "a"));
+        assert!(capped.observe_hashed(HyperLogLog::hash_bytes(b"b"), "b"));
+        assert!(!capped.observe_hashed(HyperLogLog::hash_bytes(b"c"), "c"));
+        assert!(capped.observe_hashed(HyperLogLog::hash_bytes(b"a"), "a"));
+        assert!(capped.is_capped());
+        assert!(!capped.is_aborted());
+        assert_eq!(
+            capped.drain_to_map().unwrap(),
+            std::collections::HashMap::from([("a".to_owned(), 2), ("b".to_owned(), 1)])
+        );
 
-        let uncapped = SharedColumnCounts::new_hashed_uncapped();
-        uncapped
-            .unique_count
-            .store(MAX_CATEGORIES, Ordering::Relaxed);
-        uncapped.record_new_unique();
-        assert!(!uncapped.is_aborted());
-        uncapped.observe_hashed(HyperLogLog::hash_bytes(b"a"), "a");
-        uncapped.observe_hashed(HyperLogLog::hash_bytes(b"b"), "b");
-        uncapped.observe_hashed(HyperLogLog::hash_bytes(b"c"), "c");
-        let counts = uncapped.drain_to_map().unwrap();
-        assert_eq!(counts.len(), 3);
+        let exhaustive = SharedColumnCounts::new_hashed_with_max_categories(1);
+        assert!(exhaustive.observe_hashed(HyperLogLog::hash_bytes(b"a"), "a"));
+        assert!(exhaustive.observe_hashed(HyperLogLog::hash_bytes(b"b"), "b"));
+        assert!(exhaustive.is_aborted());
+        assert!(!exhaustive.is_capped());
+        assert!(exhaustive.drain_to_map().is_none());
     }
 
     #[test]
@@ -3598,6 +3592,10 @@ mod tests {
                 (1..=4).contains(&v),
                 "status NUM_UNIQUE should be ~2, got {v}"
             );
+            assert_eq!(nu["approx"], json!(false));
+            assert_eq!(nu["data_version"], json!("v42"));
+            assert_eq!(nu["num_entries"], json!(4));
+            assert!(!map.contains_key("status__kumo.categorical__NUM_UNIQUE__True"));
         }
 
         // ---- Id: user_id ----
@@ -3649,6 +3647,10 @@ mod tests {
                 (1..=2).contains(&v),
                 "user_id NUM_UNIQUE should be ~2, got {v}"
             );
+            assert_eq!(nu["approx"], json!(false));
+            assert_eq!(nu["data_version"], json!("v42"));
+            assert_eq!(nu["num_entries"], json!(2));
+            assert!(!map.contains_key("user_id__kumo.ID__NUM_UNIQUE__True"));
         }
 
         // ---- Text: bio ----
@@ -3929,6 +3931,249 @@ mod tests {
             .as_ref()
             .and_then(|shared| shared.drain_to_map())
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn id_columns_get_category_accumulator() {
+        // Id columns now get a (capped) accumulator alongside Categorical:
+        // some models consume their category counts and the shared map is
+        // bounded by MAX_CATEGORIES, so there is no reason to skip them.
+        let tc = TableCategoryCounts::new(
+            CategoryCountStrategy::Hybrid,
+            &[Some(SemanticType::Categorical), Some(SemanticType::Id)],
+            false,
+        );
+        assert!(tc.columns[0].is_some());
+        assert!(tc.columns[1].is_some());
+    }
+
+    #[test]
+    fn id_column_category_counts_populate() {
+        // An Id column's category counts populate through the normal observe
+        // path (capped), rather than being skipped.
+        let (mut stats, tc) = make_hybrid_stats(&[(
+            Some(SemanticType::Id),
+            IngestedType::String,
+            None,
+        )]);
+        stats.observe_string(0, "u1");
+        stats.observe_string(0, "u1");
+        stats.observe_string(0, "u2");
+        stats.flush_categories();
+        assert_eq!(
+            drain_counts(&tc, 0),
+            std::collections::HashMap::from([("u1".into(), 2), ("u2".into(), 1)]),
+        );
+    }
+
+    #[test]
+    fn hybrid_small_cap_publishes_exact_counts_with_legacy_cardinality_flags() {
+        let cols = make_test_cols_with_types(&[(
+            Some(SemanticType::Categorical),
+            IngestedType::String,
+            None,
+        )]);
+        let table_cat = std::sync::Arc::new(TableCategoryCounts::new_with_max_categories(
+            CategoryCountStrategy::Hybrid,
+            &[Some(SemanticType::Categorical)],
+            false,
+            2,
+        ));
+        let mut first = FileColStats::new_with_categories(&cols, std::sync::Arc::clone(&table_cat));
+        let mut second =
+            FileColStats::new_with_categories(&cols, std::sync::Arc::clone(&table_cat));
+
+        // "hot" is admitted immediately rather than living only in the first
+        // worker's local cache. A third distinct value closes admissions, but
+        // both workers keep contributing exact deltas for retained values.
+        first.observe_string(0, "hot");
+        second.observe_string(0, "cold");
+        second.observe_string(0, "excluded");
+        first.observe_string(0, "hot");
+        second.observe_string(0, "cold");
+        first.observe_string(0, "hot");
+        first.flush_categories();
+        second.flush_categories();
+        first.merge(&mut second);
+
+        let output = first.to_kumo_json(
+            &["feature".to_owned()],
+            &[IngestedType::String],
+            Some(&table_cat),
+            None,
+            "v1",
+        );
+        assert_eq!(
+            output["feature__kumo.categorical__CATEGORY_COUNTS__False"]["value"],
+            json!([["hot", 3], ["cold", 2]])
+        );
+        assert!(!output.contains_key("feature__kumo.categorical__CATEGORY_COUNTS_CAPPED__False"));
+        assert!(!output.contains_key("feature__kumo.categorical__NUM_UNIQUE__True"));
+        let num_unique = &output["feature__kumo.categorical__NUM_UNIQUE__False"];
+        assert_eq!(num_unique["value"], json!(3));
+        assert_eq!(num_unique["approx"], json!(false));
+        assert!(!output.contains_key("feature__kumo.categorical__UNIQUE_FRACTION__True"));
+        let unique_fraction = &output["feature__kumo.categorical__UNIQUE_FRACTION__False"];
+        assert_eq!(unique_fraction["value"], json!(0.5));
+        assert_eq!(unique_fraction["approx"], json!(false));
+    }
+
+    #[test]
+    fn hybrid_multicat_small_cap_publishes_exact_token_counts_and_cap_status() {
+        let cols = make_test_cols_with_types(&[(
+            Some(SemanticType::Multicategorical),
+            IngestedType::String,
+            None,
+        )]);
+        let table_cat = std::sync::Arc::new(TableCategoryCounts::new_with_max_categories(
+            CategoryCountStrategy::Hybrid,
+            &[Some(SemanticType::Multicategorical)],
+            false,
+            2,
+        ));
+        let mut stats =
+            FileColStats::new_with_categories(&cols, std::sync::Arc::clone(&table_cat));
+
+        stats.observe_string(0, "red");
+        stats.observe_string(0, "blue");
+        stats.observe_string(0, "excluded");
+        stats.observe_string(0, "red");
+        stats.observe_string(0, "blue");
+        stats.observe_string(0, "red");
+        stats.flush_categories();
+
+        let output = stats.to_kumo_json(
+            &["tags".to_owned()],
+            &[IngestedType::String],
+            Some(&table_cat),
+            None,
+            "v1",
+        );
+        assert_eq!(
+            output["tags__kumo.multicategorical__MULTI_CATEGORY_COUNTS__False"]["value"],
+            json!([["red", 3], ["blue", 2]])
+        );
+        assert!(!output
+            .contains_key("tags__kumo.multicategorical__MULTI_CATEGORY_COUNTS_CAPPED__False"));
+        let num_unique = &output["tags__kumo.multicategorical__NUM_UNIQUE_MULTI__True"];
+        assert_eq!(num_unique["value"], json!(3));
+        assert_eq!(num_unique["approx"], json!(true));
+    }
+
+    #[test]
+    fn exactly_at_hybrid_cap_is_exhaustive_until_a_value_is_excluded() {
+        let cols =
+            make_test_cols_with_types(&[(Some(SemanticType::Id), IngestedType::Int64, None)]);
+        let table_cat = std::sync::Arc::new(TableCategoryCounts::new_with_max_categories(
+            CategoryCountStrategy::Hybrid,
+            &[Some(SemanticType::Id)],
+            false,
+            2,
+        ));
+        let mut stats =
+            FileColStats::new_with_categories(&cols, std::sync::Arc::clone(&table_cat));
+        stats.observe_i64(0, 10);
+        stats.observe_i64(0, 20);
+        stats.observe_i64(0, 10);
+        stats.flush_categories();
+
+        let output = stats.to_kumo_json(
+            &["id_feature".to_owned()],
+            &[IngestedType::Int64],
+            Some(&table_cat),
+            None,
+            "v1",
+        );
+        assert_eq!(
+            output["id_feature__kumo.ID__CATEGORY_COUNTS__False"]["value"],
+            json!([[10, 2], [20, 1]])
+        );
+        assert!(!output.contains_key("id_feature__kumo.ID__CATEGORY_COUNTS_CAPPED__False"));
+        assert_eq!(
+            output["id_feature__kumo.ID__NUM_UNIQUE__False"]["value"],
+            json!(2)
+        );
+    }
+
+    #[test]
+    fn scalar_float_signed_zero_uses_one_mapper_identity() {
+        let cols = make_test_cols_with_types(&[(
+            Some(SemanticType::Categorical),
+            IngestedType::Float64,
+            None,
+        )]);
+        let table_cat = std::sync::Arc::new(TableCategoryCounts::new_with_max_categories(
+            CategoryCountStrategy::Hybrid,
+            &[Some(SemanticType::Categorical)],
+            false,
+            2,
+        ));
+        let mut stats =
+            FileColStats::new_with_categories(&cols, std::sync::Arc::clone(&table_cat));
+
+        stats.observe_f64(0, 0.0);
+        stats.observe_f64(0, -0.0);
+        stats.flush_categories();
+
+        let output = stats.to_kumo_json(
+            &["float_feature".to_owned()],
+            &[IngestedType::Float64],
+            Some(&table_cat),
+            None,
+            "v1",
+        );
+        assert_eq!(
+            output["float_feature__kumo.categorical__CATEGORY_COUNTS__False"]["value"],
+            json!([[0.0, 2]])
+        );
+        assert_eq!(
+            output["float_feature__kumo.categorical__NUM_UNIQUE__False"]["value"],
+            json!(1)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Hybrid category counts require row_subsample=false")]
+    fn hybrid_subsampling_is_rejected_for_exact_feature_counts() {
+        TableCategoryCounts::new(
+            CategoryCountStrategy::Hybrid,
+            &[Some(SemanticType::Categorical)],
+            true,
+        );
+    }
+
+    #[test]
+    fn graduation_id_num_unique_falls_back_to_hll_not_empty_map() {
+        // Under Graduation a single value seen once stays below min_occ and never
+        // graduates, so the drained category map is empty. NUM_UNIQUE must fall
+        // back to the HLL estimate (~1, clamped by total=1), not the empty map's
+        // length (0). Non-subsampled Hybrid stays on the exact map length.
+        let cols =
+            make_test_cols_with_types(&[(Some(SemanticType::Id), IngestedType::String, None)]);
+        let stypes: Vec<Option<SemanticType>> = cols.iter().map(|c| c.semantic_type).collect();
+        let table_cat = std::sync::Arc::new(TableCategoryCounts::new(
+            CategoryCountStrategy::Graduation,
+            &stypes,
+            false,
+        ));
+        let mut stats =
+            FileColStats::new_with_categories(&cols, std::sync::Arc::clone(&table_cat));
+        stats.observe_string(0, "solo");
+        stats.flush_categories();
+
+        let col_names = vec!["uid".to_string()];
+        let ingested_types = vec![IngestedType::String];
+        let map = stats.to_kumo_json(&col_names, &ingested_types, Some(&table_cat), None, "v1");
+        let nu = map.get("uid__kumo.ID__NUM_UNIQUE__False").unwrap();
+        assert_eq!(
+            nu["value"].as_u64().unwrap(),
+            1,
+            "Graduation NUM_UNIQUE must be the HLL estimate (~1), not the empty map length (0)",
+        );
+        assert_eq!(nu["approx"], json!(false));
+        assert_eq!(nu["data_version"], json!("v1"));
+        assert_eq!(nu["num_entries"], json!(1));
+        assert!(!map.contains_key("uid__kumo.ID__NUM_UNIQUE__True"));
     }
 
     // --- SingleStringToken input kind --------------------------------------

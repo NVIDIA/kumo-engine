@@ -62,18 +62,20 @@ type PassAOutputs<U> = (u64, StatsMerger<U>, Option<[StagePartsOut; 3]>);
 /// not use this encoder vocabulary.
 const MAX_TRAIN_TABLE_TARGET_CATEGORIES: u64 = 250_000_000;
 
+// The entity column is a graph FK/pkey resolved to node ids and is never
+// encoded, so no exact entity category counts are collected — only the target
+// accumulator exists, and only for node-task categorical targets (LP targets
+// are graph node IDs with no exact-vocabulary consumer).
 fn category_count_accumulators(
     target_is_categorical: bool,
     is_link_prediction: bool,
-) -> (Option<Arc<SharedColumnCounts>>, Arc<SharedColumnCounts>) {
+) -> Option<Arc<SharedColumnCounts>> {
     let collect_exact_target_categories = target_is_categorical && !is_link_prediction;
-    let target = collect_exact_target_categories.then(|| {
+    collect_exact_target_categories.then(|| {
         Arc::new(SharedColumnCounts::new_hashed_with_max_categories(
             MAX_TRAIN_TABLE_TARGET_CATEGORIES,
         ))
-    });
-    let entity = Arc::new(SharedColumnCounts::new_hashed());
-    (target, entity)
+    })
 }
 
 fn drain_required_target_category_counts(
@@ -643,7 +645,7 @@ where
     // Link-prediction targets are graph node IDs: their scalar/HLL stats remain
     // collected, but an exact target-ID distribution has no registered
     // consumer and can grow with the RHS entity cardinality.
-    let (shared_target_counts, shared_entity_counts) =
+    let shared_target_counts =
         category_count_accumulators(target_is_categorical, is_link_prediction);
 
     // ── Writer thread ────────────────────────────────────────────────────
@@ -693,7 +695,6 @@ where
             num_chunks,
             num_entities,
             shared_target_counts.as_ref(),
-            &shared_entity_counts,
             NoSplitDecider,
             &tt_parquet_path,
             writer_thread,
@@ -714,7 +715,6 @@ where
                     num_chunks,
                     num_entities,
                     shared_target_counts.as_ref(),
-                    &shared_entity_counts,
                     decider,
                     &tt_parquet_path,
                     writer_thread,
@@ -738,7 +738,6 @@ where
                     num_chunks,
                     num_entities,
                     shared_target_counts.as_ref(),
-                    &shared_entity_counts,
                     decider,
                     &tt_parquet_path,
                     writer_thread,
@@ -781,7 +780,6 @@ where
                     num_chunks,
                     num_entities,
                     shared_target_counts.as_ref(),
-                    &shared_entity_counts,
                     decider,
                     &tt_parquet_path,
                     writer_thread,
@@ -803,7 +801,6 @@ where
                     num_chunks,
                     num_entities,
                     shared_target_counts.as_ref(),
-                    &shared_entity_counts,
                     decider,
                     &tt_parquet_path,
                     writer_thread,
@@ -824,7 +821,6 @@ where
                     num_chunks,
                     num_entities,
                     shared_target_counts.as_ref(),
-                    &shared_entity_counts,
                     decider,
                     &tt_parquet_path,
                     writer_thread,
@@ -844,7 +840,6 @@ where
                     num_chunks,
                     num_entities,
                     shared_target_counts.as_ref(),
-                    &shared_entity_counts,
                     decider,
                     &tt_parquet_path,
                     writer_thread,
@@ -864,7 +859,6 @@ where
                     num_chunks,
                     num_entities,
                     shared_target_counts.as_ref(),
-                    &shared_entity_counts,
                     decider,
                     &tt_parquet_path,
                     writer_thread,
@@ -896,7 +890,6 @@ where
                     num_chunks,
                     num_entities,
                     shared_target_counts.as_ref(),
-                    &shared_entity_counts,
                     decider,
                     &tt_parquet_path,
                     writer_thread,
@@ -916,7 +909,6 @@ where
                     num_chunks,
                     num_entities,
                     shared_target_counts.as_ref(),
-                    &shared_entity_counts,
                     decider,
                     &tt_parquet_path,
                     writer_thread,
@@ -984,7 +976,6 @@ where
                         num_chunks,
                         num_entities,
                         shared_target_counts.as_ref(),
-                        &shared_entity_counts,
                         decider,
                         &tt_parquet_path,
                         writer_thread,
@@ -1008,7 +999,6 @@ where
                         num_chunks,
                         num_entities,
                         shared_target_counts.as_ref(),
-                        &shared_entity_counts,
                         decider,
                         &tt_parquet_path,
                         writer_thread,
@@ -1031,7 +1021,6 @@ where
                 num_chunks,
                 num_entities,
                 shared_target_counts.as_ref(),
-                &shared_entity_counts,
                 NoSplitDecider,
                 &tt_parquet_path,
                 writer_thread,
@@ -1074,9 +1063,10 @@ where
     let target_category_counts =
         drain_required_target_category_counts(shared_target_counts.as_deref())?;
 
-    // ENTITY1 exact category counts are intentionally not collected: the
-    // entity column is a graph foreign key and has no category-count consumer.
-    let entity_category_counts = shared_entity_counts.drain_to_map();
+    // ENTITY1 exact category counts are intentionally not collected: the entity
+    // column is a graph foreign key and has no category-count consumer, so no
+    // accumulator is allocated and finalize receives `None`.
+    let entity_category_counts = None;
 
     let finalized_stats = stats.finalize(
         total_rows,
@@ -1292,7 +1282,6 @@ fn run_pass_a_then_pass_b<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
     num_chunks: usize,
     num_entities: u64,
     shared_target_counts: Option<&Arc<SharedColumnCounts>>,
-    shared_entity_counts: &Arc<SharedColumnCounts>,
     decider_template: D,
     tt_parquet_path: &Path,
     writer_thread: std::thread::JoinHandle<TTGenResult<u64>>,
@@ -1304,7 +1293,6 @@ fn run_pass_a_then_pass_b<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
             resolved,
             &sender,
             shared_target_counts,
-            shared_entity_counts,
             &decider_template,
             &source.parquet_path,
             source.input_timestamp_unit,
@@ -1316,7 +1304,6 @@ fn run_pass_a_then_pass_b<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
             num_chunks,
             num_entities,
             shared_target_counts,
-            shared_entity_counts,
             &decider_template,
         )
     };
@@ -1454,7 +1441,6 @@ fn run_pass_a<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
     num_chunks: usize,
     num_entities: u64,
     shared_target_counts: Option<&Arc<SharedColumnCounts>>,
-    shared_entity_counts: &Arc<SharedColumnCounts>,
     decider_template: &D,
 ) -> TTGenResult<(u64, StatsMerger<U>, D)> {
     let results: Vec<TTGenResult<(u64, RowProcessor<U, D>)>> = (0..num_chunks)
@@ -1467,7 +1453,6 @@ fn run_pass_a<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
                 start..end,
                 sender,
                 shared_target_counts.cloned(),
-                Arc::clone(shared_entity_counts),
                 decider_template,
             )
         })
@@ -1548,7 +1533,6 @@ fn run_pass_a_custom_tt<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
     resolved: &Arc<ResolvedPlan<U>>,
     sender: &Sender<BatchMessage>,
     shared_target_counts: Option<&Arc<SharedColumnCounts>>,
-    shared_entity_counts: &Arc<SharedColumnCounts>,
     decider_template: &D,
     custom_tt_parquet: &Path,
     input_timestamp_unit: TimeUnit,
@@ -1591,7 +1575,6 @@ fn run_pass_a_custom_tt<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
                 sender,
                 decider_template,
                 shared_target_counts.cloned(),
-                Arc::clone(shared_entity_counts),
                 input_timestamp_unit,
             )
         })
@@ -1668,7 +1651,6 @@ fn execute_chunk<U: UnitSystem, D: SplitDecider<U> + Clone>(
     entity_range: std::ops::Range<u64>,
     sender: &Sender<BatchMessage>,
     shared_target_counts: Option<Arc<SharedColumnCounts>>,
-    shared_entity_counts: Arc<SharedColumnCounts>,
     decider_template: &D,
 ) -> TTGenResult<(u64, RowProcessor<U, D>)> {
     let mode = output_mode_from_prediction_type(plan);
@@ -1746,21 +1728,13 @@ fn execute_chunk<U: UnitSystem, D: SplitDecider<U> + Clone>(
     // halves is fully inlined, no vtable.
     let mut processor: RowProcessor<U, D> = RowProcessor::new(stats, decider_template.clone());
 
-    // Thread-local categorical target counts (flushed to shared at end)
-    let mut local_target_counts: Option<LocalColumnCounts> = if target_is_categorical {
-        Some(LocalColumnCounts::with_capacity(5000))
-    } else {
-        None
-    };
-
-    // Entity CATEGORY_COUNTS has no downstream reader: the entity column is a
-    // FK/pkey resolved to node ids and is never encoded (it lives in the graph
-    // table's fkeys/pkey, outside the feature `cols` that `infer_encoders`
-    // iterates), so its per-category counts are dead weight. `None` disables the
-    // per-row collection and the flush below, leaving the shared category-string
-    // budget entirely to the target column. Entity cardinality is still tracked
-    // via the HLL (NUM_UNIQUE).
-    let mut local_entity_counts: Option<LocalColumnCounts> = None;
+    // Thread-local categorical target counts, flushed to shared at end. Only
+    // allocate when there is a shared accumulator to flush into: link-prediction
+    // targets have no exact-vocabulary consumer (`shared_target_counts` is None),
+    // so collecting them would be dead work.
+    let mut local_target_counts: Option<LocalColumnCounts> = shared_target_counts
+        .is_some()
+        .then(|| LocalColumnCounts::with_capacity(5000));
 
     for entity_node in entity_range {
         execute_entity(
@@ -1773,7 +1747,6 @@ fn execute_chunk<U: UnitSystem, D: SplitDecider<U> + Clone>(
             target_is_categorical,
             target_stype,
             &mut local_target_counts,
-            &mut local_entity_counts,
             &mut writer,
             &mut processor,
         )?;
@@ -1784,12 +1757,6 @@ fn execute_chunk<U: UnitSystem, D: SplitDecider<U> + Clone>(
         (&shared_target_counts, &mut local_target_counts)
     {
         shared.merge_local_batch(local);
-    }
-    // Flush local entity counts to shared -- disabled: entity counts are not
-    // collected (see `local_entity_counts` above), so the shared accumulator
-    // stays empty and consumes none of the category-string budget.
-    if let Some(ref mut local) = local_entity_counts {
-        shared_entity_counts.merge_local_batch(local);
     }
 
     let rows = writer.finish()?;
@@ -1810,7 +1777,6 @@ fn execute_entity<U: UnitSystem, D: SplitDecider<U>>(
     target_is_categorical: bool,
     target_stype: &str,
     local_target_counts: &mut Option<LocalColumnCounts>,
-    local_entity_counts: &mut Option<LocalColumnCounts>,
     writer: &mut ChannelBatchWriter<U>,
     processor: &mut RowProcessor<U, D>,
 ) -> TTGenResult<()> {
@@ -1902,7 +1868,6 @@ fn execute_entity<U: UnitSystem, D: SplitDecider<U>>(
                 target_is_categorical,
                 target_stype,
                 local_target_counts,
-                local_entity_counts,
                 writer,
                 processor,
             )?;
@@ -1959,7 +1924,6 @@ fn execute_entity<U: UnitSystem, D: SplitDecider<U>>(
                 target_is_categorical,
                 target_stype,
                 local_target_counts,
-                local_entity_counts,
                 writer,
                 processor,
             )?;
@@ -1987,7 +1951,6 @@ fn write_target<U: UnitSystem, D: SplitDecider<U>>(
     target_is_categorical: bool,
     target_stype: &str,
     local_target_counts: &mut Option<LocalColumnCounts>,
-    local_entity_counts: &mut Option<LocalColumnCounts>,
     writer: &mut ChannelBatchWriter<U>,
     processor: &mut RowProcessor<U, D>,
 ) -> TTGenResult<()> {
@@ -2059,7 +2022,7 @@ fn write_target<U: UnitSystem, D: SplitDecider<U>>(
                         target_stype,
                         split_column_value: split_value,
                     };
-                    processor.observe(&row, local_target_counts, local_entity_counts);
+                    processor.observe(&row, local_target_counts);
                 }
             }
 
@@ -2111,7 +2074,7 @@ fn write_target<U: UnitSystem, D: SplitDecider<U>>(
                             // For non-ColumnSplit families this stays `None`.
                             split_column_value: split_value,
                         };
-                        processor.observe(&row, local_target_counts, local_entity_counts);
+                        processor.observe(&row, local_target_counts);
                     }
                     if entity_include_bit {
                         processor.stats.include_true_count += 1;
@@ -2159,7 +2122,7 @@ fn write_target<U: UnitSystem, D: SplitDecider<U>>(
                                     // path doesn't go through here.
                                     split_column_value: split_value,
                                 };
-                                processor.observe(&row, local_target_counts, local_entity_counts);
+                                processor.observe(&row, local_target_counts);
                                 for (idx, tgt) in targets.iter().enumerate().skip(1) {
                                     let freq = if *include_frequency {
                                         freqs.get(idx).copied()
@@ -2317,7 +2280,6 @@ pub(crate) fn update_exact_stats<U: UnitSystem>(
     target_is_categorical: bool,
     target_stype: &str,
     local_target_counts: &mut Option<LocalColumnCounts>,
-    local_entity_counts: &mut Option<LocalColumnCounts>,
 ) {
     // Cardinality tracking is HLL-only. Target HLL is observed
     // in the per-stype branches below (numerical: raw value; categorical:
@@ -2341,16 +2303,11 @@ pub(crate) fn update_exact_stats<U: UnitSystem>(
 
     // Observe entity value into HLL for cardinality (canonical type-aware RAW
     // basis; shared with the empty-target-row branch via `observe_entity_hll`).
+    // Entity CATEGORY_COUNTS is intentionally not collected: the entity column
+    // is a graph FK/pkey resolved to node ids, never encoded, so it has no
+    // category-count consumer. Cardinality is tracked by the HLL alone.
     if let Some(ref mut h) = stats.entity_hll {
         observe_entity_hll(h, entity_pk);
-    }
-
-    // Entity CATEGORY_COUNTS is not collected (no downstream reader); `None`
-    // skips the per-row observe. Entity cardinality is tracked by the HLL above.
-    if let Some(local) = local_entity_counts.as_mut() {
-        let entity_str = value_to_string(entity_pk);
-        let entity_hash = hash_value(entity_pk);
-        local.observe(entity_hash, &entity_str);
     }
 
     // Observe entity value into Welford + TDigest (numeric entities only — Int values)
@@ -3395,8 +3352,8 @@ mod tests {
 
     #[test]
     fn train_table_category_counts_use_target_specific_limit_without_string_budget() {
-        let (limit_target, _) = category_count_accumulators(true, false);
-        let limit_target = limit_target.expect("categorical target accumulator");
+        let limit_target = category_count_accumulators(true, false)
+            .expect("categorical target accumulator");
         limit_target.unique_count.store(
                 MAX_TRAIN_TABLE_TARGET_CATEGORIES - 1,
                 std::sync::atomic::Ordering::Relaxed,
@@ -3406,11 +3363,11 @@ mod tests {
         limit_target.record_new_unique();
         assert!(limit_target.is_aborted());
 
-        let (target, entity) = category_count_accumulators(true, false);
-        let target = target.expect("categorical target accumulator");
+        let target = category_count_accumulators(true, false)
+            .expect("categorical target accumulator");
 
-        // Forty thousand short strings exceed the former 128 MiB conservative
-        // CategoryStringBudget charge while retaining only a modest test map.
+        // Forty thousand short strings all survive: target category collection
+        // is bounded only by the unique-count cap, not by any string byte budget.
         const NUM_TARGETS: usize = 40_000;
         let mut target_local = LocalColumnCounts::with_capacity(NUM_TARGETS);
         for value in 0..NUM_TARGETS {
@@ -3422,21 +3379,35 @@ mod tests {
             target.drain_to_map().expect("complete target counts").len(),
             NUM_TARGETS
         );
-        assert_eq!(entity.drain_to_map().expect("empty entity counts").len(), 0);
     }
 
     #[test]
     fn link_prediction_does_not_allocate_exact_target_category_counts() {
-        let (target, entity) = category_count_accumulators(true, true);
+        // LP targets are graph node IDs with no exact-vocabulary consumer, so no
+        // shared accumulator is created.
+        let lp_shared = category_count_accumulators(true, true);
+        assert!(lp_shared.is_none());
+        // The per-worker LOCAL map is gated on the shared accumulator existing
+        // (the exact predicate used in execute_chunk / custom_tt_chunk_processor),
+        // so it is never allocated for LP — no dead per-worker allocation.
+        let lp_local = lp_shared
+            .is_some()
+            .then(|| LocalColumnCounts::with_capacity(5000));
+        assert!(lp_local.is_none());
 
-        assert!(target.is_none());
-        assert_eq!(entity.drain_to_map().expect("empty entity counts").len(), 0);
+        // A node-task categorical target allocates both the shared and local maps.
+        let node_shared = category_count_accumulators(true, false);
+        assert!(node_shared.is_some());
+        let node_local = node_shared
+            .is_some()
+            .then(|| LocalColumnCounts::with_capacity(5000));
+        assert!(node_local.is_some());
     }
 
     #[test]
     fn target_category_limit_is_a_generation_error() {
-        let (target, entity) = category_count_accumulators(true, false);
-        let target = target.expect("categorical target accumulator");
+        let target = category_count_accumulators(true, false)
+            .expect("categorical target accumulator");
         target.unique_count.store(
             MAX_TRAIN_TABLE_TARGET_CATEGORIES,
             std::sync::atomic::Ordering::Relaxed,
@@ -3453,7 +3424,6 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("refusing to publish"), "{message}");
-        assert_eq!(entity.drain_to_map().expect("empty entity counts").len(), 0);
     }
 
     // ─── HLL hash-basis consistency (LP train-table stat over-count fix) ─────

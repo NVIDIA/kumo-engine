@@ -691,6 +691,21 @@ pub fn ingest_with_stats_from_source(
     )
 }
 
+fn validate_exact_category_count_options(options: &IngestOptions) -> Result<()> {
+    ensure!(
+        !(options.col_stats
+            && options.cat_count_strategy
+                == crate::col_stats::CategoryCountStrategy::Graduation),
+        "Graduation category counts are thresholded and cannot publish exact graph-feature vocabularies; use Hybrid with row_subsample=false"
+    );
+    ensure!(
+        !(options.cat_count_strategy == crate::col_stats::CategoryCountStrategy::Hybrid
+            && options.row_subsample),
+        "Hybrid category counts require row_subsample=false so retained occurrence counts are exact"
+    );
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     mut source: GraphConfig,
@@ -702,6 +717,9 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     success_marker_content: Option<&str>,
     stage_sidecars: HashMap<String, StageSidecarColumns>,
 ) -> Result<(DatasetMetadata, IngestStats)> {
+    // Validate the exact graph-feature statistics contract at the common
+    // public-ingest boundary, before source normalization or output writes.
+    validate_exact_category_count_options(&options)?;
     let wall_start = std::time::Instant::now();
     // Reject the markerless-mirror config at the API boundary.
     // `output_dataplane_dir.is_some() + success_marker_content.is_none()`
@@ -1336,6 +1354,37 @@ pub fn is_disk_space_error(err: &anyhow::Error) -> bool {
 mod tests_resume_phase {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn public_ingest_rejects_graduation_for_exact_graph_feature_stats() {
+        let output = tempfile::tempdir().unwrap();
+        let source = GraphConfig {
+            dataset_name: "graduation_rejected".to_owned(),
+            tables: Vec::new(),
+            rowpack: None,
+            num_shards: None,
+            edge_format: None,
+            coercion_mode: Default::default(),
+        };
+        let error = ingest_with_stats_from_source(
+            source,
+            None,
+            output.path().to_str().unwrap(),
+            Dest::Local,
+            IngestOptions {
+                col_stats: true,
+                cat_count_strategy: crate::col_stats::CategoryCountStrategy::Graduation,
+                ..IngestOptions::default()
+            },
+            None,
+            None,
+        )
+        .expect_err("Graduation must not enter the exact graph-feature publication path");
+
+        assert!(error.to_string().contains(
+            "Graduation category counts are thresholded and cannot publish exact graph-feature vocabularies"
+        ));
+    }
 
     #[test]
     fn ingest_phase_ordering() {
@@ -7243,30 +7292,11 @@ impl IngestContext {
         let relation_defs = std::sync::Arc::new(self.relation_defs.clone());
         let fk_edge_targets = std::sync::Arc::new(self.fk_edge_targets.clone());
         let num_shards = self.num_shards;
-        let category_memory_bytes = if self.col_stats
-            && self.cat_count_strategy != crate::col_stats::CategoryCountStrategy::None
-        {
-            diskgraph_core::accumulators::CATEGORY_MEMORY_BUDGET_BYTES
-        } else {
-            0
-        };
-        let source_working_budget = encode_memory_budget_bytes
-            .checked_sub(category_memory_bytes)
-            .filter(|bytes| *bytes > 0)
-            .ok_or_else(|| {
-                anyhow!(
-                    "Encode category state requires {} bytes, exhausting the {} byte working budget",
-                    category_memory_bytes,
-                    encode_memory_budget_bytes
-                )
-            })?;
-        let category_memory_budget = (category_memory_bytes > 0).then(|| {
-            Arc::new(crate::col_stats::CategoryStringBudget::new(
-                category_memory_bytes,
-            ))
-        });
+        // Category counts are bounded by the per-column unique cap
+        // (`MAX_CATEGORIES`), not by a byte budget, so the whole Encode budget
+        // funds the source working set.
         let source_budget = crate::source_memory::ByteBudget::with_oversized_limit(
-            source_working_budget,
+            encode_memory_budget_bytes,
             ENCODE_MAX_OVERSIZED_CHUNK_BYTES,
         )?;
         let target = std::sync::Arc::clone(&self.target);
@@ -7606,22 +7636,11 @@ impl IngestContext {
                             .collect::<Vec<_>>();
                         table_cat_counts.insert(
                             table.name.clone(),
-                            Arc::new(
-                                if let Some(category_memory_budget) = &category_memory_budget {
-                                    crate::col_stats::TableCategoryCounts::new_with_string_budget(
-                                        cat_count_strategy,
-                                        &stypes,
-                                        row_subsample,
-                                        Arc::clone(category_memory_budget),
-                                    )
-                                } else {
-                                    crate::col_stats::TableCategoryCounts::new(
-                                        cat_count_strategy,
-                                        &stypes,
-                                        row_subsample,
-                                    )
-                                },
-                            ),
+                            Arc::new(crate::col_stats::TableCategoryCounts::new(
+                                cat_count_strategy,
+                                &stypes,
+                                row_subsample,
+                            )),
                         );
                     }
                     let replay = prefix
@@ -7849,11 +7868,9 @@ impl IngestContext {
         self.write_consolidated_meta(&node_stats, &edge_stats, &dest_key_stats)?;
         self.refresh_shard_rows_from_stats(&node_stats);
         self.table_rows = table_rows;
-        self.encode_memory_high_water_bytes = source_budget.high_water_bytes().saturating_add(
-            category_memory_budget
-                .as_ref()
-                .map_or(0, |budget| budget.used_bytes()),
-        );
+        // High-water tracks the source working set only; category-map memory is
+        // bounded by the per-column unique cap and not metered here.
+        self.encode_memory_high_water_bytes = source_budget.high_water_bytes();
         self.persist_encode_state()?;
         Ok(())
     }

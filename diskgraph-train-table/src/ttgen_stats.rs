@@ -1331,11 +1331,10 @@ fn max_opt_abs<U: UnitSystem>(a: Option<Abs<U>>, b: Option<Abs<U>>) -> Option<Ab
 //
 // ## Local counts: NOT in `TTRowRef`
 //
-// `local_target_counts` and `local_entity_counts` are PER-WORKER SCRATCH
-// state, not row data. They are passed by `&mut` through `RowProcessor::observe`
-// because today's `update_exact_stats` writes into them. We deliberately
-// keep them OUT of `TTRowRef` (they are not row content) and OUT of
-// `RowProcessor` fields to minimize blast radius.
+// `local_target_counts` is PER-WORKER SCRATCH state, not row data. It is passed
+// by `&mut` through `RowProcessor::observe` because today's `update_exact_stats`
+// writes into it. We deliberately keep it OUT of `TTRowRef` (it is not row
+// content) and OUT of `RowProcessor` fields to minimize blast radius.
 //
 // ## Performance contract
 //
@@ -1376,14 +1375,14 @@ pub(crate) struct TTRowRef<'a, U: UnitSystem> {
 /// `Send` so observers can cross rayon worker boundaries.
 #[allow(dead_code)]
 pub(crate) trait RowObserver<U: UnitSystem>: Send {
-    /// Observe one row. `local_target_counts` / `local_entity_counts` are
-    /// per-worker scratch buffers (NOT row data) that today's stats path
-    /// writes category-count info into.
+    /// Observe one row. `local_target_counts` is a per-worker scratch buffer
+    /// (NOT row data) that the stats path writes target category-count info
+    /// into. (Entity category counts are never collected — the entity column
+    /// has no downstream consumer.)
     fn observe(
         &mut self,
         row: &TTRowRef<'_, U>,
         local_target_counts: &mut Option<LocalColumnCounts>,
-        local_entity_counts: &mut Option<LocalColumnCounts>,
     );
 
     /// Fold another observer's state into self.
@@ -1398,7 +1397,6 @@ impl<U: UnitSystem> RowObserver<U> for ChunkStats<U> {
         &mut self,
         row: &TTRowRef<'_, U>,
         local_target_counts: &mut Option<LocalColumnCounts>,
-        local_entity_counts: &mut Option<LocalColumnCounts>,
     ) {
         // Delegate to the existing per-row stats logic. Trait-shape only;
         // no behavior change.
@@ -1412,7 +1410,6 @@ impl<U: UnitSystem> RowObserver<U> for ChunkStats<U> {
             row.target_is_categorical,
             row.target_stype,
             local_target_counts,
-            local_entity_counts,
         );
     }
 
@@ -1444,16 +1441,10 @@ impl<U: UnitSystem, D: SplitDecider<U>> RowProcessor<U, D> {
         &mut self,
         row: &TTRowRef<'_, U>,
         local_target_counts: &mut Option<LocalColumnCounts>,
-        local_entity_counts: &mut Option<LocalColumnCounts>,
     ) {
         // Both calls are monomorphized — the compiler resolves D's accumulate
         // at compile time and elides NoSplitDecider's no-op entirely.
-        <ChunkStats<U> as RowObserver<U>>::observe(
-            &mut self.stats,
-            row,
-            local_target_counts,
-            local_entity_counts,
-        );
+        <ChunkStats<U> as RowObserver<U>>::observe(&mut self.stats, row, local_target_counts);
         self.decider.accumulate(row);
     }
 
@@ -1798,20 +1789,17 @@ mod tests {
         let mut processor: RowProcessor<Seconds, NoSplitDecider> =
             RowProcessor::new(p_stats, NoSplitDecider);
         let mut local_target_counts: Option<LocalColumnCounts> = None;
-        let mut local_entity_counts: Option<LocalColumnCounts> = None;
-        processor.observe(&row, &mut local_target_counts, &mut local_entity_counts);
+        processor.observe(&row, &mut local_target_counts);
 
         // Compare against an independent ChunkStats path that uses the
         // same observation logic via the trait impl.
         let mut reference_stats: ChunkStats<Seconds> = ChunkStats::default();
         seed_hlls(&mut reference_stats);
         let mut local_target_counts2: Option<LocalColumnCounts> = None;
-        let mut local_entity_counts2: Option<LocalColumnCounts> = None;
         <ChunkStats<Seconds> as RowObserver<Seconds>>::observe(
             &mut reference_stats,
             &row,
             &mut local_target_counts2,
-            &mut local_entity_counts2,
         );
 
         // HLL state must match bit-for-bit between the two paths since
@@ -1875,19 +1863,15 @@ mod tests {
         let mut p_b: RowProcessor<Seconds, NoSplitDecider> = RowProcessor::new(s_b, NoSplitDecider);
 
         let mut ltc_a: Option<LocalColumnCounts> = None;
-        let mut lec_a: Option<LocalColumnCounts> = None;
         let mut ltc_b: Option<LocalColumnCounts> = None;
-        let mut lec_b: Option<LocalColumnCounts> = None;
 
         p_a.observe(
             &make_row(&entity_a, Abs::from_raw(100), &target_a),
             &mut ltc_a,
-            &mut lec_a,
         );
         p_b.observe(
             &make_row(&entity_b, Abs::from_raw(200), &target_b),
             &mut ltc_b,
-            &mut lec_b,
         );
 
         // Cardinality is HLL-only. For tiny fixtures
@@ -2003,14 +1987,12 @@ mod tests {
     }
 
     /// The entity column is a foreign key resolved to graph node ids; it is
-    /// never encoded, so nothing reads its CATEGORY_COUNTS. Collecting them
-    /// shared the target's string budget, and a high-cardinality entity could
-    /// exhaust it and drop the target's counts, which ARE required.
+    /// never encoded, so nothing reads its CATEGORY_COUNTS and the executor
+    /// never collects them.
     ///
-    /// Drained-but-empty is what production produces once collection stops, so
-    /// that is what this feeds in. The key must be absent rather than empty: a
-    /// consumer added later should fail on the missing key, not read an empty
-    /// vocabulary as "no categories".
+    /// `None` is what the executor now hands over. The key must be absent rather
+    /// than empty: a consumer added later should fail on the missing key, not
+    /// read an empty vocabulary as "no categories".
     #[test]
     fn test_finalize_omits_entity_category_counts() {
         let mut chunk: ChunkStats<Seconds> = ChunkStats {
@@ -2033,8 +2015,8 @@ mod tests {
             false,
             Some(target_counts),
             "categorical",
-            // What the executor hands over once entity counting is disabled.
-            Some(HashMap::new()),
+            // What the executor hands over: entity counting is not done at all.
+            None,
         );
 
         let stats = payload

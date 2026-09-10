@@ -1389,7 +1389,7 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
 /// side.
 ///
 /// Row groups are processed in parallel (rayon); category counts use the
-/// memory-bounded Hybrid strategy. Scalar and category statistics are computed
+/// count-capped Hybrid strategy. Scalar and category statistics are computed
 /// in a first pass, then exact numerical and timestamp distributions in a
 /// second pass. The full and min variants share the accumulated statistics.
 ///
@@ -1408,26 +1408,44 @@ fn estimate_ingest_size(py: Python<'_>, config_json: &str) -> PyResult<u64> {
 ///         invalid. Semantic and logical types are mapped through the same
 ///         ``map_kumo_stype`` / ``map_kumo_dtype`` helpers ingest uses.
 ///     data_version: version string stamped into every emitted entry.
+///     _category_count_limit_for_testing: keyword-only test hook that lowers
+///         the retained category limit. ``None`` preserves the production
+///         1,000,000-category limit; a supplied value must be greater than 0.
 ///
 /// Returns ``(full_json, min_json)`` — the full ``kumo_col_stats_v1`` map and
 /// its min (truncated-CATEGORY_COUNTS) variant, each as a JSON string,
 /// suitable for direct ``fsutil.write_text(table_dir.col_stats, ...)`` /
 /// ``min_col_stats``.
 #[pyfunction]
-#[pyo3(signature = (parquet_paths, kumo_column_specs_json, data_version))]
+#[pyo3(signature = (
+    parquet_paths,
+    kumo_column_specs_json,
+    data_version,
+    *,
+    _category_count_limit_for_testing=None,
+))]
 #[tracing::instrument(level = "debug", skip(py, kumo_column_specs_json))]
 fn compute_col_stats_for_parquet(
     py: Python<'_>,
     parquet_paths: Vec<String>,
     kumo_column_specs_json: &str,
     data_version: &str,
+    _category_count_limit_for_testing: Option<u64>,
 ) -> PyResult<(String, String)> {
     use diskgraph_ingest::config_converter::{
         map_kumo_dtype, map_kumo_stype, map_timestamp_unit,
     };
     use diskgraph_ingest::graph_config::ColumnSpec;
 
-    use crate::bp_col_stats::compute_parquet_col_stats;
+    use crate::bp_col_stats::{
+        compute_parquet_col_stats, compute_parquet_col_stats_with_max_categories,
+    };
+
+    if _category_count_limit_for_testing == Some(0) {
+        return Err(DiskgraphConfigError::new_err(
+            "_category_count_limit_for_testing must be greater than zero",
+        ));
+    }
 
     #[derive(serde::Deserialize)]
     struct KumoColumnSpec {
@@ -1485,7 +1503,15 @@ fn compute_col_stats_for_parquet(
     py.detach(|| -> anyhow::Result<(String, String)> {
         let paths: Vec<&std::path::Path> =
             paths_owned.iter().map(std::path::Path::new).collect();
-        compute_parquet_col_stats(&paths, &columns, &data_version)
+        match _category_count_limit_for_testing {
+            Some(limit) => compute_parquet_col_stats_with_max_categories(
+                &paths,
+                &columns,
+                &data_version,
+                limit,
+            ),
+            None => compute_parquet_col_stats(&paths, &columns, &data_version),
+        }
     })
     // Route schema failures through the shared exception classifier rather
     // than reporting missing columns or invalid timestamp metadata as a
