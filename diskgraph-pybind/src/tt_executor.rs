@@ -669,18 +669,16 @@ pub(crate) fn resolve_ingest_stages(
                 .iter()
                 .map(|info| {
                     let parquet_paths = validate_stage_parts(staging_dir, info)?;
-                    let per_element_weight =
-                        info.key == "train" && weight_col_is_per_element(&parquet_paths);
+                    let per_element_weight = weight_col_is_per_element(&parquet_paths);
                     Ok(StageSpec {
                         key: info.key.clone(),
                         table_name: info.table_name.clone(),
                         parquet_paths,
                         seed_time: info.seed_time,
-                        binary_label_column: (info.key == "train")
-                            .then(|| PRIMARY_TARGET_COL.to_string()),
+                        binary_label_column: Some(PRIMARY_TARGET_COL.to_string()),
                         // Seed sampling weights whole rows; a per-element
                         // weight has no per-row value to sample by.
-                        sample_weight_column: (info.key == "train" && !per_element_weight)
+                        sample_weight_column: (!per_element_weight)
                             .then(|| diskgraph_train_table::ttgen_output::WEIGHT_COL.to_string()),
                     })
                 })

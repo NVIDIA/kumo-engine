@@ -1669,6 +1669,47 @@
     }
 
     #[test]
+    fn test_split_stages_request_sampling_sidecars() {
+        let staging = tempfile::tempdir().unwrap();
+        let mut infos = Vec::new();
+        for key in ["train", "val", "test"] {
+            let relative = format!("{key}_seeds/part-00000.parquet");
+            let path = staging.path().join(&relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let row_count = t_write_custom_tt_node_parquet(&path);
+            infos.push(StageGenInfo {
+                key: key.to_string(),
+                table_name: format!("{key}_seeds"),
+                parts: vec![relative.clone()],
+                row_count,
+                seed_time: None,
+                artifact_inventory: Some(t_stage_inventory(
+                    staging.path(),
+                    &relative,
+                    row_count,
+                )),
+            });
+        }
+
+        let stages = resolve_ingest_stages(
+            staging.path(),
+            &staging.path().join("tt.parquet"),
+            "predict",
+            Some(&infos),
+        )
+        .unwrap();
+
+        assert_eq!(stages.len(), 3);
+        assert!(stages
+            .iter()
+            .all(|stage| stage.binary_label_column.as_deref() == Some(PRIMARY_TARGET_COL)));
+        assert!(stages.iter().all(|stage| stage
+            .sample_weight_column
+            .as_deref()
+            == Some(diskgraph_train_table::ttgen_output::WEIGHT_COL)));
+    }
+
+    #[test]
     fn test_train_binary_label_index_is_emitted_by_stage_ingest() {
         pyo3::Python::initialize();
         let dir = tempfile::tempdir().unwrap();
