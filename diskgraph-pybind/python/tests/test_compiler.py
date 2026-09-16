@@ -672,7 +672,7 @@ def test_compiler_not_target():
 
 
 def test_compiler_and_target():
-    # PREDICT (transactions.status='paid' AND transactions.status='shipped') FOR users.user_id
+    # PREDICT (transactions.status='paid' AND profiles.status='active') FOR users.user_id
     cond1 = Condition(
         target=Column(fqn="transactions.status"),
         op=RelOp.EQ,
@@ -684,14 +684,14 @@ def test_compiler_and_target():
         rhs_key="transactions.user_id",
     )
     cond2 = Condition(
-        target=Column(fqn="transactions.status"),
+        target=Column(fqn="profiles.status"),
         op=RelOp.EQ,
-        value=Constant.from_value("shipped"),
+        value=Constant.from_value("active"),
     )
     cond2.target = Join(
-        rhs_target=Column(fqn="transactions.status"),
-        lhs_key="users.user_id",
-        rhs_key="transactions.user_id",
+        rhs_target=Column(fqn="profiles.status"),
+        lhs_key="users.profile_id",
+        rhs_key="profiles.profile_id",
     )
     target_ast = LogicalOperation(
         left=cond1,
@@ -716,6 +716,71 @@ def test_compiler_and_target():
     lop = last_op["logical_op"]
     assert lop["op"] == "and"
     assert len(lop["operands"]) == 2
+    column_paths = [op["column"]["path"] for op in ops if "column" in op]
+    assert column_paths == [
+        [{
+            "src_table": "users",
+            "src_col": "user_id",
+            "dst_table": "transactions",
+            "dst_col": "user_id",
+        }],
+        [{
+            "src_table": "users",
+            "src_col": "profile_id",
+            "dst_table": "profiles",
+            "dst_col": "profile_id",
+        }],
+    ]
+
+
+def test_compiler_direct_column_path_contract():
+    compile_kwargs = {
+        "timestamps": [],
+        "forecast_length": 1,
+        "lag_timesteps": None,
+        "task_type": "binary_classification",
+        "target_stype": "categorical",
+        "input_timestamp_unit": TimeUnit.Seconds,
+    }
+
+    remote_query = ValidatedPredictiveQuery(
+        entity_ast=Column(fqn="users.user_id"),
+        target_ast=Column(fqn="profiles.status"),
+    )
+    remote_query._query_type = "STATIC"
+    compiler = DiskGraphPlanCompiler()
+    with pytest.raises(DiskgraphConfigError, match="no validated relationship path"):
+        compiler.compile(query=remote_query, **compile_kwargs)
+
+    joined_query = ValidatedPredictiveQuery(
+        entity_ast=Column(fqn="users.user_id"),
+        target_ast=Column(fqn="profiles.status"),
+    )
+    joined_query.target_ast = Join(
+        rhs_target=Column(fqn="profiles.status"),
+        lhs_key="users.profile_id",
+        rhs_key="profiles.profile_id",
+    )
+    joined_query._query_type = "STATIC"
+    joined_plan = json.loads(
+        DiskGraphPlanCompiler().compile(query=joined_query, **compile_kwargs)
+    )
+    assert joined_plan["stages"][0]["ops"][0]["column"]["path"] == [{
+        "src_table": "users",
+        "src_col": "profile_id",
+        "dst_table": "profiles",
+        "dst_col": "profile_id",
+    }]
+
+    local_query = ValidatedPredictiveQuery(
+        entity_ast=Column(fqn="users.user_id"),
+        target_ast=Column(fqn="users.status"),
+    )
+    local_query._query_type = "STATIC"
+    local_plan = json.loads(
+        DiskGraphPlanCompiler().compile(query=local_query, **compile_kwargs)
+    )
+    assert "path" not in local_plan["stages"][0]["ops"][0]["column"]
 
 
 def test_compiler_or_target():

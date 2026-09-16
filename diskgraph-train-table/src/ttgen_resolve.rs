@@ -207,6 +207,7 @@ pub struct ResolvedColumn {
     pub alias_idx: usize,
     pub table: Arc<TableReader>,
     pub col_idx: usize,
+    pub path: Vec<ResolvedEdge>,
     /// See `ResolvedAggregate::target_semantic_type`. Drives dispatch at the
     /// `ResolvedOp::Column` direct-target read site (Route A).
     pub target_semantic_type: Option<String>,
@@ -946,7 +947,7 @@ fn resolve_stage<U: UnitSystem>(
 fn resolve_op<U: UnitSystem>(
     op: &Op<U>,
     reader: &GraphIndexReader,
-    _entity_table: &Arc<TableReader>,
+    entity_table: &Arc<TableReader>,
     _entity_ctx: &Option<RowPackContext>,
     alias_to_idx: &HashMap<String, usize>,
     entity_col_indices: &[(String, usize)],
@@ -1232,11 +1233,61 @@ fn resolve_op<U: UnitSystem>(
                 row_filter: resolved_filter,
             }))
         }
-        Op::Column { alias, table, column } => {
+        Op::Column { alias, table, column, path } => {
             let alias_idx = alias_to_idx[alias];
             let table_reader = reader
                 .table(table)
                 .ok_or_else(|| TTGenError::SchemaError(format!("table '{}' not found", table)))?;
+            let resolved_path = resolve_path(path, reader)?;
+            for (edge_ref, edge) in path.iter().zip(&resolved_path) {
+                let dst_primary_key = edge.dst_table.primary_key_map().ok_or_else(|| {
+                    TTGenError::InvalidPlan(format!(
+                        "direct column path destination table '{}' has no primary key",
+                        edge_ref.dst_table
+                    ))
+                })?;
+                if edge_ref.dst_col != dst_primary_key.column {
+                    return Err(TTGenError::InvalidPlan(format!(
+                        "direct column path hop '{}.{}' to '{}.{}' is not many-to-one",
+                        edge_ref.src_table,
+                        edge_ref.src_col,
+                        edge_ref.dst_table,
+                        edge_ref.dst_col
+                    )));
+                }
+            }
+            if let Some(first) = resolved_path.first() {
+                if !Arc::ptr_eq(&first.src_table, entity_table) {
+                    return Err(TTGenError::InvalidPlan(format!(
+                        "direct column path for '{}.{}' does not start at the entity table",
+                        table, column
+                    )));
+                }
+                if resolved_path
+                    .windows(2)
+                    .any(|pair| !Arc::ptr_eq(&pair[0].dst_table, &pair[1].src_table))
+                {
+                    return Err(TTGenError::InvalidPlan(format!(
+                        "direct column path for '{}.{}' is not contiguous",
+                        table, column
+                    )));
+                }
+            }
+            match resolved_path.last() {
+                Some(last) if !Arc::ptr_eq(&last.dst_table, &table_reader) => {
+                    return Err(TTGenError::InvalidPlan(format!(
+                        "direct column path terminates at a different table than '{}.{}'",
+                        table, column
+                    )));
+                }
+                None if !Arc::ptr_eq(entity_table, &table_reader) => {
+                    return Err(TTGenError::InvalidPlan(format!(
+                        "direct column '{}.{}' is outside the entity table but has no path",
+                        table, column
+                    )));
+                }
+                _ => {}
+            }
             let ctx = table_reader.node_data_decoder().map(|d| d.context().clone());
             let col_idx = find_col_idx_in_context(&ctx, column)?;
 
@@ -1313,6 +1364,7 @@ fn resolve_op<U: UnitSystem>(
                 alias_idx,
                 table: table_reader,
                 col_idx,
+                path: resolved_path,
                 target_semantic_type: resolved_stype,
             }))
         }
@@ -1351,7 +1403,7 @@ fn resolve_op<U: UnitSystem>(
             let resolved_target = resolve_op(
                 target_op,
                 reader,
-                _entity_table,
+                entity_table,
                 _entity_ctx,
                 alias_to_idx,
                 entity_col_indices,
@@ -1368,7 +1420,7 @@ fn resolve_op<U: UnitSystem>(
             let resolved_target = resolve_op(
                 target_op,
                 reader,
-                _entity_table,
+                entity_table,
                 _entity_ctx,
                 alias_to_idx,
                 entity_col_indices,

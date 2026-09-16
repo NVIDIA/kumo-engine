@@ -43,6 +43,7 @@ use crate::split_decider::{
 use crate::ttgen_accumulator::{hash_i64, hash_str, hash_value, Accumulator};
 use crate::ttgen_filter::{
     compare_values, eval_row_filter, eval_stage_filter, is_nullish_filter_value,
+    resolve_remote_node,
 };
 use crate::ttgen_output::{
     BatchMessage, ChannelBatchWriter, ExtraColumnOutput, ExtraValueRef, OutputMode,
@@ -2665,39 +2666,48 @@ fn execute_stages<U: UnitSystem>(
                     execute_has_edges(plan, entity_node, has_edges, entity_cols, observation_ts)
                 }
                 ResolvedOp::Column(col) => {
-                    // Route A direct-target read site (kumo#28400). For
-                    // multicat sources, emit `Value::List(tokens)` so the
-                    // downstream alias consumer (the writer) sees the row's
-                    // flat token set. Non-multicat path is unchanged.
-                    let is_multicat =
-                        col.target_semantic_type.as_deref() == Some("multicategorical");
-                    if is_multicat {
-                        let mut tokens: Vec<Value> = Vec::new();
-                        let outcome = dispatch_multicat_source(
-                            &col.table,
-                            entity_node,
-                            col.col_idx,
-                            true,
-                            |tok| {
-                                tokens.push(match tok {
-                                    MulticatToken::Str(s) => Value::Str(s.to_string()),
-                                    MulticatToken::Int(n) => Value::Int(n),
-                                    MulticatToken::Legacy(v) => v,
-                                });
-                                true
-                            },
-                        );
-                        if outcome.observed() {
-                            Some(Value::List(tokens))
-                        } else {
-                            None
+                    match resolve_remote_node(&col.path, entity_node) {
+                        Some(column_node) => {
+                            // Route A direct-target read site (kumo#28400). For
+                            // multicat sources, emit `Value::List(tokens)` so the
+                            // downstream alias consumer (the writer) sees the row's
+                            // flat token set. Non-multicat path is unchanged.
+                            let is_multicat =
+                                col.target_semantic_type.as_deref() == Some("multicategorical");
+                            if is_multicat {
+                                let mut tokens: Vec<Value> = Vec::new();
+                                let outcome = dispatch_multicat_source(
+                                    &col.table,
+                                    column_node,
+                                    col.col_idx,
+                                    true,
+                                    |tok| {
+                                        tokens.push(match tok {
+                                            MulticatToken::Str(s) => Value::Str(s.to_string()),
+                                            MulticatToken::Int(n) => Value::Int(n),
+                                            MulticatToken::Legacy(v) => v,
+                                        });
+                                        true
+                                    },
+                                );
+                                if outcome.observed() {
+                                    Some(Value::List(tokens))
+                                } else {
+                                    None
+                                }
+                            } else {
+                                match read_column_value_nullable(
+                                    &col.table,
+                                    column_node,
+                                    col.col_idx,
+                                ) {
+                                    Some(Some(v)) => Some(v),
+                                    Some(None) => None,
+                                    None => None,
+                                }
+                            }
                         }
-                    } else {
-                        match read_column_value_nullable(&col.table, entity_node, col.col_idx) {
-                            Some(Some(v)) => Some(v),
-                            Some(None) => None,
-                            None => None,
-                        }
+                        None => None,
                     }
                 }
                 ResolvedOp::Compare(cmp) => {

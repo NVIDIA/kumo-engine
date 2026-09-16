@@ -549,7 +549,12 @@ class DiskGraphPlanCompiler:
         if isinstance(node, Column):
             alias = self._next_alias("col")
             table, col = node.fqn.split('.')
-            self.builder.column(alias, table, col)
+            if outer_path is None and table != query.entity_table:
+                raise DiskgraphConfigError(
+                    f"Direct column '{node.fqn}' is outside the entity table "
+                    f"'{query.entity_table}' but has no validated relationship path"
+                )
+            self.builder.column(alias, table, col, path=outer_path)
             return alias
 
         elif isinstance(node, Aggregation):

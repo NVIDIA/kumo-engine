@@ -206,11 +206,7 @@ fn resolve_row_rhs(
 
 /// Follow a sub-traversal path from a node, taking the first destination
 /// at each hop (FK direction = many-to-one = exactly one destination).
-fn resolve_remote_value(
-    path: &[ResolvedEdge],
-    start_node: u64,
-    col_idx: usize,
-) -> Option<Value> {
+pub(crate) fn resolve_remote_node(path: &[ResolvedEdge], start_node: u64) -> Option<u64> {
     let mut current = start_node;
     for edge in path {
         // Iterate edges and take first destination (FK = 1:1)
@@ -219,6 +215,15 @@ fn resolve_remote_value(
         let segment = segments.get(edge.relation_idx)?;
 
         if segment.count == 0 {
+            return None;
+        }
+        if segment.count > 1 {
+            tracing::error!(
+                count = segment.count,
+                source_node = current,
+                relation_idx = edge.relation_idx,
+                "scalar relationship path has multiple destinations; treating value as null"
+            );
             return None;
         }
 
@@ -230,7 +235,15 @@ fn resolve_remote_value(
         let val = u128::from_le_bytes(buf);
         current = (val & segment.layout.dst_mask as u128) as u64;
     }
+    Some(current)
+}
 
+fn resolve_remote_value(
+    path: &[ResolvedEdge],
+    start_node: u64,
+    col_idx: usize,
+) -> Option<Value> {
+    let current = resolve_remote_node(path, start_node)?;
     // Read column from final destination, preserving NULL as None.
     let dst_table = &path.last()?.dst_table;
     read_column_value(dst_table, current, col_idx)

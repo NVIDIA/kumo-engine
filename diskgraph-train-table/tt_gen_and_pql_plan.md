@@ -46,7 +46,7 @@ DiskGraphTTPlan
   ├── stages: Vec<Stage>
   │     └── Stage {ops: Vec<Op>, filter: Option<StageFilter>}
   │           └── Op::Aggregate {alias, path: Vec<EdgeRef>, func, target_col, window, row_filter, limit}
-  │           └── Op::Column {alias, table, column}
+  │           └── Op::Column {alias, table, column, path: Vec<EdgeRef>}
   │           └── Op::Compare {alias, lhs, op, rhs}
   └── split: Option<SplitSpec>
 

@@ -90,7 +90,7 @@ target: condition | aggregation | column;
 ```
 
 Three cases:
-- **column**: `PREDICT LOAN.STATUS FOR EACH LOAN.LOAN_ID` — direct lookup.
+- **column**: `PREDICT LOAN.STATUS FOR EACH LOAN.LOAN_ID` — direct lookup, with an optional validated many-to-one relationship path when the column belongs to a related table.
 - **aggregation**: `PREDICT SUM(ORDERS.AMOUNT, 0, 30, days) FOR EACH USERS.USER_ID`
   — traverse edges, aggregate.
 - **condition**: `PREDICT LOAN.STATUS = "paid" FOR EACH LOAN.LOAN_ID` — boolean.
@@ -182,18 +182,13 @@ Each grammar production that *computes a value* maps to an op:
 
 **`column` (bare column target):**
 
-`PREDICT LOAN.STATUS FOR EACH LOAN.LOAN_ID` — read a column value for
-the entity. One entity = one row = one value. No traversal, no
-aggregation.
+`PREDICT LOAN.STATUS FOR EACH LOAN.LOAN_ID` reads a column value for the entity row. A bare related-table column may traverse a validated many-to-one relationship first. One entity still produces at most one value, without aggregation.
 
 ```rust
-Op::Column { alias: String, table: String, column: String }
+Op::Column { alias: String, table: String, column: String, path: Vec<EdgeRef> }
 ```
 
-No `row_filter` field because there's nothing to filter. Column
-lookups read a single row from the entity's own table. If you need a
-column from a related table (one-to-many), you must aggregate (which
-one? `FIRST`, `LAST`, `MAX`?), and aggregation supports filtering.
+No `row_filter` field because there's nothing to filter. An empty path reads the entity row directly. A non-empty path follows a validated relationship from the entity row before reading the column; this is valid for unique many-to-one lookup targets. One-to-many related-table targets still require an aggregation to define which related rows contribute.
 
 **`aggregation`:**
 

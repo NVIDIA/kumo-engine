@@ -512,13 +512,23 @@ impl DiskGraphTTBuilder {
         Ok(())
     }
 
-    /// Direct column lookup (no traversal).
-    fn column(&mut self, alias: String, table: String, column: String) {
+    /// Direct column lookup, optionally after traversing a validated relationship path.
+    #[pyo3(signature = (alias, table, column, path=None))]
+    fn column(
+        &mut self,
+        alias: String,
+        table: String,
+        column: String,
+        path: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
+        let path = path.map(extract_edge_path).transpose()?.unwrap_or_default();
         self.current_ops.push(tt::Op::Column {
             alias,
             table,
             column,
+            path,
         });
+        Ok(())
     }
 
     /// Boolean comparison on a prior alias.

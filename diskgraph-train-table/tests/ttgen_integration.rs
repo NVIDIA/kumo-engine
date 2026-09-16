@@ -843,6 +843,136 @@ fn mk_col(name: &str, dtype: IngestedType) -> ColumnSpec {
     }
 }
 
+/// Build a graph whose entity ordinals, entity keys, foreign keys, and target ordinals intentionally diverge.
+fn build_related_column_graph(root: &Path) -> PathBuf {
+    let data_dir = root.join("data");
+    let index_dir = root.join("index");
+    fs::create_dir_all(&data_dir).unwrap();
+
+    let entities = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("entity_id", DataType::Int64, false),
+            Field::new("target_id", DataType::Int64, true),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![10, 11, 12, 13, 14, 15, 16])),
+            Arc::new(Int64Array::from(vec![
+                Some(0),
+                Some(1),
+                Some(2),
+                Some(3),
+                Some(3),
+                Some(4),
+                None,
+            ])),
+        ],
+    )
+    .unwrap();
+    write_parquet(&data_dir.join("entities.parquet"), &entities);
+
+    let mut tags = ListBuilder::new(StringBuilder::new());
+    for values in [vec!["a"], vec!["b"], vec!["c", "d"], vec!["e"]] {
+        for value in values {
+            tags.values().append_value(value);
+        }
+        tags.append(true);
+    }
+    let targets = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("target_id", DataType::Int64, false),
+            Field::new("label", DataType::Boolean, true),
+            Field::new(
+                "tags",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+                false,
+            ),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![0, 1, 3, 4])),
+            Arc::new(BooleanArray::from(vec![
+                Some(true),
+                Some(false),
+                Some(true),
+                None,
+            ])),
+            Arc::new(tags.finish()),
+        ],
+    )
+    .unwrap();
+    write_parquet(&data_dir.join("targets.parquet"), &targets);
+
+    let config = GraphConfig {
+        dataset_name: "related_column_graph".to_string(),
+        tables: vec![
+            TableSpec {
+                name: "entities".to_string(),
+                columns: vec![
+                    mk_col("entity_id", IngestedType::Int64),
+                    mk_col("target_id", IngestedType::Int64),
+                ],
+                primary_key: Some("entity_id".to_string()),
+                create_time: None,
+                end_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+                source: DataSource::Parquet {
+                    paths: vec![data_dir.join("entities.parquet").to_str().unwrap().to_string()],
+                },
+                source_size: None,
+                fkeys: vec![FKeySpec {
+                    src_column: "target_id".to_string(),
+                    dst_table: "targets".to_string(),
+                    forward: Some(DirectionSpec {
+                        time: None,
+                        weight: None,
+                    }),
+                    reverse: None,
+                    ..Default::default()
+                }],
+                data_version: None,
+                kumo_connector_id: None,
+                kumo_source_table_name: None,
+                group_by_timestamp: false,
+            },
+            TableSpec {
+                name: "targets".to_string(),
+                columns: vec![
+                    mk_col("target_id", IngestedType::Int64),
+                    mk_col("label", IngestedType::Bool),
+                    ColumnSpec {
+                        semantic_type: Some(SemanticType::Multicategorical),
+                        ..mk_col("tags", IngestedType::StringArray)
+                    },
+                ],
+                primary_key: Some("target_id".to_string()),
+                create_time: None,
+                end_time: None,
+                weight: None,
+                edge_table: None,
+                rowpack: None,
+                source: DataSource::Parquet {
+                    paths: vec![data_dir.join("targets.parquet").to_str().unwrap().to_string()],
+                },
+                source_size: None,
+                fkeys: vec![],
+                data_version: None,
+                kumo_connector_id: None,
+                kumo_source_table_name: None,
+                group_by_timestamp: false,
+            },
+        ],
+        rowpack: None,
+        num_shards: Some(1),
+        edge_format: None,
+        coercion_mode: CoercionMode::Lossless,
+    };
+    let config_path = data_dir.join("graph_config.json");
+    fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+    run_ingest(&config_path, &index_dir);
+    index_dir
+}
+
 // ─── Plan helpers ────────────────────────────────────────────────────────────
 
 fn g1_plan(stages: Vec<Stage<Seconds>>) -> DiskGraphTTPlan<Seconds> {
@@ -912,6 +1042,42 @@ fn o2p_edge() -> EdgeRef {
         src_col: "product_id".to_string(),
         dst_table: "products".to_string(),
         dst_col: "product_id".to_string(),
+    }
+}
+
+fn related_column_edge() -> EdgeRef {
+    EdgeRef {
+        src_table: "entities".to_string(),
+        src_col: "target_id".to_string(),
+        dst_table: "targets".to_string(),
+        dst_col: "target_id".to_string(),
+    }
+}
+
+fn related_column_plan(
+    ops: Vec<Op<Seconds>>,
+    prediction_type: PredictionType,
+) -> DiskGraphTTPlan<Seconds> {
+    DiskGraphTTPlan {
+        is_prediction: matches!(prediction_type, PredictionType::PassThrough),
+        entity: EntitySpec {
+            table: "entities".to_string(),
+            column: "entity_id".to_string(),
+            output_time_col_name: None,
+            default_time_value: None,
+            time_col: None,
+            valid_to_col: None,
+            filter: None,
+        },
+        temporal: None,
+        prediction_type,
+        split: None,
+        stages: vec![Stage { ops, filter: None }],
+        target_stype: Some("categorical".to_string()),
+        weight_col: None,
+        fkey_mapping: None,
+        lp_resolution: None,
+        lp_rhs_is_temporal: false,
     }
 }
 
@@ -1971,6 +2137,7 @@ fn integ_column_and_aggregate_same_stage() {
                     alias: "sc".to_string(),
                     table: "users".to_string(),
                     column: "score".to_string(),
+                    path: vec![],
                 },
                 count_orders_op("cnt", Some((0, 5000))),
             ],
@@ -2026,6 +2193,7 @@ fn integ_entity_column() {
             alias: "sc".to_string(),
             table: "users".to_string(),
             column: "score".to_string(),
+            path: vec![],
         }],
         filter: None,
     }]);
@@ -2036,6 +2204,142 @@ fn integ_entity_column() {
     assert_target_eq(groups[&2][0].1, 50.0, "carol");
     assert_target_eq(groups[&3][0].1, 200.0, "dave");
     assert_target_eq(groups[&4][0].1, 10.0, "eve");
+}
+
+#[test]
+fn integ_related_column_path_preserves_entity_identity_and_null_semantics() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_related_column_graph(dir.path());
+
+    let label_plan = related_column_plan(
+        vec![Op::Column {
+            alias: "label".to_string(),
+            table: "targets".to_string(),
+            column: "label".to_string(),
+            path: vec![related_column_edge()],
+        }],
+        PredictionType::Node,
+    );
+    let label_rows = execute_and_group_bool(&label_plan, &index);
+    assert_eq!(
+        label_rows,
+        HashMap::from([
+            (10, vec![(0, true)]),
+            (11, vec![(0, false)]),
+            (13, vec![(0, true)]),
+            (14, vec![(0, true)]),
+        ])
+    );
+
+    let mut null_cohort_plan = related_column_plan(
+        vec![
+            Op::Column {
+                alias: "label".to_string(),
+                table: "targets".to_string(),
+                column: "label".to_string(),
+                path: vec![related_column_edge()],
+            },
+            Op::Compare {
+                alias: "label_is_null".to_string(),
+                lhs: "label".to_string(),
+                op: CompareOp::IsNull,
+                rhs: Value::Bool(false),
+            },
+        ],
+        PredictionType::PassThrough,
+    );
+    null_cohort_plan.stages[0].filter = Some(StageFilter::Compare {
+        alias: "label_is_null".to_string(),
+        op: CompareOp::Eq,
+        rhs: StageFilterRhs::Constant(Value::Bool(true)),
+    });
+    let (receiver, handle) = execute(&null_cohort_plan, &index).unwrap();
+    let (cohort_rows, _) = read_output_rows_pass_through(receiver);
+    handle.join().unwrap().unwrap();
+    assert_eq!(cohort_rows, vec![(12, 0), (15, 0), (16, 0)]);
+
+    let tags_plan = related_column_plan(
+        vec![Op::Column {
+            alias: "tags".to_string(),
+            table: "targets".to_string(),
+            column: "tags".to_string(),
+            path: vec![related_column_edge()],
+        }],
+        PredictionType::Node,
+    );
+    let tag_rows = execute_and_group_str(&tags_plan, &index);
+    assert_eq!(
+        tag_rows,
+        HashMap::from([
+            (10, vec![(0, "a".to_string())]),
+            (11, vec![(0, "b".to_string())]),
+            (13, vec![(0, "c|d".to_string())]),
+            (14, vec![(0, "c|d".to_string())]),
+            (15, vec![(0, "e".to_string())]),
+        ])
+    );
+}
+
+#[test]
+fn integ_related_column_path_rejects_table_mismatches() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_related_column_graph(dir.path());
+    let reader = diskgraph_index::graph::GraphIndexReader::open(
+        &index.join("index_metadata.json"),
+        &index,
+    )
+    .unwrap();
+
+    let pathless_remote = related_column_plan(
+        vec![Op::Column {
+            alias: "label".to_string(),
+            table: "targets".to_string(),
+            column: "label".to_string(),
+            path: vec![],
+        }],
+        PredictionType::Node,
+    );
+    assert!(matches!(
+        resolve_plan(&pathless_remote, &reader),
+        Err(TTGenError::InvalidPlan(_))
+    ));
+
+    let wrong_terminal_table = related_column_plan(
+        vec![Op::Column {
+            alias: "entity_id".to_string(),
+            table: "entities".to_string(),
+            column: "entity_id".to_string(),
+            path: vec![related_column_edge()],
+        }],
+        PredictionType::Node,
+    );
+    assert!(matches!(
+        resolve_plan(&wrong_terminal_table, &reader),
+        Err(TTGenError::InvalidPlan(_))
+    ));
+
+    let mut one_to_many_path = related_column_plan(
+        vec![Op::Column {
+            alias: "entity_id".to_string(),
+            table: "entities".to_string(),
+            column: "entity_id".to_string(),
+            path: vec![EdgeRef {
+                src_table: "targets".to_string(),
+                src_col: "target_id".to_string(),
+                dst_table: "entities".to_string(),
+                dst_col: "target_id".to_string(),
+            }],
+        }],
+        PredictionType::Node,
+    );
+    one_to_many_path.entity.table = "targets".to_string();
+    one_to_many_path.entity.column = "target_id".to_string();
+    let one_to_many_error = match resolve_plan(&one_to_many_path, &reader) {
+        Ok(_) => panic!("expected one-to-many direct column path to fail"),
+        Err(error) => error,
+    };
+    assert!(matches!(one_to_many_error, TTGenError::InvalidPlan(_)));
+    assert!(one_to_many_error.to_string().contains("is not many-to-one"));
 }
 
 #[test]
@@ -2598,6 +2902,7 @@ fn integ_compare_string() {
                 alias: "nm".to_string(),
                 table: "users".to_string(),
                 column: "name".to_string(),
+                path: vec![],
             }],
             filter: None,
         },
@@ -5340,6 +5645,7 @@ fn integ_logical_not_target() {
                 alias: "nm".to_string(),
                 table: "users".to_string(),
                 column: "name".to_string(),
+                path: vec![],
             },
             Op::Compare {
                 alias: "is_alice".to_string(),
@@ -5422,6 +5728,7 @@ fn integ_logical_or_target() {
                 alias: "nm".to_string(),
                 table: "users".to_string(),
                 column: "name".to_string(),
+                path: vec![],
             },
             Op::Compare {
                 alias: "is_alice".to_string(),
@@ -5471,6 +5778,7 @@ fn integ_logical_nested_not_and() {
                         alias: "nm".to_string(),
                         table: "users".to_string(),
                         column: "name".to_string(),
+                        path: vec![],
                     },
                 ],
                 filter: None,
@@ -5716,6 +6024,7 @@ fn integ_bp_is_null_filter() {
                 alias: "dummy".to_string(),
                 table: "users".to_string(),
                 column: "user_id".to_string(),
+                path: vec![],
             }],
             filter: None,
         },
@@ -5749,6 +6058,7 @@ fn integ_bp_is_not_null_filter() {
                 alias: "dummy".to_string(),
                 table: "users".to_string(),
                 column: "user_id".to_string(),
+                path: vec![],
             }],
             filter: None,
         },
@@ -9005,6 +9315,7 @@ fn integ_tt_forecasting_target_extraction() {
                     alias: "entity_id_target".to_string(),
                     table: "users".to_string(),
                     column: "user_id".to_string(),
+                    path: vec![],
                 },
             ],
             filter: None,
@@ -9982,6 +10293,7 @@ fn integ_forecasting_empty_count_distinct_target_is_zero() {
                     alias: "entity_id_target".to_string(),
                     table: "users".to_string(),
                     column: "user_id".to_string(),
+                    path: vec![],
                 },
             ],
             filter: None,

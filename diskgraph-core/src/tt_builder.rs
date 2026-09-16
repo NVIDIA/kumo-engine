@@ -320,11 +320,13 @@ pub enum Op<U: UnitSystem> {
         ///   * Otherwise → `None`.
         target_entity_table: Option<String>,
     },
-    /// Direct column lookup (no traversal).
+    /// Direct column lookup, optionally after traversing a validated relationship path.
     Column {
         alias: String,
         table: String,
         column: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        path: Vec<EdgeRef>,
     },
     /// Boolean comparison on a previously computed alias.
     Compare {
@@ -656,6 +658,7 @@ mod tests {
                 alias: "col".into(),
                 table: "T".into(),
                 column: "C".into(),
+                path: vec![],
             }),
             lag_offsets: vec![Dur::from_secs(-86400), Dur::from_secs(-172800)],
         };
@@ -678,6 +681,7 @@ mod tests {
                 alias: "col".into(),
                 table: "T".into(),
                 column: "C".into(),
+                path: vec![],
             }),
             future_offsets: vec![Dur::from_secs(0), Dur::from_secs(86400)],
         };
