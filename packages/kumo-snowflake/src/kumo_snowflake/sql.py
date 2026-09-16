@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from kumo_core.sources import sql
 from kumo_core.sources.errors import PermanentSourceError
+from kumo_core.sources.sql import resolve_snowflake_identifier
 from kumoapi.typing import Dtype
 
 QUOTE = '"'
@@ -32,6 +33,48 @@ def quote_identifier(name: str) -> str:
 
 def qualified_name(*parts: str) -> str:
     return sql.qualified_name(*parts, quote=quote_identifier)
+
+
+def resolve_qualified_name(
+    value: str,
+    *,
+    parts: int | tuple[int, ...],
+) -> tuple[str, ...]:
+    """Resolve dotted Snowflake syntax to exact catalog identifier names."""
+    expected = (parts, ) if isinstance(parts, int) else parts
+    declared: list[str] = []
+    start = 0
+    quoted = False
+    index = 0
+    while index < len(value):
+        character = value[index]
+        if character == '"':
+            if quoted and index + 1 < len(value) and value[index + 1] == '"':
+                index += 2
+                continue
+            quoted = not quoted
+        elif character == '.' and not quoted:
+            declared.append(value[start:index])
+            start = index + 1
+        index += 1
+    if quoted:
+        raise ValueError(f'unterminated quoted Snowflake identifier: {value!r}')
+    declared.append(value[start:])
+    if len(declared) not in expected:
+        choices = ', '.join(str(count) for count in expected)
+        raise ValueError(
+            f'expected {choices} Snowflake identifier components, got '
+            f'{len(declared)} in {value!r}')
+    return tuple(resolve_snowflake_identifier(name) for name in declared)
+
+
+def declared_qualified_name(
+    value: str,
+    *,
+    parts: int | tuple[int, ...],
+) -> str:
+    """Render declared Snowflake identifier syntax as a quoted SQL name."""
+    return qualified_name(*resolve_qualified_name(value, parts=parts))
 
 
 def build_projection(

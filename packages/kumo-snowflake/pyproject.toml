@@ -23,6 +23,7 @@ dependencies = [
   "snowflake-connector-python>=4.3",
   "requests>=2.31",
   "pandas>=1.5,<3",
+  "tqdm>=4.66",
 ]
 
 [project.optional-dependencies]
@@ -33,7 +34,7 @@ dependencies = [
 # is loaded there -- `__init__` exports the plugin lazily to keep that true.
 sdk = [
   "snowflake-snowpark-python",
-  "snowflake-ml-python",
+  "snowflake-ml-python>=1.26",
   "pyyaml",
 ]
 test = [

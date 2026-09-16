@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytorch_lightning as pl
 from kumo_core.io.json import save_json
+from kumo_core.runtime_progress import progress_updated
 from kumoapi.jobs import PredictionProgress
 from pytorch_lightning.callbacks import Callback
 from torch import Tensor
@@ -37,6 +38,7 @@ class PredictionProgressLogger(Callback):  # pragma: no cover
 
         # Save to file
         save_json(self.progress, self.path)
+        progress_updated('prediction', self.progress)
 
     def on_predict_start(
         self,
@@ -48,6 +50,7 @@ class PredictionProgressLogger(Callback):  # pragma: no cover
 
         # Save to file
         save_json(self.progress, self.path)
+        progress_updated('prediction', self.progress)
 
     def on_predict_batch_end(
         self,
@@ -80,6 +83,7 @@ class PredictionProgressLogger(Callback):  # pragma: no cover
             if (time.time() - self.last_update_time
                     > _PROGRESS_UPDATE_INTERVAL_SEC):
                 save_json(self.progress, self.path)
+                progress_updated('prediction', self.progress)
                 self.last_update_time = time.time()
         except RuntimeError:
             # Ignore errors in saving the file
@@ -88,3 +92,4 @@ class PredictionProgressLogger(Callback):  # pragma: no cover
     def on_predict_end(self, pl_trainer, pl_module):
         # Always save the progress to the file after predict end.
         save_json(self.progress, self.path)
+        progress_updated('prediction', self.progress)

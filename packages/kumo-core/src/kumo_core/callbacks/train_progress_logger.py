@@ -9,6 +9,7 @@ from typing import Any
 
 import kumoapi.jobs as jobs_api
 from kumo_core.io.json import load_json, save_json
+from kumo_core.runtime_progress import progress_updated
 from kumoapi.jobs import EpochMetrics, TrainerProgress
 from pytorch_lightning.callbacks import Checkpoint
 from pytorch_lightning.trainer.states import TrainerFn
@@ -78,6 +79,7 @@ class TrainingProgressLogger(MonitoringCallback):  # pragma: no cover
         self.progress.start_time = datetime.now(timezone.utc)
         self.progress.accelerator = pl_module.device.type
         save_json(self.progress, self.path)
+        progress_updated('training', self.progress)
 
     def on_train_epoch_start(self, pl_trainer, pl_module):
         self._epoch_start = datetime.now(timezone.utc)
@@ -108,6 +110,7 @@ class TrainingProgressLogger(MonitoringCallback):  # pragma: no cover
 
         self._epoch_start = None
         save_json(self.progress, self.path)
+        progress_updated('training', self.progress)
 
         train_metric = f'train_{self.tune_metric}'
         if train_metric not in epoch_metrics.train_metrics:
@@ -131,6 +134,7 @@ class TrainingProgressLogger(MonitoringCallback):  # pragma: no cover
             self.progress.final_validation_metrics = (
                 pl_trainer.progress_bar_metrics)
             save_json(self.progress, self.path)
+            progress_updated('training', self.progress)
 
 
 class AutoTrainingProgressLogger(MonitoringCallback):  # pragma: no cover
@@ -158,11 +162,13 @@ class AutoTrainingProgressLogger(MonitoringCallback):  # pragma: no cover
         self.progress.trial_progress[self.trainer.version] = (
             self.trainer.training_progress_logger.progress)
         save_json(self.progress, self.path)
+        progress_updated('training', self.progress)
 
     def on_train_end(self, pl_trainer, pl_module):
         self.progress.completed_trials += 1
 
         save_json(self.progress, self.path)
+        progress_updated('training', self.progress)
 
     def on_train_epoch_end(self, pl_trainer, pl_module):
         now = datetime.now(timezone.utc)
@@ -183,7 +189,9 @@ class AutoTrainingProgressLogger(MonitoringCallback):  # pragma: no cover
                 (self.progress.total_trials / self.progress.completed_trials))
 
         save_json(self.progress, self.path)
+        progress_updated('training', self.progress)
 
     def on_validation_end(self, pl_trainer, pl_module):
         if pl_trainer.state.fn == TrainerFn.VALIDATING:
             save_json(self.progress, self.path)
+            progress_updated('training', self.progress)

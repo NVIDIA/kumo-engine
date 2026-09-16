@@ -31,13 +31,27 @@ from kumo_snowflake.spcs import spcs_identity_create_args
 #: Where each lazily exported name is defined. The plugin's modules, and only
 #: those: everything eager above is reachable on the platform's install.
 _LAZY_EXPORTS = {
+    "SnowflakeMLJob": "ml_jobs",
+    "SnowflakeMLJobConfigurationError": "ml_jobs",
+    "SnowflakeMLJobDiagnostic": "ml_jobs",
+    "SnowflakeMLJobError": "ml_jobs",
+    "SnowflakeMLJobFailed": "ml_jobs",
+    "SnowflakeMLJobPermissionError": "ml_jobs",
+    "SnowflakeMLJobPreflightError": "ml_jobs",
+    "SnowflakeMLJobProgress": "ml_jobs",
+    "SnowflakeMLJobResult": "ml_jobs",
+    "SnowflakeMLJobStatus": "ml_jobs",
+    "SnowflakeMLJobSubmissionError": "ml_jobs",
+    "SnowflakeMLJobTransientError": "ml_jobs",
     "SnowflakeSession": "session",
     "SnowflakeSinkBackend": "sink",
     "SnowflakeSourceBackend": "backend",
     "SourceConnector": "session",
     "StageArtifactLocation": "artifacts",
     "close": "session",
+    "get_ml_job": "ml_jobs",
     "probe": "session",
+    "submit_ml_job": "ml_jobs",
 }
 
 __all__ = [
