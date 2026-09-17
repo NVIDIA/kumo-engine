@@ -783,8 +783,11 @@ const MULTICAT_DETECT_MIN_FRACTION: f64 = 0.01;
 /// are accepted if the delimiter appears at least once, but hit rates below
 /// this threshold get a warning.
 const MULTICAT_EXPLICIT_SUSPICIOUS_FRACTION: f64 = 0.20;
-/// Max number of non-null sample rows to pull per column.
+/// Max number of non-null sample rows used for automatic detection.
 const MULTICAT_MAX_SAMPLES: usize = 1_000;
+/// Explicit declarations need a larger bounded sample so sparse valid values
+/// are not rejected by the stricter zero-hit mismatch check.
+const MULTICAT_EXPLICIT_MAX_SAMPLES: usize = 10_000;
 /// Max number of files to inspect while looking for multicat delimiter samples.
 const MULTICAT_MAX_FILES: usize = 15;
 
@@ -797,7 +800,7 @@ struct ExplicitMulticatCandidate {
 }
 
 /// Bounded, transport-independent validation folded into the normal Encode
-/// pass. Once each candidate has 1,000 non-empty values, observation is a
+/// pass. Once each candidate has 10,000 non-empty values, observation is a
 /// no-op, so this never grows with result size.
 pub(crate) struct ExplicitMulticatDelimiterValidator {
     table: String,
@@ -850,12 +853,12 @@ impl ExplicitMulticatDelimiterValidator {
     fn is_complete(&self) -> bool {
         self.candidates
             .iter()
-            .all(|candidate| candidate.total >= MULTICAT_MAX_SAMPLES)
+            .all(|candidate| candidate.total >= MULTICAT_EXPLICIT_MAX_SAMPLES)
     }
 
     pub(crate) fn observe(&mut self, batch: &arrow_array::RecordBatch) {
         for candidate in &mut self.candidates {
-            if candidate.total >= MULTICAT_MAX_SAMPLES {
+            if candidate.total >= MULTICAT_EXPLICIT_MAX_SAMPLES {
                 continue;
             }
             let Ok(array_index) = batch.schema().index_of(&candidate.name) else {
@@ -863,7 +866,7 @@ impl ExplicitMulticatDelimiterValidator {
             };
             let array = batch.column(array_index);
             for row in 0..batch.num_rows() {
-                if candidate.total >= MULTICAT_MAX_SAMPLES {
+                if candidate.total >= MULTICAT_EXPLICIT_MAX_SAMPLES {
                     break;
                 }
                 if array.is_null(row) {

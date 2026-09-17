@@ -1081,6 +1081,91 @@ fn convert_accepts_explicit_delim_with_mostly_single_token_rows() -> Result<()> 
     Ok(())
 }
 
+/// Explicit validation uses a larger budget than automatic detection so a
+/// sparse declared delimiter can appear after the first 1,000 values.
+#[test]
+fn convert_and_ingest_accept_explicit_delim_with_hit_after_auto_sample_cap() -> Result<()> {
+    let dir = tempdir()?;
+    let data_dir = dir.path().join("data");
+    let index_dir = dir.path().join("index");
+    fs::create_dir_all(&data_dir)?;
+
+    let mut tags = vec!["solo"; 1_000];
+    tags.push("a,b");
+    let item_ids: Vec<i64> = (0..tags.len() as i64).collect();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("item_id", DataType::Int64, false),
+        Field::new("tags", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(arrow_array::Int64Array::from(item_ids)) as ArrayRef,
+            Arc::new(ArrowStringArray::from(tags)) as ArrayRef,
+        ],
+    )?;
+    write_parquet(&data_dir.join("items.parquet"), &batch);
+
+    let kumo_json = serde_json::json!({
+        "tables": [{
+            "table_name": "items",
+            "data_source": "test",
+            "data_version": "v1",
+            "pkey": {"name": "item_id", "dtype": "int", "stype": "ID"},
+            "fkeys": [],
+            "cols": [{
+                "name": "tags",
+                "dtype": "string",
+                "stype": "multicategorical",
+                "multicategorical_delimiter": ","
+            }],
+            "time_col": null,
+            "end_time_col": null,
+            "edge_table": null
+        }]
+    });
+    let kumo: KumoGraphConfig = serde_json::from_value(kumo_json)?;
+    let opts = ConvertOptions {
+        data_persist_dir: data_dir.to_string_lossy().to_string(),
+        dataset_name: "mc_delim_after_sample_cap".to_string(),
+        table_data_versions: None,
+        source_paths_base: None,
+        source_paths: Some({
+            let mut m = std::collections::HashMap::new();
+            m.insert("items".to_string(), data_dir.to_string_lossy().to_string());
+            m
+        }),
+        source_specs: None,
+    };
+
+    let cfg = convert_kumo_to_diskgraph(&kumo, &opts)?;
+    let col = cfg.tables[0]
+        .columns
+        .iter()
+        .find(|c| c.name == "tags")
+        .expect("tags col");
+    assert_eq!(
+        col.ingested_dtype,
+        diskgraph_ingest::graph_config::IngestedType::StringArray,
+    );
+    assert_eq!(col.multicategorical_delimiter.as_deref(), Some(","));
+
+    let config_path = data_dir.join("diskgraph_config.json");
+    fs::write(&config_path, serde_json::to_string_pretty(&cfg)?)?;
+    ingest_with_stats(
+        &config_path,
+        index_dir.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions {
+            parallel: false,
+            col_stats: true,
+            cat_count_strategy: CategoryCountStrategy::Hybrid,
+            ..IngestOptions::default()
+        },
+    )?;
+    Ok(())
+}
+
 /// Direct DiskGraph configs (i.e. configs hand-authored or emitted by
 /// non-kumo tooling, fed straight to `ingest_with_stats`) must also see
 /// the wrong-delimiter validation. Pre-#28478 the convert path was the
