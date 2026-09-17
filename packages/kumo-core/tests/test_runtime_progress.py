@@ -105,6 +105,24 @@ def test_observer_progress_failure_does_not_abort_the_workload() -> None:
         runtime_progress.reset(token)
 
 
+def test_observer_completion_failure_does_not_replace_workload_result() -> None:
+    class _FailingObserver(_Observer):
+        def operation_finished(self, kind: str, operation_id: str,
+                               error: BaseException | None) -> None:
+            del kind, operation_id, error
+            raise ConnectionError('progress sink unavailable')
+
+    observer = _FailingObserver()
+    token = runtime_progress.install(observer)
+    try:
+        with runtime_progress.operation('prediction', 'bp-job-1', 'Predicting'):
+            result = 'predicted'
+    finally:
+        runtime_progress.reset(token)
+
+    assert result == 'predicted'
+
+
 def test_reset_waits_for_an_in_flight_worker_callback() -> None:
     callback_started = threading.Event()
     release_callback = threading.Event()

@@ -124,4 +124,14 @@ def operation(
         raise
     finally:
         with _LOCK:
-            observer.operation_finished(kind, operation_id, error)
+            try:
+                observer.operation_finished(kind, operation_id, error)
+            except Exception:
+                # Completion reporting is observability.  Once the operation
+                # has produced a result (or its own exception), an observer
+                # failure must not replace that outcome.
+                logger.warning(
+                    'Could not finish %s runtime progress',
+                    kind,
+                    exc_info=True,
+                )

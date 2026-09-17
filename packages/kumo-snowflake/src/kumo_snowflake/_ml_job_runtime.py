@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import logging
 import math
@@ -167,6 +168,22 @@ def _observability_json(value: Any) -> Any:
     return value
 
 
+def _safe_exception_text(error: BaseException) -> str:
+    """Format an exception without letting broken ``__str__`` mask it."""
+    try:
+        return str(error)
+    except Exception:
+        return f'<{type(error).__name__} message unavailable>'
+
+
+def _safe_traceback(error: BaseException) -> str:
+    """Best-effort traceback text for a durable failure envelope."""
+    try:
+        return ''.join(traceback.format_exception(error))
+    except Exception:
+        return f'{type(error).__name__}: {_safe_exception_text(error)}'
+
+
 class _RemoteObserver:
     """Serially mirrors native progress through the ML Job active session."""
     def __init__(self, store: StageStore, config: Mapping[str, Any]) -> None:
@@ -189,6 +206,10 @@ class _RemoteObserver:
         self._best_metrics: dict[str, float] = {}
         self._operation_active = False
         self._operation_automatic = False
+        self._active_automatic_source: Any | None = None
+        self._completed_automatic_source: Any | None = None
+        self._native_operation_kinds: set[str] = set()
+        self._policy_error: RuntimeError | None = None
         self._last_publish = 0.0
         self._publish(force=True)
 
@@ -251,6 +272,15 @@ class _RemoteObserver:
                 'A submitted Snowflake ML Job may run only one top-level '
                 'Kumo operation at a time; overlapping '
                 f'{self._operation_kind!r} and {kind!r} is unsupported')
+        if (kind in {'training', 'prediction'}
+                and kind in self._native_operation_kinds):
+            error = RuntimeError(
+                'A submitted Snowflake ML Job may run at most one training '
+                'operation and at most one prediction operation')
+            self._policy_error = error
+            raise error
+        if kind in {'training', 'prediction'}:
+            self._native_operation_kinds.add(kind)
         self._operation_kind = kind
         self._operation_id = operation_id
         self._training = None
@@ -258,7 +288,14 @@ class _RemoteObserver:
         self._current_metrics.clear()
         self._best_metrics.clear()
         self._operation_active = True
+        self._active_automatic_source = None
+        self._completed_automatic_source = None
         self.stage_changed(stage)
+
+    def raise_for_policy_violation(self) -> None:
+        """Fail the durable result even if callback delivery was best effort."""
+        if self._policy_error is not None:
+            raise self._policy_error
 
     def stage_changed(self, stage: str, detail: str | None = None) -> None:
         now = _now()
@@ -279,26 +316,33 @@ class _RemoteObserver:
 
     def progress_updated(self, kind: str, progress: Any) -> None:
         if (not self._operation_active and kind == self._operation_kind
-                and self._progress_complete(kind)):
-            # A final callback can race a delayed worker callback from the
-            # same automatically observed operation.  Once the typed counters
-            # reached completion, do not reopen that operation or regress its
-            # durable progress.
+                and progress is self._completed_automatic_source):
+            # All callbacks from one native logger carry the same mutable
+            # progress object.  Retain that object as the automatic-operation
+            # generation marker so a delayed callback cannot reopen it.  A new
+            # logger object reaches ``operation_started`` and is rejected by
+            # the one-operation-per-kind submission policy below.
             return
         if not self._operation_active:
+            completed_source = self._completed_automatic_source
             stage = {
                 'training': 'Training',
                 'prediction': 'Predicting',
             }.get(kind, kind.title())
             self.operation_started(kind, self._execution_id, stage)
             self._operation_automatic = True
+            self._completed_automatic_source = completed_source
         if kind != self._operation_kind:
             raise RuntimeError(f'Kumo emitted {kind!r} progress while '
                                f'{self._operation_kind!r} was active')
+        if (self._operation_automatic
+                and progress is self._completed_automatic_source):
+            return
         if isinstance(progress, AutoTrainerProgress):
-            self._training = progress
+            progress_snapshot = copy.deepcopy(progress)
+            self._training = progress_snapshot
             try:
-                current, best = _metric_snapshots(progress)
+                current, best = _metric_snapshots(progress_snapshot)
             except Exception:
                 logger.warning('Could not derive Kumo training metrics',
                                exc_info=True)
@@ -317,11 +361,18 @@ class _RemoteObserver:
                 else:
                     self._best_metrics[name] = max(previous, value)
         elif isinstance(progress, PredictionProgress):
-            self._prediction = progress
+            self._prediction = copy.deepcopy(progress)
         else:
             # Trial-level TrainerProgress is useful inside AutoTrainerProgress
             # but is not itself the public top-level contract.
             return
+        if self._operation_automatic:
+            if self._active_automatic_source is None:
+                self._active_automatic_source = progress
+            elif progress is not self._active_automatic_source:
+                raise RuntimeError(
+                    f'Kumo {kind!r} progress source changed during an active '
+                    'automatic operation')
         self._publish()
         if self._operation_automatic and self._progress_complete(kind):
             self.operation_finished(kind, self._execution_id, None)
@@ -342,7 +393,13 @@ class _RemoteObserver:
         if (kind, operation_id) != (self._operation_kind, self._operation_id):
             raise RuntimeError('Kumo progress operation ownership changed')
         stage = f'{kind.title()} failed' if error else f'{kind.title()} complete'
-        self.stage_changed(stage, None if error is None else str(error))
+        self.stage_changed(
+            stage,
+            None if error is None else _safe_exception_text(error),
+        )
+        if self._operation_automatic:
+            self._completed_automatic_source = self._active_automatic_source
+        self._active_automatic_source = None
         self._operation_active = False
         self._operation_automatic = False
 
@@ -410,11 +467,11 @@ def _diagnostic(error: BaseException) -> dict[str, Any]:
 
     return {
         'type': type(error).__name__,
-        'message': str(error),
+        'message': _safe_exception_text(error),
         'code': code,
         'sqlstate': text_attribute('sqlstate'),
         'sfqid': text_attribute('sfqid'),
-        'traceback': ''.join(traceback.format_exception(error)),
+        'traceback': _safe_traceback(error),
     }
 
 
@@ -515,6 +572,7 @@ def execute_user_function(
             decoded_args = _decode_argument(list(args))
             decoded_kwargs = _decode_argument(dict(kwargs))
             returned = function(*decoded_args, **decoded_kwargs)
+            observer.raise_for_policy_violation()
             if isinstance(returned, PublishedModel):
                 execution_context.published_model = returned
             value = _json_value(returned)
@@ -522,7 +580,8 @@ def execute_user_function(
             runtime_progress.reset(token)
             observer_attached = False
             try:
-                terminal_progress = observer.terminal(False, str(error))
+                terminal_progress = observer.terminal(
+                    False, _safe_exception_text(error))
             except Exception:
                 terminal_progress = None
                 logger.exception(

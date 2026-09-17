@@ -98,11 +98,13 @@ prediction_job.attach().raise_for_failure()
 ```
 
 The helper preflights the GPU pool and internal stage, discovers the installed
-self-contained Kumo wheel, verifies its fat-bundle manifest, stages it by
-content digest, and asks Snowflake ML Jobs to install exactly that wheel. It
-does not impose a Container Runtime version. Pass `runtime_environment=` when
-you want to select one; compatible runtime versions are maintained outside
-this package.
+Kumo fat wheel, verifies its bundle manifest and declared installation
+requirements, stages it by content digest, and asks Snowflake ML Jobs to
+install exactly that wheel. Normal `Requires-Dist` dependencies are resolved
+by the remote environment; pass `artifact_repositories=` when they must come
+from a Snowflake Artifact Repository. The helper does not impose a Container
+Runtime version. Pass `runtime_environment=` when you want to select one;
+compatible runtime versions are maintained outside this package.
 
 Function dispatch uses Snowflake ML Jobs' supported CloudPickle mechanism, but
 Kumo deliberately accepts only a top-level module or notebook function plus
@@ -127,6 +129,10 @@ value is also exposed as `result.published_model` for convenient discovery.
 Native Kumo training and prediction progress reaches the durable ML Job
 progress sidecar through the shared `kumo_core.runtime_progress` observer.
 The submission layer does not import or freeze either SDK's public API.
+A submitted function may run at most one training operation and at most one
+prediction operation, sequentially. Training followed by prediction is
+supported; repeated or overlapping operations of either kind fail the durable
+job result.
 
 Handles are not thread-safe. Serialize calls on one handle. Independent jobs
 may be observed concurrently when callers supply distinct Snowpark sessions.

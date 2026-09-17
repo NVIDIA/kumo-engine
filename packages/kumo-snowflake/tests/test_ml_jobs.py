@@ -124,6 +124,20 @@ def function_with_sequential_progress(log_dir: str) -> str:
     return 'done'
 
 
+def function_with_training_then_prediction(log_dir: str) -> str:
+    callback = AutoTrainingProgressLogger(log_dir, 1)
+    callback.set_current_trainer(
+        SimpleNamespace(
+            version='0',
+            training_progress_logger=SimpleNamespace(
+                progress=TrainerProgress(), ),
+        ))
+    callback.on_train_start(None, None)
+    callback.on_train_end(None, None)
+    function_with_prediction_progress(log_dir)
+    return 'done'
+
+
 def function_with_transport_named_argument(
     __kumo_ml_job_transport__: str, ) -> str:
     return __kumo_ml_job_transport__
@@ -1520,6 +1534,50 @@ def test_remote_failure_coerces_non_json_diagnostic_attributes(
     assert diagnostic['sfqid'] == "{'query': 'id'}"
 
 
+def test_remote_failure_preserves_exception_with_broken_string(
+    monkeypatch: Any, ) -> None:
+    class UnprintableError(RuntimeError):
+        def __str__(self) -> str:
+            raise ValueError('message formatting failed')
+
+    error = UnprintableError()
+
+    def fail_without_printable_message() -> None:
+        raise error
+
+    session = _Session()
+    monkeypatch.setattr(
+        'kumo_snowflake._ml_job_runtime._active_job_session',
+        lambda: session,
+    )
+
+    def fail_to_format_traceback(error: BaseException) -> list[str]:
+        del error
+        raise ValueError('traceback formatting failed')
+
+    monkeypatch.setattr(
+        'kumo_snowflake._ml_job_runtime.traceback.format_exception',
+        fail_to_format_traceback,
+    )
+    with pytest.raises(UnprintableError) as caught:
+        execute_user_function(fail_without_printable_message, [], {}, {
+            'schema_version': 1,
+            'execution_id': 'unprintable-diagnostic',
+            'stage_name': STAGE,
+            'progress_location': 'progress.json',
+            'result_location': 'result.json',
+        })
+
+    assert caught.value is error
+    durable = StageStore(session, STAGE).get_json('result.json')
+    assert durable['status'] == 'FAILED'
+    assert durable['diagnostic']['type'] == 'UnprintableError'
+    assert durable['diagnostic'][
+        'message'] == '<UnprintableError message unavailable>'
+    assert durable['diagnostic']['traceback'].endswith(
+        'UnprintableError: <UnprintableError message unavailable>')
+
+
 def test_remote_failure_preserves_final_native_progress(
     monkeypatch: Any, ) -> None:
     session = _Session()
@@ -1814,6 +1872,44 @@ def test_real_progress_callbacks_support_sequential_operations(
     ]
 
 
+def test_real_progress_callbacks_support_training_then_prediction(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    session = _Session()
+    monkeypatch.setattr(
+        'kumo_snowflake._ml_job_runtime._active_job_session',
+        lambda: session,
+    )
+
+    result = execute_user_function(
+        function_with_training_then_prediction,
+        [str(tmp_path)],
+        {},
+        {
+            'schema_version': 1,
+            'execution_id': 'training-then-prediction',
+            'stage_name': STAGE,
+            'progress_location': 'progress.json',
+            'result_location': 'result.json',
+        },
+    )
+
+    assert result['status'] == 'SUCCEEDED'
+    assert result['progress_kind'] == 'prediction'
+    assert result['progress']['completed_iterations'] == 5
+    assert [
+        event['stage_name'] for event in result['status_report']['event_log']
+    ] == [
+        'Starting user function',
+        'Training',
+        'Training complete',
+        'Predicting',
+        'Prediction complete',
+        'Completed',
+    ]
+
+
 def test_automatic_progress_ignores_late_regression_after_completion() -> None:
     session = _Session()
     observer = _RemoteObserver(
@@ -1823,14 +1919,10 @@ def test_automatic_progress_ignores_late_regression_after_completion() -> None:
             'progress_location': 'progress.json',
         },
     )
-    observer.progress_updated(
-        'prediction',
-        PredictionProgress(total_iterations=2, completed_iterations=2),
-    )
-    observer.progress_updated(
-        'prediction',
-        PredictionProgress(total_iterations=2, completed_iterations=1),
-    )
+    progress = PredictionProgress(total_iterations=2, completed_iterations=2)
+    observer.progress_updated('prediction', progress)
+    progress.completed_iterations = 1
+    observer.progress_updated('prediction', progress)
 
     payload = observer.terminal(True)
     assert payload['prediction']['completed_iterations'] == 2
@@ -1842,6 +1934,71 @@ def test_automatic_progress_ignores_late_regression_after_completion() -> None:
         'Prediction complete',
         'Completed',
     ]
+
+
+def test_automatic_progress_rejects_sequential_same_kind_operations() -> None:
+    session = _Session()
+    observer = _RemoteObserver(
+        StageStore(session, STAGE),
+        {
+            'execution_id': 'sequential-prediction',
+            'progress_location': 'progress.json',
+        },
+    )
+    first = PredictionProgress(total_iterations=2, completed_iterations=2)
+    second = PredictionProgress(total_iterations=3, completed_iterations=1)
+
+    observer.progress_updated('prediction', first)
+    with pytest.raises(RuntimeError, match='at most one prediction'):
+        observer.progress_updated('prediction', second)
+
+
+@pytest.mark.parametrize('kind', ['training', 'prediction'])
+def test_repeated_automatic_operation_fails_durable_result(
+    monkeypatch: Any,
+    kind: str,
+) -> None:
+    session = _Session()
+    monkeypatch.setattr(
+        'kumo_snowflake._ml_job_runtime._active_job_session',
+        lambda: session,
+    )
+
+    def progress(completed: int, total: int) -> Any:
+        if kind == 'training':
+            return AutoTrainerProgress(
+                total_trials=total,
+                completed_trials=completed,
+            )
+        return PredictionProgress(
+            total_iterations=total,
+            completed_iterations=completed,
+        )
+
+    def run_twice() -> str:
+        runtime_progress.progress_updated(
+            kind,
+            progress(2, 2),
+        )
+        runtime_progress.progress_updated(
+            kind,
+            progress(1, 3),
+        )
+        return 'must not succeed'
+
+    with pytest.raises(RuntimeError, match=f'at most one {kind}'):
+        execute_user_function(run_twice, [], {}, {
+            'schema_version': 1,
+            'execution_id': f'repeated-{kind}',
+            'stage_name': STAGE,
+            'progress_location': 'progress.json',
+            'result_location': 'result.json',
+        })
+
+    durable = StageStore(session, STAGE).get_json('result.json')
+    assert durable['status'] == 'FAILED'
+    assert durable['diagnostic']['message'].endswith(
+        'at most one prediction operation')
 
 
 def test_terminal_progress_waits_for_in_flight_worker_callback(
@@ -1903,7 +2060,7 @@ def test_terminal_progress_waits_for_in_flight_worker_callback(
                     'result_location': 'result.json',
                 },
             )
-        except BaseException as error:
+        except Exception as error:
             outcome['error'] = error
 
     execution = threading.Thread(target=execute)
