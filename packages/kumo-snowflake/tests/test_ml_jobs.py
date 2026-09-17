@@ -1953,6 +1953,40 @@ def test_automatic_progress_rejects_sequential_same_kind_operations() -> None:
         observer.progress_updated('prediction', second)
 
 
+def test_changed_automatic_progress_source_fails_durable_result(
+    monkeypatch: Any, ) -> None:
+    session = _Session()
+    monkeypatch.setattr(
+        'kumo_snowflake._ml_job_runtime._active_job_session',
+        lambda: session,
+    )
+
+    def change_source_while_active() -> str:
+        runtime_progress.progress_updated(
+            'prediction',
+            PredictionProgress(total_iterations=3, completed_iterations=1),
+        )
+        runtime_progress.progress_updated(
+            'prediction',
+            PredictionProgress(total_iterations=3, completed_iterations=2),
+        )
+        return 'must not succeed'
+
+    with pytest.raises(RuntimeError, match='progress source changed'):
+        execute_user_function(change_source_while_active, [], {}, {
+            'schema_version': 1,
+            'execution_id': 'changed-progress-source',
+            'stage_name': STAGE,
+            'progress_location': 'progress.json',
+            'result_location': 'result.json',
+        })
+
+    durable = StageStore(session, STAGE).get_json('result.json')
+    assert durable['status'] == 'FAILED'
+    assert durable['diagnostic']['message'].endswith(
+        'progress source changed during an active automatic operation')
+
+
 @pytest.mark.parametrize('kind', ['training', 'prediction'])
 def test_repeated_automatic_operation_fails_durable_result(
     monkeypatch: Any,

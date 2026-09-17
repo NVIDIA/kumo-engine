@@ -370,9 +370,11 @@ class _RemoteObserver:
             if self._active_automatic_source is None:
                 self._active_automatic_source = progress
             elif progress is not self._active_automatic_source:
-                raise RuntimeError(
+                error = RuntimeError(
                     f'Kumo {kind!r} progress source changed during an active '
                     'automatic operation')
+                self._policy_error = error
+                raise error
         self._publish()
         if self._operation_automatic and self._progress_complete(kind):
             self.operation_finished(kind, self._execution_id, None)
