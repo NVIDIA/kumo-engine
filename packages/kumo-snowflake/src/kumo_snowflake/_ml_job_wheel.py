@@ -35,10 +35,10 @@ _REQUIRED_COMPONENTS = frozenset({
     'kumoai',
     'kumoml-enterprise',
     'pyg-lib',
-    'pytorch-frame',
     'torch-geometric',
     'torch-scatter',
 })
+_REQUIRED_RUNTIME_REQUIREMENTS = frozenset({'pytorch-frame==0.3.0'})
 _WHEEL_NAME = re.compile(r'[A-Za-z0-9_.+-]+\.whl')
 
 
@@ -109,7 +109,7 @@ def discover_installed_wheel() -> InstalledWheel:
     if len(candidates) != 1:
         raise RuntimeError(
             'submit_ml_job requires Kumo to be installed from one '
-            'retained self-contained wheel produced by '
+            'retained Kumo fat wheel produced by '
             'packages/scripts/build_fat_wheel.sh; found '
             f'{len(candidates)} candidate wheels')
     return validate_wheel(*candidates[0])
@@ -132,7 +132,7 @@ def _hashes(handle: BinaryIO) -> tuple[str, str, int]:
 
 def validate_wheel(path: Path,
                    expected_sha256: str | None = None) -> InstalledWheel:
-    """Validate a readable, self-contained wheel and its fat-bundle manifest."""
+    """Validate a readable Kumo fat wheel and its bundled components."""
     path = path.resolve()
     if not path.is_file() or not _WHEEL_NAME.fullmatch(path.name):
         raise RuntimeError(f'{path} is not a readable wheel file')
@@ -172,6 +172,22 @@ def validate_wheel(path: Path,
         raise RuntimeError(
             f'{path.name} is missing required fat-wheel components '
             f'{missing_components!r}')
+    requirements = manifest.get('requires_at_install')
+    if not isinstance(requirements, list) or not all(
+            isinstance(requirement, str) for requirement in requirements):
+        raise RuntimeError(
+            f'{path.name} has no valid install-time requirements')
+    declared_requirements = {
+        requirement.lower().strip()
+        for requirement in requirements
+    }
+    missing_requirements = ([] if 'pytorch-frame' in component_names else
+                            sorted(_REQUIRED_RUNTIME_REQUIREMENTS -
+                                   declared_requirements))
+    if missing_requirements:
+        raise RuntimeError(
+            f'{path.name} is missing required runtime dependencies '
+            f'{missing_requirements!r}')
 
     if expected_sha256 is not None:
         # pip already verified and retained this PEP 610 digest when it

@@ -24,21 +24,25 @@ class PredictionProgressLogger(Callback):  # pragma: no cover
     FILE_NAME = "prediction_progress.json"  # Filename to log to.
     FILE_NAME_WITH_ID = "prediction_progress_{progress_log_id}.json"
 
-    def __init__(self, log_dir: str, progress_log_id: int,
+    def __init__(self, log_dir: str | None, progress_log_id: int,
                  total_iterations: int):
         super().__init__()
-        self.path = os.path.join(
+        self.path = (None if log_dir is None else os.path.join(
             log_dir,
             f'{_FILE_PREFIX}{progress_log_id}.json',
-        )
+        ))
         self.total_iterations = total_iterations
 
         self.progress = PredictionProgress(total_iterations=total_iterations)
         self.last_update_time: float = 0
 
         # Save to file
-        save_json(self.progress, self.path)
+        self._save()
         progress_updated('prediction', self.progress)
+
+    def _save(self) -> None:
+        if self.path is not None:
+            save_json(self.progress, self.path)
 
     def on_predict_start(
         self,
@@ -49,7 +53,7 @@ class PredictionProgressLogger(Callback):  # pragma: no cover
             self.progress.start_time = datetime.now(timezone.utc)
 
         # Save to file
-        save_json(self.progress, self.path)
+        self._save()
         progress_updated('prediction', self.progress)
 
     def on_predict_batch_end(
@@ -82,7 +86,7 @@ class PredictionProgressLogger(Callback):  # pragma: no cover
         try:
             if (time.time() - self.last_update_time
                     > _PROGRESS_UPDATE_INTERVAL_SEC):
-                save_json(self.progress, self.path)
+                self._save()
                 progress_updated('prediction', self.progress)
                 self.last_update_time = time.time()
         except RuntimeError:
@@ -91,5 +95,5 @@ class PredictionProgressLogger(Callback):  # pragma: no cover
 
     def on_predict_end(self, pl_trainer, pl_module):
         # Always save the progress to the file after predict end.
-        save_json(self.progress, self.path)
+        self._save()
         progress_updated('prediction', self.progress)

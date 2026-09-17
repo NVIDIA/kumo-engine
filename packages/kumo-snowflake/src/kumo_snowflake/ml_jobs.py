@@ -97,7 +97,7 @@ def _load_jobs_api() -> Any:
         from snowflake.ml import jobs
     except ImportError as error:
         raise SnowflakeMLJobConfigurationError(
-            'Snowflake ML Jobs requires snowflake-ml-python >= 1.26; install '
+            'Snowflake ML Jobs requires snowflake-ml-python >= 1.51,<2; install '
             'the kumoai[snowflake] runtime') from error
     return jobs
 
@@ -942,11 +942,6 @@ def submit_ml_job(
             'env_vars': {
                 'KUMO_SUBMITTED_BY': 'kumo-sdk',
                 'KUMO_EXECUTION_ID': execution_id,
-                # The fat wheel contains the complete Kumo closure. Mirror
-                # the documented single-wheel ``pip install --no-deps`` and
-                # prevent an offline ML Job from resolving bundled packages
-                # against a public index.
-                'PIP_NO_DEPS': '1',
             },
         }
         optional = {

@@ -1417,14 +1417,13 @@ class DiskgraphNestedTrainer(NestedTrainer):
         self.pl_model.eval_top_k = None
         output_partition_ids = output_partition_ids or [partition_id]
 
-        callbacks = []
-        if progress_log_dir is not None:
-            callbacks.append(
-                PredictionProgressLogger(
-                    progress_log_dir,
-                    progress_log_id,
-                    total_iterations=len(self.datamodule.predict_dataloader()),
-                ))
+        callbacks = [
+            PredictionProgressLogger(
+                progress_log_dir,
+                progress_log_id,
+                total_iterations=len(self.datamodule.predict_dataloader()),
+            )
+        ]
         embedding_extra_fields = set((output_extra_fields
                                       or {}).get('EMBEDDINGS', ()))
 
@@ -1762,12 +1761,11 @@ class DiskgraphNestedTrainer(NestedTrainer):
             self.pl_model.pred_top_k = int(pred_top_k)
 
         # kumo-pred reads a PredictionProgress file after predict.
-        _cbs = []
-        if progress_log_dir is not None:
-            _cbs.append(
-                PredictionProgressLogger(
-                    progress_log_dir, progress_log_id,
-                    total_iterations=len(self.datamodule.predict_dataloader())))
+        _cbs = [
+            PredictionProgressLogger(
+                progress_log_dir, progress_log_id,
+                total_iterations=len(self.datamodule.predict_dataloader()))
+        ]
 
         def _np(x: Any) -> Any:
             if x is None:

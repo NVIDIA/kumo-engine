@@ -188,6 +188,7 @@ class _RemoteObserver:
         self._current_metrics: dict[str, float] = {}
         self._best_metrics: dict[str, float] = {}
         self._operation_active = False
+        self._operation_automatic = False
         self._last_publish = 0.0
         self._publish(force=True)
 
@@ -277,6 +278,20 @@ class _RemoteObserver:
         self._publish(force=True)
 
     def progress_updated(self, kind: str, progress: Any) -> None:
+        if (not self._operation_active and kind == self._operation_kind
+                and self._progress_complete(kind)):
+            # A final callback can race a delayed worker callback from the
+            # same automatically observed operation.  Once the typed counters
+            # reached completion, do not reopen that operation or regress its
+            # durable progress.
+            return
+        if not self._operation_active:
+            stage = {
+                'training': 'Training',
+                'prediction': 'Predicting',
+            }.get(kind, kind.title())
+            self.operation_started(kind, self._execution_id, stage)
+            self._operation_automatic = True
         if kind != self._operation_kind:
             raise RuntimeError(f'Kumo emitted {kind!r} progress while '
                                f'{self._operation_kind!r} was active')
@@ -308,6 +323,19 @@ class _RemoteObserver:
             # but is not itself the public top-level contract.
             return
         self._publish()
+        if self._operation_automatic and self._progress_complete(kind):
+            self.operation_finished(kind, self._execution_id, None)
+
+    def _progress_complete(self, kind: str) -> bool:
+        if kind == 'training' and self._training is not None:
+            return (self._training.total_trials > 0
+                    and self._training.completed_trials
+                    >= self._training.total_trials)
+        if kind == 'prediction' and self._prediction is not None:
+            return (self._prediction.total_iterations > 0
+                    and self._prediction.completed_iterations
+                    >= self._prediction.total_iterations)
+        return False
 
     def operation_finished(self, kind: str, operation_id: str,
                            error: BaseException | None) -> None:
@@ -316,9 +344,17 @@ class _RemoteObserver:
         stage = f'{kind.title()} failed' if error else f'{kind.title()} complete'
         self.stage_changed(stage, None if error is None else str(error))
         self._operation_active = False
+        self._operation_automatic = False
 
     def terminal(self, succeeded: bool,
                  detail: str | None = None) -> dict[str, Any]:
+        if self._operation_active:
+            assert self._operation_kind is not None
+            stage = (f'{self._operation_kind.title()} complete'
+                     if succeeded else f'{self._operation_kind.title()} failed')
+            self.stage_changed(stage, None if succeeded else detail)
+            self._operation_active = False
+            self._operation_automatic = False
         status = JobStatus.DONE if succeeded else JobStatus.FAILED
         stage = 'Completed' if succeeded else 'Failed'
         self._events.append(
@@ -473,6 +509,7 @@ def execute_user_function(
         observer=observer,
     )
     token = runtime_progress.install(observer)
+    observer_attached = True
     try:
         try:
             decoded_args = _decode_argument(list(args))
@@ -481,17 +518,9 @@ def execute_user_function(
             if isinstance(returned, PublishedModel):
                 execution_context.published_model = returned
             value = _json_value(returned)
-            terminal_progress = observer.terminal(True)
-            result = {
-                'schema_version': _SCHEMA_VERSION,
-                'execution_id': str(config['execution_id']),
-                'status': 'SUCCEEDED',
-                'finished_at': _now().isoformat(),
-                'value': value,
-                'diagnostic': None,
-                **_result_observation_fields(execution_context, terminal_progress),
-            }
         except BaseException as error:
+            runtime_progress.reset(token)
+            observer_attached = False
             try:
                 terminal_progress = observer.terminal(False, str(error))
             except Exception:
@@ -515,6 +544,18 @@ def execute_user_function(
                     'Could not publish the durable failure for Kumo execution %s',
                     config.get('execution_id'))
             raise
+        runtime_progress.reset(token)
+        observer_attached = False
+        terminal_progress = observer.terminal(True)
+        result = {
+            'schema_version': _SCHEMA_VERSION,
+            'execution_id': str(config['execution_id']),
+            'status': 'SUCCEEDED',
+            'finished_at': _now().isoformat(),
+            'value': value,
+            'diagnostic': None,
+            **_result_observation_fields(execution_context, terminal_progress),
+        }
         _publish_terminal_result(
             store,
             str(config['result_location']),
@@ -522,4 +563,5 @@ def execute_user_function(
         )
         return result
     finally:
-        runtime_progress.reset(token)
+        if observer_attached:
+            runtime_progress.reset(token)

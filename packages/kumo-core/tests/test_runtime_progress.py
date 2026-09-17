@@ -90,6 +90,21 @@ def test_native_progress_from_a_worker_thread_reaches_the_observer() -> None:
     })]
 
 
+def test_observer_progress_failure_does_not_abort_the_workload() -> None:
+    class _FailingObserver(_Observer):
+        def progress_updated(self, kind: str, progress: Any) -> None:
+            del kind, progress
+            raise ConnectionError('progress sink unavailable')
+
+    observer = _FailingObserver()
+    token = runtime_progress.install(observer)
+    try:
+        runtime_progress.progress_updated('prediction',
+                                          {'completed_iterations': 4})
+    finally:
+        runtime_progress.reset(token)
+
+
 def test_reset_waits_for_an_in_flight_worker_callback() -> None:
     callback_started = threading.Event()
     release_callback = threading.Event()

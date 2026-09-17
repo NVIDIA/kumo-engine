@@ -13,13 +13,16 @@ from pathlib import PurePosixPath
 from typing import Any, Mapping
 
 _IDENTIFIER = r'(?:[A-Za-z_][A-Za-z0-9_$]*|"(?:[^"]|"")+")'
-_STAGE = re.compile(
-    rf'^@{_IDENTIFIER}\.{_IDENTIFIER}\.{_IDENTIFIER}(?:/[A-Za-z0-9_.+$/=-]+)*$')
+_STAGE = re.compile(rf'^@{_IDENTIFIER}\.{_IDENTIFIER}\.{_IDENTIFIER}'
+                    r'(?:/[A-Za-z0-9_.+$=-]+)*/?$')
+_MAX_STAGE_NAME_LENGTH = 4096
 
 
 def validate_stage_name(stage_name: str) -> str:
     """Return a normalized, fully-qualified internal-stage path."""
-    if not isinstance(stage_name, str) or not _STAGE.fullmatch(stage_name):
+    if (not isinstance(stage_name, str)
+            or len(stage_name) > _MAX_STAGE_NAME_LENGTH
+            or not _STAGE.fullmatch(stage_name)):
         raise ValueError(
             'stage_name must be a fully-qualified Snowflake stage path such '
             "as '@DB.SCHEMA.KUMO_JOBS'")

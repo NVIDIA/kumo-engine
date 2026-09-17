@@ -11,9 +11,12 @@ training or prediction code executes.
 
 from __future__ import annotations
 
+import logging
 import threading
 from contextlib import contextmanager
 from typing import Any, Iterator, Protocol
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeProgressObserver(Protocol):
@@ -78,11 +81,21 @@ def stage_changed(stage: str, detail: str | None = None) -> None:
 
 
 def progress_updated(kind: str, progress: Any) -> None:
-    """Publish a native Kumo progress value when one is available."""
+    """Best-effort publish a native Kumo progress value when available."""
     with _LOCK:
         observer = _OBSERVER
         if observer is not None:
-            observer.progress_updated(kind, progress)
+            try:
+                observer.progress_updated(kind, progress)
+            except Exception:
+                # Progress is observability.  An observer failure must not
+                # turn a successful training or prediction workload into a
+                # failure.
+                logger.warning(
+                    'Could not publish %s runtime progress',
+                    kind,
+                    exc_info=True,
+                )
 
 
 @contextmanager

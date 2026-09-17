@@ -9,6 +9,8 @@ import hashlib
 import io
 import json
 import re
+import threading
+import time
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -18,6 +20,10 @@ from typing import Any
 
 import pytest
 from kumo_core import runtime_progress
+from kumo_core.callbacks import (
+    AutoTrainingProgressLogger,
+    PredictionProgressLogger,
+)
 from kumo_snowflake import (
     SnowflakeMLJob,
     SnowflakeMLJobConfigurationError,
@@ -38,7 +44,7 @@ from kumo_snowflake._ml_job_runtime import (
     _RemoteObserver,
     execute_user_function,
 )
-from kumo_snowflake._ml_job_stage import StageStore
+from kumo_snowflake._ml_job_stage import StageStore, validate_stage_name
 from kumo_snowflake._ml_job_wheel import (
     discover_installed_wheel,
     stage_wheel,
@@ -90,6 +96,32 @@ def user_function(value: int = 1) -> dict[str, int]:
 
 def failing_user_function() -> None:
     raise LookupError('user training failed')
+
+
+def function_with_prediction_progress(log_dir: str | None) -> str:
+    callback = PredictionProgressLogger(log_dir, 0, 5)
+    callback.progress.completed_iterations = 5
+    callback.on_predict_end(None, None)
+    return 'done'
+
+
+def function_with_training_progress(log_dir: str) -> str:
+    callback = AutoTrainingProgressLogger(log_dir, 2)
+    callback.set_current_trainer(
+        SimpleNamespace(
+            version='0',
+            training_progress_logger=SimpleNamespace(
+                progress=TrainerProgress(), ),
+        ))
+    callback.on_train_start(None, None)
+    callback.on_train_end(None, None)
+    return 'done'
+
+
+def function_with_sequential_progress(log_dir: str) -> str:
+    function_with_prediction_progress(log_dir)
+    function_with_training_progress(log_dir)
+    return 'done'
 
 
 def function_with_transport_named_argument(
@@ -269,7 +301,6 @@ def fat_wheel(tmp_path: Path) -> Any:
         # The build records the normalized distribution spelling from wheel
         # metadata. Validation must treat underscores and hyphens equally.
         'pyg_lib',
-        'pytorch-frame',
         'torch-geometric',
         'torch_scatter',
     ]
@@ -283,6 +314,7 @@ def fat_wheel(tmp_path: Path) -> Any:
                 'components': [{
                     'name': name
                 } for name in components],
+                'requires_at_install': ['pytorch-frame==0.3.0'],
             }))
         archive.writestr('kumo_fat_bundle-3.1.0.dist-info/WHEEL',
                          'Wheel-Version: 1.0\n')
@@ -308,6 +340,7 @@ def test_submit_preflights_stages_one_wheel_and_returns_handle(
         stage_name=STAGE,
         args=(4, ),
         tags={'TEST_DB.PUBLIC.REQUEST': 'run-1'},
+        artifact_repositories=['SNOWFLAKE.SNOWPARK.PYPI_SHARED_REPOSITORY'],
         session=session,
     )
 
@@ -321,7 +354,7 @@ def test_submit_preflights_stages_one_wheel_and_returns_handle(
         sql.startswith('SHOW COMPUTE POOLS') for sql, _ in session.statements)
     assert any(sql.startswith('ALTER SERVICE') for sql, _ in session.statements)
     assert any('KUMO_SUBMITTED_BY' in jobs.options['env_vars'] for _ in [None])
-    assert jobs.options['env_vars']['PIP_NO_DEPS'] == '1'
+    assert 'PIP_NO_DEPS' not in jobs.options['env_vars']
     job.close()
     assert session.close_calls == 0
 
@@ -585,6 +618,25 @@ def test_wheel_missing_required_manifest_component_is_rejected(
                     target.writestr(member, source.read(member))
 
     with pytest.raises(RuntimeError, match=r"components \['bbhash'\]"):
+        validate_wheel(incomplete)
+
+
+def test_wheel_missing_required_install_dependency_is_rejected(
+        tmp_path: Path, fat_wheel: Any) -> None:
+    incomplete = tmp_path / 'incomplete-requirement-3.1.0-py3-none-any.whl'
+    with zipfile.ZipFile(fat_wheel.path) as source:
+        with zipfile.ZipFile(incomplete, 'w') as target:
+            for member in source.namelist():
+                if member == 'kumo_bundle_manifest.json':
+                    manifest = json.loads(source.read(member))
+                    manifest['requires_at_install'] = []
+                    target.writestr(member, json.dumps(manifest))
+                else:
+                    target.writestr(member, source.read(member))
+
+    with pytest.raises(
+            RuntimeError, match=(r"runtime dependencies "
+                                 r"\['pytorch-frame==0.3.0'\]")):
         validate_wheel(incomplete)
 
 
@@ -1631,6 +1683,246 @@ def test_remote_observer_publishes_prediction_iterations() -> None:
     assert payload['prediction']['total_iterations'] == 50
 
 
+def test_prediction_callback_does_not_require_legacy_log_file(
+    monkeypatch: Any, ) -> None:
+    session = _Session()
+    monkeypatch.setattr(
+        'kumo_snowflake._ml_job_runtime._active_job_session',
+        lambda: session,
+    )
+
+    result = execute_user_function(
+        function_with_prediction_progress,
+        [None],
+        {},
+        {
+            'schema_version': 1,
+            'execution_id': 'prediction-without-file',
+            'stage_name': STAGE,
+            'progress_location': 'progress.json',
+            'result_location': 'result.json',
+        },
+    )
+
+    assert result['status'] == 'SUCCEEDED'
+    assert result['progress_kind'] == 'prediction'
+    assert result['progress']['completed_iterations'] == 5
+    assert result['progress']['total_iterations'] == 5
+
+
+@pytest.mark.parametrize(
+    ('function', 'kind', 'active_stage', 'expected_progress'),
+    [
+        (
+            function_with_prediction_progress,
+            'prediction',
+            'Predicting',
+            {
+                'completed_iterations': 5,
+                'total_iterations': 5,
+            },
+        ),
+        (
+            function_with_training_progress,
+            'training',
+            'Training',
+            {
+                'completed_trials': 1,
+                'total_trials': 2,
+            },
+        ),
+    ],
+)
+def test_real_progress_callback_starts_remote_operation(
+    monkeypatch: Any,
+    tmp_path: Path,
+    function: Any,
+    kind: str,
+    active_stage: str,
+    expected_progress: dict[str, int],
+) -> None:
+    session = _Session()
+    monkeypatch.setattr(
+        'kumo_snowflake._ml_job_runtime._active_job_session',
+        lambda: session,
+    )
+    result = execute_user_function(
+        function,
+        [str(tmp_path)],
+        {},
+        {
+            'schema_version': 1,
+            'execution_id': f'{kind}-execution',
+            'stage_name': STAGE,
+            'progress_location': 'progress.json',
+            'result_location': 'result.json',
+        },
+    )
+
+    assert result['status'] == 'SUCCEEDED'
+    assert result['progress_kind'] == kind
+    assert {
+        field: result['progress'][field]
+        for field in expected_progress
+    } == expected_progress
+    stages = [
+        event['stage_name'] for event in result['status_report']['event_log']
+    ]
+    assert stages == [
+        'Starting user function',
+        active_stage,
+        f'{kind.title()} complete',
+        'Completed',
+    ]
+
+
+def test_real_progress_callbacks_support_sequential_operations(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    session = _Session()
+    monkeypatch.setattr(
+        'kumo_snowflake._ml_job_runtime._active_job_session',
+        lambda: session,
+    )
+
+    result = execute_user_function(
+        function_with_sequential_progress,
+        [str(tmp_path)],
+        {},
+        {
+            'schema_version': 1,
+            'execution_id': 'sequential-execution',
+            'stage_name': STAGE,
+            'progress_location': 'progress.json',
+            'result_location': 'result.json',
+        },
+    )
+
+    assert result['status'] == 'SUCCEEDED'
+    assert result['progress_kind'] == 'training'
+    assert result['progress']['completed_trials'] == 1
+    assert [
+        event['stage_name'] for event in result['status_report']['event_log']
+    ] == [
+        'Starting user function',
+        'Predicting',
+        'Prediction complete',
+        'Training',
+        'Training complete',
+        'Completed',
+    ]
+
+
+def test_automatic_progress_ignores_late_regression_after_completion() -> None:
+    session = _Session()
+    observer = _RemoteObserver(
+        StageStore(session, STAGE),
+        {
+            'execution_id': 'late-regression',
+            'progress_location': 'progress.json',
+        },
+    )
+    observer.progress_updated(
+        'prediction',
+        PredictionProgress(total_iterations=2, completed_iterations=2),
+    )
+    observer.progress_updated(
+        'prediction',
+        PredictionProgress(total_iterations=2, completed_iterations=1),
+    )
+
+    payload = observer.terminal(True)
+    assert payload['prediction']['completed_iterations'] == 2
+    assert [
+        event['stage_name'] for event in payload['status_report']['event_log']
+    ] == [
+        'Starting user function',
+        'Predicting',
+        'Prediction complete',
+        'Completed',
+    ]
+
+
+def test_terminal_progress_waits_for_in_flight_worker_callback(
+    monkeypatch: Any, ) -> None:
+    session = _Session()
+    monkeypatch.setattr(
+        'kumo_snowflake._ml_job_runtime._active_job_session',
+        lambda: session,
+    )
+    callback_started = threading.Event()
+    release_callback = threading.Event()
+    callback_workers: list[threading.Thread] = []
+    original_progress_updated = _RemoteObserver.progress_updated
+
+    def blocked_progress_updated(
+        observer: _RemoteObserver,
+        kind: str,
+        progress: Any,
+    ) -> None:
+        callback_started.set()
+        assert release_callback.wait(timeout=2)
+        original_progress_updated(observer, kind, progress)
+
+    monkeypatch.setattr(
+        _RemoteObserver,
+        'progress_updated',
+        blocked_progress_updated,
+    )
+
+    def workload_with_late_progress() -> str:
+        worker = threading.Thread(
+            target=runtime_progress.progress_updated,
+            args=(
+                'prediction',
+                PredictionProgress(
+                    total_iterations=2,
+                    completed_iterations=1,
+                ),
+            ),
+        )
+        callback_workers.append(worker)
+        worker.start()
+        assert callback_started.wait(timeout=1)
+        return 'done'
+
+    outcome: dict[str, Any] = {}
+
+    def execute() -> None:
+        try:
+            outcome['result'] = execute_user_function(
+                workload_with_late_progress,
+                [],
+                {},
+                {
+                    'schema_version': 1,
+                    'execution_id': 'late-progress',
+                    'stage_name': STAGE,
+                    'progress_location': 'progress.json',
+                    'result_location': 'result.json',
+                },
+            )
+        except BaseException as error:
+            outcome['error'] = error
+
+    execution = threading.Thread(target=execute)
+    execution.start()
+    assert callback_started.wait(timeout=1)
+    time.sleep(0.05)
+    release_callback.set()
+    execution.join(timeout=2)
+    callback_workers[0].join(timeout=2)
+
+    assert not execution.is_alive()
+    assert 'error' not in outcome
+    assert outcome['result']['status'] == 'SUCCEEDED'
+    durable = StageStore(session, STAGE).get_json('progress.json')
+    assert durable['status_report']['status'] == 'DONE'
+    assert durable['status_report']['event_log'][-1][
+        'stage_name'] == 'Completed'
+
+
 def test_progress_transport_failure_does_not_abort_user_operation() -> None:
     class FailingStore(StageStore):
         def __init__(self) -> None:
@@ -1676,4 +1968,12 @@ def test_sdk_snowflake_extra_requires_ml_jobs_client_version() -> None:
     plugin_extra = re.search(r'^sdk = \[(.*?)^\]$', plugin_pyproject,
                              re.MULTILINE | re.DOTALL)
     assert plugin_extra is not None
-    assert '"snowflake-ml-python>=1.26"' in plugin_extra.group(1)
+    assert '"snowflake-ml-python>=1.51,<2"' in plugin_extra.group(1)
+
+
+def test_stage_name_rejects_empty_segments_and_bounds_input() -> None:
+    assert validate_stage_name(f'{STAGE}/models/v1/') == f'{STAGE}/models/v1'
+    with pytest.raises(ValueError, match='fully-qualified'):
+        validate_stage_name(f'{STAGE}//models')
+    with pytest.raises(ValueError, match='fully-qualified'):
+        validate_stage_name(f'{STAGE}/' + 'a' * 4096)
