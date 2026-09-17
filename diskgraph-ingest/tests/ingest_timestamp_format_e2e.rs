@@ -16,6 +16,7 @@ use diskgraph_index::graph::GraphIndexReader;
 use diskgraph_ingest::config_converter::{
     convert_kumo_to_diskgraph, ConvertOptions, KumoGraphConfig,
 };
+use diskgraph_ingest::graph_config::{IngestedType, TimestampUnit};
 use diskgraph_ingest::{ingest_with_stats_from_source, Dest, IngestOptions};
 use parquet::arrow::ArrowWriter;
 use std::fs;
@@ -196,6 +197,93 @@ fn ingest_with_explicit_timestamp_format_parses_2digit_year() -> Result<()> {
         Some(expected_1999),
         "card_id=3 ('991231 23:59:59') should parse to 1999-12-31 epoch",
     );
+
+    Ok(())
+}
+
+#[test]
+fn ingest_int64_unix_seconds_time_role_as_timestamp() -> Result<()> {
+    let dir = tempdir()?;
+    let data_dir = dir.path().join("data");
+    let output_root = dir.path().join("output");
+    fs::create_dir_all(&data_dir)?;
+
+    let row_count = 40_i64;
+    let path = data_dir.join("events.parquet");
+    write_parquet(
+        &path,
+        Schema::new(vec![
+            Field::new("EventID", DataType::Int64, false),
+            Field::new("EventTime", DataType::Int64, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from_iter_values(0..row_count)) as ArrayRef,
+            Arc::new(Int64Array::from_iter_values(
+                (0..row_count).map(|offset| 1_700_000_000 + offset),
+            )) as ArrayRef,
+        ],
+    )?;
+
+    // This matches the Kumo graph shape from kumo-ai/kumo#31171: Unix
+    // seconds remain physically int64 while the authored role is timestamp.
+    let kumo_json = serde_json::json!({
+        "tables": [{
+            "table_name": "events",
+            "data_source": "test_ds",
+            "data_version": "v1",
+            "pkey": {"name": "EventID", "dtype": "int64"},
+            "cols": [],
+            "time_col": {
+                "name": "EventTime",
+                "dtype": "int64",
+                "stype": "timestamp",
+                "timestamp_format": "s"
+            }
+        }]
+    });
+    let kumo: KumoGraphConfig = serde_json::from_value(kumo_json)?;
+    let options = ConvertOptions {
+        data_persist_dir: data_dir.to_string_lossy().to_string(),
+        dataset_name: "int64_time_role_e2e".to_string(),
+        table_data_versions: None,
+        source_paths_base: None,
+        source_paths: Some({
+            let mut paths = std::collections::HashMap::new();
+            paths.insert(
+                "events".to_string(),
+                data_dir.to_string_lossy().to_string(),
+            );
+            paths
+        }),
+        source_specs: None,
+    };
+    let cfg = convert_kumo_to_diskgraph(&kumo, &options)?;
+
+    let event_time = cfg.tables[0]
+        .columns
+        .iter()
+        .find(|column| column.name == "EventTime")
+        .ok_or_else(|| anyhow!("missing EventTime column"))?;
+    assert_eq!(event_time.source_dtype.as_deref(), Some("int64"));
+    assert_eq!(event_time.ingested_dtype, IngestedType::Timestamp);
+    assert_eq!(event_time.timestamp_unit, Some(TimestampUnit::Seconds));
+
+    let (_metadata, _stats) = ingest_with_stats_from_source(
+        cfg,
+        None,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+        None,
+        None,
+    )?;
+
+    let metadata_path = output_root.join("index_metadata.json");
+    let reader = GraphIndexReader::open(&metadata_path, &output_root)?;
+    let table = reader
+        .table("events")
+        .ok_or_else(|| anyhow!("missing events table"))?;
+    assert_eq!(table.node_count(), row_count as u64);
 
     Ok(())
 }

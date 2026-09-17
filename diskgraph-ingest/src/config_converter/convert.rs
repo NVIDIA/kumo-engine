@@ -329,6 +329,14 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
 
     let mut columns = Vec::new();
     let mut seen_names: HashSet<String> = HashSet::new();
+    let temporal_columns: HashSet<&str> = [
+        kumo_table.time_col.as_ref(),
+        kumo_table.end_time_col.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|column| column.name.as_str())
+    .collect();
 
     // Helper to add a column if not already seen.
     // `multicategorical_delimiter` is only meaningful for regular columns with
@@ -360,13 +368,21 @@ fn build_columns(kumo_table: &KumoTable) -> Result<Vec<ColumnSpec>, ConvertError
             }
         }
 
-        let ingested_dtype = match dtype {
+        let physical_dtype = match dtype {
             Some(dt) => map_kumo_dtype(dt).map_err(|unknown| ConvertError::UnknownDtype {
                 table: kumo_table.table_name.clone(),
                 column: name.to_string(),
                 dtype: unknown.to_string(),
             })?,
             None => IngestedType::String,
+        };
+        // `time_col` and `end_time_col` are logical roles. Their physical
+        // source can be an encoded integer or string, but DiskGraph requires
+        // the role's on-disk representation to be a timestamp.
+        let ingested_dtype = if temporal_columns.contains(name) {
+            IngestedType::Timestamp
+        } else {
+            physical_dtype
         };
 
         let ts_unit = timestamp_unit.and_then(map_timestamp_unit);

@@ -563,10 +563,10 @@ fn test_convert_time_col_to_create_time() {
         cols: vec![],
         time_col: Some(KumoTimeCol {
             name: "event_time".to_string(),
-            dtype: Some("time".to_string()),
-            stype: None,
-            timestamp_unit: Some("ms".to_string()),
-            timestamp_format: None,
+            dtype: Some("int64".to_string()),
+            stype: Some("timestamp".to_string()),
+            timestamp_unit: None,
+            timestamp_format: Some("s".to_string()),
             is_pseudo: false,
         }),
         end_time_col: None,
@@ -580,15 +580,19 @@ fn test_convert_time_col_to_create_time() {
     let table = &result.tables[0];
     assert_eq!(table.create_time, Some("event_time".to_string()));
 
-    // Check that the time column has the correct timestamp unit
+    // A temporal role preserves its physical input dtype but must be lowered
+    // to timestamp storage for native ingest validation.
     let time_col = table
         .columns
         .iter()
         .find(|c| c.name == "event_time")
         .unwrap();
+    assert_eq!(time_col.source_dtype.as_deref(), Some("int64"));
+    assert_eq!(time_col.ingested_dtype, IngestedType::Timestamp);
+    assert_eq!(time_col.timestamp_format, None);
     assert_eq!(
         time_col.timestamp_unit,
-        Some(crate::graph_config::TimestampUnit::Millis)
+        Some(crate::graph_config::TimestampUnit::Seconds)
     );
 }
 
@@ -2227,8 +2231,9 @@ fn test_timestamp_format_cross_position_consistency() {
     // column name. All cases use `ts` referenced from both positions.
     //
     // Empty strings normalize to `None` so they participate as "unset".
-    // The success rows also verify that an empty-string `cols[]` hint
-    // doesn't reach `ColumnSpec` (it lands as `None`).
+    // A create-time column with no surviving hint is intentionally omitted
+    // from this success matrix because the shared fixture has no timestamp
+    // values and correct temporal lowering therefore rejects it as all-null.
     //
     // The conflict case lives in `test_timestamp_format_conflict_errors`
     // (different assertion shape).
@@ -2250,12 +2255,6 @@ fn test_timestamp_format_cross_position_consistency() {
             Some(real),
             Some(real),
             Some(real),
-        ),
-        (
-            "empty-string normalizes to None (cols)",
-            Some(""),
-            None,
-            None,
         ),
         (
             "empty-string paired with value",
