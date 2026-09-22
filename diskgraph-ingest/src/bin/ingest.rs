@@ -198,16 +198,18 @@ fn increase_nofile_limit() {
 fn increase_nofile_limit() {}
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter("info,pprof=warn")
-        .init();
-    increase_nofile_limit();
     let args = Args::parse();
-    // Answer the runner's thread-count query before opening any source.
+    // Answer the runner's thread-count query before initializing tracing or
+    // touching rlimits, so stdout carries only the number: no logging setup
+    // means no logging can ever land on stdout ahead of it.
     if args.print_resolved_threads {
         println!("{}", diskgraph_ingest::default_worker_threads());
         return Ok(());
     }
+    tracing_subscriber::fmt()
+        .with_env_filter("info,pprof=warn")
+        .init();
+    increase_nofile_limit();
     if !args.worker {
         let diagnostic_paths = local_diagnostic_paths(&args);
         if let Some((final_path, worker_path)) = &diagnostic_paths {
