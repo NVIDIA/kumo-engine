@@ -1,0 +1,20 @@
+name: Sync Kumo mirror
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Request Kumo synchronization
+        env:
+          GH_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+        run: |
+          gh api repos/kumo-ai/kumo/dispatches \
+            --method POST \
+            -f event_type=sync-diskgraph \
+            -F "client_payload[sha]=$GITHUB_SHA"
