@@ -117,32 +117,17 @@ Use this when you have a training or bp job ID and want the raw parquet tables f
 ./diskgraph-ingest/scripts/ingest_local.sh /mnt/localssd/datasets/<customer_name>_<job_id>
 ```
 
-## Python wheel CI / nightly publishing
+## Python wheel builds
 
-The repo now has two wheel-related workflows:
+`.github/workflows/build.yml` builds the native Python wheel on every relevant
+push and pull request. The wheel contains the extension and the standalone
+`ingest` binary.
 
-- `.github/workflows/build.yml`
-  - Runs on push/PR to `main`
-  - Builds the Python wheel using `scripts/build_python_wheel.sh`
+Kumo builds and distributes that artifact from its in-tree
+`packages/diskgraph` mirror. DiskGraph does not publish independently versioned
+or development wheels.
 
-- `.github/workflows/nightly.yml`
-  - Runs on push to `main` when wheel-related files change and via manual dispatch
-  - Builds wheels for:
-    - `ubuntu-22.04`, Python `3.10`
-  - Uploads wheels to S3:
-    - `s3://kumo-diskgraph/packages/<os>/py<python>/latest/<wheel-file>`
-    - `s3://kumo-diskgraph/packages/<os>/py<python>/<version>.dev<YYYYMMDD>/<wheel-file>`
-
-Required GitHub Actions secrets for nightly upload:
-
-- `AWS_ACCESS_KEY_ID`
-- `AWS_SECRET_ACCESS_KEY`
-
-Region used by the workflow: `us-west-2`.
-
-Current Python package version is read from root `pyproject.toml`
-(`[project].version`). See `diskgraph-pybind/README.md` for local wheel,
-portable Linux wheel, and development install commands.
+See `diskgraph-pybind/README.md` for local and portable Linux build commands.
 
 The Python package build is self-contained from a source checkout. The PEP 517
 backend builds and stages the standalone `ingest` binary before delegating to
