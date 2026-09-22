@@ -17,13 +17,12 @@ dependencies = [
 
 [project.optional-dependencies]
 kumo = [
-    "kumo-api @ git+ssh://git@github.com/kumo-ai/kumo-api.git@v0.53.0",
+    "kumo-api>=3.0.0b1,<4",
 ]
 test = [
     "pytest",
     "pyarrow",
-    "kumo-api @ git+ssh://git@github.com/kumo-ai/kumo-api.git@v0.53.0",
-    "kumo-pql @ git+ssh://git@github.com/kumo-ai/kumo-pql.git@4bdab83d790151a749f34a205fdbe848234de44f"
+    "kumo-api>=3.0.0b1,<4",
 ]
 
 [tool.maturin]

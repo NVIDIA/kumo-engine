@@ -144,14 +144,12 @@ Current Python package version is read from root `pyproject.toml`
 (`[project].version`). See `diskgraph-pybind/README.md` for local wheel,
 portable Linux wheel, and development install commands.
 
-The Python package build is also self-contained when installed from Git. The
-PEP 517 backend builds and stages the standalone `ingest` binary before
-delegating to maturin, so consumers can install a pinned source commit
-directly:
+The Python package build is self-contained from a source checkout. The PEP 517
+backend builds and stages the standalone `ingest` binary before delegating to
+maturin:
 
 ```bash
-uv pip install \
-  "diskgraph @ git+ssh://git@github.com/kumo-ai/kumo-diskgraph.git@<sha>"
+uv pip install .
 ```
 
 The base package installs the native extension and bundled standalone ingest
