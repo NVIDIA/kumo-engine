@@ -3665,6 +3665,128 @@ fn integ_timeunit_years_calendar() {
     );
 }
 
+#[test]
+fn integ_unbounded_lower_window_all_units() {
+    const UNBOUNDED_LOWER_OFFSET: i64 = -(1_i64 << 60);
+
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+    for unit in [
+        TimeUnit::Seconds,
+        TimeUnit::Minutes,
+        TimeUnit::Hours,
+        TimeUnit::Days,
+        TimeUnit::Weeks,
+        TimeUnit::Months,
+        TimeUnit::Years,
+    ] {
+        let plan = g1_temporal(
+            vec![Stage::<Seconds> {
+                ops: vec![Op::Aggregate {
+                    alias: "cnt".to_string(),
+                    path: vec![u2o_edge()],
+                    func: AggFunc::Count,
+                    target_col: None,
+                    time_col: None,
+                    window: Some((UNBOUNDED_LOWER_OFFSET, 0)),
+                    window_unit: Some(unit),
+                    row_filter: None,
+                    limit: None,
+                    target_entity_table: None,
+                }],
+                filter: None,
+            }],
+            vec![4000],
+        );
+        let groups = execute_and_group(&plan, &index);
+        assert_target_eq(groups[&0][0].1, 4.0, &format!("alice, {unit:?}"));
+        assert_target_eq(groups[&1][0].1, 2.0, &format!("bob, {unit:?}"));
+        assert_target_eq(groups[&2][0].1, 1.0, &format!("carol, {unit:?}"));
+        assert_target_eq(groups[&3][0].1, 3.0, &format!("dave, {unit:?}"));
+        assert_target_eq(groups[&4][0].1, 0.0, &format!("eve, {unit:?}"));
+    }
+}
+
+#[test]
+fn integ_unbounded_lower_window_has_edges_all_units() {
+    const UNBOUNDED_LOWER_OFFSET: i64 = -(1_i64 << 60);
+
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+    for unit in [
+        TimeUnit::Seconds,
+        TimeUnit::Minutes,
+        TimeUnit::Hours,
+        TimeUnit::Days,
+        TimeUnit::Weeks,
+        TimeUnit::Months,
+        TimeUnit::Years,
+    ] {
+        let mut plan = g1_temporal(
+            vec![Stage::<Seconds> {
+                ops: vec![Op::HasEdges {
+                    alias: "has_orders".to_string(),
+                    path: vec![u2o_edge()],
+                    time_col: None,
+                    window: Some((UNBOUNDED_LOWER_OFFSET, 0)),
+                    window_unit: Some(unit),
+                    row_filter: None,
+                }],
+                filter: None,
+            }],
+            vec![4000],
+        );
+        plan.target_stype = Some("categorical".to_string());
+        let groups = execute_and_group_bool(&plan, &index);
+        for entity in 0..4 {
+            assert!(groups[&entity][0].1, "entity {entity}, {unit:?}");
+        }
+        assert!(!groups[&4][0].1, "eve, {unit:?}");
+    }
+}
+
+#[test]
+fn integ_unbounded_population_count_filters() {
+    const UNBOUNDED_LOWER_OFFSET: i64 = -(1_i64 << 60);
+
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph1(dir.path());
+    let make_plan = |op| {
+        g1_temporal(
+            vec![Stage::<Seconds> {
+                ops: vec![Op::Aggregate {
+                    alias: "cnt".to_string(),
+                    path: vec![u2o_edge()],
+                    func: AggFunc::Count,
+                    target_col: None,
+                    time_col: None,
+                    window: Some((UNBOUNDED_LOWER_OFFSET, 0)),
+                    window_unit: Some(TimeUnit::Days),
+                    row_filter: None,
+                    limit: None,
+                    target_entity_table: None,
+                }],
+                filter: Some(StageFilter::Compare {
+                    alias: "cnt".to_string(),
+                    op,
+                    rhs: StageFilterRhs::Constant(Value::Int(0)),
+                }),
+            }],
+            vec![4000],
+        )
+    };
+
+    let no_prior = execute_and_group(&make_plan(CompareOp::Eq), &index);
+    assert_eq!(no_prior.len(), 1);
+    assert!(no_prior.contains_key(&4));
+
+    let has_prior = execute_and_group(&make_plan(CompareOp::Gt), &index);
+    assert_eq!(has_prior.len(), 4);
+    for entity in 0..4 {
+        assert!(has_prior.contains_key(&entity), "missing entity {entity}");
+    }
+}
+
 // ─── Tests: Multi-hop ───────────────────────────────────────────────────────
 
 #[test]

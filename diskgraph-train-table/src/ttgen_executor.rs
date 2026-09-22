@@ -2507,11 +2507,12 @@ fn execute_target_sequence<U: UnitSystem>(
     else {
         unreachable!()
     };
-    let windows: Vec<(u64, u64)> = offsets
+    let windows: Vec<SortKeyWindow> = offsets
         .iter()
         .map(|&offset| {
             let win_ts = base_ts + offset;
-            let abs_lo = encoder.encode_upper((win_ts + *offset_lo).raw());
+            let abs_lo = offset_lo
+                .map(|offset_lo| encoder.encode_upper((win_ts + offset_lo).raw()));
             let abs_hi = encoder.encode_upper((win_ts + *offset_hi).raw());
             (abs_lo, abs_hi)
         })
@@ -2531,7 +2532,11 @@ fn execute_target_sequence<U: UnitSystem>(
 
     for (abs_lo, abs_hi) in windows {
         let start = edges.partition_point(|e| e.sort_key > abs_hi);
-        let end = start + edges[start..].partition_point(|e| e.sort_key > abs_lo);
+        let end = abs_lo
+            .map(|abs_lo| {
+                start + edges[start..].partition_point(|e| e.sort_key > abs_lo)
+            })
+            .unwrap_or(edges.len());
         let slice = &edges[start..end];
 
         if slice.is_empty() {
@@ -2849,7 +2854,8 @@ fn execute_has_edges<U: UnitSystem>(
                 offset_hi,
                 encoder,
             } => {
-                let lo = encoder.encode_upper((obs + *offset_lo).raw());
+                let lo = offset_lo
+                    .map(|offset_lo| encoder.encode_upper((obs + offset_lo).raw()));
                 let hi = encoder.encode_upper((obs + *offset_hi).raw());
                 (lo, hi)
             }
@@ -2858,9 +2864,10 @@ fn execute_has_edges<U: UnitSystem>(
                 hi_months,
                 encoder,
             } => {
-                let lo_abs = add_calendar_months(obs, *lo_months);
                 let hi_abs = add_calendar_months(obs, *hi_months);
-                let lo = encoder.encode_upper(lo_abs.raw());
+                let lo = lo_months.map(|lo_months| {
+                    encoder.encode_upper(add_calendar_months(obs, lo_months).raw())
+                });
                 let hi = encoder.encode_upper(hi_abs.raw());
                 (lo, hi)
             }
@@ -2914,7 +2921,8 @@ fn execute_aggregate<U: UnitSystem>(
                 offset_hi,
                 encoder,
             } => {
-                let lo = encoder.encode_upper((obs + *offset_lo).raw());
+                let lo = offset_lo
+                    .map(|offset_lo| encoder.encode_upper((obs + offset_lo).raw()));
                 let hi = encoder.encode_upper((obs + *offset_hi).raw());
                 (lo, hi)
             }
@@ -2923,9 +2931,10 @@ fn execute_aggregate<U: UnitSystem>(
                 hi_months,
                 encoder,
             } => {
-                let lo_abs = add_calendar_months(obs, *lo_months);
                 let hi_abs = add_calendar_months(obs, *hi_months);
-                let lo = encoder.encode_upper(lo_abs.raw());
+                let lo = lo_months.map(|lo_months| {
+                    encoder.encode_upper(add_calendar_months(obs, lo_months).raw())
+                });
                 let hi = encoder.encode_upper(hi_abs.raw());
                 (lo, hi)
             }

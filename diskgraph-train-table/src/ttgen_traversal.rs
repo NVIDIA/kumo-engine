@@ -11,6 +11,10 @@ use std::sync::Arc;
 
 use crate::ttgen_resolve::ResolvedEdge;
 
+/// Encoded temporal bounds: an optional exclusive lower bound and an inclusive
+/// upper bound. `None` on the lower endpoint represents all prior history.
+pub type SortKeyWindow = (Option<u64>, u64);
+
 // ─── Edge iteration ──────────────────────────────────────────────────────────
 
 /// A decoded edge entry: destination node ID and sort key.
@@ -23,15 +27,15 @@ pub struct EdgeEntry {
 /// Iterate edges from `src_node` in a given relation, optionally restricted
 /// to a sort key range (for time window binary search).
 ///
-/// Returns a Vec of (dst_node, sort_key) pairs. When `sort_key_range` is
-/// Some((lo, hi)), only edges with lo <= sort_key < hi are returned.
+/// Returns a Vec of (dst_node, sort_key) pairs. A bounded range uses `(lo, hi]`
+/// semantics; a missing lower endpoint includes every edge through `hi`.
 #[inline]
 pub fn iter_edge(
     src_table: &Arc<TableReader>,
     relation_idx: usize,
     layout: &RelationLayout,
     src_node: u64,
-    sort_key_range: Option<(u64, u64)>,
+    sort_key_range: Option<SortKeyWindow>,
 ) -> Vec<EdgeEntry> {
     let view = match src_table.edges_for_node(src_node) {
         Ok(v) => v,
@@ -89,9 +93,11 @@ pub fn iter_edge(
             let start = partition_point_by(num_entries, |i| {
                 decode_entry(i).sort_key > hi
             });
-            let end = partition_point_by(num_entries, |i| {
-                decode_entry(i).sort_key > lo
-            });
+            let end = lo
+                .map(|lo| {
+                    partition_point_by(num_entries, |i| decode_entry(i).sort_key > lo)
+                })
+                .unwrap_or(num_entries);
             (start..end).map(decode_entry).collect()
         }
         None => {
@@ -132,7 +138,7 @@ fn partition_point_by(len: usize, mut pred: impl FnMut(usize) -> bool) -> usize 
 pub fn traverse_and_accumulate<F: FnMut(u64, u64) -> bool>(
     start: u64,
     path: &[ResolvedEdge],
-    window: Option<(u64, u64)>,
+    window: Option<SortKeyWindow>,
     is_first_hop: bool,
     callback: &mut F,
 ) -> bool {

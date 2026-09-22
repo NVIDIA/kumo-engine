@@ -28,6 +28,11 @@ pub const YOY_OUTPUT_ALIAS: &str = "year_over_year_labels";
 // Must match the training-only anchor emitted by the Python compiler.
 const FORECASTING_TARGET_ANCHOR_ALIAS: &str = "entity_id_target";
 
+// Wire-compatible representation emitted by the Python compiler for a PQL
+// `-inf` lower window bound. Resolve it as a semantic unbounded endpoint before
+// applying unit conversion; treating it as an ordinary offset can overflow.
+const UNBOUNDED_LOWER_OFFSET: i64 = -(1_i64 << 60);
+
 // ─── Resolved plan types ─────────────────────────────────────────────────────
 
 /// A fully resolved plan ready for parallel execution.
@@ -249,12 +254,12 @@ pub struct ResolvedEdge {
 /// not Sep 29).
 pub enum ResolvedWindow<U: UnitSystem> {
     Fixed {
-        offset_lo: Dur<U>,
+        offset_lo: Option<Dur<U>>,
         offset_hi: Dur<U>,
         encoder: SortKeyEncoder,
     },
     Calendar {
-        lo_months: i32,
+        lo_months: Option<i32>,
         hi_months: i32,
         encoder: SortKeyEncoder,
     },
@@ -977,38 +982,13 @@ fn resolve_op<U: UnitSystem>(
                 .map(|col| find_col_idx_in_context(&dst_ctx, col))
                 .transpose().map_err(|e| TTGenError::SchemaError(format!("resolving aggregate target column: {}", e)))?;
 
-            // Resolve window — applies to the FIRST hop (reverse FK with sort keys),
-            // matching Kumo's temporal join semantics.
-            let resolved_window: Option<ResolvedWindow<U>> = match window {
-                Some((lo, hi)) => {
-                    let first_edge = resolved_path.first().unwrap();
-                    let encoder = first_edge.encoder.clone().ok_or_else(|| {
-                        TTGenError::InvalidPlan("cannot apply time window on edge relation without sort key timestamp".to_string())
-                    })?;
-                    let unit = window_unit.as_ref().unwrap_or(&TimeUnit::Seconds);
-                    match unit {
-                        TimeUnit::Months => Some(ResolvedWindow::Calendar {
-                            lo_months: *lo as i32,
-                            hi_months: *hi as i32,
-                            encoder,
-                        }),
-                        TimeUnit::Years => Some(ResolvedWindow::Calendar {
-                            lo_months: (*lo as i32) * 12,
-                            hi_months: (*hi as i32) * 12,
-                            encoder,
-                        }),
-                        _ => {
-                            let unit_secs = time_unit_to_secs(unit);
-                            Some(ResolvedWindow::Fixed {
-                                offset_lo: Dur::<U>::from_secs(lo * unit_secs),
-                                offset_hi: Dur::<U>::from_secs(hi * unit_secs),
-                                encoder,
-                            })
-                        }
-                    }
-                }
-                None => None,
-            };
+            // The temporal window applies to the first hop (the reverse FK
+            // carrying timestamp sort keys).
+            let resolved_window = resolve_temporal_window::<U>(
+                window.as_ref(),
+                window_unit.as_ref(),
+                &resolved_path,
+            )?;
 
             // Use plan-level entity_col_indices so positions match the pre-resolved
             // entity_cols array built in execute_entity.
@@ -1190,36 +1170,11 @@ fn resolve_op<U: UnitSystem>(
             let dst_table = &resolved_path.last().unwrap().dst_table;
             let dst_ctx = dst_table.node_data_decoder().map(|d| d.context().clone());
 
-            let resolved_window: Option<ResolvedWindow<U>> = match window {
-                Some((lo, hi)) => {
-                    let first_edge = resolved_path.first().unwrap();
-                    let encoder = first_edge.encoder.clone().ok_or_else(|| {
-                        TTGenError::InvalidPlan("cannot apply time window on edge relation without sort key timestamp".to_string())
-                    })?;
-                    let unit = window_unit.as_ref().unwrap_or(&TimeUnit::Seconds);
-                    match unit {
-                        TimeUnit::Months => Some(ResolvedWindow::Calendar {
-                            lo_months: *lo as i32,
-                            hi_months: *hi as i32,
-                            encoder,
-                        }),
-                        TimeUnit::Years => Some(ResolvedWindow::Calendar {
-                            lo_months: (*lo as i32) * 12,
-                            hi_months: (*hi as i32) * 12,
-                            encoder,
-                        }),
-                        _ => {
-                            let unit_secs = time_unit_to_secs(unit);
-                            Some(ResolvedWindow::Fixed {
-                                offset_lo: Dur::<U>::from_secs(lo * unit_secs),
-                                offset_hi: Dur::<U>::from_secs(hi * unit_secs),
-                                encoder,
-                            })
-                        }
-                    }
-                }
-                None => None,
-            };
+            let resolved_window = resolve_temporal_window::<U>(
+                window.as_ref(),
+                window_unit.as_ref(),
+                &resolved_path,
+            )?;
             let resolved_filter = row_filter
                 .as_ref()
                 .map(|f| resolve_row_filter(f, reader, dst_table, &dst_ctx, entity_col_indices))
@@ -1835,6 +1790,49 @@ fn ingested_type_to_arrow(it: &IngestedType) -> DataType {
         // String, Bytes, Uuid, Ip, Date, Timestamp, Decimal, arrays → Utf8
         _ => DataType::Utf8,
     }
+}
+
+fn resolve_temporal_window<U: UnitSystem>(
+    window: Option<&(i64, i64)>,
+    window_unit: Option<&TimeUnit>,
+    resolved_path: &[ResolvedEdge],
+) -> TTGenResult<Option<ResolvedWindow<U>>> {
+    let Some((lo, hi)) = window else {
+        return Ok(None);
+    };
+    let encoder = resolved_path
+        .first()
+        .and_then(|edge| edge.encoder.clone())
+        .ok_or_else(|| {
+            TTGenError::InvalidPlan(
+                "cannot apply time window on edge relation without sort key timestamp".to_string(),
+            )
+        })?;
+    let unit = window_unit.unwrap_or(&TimeUnit::Seconds);
+    let unbounded_lo = *lo == UNBOUNDED_LOWER_OFFSET;
+
+    let resolved = match unit {
+        TimeUnit::Months => ResolvedWindow::Calendar {
+            lo_months: (!unbounded_lo).then_some(*lo as i32),
+            hi_months: *hi as i32,
+            encoder,
+        },
+        TimeUnit::Years => ResolvedWindow::Calendar {
+            lo_months: (!unbounded_lo).then_some((*lo as i32) * 12),
+            hi_months: (*hi as i32) * 12,
+            encoder,
+        },
+        _ => {
+            let unit_secs = time_unit_to_secs(unit);
+            ResolvedWindow::Fixed {
+                offset_lo: (!unbounded_lo)
+                    .then(|| Dur::<U>::from_secs(lo * unit_secs)),
+                offset_hi: Dur::<U>::from_secs(hi * unit_secs),
+                encoder,
+            }
+        }
+    };
+    Ok(Some(resolved))
 }
 
 fn time_unit_to_secs(unit: &TimeUnit) -> i64 {
