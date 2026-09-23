@@ -592,7 +592,7 @@ def test_compiler_pql_e2e():
     kumopql = pytest.importorskip("kumopql", reason="kumopql not installed")
     from kumopql.parser import PQLParser
 
-    pql = "PREDICT SUM(transactions.amount, -30, 0, days) FOR users.user_id WHERE users.country = 'US'"
+    pql = "PREDICT SUM(transactions.amount, -30, 0, days) FOR EACH users.user_id WHERE users.country = 'US'"
 
     # 1. Parse raw string
     parsed = PQLParser().to_parsed_predictive_query(pql)
