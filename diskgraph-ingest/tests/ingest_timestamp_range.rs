@@ -33,6 +33,13 @@ fn write_parquet(path: &Path, schema: Schema, columns: Vec<ArrayRef>) -> Result<
 /// Test 1: String time_col with unparseable values → rows dropped.
 #[test]
 fn test_string_timestamp_parse_failure_drops_rows() -> Result<()> {
+    for col_stats in [false, true] {
+        check_string_timestamp_filtering(col_stats)?;
+    }
+    Ok(())
+}
+
+fn check_string_timestamp_filtering(col_stats: bool) -> Result<()> {
     let dir = tempdir()?;
     let input_root = dir.path().join("input");
     let output_root = dir.path().join("output");
@@ -57,11 +64,11 @@ fn test_string_timestamp_parse_failure_drops_rows() -> Result<()> {
         vec![
             Arc::new(Int64Array::from(vec![1i64, 1, 1, 1, 1])) as ArrayRef,
             Arc::new(StringArray::from(vec![
-                "2024-01-15",  // valid
-                "not-a-date",  // invalid
-                "2024-03-20",  // valid
-                "garbage",     // invalid
-                "2024-06-01",  // valid
+                "2024-01-15", // valid
+                "not-a-date", // invalid
+                "2024-03-20", // valid
+                "garbage",    // invalid
+                "2024-06-01", // valid
             ])) as ArrayRef,
             Arc::new(Int64Array::from(vec![10, 20, 30, 40, 50])) as ArrayRef,
         ],
@@ -76,7 +83,7 @@ fn test_string_timestamp_parse_failure_drops_rows() -> Result<()> {
         ]),
         vec![
             Arc::new(Int64Array::from(vec![1i64, 2, 3])) as ArrayRef,
-            Arc::new(StringArray::from(vec!["Sep-02", "Apr-14", "Jul-03"])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["Sep-02", "2024-04-14", "Jul-03"])) as ArrayRef,
         ],
     )?;
 
@@ -129,7 +136,7 @@ fn test_string_timestamp_parse_failure_drops_rows() -> Result<()> {
         output_root.to_str().unwrap(),
         Dest::Local,
         IngestOptions {
-            col_stats: true,
+            col_stats,
             cat_count_strategy: diskgraph_ingest::col_stats::CategoryCountStrategy::None,
             ..IngestOptions::default()
         },
@@ -140,23 +147,57 @@ fn test_string_timestamp_parse_failure_drops_rows() -> Result<()> {
     println!("node_counts: {:?}", stats.node_counts);
 
     let events_dropped = *stats.dropped_rows_counts.get("Events").unwrap_or(&0);
-    assert_eq!(events_dropped, 2, "Should drop 2 rows with unparseable timestamps, got {events_dropped}");
+    assert_eq!(
+        events_dropped, 2,
+        "Should drop 2 rows with unparseable timestamps, got {events_dropped}"
+    );
 
     let accounts_dropped = *stats.dropped_rows_counts.get("Accounts").unwrap_or(&0);
     assert_eq!(
-        accounts_dropped, 3,
-        "Should drop all rows with unparseable date create_time, got {accounts_dropped}"
+        accounts_dropped, 2,
+        "Should drop only rows with unparseable date create_time, got {accounts_dropped}"
     );
 
-    let edge_count = stats.edge_counts.iter()
+    let edge_count = stats
+        .edge_counts
+        .iter()
         .find(|(k, _)| k.contains("Events") && k.contains("Hub") && !k.contains("reverse"))
-        .map(|(_, v)| *v).unwrap_or(0);
-    assert_eq!(edge_count, 3, "Should have 3 edges (2 dropped), got {edge_count}");
+        .map(|(_, v)| *v)
+        .unwrap_or(0);
+    assert_eq!(
+        edge_count, 3,
+        "Should have 3 edges (2 dropped), got {edge_count}"
+    );
 
     let metadata_path = output_root.join("index_metadata.json");
     let reader = GraphIndexReader::open(&metadata_path, &output_root)?;
     assert!(reader.table("Hub").is_some());
-    assert!(reader.table("Events").is_some());
+    let events = reader.table("Events").unwrap();
+    let mut values = Vec::new();
+    for id in 0..events.node_count() {
+        let view = events.edges_for_node(id)?;
+        values.push(
+            events.decode_node_data_json(&view)?.unwrap()["value"]
+                .as_i64()
+                .unwrap(),
+        );
+        assert_eq!(view.relation_segments()?[0].count, 1);
+    }
+    values.sort_unstable();
+    assert_eq!(values, vec![10, 30, 50]);
+    // Reopen persisted data and prove dropped keys did not enter the PK map.
+    drop(reader);
+    let reopened = GraphIndexReader::open(&metadata_path, &output_root)?;
+    let accounts = reopened.table("Accounts").unwrap();
+    assert_eq!(accounts.node_count(), 1);
+    for id in ["1", "3"] {
+        assert!(accounts
+            .node_id_from_pk(&accounts.parse_pk_key(id)?)?
+            .is_none());
+    }
+    assert!(accounts
+        .node_id_from_pk(&accounts.parse_pk_key("2")?)?
+        .is_some());
 
     Ok(())
 }
@@ -251,6 +292,11 @@ fn test_date32_out_of_range_drops_rows() -> Result<()> {
 /// Test 3: Edge table with Date32 out-of-range time_col → rows dropped.
 #[test]
 fn test_edge_table_date32_out_of_range_drops_rows() -> Result<()> {
+    check_edge_time_filtering(false)?;
+    check_edge_time_filtering(true)
+}
+
+fn check_edge_time_filtering(all_invalid: bool) -> Result<()> {
     let dir = tempdir()?;
     let input_root = dir.path().join("input");
     let output_root = dir.path().join("output");
@@ -283,12 +329,12 @@ fn test_edge_table_date32_out_of_range_drops_rows() -> Result<()> {
         vec![
             Arc::new(Int64Array::from(vec![1i64, 1, 2, 2])) as ArrayRef,
             Arc::new(Int64Array::from(vec![100i64, 200, 100, 200])) as ArrayRef,
-            Arc::new(Date32Array::from(vec![
+            Arc::new(Date32Array::from(if all_invalid { vec![446824; 4] } else { vec![
                 19738,   // 2024-01-15 (valid)
                 446824,  // 3193-05-13 (out of range)
                 19875,   // 2024-06-01 (valid)
                 385314,  // 3024-12-15 (out of range)
-            ])) as ArrayRef,
+            ] })) as ArrayRef,
         ],
     )?;
 
@@ -338,13 +384,13 @@ fn test_edge_table_date32_out_of_range_drops_rows() -> Result<()> {
     println!("edge_counts: {:?}", stats.edge_counts);
 
     let edges_dropped = *stats.dropped_rows_counts.get("Edges").unwrap_or(&0);
-    assert_eq!(edges_dropped, 2, "Should drop 2 edge rows with out-of-range dates, got {edges_dropped}");
+    assert_eq!(edges_dropped, if all_invalid { 4 } else { 2 }, "Should drop 2 edge rows with out-of-range dates, got {edges_dropped}");
 
     // Each valid edge row creates edges in both directions
     let fwd_edge_count = stats.edge_counts.iter()
         .find(|(k, _)| k.contains("Edges") && k.contains("src_to_dst"))
         .map(|(_, v)| *v).unwrap_or(0);
-    assert_eq!(fwd_edge_count, 2, "Should have 2 forward edges, got {fwd_edge_count}");
+    assert_eq!(fwd_edge_count, if all_invalid { 0 } else { 2 }, "Should have 2 forward edges, got {fwd_edge_count}");
 
     Ok(())
 }
@@ -504,5 +550,58 @@ fn test_time64_microsecond_create_time_does_not_drop_rows() -> Result<()> {
         .unwrap_or(0);
     assert_eq!(edge_count, 3, "Should preserve all 3 time64 event edges");
 
+    Ok(())
+}
+/// Reject an unusable base table, not an individual malformed row or empty shard.
+#[test]
+fn test_all_invalid_required_times_do_not_publish() -> Result<()> {
+    for col_stats in [false, true] {
+        for value in [Some("not-a-time"), None] {
+            let dir = tempdir()?;
+            let path = dir.path().join("events.parquet");
+            write_parquet(
+                &path,
+                Schema::new(vec![
+                    Field::new("id", DataType::Int64, false),
+                    Field::new("ts", DataType::Utf8, true),
+                ]),
+                vec![
+                    Arc::new(Int64Array::from(vec![1])) as ArrayRef,
+                    Arc::new(StringArray::from(vec![value])) as ArrayRef,
+                ],
+            )?;
+            let config = serde_json::json!({
+                "dataset_name": "empty_after_filtering",
+                "tables": [{
+                    "name": "Events",
+                    "source": {"type": "parquet", "paths": [path.to_string_lossy()]},
+                    "primary_key": "id", "create_time": "ts",
+                    "columns": [{"name": "id", "ingested_dtype": "int64"},
+                                {"name": "ts", "source_dtype": "Utf8", "ingested_dtype": "timestamp"}]
+                }]
+            });
+            let config_path = dir.path().join("config.json");
+            fs::write(&config_path, serde_json::to_vec(&config)?)?;
+            let output_root = dir.path().join("output");
+            let error = ingest_with_stats(
+                &config_path,
+                output_root.to_str().unwrap(),
+                Dest::Local,
+                IngestOptions {
+                    col_stats,
+                    ..IngestOptions::default()
+                },
+            )
+            .unwrap_err();
+            assert!(diskgraph_ingest::is_non_retryable_ingest_error(&error));
+            assert!(
+                format!("{error:#}").contains("Events has no usable rows"),
+                "{error:#}"
+            );
+            for marker in ["index_metadata.json", "_MANIFEST.json", "_SUCCESS"] {
+                assert!(!output_root.join(marker).exists());
+            }
+        }
+    }
     Ok(())
 }

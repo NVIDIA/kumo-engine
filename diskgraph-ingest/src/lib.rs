@@ -11818,6 +11818,15 @@ impl IngestContext {
                 .get(&table.name)
                 .cloned()
                 .unwrap_or_else(|| vec![0; self.num_shards]);
+            // Use retained rows, not source counts or max_id (zero is also a
+            // valid node ID). Extensions may legitimately add an empty table.
+            if self.parent_index_path.is_none() && shard_rows.iter().all(|&rows| rows == 0) {
+                return Err(PublicIngestError::new(format!(
+                    "graph table {} has no usable rows after ingestion filtering",
+                    table.name
+                ))
+                .into());
+            }
             let shard_offsets = self
                 .shard_offsets
                 .get(&table.name)
