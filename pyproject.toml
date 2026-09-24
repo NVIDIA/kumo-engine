@@ -11,6 +11,7 @@ version = "0.1.0"
 # wheel installs on 3.10 through 3.14+.
 requires-python = ">=3.10"
 dependencies = [
+    "numpy>=1.26,<3",
     # Parquet and Arrow IPC reads/writes in the Python artifact helpers.
     "pyarrow==24.0.0",
 ]

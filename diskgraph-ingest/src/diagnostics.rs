@@ -303,6 +303,13 @@ pub fn render_diagnostic(
             "diskgraph_ingest_validation",
             false,
         )
+    } else if crate::is_disk_space_error(error) {
+        (
+            "write_snapshot",
+            DiagnosticCategory::Resource,
+            "ingest.no_space",
+            true,
+        )
     } else {
         (
             "ingest",
@@ -506,5 +513,16 @@ mod tests {
         assert_eq!(value["public"]["code"], "diskgraph_ingest_validation");
         assert_eq!(value["public"]["message"], "safe validation detail");
         assert_eq!(value["public"]["non_retryable"], true);
+    }
+
+    #[test]
+    fn disk_space_errors_have_a_typed_retryable_diagnostic() {
+        let error = anyhow::Error::new(std::io::Error::from_raw_os_error(28));
+        let value = envelope_json(&render_diagnostic(&error, 1, "persist"));
+        assert_eq!(value["operation"], "write_snapshot");
+        assert_eq!(value["category"], "resource");
+        assert_eq!(value["code"], "ingest.no_space");
+        assert_eq!(value["retryable"], true);
+        assert!(value["public"].is_null());
     }
 }
