@@ -6,6 +6,39 @@ on:
   pull_request:
 
 jobs:
+  licenses:
+    runs-on: ubuntu-22.04-large
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: stable
+      - uses: taiki-e/install-action@9114bf4d891761788c546334fd37538eae1bf8b3 # v2.87.16
+        with:
+          tool: cargo-about@0.8.4,cargo-deny@0.20.2
+      - name: Fetch locked dependency sources
+        run: cargo fetch --locked
+      - name: Check license policy
+        run: cargo deny check licenses
+      - name: Check artifact-scoped dependency manifests
+        run: python3 scripts/generate_artifact_manifest.py --check third_party/artifact-manifest.json
+      - name: Check extension notice license resolution
+        run: |
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            cargo about generate --locked --offline --fail --manifest-path diskgraph-pybind/Cargo.toml --target "${target}" --features "extension-module pyo3/abi3-py310" --output-file "/tmp/diskgraph-extension-${target}-notice.txt" about.hbs
+          done
+      - name: Check ingest notice license resolution
+        run: |
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            cargo about generate --locked --offline --fail --manifest-path diskgraph-ingest/Cargo.toml --target "${target}" --output-file "/tmp/diskgraph-ingest-${target}-notice.txt" about.hbs
+          done
+      - name: Check vendored source attribution
+        run: |
+          for notice in /tmp/diskgraph-*-notice.txt; do
+            grep -Fq 'diskgraph-ptrhash 1.1.0' "${notice}"
+            grep -Fq 'Copyright (c) 2026 Ragnar Groot Koerkamp' "${notice}"
+          done
+
   clippy:
     runs-on: ubuntu-22.04-large
     steps:

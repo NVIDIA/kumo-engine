@@ -12700,14 +12700,6 @@ fn profile_phase<T>(dir: &Path, name: &str, f: impl FnOnce() -> Result<T>) -> Re
     let result = f();
     let report = guard.report().build().context("build profile report")?;
     let pb_path = dir.join(format!("{name}-profile.pb"));
-    #[cfg(feature = "flamegraph")]
-    {
-        let svg_path = dir.join(format!("{name}-profile.svg"));
-        let file = fs::File::create(&svg_path).context("create profile output")?;
-        report
-            .flamegraph(file)
-            .context("write flamegraph profile")?;
-    }
     let profile = report.pprof().context("build pprof profile")?;
     let mut file = fs::File::create(&pb_path).context("create pprof output")?;
     let bytes = profile.encode_to_vec();

@@ -1,0 +1,41 @@
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+]
+all-features = true
+
+[licenses]
+confidence-threshold = 0.93
+unused-allowed-license = "allow"
+allow = [
+    "MIT",
+    "MIT-0",
+    "MIT-CMU",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "ISC",
+    "Zlib",
+    "BSL-1.0",
+    "Unlicense",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "PSF-2.0",
+    "Python-2.0",
+    "OLDAP-2.8",
+]
+private = { ignore = true }
+
+# Weak-copyleft, data-license, and proprietary licenses are intentionally not
+# blanket-allowed. OSRB-6649311 covers option-ext 0.2.0 in the broader
+# all-features policy graph. It is unmodified, its MPL-2.0 file must be
+# retained, and the corresponding source must remain available. The crate is
+# reachable only through the optional ingest TUI and is absent from the two
+# redistributed artifact manifests.
+exceptions = [
+    { allow = ["MPL-2.0"], name = "option-ext", version = "=0.2.0" },
+]

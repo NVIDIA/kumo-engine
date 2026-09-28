@@ -2,6 +2,7 @@
 name = "diskgraph-gateway"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 
 [dependencies]
 diskgraph-core = { path = "../diskgraph-core" }

@@ -89,7 +89,7 @@ if [[ "${MEM_PROFILE_ENABLED}" == "true" ]]; then
     MALLOC_CONF= _RJEM_MALLOC_CONF= _rjem_MALLOC_CONF= \
     JEMALLOC_CONF= JEMALLOC_SYS_WITH_MALLOC_CONF= JEMALLOC_OPTIONS= \
     "${env_args[@]}" \
-    cargo build -p diskgraph-ingest --bin ingest --release --features mem-profile,flamegraph
+    cargo build -p diskgraph-ingest --bin ingest --release --features mem-profile
   env_args+=(MALLOC_CONF= _rjem_MALLOC_CONF=)
   env_args+=(_RJEM_MALLOC_CONF="${_RJEM_MALLOC_CONF:-prof:true}")
   env_args+=(JEMALLOC_CONF= JEMALLOC_SYS_WITH_MALLOC_CONF= JEMALLOC_OPTIONS=)
@@ -98,9 +98,9 @@ if [[ "${MEM_PROFILE_ENABLED}" == "true" ]]; then
 elif [[ -n "${MALLOC_CONF:-}" || -n "${_RJEM_MALLOC_CONF:-}" || -n "${_rjem_MALLOC_CONF:-}" || -n "${JEMALLOC_CONF:-}" || -n "${JEMALLOC_SYS_WITH_MALLOC_CONF:-}" || -n "${JEMALLOC_OPTIONS:-}" ]]; then
   env_args+=(MALLOC_CONF= _RJEM_MALLOC_CONF= _rjem_MALLOC_CONF=)
   env_args+=(JEMALLOC_CONF= JEMALLOC_SYS_WITH_MALLOC_CONF= JEMALLOC_OPTIONS=)
-  args=(cargo run -p diskgraph-ingest --bin ingest --release --features flamegraph)
+  args=(cargo run -p diskgraph-ingest --bin ingest --release)
 else
-  args=(cargo run -p diskgraph-ingest --bin ingest --release --features flamegraph)
+  args=(cargo run -p diskgraph-ingest --bin ingest --release)
 fi
 if [[ "${USE_CARGO_RUN}" == "true" ]]; then
   args+=(-- --source "${SOURCE}" --output "${OUTPUT}" --dest local)

@@ -253,7 +253,7 @@ Flags:
 - `--col-stats`: collect per-column statistics during encode. See `diskgraph-ingest/col_stats.md`.
 - `--cat-count-strategy`: category counting strategy: `none` (default), `hybrid` (exact counts), `graduation` (approximate).
 - `--row-subsample`: enable per-row 30% subsampling for category counts (experimental).
-- `--profile [dir]`: enable CPU profiling and emit `*-profile.pb`. Build with `--features flamegraph` to also emit `*-profile.svg`.
+- `--profile [dir]`: enable CPU profiling and emit `*-profile.pb`.
 - `-m, --mem-profile`: enable jemalloc heap dump watchdog.
 - `--stats-dest`: stats destination root (s3://, gs://, az://, or local path) for publishing.
 - `--stats-dataset`, `--stats-run-id`: identifiers for stats publishing.
@@ -271,6 +271,8 @@ Profiles are emitted when `--profile` is enabled (default in the helper scripts)
 ```
 
 Inside the perf explorer, press `p` to download the `.pb` profiles for the selected run and show the top 10 entries via `go tool pprof -top -nodecount=10`.
+
+To inspect a profile interactively, render the protobuf directly with `go tool pprof -http=: <profile>.pb`.
 
 Stats root can be overridden with `DISKGRAPH_STATS_DEST` (e.g., `s3://kumo-unit-test/diskgraph-profiles`).
 

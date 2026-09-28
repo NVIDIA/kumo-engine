@@ -669,7 +669,6 @@ fn profile_files(profile_dir: &Option<PathBuf>) -> Option<Vec<PathBuf>> {
             None => continue,
         };
         if name.ends_with("-profile.pb")
-            || name.ends_with("-profile.svg")
             || (name.starts_with("heap-") && name.ends_with(".heap"))
         {
             files.push(path);

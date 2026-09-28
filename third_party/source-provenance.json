@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "sources": [
+    {
+      "path": "diskgraph-ptrhash/**",
+      "upstream": "https://github.com/RagnarGrootKoerkamp/PtrHash",
+      "upstream_ref": "v1.1.0",
+      "license_expression": "MIT",
+      "license_file": "diskgraph-ptrhash/LICENSE",
+      "modified": true,
+      "apache_4b_notice_required": false,
+      "header_policy": "retain-upstream"
+    }
+  ]
+}

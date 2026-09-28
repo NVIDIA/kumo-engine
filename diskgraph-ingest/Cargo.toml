@@ -2,6 +2,7 @@
 name = "diskgraph-ingest"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
@@ -51,7 +52,7 @@ libc = "0.2"
 jemallocator = { version = "0.5", optional = true, features = ["profiling"] }
 jemalloc-ctl = { version = "0.5", optional = true }
 sysinfo = "0.30"
-ureq = "2"
+ureq = { version = "2", default-features = false }
 ratatui = "0.26"
 crossterm = "0.27"
 dirs = { version = "5", optional = true }
@@ -73,7 +74,6 @@ serial_test = "3"
 
 [features]
 default = []
-flamegraph = ["pprof/flamegraph"]
 ingest-tui = ["dep:dirs"]
 mem-profile = ["jemallocator", "jemalloc-ctl", "jemallocator/profiling"]
 unsafe-vars = []
