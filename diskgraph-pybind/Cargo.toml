@@ -13,13 +13,13 @@ default = []
 extension-module = ["pyo3/extension-module"]
 
 [dependencies]
-# abi3-py310: build a single stable-ABI (limited API) extension whose
-# floor is CPython 3.10 (the org-wide minimum). One `cp310-abi3` wheel
-# loads unchanged on 3.10, 3.11, 3.12, 3.13 and 3.14+ — no per-version
+# abi3-py311: build a single stable-ABI (limited API) extension whose
+# floor is CPython 3.11 (the org-wide minimum). One `cp311-abi3` wheel
+# loads unchanged on 3.11, 3.12, 3.13 and 3.14+ — no per-version
 # rebuild. pyo3 0.28 supports CPython up to 3.14. All bindings here stay
 # within the limited API (#[pyclass], #[pyo3(get/set/signature)],
 # create_exception!, PyDict/PyList/PyString/PyTuple), so abi3 is clean.
-pyo3 = { version = "0.28", features = ["abi3-py310", "hashbrown"] }
+pyo3 = { version = "0.28", features = ["abi3-py311", "hashbrown"] }
 pyo3-log = "0.13"
 arrow = { version = "58.4.0", features = ["pyarrow"] }
 arrow-array = "58.4.0"

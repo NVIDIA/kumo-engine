@@ -26,7 +26,7 @@ ARTIFACTS = (
         "label": "diskgraph._c.abi3.so",
         "package": "diskgraph-pybind",
         "manifest": "diskgraph-pybind/Cargo.toml",
-        "features": ["extension-module", "pyo3/abi3-py310"],
+        "features": ["extension-module", "pyo3/abi3-py311"],
     },
     {
         "id": "diskgraph-ingest",

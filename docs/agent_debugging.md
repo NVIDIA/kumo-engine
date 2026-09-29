@@ -156,7 +156,7 @@ print(f"TARGET == -1: {(fkey_df['TARGET'] == -1).sum()} rows (orphaned FKs)")
 # Rust changes in kumo-diskgraph:
 bash kumo-tests/scripts/update_diskgraph.sh --build-only
 # Verify .so timestamp is newer:
-ls -la kumo/venv/lib/python3.10/site-packages/diskgraph/*.so
+ls -la kumo/venv/lib/python3.11/site-packages/diskgraph/*.so
 # Delete pycache:
 find kumo/venv -name "__pycache__" -path "*diskgraph*" -exec rm -rf {} +
 # Smoke test:

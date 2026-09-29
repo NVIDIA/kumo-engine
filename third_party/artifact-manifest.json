@@ -7,7 +7,7 @@
       ],
       "features": [
         "extension-module",
-        "pyo3/abi3-py310"
+        "pyo3/abi3-py311"
       ],
       "id": "diskgraph-extension",
       "label": "diskgraph._c.abi3.so",

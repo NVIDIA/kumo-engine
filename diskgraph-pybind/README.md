@@ -58,7 +58,7 @@ Portable Linux wheels should be built through the repository wrapper:
 
 ```bash
 # From the kumo-diskgraph repository root:
-scripts/build_python_wheel.sh --python python3.10 --out target/wheels --zig
+scripts/build_python_wheel.sh --python python3.11 --out target/wheels --zig
 ```
 
 `--zig` builds the Python extension and bundled `diskgraph/bin/ingest` binary

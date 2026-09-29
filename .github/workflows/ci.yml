@@ -25,7 +25,7 @@ jobs:
       - name: Check extension notice license resolution
         run: |
           for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
-            cargo about generate --locked --offline --fail --manifest-path diskgraph-pybind/Cargo.toml --target "${target}" --features "extension-module pyo3/abi3-py310" --output-file "/tmp/diskgraph-extension-${target}-notice.txt" about.hbs
+            cargo about generate --locked --offline --fail --manifest-path diskgraph-pybind/Cargo.toml --target "${target}" --features "extension-module pyo3/abi3-py311" --output-file "/tmp/diskgraph-extension-${target}-notice.txt" about.hbs
           done
       - name: Check ingest notice license resolution
         run: |
@@ -43,6 +43,10 @@ jobs:
     runs-on: ubuntu-22.04-large
     steps:
       - uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
       - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
           toolchain: stable
@@ -80,6 +84,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install lld linker
         run: sudo apt-get update -qq && sudo apt-get install -y lld
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
       - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
           toolchain: stable
@@ -110,10 +118,10 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-      - name: Set up Python 3.10
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
           cache: 'pip'
       - name: Install dependencies
         run: |
@@ -130,16 +138,16 @@ jobs:
           pip install -v ".[test]" --no-build-isolation
 
           # Build the wheel once for the abi3 / 3.14 forward-compat check
-          # below (single cp310-abi3 artifact, reused across interpreters).
+          # below (single cp311-abi3 artifact, reused across interpreters).
           python -m pip wheel --no-deps --wheel-dir /tmp/dg-wheels .
 
           TEST_DIR="$(pwd)/diskgraph-pybind/python/tests"
           cd /tmp
           pytest -v -s "$TEST_DIR"
 
-      # The native module is built abi3 (limited API, floor py310), so the
+      # The native module is built abi3 (limited API, floor py311), so the
       # SAME wheel must load on newer CPython without a rebuild. Prove the
-      # org-wide "switch to Python 3.14" goal by importing the cp310-abi3
+      # org-wide "switch to Python 3.14" goal by importing the cp311-abi3
       # wheel under a clean 3.14 interpreter.
       - name: Set up Python 3.14
         uses: actions/setup-python@v5
