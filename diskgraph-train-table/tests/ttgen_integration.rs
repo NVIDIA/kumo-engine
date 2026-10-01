@@ -7823,6 +7823,45 @@ fn integ_temporal_orphan_filter_all_valid_at_later_time() {
     assert!(!target_set.contains("30"), "product 30 still deleted");
 }
 
+/// `temporal_orphan_ld_plan` with the label window `(obs, obs + horizon]`.
+fn temporal_orphan_forward_plan(obs_ts: i64, horizon: i64) -> DiskGraphTTPlan<Seconds> {
+    let mut plan = temporal_orphan_ld_plan(Some("products".to_string()), obs_ts);
+    let Op::Aggregate { window, .. } = &mut plan.stages[0].ops[0] else {
+        unreachable!("temporal_orphan_ld_plan builds one aggregate");
+    };
+    *window = Some((0, horizon));
+    plan
+}
+
+fn temporal_orphan_targets(plan: &DiskGraphTTPlan<Seconds>) -> std::collections::HashSet<String> {
+    init_tracing();
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_graph_temporal_orphan(dir.path());
+    let (receiver, handle) = execute(plan, &index).unwrap();
+    let rows = read_output_rows_array(receiver);
+    handle.join().unwrap().unwrap();
+    assert_eq!(rows.len(), 1, "one row for user 0");
+    rows[0].2.iter().cloned().collect()
+}
+
+#[test]
+fn integ_temporal_orphan_target_created_in_window() {
+    // Window (500, 1500]; product 20 is created at 1500.
+    let targets = temporal_orphan_targets(&temporal_orphan_forward_plan(500, 1000));
+    let expected: std::collections::HashSet<String> =
+        ["10", "20", "30"].iter().map(|s| s.to_string()).collect();
+    assert_eq!(targets, expected);
+}
+
+#[test]
+fn integ_temporal_orphan_target_created_after_window() {
+    // Window (500, 950]; product 20 is created at 1500.
+    let targets = temporal_orphan_targets(&temporal_orphan_forward_plan(500, 450));
+    let expected: std::collections::HashSet<String> =
+        ["10", "30"].iter().map(|s| s.to_string()).collect();
+    assert_eq!(targets, expected);
+}
+
 // ─── Phase 4: execute_tt_pass direct API tests ──────────────────────────────
 //
 // These exercise the new `execute_tt_pass(plan, index_path, output_dir) ->

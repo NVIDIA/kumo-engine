@@ -1756,6 +1756,26 @@ impl TableReader {
         end_col_idx: Option<usize>,
         scratch: &mut diskgraph_rowpack::RowPackDecodeScratch,
     ) -> Result<bool> {
+        self.is_node_valid_between(
+            node_id,
+            observation_ts,
+            observation_ts,
+            create_col_idx,
+            end_col_idx,
+            scratch,
+        )
+    }
+
+    /// [`is_node_temporally_valid`] with separate create and end reference times.
+    pub fn is_node_valid_between(
+        &self,
+        node_id: u64,
+        create_ref_ts: i64,
+        end_ref_ts: i64,
+        create_col_idx: Option<usize>,
+        end_col_idx: Option<usize>,
+        scratch: &mut diskgraph_rowpack::RowPackDecodeScratch,
+    ) -> Result<bool> {
         if create_col_idx.is_none() && end_col_idx.is_none() {
             return Ok(true);
         }
@@ -1769,24 +1789,24 @@ impl TableReader {
             None => return Ok(true),
         };
 
-        // Check create_time_col <= observation_ts
+        // Check create_time_col <= create_ref_ts
         if let Some(col_idx) = create_col_idx {
             let val = decoder.decode_column_value(raw, col_idx, scratch)?;
             let ts_secs = temporal_value_to_epoch_secs(&val);
             if let Some(secs) = ts_secs {
-                if secs > observation_ts {
+                if secs > create_ref_ts {
                     return Ok(false);
                 }
             }
             // NULL create_time → conservatively include
         }
 
-        // Check end_time_col IS NULL OR end_time_col > observation_ts
+        // Check end_time_col IS NULL OR end_time_col > end_ref_ts
         if let Some(col_idx) = end_col_idx {
             let val = decoder.decode_column_value(raw, col_idx, scratch)?;
             let ts_secs = temporal_value_to_epoch_secs(&val);
             if let Some(secs) = ts_secs {
-                if secs <= observation_ts {
+                if secs <= end_ref_ts {
                     return Ok(false);
                 }
             }
@@ -1802,6 +1822,26 @@ impl TableReader {
         &self,
         value: &Value,
         observation_ts: i64,
+        create_col_idx: Option<usize>,
+        end_col_idx: Option<usize>,
+        scratch: &mut diskgraph_rowpack::RowPackDecodeScratch,
+    ) -> bool {
+        self.contains_pk_value_valid_between(
+            value,
+            observation_ts,
+            observation_ts,
+            create_col_idx,
+            end_col_idx,
+            scratch,
+        )
+    }
+
+    /// [`contains_pk_value_temporal`] with separate create and end reference times.
+    pub fn contains_pk_value_valid_between(
+        &self,
+        value: &Value,
+        create_ref_ts: i64,
+        end_ref_ts: i64,
         create_col_idx: Option<usize>,
         end_col_idx: Option<usize>,
         scratch: &mut diskgraph_rowpack::RowPackDecodeScratch,
@@ -1822,9 +1862,10 @@ impl TableReader {
         if create_col_idx.is_none() && end_col_idx.is_none() {
             return true;
         }
-        self.is_node_temporally_valid(
+        self.is_node_valid_between(
             node_id,
-            observation_ts,
+            create_ref_ts,
+            end_ref_ts,
             create_col_idx,
             end_col_idx,
             scratch,

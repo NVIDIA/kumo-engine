@@ -3069,12 +3069,20 @@ fn execute_aggregate<U: UnitSystem>(
             // Temporal validity filtering requires both an observation timestamp
             // and pre-resolved temporal column indices on the target entity table.
             // Without observation_ts (non-temporal plans), fall back to PK-only check.
-            let temporal_obs_ts = match observation_ts {
+            // Created by the window end, as for ranked candidates (`RHSTime`).
+            let temporal_ref_ts = match observation_ts {
                 Some(ts)
                     if agg.target_temporal_create_col_idx.is_some()
                         || agg.target_temporal_end_col_idx.is_some() =>
                 {
-                    Some(ts.raw())
+                    let create_ref = match agg.window.as_ref() {
+                        Some(ResolvedWindow::Fixed { offset_hi, .. }) => ts + *offset_hi,
+                        Some(ResolvedWindow::Calendar { hi_months, .. }) => {
+                            add_calendar_months(ts, *hi_months)
+                        }
+                        None => ts,
+                    };
+                    Some((create_ref.raw().max(ts.raw()), ts.raw()))
                 }
                 _ => None,
             };
@@ -3129,15 +3137,13 @@ fn execute_aggregate<U: UnitSystem>(
 
                 // Legacy whole-cell path (FK ListDistinct, scalar ListDistinct).
                 if let Some(val) = read_column_value(dst_table, dst, col_idx) {
-                    // Skip target values whose FK doesn't exist in the
-                    // destination table, or whose target entity is not
-                    // temporally valid at the observation timestamp
-                    // (e.g., FIDO added to catalog after anchor time).
+                    // Skip orphan FKs and targets invalid for the window.
                     if let Some(pk_table) = pk_filter {
-                        if let Some(obs_ts) = temporal_obs_ts {
-                            if !pk_table.contains_pk_value_temporal(
+                        if let Some((create_ref_ts, end_ref_ts)) = temporal_ref_ts {
+                            if !pk_table.contains_pk_value_valid_between(
                                 &val,
-                                obs_ts,
+                                create_ref_ts,
+                                end_ref_ts,
                                 agg.target_temporal_create_col_idx,
                                 agg.target_temporal_end_col_idx,
                                 &mut rowpack_scratch,

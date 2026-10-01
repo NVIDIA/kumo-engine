@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
-          toolchain: stable
+          toolchain: 1.98.1
       - uses: taiki-e/install-action@9114bf4d891761788c546334fd37538eae1bf8b3 # v2.87.16
         with:
           tool: cargo-about@0.8.4,cargo-deny@0.20.2
@@ -49,7 +49,8 @@ jobs:
           python-version: '3.11'
       - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
-          toolchain: stable
+          # Pinned: a new stable clippy adds lints that fail unchanged code.
+          toolchain: 1.98.1
           components: clippy
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Clippy
@@ -90,7 +91,7 @@ jobs:
           python-version: '3.11'
       - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
-          toolchain: stable
+          toolchain: 1.98.1
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Build and Test
         run: cargo test --workspace
@@ -116,7 +117,7 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y lld
       - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
-          toolchain: stable
+          toolchain: 1.98.1
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
