@@ -257,7 +257,7 @@ pub fn detect_timestamp_formats(
                     );
                     continue;
                 }
-                tracing::warn!(
+                tracing::debug!(
                     table = %table.name, column = %col_name,
                     "could not detect timestamp format: {}", info,
                 );

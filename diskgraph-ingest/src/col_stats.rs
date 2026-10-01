@@ -563,6 +563,7 @@ pub struct FileColStats {
 pub enum ColumnStatsCollector {
     Numerical {
         null_count: u64,
+        parse_fail_count: u64,
         invalid_count: u64,
         welford: WelfordAccumulator,
         hll: HyperLogLog,
@@ -571,24 +572,25 @@ pub enum ColumnStatsCollector {
     Categorical {
         count: u64,
         null_count: u64,
+        parse_fail_count: u64,
         hll: HyperLogLog,
     },
     Id {
         count: u64,
         null_count: u64,
+        parse_fail_count: u64,
         hll: HyperLogLog,
     },
     Text {
         count: u64,
         null_count: u64,
+        parse_fail_count: u64,
         hll: HyperLogLog,
     },
     Timestamp {
         count: u64,
         null_count: u64,
         parse_fail_count: u64,
-        /// Up to 3 sample values that failed to parse (for error messages).
-        parse_fail_samples: Vec<String>,
         min_secs: i64,
         max_secs: i64,
         hll: HyperLogLog,
@@ -596,6 +598,7 @@ pub enum ColumnStatsCollector {
     Sequence {
         count: u64,
         null_count: u64,
+        parse_fail_count: u64,
         min_len: usize,
         max_len: usize,
         welford: WelfordAccumulator,
@@ -603,14 +606,19 @@ pub enum ColumnStatsCollector {
     Latlong {
         count: u64,
         null_count: u64,
+        parse_fail_count: u64,
         invalid_count: u64,
         min_len: usize,
         max_len: usize,
         welford: WelfordAccumulator,
     },
-    /// Image URL column — stores only universal stats (count, null_count).
+    /// Image URL column — stores universal column statistics.
     /// Produces `kumo.image` keys in col_stats output.
-    ImageUrl { count: u64, null_count: u64 },
+    ImageUrl {
+        count: u64,
+        null_count: u64,
+        parse_fail_count: u64,
+    },
     /// Multicategorical column — one row produces N tokens; per-token
     /// counting reuses the existing `SharedColumnCounts` / `LocalColumnCounts`
     /// machinery via `observe_category_{string,i64}`. This variant carries
@@ -621,6 +629,7 @@ pub enum ColumnStatsCollector {
         count: u64,
         /// Null rows observed.
         null_count: u64,
+        parse_fail_count: u64,
         /// HLL over per-token hashes — source of `NUM_UNIQUE_MULTI`.
         hll: HyperLogLog,
         /// Tokenization dispatch; frozen at construction.
@@ -635,41 +644,6 @@ pub enum ColumnStatsCollector {
     },
     /// Skip this column (PK, Unsupported).
     Skip,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct TimestampParseFailureSummary {
-    total_rows: u64,
-    source_non_null_rows: u64,
-    source_null_rows: u64,
-    parse_failures: u64,
-}
-
-impl TimestampParseFailureSummary {
-    fn new(count: u64, null_count: u64, parse_fail_count: u64) -> Option<Self> {
-        let total_rows = count.saturating_add(null_count);
-        if total_rows == 0 {
-            return None;
-        }
-        Some(Self {
-            total_rows,
-            source_non_null_rows: count.saturating_add(parse_fail_count),
-            source_null_rows: null_count.saturating_sub(parse_fail_count),
-            parse_failures: parse_fail_count,
-        })
-    }
-
-    fn parse_failure_pct_of_non_null(self) -> f64 {
-        if self.source_non_null_rows == 0 {
-            0.0
-        } else {
-            self.parse_failures as f64 / self.source_non_null_rows as f64 * 100.0
-        }
-    }
-
-    fn parse_failure_pct_of_total(self) -> f64 {
-        self.parse_failures as f64 / self.total_rows as f64 * 100.0
-    }
 }
 
 impl FileColStats {
@@ -801,60 +775,13 @@ impl FileColStats {
         }
     }
 
-    /// Warn when timestamp parse failures were observed.
-    ///
-    /// Timestamp parse failures are diagnostics, not fatal errors: create-time
-    /// rows are dropped by ingest, and non-time timestamp features encode as
-    /// null. `parse_fail_count` is a subset of `null_count`, so totals are
-    /// derived from valid + encoded-null rows and do not add parse failures a
-    /// second time.
     pub fn warn_parse_failures(&self, column_names: &[String], table_name: &str) {
-        for (col, name) in self.cols.iter().zip(column_names.iter()) {
-            if let ColumnStatsCollector::Timestamp {
-                count,
-                null_count,
-                parse_fail_count,
-                parse_fail_samples,
-                ..
-            } = col
-            {
-                let Some(summary) =
-                    TimestampParseFailureSummary::new(*count, *null_count, *parse_fail_count)
-                else {
-                    continue;
-                };
-                if summary.parse_failures > 0 {
-                    let samples = if parse_fail_samples.is_empty() {
-                        String::new()
-                    } else {
-                        format!(
-                            " [{}]",
-                            parse_fail_samples
-                                .iter()
-                                .map(|s| format!("'{}'", s))
-                                .collect::<Vec<_>>()
-                                .join(", "),
-                        )
-                    };
-                    tracing::warn!(
-                        table = table_name,
-                        column = name.as_str(),
-                        parse_failures = summary.parse_failures,
-                        source_non_null_rows = summary.source_non_null_rows,
-                        source_null_rows = summary.source_null_rows,
-                        total_rows = summary.total_rows,
-                        pct_of_non_null = format_args!(
-                            "{:.1}%",
-                            summary.parse_failure_pct_of_non_null()
-                        ),
-                        pct_of_total = format_args!(
-                            "{:.1}%",
-                            summary.parse_failure_pct_of_total()
-                        ),
-                        samples = samples.as_str(),
-                        "timestamp parse failures detected; invalid timestamp values were treated as null or dropped according to time-column semantics",
-                    );
-                }
+        for (col, name) in self.cols.iter().zip(column_names) {
+            let count = col.parse_fail_count();
+            if count > 0 {
+                tracing::warn!(
+                    "{count} invalid values found in {table_name}.{name}. Invalid values are parsed as null. Please correct and retrain if needed."
+                );
             }
         }
     }
@@ -978,6 +905,39 @@ fn single_byte_ascii(s: &str) -> Option<u8> {
 }
 
 impl ColumnStatsCollector {
+    fn parse_fail_count(&self) -> u64 {
+        match self {
+            Self::Numerical {
+                parse_fail_count, ..
+            }
+            | Self::Categorical {
+                parse_fail_count, ..
+            }
+            | Self::Id {
+                parse_fail_count, ..
+            }
+            | Self::Text {
+                parse_fail_count, ..
+            }
+            | Self::Timestamp {
+                parse_fail_count, ..
+            }
+            | Self::Sequence {
+                parse_fail_count, ..
+            }
+            | Self::Latlong {
+                parse_fail_count, ..
+            }
+            | Self::ImageUrl {
+                parse_fail_count, ..
+            }
+            | Self::Multicategorical {
+                parse_fail_count, ..
+            } => *parse_fail_count,
+            Self::Skip => 0,
+        }
+    }
+
     /// Construct the per-column collector for an ingest scan.
     ///
     /// Multicategorical columns need both the declared `ingested_type` (to pick
@@ -994,6 +954,7 @@ impl ColumnStatsCollector {
         match stype {
             Some(SemanticType::Numerical) => ColumnStatsCollector::Numerical {
                 null_count: 0,
+                parse_fail_count: 0,
                 invalid_count: 0,
                 welford: WelfordAccumulator::new(),
                 hll: HyperLogLog::new(),
@@ -1002,23 +963,25 @@ impl ColumnStatsCollector {
             Some(SemanticType::Categorical) => ColumnStatsCollector::Categorical {
                 count: 0,
                 null_count: 0,
+                parse_fail_count: 0,
                 hll: HyperLogLog::new(),
             },
             Some(SemanticType::Id) => ColumnStatsCollector::Id {
                 count: 0,
                 null_count: 0,
+                parse_fail_count: 0,
                 hll: HyperLogLog::new(),
             },
             Some(SemanticType::Text) => ColumnStatsCollector::Text {
                 count: 0,
                 null_count: 0,
+                parse_fail_count: 0,
                 hll: HyperLogLog::new(),
             },
             Some(SemanticType::Timestamp) => ColumnStatsCollector::Timestamp {
                 count: 0,
                 null_count: 0,
                 parse_fail_count: 0,
-                parse_fail_samples: Vec::new(),
                 min_secs: i64::MAX,
                 max_secs: i64::MIN,
                 hll: HyperLogLog::new(),
@@ -1026,6 +989,7 @@ impl ColumnStatsCollector {
             Some(SemanticType::Sequence) => ColumnStatsCollector::Sequence {
                 count: 0,
                 null_count: 0,
+                parse_fail_count: 0,
                 min_len: usize::MAX,
                 max_len: 0,
                 welford: WelfordAccumulator::new(),
@@ -1033,6 +997,7 @@ impl ColumnStatsCollector {
             Some(SemanticType::Latlong) => ColumnStatsCollector::Latlong {
                 count: 0,
                 null_count: 0,
+                parse_fail_count: 0,
                 invalid_count: 0,
                 min_len: usize::MAX,
                 max_len: 0,
@@ -1041,6 +1006,7 @@ impl ColumnStatsCollector {
             Some(SemanticType::ImageUrl) => ColumnStatsCollector::ImageUrl {
                 count: 0,
                 null_count: 0,
+                parse_fail_count: 0,
             },
             Some(SemanticType::Multicategorical) => {
                 let input_kind = match ingested_type {
@@ -1059,6 +1025,7 @@ impl ColumnStatsCollector {
                     Some(kind) => ColumnStatsCollector::Multicategorical {
                         count: 0,
                         null_count: 0,
+                        parse_fail_count: 0,
                         hll: HyperLogLog::new(),
                         input_kind: kind,
                         // Emit `MULTI_CATEGORIES_SEPARATOR` whenever a delimiter
@@ -1088,6 +1055,7 @@ impl ColumnStatsCollector {
             (
                 ColumnStatsCollector::Numerical {
                     null_count,
+                    parse_fail_count,
                     invalid_count,
                     welford,
                     hll,
@@ -1095,6 +1063,7 @@ impl ColumnStatsCollector {
                 },
                 ColumnStatsCollector::Numerical {
                     null_count: nc2,
+                    parse_fail_count: pf2,
                     invalid_count: ic2,
                     welford: w2,
                     hll: h2,
@@ -1102,6 +1071,7 @@ impl ColumnStatsCollector {
                 },
             ) => {
                 *null_count += *nc2;
+                *parse_fail_count += *pf2;
                 *invalid_count += *ic2;
                 welford.merge(w2);
                 hll.merge(h2);
@@ -1111,48 +1081,57 @@ impl ColumnStatsCollector {
                 ColumnStatsCollector::Categorical {
                     count,
                     null_count,
+                    parse_fail_count,
                     hll,
                 },
                 ColumnStatsCollector::Categorical {
                     count: c2,
                     null_count: nc2,
+                    parse_fail_count: pf2,
                     hll: h2,
                 },
             ) => {
                 *count += *c2;
                 *null_count += *nc2;
+                *parse_fail_count += *pf2;
                 hll.merge(h2);
             }
             (
                 ColumnStatsCollector::Id {
                     count,
                     null_count,
+                    parse_fail_count,
                     hll,
                 },
                 ColumnStatsCollector::Id {
                     count: c2,
                     null_count: nc2,
+                    parse_fail_count: pf2,
                     hll: h2,
                 },
             ) => {
                 *count += *c2;
                 *null_count += *nc2;
+                *parse_fail_count += *pf2;
                 hll.merge(h2);
             }
             (
                 ColumnStatsCollector::Text {
                     count,
                     null_count,
+                    parse_fail_count,
                     hll,
                 },
                 ColumnStatsCollector::Text {
                     count: c2,
                     null_count: nc2,
+                    parse_fail_count: pf2,
                     hll: h2,
                 },
             ) => {
                 *count += *c2;
                 *null_count += *nc2;
+                *parse_fail_count += *pf2;
                 hll.merge(h2);
             }
             (
@@ -1160,7 +1139,6 @@ impl ColumnStatsCollector {
                     count,
                     null_count,
                     parse_fail_count,
-                    parse_fail_samples,
                     min_secs,
                     max_secs,
                     hll,
@@ -1169,7 +1147,6 @@ impl ColumnStatsCollector {
                     count: c2,
                     null_count: nc2,
                     parse_fail_count: pf2,
-                    parse_fail_samples: pfs2,
                     min_secs: ms2,
                     max_secs: xs2,
                     hll: hll2,
@@ -1179,12 +1156,6 @@ impl ColumnStatsCollector {
                 *null_count += *nc2;
                 *parse_fail_count += *pf2;
                 hll.merge(hll2);
-                // Keep up to 3 sample values across merges.
-                for s in pfs2 {
-                    if parse_fail_samples.len() < 3 {
-                        parse_fail_samples.push(s.clone());
-                    }
-                }
                 if *ms2 < *min_secs {
                     *min_secs = *ms2;
                 }
@@ -1196,6 +1167,7 @@ impl ColumnStatsCollector {
                 ColumnStatsCollector::Sequence {
                     count,
                     null_count,
+                    parse_fail_count,
                     min_len,
                     max_len,
                     welford,
@@ -1203,6 +1175,7 @@ impl ColumnStatsCollector {
                 ColumnStatsCollector::Sequence {
                     count: c2,
                     null_count: nc2,
+                    parse_fail_count: pf2,
                     min_len: ml2,
                     max_len: xl2,
                     welford: w2,
@@ -1210,6 +1183,7 @@ impl ColumnStatsCollector {
             ) => {
                 *count += *c2;
                 *null_count += *nc2;
+                *parse_fail_count += *pf2;
                 if *ml2 < *min_len {
                     *min_len = *ml2;
                 }
@@ -1222,6 +1196,7 @@ impl ColumnStatsCollector {
                 ColumnStatsCollector::Latlong {
                     count,
                     null_count,
+                    parse_fail_count,
                     invalid_count,
                     min_len,
                     max_len,
@@ -1230,6 +1205,7 @@ impl ColumnStatsCollector {
                 ColumnStatsCollector::Latlong {
                     count: c2,
                     null_count: nc2,
+                    parse_fail_count: pf2,
                     invalid_count: ic2,
                     min_len: ml2,
                     max_len: xl2,
@@ -1238,6 +1214,7 @@ impl ColumnStatsCollector {
             ) => {
                 *count += *c2;
                 *null_count += *nc2;
+                *parse_fail_count += *pf2;
                 *invalid_count += *ic2;
                 if *ml2 < *min_len {
                     *min_len = *ml2;
@@ -1248,19 +1225,26 @@ impl ColumnStatsCollector {
                 welford.merge(w2);
             }
             (
-                ColumnStatsCollector::ImageUrl { count, null_count },
+                ColumnStatsCollector::ImageUrl {
+                    count,
+                    null_count,
+                    parse_fail_count,
+                },
                 ColumnStatsCollector::ImageUrl {
                     count: c2,
                     null_count: nc2,
+                    parse_fail_count: pf2,
                 },
             ) => {
                 *count += *c2;
                 *null_count += *nc2;
+                *parse_fail_count += *pf2;
             }
             (
                 ColumnStatsCollector::Multicategorical {
                     count,
                     null_count,
+                    parse_fail_count,
                     hll,
                     input_kind,
                     separator: _,
@@ -1269,6 +1253,7 @@ impl ColumnStatsCollector {
                 ColumnStatsCollector::Multicategorical {
                     count: c2,
                     null_count: nc2,
+                    parse_fail_count: pf2,
                     hll: h2,
                     input_kind: ik2,
                     separator: _,
@@ -1284,6 +1269,7 @@ impl ColumnStatsCollector {
                 );
                 *count += *c2;
                 *null_count += *nc2;
+                *parse_fail_count += *pf2;
                 hll.merge(h2);
                 // Token counts merge through SharedColumnCounts — no per-file
                 // state to combine here. The separator is read from the column
@@ -1303,6 +1289,7 @@ impl ColumnStatsCollector {
         match self {
             ColumnStatsCollector::Numerical {
                 null_count,
+                parse_fail_count,
                 invalid_count,
                 welford,
                 hll,
@@ -1314,6 +1301,7 @@ impl ColumnStatsCollector {
                     "semantic_type": "numerical",
                     "count": total,
                     "null_count": *null_count,
+                    "parse_fail_count": *parse_fail_count,
                     "invalid_count": *invalid_count,
                     "mean": welford.mean(),
                     "std": welford.std_dev(),
@@ -1330,31 +1318,37 @@ impl ColumnStatsCollector {
             ColumnStatsCollector::Categorical {
                 count,
                 null_count,
+                parse_fail_count,
                 hll,
             } => Some(json!({
                 "semantic_type": "categorical",
                 "count": *count + *null_count,
                 "null_count": *null_count,
+                "parse_fail_count": *parse_fail_count,
                 "num_unique": hll.estimate() as u64,
             })),
             ColumnStatsCollector::Id {
                 count,
                 null_count,
+                parse_fail_count,
                 hll,
             } => Some(json!({
                 "semantic_type": "id",
                 "count": *count + *null_count,
                 "null_count": *null_count,
+                "parse_fail_count": *parse_fail_count,
                 "num_unique": hll.estimate() as u64,
             })),
             ColumnStatsCollector::Text {
                 count,
                 null_count,
+                parse_fail_count,
                 hll,
             } => Some(json!({
                 "semantic_type": "text",
                 "count": *count + *null_count,
                 "null_count": *null_count,
+                "parse_fail_count": *parse_fail_count,
                 "num_unique": hll.estimate() as u64,
             })),
             ColumnStatsCollector::Timestamp {
@@ -1380,6 +1374,7 @@ impl ColumnStatsCollector {
             ColumnStatsCollector::Sequence {
                 count,
                 null_count,
+                parse_fail_count,
                 min_len,
                 max_len,
                 welford,
@@ -1395,6 +1390,7 @@ impl ColumnStatsCollector {
                     "semantic_type": "sequence",
                     "count": *count + *null_count,
                     "null_count": *null_count,
+                    "parse_fail_count": *parse_fail_count,
                     "min_len": emitted_min_len,
                     "max_len": emitted_max_len,
                     "sequence_mean": welford.mean(),
@@ -1404,6 +1400,7 @@ impl ColumnStatsCollector {
             ColumnStatsCollector::Latlong {
                 count,
                 null_count,
+                parse_fail_count,
                 invalid_count,
                 min_len,
                 max_len,
@@ -1412,26 +1409,34 @@ impl ColumnStatsCollector {
                 "semantic_type": "latlong",
                 "count": *count + *null_count,
                 "null_count": *null_count,
+                "parse_fail_count": *parse_fail_count,
                 "invalid_count": *invalid_count,
                 "min_len": *min_len,
                 "max_len": *max_len,
                 "sequence_mean": welford.mean(),
                 "sequence_std": welford.std_dev(),
             })),
-            ColumnStatsCollector::ImageUrl { count, null_count } => Some(json!({
+            ColumnStatsCollector::ImageUrl {
+                count,
+                null_count,
+                parse_fail_count,
+            } => Some(json!({
                 "semantic_type": "image_url",
                 "count": *count + *null_count,
                 "null_count": *null_count,
+                "parse_fail_count": *parse_fail_count,
             })),
             ColumnStatsCollector::Multicategorical {
                 count,
                 null_count,
+                parse_fail_count,
                 hll,
                 ..
             } => Some(json!({
                 "semantic_type": "multicategorical",
                 "count": *count + *null_count,
                 "null_count": *null_count,
+                "parse_fail_count": *parse_fail_count,
                 "num_unique_multi": hll.estimate() as u64,
             })),
             ColumnStatsCollector::Skip => None,
@@ -1616,6 +1621,7 @@ impl FileColStats {
             match col {
                 ColumnStatsCollector::Numerical {
                     null_count,
+                    parse_fail_count,
                     invalid_count,
                     welford,
                     hll,
@@ -1626,6 +1632,10 @@ impl FileColStats {
                     map.insert(
                         kumo_key(name, sk, "COUNT", false),
                         kumo_entry(json!(count), false, dv, count),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NUM_PARSE_FAILURES", false),
+                        kumo_entry(json!(*parse_fail_count), false, dv, count),
                     );
                     map.insert(
                         kumo_key(name, sk, "NUM_NA", false),
@@ -1709,12 +1719,17 @@ impl FileColStats {
                 ColumnStatsCollector::Categorical {
                     count,
                     null_count,
+                    parse_fail_count,
                     hll,
                 } => {
                     let total = *count + *null_count;
                     map.insert(
                         kumo_key(name, sk, "COUNT", false),
                         kumo_entry(json!(total), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NUM_PARSE_FAILURES", false),
+                        kumo_entry(json!(*parse_fail_count), false, dv, total),
                     );
                     map.insert(
                         kumo_key(name, sk, "NUM_NA", false),
@@ -1760,12 +1775,17 @@ impl FileColStats {
                 ColumnStatsCollector::Id {
                     count,
                     null_count,
+                    parse_fail_count,
                     hll,
                 } => {
                     let total = *count + *null_count;
                     map.insert(
                         kumo_key(name, sk, "COUNT", false),
                         kumo_entry(json!(total), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NUM_PARSE_FAILURES", false),
+                        kumo_entry(json!(*parse_fail_count), false, dv, total),
                     );
                     map.insert(
                         kumo_key(name, sk, "NUM_NA", false),
@@ -1810,12 +1830,17 @@ impl FileColStats {
                 ColumnStatsCollector::Text {
                     count,
                     null_count,
+                    parse_fail_count,
                     hll,
                 } => {
                     let total = *count + *null_count;
                     map.insert(
                         kumo_key(name, sk, "COUNT", false),
                         kumo_entry(json!(total), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NUM_PARSE_FAILURES", false),
+                        kumo_entry(json!(*parse_fail_count), false, dv, total),
                     );
                     map.insert(
                         kumo_key(name, sk, "NUM_NA", false),
@@ -1882,6 +1907,10 @@ impl FileColStats {
                         kumo_entry(json!(total), false, dv, total),
                     );
                     map.insert(
+                        kumo_key(name, sk, "NUM_PARSE_FAILURES", false),
+                        kumo_entry(json!(*parse_fail_count), false, dv, total),
+                    );
+                    map.insert(
                         kumo_key(name, sk, "NUM_NA", false),
                         kumo_entry(json!(*null_count), false, dv, total),
                     );
@@ -1914,6 +1943,7 @@ impl FileColStats {
                 ColumnStatsCollector::Sequence {
                     count: c,
                     null_count,
+                    parse_fail_count,
                     min_len,
                     max_len,
                     ..
@@ -1927,6 +1957,10 @@ impl FileColStats {
                     map.insert(
                         kumo_key(name, sk, "COUNT", false),
                         kumo_entry(json!(total), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NUM_PARSE_FAILURES", false),
+                        kumo_entry(json!(*parse_fail_count), false, dv, total),
                     );
                     map.insert(
                         kumo_key(name, sk, "NUM_NA", false),
@@ -1954,6 +1988,7 @@ impl FileColStats {
                 ColumnStatsCollector::Latlong {
                     count: c,
                     null_count,
+                    parse_fail_count,
                     invalid_count,
                     min_len,
                     max_len,
@@ -1963,6 +1998,10 @@ impl FileColStats {
                     map.insert(
                         kumo_key(name, sk, "COUNT", false),
                         kumo_entry(json!(total), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NUM_PARSE_FAILURES", false),
+                        kumo_entry(json!(*parse_fail_count), false, dv, total),
                     );
                     map.insert(
                         kumo_key(name, sk, "NUM_NA", false),
@@ -1990,11 +2029,19 @@ impl FileColStats {
                         kumo_entry(json!(*max_len), false, dv, total),
                     );
                 }
-                ColumnStatsCollector::ImageUrl { count, null_count } => {
+                ColumnStatsCollector::ImageUrl {
+                    count,
+                    null_count,
+                    parse_fail_count,
+                } => {
                     let total = *count + *null_count;
                     map.insert(
                         kumo_key(name, sk, "COUNT", false),
                         kumo_entry(json!(total), false, dv, total),
+                    );
+                    map.insert(
+                        kumo_key(name, sk, "NUM_PARSE_FAILURES", false),
+                        kumo_entry(json!(*parse_fail_count), false, dv, total),
                     );
                     map.insert(
                         kumo_key(name, sk, "NUM_NA", false),
@@ -2012,6 +2059,7 @@ impl FileColStats {
                 ColumnStatsCollector::Multicategorical {
                     count,
                     null_count,
+                    parse_fail_count,
                     hll,
                     separator,
                     ..
@@ -2023,6 +2071,10 @@ impl FileColStats {
                         .map(|cc| cc.iter().map(|(k, v)| (k.clone(), *v)).collect())
                         .unwrap_or_default();
                     sorted_cats.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                    map.insert(
+                        kumo_key(name, sk, "NUM_PARSE_FAILURES", false),
+                        kumo_entry(json!(*parse_fail_count), false, dv, *count + *null_count),
+                    );
                     let pairs = build_multicat_emit_stats(
                         name,
                         sk,
@@ -2653,11 +2705,39 @@ impl ColumnValueObserver for FileColStats {
     #[inline]
     fn observe_parse_failure(&mut self, col_idx: usize) {
         match &mut self.cols[col_idx] {
-            ColumnStatsCollector::Timestamp {
+            ColumnStatsCollector::Numerical {
+                parse_fail_count, ..
+            }
+            | ColumnStatsCollector::Categorical {
+                parse_fail_count, ..
+            }
+            | ColumnStatsCollector::Id {
+                parse_fail_count, ..
+            }
+            | ColumnStatsCollector::Text {
+                parse_fail_count, ..
+            }
+            | ColumnStatsCollector::Timestamp {
+                parse_fail_count, ..
+            }
+            | ColumnStatsCollector::Sequence {
+                parse_fail_count, ..
+            }
+            | ColumnStatsCollector::ImageUrl {
+                parse_fail_count, ..
+            }
+            | ColumnStatsCollector::Multicategorical {
                 parse_fail_count, ..
             } => *parse_fail_count += 1,
-            ColumnStatsCollector::Latlong { invalid_count, .. } => *invalid_count += 1,
-            _ => {}
+            ColumnStatsCollector::Latlong {
+                parse_fail_count,
+                invalid_count,
+                ..
+            } => {
+                *parse_fail_count += 1;
+                *invalid_count += 1;
+            }
+            ColumnStatsCollector::Skip => {}
         }
     }
 }
@@ -3228,20 +3308,49 @@ mod tests {
     }
 
     #[test]
-    fn timestamp_parse_failure_summary_does_not_double_count_failed_rows() {
-        let summary = TimestampParseFailureSummary::new(0, 3, 3).unwrap();
-        assert_eq!(summary.total_rows, 3);
-        assert_eq!(summary.source_non_null_rows, 3);
-        assert_eq!(summary.source_null_rows, 0);
-        assert_eq!(summary.parse_failure_pct_of_non_null(), 100.0);
-        assert_eq!(summary.parse_failure_pct_of_total(), 100.0);
+    fn parse_failures_merge_without_counting_source_nulls() {
+        for stype in [
+            SemanticType::Numerical,
+            SemanticType::Categorical,
+            SemanticType::Id,
+            SemanticType::Text,
+            SemanticType::Timestamp,
+            SemanticType::Sequence,
+            SemanticType::Latlong,
+            SemanticType::ImageUrl,
+            SemanticType::Multicategorical,
+        ] {
+            let cols = make_test_cols(&[Some(stype)]);
+            let mut first = FileColStats::new(&cols);
+            let mut second = FileColStats::new(&cols);
+            let names = vec!["value".into()];
+            let types = vec![IngestedType::String];
+            let key = kumo_key(
+                "value",
+                kumo_stype_key(&first.cols[0]),
+                "NUM_PARSE_FAILURES",
+                false,
+            );
+            let raw = first.to_json(&names, &types, None, None);
+            assert_eq!(raw["value"]["parse_fail_count"], 0);
+            let hosted = first.to_kumo_json(&names, &types, None, None, "v1");
+            assert_eq!(hosted[&key]["value"], 0);
 
-        let mixed = TimestampParseFailureSummary::new(2, 3, 1).unwrap();
-        assert_eq!(mixed.total_rows, 5);
-        assert_eq!(mixed.source_non_null_rows, 3);
-        assert_eq!(mixed.source_null_rows, 2);
-        assert!((mixed.parse_failure_pct_of_non_null() - 33.333333).abs() < 0.000001);
-        assert_eq!(mixed.parse_failure_pct_of_total(), 20.0);
+            first.observe_null(0);
+            first.observe_parse_failure(0);
+            first.observe_null(0);
+            second.observe_parse_failure(0);
+            second.observe_null(0);
+            first.merge(&mut second);
+
+            assert_eq!(first.cols[0].parse_fail_count(), 2);
+            let raw = first.to_json(&names, &types, None, None);
+            assert_eq!(raw["value"]["parse_fail_count"], 2);
+            assert_eq!(raw["value"]["null_count"], 3);
+            let hosted = first.to_kumo_json(&names, &types, None, None, "v1");
+            assert_eq!(hosted[&key]["value"], 2);
+            assert_eq!(hosted[&key]["num_entries"], 3);
+        }
     }
 
     #[test]
@@ -3840,21 +3949,21 @@ mod tests {
             assert_eq!(max_l["value"], json!(0));
         }
 
-        // ---- Total key count ----
-        // numerical: 4 base + MEAN STD MIN MAX (4) + QUANTILES Q25 MEDIAN Q75 MEDIAN(approx) (5)
-        //          + KURTOSIS(exact) KURTOSIS(approx) (2) + NUM_UNIQUE UNIQUE_FRACTION (2) = 17
-        // categorical: 4 base + CATEGORY_COUNTS + NUM_UNIQUE + UNIQUE_FRACTION = 7
-        // id: same = 7
-        // text: 4 base + 4 text stats + NUM_UNIQUE + UNIQUE_FRACTION = 10
-        // timestamp: 4 base + DROPPED_ROWS + MIN + MAX + NUM_UNIQUE = 8
-        // sequence: 4 base + SEQ_MIN + SEQ_MAX = 6
-        // Total = 17 + 7 + 7 + 10 + 8 + 6 = 55
-        assert_eq!(
-            map.len(),
-            55,
-            "Expected exactly 55 stat entries, got {}",
-            map.len()
-        );
+        // The six supported columns each emit NUM_PARSE_FAILURES, including zero.
+        for (name, sk, failures) in [
+            ("age", "kumo.numerical", 0),
+            ("status", "kumo.categorical", 0),
+            ("user_id", "kumo.ID", 0),
+            ("bio", "kumo.text", 0),
+            ("created_at", "kumo.timestamp", 1),
+            ("embedding", "kumo.sequence", 0),
+        ] {
+            assert_eq!(
+                map[&kumo_key(name, sk, "NUM_PARSE_FAILURES", false)]["value"],
+                failures
+            );
+        }
+        assert_eq!(map.len(), 61);
 
         // ---- Verify canonical JSON is stable ----
         // Re-run and assert identical canonical output

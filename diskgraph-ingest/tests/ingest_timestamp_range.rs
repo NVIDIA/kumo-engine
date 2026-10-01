@@ -605,3 +605,54 @@ fn test_all_invalid_required_times_do_not_publish() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn feature_parse_failures_are_null_and_counted_across_files() -> Result<()> {
+    let dir = tempdir()?;
+    let output = dir.path().join("output");
+    let mut paths = Vec::new();
+    for file in 0..2 {
+        let path = dir.path().join(format!("part-{file}.parquet"));
+        write_parquet(&path, Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("amount", DataType::Utf8, true),
+            Field::new("date", DataType::Utf8, true),
+        ]), vec![
+            Arc::new(Int64Array::from((file * 5..file * 5 + 5).collect::<Vec<i64>>())),
+            Arc::new(StringArray::from(vec![Some("not-a-number"), None, Some("2.5"), Some("3.5"), Some("bad")])),
+            Arc::new(StringArray::from(vec![Some("not-a-timestamp"), None, Some("2024-01-01"), Some("999999-01-01"), Some("bad")])),
+        ])?;
+        paths.push(path);
+    }
+    let config = serde_json::json!({"dataset_name": "parse_failures", "tables": [{
+        "name": "features", "data_version": "v1",
+        "source": {"type": "parquet", "paths": paths},
+        "primary_key": "id",
+        "columns": [
+            {"name": "id", "ingested_dtype": "int64"},
+            {"name": "amount", "ingested_dtype": "float64", "semantic_type": "numerical"},
+            {"name": "date", "ingested_dtype": "timestamp", "semantic_type": "timestamp"}
+        ]
+    }]});
+    let config_path = dir.path().join("config.json");
+    fs::write(&config_path, serde_json::to_vec(&config)?)?;
+    let options = IngestOptions { col_stats: true, ..Default::default() };
+    ingest_with_stats(&config_path, output.to_str().unwrap(), Dest::Local, options)?;
+    let stats: serde_json::Value = serde_json::from_slice(&fs::read(output.join("col_stats.json"))?)?;
+    assert_eq!(stats["features"]["amount"]["parse_fail_count"], 4);
+    assert_eq!(stats["features"]["date"]["parse_fail_count"], 6);
+    let reader = GraphIndexReader::open(&output.join("index_metadata.json"), &output)?;
+    let table = reader.table("features").unwrap();
+    assert_eq!(table.node_count(), 10);
+    let mut numeric_nulls = 0;
+    let mut timestamp_nulls = 0;
+    for id in 0..table.node_count() {
+        let view = table.edges_for_node(id)?;
+        let row = table.decode_node_data_json(&view)?.unwrap();
+        numeric_nulls += usize::from(row["amount"].is_null());
+        timestamp_nulls += usize::from(row["date"].is_null());
+    }
+    assert_eq!(numeric_nulls, 6);
+    assert_eq!(timestamp_nulls, 8);
+    Ok(())
+}
