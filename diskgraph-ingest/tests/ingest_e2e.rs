@@ -3814,6 +3814,7 @@ fn ingest_binary_retries_local_source_open_failure_nine_times() -> Result<()> {
     let output_root = dir.path().join("output");
 
     let process = Command::new(env!("CARGO_BIN_EXE_ingest"))
+        .env("NO_COLOR", "1")
         .arg("--source")
         .arg(&config_path)
         .arg("--output")
@@ -3823,9 +3824,9 @@ fn ingest_binary_retries_local_source_open_failure_nine_times() -> Result<()> {
         .arg("--oom-retries")
         .arg("8")
         .arg("--context-threads")
-        .arg("1")
+        .arg("4")
         .arg("--encode-threads")
-        .arg("1")
+        .arg("4")
         .arg("--pk-map-threads")
         .arg("1")
         .arg("--edges-map-threads")
@@ -3844,9 +3845,99 @@ fn ingest_binary_retries_local_source_open_failure_nine_times() -> Result<()> {
         "the initial worker and eight retries must all attempt the transient source: {stderr}"
     );
     assert!(stderr.contains("exhausted 8 worker retries"), "{stderr}");
+    let stdout = String::from_utf8_lossy(&process.stdout);
+    assert_eq!(
+        stdout.matches("source_loader=4 source_encoder=4 ").count(),
+        8,
+        "a non-OOM retry must keep its thread counts: {stdout}"
+    );
     let diagnostic: serde_json::Value =
         serde_json::from_slice(&fs::read(output_root.join(".diagnostic.json"))?)?;
     assert!(diagnostic["public"].is_null());
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn ingest_binary_stops_on_full_disk_without_retry() -> Result<()> {
+    if !Command::new("unshare")
+        .args(["--user", "--map-root-user", "--mount", "true"])
+        .status()
+        .is_ok_and(|status| status.success())
+    {
+        eprintln!("skipping: unprivileged mount namespaces are unavailable");
+        return Ok(());
+    }
+    let dir = tempdir()?;
+    let data_path = dir.path().join("nodes.parquet");
+    let rows = 50_000;
+    write_parquet(
+        &data_path,
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, false),
+        ]),
+        vec![
+            Arc::new(Int64Array::from_iter_values(0..rows)) as ArrayRef,
+            Arc::new(StringArray::from_iter_values(
+                (0..rows).map(|i| format!("name-{:016x}", i * 7919)),
+            )) as ArrayRef,
+        ],
+    )?;
+    let config = serde_json::json!({
+        "dataset_name": "disk_full_protocol_test",
+        "tables": [{
+            "name": "Nodes",
+            "columns": [
+                {"name": "id", "ingested_dtype": "int64"},
+                {"name": "name", "ingested_dtype": "utf8"}
+            ],
+            "primary_key": "id",
+            "source": {"type": "parquet", "paths": [data_path.to_string_lossy()]}
+        }],
+        "relationships": []
+    });
+    let config_path = dir.path().join("config.json");
+    fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
+    let mount = dir.path().join("tiny");
+    fs::create_dir_all(&mount)?;
+    let diagnostic_copy = dir.path().join("diagnostic.json");
+
+    let script = r#"mount -t tmpfs -o size=256k tmpfs "$1" || exit 99
+"$2" --source "$3" --output "$1/out" --dest local --oom-retries 8 \
+    --context-threads 4 --encode-threads 4
+status=$?
+cp "$1/out/.diagnostic.json" "$4"
+exit $status"#;
+    let process = Command::new("unshare")
+        .args([
+            "--user",
+            "--map-root-user",
+            "--mount",
+            "sh",
+            "-c",
+            script,
+            "sh",
+        ])
+        .arg(&mount)
+        .arg(env!("CARGO_BIN_EXE_ingest"))
+        .arg(&config_path)
+        .arg(&diagnostic_copy)
+        .env("NO_COLOR", "1")
+        .output()?;
+
+    let stderr = String::from_utf8_lossy(&process.stderr);
+    assert_eq!(process.status.code(), Some(1), "{stderr}");
+    assert_eq!(
+        stderr.matches("No space left on device").count(),
+        1,
+        "{stderr}"
+    );
+    assert!(!String::from_utf8_lossy(&process.stdout)
+        .contains("restarting from first incomplete phase"));
+    let diagnostic: serde_json::Value = serde_json::from_slice(&fs::read(&diagnostic_copy)?)?;
+    assert_eq!(diagnostic["code"], "ingest.no_space");
 
     Ok(())
 }

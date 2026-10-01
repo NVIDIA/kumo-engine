@@ -267,9 +267,9 @@ fn main() -> Result<()> {
                 let diagnostic = render_diagnostic(&error, attempt, phase);
                 persist_diagnostic(path, &diagnostic);
             }
-            if diskgraph_ingest::is_non_retryable_ingest_error(&error) {
+            if let Some(code) = worker_exit_code(&error) {
                 eprintln!("Error: {error:?}");
-                std::process::exit(NON_RETRYABLE_WORKER_EXIT_CODE);
+                std::process::exit(code);
             }
             Err(error)
         }
@@ -704,6 +704,18 @@ fn run_worker(args: Args) -> Result<()> {
 const SUPERVISOR_RESUME_ENV: &str = "DISKGRAPH_SUPERVISOR_RESUME_PHASE";
 // EX_CONFIG: the worker validated its input and a retry cannot change it.
 const NON_RETRYABLE_WORKER_EXIT_CODE: i32 = 78;
+// EX_IOERR: the output filesystem is full.
+const DISK_FULL_WORKER_EXIT_CODE: i32 = 74;
+
+fn worker_exit_code(error: &anyhow::Error) -> Option<i32> {
+    if diskgraph_ingest::is_non_retryable_ingest_error(error) {
+        Some(NON_RETRYABLE_WORKER_EXIT_CODE)
+    } else if diskgraph_ingest::is_disk_space_error(error) {
+        Some(DISK_FULL_WORKER_EXIT_CODE)
+    } else {
+        None
+    }
+}
 
 fn local_diagnostic_paths(args: &Args) -> Option<(PathBuf, PathBuf)> {
     if !matches!(args.dest, DestArg::Local) {
@@ -806,12 +818,18 @@ fn is_non_retryable_exit(status: ExitStatus) -> bool {
     status.code() == Some(NON_RETRYABLE_WORKER_EXIT_CODE)
 }
 
+fn is_disk_full_exit(status: ExitStatus) -> bool {
+    status.code() == Some(DISK_FULL_WORKER_EXIT_CODE)
+}
+
 fn retry_phase_for_exit(
-    oom: bool,
-    non_retryable: bool,
+    status: ExitStatus,
     phase: diskgraph_ingest::IngestPhase,
 ) -> Option<diskgraph_ingest::IngestPhase> {
-    (!non_retryable && (oom || phase == diskgraph_ingest::IngestPhase::Encode)).then_some(phase)
+    if is_non_retryable_exit(status) || is_disk_full_exit(status) {
+        return None;
+    }
+    (is_oom_exit(status) || phase == diskgraph_ingest::IngestPhase::Encode).then_some(phase)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -962,9 +980,7 @@ fn supervise_ingest(args: &Args) -> Result<()> {
 
         let oom = is_oom_exit(status);
         let incomplete_phase = diskgraph_ingest::first_incomplete_phase(&output)?;
-        let Some(phase) =
-            retry_phase_for_exit(oom, is_non_retryable_exit(status), incomplete_phase)
-        else {
+        let Some(phase) = retry_phase_for_exit(status, incomplete_phase) else {
             publish_terminal_diagnostic(
                 &diagnostic_path,
                 &worker_diagnostic_path,
@@ -975,6 +991,9 @@ fn supervise_ingest(args: &Args) -> Result<()> {
             );
             if is_non_retryable_exit(status) {
                 std::process::exit(NON_RETRYABLE_WORKER_EXIT_CODE);
+            }
+            if is_disk_full_exit(status) {
+                anyhow::bail!("DiskGraph ingest ran out of disk space at {output:?}");
             }
             anyhow::bail!("DiskGraph ingest worker exited with {status}");
         };
@@ -998,14 +1017,17 @@ fn supervise_ingest(args: &Args) -> Result<()> {
 
         remove_diagnostic(&worker_diagnostic_path);
 
-        match phase {
-            diskgraph_ingest::IngestPhase::Encode => {
-                source_loader = Some(backoff_source_loader(source_loader, default_source_loader));
-                source_encoder = halve_threads(source_encoder);
+        if oom {
+            match phase {
+                diskgraph_ingest::IngestPhase::Encode => {
+                    source_loader =
+                        Some(backoff_source_loader(source_loader, default_source_loader));
+                    source_encoder = halve_threads(source_encoder);
+                }
+                diskgraph_ingest::IngestPhase::PkMap => pk_map = halve_threads(pk_map),
+                diskgraph_ingest::IngestPhase::EdgesMap => edges_map = halve_threads(edges_map),
+                diskgraph_ingest::IngestPhase::Index => index = halve_threads(index),
             }
-            diskgraph_ingest::IngestPhase::PkMap => pk_map = halve_threads(pk_map),
-            diskgraph_ingest::IngestPhase::EdgesMap => edges_map = halve_threads(edges_map),
-            diskgraph_ingest::IngestPhase::Index => index = halve_threads(index),
         }
         resume_override = Some(phase);
         tracing::warn!(
@@ -1607,16 +1629,45 @@ mod supervisor_tests {
         assert_eq!(diskgraph_ingest::initial_resume_phase(root).unwrap(), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn only_retryable_encode_failures_and_ooms_restart() {
         use diskgraph_ingest::IngestPhase::{EdgesMap, Encode, Index, PkMap};
+        use std::os::unix::process::ExitStatusExt;
 
-        assert_eq!(retry_phase_for_exit(false, false, Encode), Some(Encode));
-        assert_eq!(retry_phase_for_exit(false, true, Encode), None);
-        assert_eq!(retry_phase_for_exit(false, false, PkMap), None);
-        assert_eq!(retry_phase_for_exit(false, false, EdgesMap), None);
-        assert_eq!(retry_phase_for_exit(false, false, Index), None);
-        assert_eq!(retry_phase_for_exit(true, false, PkMap), Some(PkMap));
+        let failed = ExitStatus::from_raw(1 << 8);
+        let killed = ExitStatus::from_raw(libc::SIGKILL);
+        let public = ExitStatus::from_raw(NON_RETRYABLE_WORKER_EXIT_CODE << 8);
+        let disk_full = ExitStatus::from_raw(DISK_FULL_WORKER_EXIT_CODE << 8);
+
+        assert_eq!(retry_phase_for_exit(failed, Encode), Some(Encode));
+        assert_eq!(retry_phase_for_exit(public, Encode), None);
+        assert_eq!(retry_phase_for_exit(failed, PkMap), None);
+        assert_eq!(retry_phase_for_exit(failed, EdgesMap), None);
+        assert_eq!(retry_phase_for_exit(failed, Index), None);
+        assert_eq!(retry_phase_for_exit(killed, PkMap), Some(PkMap));
+        for phase in [Encode, PkMap, EdgesMap, Index] {
+            assert_eq!(retry_phase_for_exit(disk_full, phase), None);
+        }
+    }
+
+    #[test]
+    fn worker_exit_code_marks_disk_full_and_public_errors_terminal() {
+        let enospc = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::ENOSPC))
+            .context("writing node shard");
+        assert_eq!(worker_exit_code(&enospc), Some(DISK_FULL_WORKER_EXIT_CODE));
+
+        let stringified =
+            anyhow::anyhow!("node writer failed: No space left on device (os error 28)");
+        assert_eq!(
+            worker_exit_code(&stringified),
+            Some(DISK_FULL_WORKER_EXIT_CODE)
+        );
+
+        assert_eq!(
+            worker_exit_code(&anyhow::anyhow!("cloud fetch connection reset")),
+            None
+        );
     }
 
     #[test]
