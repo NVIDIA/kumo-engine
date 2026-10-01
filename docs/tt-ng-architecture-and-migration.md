@@ -349,7 +349,7 @@ Schema documented in §8.
 | `BacktestingDecider` | timestamp, single cutoff from plan | `ts ≥ backtest_ts ? test : train` | yes |
 | `ManualDecider` | split column value, per-stage value lists from plan | lookup in lists | yes |
 | `RandomDecider` | entity_pk + ts, hashed with seed | `hash_value(entity, ts, seed)` mod cumulative cutoffs | yes |
-| `RandomLinkDecider` | per-row case wraps `RandomDecider`. The per-link case for LP+array is handled by `regroup.rs`'s `hash_entity_ts_link_to_unit_interval` driver, which reuses the same `splitmix64` + `hash_value` machinery and adds `link_idx` as a tiebreaker. | inherits / `(source_entity, ts, link_idx, seed)` hash | yes |
+| `RandomLinkDecider` | per-row case wraps `RandomDecider`. The per-link case for LP+array is handled by `route.rs`'s `hash_entity_ts_link_to_unit_interval` driver, which reuses the same `splitmix64` + `hash_value` machinery and adds the link's target value, so a link's stage does not depend on its list position. | inherits / `(source_entity, ts, link target, seed)` hash | yes |
 | `FixedDecider` | row offset | indexes pre-computed `Vec<u8>` | yes (pre-baked) |
 | `TemporalDecider` | timestamp | pass A t-digests; `derive_cutoffs()` computes q=0.8 / q=0.9; pass B is TimeRange-like | yes (no buffer; t-digest is O(1) memory) |
 | `DateOffsetDecider` | timestamp + offset (calendar months when `month_offsets` set, else fixed `Dur<U>`) | anchor-relative bucket | yes |

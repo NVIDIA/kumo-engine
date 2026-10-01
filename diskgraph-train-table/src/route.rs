@@ -266,8 +266,7 @@ fn filter_three(batch: &RecordBatch, masks: &[Vec<bool>; 3]) -> TTGenResult<[Rec
 /// Per-link stage assigner for the array-LP `route_per_link` kernel.
 ///
 /// - `RandomLink`: each link's stage = `stage_for_link(entity, ts_secs,
-///   link_idx, seed, &cutoffs)` (content-hash bucketing, batch/position
-///   independent).
+///   link, seed, &cutoffs)` (content-hash bucketing over the link value).
 /// - `CustomLink`: each link's stage = membership of the parallel
 ///   `split_col` link value in the train/val/test value sets (else UNUSED).
 #[derive(Debug, Clone)]
@@ -339,7 +338,7 @@ pub(crate) fn route_per_link(
                 LinkAssigner::RandomLink { seed, .. } => {
                     let ts_secs = exploded.row_anchor_ts[row_idx] / 1_000_000_000;
                     let entity = &exploded.row_anchor_entity[row_idx];
-                    stage_for_link(entity, ts_secs, link_idx, *seed, cutoffs)
+                    stage_for_link(entity, ts_secs, &targets[link_idx], *seed, cutoffs)
                 }
                 LinkAssigner::CustomLink {
                     train, val, test, ..
@@ -1051,13 +1050,20 @@ fn read_entity_value_at(arr: &dyn Array, idx: usize) -> TTGenResult<Value> {
 fn hash_entity_ts_link_to_unit_interval(
     entity: &Value,
     ts_secs: i64,
-    link_idx: usize,
+    link: &ScalarCell,
     seed: u64,
 ) -> f64 {
     let h0 = splitmix64(seed);
     let h1 = hash_value(entity, h0);
     let h2 = splitmix64(h1 ^ (ts_secs as u64));
-    let h = splitmix64(h2 ^ (link_idx as u64));
+    let link = match link {
+        ScalarCell::Int(v) | ScalarCell::Ts(v) => Value::Int(*v),
+        ScalarCell::Float(v) => Value::Float(*v),
+        ScalarCell::Str(v) => Value::Str(v.clone()),
+        ScalarCell::Bool(v) => Value::Bool(*v),
+        ScalarCell::Null => Value::List(Vec::new()), // `Value` has no null.
+    };
+    let h = hash_value(&link, h2);
     (h >> 11) as f64 / (1u64 << 53) as f64
 }
 
@@ -1077,21 +1083,19 @@ pub(crate) fn ratio_to_cumulative_cutoffs(ratio: &[f64]) -> Vec<f64> {
     out
 }
 
-/// Assign one link to a stage by content-hash bucketing over
-/// `(entity, ts_secs, link_idx, seed)`. Returns `UNUSED_STAGE` when
-/// `cutoffs` is empty.
+/// Hash-buckets a link by `(entity, ts_secs, link value, seed)`; not by list position.
 #[inline]
-pub(crate) fn stage_for_link(
+fn stage_for_link(
     entity: &Value,
     ts_secs: i64,
-    link_idx: usize,
+    link: &ScalarCell,
     seed: u64,
     cutoffs: &[f64],
 ) -> u8 {
     if cutoffs.is_empty() {
         return UNUSED_STAGE;
     }
-    let v = hash_entity_ts_link_to_unit_interval(entity, ts_secs, link_idx, seed);
+    let v = hash_entity_ts_link_to_unit_interval(entity, ts_secs, link, seed);
     for (i, &c) in cutoffs.iter().enumerate() {
         if v < c {
             return i as u8;
@@ -1428,8 +1432,8 @@ mod tests {
         let links = ["a", "b", "c", "d"];
         let mut expected: [Vec<String>; 3] =
             [Vec::new(), Vec::new(), Vec::new()];
-        for (li, name) in links.iter().enumerate() {
-            let s = stage_for_link(&Value::Int(entity_id), ts_secs, li, seed, &cutoffs);
+        for name in links.iter() {
+            let s = stage_for_link(&Value::Int(entity_id), ts_secs, &str_cell(name), seed, &cutoffs);
             if (s as usize) < 3 {
                 expected[s as usize].push(name.to_string());
             }
@@ -1487,8 +1491,8 @@ mod tests {
         for (anchor_idx, (e, ts, items)) in rows.iter().enumerate() {
             let _ = anchor_idx;
             let mut exp: [Vec<String>; 2] = [Vec::new(), Vec::new()];
-            for (li, (name, _f)) in items.iter().enumerate() {
-                let s = stage_for_link(&Value::Int(*e), *ts, li, seed, &cutoffs);
+            for (name, _f) in items.iter() {
+                let s = stage_for_link(&Value::Int(*e), *ts, &str_cell(name), seed, &cutoffs);
                 if (s as usize) < 2 {
                     exp[s as usize].push(name.to_string());
                 }
@@ -1504,6 +1508,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn str_cell(s: &str) -> ScalarCell {
+        ScalarCell::Str(s.to_string())
+    }
+
+    #[test]
+    fn test_per_link_random_order_independent() {
+        let names: Vec<String> = (0..64).map(|i| format!("item-{i}")).collect();
+        let forward: Vec<(&str, i64)> = names.iter().map(|n| (n.as_str(), 1)).collect();
+        let reversed: Vec<(&str, i64)> = forward.iter().rev().copied().collect();
+        let assigner = LinkAssigner::random_from_ratio(&[0.8, 0.1, 0.1], 7);
+        let stage_sets = |items: Vec<(&str, i64)>| {
+            let batch = lp_array_batch(&[(1, 0, items)]);
+            route_per_link(&batch, &assigner).unwrap().map(|out| {
+                let mut links: Vec<String> = target_lists_str(&out).concat();
+                links.sort();
+                links
+            })
+        };
+        let a = stage_sets(forward);
+        assert!(a.iter().all(|links| !links.is_empty()), "{a:?}");
+        assert_eq!(a, stage_sets(reversed));
     }
 
     #[test]
