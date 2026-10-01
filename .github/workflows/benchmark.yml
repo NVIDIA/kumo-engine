@@ -44,7 +44,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
-          toolchain: stable
+          # Pinned to match ci.yml: a compiler bump should be a deliberate
+          # commit, not an unexplained shift in the benchmark numbers.
+          toolchain: 1.98.1
 
       - name: Build release
         run: cargo build -p diskgraph-ingest --bin ingest --release
@@ -155,27 +157,32 @@ jobs:
               continue
             fi
 
-            # Regression check
+            # Regression check. Capture rc with `|| rc=$?`: a bare failing
+            # `result=$(...)` trips `set -e` and kills the step before the
+            # result is printed or the remaining datasets run.
+            rc=0
             result=$(python3 scripts/benchmarks/regression_check.py \
               "${stats_file}" "${baseline_file}" \
               --dataset "${dataset}" \
               --warn-threshold "${WARN_THRESHOLD}" \
               --fail-threshold "${FAIL_THRESHOLD}"
-            )
-            rc=$?
+            ) || rc=$?
 
             echo "$result"
+            # `|| true`: under pipefail a missing DELTA line would also abort.
+            delta=$(echo "$result" | grep "^DELTA:" | tail -1 | cut -d: -f2 || true)
 
             if [[ $rc -ne 0 ]]; then
               overall_failed=1
-              delta=$(echo "$result" | grep "^DELTA:" | tail -1 | cut -d: -f2)
-              summary="${summary}| ${dataset} | FAIL | ${delta} | regression |\n"
+              if echo "$result" | grep -q "STATUS:FAIL"; then
+                summary="${summary}| ${dataset} | FAIL | ${delta} | regression |\n"
+              else
+                summary="${summary}| ${dataset} | FAIL (check error, rc=${rc}) | - | see log |\n"
+              fi
             elif echo "$result" | grep -q "STATUS:WARN"; then
               overall_warned=1
-              delta=$(echo "$result" | grep "^DELTA:" | tail -1 | cut -d: -f2)
               summary="${summary}| ${dataset} | WARN | ${delta} | review recommended |\n"
             else
-              delta=$(echo "$result" | grep "^DELTA:" | tail -1 | cut -d: -f2)
               summary="${summary}| ${dataset} | OK | ${delta} | - |\n"
             fi
 
