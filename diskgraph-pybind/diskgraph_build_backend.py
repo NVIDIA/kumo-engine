@@ -44,6 +44,51 @@ def build_wheel(
     config_settings: Optional[Mapping[str, Any]] = None,
     metadata_directory: Optional[str] = None,
 ) -> str:
+    return _build_wheel(
+        wheel_directory,
+        config_settings=config_settings,
+        metadata_directory=metadata_directory,
+        editable=False,
+    )
+
+
+def get_requires_for_build_editable(
+    config_settings: Optional[Mapping[str, Any]] = None,
+) -> List[str]:
+    return get_requires_for_build_wheel(config_settings)
+
+
+def prepare_metadata_for_build_editable(
+    metadata_directory: str,
+    config_settings: Optional[Mapping[str, Any]] = None,
+) -> str:
+    use_zig = _use_zig()
+    settings = _maturin_config_settings(config_settings, use_zig=use_zig)
+    with _patched_environ(_maturin_env()):
+        return maturin.prepare_metadata_for_build_editable(
+            metadata_directory, settings)
+
+
+def build_editable(
+    wheel_directory: str,
+    config_settings: Optional[Mapping[str, Any]] = None,
+    metadata_directory: Optional[str] = None,
+) -> str:
+    return _build_wheel(
+        wheel_directory,
+        config_settings=config_settings,
+        metadata_directory=metadata_directory,
+        editable=True,
+    )
+
+
+def _build_wheel(
+    wheel_directory: str,
+    *,
+    config_settings: Optional[Mapping[str, Any]] = None,
+    metadata_directory: Optional[str] = None,
+    editable: bool,
+) -> str:
     wheel_dir = Path(wheel_directory)
     wheel_dir.mkdir(parents=True, exist_ok=True)
     use_zig = _use_zig()
@@ -54,10 +99,17 @@ def build_wheel(
         config_settings=config_settings,
         metadata_directory=metadata_directory,
         use_zig=use_zig,
+        editable=editable,
     )
 
-    wheel = wheel_dir / wheel_name
-    _verify_wheel_contains_ingest(wheel)
+    if editable:
+        # Editable wheels are a `.pth` redirect to this source tree, not an
+        # archive of its files -- `_stage_ingest_binary` above already placed
+        # the binary where the redirect points, so there's nothing to verify
+        # inside the (data-file-free) wheel zip.
+        _verify_staged_ingest_present()
+    else:
+        _verify_wheel_contains_ingest(wheel_dir / wheel_name)
     return wheel_name
 
 
@@ -111,6 +163,7 @@ def _maturin_build_wheel(
     config_settings: Optional[Mapping[str, Any]] = None,
     metadata_directory: Optional[str] = None,
     use_zig: bool,
+    editable: bool = False,
     env: Optional[Dict[str, str]] = None,
 ) -> str:
     settings = _maturin_config_settings(config_settings, use_zig=use_zig)
@@ -118,8 +171,9 @@ def _maturin_build_wheel(
         env = _maturin_env()
     else:
         env = _maturin_env(env)
+    build_fn = maturin.build_editable if editable else maturin.build_wheel
     with _patched_environ(env):
-        return maturin.build_wheel(str(wheel_dir), settings, metadata_directory)
+        return build_fn(str(wheel_dir), settings, metadata_directory)
 
 
 def _verify_wheel_contains_ingest(wheel: Path) -> None:
@@ -128,6 +182,13 @@ def _verify_wheel_contains_ingest(wheel: Path) -> None:
         names = set(archive.namelist())
     if expected not in names:
         raise RuntimeError(f"{wheel} does not contain {expected}")
+
+
+def _verify_staged_ingest_present() -> None:
+    if not STAGED_INGEST.is_file() or not os.access(STAGED_INGEST, os.X_OK):
+        raise RuntimeError(
+            f"diskgraph ingest binary missing or not executable: {STAGED_INGEST}"
+        )
 
 
 def _cargo_env() -> Dict[str, str]:
