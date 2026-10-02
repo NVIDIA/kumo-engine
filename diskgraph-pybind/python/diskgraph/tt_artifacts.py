@@ -10,6 +10,7 @@ SplitSpec shape and dispatches into the Rust pyo3 entry point at
 from __future__ import annotations
 
 import dataclasses
+import json
 from typing import Optional
 
 from ._c import (  # type: ignore[import]
@@ -137,6 +138,7 @@ def build_train_table_artifacts_for_existing_table(
     task_type: Optional[str] = None,
     lp_rhs_is_temporal: bool = False,
     allow_new_target_entities: bool = False,
+    fact_pseudo_time: Optional[dict] = None,
 ) -> dict:
     """Rebuild TT artifacts (manifest + sidecars) for an existing
     training-table parquet.
@@ -177,6 +179,8 @@ def build_train_table_artifacts_for_existing_table(
             timestamp bucket indexes, matching the native TT-gen path.
         allow_new_target_entities: Preserve targets created after the anchor;
             downstream LP resolution still validates every target PK.
+        fact_pseudo_time: Static LP fact table
+            (``{table, entity_col, target_col}``).
 
     Returns:
         dict describing the durable GEN-ONLY bundle (mirrors
@@ -222,6 +226,8 @@ def build_train_table_artifacts_for_existing_table(
         task_type=task_type,
         lp_rhs_is_temporal=bool(lp_rhs_is_temporal),
         allow_new_target_entities=bool(allow_new_target_entities),
+        fact_pseudo_time_json=(json.dumps(fact_pseudo_time)
+                               if fact_pseudo_time is not None else None),
     )
 
 

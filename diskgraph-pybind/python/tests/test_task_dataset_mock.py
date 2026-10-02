@@ -304,7 +304,7 @@ def test_native_iterator_surface_forwards_selected_stage_node_ids(tmp_path, monk
 
     class FakeIterator:
         def num_samples(self):
-            return len(captured.args[-2])
+            return len(captured.args[-4])
 
     class FakeRuntimeIndex:
         def __init__(self, *args):
@@ -331,8 +331,10 @@ def test_native_iterator_surface_forwards_selected_stage_node_ids(tmp_path, monk
     )
 
     assert num_samples == 3
-    assert captured.args[-2] is selected_stage_node_ids
-    assert captured.args[-1] is True
+    assert captured.args[-4] is selected_stage_node_ids
+    assert captured.args[-3] is True
+    assert captured.args[-2] is None
+    assert captured.args[-1] is False
 
 
 def test_native_iterator_surface_resolves_weighted_seed_sampling(tmp_path, monkeypatch):
@@ -394,7 +396,7 @@ def test_native_iterator_surface_resolves_weighted_seed_sampling(tmp_path, monke
     )
 
     assert num_samples == 6
-    config = json.loads(captured.args[-3])
+    config = json.loads(captured.args[-5])
     assert config["buckets"] == [
         {
             "name": "false",
@@ -472,7 +474,7 @@ def test_native_iterator_surface_resolves_row_weight_sampling(tmp_path, monkeypa
     )
 
     assert num_samples == 12
-    config = json.loads(captured.args[-3])
+    config = json.loads(captured.args[-5])
     assert config["buckets"] == [{
         "name": "all",
         "node_ids_path": str(ids),
@@ -535,7 +537,7 @@ def test_native_iterator_surface_disables_seed_timestamps_for_static_task(
         batch_size=2,
     )
 
-    assert captured.args[-1] is False
+    assert captured.args[-3] is False
 
 
 def test_native_iterator_surface_forwards_pred_table_extension(tmp_path, monkeypatch):

@@ -365,6 +365,8 @@ class RuntimeIndex:
         group_by_timestamp: bool = False,
         weighted_seed_sampling: Any = None,
         selected_stage_node_ids: Any = None,
+        pseudo_seed_time: Optional[int] = None,
+        disable_pseudo_time: bool = False,
     ) -> tuple[Any, int]:
         """Iterate one (stage, epoch, shard) of this index.
 
@@ -372,7 +374,8 @@ class RuntimeIndex:
         ``dataset_ref`` and ``num_threads`` are fixed by the index. ``rnd_seed``
         defaults to the one the index was opened with, which is what callers
         almost always want; pass it explicitly only to vary the shuffle
-        independently of the engine seed.
+        independently of the engine seed. Static LP cutoffs default to the
+        manifest stage. Prediction can set ``disable_pseudo_time=True``.
         """
         seed = self._rnd_seed if rnd_seed is _UNSET else rnd_seed
         _validate_worker_iterator_inputs(
@@ -416,6 +419,8 @@ class RuntimeIndex:
             _weighted_seed_sampling_json(ref, stage, weighted_seed_sampling),
             selected_stage_node_ids,
             _use_seed_timestamps(self._manifest),
+            int(pseudo_seed_time) if pseudo_seed_time is not None else None,
+            bool(disable_pseudo_time),
         )
         return iterator, iterator.num_samples()
 

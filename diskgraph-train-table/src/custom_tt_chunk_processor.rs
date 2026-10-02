@@ -117,10 +117,8 @@ pub const ENTITY_TYPES: &[&str] = &["int64", "float64", "string"];
 /// What `cell_to_value` reads: a scalar `TARGET{k}`, and a split column.
 pub const SCALAR_TYPES: &[&str] = &["int64", "float64", "string", "boolean"];
 
-/// The container a list-valued `TARGET{k}` may be. `read_list_values`
-/// downcasts to `ListArray` alone, so a `large_list` or `fixed_size_list`
-/// target reads as an empty target list rather than as an error.
-pub const LIST_TARGET_CONTAINERS: &[&str] = &["list"];
+/// Containers accepted by the link-target reader.
+pub const LIST_TARGET_CONTAINERS: &[&str] = &["list", "large_list"];
 
 /// What may be inside a list-valued `TARGET{k}`.
 pub const LIST_TARGET_ITEM_TYPES: &[&str] = &["int64", "float64", "string"];
@@ -140,9 +138,7 @@ pub const WEIGHT_TYPES: &[&str] = &[
     "decimal128",
 ];
 
-/// The container a per-element weight may be, beside a list-valued target.
-/// Wider than [`LIST_TARGET_CONTAINERS`]: `read_weight_list_f64` takes a
-/// `large_list` where the target reader does not.
+/// Containers accepted by the per-element weight reader.
 pub const WEIGHT_LIST_CONTAINERS: &[&str] = &["list", "large_list"];
 
 /// What may be inside a per-element weight, per `weight_slice_f64`. Narrower
@@ -275,7 +271,7 @@ fn output_mode_for_custom_tt<U: UnitSystem>(
                             ))
                         })?;
                         match field.data_type() {
-                            DataType::List(inner) => Ok(inner.data_type().clone()),
+                            DataType::List(inner) | DataType::LargeList(inner) => Ok(inner.data_type().clone()),
                             other => Err(TTGenError::SchemaError(format!(
                                 "custom-TT LP parquet column '{parquet_name}' must be a List, got {other:?}"
                             ))),
@@ -318,7 +314,7 @@ fn max_opt_i64(current: Option<i64>, value: i64) -> Option<i64> {
 /// index's typed key). Mirrors the private helper inside
 /// `diskgraph-index/src/graph.rs::value_to_pk_key`. Used only on the
 /// custom-TT slow path (one call per parquet row), not on the PQ hot path.
-fn value_to_pk_key(value: &Value, key_type: pkmap::KeyType) -> Option<pkmap::Key> {
+pub(crate) fn value_to_pk_key(value: &Value, key_type: pkmap::KeyType) -> Option<pkmap::Key> {
     match (value, key_type) {
         (Value::Int(i), pkmap::KeyType::Int64) => Some(pkmap::Key::Int(*i as u64)),
         (Value::Str(s), pkmap::KeyType::VarBytes) => {
@@ -344,7 +340,7 @@ fn lookup_entity_node<U: UnitSystem>(
 /// Read one cell of an Arrow array as our `Value` enum. Supports the dtypes
 /// we expect in customer parquets: Int64, Float64, Utf8 (entity PKs +
 /// scalar targets).
-fn cell_to_value(arr: &dyn Array, idx: usize) -> Option<Value> {
+pub(crate) fn cell_to_value(arr: &dyn Array, idx: usize) -> Option<Value> {
     if arr.is_null(idx) {
         return None;
     }
@@ -462,7 +458,45 @@ fn read_list_values(arr: &dyn Array, idx: usize) -> Option<Vec<Value>> {
         })
 }
 
-fn weight_slice_f64(values: &dyn Array, start: usize, end: usize, row: usize) -> TTGenResult<Vec<f64>> {
+fn read_link_targets(arr: &dyn Array, row: usize) -> TTGenResult<Vec<Option<Value>>> {
+    let values = arr
+        .as_any()
+        .downcast_ref::<ListArray>()
+        .map(|list| list.value(row))
+        .or_else(|| {
+            arr.as_any()
+                .downcast_ref::<LargeListArray>()
+                .map(|list| list.value(row))
+        })
+        .ok_or_else(|| {
+            TTGenError::SchemaError(format!(
+                "custom-TT link target must be a list; found {}",
+                arr.data_type()
+            ))
+        })?;
+    if !matches!(
+        values.data_type(),
+        DataType::Int64 | DataType::Float64 | DataType::Utf8
+    ) {
+        return Err(TTGenError::SchemaError(format!(
+            "unsupported custom-TT link target item type {}",
+            values.data_type()
+        )));
+    }
+    if arr.is_null(row) {
+        return Ok(Vec::new());
+    }
+    Ok((0..values.len())
+        .map(|idx| cell_to_value(values.as_ref(), idx))
+        .collect())
+}
+
+fn weight_slice_f64(
+    values: &dyn Array,
+    start: usize,
+    end: usize,
+    row: usize,
+) -> TTGenResult<Vec<f64>> {
     macro_rules! typed {
         ($ty:ty) => {
             if let Some(a) = values.as_any().downcast_ref::<$ty>() {
@@ -898,8 +932,39 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
     };
     // Read a row's split-column value as a `Value` (used both as the projected
     // extra value and as the stats `split_column_value`).
-    let read_split_value = |row_idx: usize| -> Option<Value> {
-        split_col_idx.and_then(|c| cell_to_value(batch.column(c).as_ref(), row_idx))
+    let read_split_value = |row_idx: usize| -> TTGenResult<Option<Value>> {
+        let Some(column) = split_col_idx.map(|c| batch.column(c).as_ref()) else {
+            return Ok(None);
+        };
+        let values = column
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .map(|list| list.value(row_idx))
+            .or_else(|| {
+                column
+                    .as_any()
+                    .downcast_ref::<LargeListArray>()
+                    .map(|list| list.value(row_idx))
+            });
+        let Some(values) = values else {
+            return Ok(cell_to_value(column, row_idx));
+        };
+        if column.is_null(row_idx) || values.null_count() > 0 {
+            return Err(TTGenError::SchemaError(format!(
+                "custom-TT split list contains null at source row {row_idx}"
+            )));
+        }
+        let values = (0..values.len())
+            .map(|idx| {
+                cell_to_value(values.as_ref(), idx).ok_or_else(|| {
+                    TTGenError::SchemaError(format!(
+                        "unsupported custom-TT split list type {:?}",
+                        values.data_type()
+                    ))
+                })
+            })
+            .collect::<TTGenResult<Vec<_>>>()?;
+        Ok(Some(Value::List(values)))
     };
 
     for row_idx in 0..batch.num_rows() {
@@ -980,7 +1045,7 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                         row_idx,
                     )?);
                 }
-                let split_value = read_split_value(row_idx);
+                let split_value = read_split_value(row_idx)?;
                 writer.write_row_pass_through_wide(
                     &entity_pks,
                     ts,
@@ -1063,7 +1128,7 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                         row_idx,
                     )?);
                 }
-                let split_value = read_split_value(row_idx);
+                let split_value = read_split_value(row_idx)?;
                 writer.write_row_forecasting_wide(
                     &entity_pks,
                     ts,
@@ -1149,7 +1214,7 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                         row_idx,
                     )?);
                 }
-                let split_value = read_split_value(row_idx);
+                let split_value = read_split_value(row_idx)?;
                 writer.write_row_wide(
                     &entity_pks,
                     ts,
@@ -1184,21 +1249,21 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                 // A PREDICTION seed table has NO TARGET1 column (just LHS
                 // entities + TIMESTAMP), so predict writes an empty-target
                 // seed row. Only TRAIN reads/requires TARGET1.
-                let (mut targets, mut freqs): (Vec<Value>, Vec<i64>) = if plan.is_prediction {
+                let (targets, mut freqs): (Vec<Option<Value>>, Vec<i64>) = if plan.is_prediction {
                     (Vec::new(), Vec::new())
                 } else {
-                    let target_col = target_col_indices
-                        .first()
-                        .copied()
-                        .flatten()
-                        .ok_or_else(|| {
-                            TTGenError::SchemaError(
-                                "custom-TT LP parquet missing required column 'TARGET1'"
-                                    .to_string(),
-                            )
-                        })?;
-                    let targets = read_list_values(batch.column(target_col).as_ref(), row_idx)
-                        .unwrap_or_default();
+                    let target_col =
+                        target_col_indices
+                            .first()
+                            .copied()
+                            .flatten()
+                            .ok_or_else(|| {
+                                TTGenError::SchemaError(
+                                    "custom-TT LP parquet missing required column 'TARGET1'"
+                                        .to_string(),
+                                )
+                            })?;
+                    let targets = read_link_targets(batch.column(target_col).as_ref(), row_idx)?;
 
                     let mut freqs: Vec<i64> = if *include_frequency {
                         frequency_col_idx
@@ -1213,6 +1278,15 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                     (targets, freqs)
                 };
 
+                let mut split_value = read_split_value(row_idx)?;
+                if let Some(Value::List(values)) = &split_value {
+                    if values.len() != targets.len() {
+                        return Err(TTGenError::SchemaError(format!(
+                            "custom-TT split list has {} entries but the target has {} at source row {row_idx}",
+                            values.len(), targets.len()
+                        )));
+                    }
+                }
                 let per_element_weight = writer.weight_is_per_element();
                 let mut weights: Vec<f64> = match weight_col_idx {
                     Some(c) if per_element_weight => {
@@ -1230,17 +1304,20 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                     _ => Vec::new(),
                 };
 
-                if let Some(pk_table) = plan.custom_target_pk_table.as_ref() {
-                    let mut filtered_targets = Vec::with_capacity(targets.len());
-                    let mut filtered_weights = Vec::with_capacity(weights.len());
-                    let mut filtered_freqs = if *include_frequency {
-                        Vec::with_capacity(freqs.len())
-                    } else {
-                        Vec::new()
-                    };
-                    for (idx, target) in targets.into_iter().enumerate() {
-                        let keep = if plan.custom_target_temporal_create_col_idx.is_some()
-                            || plan.custom_target_temporal_end_col_idx.is_some()
+                let split_values = match &split_value {
+                    Some(Value::List(values)) => Some(values),
+                    _ => None,
+                };
+                let mut filtered_splits = Vec::new();
+                let mut filtered_targets = Vec::with_capacity(targets.len());
+                let mut filtered_weights = Vec::with_capacity(weights.len());
+                let mut filtered_freqs = Vec::with_capacity(freqs.len());
+                for (idx, target) in targets.into_iter().enumerate() {
+                    let Some(target) = target else { continue };
+                    let keep = match plan.custom_target_pk_table.as_ref() {
+                        Some(pk_table)
+                            if plan.custom_target_temporal_create_col_idx.is_some()
+                                || plan.custom_target_temporal_end_col_idx.is_some() =>
                         {
                             pk_table.contains_pk_value_temporal(
                                 &target,
@@ -1249,25 +1326,29 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                                 plan.custom_target_temporal_end_col_idx,
                                 &mut target_pk_scratch,
                             )
-                        } else {
-                            pk_table.contains_pk_value(&target)
-                        };
-                        if keep {
-                            filtered_targets.push(target);
-                            if *include_frequency {
-                                filtered_freqs.push(freqs.get(idx).copied().unwrap_or(1));
-                            }
-                            if per_element_weight {
-                                filtered_weights.push(weights[idx]);
-                            }
+                        }
+                        Some(pk_table) => pk_table.contains_pk_value(&target),
+                        None => true,
+                    };
+                    if keep {
+                        filtered_targets.push(target);
+                        if let Some(values) = split_values {
+                            filtered_splits.push(values[idx].clone());
+                        }
+                        if *include_frequency {
+                            filtered_freqs.push(freqs.get(idx).copied().unwrap_or(1));
+                        }
+                        if per_element_weight {
+                            filtered_weights.push(weights[idx]);
                         }
                     }
-                    targets = filtered_targets;
-                    if *include_frequency {
-                        freqs = filtered_freqs;
-                    }
-                    weights = filtered_weights;
                 }
+                if split_values.is_some() {
+                    split_value = Some(Value::List(filtered_splits));
+                }
+                let targets = filtered_targets;
+                freqs = filtered_freqs;
+                weights = filtered_weights;
 
                 if let Some(c) = weight_col_idx {
                     if per_element_weight {
@@ -1279,7 +1360,6 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                         )?);
                     }
                 }
-                let split_value = read_split_value(row_idx);
                 writer.write_row_array(
                     entity_pk.clone(),
                     ts,
@@ -1621,9 +1701,9 @@ mod contract_tests {
             let listed = LIST_TARGET_CONTAINERS.contains(&container)
                 && token.is_some_and(|t| LIST_TARGET_ITEM_TYPES.contains(&t));
             assert_eq!(
-                read_list_values(array.as_ref(), 0).is_some(),
+                read_link_targets(array.as_ref(), 0).is_ok(),
                 listed,
-                "LIST_TARGET_* disagrees with read_list_values for {}",
+                "LIST_TARGET_* disagrees with read_link_targets for {}",
                 array.data_type()
             );
         }
@@ -1648,7 +1728,7 @@ mod contract_tests {
         // The two families do not overlap, which is what lets a caller test
         // the container first and the item type second.
         for (_, array) in scalar_corpus() {
-            assert!(read_list_values(array.as_ref(), 0).is_none());
+            assert!(read_link_targets(array.as_ref(), 0).is_err());
         }
         for (_, _, array) in list_corpus() {
             assert!(cell_to_value(array.as_ref(), 0).is_none());

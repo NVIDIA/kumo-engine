@@ -498,6 +498,7 @@ fn anchored_node_plan(timestamps: Vec<i64>) -> DiskGraphTTPlan<Seconds> {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     }
 }
 
@@ -527,6 +528,7 @@ fn array_lp_plan() -> DiskGraphTTPlan<Seconds> {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     }
 }
 
@@ -789,6 +791,7 @@ fn e2e_custom_tt_passthrough_full_pipeline() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
 
     let out_dir = tempfile::tempdir().unwrap();
@@ -1208,6 +1211,7 @@ fn e2e_include_mask_forces_unused_across_phases() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
 
     let out_dir = tempfile::tempdir().unwrap();
@@ -1295,6 +1299,7 @@ fn e2e_custom_tt_manual_split_column_full_pipeline() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
 
     let out_dir = tempfile::tempdir().unwrap();
@@ -1391,6 +1396,7 @@ fn e2e_custom_tt_manual_split_column_multi_part_full_pipeline() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
 
     let out_dir = tempfile::tempdir().unwrap();
@@ -1518,6 +1524,7 @@ fn e2e_multi_entity_multi_target_pipeline() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
 
     let out_dir = tempfile::tempdir().unwrap();

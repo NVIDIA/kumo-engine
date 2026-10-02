@@ -842,6 +842,7 @@
                 None
             },
             lp_rhs_is_temporal: false,
+            fact_pseudo_time: None,
         }
     }
 
@@ -2028,6 +2029,7 @@
                     None,
                     false,
                     false,
+                    None,
                 )
                 .unwrap();
                 let d = d.bind(py);
@@ -2227,6 +2229,7 @@
                 None,
                 false,
                 false,
+                None,
             )
             .expect("custom gen build should succeed");
         });
@@ -2299,6 +2302,7 @@
                 None,
                 false,
                 false,
+                None,
             )
             .expect("custom gen build (split) should succeed");
         });
@@ -2371,6 +2375,7 @@
                 None,           // task_type
                 false,
                 false,
+                None,
             )
         });
 
@@ -2455,6 +2460,7 @@
                 None,
                 false,
                 false,
+                None,
             )
             .expect("custom gen build should succeed");
         });
@@ -2550,6 +2556,7 @@
                 None,
                 false,
                 false,
+                None,
             )
             .expect("gen build should succeed");
         });

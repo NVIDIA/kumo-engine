@@ -65,6 +65,7 @@ pub fn empty_checksums(
         train_table_col_stats_sha256: None,
         train_table_edges_sha256: None,
         weight_sidecar_sha256: None,
+        fact_pseudo_time_sha256: None,
     }
 }
 
@@ -247,6 +248,7 @@ mod tests {
                 path: "arange.bin".into(),
             }),
             weight_sidecar: None,
+            fact_pseudo_time: None,
             checksums: ManifestChecksums {
                 split_sha256: "b".into(),
                 stats_sha256: "c".into(),

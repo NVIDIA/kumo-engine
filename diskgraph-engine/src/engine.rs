@@ -386,6 +386,31 @@ where
     Ok((negs, mask))
 }
 
+/// Hides `node_type` nodes whose pseudo time (`times[node_id]`) exceeds
+/// `seed_time`, on every hop of the request.
+#[derive(Clone, Copy, Debug)]
+pub struct PseudoTimeFilter<'a> {
+    pub node_type: &'a str,
+    pub times: &'a [u8],
+    pub seed_time: u8,
+}
+
+#[derive(Clone, Copy)]
+struct NodeCutoff<'a> {
+    type_id: usize,
+    times: &'a [u8],
+    seed_time: u8,
+}
+
+impl NodeCutoff<'_> {
+    #[inline]
+    fn visible(&self, node_id: u64) -> bool {
+        self.times
+            .get(node_id as usize)
+            .is_some_and(|t| *t <= self.seed_time)
+    }
+}
+
 /// The core engine responsible for executing graph sampling requests.
 pub struct DiskGraphEngine {
     /// Shard readers mapped by dense Node Type ID.
@@ -1053,15 +1078,26 @@ impl DiskGraphEngine {
         // request falls through to the SAME `self.sample()` / `finalize()` path.
         // `None` (default) preserves the stage-table seeding behavior byte-for-byte.
         node_range: Option<NodeRangeSeed<'_>>,
+        pseudo_time: Option<PseudoTimeFilter<'_>>,
     ) -> Result<crate::output::RuntimeBatch> {
         use crate::output::{InMemoryOutput, OutputHandler, RuntimeBatchOutput};
         use std::collections::HashSet;
+
+        let cutoff = pseudo_time.map(|f| self.node_cutoff(f)).transpose()?;
 
         // NodeRange seed mode: bypass stage/entity/target resolution AND
         // negatives, seed `[0, num_rhs)`-style ids at a fixed seed_time, then
         // reuse the shared sample/finalize path.
         if let Some(nr) = node_range {
-            return self.sample_node_range_batch(reader, batch_row_ids, dataset_id, plan, flags, nr);
+            return self.sample_node_range_batch(
+                reader,
+                batch_row_ids,
+                dataset_id,
+                plan,
+                flags,
+                nr,
+                cutoff,
+            );
         }
 
         // 1. Resolve seed type id from the merged catalog.
@@ -1419,7 +1455,7 @@ impl DiskGraphEngine {
             // symmetric with the seed-src edge filtering above.
             seed_type_ids,
         );
-        self.sample(&request, &mut state, &mut output)?;
+        self.sample_with_cutoff(&request, &mut state, &mut output, cutoff.as_ref())?;
         output.finalize(&state)?;
 
         // 7b. Non-fused path: the sampler doesn't fetch features inline, so
@@ -1623,6 +1659,7 @@ impl DiskGraphEngine {
     /// `batch_row_ids` are the seeds for this batch; the pybind iterator drives
     /// the full dense `[0, num_rhs)` range in `batch_size` chunks so the seeds
     /// cover the catalog exactly once, in order, deterministically.
+    #[allow(clippy::too_many_arguments)]
     fn sample_node_range_batch(
         &self,
         reader: &diskgraph_index::graph::GraphIndexReader,
@@ -1631,6 +1668,7 @@ impl DiskGraphEngine {
         plan: &SamplingPlan,
         flags: &SamplingFlags,
         nr: NodeRangeSeed<'_>,
+        cutoff: Option<NodeCutoff<'_>>,
     ) -> Result<crate::output::RuntimeBatch> {
         use crate::output::{OutputHandler, RuntimeBatchOutput};
         use std::collections::HashSet;
@@ -1690,7 +1728,7 @@ impl DiskGraphEngine {
             self.id_to_node_type.clone(),
             HashSet::new(),
         );
-        self.sample(&request, &mut state, &mut output)?;
+        self.sample_with_cutoff(&request, &mut state, &mut output, cutoff.as_ref())?;
         output.finalize(&state)?;
 
         // Non-fused path: fetch features post-sampling per visited type (same as
@@ -1760,11 +1798,49 @@ impl DiskGraphEngine {
         Ok(CompiledSamplingPlan { layers })
     }
 
+    fn node_cutoff<'a>(&self, filter: PseudoTimeFilter<'a>) -> Result<NodeCutoff<'a>> {
+        let type_id = *self.node_type_to_id.get(filter.node_type).ok_or_else(|| {
+            EngineError::InvalidRequest(format!(
+                "pseudo time node type `{}` not in engine catalog",
+                filter.node_type
+            ))
+        })?;
+        let required = self.readers[type_id]
+            .iter()
+            .filter(|shard| shard.min_id <= shard.max_id)
+            .map(|shard| shard.max_id + 1)
+            .max()
+            .unwrap_or(0);
+        if (filter.times.len() as u64) < required {
+            return Err(EngineError::InvalidRequest(format!(
+                "pseudo times cover {} `{}` nodes, graph has {}",
+                filter.times.len(),
+                filter.node_type,
+                required
+            )));
+        }
+        Ok(NodeCutoff {
+            type_id,
+            times: filter.times,
+            seed_time: filter.seed_time,
+        })
+    }
+
     pub fn sample(
         &self,
         request: &BatchSamplingRequest,
         state: &mut SamplingState,
         output: &mut impl OutputHandler,
+    ) -> Result<()> {
+        self.sample_with_cutoff(request, state, output, None)
+    }
+
+    fn sample_with_cutoff(
+        &self,
+        request: &BatchSamplingRequest,
+        state: &mut SamplingState,
+        output: &mut impl OutputHandler,
+        cutoff: Option<&NodeCutoff<'_>>,
     ) -> Result<()> {
         let sample_start = Instant::now();
 
@@ -1869,6 +1945,7 @@ impl DiskGraphEngine {
                 request,
                 state,
                 output,
+                cutoff,
             )?;
 
             debug!(
@@ -2219,6 +2296,7 @@ impl DiskGraphEngine {
         request: &BatchSamplingRequest,
         dst_scratch: &mut Vec<u64>,
         key_scratch: &mut Vec<u64>,
+        cutoff: Option<&NodeCutoff<'_>>,
         mut on_edge: impl FnMut(u64) -> Result<()>,
     ) -> Result<()> {
         let edge_count = segment.count as usize;
@@ -2228,6 +2306,17 @@ impl DiskGraphEngine {
 
         let mut unpacker = EdgeUnpacker::new(segment.data, &segment.layout);
         let k = fanout_spec.fanout as usize;
+        if k == 0
+            && matches!(
+                fanout_spec.mode,
+                SamplingMode::Uniform
+                    | SamplingMode::DeterministicUniform
+                    | SamplingMode::TemporalMostRecent
+            )
+        {
+            return Ok(());
+        }
+        let cutoff = cutoff.filter(|c| self.relation_info.get(rel_id) == Some(&c.type_id));
 
         match fanout_spec.mode {
             SamplingMode::TemporalMostRecent => {
@@ -2263,11 +2352,12 @@ impl DiskGraphEngine {
                         break;
                     }
 
-                    for (&dst_global_id, &sort_key) in dst_scratch
-                        .iter()
-                        .zip(key_scratch.iter())
-                        .take(unpacked)
+                    for (&dst_global_id, &sort_key) in
+                        dst_scratch.iter().zip(key_scratch.iter()).take(unpacked)
                     {
+                        if cutoff.is_some_and(|c| !c.visible(dst_global_id)) {
+                            continue;
+                        }
                         if let (Some(dec), Some(anch)) = (decoder, anchor) {
                             let (edge_ts, _) = dec.decode(sort_key);
                             if let Some(ts) = edge_ts {
@@ -2289,6 +2379,109 @@ impl DiskGraphEngine {
                     }
                 }
             }
+            SamplingMode::Uniform | SamplingMode::DeterministicUniform if cutoff.is_some() => {
+                let c = cutoff.expect("guarded");
+                if k >= edge_count {
+                    loop {
+                        dst_scratch.resize(128, 0);
+                        key_scratch.resize(128, 0);
+                        let count = unpacker.unpack_batch(dst_scratch, key_scratch);
+                        if count == 0 {
+                            break;
+                        }
+                        for &dst in &dst_scratch[..count] {
+                            if c.visible(dst) {
+                                on_edge(dst)?;
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
+                use rand::SeedableRng;
+                let mut rng = match self.sampling_seed(node, rel_id, &fanout_spec.mode) {
+                    Some(seed) => rand_chacha::ChaCha8Rng::seed_from_u64(seed),
+                    None => rand_chacha::ChaCha8Rng::seed_from_u64(rand::random()),
+                };
+                let budget = k.saturating_mul(16).saturating_add(32);
+                if budget < edge_count / 2 {
+                    // Shuffled order makes the first k visible candidates uniform.
+                    let candidates =
+                        rand::seq::index::sample(&mut rng, edge_count, budget).into_vec();
+                    let mut picked = Vec::new();
+                    for index in candidates {
+                        let mut candidate = EdgeUnpacker::new(segment.data, &segment.layout);
+                        candidate.advance(index);
+                        let mut dst = [0];
+                        let mut key = [0];
+                        if candidate.unpack_batch(&mut dst, &mut key) == 1 && c.visible(dst[0]) {
+                            picked.push((index, dst[0]));
+                            if picked.len() == k {
+                                break;
+                            }
+                        }
+                    }
+                    if picked.len() == k {
+                        picked.sort_unstable_by_key(|&(index, _)| index);
+                        for (_, dst) in picked {
+                            on_edge(dst)?;
+                        }
+                        return Ok(());
+                    }
+                }
+                let collect = edge_count <= budget.saturating_mul(2);
+                let mut visible = Vec::new();
+                let mut count = 0;
+                loop {
+                    dst_scratch.resize(128, 0);
+                    key_scratch.resize(128, 0);
+                    let unpacked = unpacker.unpack_batch(dst_scratch, key_scratch);
+                    if unpacked == 0 {
+                        break;
+                    }
+                    let batch = dst_scratch[..unpacked].iter().filter(|&&dst| c.visible(dst));
+                    if collect {
+                        visible.extend(batch);
+                    } else {
+                        count += batch.count();
+                    }
+                }
+                if collect {
+                    if k >= visible.len() {
+                        for dst in visible {
+                            on_edge(dst)?;
+                        }
+                    } else {
+                        let mut indices =
+                            rand::seq::index::sample(&mut rng, visible.len(), k).into_vec();
+                        indices.sort_unstable();
+                        for index in indices {
+                            on_edge(visible[index])?;
+                        }
+                    }
+                    return Ok(());
+                }
+                let mut picked = rand::seq::index::sample(&mut rng, count, k.min(count)).into_vec();
+                picked.sort_unstable();
+                let mut picked = picked.into_iter().peekable();
+                let mut position = 0;
+                unpacker = EdgeUnpacker::new(segment.data, &segment.layout);
+                while picked.peek().is_some() {
+                    let count = unpacker.unpack_batch(dst_scratch, key_scratch);
+                    if count == 0 {
+                        break;
+                    }
+                    for &dst in &dst_scratch[..count] {
+                        if !c.visible(dst) {
+                            continue;
+                        }
+                        if picked.peek() == Some(&position) {
+                            on_edge(dst)?;
+                            picked.next();
+                        }
+                        position += 1;
+                    }
+                }
+            }
             SamplingMode::Uniform | SamplingMode::DeterministicUniform => {
                 if k >= edge_count {
                     loop {
@@ -2303,30 +2496,8 @@ impl DiskGraphEngine {
                         }
                     }
                 } else {
-                    use rand::seq::index::sample;
-                    let random_seed = match fanout_spec.mode {
-                        SamplingMode::DeterministicUniform => {
-                            Some(DETERMINISTIC_UNIFORM_SEED_V1)
-                        }
-                        SamplingMode::Uniform => self.random_seed,
-                        _ => None,
-                    };
-                    let indices = if let Some(seed) = random_seed {
-                        use rand::SeedableRng;
-                        // Combine the global random_seed with the unique deterministic global_id
-                        // to ensure every seed node walks the same deterministic path consistently
-                        // regardless of batch composition or multi-threading order.
-                        let rng_seed = seed
-                            .wrapping_add(node.global_id)
-                            .wrapping_add(rel_id as u64);
-                        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(rng_seed);
-                        sample(&mut rng, edge_count, k)
-                    } else {
-                        let mut rng = rand::thread_rng();
-                        sample(&mut rng, edge_count, k)
-                    };
-
-                    let mut sorted_indices = indices.into_vec();
+                    let mut sorted_indices =
+                        self.uniform_indices(node, rel_id, &fanout_spec.mode, edge_count, k);
                     sorted_indices.sort_unstable();
 
                     let mut current_pos = 0;
@@ -2361,6 +2532,37 @@ impl DiskGraphEngine {
         Ok(())
     }
 
+    fn sampling_seed(&self, node: &NodeRecord, rel_id: usize, mode: &SamplingMode) -> Option<u64> {
+        let seed = match mode {
+            SamplingMode::DeterministicUniform => Some(DETERMINISTIC_UNIFORM_SEED_V1),
+            SamplingMode::Uniform => self.random_seed,
+            _ => None,
+        };
+        seed.map(|seed| {
+            seed.wrapping_add(node.global_id)
+                .wrapping_add(rel_id as u64)
+        })
+    }
+
+    fn uniform_indices(
+        &self,
+        node: &NodeRecord,
+        rel_id: usize,
+        mode: &SamplingMode,
+        n: usize,
+        k: usize,
+    ) -> Vec<usize> {
+        use rand::seq::index::sample;
+        if let Some(rng_seed) = self.sampling_seed(node, rel_id, mode) {
+            use rand::SeedableRng;
+            let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(rng_seed);
+            sample(&mut rng, n, k).into_vec()
+        } else {
+            sample(&mut rand::thread_rng(), n, k).into_vec()
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn process_layer(
         &self,
         layer_idx: usize,
@@ -2368,6 +2570,7 @@ impl DiskGraphEngine {
         request: &BatchSamplingRequest,
         state: &mut SamplingState,
         output: &mut impl OutputHandler,
+        cutoff: Option<&NodeCutoff<'_>>,
     ) -> Result<()> {
         let fused = request.flags.fused_feature_fetching;
         let mut work_queue = Vec::new();
@@ -2416,6 +2619,7 @@ impl DiskGraphEngine {
 
                     self.process_node_relations(
                         layer_idx, src_type_id, &segments, node, layer_spec, request, state, output,
+                        cutoff,
                     )?;
                 }
             }
@@ -2505,6 +2709,7 @@ impl DiskGraphEngine {
                                         request,
                                         &mut dst_scratch,
                                         &mut key_scratch,
+                                        cutoff,
                                         |dst_global_id| {
                                             local_raw_edges.push(RawEdge {
                                                 src_local_id: node.local_id,
@@ -2560,6 +2765,7 @@ impl DiskGraphEngine {
         request: &BatchSamplingRequest,
         state: &mut SamplingState,
         output: &mut impl OutputHandler,
+        cutoff: Option<&NodeCutoff<'_>>,
     ) -> Result<()> {
         let mut dst_scratch = std::mem::take(&mut state.dst_scratch);
         let mut key_scratch = std::mem::take(&mut state.key_scratch);
@@ -2596,6 +2802,7 @@ impl DiskGraphEngine {
                         request,
                         &mut dst_scratch,
                         &mut key_scratch,
+                        cutoff,
                         |dst_global_id| {
                             self.record_edge(
                                 layer_idx, node.local_id, node.seed_index, node.seed_type_id,
@@ -3160,3 +3367,7 @@ fn read_weight_column(rb: &arrow_array::RecordBatch) -> Result<Option<Vec<f32>>>
     }
     Ok(Some(out))
 }
+
+#[cfg(test)]
+#[path = "pseudo_time_tests.rs"]
+mod pseudo_time_tests;

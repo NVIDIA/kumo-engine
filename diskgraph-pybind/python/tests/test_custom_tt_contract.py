@@ -76,8 +76,6 @@ def test_every_token_names_a_predicate_pyarrow_has():
         ("boolean", pa.bool_(), pa.int64()),
         ("decimal128", pa.decimal128(10, 2), pa.float64()),
         ("timestamp", pa.timestamp("ns"), pa.date32()),
-        # `is_list` must exclude large and fixed-size, which is what makes
-        # `list_target_containers == ["list"]` enforceable in Python.
         ("list", pa.list_(pa.int64()), pa.large_list(pa.int64())),
         ("large_list", pa.large_list(pa.int64()), pa.list_(pa.int64())),
         ("fixed_size_list", pa.list_(pa.int64(), 2), pa.list_(pa.int64())),
@@ -98,15 +96,10 @@ def test_a_time_zone_aware_timestamp_is_still_a_timestamp():
     assert pa.types.is_timestamp(pa.timestamp("ns", tz="Etc/UTC"))
 
 
-def test_a_list_target_container_is_list_and_nothing_wider():
-    assert CONTRACT["list_target_containers"] == ["list"]
-    assert not pa.types.is_list(pa.large_list(pa.float64()))
-    assert not pa.types.is_list(pa.list_(pa.float64(), 2))
-
-
-def test_a_list_weight_container_is_wider_than_a_list_target_by_exactly_one():
-    assert set(CONTRACT["weight_list_containers"]) - set(
-        CONTRACT["list_target_containers"]) == {"large_list"}
+def test_link_targets_and_weights_accept_both_variable_list_widths():
+    assert CONTRACT["list_target_containers"] == ["list", "large_list"]
+    assert set(CONTRACT["weight_list_containers"]) == set(
+        CONTRACT["list_target_containers"])
 
 
 def test_a_scalar_weight_takes_a_decimal_and_a_list_weight_does_not():

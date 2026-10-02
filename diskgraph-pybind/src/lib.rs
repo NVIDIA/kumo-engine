@@ -765,7 +765,9 @@ impl SamplerEngine {
             .next()
             .map_or(0usize, |v| v.len());
 
-        let count = self.sample_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let count = self
+            .sample_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if count % 100 == 0 {
             info!(
                 seed_type = %seed_type,

@@ -78,6 +78,10 @@ pub(crate) struct TtIngestSpec {
     #[serde(default)]
     pub fkey_mapping: Option<Vec<TTFKeySpec>>,
     pub entity_table: String,
+    #[serde(default)]
+    pub entity_column: Option<String>,
+    #[serde(default)]
+    pub fact_pseudo_time: Option<diskgraph_core::tt_builder::FactPseudoTimeSpec>,
     /// LP resolution specs (`ENTITY1`/`TARGET1` → node-id rowpack columns).
     /// `None` for non-LP; ingest then synthesizes the scalar `ENTITY1` spec.
     #[serde(default)]
@@ -107,6 +111,8 @@ impl TtIngestSpec {
             tt_id: tt_id.to_string(),
             fkey_mapping: plan.fkey_mapping.clone(),
             entity_table: plan.entity.table.clone(),
+            entity_column: Some(plan.entity.column.clone()),
+            fact_pseudo_time: plan.fact_pseudo_time.clone(),
             lp_resolution: plan.lp_resolution.clone(),
             is_temporal: plan
                 .split
@@ -891,7 +897,8 @@ pub fn execute_tt_ingest(
             if ingest_root.exists() {
                 std::fs::remove_dir_all(&ingest_root)?;
             }
-            let artifacts = StagedTtArtifacts::from_staging_dir(&staging_dir);
+            let mut artifacts = StagedTtArtifacts::from_staging_dir(&staging_dir);
+            artifacts.rebuild_fact_pseudo_time = true;
 
             // Both paths feed the SAME ingest: resolution-mode predict seeds are
             // topologically identical to resolution-mode train seeds.
@@ -922,6 +929,7 @@ pub fn execute_tt_ingest(
                 &artifacts,
                 group_by_timestamp,
             )?;
+            rebuild_fact_pseudo_time(&spec, &stages, index_root, &ingest_root)?;
             // Self-describing manifest fields, recovered from the gen-time spec.
             let rhs_node_type = rhs_node_type_from_resolution(&spec.lp_resolution);
             Ok((
@@ -948,6 +956,90 @@ pub fn execute_tt_ingest(
         &key_failures,
         input_row_count,
     )
+}
+
+fn rebuild_fact_pseudo_time(
+    spec: &TtIngestSpec,
+    stages: &[StageSpec],
+    index_root: &Path,
+    ingest_root: &Path,
+) -> diskgraph_train_table::errors::TTGenResult<()> {
+    use diskgraph_train_table::errors::TTGenError;
+    use diskgraph_train_table::pseudo_time::FactPseudoTime;
+
+    let manifest_path = ingest_root.join("manifest.json");
+    let mut manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(&manifest_path)?)
+        .map_err(|e| TTGenError::SystemError(e.to_string()))?;
+    if manifest
+        .get("fact_pseudo_time")
+        .is_none_or(serde_json::Value::is_null)
+    {
+        return Ok(());
+    }
+    let fact = spec.fact_pseudo_time.as_ref().ok_or_else(|| {
+        TTGenError::InvalidPlan("fact pseudo times require an ingest reconstruction spec".into())
+    })?;
+    if manifest["fact_pseudo_time"]["node_type"].as_str() != Some(fact.table.as_str())
+        || manifest["fact_pseudo_time"]["format"].as_str()
+            != Some(diskgraph_train_table::manifest::FACT_PSEUDO_TIME_FORMAT)
+    {
+        return Err(TTGenError::InvalidPlan(
+            "fact pseudo-time manifest disagrees with ingest spec".into(),
+        ));
+    }
+    let entity_column = spec.entity_column.as_deref().ok_or_else(|| {
+        TTGenError::InvalidPlan("fact pseudo times require the entity key column".into())
+    })?;
+    let reader = diskgraph_index::graph::GraphIndexReader::open(
+        &index_root.join("index_metadata.json"),
+        index_root,
+    )
+    .map_err(|e| TTGenError::SystemError(e.to_string()))?;
+    let mut marker = FactPseudoTime::new(&reader, &spec.entity_table, entity_column, fact)?;
+    marker.initialize();
+    let mut nonempty = false;
+    for stage in stages {
+        let position = match stage.key.as_str() {
+            "train" => 0,
+            "val" => 1,
+            "test" => 2,
+            _ => {
+                return Err(TTGenError::InvalidPlan(
+                    "unsupported fact pseudo-time stage".into(),
+                ))
+            }
+        };
+        for path in &stage.parquet_paths {
+            let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(path)?)?;
+            let columns = [PRIMARY_ENTITY_COL, PRIMARY_TARGET_COL]
+                .into_iter()
+                .map(|name| {
+                    builder
+                        .schema()
+                        .index_of(name)
+                        .map_err(|e| TTGenError::SchemaError(e.to_string()))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let projection = ProjectionMask::roots(builder.parquet_schema(), columns);
+            let batches = builder.with_projection(projection).build()?;
+            for batch in batches {
+                let batch = batch.map_err(|e| TTGenError::SystemError(e.to_string()))?;
+                nonempty |= batch.num_rows() > 0;
+                let mut routed = std::array::from_fn(|_| RecordBatch::new_empty(batch.schema()));
+                routed[position] = batch;
+                marker.observe(&routed)?;
+            }
+        }
+    }
+    let path = marker.finish(ingest_root, nonempty, false)?;
+    manifest["checksums"]["fact_pseudo_time_sha256"] = serde_json::Value::String(
+        sha256_hex_path(&path).map_err(|e| TTGenError::SystemError(e.to_string()))?,
+    );
+    std::fs::write(
+        manifest_path,
+        serde_json::to_vec_pretty(&manifest).map_err(|e| TTGenError::SystemError(e.to_string()))?,
+    )?;
+    Ok(())
 }
 
 /// Read back a stage table's node_count from a freshly-ingested extension's
@@ -2015,6 +2107,7 @@ where
 /// [`TTPassOutput`] so the ingest job (which has no `TTPassOutput`, only the
 /// on-disk staging dir) can drive the copy from sibling files.
 pub(crate) struct StagedTtArtifacts {
+    rebuild_fact_pseudo_time: bool,
     /// Directory holding `tt.parquet`, `manifest.json`, the per-stage seed
     /// parquets, and the kumo-contract stats sidecars.
     pub staging_dir: std::path::PathBuf,
@@ -2039,6 +2132,7 @@ impl StagedTtArtifacts {
             })?
             .to_path_buf();
         Ok(Self {
+            rebuild_fact_pseudo_time: false,
             staging_dir,
             tt_parquet_path: pass_output.tt_parquet_path.clone(),
             manifest_path: pass_output.manifest_path.clone(),
@@ -2049,6 +2143,7 @@ impl StagedTtArtifacts {
     /// siblings of `tt.parquet`.
     fn from_staging_dir(staging_dir: &Path) -> Self {
         Self {
+            rebuild_fact_pseudo_time: false,
             staging_dir: staging_dir.to_path_buf(),
             tt_parquet_path: staging_dir.join("tt.parquet"),
             manifest_path: staging_dir.join("manifest.json"),
@@ -2135,7 +2230,13 @@ fn copy_stage_artifacts(
         "stats.json",
         "split_stats.json",
         "train_table_col_stats.json",
+        diskgraph_train_table::pseudo_time::FACT_PSEUDO_TIME_FILE,
     ] {
+        if artifacts.rebuild_fact_pseudo_time
+            && sidecar == diskgraph_train_table::pseudo_time::FACT_PSEUDO_TIME_FILE
+        {
+            continue;
+        }
         let src = artifacts.staging_dir.join(sidecar);
         if src.exists() {
             std::fs::copy(&src, tt_root.join(sidecar))?;
@@ -2667,3 +2768,6 @@ pub fn persist_prediction_artifact_bundle(
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests;
+
+#[cfg(test)]
+mod pseudo_time_tests;

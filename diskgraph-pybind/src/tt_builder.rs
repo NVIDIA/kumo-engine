@@ -690,6 +690,7 @@ impl DiskGraphTTBuilder {
             fkey_mapping: None,
             lp_resolution: None,
             lp_rhs_is_temporal: false,
+            fact_pseudo_time: None,
         };
 
         serde_json::to_string(&plan)

@@ -11,7 +11,7 @@
 //!
 //! ```json
 //! {
-//!   "version": 3,
+//!   "version": 4,
 //!   "row_count": 1234,
 //!   "source_mode": "pquery",
 //!   "split_mode": "compute",
@@ -22,12 +22,13 @@
 //!   "train_table_col_stats": {"path": "...", "format": "tt_train_table_col_stats_json"} | null,
 //!   "train_table_edges":     {...edge bundle JSON...} | null,
 //!   "arange_sidecar":        {"path": "..."} | null,
+//!   "fact_pseudo_time":      {"path": "...", "format": "tt_fact_pseudo_time_v1", "node_type": "..."} | null,
 //!   "checksums": {"stats_sha256": "...", ...}
 //! }
 //! ```
 //!
 //! Optional sections (`split`, `split_stats`, `train_table_col_stats`,
-//! `train_table_edges`, `arange_sidecar`) elide via
+//! `train_table_edges`, `arange_sidecar`, `fact_pseudo_time`) elide via
 //! `skip_serializing_if = "Option::is_none"`.
 //!
 //! ## Concurrency
@@ -37,8 +38,7 @@
 //!
 //! ## Schema stability
 //!
-//! `version = 3` (integer, kumo's reader rejects mismatch). Breaking
-//! changes bump this.
+//! Version 3 has no fact visibility requirement; version 4 requires it.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -51,6 +51,7 @@ use crate::errors::{TTGenError, TTGenResult};
 use crate::ttgen_stats::TrainTableStatsPayload;
 
 pub const TT_MANIFEST_VERSION: u32 = 3;
+pub const FACT_PSEUDO_TIME_MANIFEST_VERSION: u32 = 4;
 
 // ─── Format identifiers (kumo's reader checks these strings exactly) ────────
 
@@ -67,6 +68,8 @@ pub const TRAIN_TABLE_COL_STATS_FORMAT: &str = "tt_train_table_col_stats_json";
 /// `weight_sidecar.format` value (optional in manifest, custom-TT only).
 /// File on disk has DGWGHT magic + version + dtype + row_count + payload.
 pub const WEIGHT_SIDECAR_FORMAT: &str = "tt_weight_sidecar_v1";
+/// `fact_pseudo_time.format` value (static LP only). DGPTIME header + u8/row.
+pub const FACT_PSEUDO_TIME_FORMAT: &str = "tt_fact_pseudo_time_v1";
 
 /// Reference to a single artifact: `path` + `format`. The format string
 /// is checked verbatim by kumo's reader.
@@ -122,6 +125,14 @@ impl ArtifactRef {
     }
 }
 
+/// Per-row pseudo times of the static LP fact `node_type`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FactPseudoTimeRef {
+    pub path: String,
+    pub format: String,
+    pub node_type: String,
+}
+
 /// Sidecar reference (no format check on the kumo side; just a path).
 /// Used for the transitional `arange.bin` artifact (no longer written on
 /// the TT-NG path; the field stays for the kumo JSON contract).
@@ -148,6 +159,8 @@ pub struct ManifestChecksums {
     /// `weight_col == None`).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub weight_sidecar_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub fact_pseudo_time_sha256: Option<String>,
 }
 
 /// Manifest written to `output_dir/manifest.json` at the end of every
@@ -155,7 +168,7 @@ pub struct ManifestChecksums {
 /// `path` + `format` objects).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TTManifest {
-    /// Schema version. `3` (integer) — kumo's reader rejects mismatch.
+    /// Version 4 requires fact visibility; ordinary artifacts remain version 3.
     pub version: u32,
     /// Total rows in the `tt.parquet` dataset (after regroup, if applicable).
     pub row_count: u64,
@@ -215,20 +228,33 @@ pub struct TTManifest {
     /// `weight` column to `tt.parquet` post-bridge.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub weight_sidecar: Option<ArtifactRef>,
+    /// Static LP fact-row pseudo times (`fact_pseudo_time.bin`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub fact_pseudo_time: Option<FactPseudoTimeRef>,
     /// Checksums for every referenced artifact.
     pub checksums: ManifestChecksums,
+}
+
+fn validate_manifest_version(manifest: &TTManifest) -> TTGenResult<()> {
+    let expected = if manifest.fact_pseudo_time.is_some() {
+        FACT_PSEUDO_TIME_MANIFEST_VERSION
+    } else {
+        TT_MANIFEST_VERSION
+    };
+    if manifest.version != expected {
+        return Err(TTGenError::SystemError(format!(
+            "manifest version mismatch: expected={expected} got={}; version 4 requires fact visibility support",
+            manifest.version
+        )));
+    }
+    Ok(())
 }
 
 /// Write `manifest` to `output_dir/manifest.json` (pretty-printed).
 /// Returns the absolute path on success. Single-threaded; no sync
 /// primitives.
 pub fn write_manifest(output_dir: &Path, manifest: &TTManifest) -> TTGenResult<PathBuf> {
-    if manifest.version != TT_MANIFEST_VERSION {
-        return Err(TTGenError::SystemError(format!(
-            "manifest version mismatch: expected={} got={}",
-            TT_MANIFEST_VERSION, manifest.version
-        )));
-    }
+    validate_manifest_version(manifest)?;
     let path = output_dir.join("manifest.json");
     let json = serde_json::to_string_pretty(manifest)
         .map_err(|e| TTGenError::SystemError(format!("manifest serialize: {e}")))?;
@@ -242,12 +268,7 @@ pub fn read_manifest(path: &Path) -> TTGenResult<TTManifest> {
     let s = std::fs::read_to_string(path)?;
     let manifest = serde_json::from_str::<TTManifest>(&s)
         .map_err(|e| TTGenError::SystemError(format!("manifest deserialize: {e}")))?;
-    if manifest.version != TT_MANIFEST_VERSION {
-        return Err(TTGenError::SystemError(format!(
-            "manifest version mismatch: expected={} got={}",
-            TT_MANIFEST_VERSION, manifest.version
-        )));
-    }
+    validate_manifest_version(&manifest)?;
     Ok(manifest)
 }
 
@@ -447,6 +468,7 @@ mod tests {
                 path: "arange.bin".into(),
             }),
             weight_sidecar: None,
+            fact_pseudo_time: None,
             checksums: ManifestChecksums {
                 split_sha256: "b".into(),
                 stats_sha256: "c".into(),
@@ -462,6 +484,25 @@ mod tests {
         let path = write_manifest(dir.path(), &m).unwrap();
         let m2 = read_manifest(&path).unwrap();
         assert_eq!(m, m2);
+    }
+
+    #[test]
+    fn fact_visibility_requires_manifest_v4() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manifest = full_manifest_with_split();
+        manifest.fact_pseudo_time = Some(FactPseudoTimeRef {
+            path: "fact_pseudo_time.bin".into(),
+            format: FACT_PSEUDO_TIME_FORMAT.into(),
+            node_type: "orders".into(),
+        });
+        assert!(write_manifest(dir.path(), &manifest).is_err());
+        manifest.version = FACT_PSEUDO_TIME_MANIFEST_VERSION;
+        let path = write_manifest(dir.path(), &manifest).unwrap();
+        assert_eq!(read_manifest(&path).unwrap(), manifest);
+        manifest.fact_pseudo_time = None;
+        std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(read_manifest(&path).is_err());
+        assert!(write_manifest(dir.path(), &manifest).is_err());
     }
 
     #[test]
@@ -504,6 +545,7 @@ mod tests {
             train_table_edges: None,
             arange_sidecar: None,
             weight_sidecar: None,
+            fact_pseudo_time: None,
             checksums: ManifestChecksums {
                 split_sha256: "".into(),
                 stats_sha256: "y".into(),

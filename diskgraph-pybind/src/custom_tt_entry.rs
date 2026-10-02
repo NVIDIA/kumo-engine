@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 
 use diskgraph_core::time::{Seconds, TimeUnit};
 use diskgraph_core::tt_builder::{
-    DiskGraphTTPlan, EntitySpec, PredictionType, RefResolveKind, RefResolveSpec,
+    DiskGraphTTPlan, EntitySpec, FactPseudoTimeSpec, PredictionType, RefResolveKind, RefResolveSpec,
     SplitSpec as PlanSplitSpec,
 };
 use diskgraph_train_table::ttgen_executor::CustomTtSource;
@@ -122,6 +122,7 @@ fn path_with_suffix(base: &Path, suffix: &str) -> PathBuf {
     task_type = None,
     lp_rhs_is_temporal = false,
     allow_new_target_entities = false,
+    fact_pseudo_time_json = None,
 ))]
 pub fn build_train_table_artifacts_for_existing_table(
     py: Python<'_>,
@@ -138,7 +139,14 @@ pub fn build_train_table_artifacts_for_existing_table(
     task_type: Option<&str>,
     lp_rhs_is_temporal: bool,
     allow_new_target_entities: bool,
+    fact_pseudo_time_json: Option<&str>,
 ) -> PyResult<Py<PyAny>> {
+    let fact_pseudo_time = fact_pseudo_time_json
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|e| {
+            crate::DiskgraphConfigError::new_err(format!("invalid fact_pseudo_time_json: {e}"))
+        })?;
     build_bundle_for_existing_table(
         py,
         output_path,
@@ -154,6 +162,7 @@ pub fn build_train_table_artifacts_for_existing_table(
         task_type,
         lp_rhs_is_temporal,
         allow_new_target_entities,
+        fact_pseudo_time,
         /* is_prediction */ false,
     )
 }
@@ -219,6 +228,7 @@ pub fn build_prediction_table_artifacts_for_existing_table(
         false,
         /* allow_new_target_entities */
         false,
+        /* fact_pseudo_time */ None,
         /* is_prediction */ true,
     )
 }
@@ -325,6 +335,7 @@ fn build_bundle_for_existing_table(
     task_type: Option<&str>,
     lp_rhs_is_temporal: bool,
     allow_new_target_entities: bool,
+    fact_pseudo_time: Option<FactPseudoTimeSpec>,
     is_prediction: bool,
 ) -> PyResult<Py<PyAny>> {
     validate_tt_id(tt_id)?;
@@ -403,6 +414,7 @@ fn build_bundle_for_existing_table(
         // Same grouping gate as the native PQL path: Kumo computes RHS
         // temporality from graph metadata and passes it through this bridge.
         lp_rhs_is_temporal,
+        fact_pseudo_time,
     };
 
     // Output dirs derive from the train-table bundle root, not a physical

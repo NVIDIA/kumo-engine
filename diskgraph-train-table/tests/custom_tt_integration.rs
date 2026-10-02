@@ -588,6 +588,7 @@ fn make_custom_tt_lp_node_plan(target_entity_table: Option<&str>) -> DiskGraphTT
         fkey_mapping: Some(fkey_mapping),
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     }
 }
 
@@ -621,6 +622,7 @@ fn make_custom_tt_complete_forecasting_plan() -> DiskGraphTTPlan<Seconds> {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     }
 }
 
@@ -671,6 +673,7 @@ fn make_custom_tt_target_only_node_plan() -> DiskGraphTTPlan<Seconds> {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     }
 }
 
@@ -1308,6 +1311,7 @@ fn test_dispatch_pq_source_via_with_source_api() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
     let out_dir = tempfile::tempdir().unwrap();
     let output =

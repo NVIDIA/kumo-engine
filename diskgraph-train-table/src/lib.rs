@@ -15,5 +15,6 @@ pub mod custom_tt_chunk_processor;
 pub mod regroup;
 pub mod route;
 pub mod manifest;
+pub mod pseudo_time;
 pub mod split_stats;
 pub mod kumo_contract_bridge;

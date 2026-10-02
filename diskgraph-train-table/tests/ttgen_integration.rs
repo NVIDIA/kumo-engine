@@ -996,6 +996,7 @@ fn g1_plan(stages: Vec<Stage<Seconds>>) -> DiskGraphTTPlan<Seconds> {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     }
 }
 
@@ -1024,6 +1025,7 @@ fn g1_temporal(stages: Vec<Stage<Seconds>>, timestamps: Vec<i64>) -> DiskGraphTT
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     }
 }
 
@@ -1078,6 +1080,7 @@ fn related_column_plan(
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     }
 }
 
@@ -2402,6 +2405,7 @@ fn integ_entity_time_col() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
     let groups = execute_and_group(&plan, &index);
     // alice: orders at 1050,1100,1200,1300 all in [1000,1500) → 4. eve: 0 orders.
@@ -2444,6 +2448,7 @@ fn integ_entity_valid_to_col() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
     let groups = execute_and_group(&plan, &index);
     // Window [1500,6500). alice: 0 (orders<1500). bob: 2100,2200→2. carol: 1600→1. dave: 3100,3200,3300→3.
@@ -2794,6 +2799,7 @@ fn integ_entity_create_time_metadata_fallback() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
     let groups = execute_and_group(&plan, &index);
 
@@ -2876,6 +2882,7 @@ fn integ_entity_end_time_metadata_fallback() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
     let groups = execute_and_group(&plan, &index);
 
@@ -3582,6 +3589,7 @@ fn integ_timeunit_months_calendar() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
 
     let groups = execute_and_group(&plan, &index);
@@ -3652,6 +3660,7 @@ fn integ_timeunit_years_calendar() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
 
     let groups = execute_and_group(&plan, &index);
@@ -4139,6 +4148,7 @@ fn integ_lag_timesteps_entity_include_bit() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
     let (receiver, handle) = execute(&plan, &index).unwrap();
     let rows = read_output_rows_with_bit(receiver);
@@ -4305,6 +4315,7 @@ fn g1_link_temporal(
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     }
 }
 
@@ -4954,6 +4965,7 @@ fn g2_link_temporal(
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     }
 }
 
@@ -4983,6 +4995,7 @@ fn g2_link_static(
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     }
 }
 
@@ -5481,6 +5494,7 @@ fn g3_link_temporal(
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     }
 }
 
@@ -5510,6 +5524,7 @@ fn g3_link_static(
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     }
 }
 
@@ -5735,6 +5750,7 @@ fn integ_g3_lp_entity_filter() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
     let (receiver, handle) = execute(&plan, &index).unwrap();
     let rows = read_output_rows_array(receiver);
@@ -5978,6 +5994,7 @@ fn integ_bp_pass_through() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
 
     let (receiver, handle) = execute(&plan, &index).unwrap();
@@ -6028,6 +6045,7 @@ fn integ_bp_pass_through_entity_is_null_filter() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
 
     let (receiver, handle) = execute(&plan, &index).unwrap();
@@ -6074,6 +6092,7 @@ fn integ_bp_pass_through_entity_in_filter_excludes_nulls() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
 
     let (receiver, handle) = execute(&plan, &index).unwrap();
@@ -6108,6 +6127,7 @@ fn integ_bp_pseudo_time_injection() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
 
     let (receiver, handle) = execute(&plan, &index).unwrap();
@@ -6236,6 +6256,7 @@ fn integ_bp_forecasting_multiple_lags() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
 
     let (receiver, handle) = execute(&plan, &index).unwrap();
@@ -6343,6 +6364,7 @@ fn integ_forecasting_training_future_labels() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
 
     let out_dir = tempfile::tempdir().unwrap();
@@ -6488,6 +6510,7 @@ fn integ_forecasting_split_stats_use_future_labels() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
 
     let out_dir = tempfile::tempdir().unwrap();
@@ -6590,6 +6613,7 @@ fn integ_forecasting_split_outputs_drop_horizon_tail_rows() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
 
     let out_dir = tempfile::tempdir().unwrap();
@@ -6847,6 +6871,7 @@ fn orphan_ld_plan(target_entity_table: Option<String>) -> DiskGraphTTPlan<Second
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     }
 }
 
@@ -6963,6 +6988,7 @@ fn integ_non_listdistinct_ignores_target_entity_table() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
     let (receiver, handle) = execute(&plan, &index).unwrap();
     let rows = read_output_rows(receiver);
@@ -7019,6 +7045,7 @@ fn orphan_ld_plan_with_row_filter(
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     }
 }
 
@@ -7737,6 +7764,7 @@ fn temporal_orphan_ld_plan(
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     }
 }
 
@@ -9304,6 +9332,7 @@ fn integ_pass_b_respects_include_mask_e2e() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
 
     let out_dir = tempfile::tempdir().unwrap();
@@ -9486,6 +9515,7 @@ fn integ_tt_forecasting_target_extraction() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
 
     let out_dir = tempfile::tempdir().unwrap();
@@ -10464,6 +10494,7 @@ fn integ_forecasting_empty_count_distinct_target_is_zero() {
         fkey_mapping: None,
         lp_resolution: None,
         lp_rhs_is_temporal: false,
+        fact_pseudo_time: None,
     };
 
     let out_dir = tempfile::tempdir().unwrap();

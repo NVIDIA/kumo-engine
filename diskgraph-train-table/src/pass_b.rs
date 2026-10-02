@@ -30,6 +30,7 @@ use rayon::prelude::*;
 
 use crate::errors::{TTGenError, TTGenResult};
 use crate::parquet_dataset::ordered_tt_dataset_parts;
+use crate::pseudo_time::FactPseudoTime;
 use crate::route::{
     assign_per_anchor_stages, route_per_anchor, route_per_link, ForecastingHorizonPolicy,
     LinkAssigner,
@@ -118,11 +119,20 @@ fn run_pass_b_routed<F>(
     total_rows: u64,
     out_schema: &SchemaRef,
     route: F,
+    fact_pseudo_time: Option<&FactPseudoTime>,
 ) -> TTGenResult<[StagePartsOut; 3]>
 where
     F: Fn(&RecordBatch, u64) -> TTGenResult<[RecordBatch; 3]> + Sync,
 {
-    run_pass_b_routed_impl(tt_parquet, output_dir, total_rows, out_schema, None, route)
+    run_pass_b_routed_impl(
+        tt_parquet,
+        output_dir,
+        total_rows,
+        out_schema,
+        None,
+        route,
+        fact_pseudo_time,
+    )
 }
 
 fn run_pass_b_routed_impl<F>(
@@ -132,6 +142,7 @@ fn run_pass_b_routed_impl<F>(
     out_schema: &SchemaRef,
     source_row_groups_per_part_override: Option<usize>,
     route: F,
+    fact_pseudo_time: Option<&FactPseudoTime>,
 ) -> TTGenResult<[StagePartsOut; 3]>
 where
     F: Fn(&RecordBatch, u64) -> TTGenResult<[RecordBatch; 3]> + Sync,
@@ -206,6 +217,7 @@ where
                 &output_dir,
                 group_idx,
                 &route,
+                fact_pseudo_time,
             )
         })
         .collect();
@@ -251,6 +263,7 @@ fn run_pass_b_row_group_span<F>(
     output_dir: &Path,
     group_idx: usize,
     route: &F,
+    fact_pseudo_time: Option<&FactPseudoTime>,
 ) -> TTGenResult<[WorkerStageResult; 3]>
 where
     F: Fn(&RecordBatch, u64) -> TTGenResult<[RecordBatch; 3]>,
@@ -272,6 +285,9 @@ where
                 batch_res.map_err(|e| TTGenError::Parquet(format!("pass_b reader: {e}")))?;
             let nrows = batch.num_rows() as u64;
             let sub_batches = route(&batch, source.row_offset + row_group_offset)?;
+            if let Some(marker) = fact_pseudo_time {
+                marker.observe(&sub_batches)?;
+            }
             for (stage, sub) in sub_batches.into_iter().enumerate() {
                 if sub.num_rows() == 0 {
                     continue;
@@ -411,6 +427,7 @@ pub(crate) fn run_pass_b_per_anchor<U: UnitSystem, D: SplitDecider<U> + Sync>(
     drop_split_column: Option<&str>,
     out_schema: &SchemaRef,
     forecasting_horizon: Option<(i64, i64)>,
+    fact_pseudo_time: Option<&FactPseudoTime>,
 ) -> TTGenResult<[StagePartsOut; 3]> {
     let horizon_policy = if let Some((step_ns, length)) = forecasting_horizon {
         let max_ts = stage_max_timestamps::<U, D>(tt_parquet, decider, is_array_lp)?;
@@ -433,6 +450,7 @@ pub(crate) fn run_pass_b_per_anchor<U: UnitSystem, D: SplitDecider<U> + Sync>(
                 drop_split_column,
             )
         },
+        fact_pseudo_time,
     )
 }
 
@@ -490,6 +508,7 @@ pub(crate) fn run_pass_b_per_link(
     output_dir: &Path,
     total_rows: u64,
     out_schema: &SchemaRef,
+    fact_pseudo_time: Option<&FactPseudoTime>,
 ) -> TTGenResult<[StagePartsOut; 3]> {
     run_pass_b_routed(
         tt_parquet,
@@ -497,6 +516,7 @@ pub(crate) fn run_pass_b_per_link(
         total_rows,
         out_schema,
         |batch, _offset| route_per_link(batch, assigner),
+        fact_pseudo_time,
     )
 }
 
@@ -717,6 +737,7 @@ mod tests {
             |batch, offset| {
                 route_per_anchor::<Seconds, D>(batch, decider, offset, false, None, None)
             },
+            None,
         )
     }
 
@@ -837,6 +858,7 @@ mod tests {
                     filter_record_batch(batch, &masks[2]).unwrap(),
                 ])
             },
+            None,
         )
         .unwrap();
 
@@ -884,6 +906,7 @@ mod tests {
                         None,
                         &schema,
                         None,
+                        None,
                     )
                 })
                 .unwrap();
@@ -921,6 +944,7 @@ mod tests {
             false,
             None,
             &schema,
+            None,
             None,
         )
         .unwrap();
@@ -961,6 +985,7 @@ mod tests {
             None,
             &schema,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(out[0].row_count, 3);
@@ -998,6 +1023,7 @@ mod tests {
             None,
             &schema,
             None,
+            None,
         )
         .unwrap();
         for s in &out {
@@ -1023,6 +1049,7 @@ mod tests {
             false,
             None,
             &schema,
+            None,
             None,
         )
         .unwrap();
@@ -1062,6 +1089,7 @@ mod tests {
             true,
             None,
             &schema,
+            None,
             None,
         )
         .unwrap();
@@ -1134,6 +1162,7 @@ mod tests {
             false,
             Some("split_col"),
             &out_schema,
+            None,
             None,
         )
         .unwrap();
@@ -1217,15 +1246,29 @@ mod tests {
         let dir1 = tempfile::tempdir().unwrap();
         let tt1: PathBuf = dir1.path().join("tt.parquet");
         let schema1 = write_lp_parquet(&tt1, &rows, None);
-        let out1 =
-            run_pass_b_per_link(&tt1, &assigner, dir1.path(), rows.len() as u64, &schema1).unwrap();
+        let out1 = run_pass_b_per_link(
+            &tt1,
+            &assigner,
+            dir1.path(),
+            rows.len() as u64,
+            &schema1,
+            None,
+        )
+        .unwrap();
 
         // One source row per row group selects the production group size of 4.
         let dir2 = tempfile::tempdir().unwrap();
         let tt2: PathBuf = dir2.path().join("tt.parquet");
         let schema2 = write_lp_parquet(&tt2, &rows, Some(1));
-        let out2 =
-            run_pass_b_per_link(&tt2, &assigner, dir2.path(), rows.len() as u64, &schema2).unwrap();
+        let out2 = run_pass_b_per_link(
+            &tt2,
+            &assigner,
+            dir2.path(),
+            rows.len() as u64,
+            &schema2,
+            None,
+        )
+        .unwrap();
 
         for stage in 0..3 {
             assert_eq!(

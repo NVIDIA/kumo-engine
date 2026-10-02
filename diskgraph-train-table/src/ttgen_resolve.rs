@@ -428,7 +428,9 @@ pub fn resolve_plan<U: UnitSystem>(
         )?;
         resolved_stages.push(resolved);
     }
-    validate_link_split_projection_attached(split_request.as_ref(), &resolved_stages)?;
+    if !plan.stages.is_empty() {
+        validate_link_split_projection_attached(split_request.as_ref(), &resolved_stages)?;
+    }
 
     // 7. Determine target alias and dtype
     //
@@ -1390,7 +1392,7 @@ fn resolve_op<U: UnitSystem>(
     }
 }
 
-fn resolve_path(
+pub(crate) fn resolve_path(
     path: &[EdgeRef],
     reader: &GraphIndexReader,
 ) -> TTGenResult<Vec<ResolvedEdge>> {

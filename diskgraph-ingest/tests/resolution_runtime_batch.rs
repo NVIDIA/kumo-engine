@@ -438,6 +438,7 @@ fn test_resolution_runtime_batch_label_path() {
             Some("users"),        // target_node_type → emit ragged labels
             true,                 // preserve old behavior: use seed timestamps when present
             None,                 // node_range: stage-table seeding (NodeRange off)
+            None,
         )
         .expect("sample_runtime_batch must succeed on the resolution label path");
 
@@ -565,6 +566,7 @@ fn test_resolution_runtime_batch_orphan_dropped_at_ingest() {
             Some("users"),
             true,
             None,
+            None,
         )
         .expect("clean post-drop stage must sample");
 
@@ -667,6 +669,7 @@ fn test_resolution_rhs_not_rooted() {
             Some("users"),
             true, // preserve old behavior: use seed timestamps when present
             None, // node_range off
+            None,
         )
         .expect("sample_runtime_batch must succeed");
 
@@ -852,6 +855,7 @@ fn test_resolution_exclude_hydrate() {
             Some("users"),
             true,
             None,
+            None,
         )
         .expect("sample_runtime_batch on the exclude path");
 
@@ -938,6 +942,7 @@ fn test_resolution_exclude_absent_when_all_empty() {
             Some("users"),
             true,
             None,
+            None,
         )
         .expect("sample_runtime_batch");
     assert!(
@@ -1017,6 +1022,7 @@ fn run_two_tower(tmp: &tempfile::TempDir, tt_id: &str, neg_rnd_seed: u64) -> cra
             Some("orders"),    // target_node_type == rhs type
             true,              // preserve old behavior: use seed timestamps when present
             None,              // node_range off
+            None,
         )
         .expect("two-tower sample_runtime_batch must succeed");
 
@@ -1265,6 +1271,7 @@ fn test_node_range_seeds_full_catalog() {
                     rhs_node_type: "orders",
                     seed_time,
                 }),
+                None,
             )
             .expect("NodeRange sample_runtime_batch must succeed");
 

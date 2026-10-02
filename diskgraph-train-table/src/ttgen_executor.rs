@@ -508,6 +508,12 @@ pub fn execute_tt_pass_with_customizer<U: UnitSystem, F>(
 where
     F: FnOnce(&mut ResolvedPlan<U>),
 {
+    if plan.fact_pseudo_time.is_some() && !matches!(determine_split_mode(plan), SplitMode::Compute)
+    {
+        return Err(TTGenError::InvalidPlan(
+            "fact_pseudo_time requires stage parts from a supported split".to_string(),
+        ));
+    }
     // Open index
     let metadata_path = index_path.join("index_metadata.json");
     let reader = GraphIndexReader::open(&metadata_path, index_path)
@@ -520,6 +526,18 @@ where
         customizer(&mut resolved);
     }
     let resolved = Arc::new(resolved);
+    let mut fact_pseudo_time = plan
+        .fact_pseudo_time
+        .as_ref()
+        .map(|spec| {
+            crate::pseudo_time::FactPseudoTime::new(
+                &reader,
+                &plan.entity.table,
+                &plan.entity.column,
+                spec,
+            )
+        })
+        .transpose()?;
 
     let num_entities = resolved.entity_table.node_count();
     let num_threads = rayon::current_num_threads();
@@ -701,6 +719,7 @@ where
             writer_thread,
             PassBMode::Deferred,
             custom_tt_source_ref,
+            fact_pseudo_time.as_mut(),
         )
     } else {
         match (&split_mode, split_kind.as_deref()) {
@@ -724,6 +743,7 @@ where
                         drop_split_column: None,
                     },
                     custom_tt_source_ref,
+                    fact_pseudo_time.as_mut(),
                 )
             }
             (SplitMode::Compute, Some("BacktestingSplit")) => {
@@ -747,6 +767,7 @@ where
                         drop_split_column: None,
                     },
                     custom_tt_source_ref,
+                    fact_pseudo_time.as_mut(),
                 )
             }
             (SplitMode::Compute, Some("ManualSplit"))
@@ -789,6 +810,7 @@ where
                         drop_split_column: None,
                     },
                     custom_tt_source_ref,
+                    fact_pseudo_time.as_mut(),
                 )
             }
             // ── Tier-2 deciders ──────────────────────────────────────────────
@@ -810,6 +832,7 @@ where
                         drop_split_column: None,
                     },
                     custom_tt_source_ref,
+                    fact_pseudo_time.as_mut(),
                 )
             }
             (SplitMode::Compute, Some("RandomLinkSplit")) => {
@@ -830,6 +853,7 @@ where
                         drop_split_column: None,
                     },
                     custom_tt_source_ref,
+                    fact_pseudo_time.as_mut(),
                 )
             }
             (SplitMode::Compute, Some("FixedSplit")) => {
@@ -849,6 +873,7 @@ where
                         drop_split_column: None,
                     },
                     custom_tt_source_ref,
+                    fact_pseudo_time.as_mut(),
                 )
             }
             (SplitMode::Compute, Some("TemporalSplit")) => {
@@ -868,6 +893,7 @@ where
                         drop_split_column: None,
                     },
                     custom_tt_source_ref,
+                    fact_pseudo_time.as_mut(),
                 )
             }
             (SplitMode::Compute, Some("DateOffsetSplit")) => {
@@ -899,6 +925,7 @@ where
                         drop_split_column: None,
                     },
                     custom_tt_source_ref,
+                    fact_pseudo_time.as_mut(),
                 )
             }
             (SplitMode::Compute, Some("ApproxDateOffsetSplit")) => {
@@ -918,6 +945,7 @@ where
                         drop_split_column: None,
                     },
                     custom_tt_source_ref,
+                    fact_pseudo_time.as_mut(),
                 )
             }
             // ── ColumnSplit / ManualSplit-on-column ─────────────────────────
@@ -985,6 +1013,7 @@ where
                             drop_split_column: Some(drop_col),
                         },
                         custom_tt_source_ref,
+                        fact_pseudo_time.as_mut(),
                     )
                 } else if has_ratio {
                     // (γ) Ratio-derived cutoffs on a numeric column. The
@@ -1008,6 +1037,7 @@ where
                             drop_split_column: Some(drop_col),
                         },
                         custom_tt_source_ref,
+                        fact_pseudo_time.as_mut(),
                     )
                 } else {
                     return Err(TTGenError::InvalidPlan(
@@ -1027,6 +1057,7 @@ where
                 writer_thread,
                 PassBMode::Deferred,
                 custom_tt_source_ref,
+                fact_pseudo_time.as_mut(),
             ),
         }
     };
@@ -1142,12 +1173,16 @@ where
                 )));
             }
         };
+        if let Some(marker) = &mut fact_pseudo_time {
+            marker.initialize();
+        }
         Some(run_pass_b_per_link(
             &tt_parquet_path,
             &assigner,
             output_dir,
             total_rows,
             &out_schema,
+            fact_pseudo_time.as_ref(),
         )?)
     } else {
         // No split / prediction: no pass-B; ingest reads tt.parquet directly.
@@ -1214,6 +1249,7 @@ where
         arange_sidecar: None,
         // Weight rides as the reserved `WEIGHT` column now; sidecar field kept None.
         weight_sidecar: None,
+        fact_pseudo_time: None,
         checksums: ManifestChecksums {
             split_sha256: String::new(),
             stats_sha256: stats_sha,
@@ -1221,8 +1257,28 @@ where
             train_table_col_stats_sha256: None,
             train_table_edges_sha256: None,
             weight_sidecar_sha256: None,
+            fact_pseudo_time_sha256: None,
         },
     };
+
+    if let (Some(spec), Some(marker)) = (plan.fact_pseudo_time.as_ref(), fact_pseudo_time) {
+        let parts = stage_parts.as_ref().ok_or_else(|| {
+            TTGenError::InvalidPlan("fact_pseudo_time requires stage parts".to_string())
+        })?;
+        let nonempty = if custom_tt_source.is_some() {
+            total_rows > 0
+        } else {
+            parts.iter().any(|stage| stage.row_count > 0)
+        };
+        let path = marker.finish(output_dir, nonempty, custom_tt_source.is_none())?;
+        manifest.version = crate::manifest::FACT_PSEUDO_TIME_MANIFEST_VERSION;
+        manifest.checksums.fact_pseudo_time_sha256 = Some(sha256_file(&path)?);
+        manifest.fact_pseudo_time = Some(crate::manifest::FactPseudoTimeRef {
+            path: crate::pseudo_time::FACT_PSEUDO_TIME_FILE.to_string(),
+            format: crate::manifest::FACT_PSEUDO_TIME_FORMAT.to_string(),
+            node_type: spec.table.clone(),
+        });
+    }
 
     if let Some(parts) = stage_parts.as_ref() {
         if let Some((path, sha)) = crate::split_stats::write_kumo_split_stats_artifact(
@@ -1288,6 +1344,7 @@ fn run_pass_a_then_pass_b<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
     writer_thread: std::thread::JoinHandle<TTGenResult<u64>>,
     pass_b_mode: PassBMode,
     custom_tt_source: Option<&CustomTtSource>,
+    mut fact_pseudo_time: Option<&mut crate::pseudo_time::FactPseudoTime>,
 ) -> TTGenResult<PassAOutputs<U>> {
     let pass_a_result = if let Some(source) = custom_tt_source {
         run_pass_a_custom_tt::<U, D>(
@@ -1361,6 +1418,9 @@ fn run_pass_a_then_pass_b<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
                 None => tt_schema,
             };
             let forecasting_horizon = forecasting_horizon_config(resolved)?;
+            if let Some(marker) = &mut fact_pseudo_time {
+                marker.initialize();
+            }
             Some(run_pass_b_per_anchor::<U, D>(
                 tt_parquet_path,
                 &merged_decider,
@@ -1370,6 +1430,7 @@ fn run_pass_a_then_pass_b<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
                 drop_split_column.as_deref(),
                 &out_schema,
                 forecasting_horizon,
+                fact_pseudo_time.as_deref(),
             )?)
         }
         PassBMode::Deferred => None,

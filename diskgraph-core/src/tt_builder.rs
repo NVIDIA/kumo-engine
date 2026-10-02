@@ -102,6 +102,20 @@ pub struct DiskGraphTTPlan<U: UnitSystem> {
     /// old plans (and non-LP plans) deserialize as `false` (flat).
     #[serde(default)]
     pub lp_rhs_is_temporal: bool,
+
+    /// Static LP fact table; gen writes a per-row pseudo time for it.
+    #[serde(default)]
+    pub fact_pseudo_time: Option<FactPseudoTimeSpec>,
+}
+
+/// Fact `table` whose rows hold static LP links: `entity_col` references the
+/// entity table, `target_col` holds the `TARGET1` value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct FactPseudoTimeSpec {
+    pub table: String,
+    pub entity_col: String,
+    pub target_col: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -618,6 +632,7 @@ mod tests {
             fkey_mapping: None,
             lp_resolution: None,
             lp_rhs_is_temporal: false,
+            fact_pseudo_time: None,
         };
 
         let json = serde_json::to_string(&plan).unwrap();

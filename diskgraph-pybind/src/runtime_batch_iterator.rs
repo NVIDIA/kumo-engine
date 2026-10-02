@@ -360,6 +360,150 @@ struct WeightedSeedBucketConfig {
     total_weight: Option<f64>,
 }
 
+/// A TT's mmapped `fact_pseudo_time.bin` plus the seed pseudo time.
+pub(crate) struct PseudoTimeSeed {
+    node_type: String,
+    mmap: memmap2::Mmap,
+    seed_time: u8,
+}
+
+impl PseudoTimeSeed {
+    pub(crate) fn is_present(reader: &diskgraph_index::graph::GraphIndexReader) -> PyResult<bool> {
+        let Some(root) = reader.tt_extension_root() else {
+            return Ok(false);
+        };
+        let path = root.join("manifest.json");
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(DiskgraphSystemError::new_err(format!(
+                    "{}: {error}",
+                    path.display()
+                )));
+            }
+        };
+        let manifest: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|error| DiskgraphDataError::new_err(format!("{}: {error}", path.display())))?;
+        let present = manifest
+            .get("fact_pseudo_time")
+            .is_some_and(|value| !value.is_null());
+        if !present
+            && manifest["version"].as_u64()
+                == Some(diskgraph_train_table::manifest::FACT_PSEUDO_TIME_MANIFEST_VERSION as u64)
+        {
+            return Err(DiskgraphDataError::new_err(format!(
+                "{}: manifest version 4 requires fact_pseudo_time",
+                path.display()
+            )));
+        }
+        Ok(present)
+    }
+
+    pub(crate) fn for_stage(
+        reader: &diskgraph_index::graph::GraphIndexReader,
+        stage_table: &str,
+        seed_time: Option<i64>,
+        disable_pseudo_time: bool,
+    ) -> PyResult<Option<Self>> {
+        if disable_pseudo_time {
+            if seed_time.is_some() {
+                return Err(DiskgraphConfigError::new_err(
+                    "disable_pseudo_time cannot be combined with pseudo_seed_time",
+                ));
+            }
+            return Ok(None);
+        }
+        if let Some(time) = seed_time {
+            return Self::open(reader, time).map(Some);
+        }
+        if !Self::is_present(reader)? {
+            return Ok(None);
+        }
+        let root = reader.tt_extension_root().unwrap();
+        let path = root.join("diskgraph_manifest.json");
+        let bytes = std::fs::read(&path)
+            .map_err(|e| DiskgraphDataError::new_err(format!("{}: {e}", path.display())))?;
+        let manifest: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|e| DiskgraphDataError::new_err(format!("{}: {e}", path.display())))?;
+        let stages = manifest["task_dataset"]["stages"]
+            .as_object()
+            .ok_or_else(|| {
+                DiskgraphDataError::new_err("fact pseudo times require task_dataset.stages")
+            })?;
+        let bare_table = stage_table.rsplit('/').next().unwrap_or(stage_table);
+        let stage = stages.iter().find_map(|(stage, entry)| {
+            (entry["table_name"].as_str() == Some(bare_table)).then_some(stage.as_str())
+        });
+        match stage {
+            Some("train" | "val") => Self::open(reader, 1).map(Some),
+            Some("test") => Self::open(reader, 2).map(Some),
+            Some("predict") => {
+                tracing::warn!(
+                    stage_table,
+                    "Prediction samples all facts without a pseudo-time cutoff"
+                );
+                Ok(None)
+            }
+            _ => Err(DiskgraphConfigError::new_err(format!(
+                "Cannot infer pseudo-time cutoff for {stage_table:?}; pass pseudo_seed_time explicitly"
+            ))),
+        }
+    }
+
+    pub(crate) fn open(
+        reader: &diskgraph_index::graph::GraphIndexReader,
+        seed_time: i64,
+    ) -> PyResult<Self> {
+        use diskgraph_train_table::manifest::{read_manifest, FACT_PSEUDO_TIME_FORMAT};
+        use diskgraph_train_table::pseudo_time::fact_pseudo_time_payload;
+        if !(0..=3).contains(&seed_time) {
+            return Err(DiskgraphConfigError::new_err(
+                "pseudo_seed_time must be between 0 and 3",
+            ));
+        }
+        let seed_time = seed_time as u8;
+        let root = reader.tt_extension_root().ok_or_else(|| {
+            DiskgraphConfigError::new_err("pseudo_seed_time requires a train-table extension")
+        })?;
+        let manifest = read_manifest(&root.join("manifest.json")).map_err(crate::map_ttgen_err)?;
+        let sidecar = manifest.fact_pseudo_time.ok_or_else(|| {
+            DiskgraphConfigError::new_err(format!(
+                "pseudo_seed_time set but {} has no fact_pseudo_time sidecar",
+                root.display()
+            ))
+        })?;
+        if sidecar.format != FACT_PSEUDO_TIME_FORMAT {
+            return Err(DiskgraphDataError::new_err(format!(
+                "unsupported fact_pseudo_time format {:?}",
+                sidecar.format
+            )));
+        }
+        let path = root.join(&sidecar.path);
+        let file = std::fs::File::open(&path).map_err(|e| {
+            DiskgraphSystemError::new_err(format!("failed to open {}: {e}", path.display()))
+        })?;
+        let mmap = unsafe { memmap2::Mmap::map(&file) }.map_err(|e| {
+            DiskgraphSystemError::new_err(format!("failed to mmap {}: {e}", path.display()))
+        })?;
+        fact_pseudo_time_payload(&mmap)
+            .map_err(|e| DiskgraphDataError::new_err(format!("{}: {e}", path.display())))?;
+        Ok(Self {
+            node_type: sidecar.node_type,
+            mmap,
+            seed_time,
+        })
+    }
+
+    pub(crate) fn filter(&self) -> diskgraph_engine::engine::PseudoTimeFilter<'_> {
+        diskgraph_engine::engine::PseudoTimeFilter {
+            node_type: &self.node_type,
+            times: &self.mmap[diskgraph_train_table::pseudo_time::FACT_PSEUDO_TIME_HEADER_LEN..],
+            seed_time: self.seed_time,
+        }
+    }
+}
+
 struct U64Sidecar {
     path: String,
     mmap: Option<memmap2::Mmap>,
@@ -1255,6 +1399,8 @@ pub struct RuntimeBatchIterator {
     /// of the flat `offsets` path; `offsets` is left empty in that mode. `None`
     /// => the existing flat `make_worker_offsets` path (byte-identical).
     bucket_schedule: Option<BucketSchedule>,
+    /// Static LP: hide fact rows with pseudo time above the seed's.
+    pseudo_time: Option<PseudoTimeSeed>,
     /// Whether a TIMESTAMP column in the seed rowpack should be used as the
     /// temporal sampler anchor. Static task datasets may still carry a pseudo
     /// TIMESTAMP column for split/schema compatibility; those must not anchor
@@ -1346,6 +1492,8 @@ impl RuntimeIndex {
         weighted_seed_sampling_json=None,
         selected_stage_node_ids=None,
         use_seed_timestamps=true,
+        pseudo_seed_time=None,
+        disable_pseudo_time=false,
     ))]
     #[allow(clippy::too_many_arguments)]
     pub fn iter(
@@ -1375,6 +1523,8 @@ impl RuntimeIndex {
         weighted_seed_sampling_json: Option<String>,
         selected_stage_node_ids: Option<Vec<u64>>,
         use_seed_timestamps: bool,
+        pseudo_seed_time: Option<i64>,
+        disable_pseudo_time: bool,
     ) -> PyResult<RuntimeBatchIterator> {
         RuntimeBatchIterator::build(
             Arc::clone(&self.reader),
@@ -1405,6 +1555,8 @@ impl RuntimeIndex {
             weighted_seed_sampling_json,
             selected_stage_node_ids,
             use_seed_timestamps,
+            pseudo_seed_time,
+            disable_pseudo_time,
         )
     }
 }
@@ -1480,6 +1632,8 @@ impl RuntimeBatchIterator {
         // order. These are the same ids emitted as task.tt_stage_node_ids.
         selected_stage_node_ids: Option<Vec<u64>>,
         use_seed_timestamps: bool,
+        pseudo_seed_time: Option<i64>,
+        disable_pseudo_time: bool,
     ) -> PyResult<Self> {
         if batch_size == 0 {
             return Err(DiskgraphConfigError::new_err("batch_size must be >= 1"));
@@ -1668,6 +1822,12 @@ impl RuntimeBatchIterator {
                 0,
             )?
         };
+        let pseudo_time = PseudoTimeSeed::for_stage(
+            reader.as_ref(),
+            &stage_table,
+            pseudo_seed_time,
+            disable_pseudo_time,
+        )?;
         // `fused=None` → DG picks via heuristic. Explicit override wins.
         // Telemetry so trainers can see what was chosen and why.
         let chosen_fused = match fused {
@@ -1715,6 +1875,7 @@ impl RuntimeBatchIterator {
             rhs_seed_time,
             bucket_schedule,
             use_seed_timestamps,
+            pseudo_time,
         })
     }
 
@@ -1757,6 +1918,8 @@ impl RuntimeBatchIterator {
         weighted_seed_sampling_json=None,
         selected_stage_node_ids=None,
         use_seed_timestamps=true,
+        pseudo_seed_time=None,
+        disable_pseudo_time=false,
     ))]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -1788,6 +1951,8 @@ impl RuntimeBatchIterator {
         weighted_seed_sampling_json: Option<String>,
         selected_stage_node_ids: Option<Vec<u64>>,
         use_seed_timestamps: bool,
+        pseudo_seed_time: Option<i64>,
+        disable_pseudo_time: bool,
     ) -> PyResult<Self> {
         let index = RuntimeIndex::new(parent_root, tt_id, rnd_seed, num_threads)?;
         Self::build(
@@ -1819,6 +1984,8 @@ impl RuntimeBatchIterator {
             weighted_seed_sampling_json,
             selected_stage_node_ids,
             use_seed_timestamps,
+            pseudo_seed_time,
+            disable_pseudo_time,
         )
     }
 
@@ -1896,6 +2063,7 @@ impl RuntimeBatchIterator {
             let negatives = self.negatives.as_ref();
             let entity_node_type = self.entity_node_type.as_deref();
             let target_node_type = self.target_node_type.as_deref();
+            let pseudo_time = self.pseudo_time.as_ref().map(PseudoTimeSeed::filter);
             let runtime_batch = py.detach(|| -> PyResult<Option<RuntimeBatch>> {
                 let node_ids = match sched.next_node_ids()? {
                     Some(ids) => ids,
@@ -1921,6 +2089,7 @@ impl RuntimeBatchIterator {
                         target_node_type,
                         self.use_seed_timestamps,
                         None,
+                        pseudo_time,
                     )
                     .map_err(map_engine_err)?;
                 Ok(Some(rb))
@@ -1950,6 +2119,7 @@ impl RuntimeBatchIterator {
             let negatives = self.negatives.as_ref();
             let entity_node_type = self.entity_node_type.as_deref();
             let target_node_type = self.target_node_type.as_deref();
+            let pseudo_time = self.pseudo_time.as_ref().map(PseudoTimeSeed::filter);
             let runtime_batch = py
                 .detach(|| {
                     engine.sample_runtime_batch(
@@ -1964,6 +2134,7 @@ impl RuntimeBatchIterator {
                         target_node_type,
                         self.use_seed_timestamps,
                         None,
+                        pseudo_time,
                     )
                 })
                 .map_err(map_engine_err)?;
@@ -1989,6 +2160,7 @@ impl RuntimeBatchIterator {
             let negatives = self.negatives.as_ref();
             let entity_node_type = self.entity_node_type.as_deref();
             let target_node_type = self.target_node_type.as_deref();
+            let pseudo_time = self.pseudo_time.as_ref().map(PseudoTimeSeed::filter);
             let runtime_batch = py
                 .detach(|| {
                     engine.sample_runtime_batch(
@@ -2003,6 +2175,7 @@ impl RuntimeBatchIterator {
                         target_node_type,
                         self.use_seed_timestamps,
                         None,
+                        pseudo_time,
                     )
                 })
                 .map_err(map_engine_err)?;
@@ -2037,6 +2210,7 @@ impl RuntimeBatchIterator {
             let reader = &self.reader;
             let plan = &self.plan;
             let flags = &self.flags;
+            let pseudo_time = self.pseudo_time.as_ref().map(PseudoTimeSeed::filter);
             let runtime_batch = py
                 .detach(|| {
                     engine.sample_runtime_batch(
@@ -2055,6 +2229,7 @@ impl RuntimeBatchIterator {
                             rhs_node_type: rhs_type,
                             seed_time,
                         }),
+                        pseudo_time,
                     )
                 })
                 .map_err(map_engine_err)?;
@@ -2092,6 +2267,7 @@ impl RuntimeBatchIterator {
         let negatives = self.negatives.as_ref();
         let entity_node_type = self.entity_node_type.as_deref();
         let target_node_type = self.target_node_type.as_deref();
+        let pseudo_time = self.pseudo_time.as_ref().map(PseudoTimeSeed::filter);
         let runtime_batch = py
             .detach(|| {
                 engine.sample_runtime_batch(
@@ -2106,6 +2282,7 @@ impl RuntimeBatchIterator {
                     target_node_type,
                     self.use_seed_timestamps,
                     None, // node_range off (stage-table path)
+                    pseudo_time,
                 )
             })
             .map_err(map_engine_err)?;
