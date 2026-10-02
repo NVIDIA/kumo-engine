@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 use arrow::pyarrow::ToPyArrow;
 use arrow_array::{Array, Int64Array, RecordBatch, UInt32Array, UInt64Array};
 use diskgraph_core::sampling::{NegativeSamplingSpec, SamplingFlags, SamplingPlan};

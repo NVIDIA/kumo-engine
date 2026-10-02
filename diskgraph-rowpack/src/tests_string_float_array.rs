@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Tests for string → float32_array parsing.
 //!
 //! When a parquet column stores embeddings as JSON-encoded strings like

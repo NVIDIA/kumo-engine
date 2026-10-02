@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Regression for the runner mistaking an informational RLIMIT_NOFILE log
 //! line for part of the `--print-resolved-threads` numeric result.
 //! `--print-resolved-threads` must return before tracing/rlimit setup runs,

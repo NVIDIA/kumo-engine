@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! TT-NG comprehensive end-to-end tests.
 //!
 //! Each test exercises the FULL pipeline (pass A → fused pass-B routing →

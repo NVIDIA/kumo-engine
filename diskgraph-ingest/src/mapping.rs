@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 use anyhow::{anyhow, Result};
 use epserde::prelude::{Deserialize as EpDeserialize, Flags as EpFlags};
 use memmap2::Mmap;

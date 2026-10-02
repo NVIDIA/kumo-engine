@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Diskgraph disk space manager.
 //!
 //! Manages local SSD space for diskgraph indexes. Before each ingest, scans

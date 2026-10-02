@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Exception classes used by the task-dataset rework modules.
 
 Re-exports the Rust-backed `DiskgraphDataError`,

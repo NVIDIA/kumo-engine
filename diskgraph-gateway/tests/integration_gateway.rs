@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 use arrow_flight::{flight_service_server::FlightService, Ticket};
 use diskgraph_engine::engine::{DiskGraphEngine, ShardHandle};
 use diskgraph_engine::state::StatePool;

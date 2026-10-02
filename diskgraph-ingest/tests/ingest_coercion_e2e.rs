@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Comprehensive E2E tests for FK→PK type coercion.
 //!
 //! Tests all 25×25 = 625 IngestedType combinations with actual ingestion.

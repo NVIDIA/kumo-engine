@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 from ._c import DiskgraphDataError, DiskgraphConfigError, DiskgraphSystemError
 """Convert Kumo GraphConfig to DiskGraph ingest config.
 

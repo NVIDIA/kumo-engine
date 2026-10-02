@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::errors::{DiskgraphError, Result};
 use crate::time::TimeUnit;
 use serde::{Deserialize, Serialize};

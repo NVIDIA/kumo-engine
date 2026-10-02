@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::builder::{
     compute_relation_layouts, estimate_edge_record_bytes, shard_node_count, BuildStats,
     EdgeBufferPool, MemoryBudget, ShardBuildParams, ShardBuilder,

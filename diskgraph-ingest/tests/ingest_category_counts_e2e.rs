@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! End-to-end coverage that single (non-multi) categorical columns emit a
 //! populated `CATEGORY_COUNTS` vocab through the real ingest pipeline — the
 //! encoder builds its vocab from this, so an empty list silently drops every

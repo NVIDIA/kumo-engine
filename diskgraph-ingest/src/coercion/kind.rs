@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Coercion kind determination for FK-PK type pairs.
 //!
 //! This module defines the `CoercionKind` enum and the `coercion_kind` function

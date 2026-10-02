@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 # Artifact notices target Linux release outputs. Development-only dependencies
 # do not enter those outputs; build dependencies are policy-checked by
 # cargo-deny but do not appear in the redistributed-component notice.

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 use diskgraph_index::layout::RelationLayout;
 
 /// Optimized helper to unpack edges from a binary blob.

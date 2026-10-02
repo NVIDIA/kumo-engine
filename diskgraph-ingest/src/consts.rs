@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 pub const NODE_BATCH_SIZE: usize = 100_000;
 pub const MAX_KEY_SAMPLE_LEN: usize = 64;
 pub const TEMP_DIR_NAME: &str = "_tmp";

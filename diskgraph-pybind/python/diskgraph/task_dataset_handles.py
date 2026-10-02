@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Direct-fetch handles and payloads exposed by `DiskgraphTaskDataset`.
 
 Matches `runtime-dataset-contracts.md` §Contract 2 (post-rework).  The

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! KUMO-CONTRACT BRIDGE — DELETE WHEN KUMO MIGRATES OFF SIDECAR JSON.
 //!
 //! Transitional `train_table_col_stats.json` sidecar; end-state is kumo reading

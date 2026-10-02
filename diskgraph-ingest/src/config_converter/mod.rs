@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Kumo GraphConfig to DiskGraph GraphConfig converter.
 //!
 //! This module converts Kumo's graph configuration format to DiskGraph's GraphConfig format,

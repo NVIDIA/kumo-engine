@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! TT-NG manifest (`manifest.json`) — schema, serialization, and writer.
 //!
 //! Written once at the very end of

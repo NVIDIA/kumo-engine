@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Bounded diagnostics for failures crossing a process boundary.
 //!
 //! Unmarked first-party failures are visible to operators by default. Call

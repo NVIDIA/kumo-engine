@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Compute Kumo-format statistics over completed prediction parquet files.
 //!
 //! Columns are resolved by name. Scalar and category statistics use the first

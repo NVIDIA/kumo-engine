@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Pure, per-batch routing kernels for the fused ttgen pass-B.
 //!
 //! Each kernel takes a `RecordBatch` and returns `[RecordBatch; 3]`

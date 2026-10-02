@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! TT-NG binary-label sidecars for replacement seed sampling.
 //!
 //! Labels are captured in node-write order, not source parquet order. For each

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Regression test for sort key / node data misalignment when an edge table
 //! is split across multiple parquet files and processed in parallel.
 //!

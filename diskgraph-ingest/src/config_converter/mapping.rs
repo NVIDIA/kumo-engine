@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Type mapping functions for Kumo to DiskGraph conversion.
 
 use crate::graph_config::{IngestedType, SemanticType, TimestampUnit};

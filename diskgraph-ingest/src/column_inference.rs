@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Infer stage-extension [`ColumnSpec`]s from a parquet file's Arrow schema.
 //!
 //! Shared by the TT-NG stage-ingest callers (the PQL path in

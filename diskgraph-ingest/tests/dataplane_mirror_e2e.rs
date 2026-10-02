@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! End-to-end test for atomic-marker ingest with a dataplane mirror.
 //!
 //! This is the post-condition the streaming-mirror feature promises and that

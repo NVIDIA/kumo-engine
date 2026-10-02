@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Empty-target row drop for array-form Link Prediction tasks.
 //!
 //! The fused pass-B router (`crate::route` + `crate::pass_b`) now performs

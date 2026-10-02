@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 use anyhow::{anyhow, bail, Context, Result};
 use diskgraph_fs::{build_s3_client_async, CloudTransfer, CloudTransferConfig, S3Config};
 use futures_util::stream::{self, StreamExt, TryStreamExt};

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! TT-NG temporal-LP timestamp grouping (ingest side).
 //!
 //! When enabled for a stage table, ingest produces an on-disk artifact that

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Integration tests for the custom-TT executor path (TT-NG Phase 6).
 //!
 //! These tests cover three cross-cutting aspects:

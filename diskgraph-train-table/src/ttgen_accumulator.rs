@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! TT-gen accumulators — one per `AggFunc` variant.
 //!
 //! Each accumulator is created fresh per (entity, timestamp, op), used during

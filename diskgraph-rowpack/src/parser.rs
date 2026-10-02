@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::MAX_INPUT_STRING_BYTES;
 use anyhow::{anyhow, Result};
 use arrow_array::{Array, ArrayRef};

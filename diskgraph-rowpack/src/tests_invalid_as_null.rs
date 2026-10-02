@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 use super::*;
 use arrow_array::{
     builder::{Float32Builder, Int64Builder, ListBuilder, StringBuilder},

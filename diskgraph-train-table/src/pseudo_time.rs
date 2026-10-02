@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Static LP fact-row pseudo times (Kumo 2's `PSEUDO_TIME` on the target table).
 //!
 //! One byte per fact node id: `0` not a label, else the link's stage + 1

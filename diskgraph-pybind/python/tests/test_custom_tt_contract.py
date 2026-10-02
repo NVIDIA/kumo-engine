@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """The custom-TT contract, as a Python consumer decodes it.
 
 The Rust tests prove each token corresponds to a reader arm. They cannot prove

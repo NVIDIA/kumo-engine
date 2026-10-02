@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Config-time validation of FK-PK type compatibility.
 //!
 //! This module validates FK-PK type pairs at config time, before any data is read.

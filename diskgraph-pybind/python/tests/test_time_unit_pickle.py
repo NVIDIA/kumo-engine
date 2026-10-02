@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Round-trip pickle tests for the TimeUnit pybind enum.
 
 The kumo path runs DG calls through @diskgraph_subprocess (a SIGKILL-able

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 use diskgraph_index::graph::{GraphBuildProgress, GraphBuildStage, GraphProgressSink};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::hash_map::Entry;

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Offline tool to build a bloom filter from a GloVe vocabulary text file.
 //!
 //! Usage: cargo run --release --bin build_glove_bloom -- <vocab.txt> <output.bin>

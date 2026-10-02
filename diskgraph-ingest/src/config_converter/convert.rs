@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Conversion from Kumo GraphConfig to DiskGraph GraphConfig.
 
 use std::collections::{HashMap, HashSet};

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """High-level entry point for rehydrating TT artifacts from a customer-
 supplied training-table parquet (the custom-TT path).
 

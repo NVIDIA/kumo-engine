@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Arrow DataType → IngestedType conversion tests.
 //!
 //! Tests all combinations of Arrow types × IngestedType targets using a loop-based approach.

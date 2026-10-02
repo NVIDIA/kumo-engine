@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Fused pass-B: parallel-over-row-group router that reads the `tt.parquet`
 //! directory dataset and writes per-stage seed parts directly
 //! (`<stage_table>/part-NNNNN.parquet`).

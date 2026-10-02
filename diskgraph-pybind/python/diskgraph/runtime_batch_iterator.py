@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Construct Rust-backed runtime batch iterators from a runtime manifest.
 
 Kumo passes a flat ``kind="diskgraph_task_dataset"`` runtime manifest plus

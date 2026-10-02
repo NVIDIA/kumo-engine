@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """PEP 517 backend for DiskGraph's Python wheel.
 
 The Python package is built by maturin, but the wheel also carries the

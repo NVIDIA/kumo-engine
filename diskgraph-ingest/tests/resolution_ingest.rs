@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! FK-free LP "resolution mode" ingest tests.
 //!
 //! Spec: `ttng-lp-fkfree-resolution-design.md` §S3. The special tt-ingest

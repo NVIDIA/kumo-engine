@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Plan preprocessing: resolve string references to index handles and indices.
 //!
 //! Runs once on the main thread before the parallel entity loop.

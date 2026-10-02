@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Caches AWS SDK credentials for the `object_store` S3 client.
 //!
 //! `object_store` asks custom providers for credentials on every request, while

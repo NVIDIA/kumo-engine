@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The context sample steps between partitions, and each partition it steps off
 //! is handed back to the encode phase. Both halves can go wrong silently: a
 //! dropped partition loses rows, and a sampled batch carried forward encodes

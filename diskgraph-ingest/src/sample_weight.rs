@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! TT-NG row-weight sidecars for replacement seed sampling.
 //!
 //! We spill one f64 per surviving train-stage node in node-write order. After

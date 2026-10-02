@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Integration tests proving that resuming from any phase produces a
 //! byte-identical final index compared to running the same ingest end-to-end
 //! without resume. This is the core correctness invariant the resume code

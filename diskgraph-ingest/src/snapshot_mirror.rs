@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Streaming dataplane mirror for ingest output, plus the manifest and
 //! end-of-ingest ordering primitives that callers (and `verify_snapshot_integrity`)
 //! rely on.

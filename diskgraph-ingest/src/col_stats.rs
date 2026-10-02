@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Per-column statistics collection during the encode stage.
 //!
 //! `FileColStats` implements `ColumnValueObserver` and accumulates per-file

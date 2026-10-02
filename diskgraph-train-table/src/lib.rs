@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 // TT-gen executor (plan-based, driven by DiskGraphTTPlan from PyO3 builder)
 pub mod ttgen_accumulator;
 pub mod ttgen_executor;

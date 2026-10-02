@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Diskgraph ingest: convert raw CSV/Parquet sources into index-ready artifacts.
 
 pub mod binary_label;

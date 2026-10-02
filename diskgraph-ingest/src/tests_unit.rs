@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 use super::{
     key_from_access_into_buf, BitWriter, NodeBatcher, NodeWriteMessage, OutputSink,
     RowPackRowLens,

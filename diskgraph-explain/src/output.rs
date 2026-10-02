@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Output structures for entity explanations.
 //!
 //! This is the final format that gets serialized to parquet/JSON for LLM consumption.

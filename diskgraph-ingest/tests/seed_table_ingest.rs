@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Phase 1 integration tests for seed-table ingest (Option C).
 //!
 //! Tests 2.1.1–2.1.14 from docs/proposals/seed_tables_as_dg_node_tables.md.

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! FK-free LP "resolution mode" — engine `sample_runtime_batch` (design §S3/§S5).
 //!
 //! S1+S2 (tests/resolution_ingest.rs) wrote the seed table with resolved

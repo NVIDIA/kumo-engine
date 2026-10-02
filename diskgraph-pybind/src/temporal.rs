@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! The temporal surface Python calls instead of re-implementing it.
 //!
 //! A format string is an opaque token on the Python side: it is produced here,

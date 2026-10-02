@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Tests for timestamp range handling during ingest.
 //!
 //! Test 1: String-encoded timestamps where some rows have unparseable dates.

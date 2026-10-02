@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 /// Integration test: verify col-stats ingest does not retain excessive memory
 /// from LocalColumnCounts HashMap capacity in the mpsc channel.
 ///

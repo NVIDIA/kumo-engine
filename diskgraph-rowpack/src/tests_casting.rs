@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 use super::{RowAccess, RowAccessHints, RowAccessStats};
 use arrow_array::{ArrayRef, BooleanArray, Decimal128Array, Float64Array};
 use std::sync::Arc;

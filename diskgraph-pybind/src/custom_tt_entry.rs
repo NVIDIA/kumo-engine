@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! PyO3 wrappers for the custom-TT artifact rehydration entry points.
 //!
 //! Provides `_build_train_table_artifacts_for_existing_table` (TRAIN) and

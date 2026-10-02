@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Source-agnostic TT stage-extension ingest orchestration.
 //!
 //! After a TT pass produces `tt.parquet` and (for split plans) the per-stage

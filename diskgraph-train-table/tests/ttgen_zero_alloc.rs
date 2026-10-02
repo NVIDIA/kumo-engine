@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Zero-allocation guard for the LIST_DISTINCT inner observe loop
 //! (kumo#28400 §4 Step 4).
 //!

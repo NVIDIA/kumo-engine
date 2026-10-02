@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! End-to-end test for the `timestamp_format` plumbing path: a hint on the
 //! Kumo config (kumo's `metadata.TS_FORMAT`) must flow through
 //! `convert_kumo_to_diskgraph` into `ColumnSpec.timestamp_format`, drive

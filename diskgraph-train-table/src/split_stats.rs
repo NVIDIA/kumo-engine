@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Per-stage column-stats accumulator: observes TIMESTAMP/TARGET1 into
 //! Welford / TDigest / HLL accumulators keyed by stage, alongside the fused
 //! pass-B routing.

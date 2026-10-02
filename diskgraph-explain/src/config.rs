@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Configuration for the explanation pipeline.
 //!
 //! All configuration is task-agnostic and works for classification, regression, etc.

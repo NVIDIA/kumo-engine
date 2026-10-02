@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Parquet shard writer for TT-gen output.
 //!
 //! Each thread gets its own `ParquetShardWriter` that buffers rows and

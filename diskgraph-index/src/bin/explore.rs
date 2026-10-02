@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Interactive shard explorer for diskgraph-index.
 //!
 //! Supports local graphs by opening a pre-built index and providing a simple

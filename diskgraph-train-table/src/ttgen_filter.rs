@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! Filter evaluation for row-level and stage-level filters.
 
 use diskgraph_core::tt_builder::{CompareOp, Value};

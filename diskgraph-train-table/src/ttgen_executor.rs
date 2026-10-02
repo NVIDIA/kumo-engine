@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 //! TT-gen executor: drives the entity loop, staged execution, and threading.
 //!
 //! Entry point: [`execute_tt_pass`] takes a `DiskGraphTTPlan<U>`, an index
