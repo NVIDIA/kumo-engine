@@ -413,7 +413,10 @@ fn read_timestamp_secs(arr: &dyn Array, idx: usize, declared: TimeUnit) -> Optio
 /// Read a list cell as `Value::List(Vec<Value>)`. Supports inner Float64,
 /// Int64, and Utf8. Returns `None` if the cell is null or the array shape is
 /// unsupported.
-fn read_list_cell(arr: &ListArray, idx: usize) -> Option<Value> {
+fn read_list_cell<O: arrow_array::OffsetSizeTrait>(
+    arr: &arrow_array::GenericListArray<O>,
+    idx: usize,
+) -> Option<Value> {
     if arr.is_null(idx) {
         return None;
     }
@@ -556,7 +559,15 @@ fn read_weight_list_f64(arr: &dyn Array, idx: usize) -> TTGenResult<Vec<f64>> {
 }
 
 fn read_i64_list_values(arr: &dyn Array, idx: usize) -> Option<Vec<i64>> {
-    read_list_values(arr, idx).map(|values| {
+    let values = read_list_values(arr, idx).or_else(|| {
+        arr.as_any()
+            .downcast_ref::<LargeListArray>()
+            .and_then(|list| match read_list_cell(list, idx) {
+                Some(Value::List(values)) => Some(values),
+                _ => None,
+            })
+    });
+    values.map(|values| {
         values
             .into_iter()
             .map(|value| match value {
@@ -1270,9 +1281,13 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                     let targets = read_link_targets(batch.column(target_col).as_ref(), row_idx)?;
 
                     let mut freqs: Vec<i64> = if *include_frequency {
-                        frequency_col_idx
-                            .and_then(|c| read_i64_list_values(batch.column(c).as_ref(), row_idx))
-                            .unwrap_or_else(|| vec![1; targets.len()])
+                        match frequency_col_idx {
+                            Some(c) => read_i64_list_values(batch.column(c).as_ref(), row_idx)
+                                .ok_or_else(|| TTGenError::SchemaError(format!(
+                                    "cannot read custom-TT frequencies at source row {row_idx}"
+                                )))?,
+                            None => vec![1; targets.len()],
+                        }
                     } else {
                         Vec::new()
                     };

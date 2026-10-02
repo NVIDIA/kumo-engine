@@ -759,6 +759,14 @@ fn custom_nullable_targets_preserve_split_frequency_and_weight_alignment() {
             builder.append(true);
             Arc::new(builder.finish())
         };
+        let frequencies = if large {
+            let mut builder = LargeListBuilder::new(Int64Builder::new());
+            builder.values().append_slice(&[99, 11, 22]);
+            builder.append(true);
+            Arc::new(builder.finish()) as ArrayRef
+        } else {
+            ints(&[99, 11, 22])
+        };
         let mut weights = ListBuilder::new(Float64Builder::new());
         weights.values().append_slice(&[999.0, 1.5, 2.5]);
         weights.append(true);
@@ -772,7 +780,7 @@ fn custom_nullable_targets_preserve_split_frequency_and_weight_alignment() {
                 ),
                 ("TARGET1", targets),
                 ("SPLIT", ints(&[2, 0, 1])),
-                ("__kumo_internal_frequency_column__", ints(&[99, 11, 22])),
+                ("__kumo_internal_frequency_column__", frequencies),
                 ("weight", Arc::new(weights.finish())),
             ],
         );
