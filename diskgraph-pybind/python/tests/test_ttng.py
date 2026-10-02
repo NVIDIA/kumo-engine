@@ -47,103 +47,6 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _build_parent_index(tmp_path: pathlib.Path) -> pathlib.Path:
-    """Ingest a tiny users+orders parent DG index. Returns index path."""
-    import diskgraph
-
-    data_dir = tmp_path / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    parent_root = tmp_path / "parent_idx"
-
-    n_users = 12
-    orders_per_user = 6
-    pq.write_table(
-        pa.table({"user_id": pa.array(list(range(n_users)), type=pa.int64())}),
-        data_dir / "users.parquet",
-    )
-    order_ids, order_uids, order_times = [], [], []
-    time_buckets = [500, 1500, 2500, 3500, 4500]
-    for u in range(n_users):
-        for k in range(orders_per_user):
-            order_ids.append(u * orders_per_user + k)
-            order_uids.append(u)
-            order_times.append(time_buckets[k % len(time_buckets)])
-    pq.write_table(
-        pa.table({
-            "order_id": pa.array(order_ids, type=pa.int64()),
-            "user_id": pa.array(order_uids, type=pa.int64()),
-            "order_time": pa.array(order_times, type=pa.timestamp("s")),
-        }),
-        data_dir / "orders.parquet",
-    )
-    diskgraph.ingest(
-        config_json=json.dumps({
-            "dataset_name": "ttng_stage1_parent",
-            "num_shards": 1,
-            "tables": [
-                {
-                    "name": "users",
-                    "columns": [{"name": "user_id", "ingested_dtype": "int64"}],
-                    "primary_key": "user_id",
-                    "source": {"type": "parquet", "paths": [str(data_dir / "users.parquet")]},
-                },
-                {
-                    "name": "orders",
-                    "columns": [
-                        {"name": "order_id", "ingested_dtype": "int64"},
-                        {"name": "user_id", "ingested_dtype": "int64"},
-                        {"name": "order_time", "ingested_dtype": "timestamp"},
-                    ],
-                    "primary_key": "order_id",
-                    "create_time": "order_time",
-                    "fkeys": [{
-                        "src_column": "user_id",
-                        "dst_table": "users",
-                        "forward": {},
-                        "reverse": {
-                            "time": {
-                                "table": "orders",
-                                "column": "order_time",
-                                "bitwidth": 32,
-                                "unit": "s",
-                            },
-                        },
-                    }],
-                    "source": {"type": "parquet", "paths": [str(data_dir / "orders.parquet")]},
-                },
-            ],
-        }),
-        output_dir=str(parent_root),
-        col_stats=False,
-    )
-    return parent_root
-
-
-def _build_tt_plan() -> str:
-    """Return PQL plan JSON for binary-classification node prediction on users."""
-    from diskgraph import DiskGraphTTBuilder, EdgeRef
-
-    builder = DiskGraphTTBuilder()
-    builder.temporal([1500, 2500, 3500], forecast_length=1, unit="seconds")
-    builder.node_prediction()
-    builder.for_each("users", "user_id")
-    builder.set_target_stype("numerical")
-    builder.aggregate(
-        "cnt",
-        EdgeRef("users", "user_id", "orders", "user_id"),
-        "count",
-    )
-    builder.split_ratio(SplitSpec(
-        kind="TimeRangeSplit",
-        ranges=[(0, 1999), (2000, 2999), (3000, 5000)],
-        is_temporal=True,
-        timestamp_unit="seconds",
-        offset_unit="seconds",
-        unit="seconds",
-    ))
-    return builder.build()
-
-
 def _build_forecasting_tt_plan() -> str:
     from diskgraph import DiskGraphTTBuilder, EdgeRef
 
@@ -219,14 +122,12 @@ def test_wheel_lacks_legacy_symbols():
         pass  # expected
 
 
-def test_execute_tt_plan_produces_manifest(tmp_path):
+def test_execute_tt_plan_produces_manifest(parent_index, node_prediction_plan):
     """execute_tt_plan returns a task_dataset dict with train/val/test stages."""
     from diskgraph import execute_tt_plan
 
-    parent_root = _build_parent_index(tmp_path)
-    plan_json = _build_tt_plan()
 
-    result = execute_tt_plan(plan_json, str(parent_root), "tt_stage1")
+    result = execute_tt_plan(node_prediction_plan, str(parent_index), "tt_stage1")
 
     assert "task_dataset" in result, f"missing task_dataset key; got: {list(result)}"
     td = result["task_dataset"]
@@ -243,13 +144,12 @@ def test_execute_tt_plan_produces_manifest(tmp_path):
     # Intentionally no return — assertions above cover the contract.
 
 
-def test_forecasting_tt_gen_ingest_preserves_split_stats(tmp_path):
+def test_forecasting_tt_gen_ingest_preserves_split_stats(parent_index):
     from diskgraph import execute_tt_gen, execute_tt_ingest
 
-    parent_root = _build_parent_index(tmp_path)
     plan_json = _build_forecasting_tt_plan()
 
-    gen = execute_tt_gen(plan_json, str(parent_root), "tt_forecast_stats")
+    gen = execute_tt_gen(plan_json, str(parent_index), "tt_forecast_stats")
     staging = pathlib.Path(gen["staging_dir"])
     split_stats = staging / "split_stats.json"
     assert split_stats.exists()
@@ -267,14 +167,14 @@ def test_forecasting_tt_gen_ingest_preserves_split_stats(tmp_path):
 
     execute_tt_ingest(
         staging_dir=str(staging),
-        index_path=str(parent_root),
+        index_path=str(parent_index),
         tt_id="tt_forecast_stats",
     )
-    assert (parent_root / "train_tables" / "tt_forecast_stats" /
+    assert (parent_index / "train_tables" / "tt_forecast_stats" /
             "split_stats.json").exists()
 
 
-def test_compiler_forecasting_tt_gen_uses_aggregate_as_target(tmp_path):
+def test_compiler_forecasting_tt_gen_uses_aggregate_as_target(parent_index):
     from kumoapi.pquery.AST import Aggregation, Column, DateOffsetRange, Join
     from kumoapi.pquery.validated_predictive_query import ValidatedPredictiveQuery
     from kumoapi.typing import AggregationType
@@ -282,7 +182,6 @@ def test_compiler_forecasting_tt_gen_uses_aggregate_as_target(tmp_path):
     from diskgraph import DiskGraphPlanCompiler, TimeUnit, execute_tt_gen
     from diskgraph.compiler import AUTOREGRESSION_OUTPUT_ALIAS
 
-    parent_root = _build_parent_index(tmp_path)
     target_ast = Aggregation(
         target=Column(fqn="orders.order_id"),
         aggr=AggregationType.AVG,
@@ -315,7 +214,7 @@ def test_compiler_forecasting_tt_gen_uses_aggregate_as_target(tmp_path):
 
     generated = execute_tt_gen(
         plan_json,
-        str(parent_root),
+        str(parent_index),
         "tt_compiled_forecast_target",
     )
     table = pq.read_table(generated["tt_parquet_path"])
@@ -331,7 +230,7 @@ def test_compiler_forecasting_tt_gen_uses_aggregate_as_target(tmp_path):
     assert actual == pytest.approx(expected)
 
 
-def test_runtime_batch_iterator_dict_contract(tmp_path):
+def test_runtime_batch_iterator_dict_contract(tmp_path, parent_index, node_prediction_plan):
     """Full chain: execute_tt_plan → flat manifest → make_runtime_batch_iterator.
 
     Validates the dict shape against the PR #28765 runtime_batch_to_hetero
@@ -344,10 +243,8 @@ def test_runtime_batch_iterator_dict_contract(tmp_path):
     """
     from diskgraph import execute_tt_plan
 
-    parent_root = _build_parent_index(tmp_path)
-    plan_json = _build_tt_plan()
 
-    result = execute_tt_plan(plan_json, str(parent_root), "tt_batch_contract")
+    result = execute_tt_plan(node_prediction_plan, str(parent_index), "tt_batch_contract")
     td = result["task_dataset"]
     train_stage = td["stages"].get("train")
     if train_stage is None or train_stage["row_count"] == 0:
@@ -403,14 +300,12 @@ def test_runtime_batch_iterator_dict_contract(tmp_path):
     )
 
 
-def test_multi_worker_yields_disjoint_shards(tmp_path):
+def test_multi_worker_yields_disjoint_shards(tmp_path, parent_index, node_prediction_plan):
     """Two workers must partition the stage without overlap."""
     from diskgraph import execute_tt_plan
 
-    parent_root = _build_parent_index(tmp_path)
-    plan_json = _build_tt_plan()
 
-    result = execute_tt_plan(plan_json, str(parent_root), "tt_shards")
+    result = execute_tt_plan(node_prediction_plan, str(parent_index), "tt_shards")
     td = result["task_dataset"]
     train_stage = td["stages"].get("train")
     if train_stage is None or train_stage["row_count"] < 2:

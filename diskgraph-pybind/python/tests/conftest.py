@@ -366,3 +366,102 @@ def list_features_graph_with_inner_nulls(tmp_path_factory):
         pytest.fail(f"list_features_with_inner_nulls ingest failed with exit code {e.returncode}")
 
     return str(index_dir)
+
+
+@pytest.fixture
+def parent_index(tmp_path):
+    """Ingest a tiny users+orders parent DG index. Returns index path."""
+    import diskgraph
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    parent_root = tmp_path / "parent_idx"
+
+    n_users = 12
+    orders_per_user = 6
+    pq.write_table(
+        pa.table({"user_id": pa.array(list(range(n_users)), type=pa.int64())}),
+        data_dir / "users.parquet",
+    )
+    order_ids, order_uids, order_times = [], [], []
+    time_buckets = [500, 1500, 2500, 3500, 4500]
+    for u in range(n_users):
+        for k in range(orders_per_user):
+            order_ids.append(u * orders_per_user + k)
+            order_uids.append(u)
+            order_times.append(time_buckets[k % len(time_buckets)])
+    pq.write_table(
+        pa.table({
+            "order_id": pa.array(order_ids, type=pa.int64()),
+            "user_id": pa.array(order_uids, type=pa.int64()),
+            "order_time": pa.array(order_times, type=pa.timestamp("s")),
+        }),
+        data_dir / "orders.parquet",
+    )
+    diskgraph.ingest(
+        config_json=json.dumps({
+            "dataset_name": "ttng_stage1_parent",
+            "num_shards": 1,
+            "tables": [
+                {
+                    "name": "users",
+                    "columns": [{"name": "user_id", "ingested_dtype": "int64"}],
+                    "primary_key": "user_id",
+                    "source": {"type": "parquet", "paths": [str(data_dir / "users.parquet")]},
+                },
+                {
+                    "name": "orders",
+                    "columns": [
+                        {"name": "order_id", "ingested_dtype": "int64"},
+                        {"name": "user_id", "ingested_dtype": "int64"},
+                        {"name": "order_time", "ingested_dtype": "timestamp"},
+                    ],
+                    "primary_key": "order_id",
+                    "create_time": "order_time",
+                    "fkeys": [{
+                        "src_column": "user_id",
+                        "dst_table": "users",
+                        "forward": {},
+                        "reverse": {
+                            "time": {
+                                "table": "orders",
+                                "column": "order_time",
+                                "bitwidth": 32,
+                                "unit": "s",
+                            },
+                        },
+                    }],
+                    "source": {"type": "parquet", "paths": [str(data_dir / "orders.parquet")]},
+                },
+            ],
+        }),
+        output_dir=str(parent_root),
+        col_stats=False,
+    )
+    return parent_root
+
+
+@pytest.fixture
+def node_prediction_plan():
+    """Return PQL plan JSON for binary-classification node prediction on users."""
+    from diskgraph import DiskGraphTTBuilder, EdgeRef, SplitSpec
+
+    builder = DiskGraphTTBuilder()
+    builder.temporal([1500, 2500, 3500], forecast_length=1, unit="seconds")
+    builder.node_prediction()
+    builder.for_each("users", "user_id")
+    builder.set_target_stype("numerical")
+    builder.aggregate(
+        "cnt",
+        EdgeRef("users", "user_id", "orders", "user_id"),
+        "count",
+    )
+    builder.split_ratio(SplitSpec(
+        kind="TimeRangeSplit",
+        ranges=[(0, 1999), (2000, 2999), (3000, 5000)],
+        is_temporal=True,
+        timestamp_unit="seconds",
+        offset_unit="seconds",
+        unit="seconds",
+    ))
+    return builder.build()

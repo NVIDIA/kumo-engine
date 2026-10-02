@@ -159,7 +159,8 @@ jobs:
 
           TEST_DIR="$(pwd)/diskgraph-pybind/python/tests"
           cd /tmp
-          pytest -v -s "$TEST_DIR"
+          # importlib: test modules cannot import each other, as in the kumo mirror.
+          pytest -v -s --import-mode=importlib "$TEST_DIR"
 
       # The native module is built abi3 (limited API, floor py311), so the
       # SAME wheel must load on newer CPython without a rebuild. Prove the

@@ -8,11 +8,9 @@ import pytest
 
 from diskgraph import DiskGraphTTBuilder, EdgeRef, RuntimeIndex, SplitSpec, execute_tt_plan
 from diskgraph._c import DiskgraphConfigError, DiskgraphDataError
-from test_ttng import _build_parent_index
 
 
-def test_runtime_index_infers_and_overrides_generated_fact_cutoffs(tmp_path):
-    parent = _build_parent_index(tmp_path)
+def test_runtime_index_infers_and_overrides_generated_fact_cutoffs(tmp_path, parent_index):
     builder = DiskGraphTTBuilder()
     builder.link_prediction(include_frequency=False)
     builder.for_each("users", "user_id")
@@ -28,14 +26,14 @@ def test_runtime_index_infers_and_overrides_generated_fact_cutoffs(tmp_path):
         "src_col": "ENTITY1", "dst_table": "users", "kind": "scalar",
         "node_id_col": "entity_node_id",
     }]
-    result = execute_tt_plan(json.dumps(plan), str(parent), "pseudo")
+    result = execute_tt_plan(json.dumps(plan), str(parent_index), "pseudo")
     task = result["task_dataset"]
     runtime_manifest = tmp_path / "runtime.json"
     runtime_manifest.write_text(json.dumps({
-        "kind": "diskgraph_task_dataset", "graph": {"index_path": str(parent)},
+        "kind": "diskgraph_task_dataset", "graph": {"index_path": str(parent_index)},
         "stages": task["stages"], "task": {"is_temporal": False},
     }))
-    extension = parent / "train_tables" / "pseudo"
+    extension = parent_index / "train_tables" / "pseudo"
     manifest_path = extension / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
     assert manifest["version"] == 4
@@ -75,19 +73,17 @@ def test_runtime_index_infers_and_overrides_generated_fact_cutoffs(tmp_path):
 
 
 @pytest.mark.parametrize("metadata", [None, {"version": -1, "future_field": 123}])
-def test_runtime_index_accepts_extensions_without_fact_metadata(tmp_path, metadata):
-    from test_ttng import _build_tt_plan
-
-    parent = _build_parent_index(tmp_path)
-    task = execute_tt_plan(_build_tt_plan(), str(parent), "legacy")["task_dataset"]
-    metadata_path = parent / "train_tables" / "legacy" / "manifest.json"
+def test_runtime_index_accepts_extensions_without_fact_metadata(
+        tmp_path, metadata, parent_index, node_prediction_plan):
+    task = execute_tt_plan(node_prediction_plan, str(parent_index), "legacy")["task_dataset"]
+    metadata_path = parent_index / "train_tables" / "legacy" / "manifest.json"
     if metadata is None:
         metadata_path.unlink()
     else:
         metadata_path.write_text(json.dumps(metadata))
     runtime_manifest = tmp_path / "runtime.json"
     runtime_manifest.write_text(json.dumps({
-        "kind": "diskgraph_task_dataset", "graph": {"index_path": str(parent)},
+        "kind": "diskgraph_task_dataset", "graph": {"index_path": str(parent_index)},
         "stages": task["stages"],
     }))
     index = RuntimeIndex(str(runtime_manifest), num_threads=1)
