@@ -5,10 +5,9 @@
 > training needs, why the *sampling engine* (not Python) must produce negatives,
 > how the legacy system did it, what TT-NG does instead, the exact APIs and data
 > contracts, the code/data flow, performance, testing, and the boundaries of this
-> change. Every mechanism is tied to concrete code (`file:line` references are
-> point-in-time on the `tt-ng` branch — re-confirm symbols before relying on a
-> specific line). Where a decision could go either way, the rationale and any
-> caveat is recorded in §12.
+> change. This design describes the original implementation; §13 links to current
+> sources. Where a decision could go either way, the rationale and any caveat
+> is recorded in §12.
 
 ---
 
@@ -49,25 +48,36 @@ against `t`.
 
 ---
 
-## 2. What the legacy (PyG) system did — the parity target
+## 2. What the legacy (PyG) system did
 
-The pre-TT-NG path uses PyG's `LinkLoader` with triplet negative sampling. The facts
-we replicate (verified in `kumo/train/datamodule/util.py`, `kumo/train/link_gnn_module.py`,
-`.../nn/head/link_pred_head.py`, and PyG `neighbor_sampler.py`):
+In v2.21, PyG triplet negative sampling applied to the non-default `TWO_TOWER`
+module, not link prediction generally. `SHALLOW_RHS`, `ID`, and `HYBRID` used
+the LHS node loader. See the release's
+[loader selection](https://github.com/kumo-ai/kumo/blob/v2.21.0/kumo/train/datamodule/util.py)
+and [module definitions](https://github.com/kumo-ai/kumo/blob/v2.21.0/kumo/config/trainer.py):
 
 - **Distribution: uniform, global.** Negatives are drawn uniformly at random over the
   RHS id space — no degree/popularity weighting. (`neg_sampling=dict(mode='triplet', amount=M)`.)
 - **Count: `M = rhs_sample_size or 1`** — defaults to **1**. PyG draws `ceil(B·amount)`.
   (`rhs_sample_size` is overloaded — for the shallow model it means the sampled-softmax
   pool size; for the deep triplet path it is `M`. We surface it as an explicit `amount_m`.)
-- **Temporal guard.** For `TEMPORAL_LINK_PREDICTION`, PyG rejects candidates with
-  `node_time > seed_time`, greedily resampling up to 5× and falling back to the
-  min-timestamp node. Static LP has no temporal constraint.
+- **No temporal guard on negative draws.** Kumo's
+  [v2.21 sampler](https://github.com/kumo-ai/kumo/blob/v2.21.0/kumo/engine/neighbor_sampler.py)
+  called `edge_sample(..., neg_sampling=neg_sampling)` without `node_time`.
+  In the [pinned Linux PyG revision](https://github.com/pyg-team/pytorch_geometric/blob/370181c7751892e017844382deb0298cc8c67782/torch_geometric/sampler/neighbor_sampler.py),
+  `node_time=None` bypasses temporal rejection/resampling. The draw could
+  therefore select a negative that did not exist at the anchor time. This is
+  separate from temporal filtering during neighborhood traversal.
 - **Consumption is index-based.** The model gathers
   `rhs_emb[dst_pos_index]` / `rhs_emb[dst_neg_index]`. The *physical order* of RHS nodes
   in the batch does not matter to the model — the index tensors define which rows are
   positive vs negative. **So the layout is ours to define** (see §5.3).
-- **Static vs temporal is a *head* concern, not a sampler concern** (critical — see §6).
+- **Negative sharing is a head concern**; candidate temporal validity is a
+  separate sampler concern (see §6).
+
+TT-NG's candidate checks and resample-then-mask behavior are stricter than
+v2.21 when anchors and RHS temporal metadata are available. This is a behavior
+change, not temporal parity; two-tower metrics can legitimately differ.
 
 ---
 
@@ -346,9 +356,8 @@ Item catalog ids `[0..50]`; items `45,46` have `create_time = 150` (created *aft
   (Task 3.x) and already exists.
 - **No true-negative (false-negative) filtering — DEFERRED.** A sampled negative may coincidentally
   be a true link of the LHS; this PR does not filter it (PyG does none either). True-negative
-  filtering via an `lhs→rhs` union positives index is a designed-but-deferred follow-up — see
-  `/home/vedaant/ttng-lp-true-negatives-plan.md`. This PR's correctness scope is **temporal validity
-  (via masking)**, not non-link filtering.
+  filtering via an `lhs→rhs` union positives index is deferred. This PR's correctness
+  scope is **temporal validity (via masking)**, not non-link filtering.
 - **Shallow / hybrid models** get global negatives from their embedding table and do not use
   this path.
 
@@ -382,14 +391,19 @@ Item catalog ids `[0..50]`; items `45,46` have `create_time = 150` (created *aft
 ---
 
 ## 13. Pointers
-- Config: `diskgraph-core/src/sampling.rs` (`NegativeSamplingSpec`).
-- Core logic: `diskgraph-engine/src/engine.rs` (`append_global_negatives`, the injection in
+- Config: [`diskgraph-core/src/sampling.rs`](../diskgraph-core/src/sampling.rs) (`NegativeSamplingSpec`).
+- Core logic: [`diskgraph-engine/src/engine.rs`](../diskgraph-engine/src/engine.rs) (`append_global_negatives`, the injection in
   `sample_runtime_batch`).
-- Temporal check: `diskgraph-index/src/graph.rs` (`is_node_temporally_valid`,
+- Temporal check: [`diskgraph-index/src/graph.rs`](../diskgraph-index/src/graph.rs) (`is_node_temporally_valid`,
   `temporal_col_indices`).
-- FFI: `diskgraph-engine/src/output.rs` (`TaskBag`), `diskgraph-pybind/src/runtime_batch_iterator.rs`,
-  `diskgraph-pybind/python/diskgraph/runtime_batch_iterator.py`.
-- Tests: `diskgraph-engine/src/tests_unit.rs`,
-  `diskgraph-pybind/python/tests/test_runtime_batch_iterator_e2e.py`.
-- Foundation: PR #305 (per-type anchor + `seed_type_id` in `LookupKey`).
-- Background: `docs/tt-ng-architecture-and-migration.md`.
+- FFI: [`diskgraph-engine/src/output.rs`](../diskgraph-engine/src/output.rs) (`TaskBag`),
+  [native iterator](../diskgraph-pybind/src/runtime_batch_iterator.rs),
+  [Python `RuntimeIndex`](../diskgraph-pybind/python/diskgraph/runtime_batch_iterator.py).
+- Kumo integration: [runtime adapter](https://github.com/kumo-ai/kumo/blob/master/packages/kumo-core/src/kumo_core/diskgraph/runtime_adapter.py),
+  [two-tower module](https://github.com/kumo-ai/kumo/blob/master/packages/kumo-core/src/kumo_core/train/link_gnn_module.py),
+  [prediction head](https://github.com/kumo-ai/kumo/blob/master/packages/kumo-core/src/kumo_core/modeling/heads/link_prediction.py).
+- Tests: [Rust](../diskgraph-engine/src/tests_unit.rs),
+  [Python](../diskgraph-pybind/python/tests/test_runtime_batch_iterator_e2e.py).
+- Foundation: [DiskGraph PR #305](https://github.com/kumo-ai/kumo-diskgraph/pull/305)
+  (per-type anchor + `seed_type_id` in `LookupKey`).
+- Background: [TT-NG architecture and migration](tt-ng-architecture-and-migration.md).
