@@ -38,11 +38,9 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
     let cli = Cli::parse();
     let config = load_config(&cli.config)?;
-    let workers = cli.workers.unwrap_or_else(|| {
-        std::thread::available_parallelism()
-            .map(|v| v.get())
-            .unwrap_or(1)
-    });
+    let workers = cli
+        .workers
+        .unwrap_or_else(diskgraph_ingest::effective_parallelism);
     let output = OutputTarget::parse(&cli.output, workers)?;
     generator::run(config, output, workers)
 }

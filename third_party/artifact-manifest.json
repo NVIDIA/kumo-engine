@@ -797,6 +797,13 @@
           "version": "0.1.0"
         },
         {
+          "license": "Apache-2.0",
+          "name": "diskgraph-limits",
+          "source": "diskgraph-limits/Cargo.toml",
+          "source_kind": "workspace-first-party",
+          "version": "0.1.0"
+        },
+        {
           "license": "MIT",
           "name": "diskgraph-ptrhash",
           "source": "diskgraph-ptrhash/Cargo.toml",
@@ -3501,6 +3508,13 @@
           "version": "0.1.0"
         },
         {
+          "license": "Apache-2.0",
+          "name": "diskgraph-limits",
+          "source": "diskgraph-limits/Cargo.toml",
+          "source_kind": "workspace-first-party",
+          "version": "0.1.0"
+        },
+        {
           "license": "MIT",
           "name": "diskgraph-ptrhash",
           "source": "diskgraph-ptrhash/Cargo.toml",
@@ -5384,6 +5398,6 @@
       ]
     }
   ],
-  "cargo_lock_sha256": "75f841ed77000e8e93cfd40dcaef7481cb3fbb6e07b1bbbc7165c58a18770e80",
+  "cargo_lock_sha256": "53ec7659fe60d4e7f761993d4769f229828a15717d1560dce6fd9dee59f2ec63",
   "schema": 1
 }

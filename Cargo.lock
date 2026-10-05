@@ -1620,6 +1620,7 @@ dependencies = [
  "aws-credential-types",
  "aws-types",
  "bytes",
+ "diskgraph-limits",
  "futures-util",
  "object_store",
  "tokio",
@@ -1736,6 +1737,7 @@ dependencies = [
  "diskgraph-engine",
  "diskgraph-fs",
  "diskgraph-index",
+ "diskgraph-limits",
  "diskgraph-ptrhash",
  "diskgraph-rowpack",
  "epserde",
@@ -1770,6 +1772,14 @@ dependencies = [
  "ureq",
  "url",
  "uuid-simd",
+]
+
+[[package]]
+name = "diskgraph-limits"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
 ]
 
 [[package]]

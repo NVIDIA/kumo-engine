@@ -672,11 +672,8 @@ pub fn estimate_num_shards(total_bytes: u64) -> usize {
 /// cgroup limit these reduce to the host values.
 fn shard_target_bytes(total_bytes: u64) -> u64 {
     const FALLBACK_SHARD_BYTES: u64 = 1024 * 1024 * 1024; // 1 GB
-                                                          // total_memory_bytes() = min(host MemTotal, memory.max on this process's
-                                                          // own cgroup path). cpu_capacity_parallelism() honors CPU affinity/cpuset
-                                                          // while intentionally ignoring cpu.max bandwidth quota for shard sizing.
-    let mem_total = crate::total_memory_bytes().or_else(read_system_memory_bytes);
-    let capacity_parallelism = crate::cpu_capacity_parallelism() as u64;
+    let mem_total = diskgraph_limits::total_memory_bytes();
+    let capacity_parallelism = diskgraph_limits::cpu_capacity() as u64;
     match mem_total {
         Some(mem_total) => {
             shard_target_bytes_for_capacity(mem_total, capacity_parallelism, total_bytes)
@@ -749,23 +746,6 @@ fn smooth_shard_target(per_cpu_bytes: u64, total_bytes: u64) -> u64 {
         0.75
     };
     (per_cpu_bytes as f64 / divisor).round() as u64
-}
-
-/// Read total system memory from `/proc/meminfo` (Linux only).
-fn read_system_memory_bytes() -> Option<u64> {
-    #[cfg(target_os = "linux")]
-    {
-        let contents = std::fs::read_to_string("/proc/meminfo").ok()?;
-        for line in contents.lines() {
-            if let Some(value) = line.strip_prefix("MemTotal:") {
-                let parts: Vec<&str> = value.split_whitespace().collect();
-                if parts.len() >= 2 && parts[1] == "kB" {
-                    return parts[0].parse::<u64>().ok().map(|kb| kb * 1024);
-                }
-            }
-        }
-    }
-    None
 }
 
 // ---------------------------------------------------------------------------
@@ -1253,35 +1233,6 @@ mod tests {
     #[test]
     fn test_estimate_num_shards_zero() {
         assert_eq!(estimate_num_shards(0), 1);
-    }
-
-    #[test]
-    fn test_effective_memory_never_exceeds_host() {
-        // total_memory_bytes() = min(host, cgroup) and must be <= host MemTotal. This
-        // guards the primary cgroup fix that feeds shard sizing.
-        if let (Some(eff), Some(host)) = (crate::total_memory_bytes(), read_system_memory_bytes()) {
-            assert!(
-                eff <= host,
-                "effective mem {eff} must not exceed host mem {host}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_effective_parallelism_never_exceeds_capacity() {
-        let eff = crate::effective_parallelism();
-        let capacity = crate::cpu_capacity_parallelism();
-        assert!(
-            eff <= capacity,
-            "effective cpus {eff} must not exceed affinity capacity {capacity}"
-        );
-        assert!(eff >= 1);
-        #[cfg(target_os = "linux")]
-        if let Some(quota) = crate::read_cgroup_cpu_quota() {
-            if quota < capacity {
-                assert_eq!(eff, quota.max(1));
-            }
-        }
     }
 
     #[test]

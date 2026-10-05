@@ -24,6 +24,7 @@ diskgraph-core = { path = "../diskgraph-core" }
 diskgraph-fs = { path = "../diskgraph-fs" }
 diskgraph-rowpack = { path = "../diskgraph-rowpack" }
 diskgraph-index = { path = "../diskgraph-index" }
+diskgraph-limits = { path = "../diskgraph-limits" }
 arrow-array = "58.4.0"
 arrow-buffer = "58.4.0"
 arrow-data = "58.4.0"

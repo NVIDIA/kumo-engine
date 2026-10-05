@@ -1318,7 +1318,7 @@ mod mem_watchdog {
             tracing::warn!("memory watchdog only supported on linux");
             return;
         }
-        let total_bytes = match total_memory_bytes() {
+        let total_bytes = match diskgraph_limits::total_memory_bytes() {
             Some(total) => total,
             None => {
                 tracing::warn!("memory watchdog disabled: unable to read total memory");
@@ -1446,53 +1446,6 @@ mod mem_watchdog {
 
     #[cfg(not(target_os = "linux"))]
     fn rss_anon_bytes() -> Option<u64> {
-        None
-    }
-
-    #[cfg(target_os = "linux")]
-    fn total_memory_bytes() -> Option<u64> {
-        let mem_total = read_meminfo_total().unwrap_or(0);
-        let cgroup_limit = read_cgroup_limit().unwrap_or(u64::MAX);
-        let total = mem_total.min(cgroup_limit);
-        if total == 0 || total == u64::MAX {
-            None
-        } else {
-            Some(total)
-        }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    fn total_memory_bytes() -> Option<u64> {
-        None
-    }
-
-    #[cfg(target_os = "linux")]
-    fn read_meminfo_total() -> Option<u64> {
-        let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
-        for line in meminfo.lines() {
-            if let Some(value) = line.strip_prefix("MemTotal:") {
-                return parse_kb_line(value);
-            }
-        }
-        None
-    }
-
-    #[cfg(target_os = "linux")]
-    fn read_cgroup_limit() -> Option<u64> {
-        if let Ok(limit) = fs::read_to_string("/sys/fs/cgroup/memory.max") {
-            let trimmed = limit.trim();
-            if trimmed != "max" {
-                if let Ok(bytes) = trimmed.parse::<u64>() {
-                    return Some(bytes);
-                }
-            }
-        }
-        if let Ok(limit) = fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes") {
-            let trimmed = limit.trim();
-            if let Ok(bytes) = trimmed.parse::<u64>() {
-                return Some(bytes);
-            }
-        }
         None
     }
 

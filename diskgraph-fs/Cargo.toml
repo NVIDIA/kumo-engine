@@ -19,6 +19,7 @@ aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-credential-types = "1"
 aws-types = "1"
 bytes = { workspace = true }
+diskgraph-limits = { path = "../diskgraph-limits" }
 futures-util = "0.3"
 object_store = { version = "0.13.1", features = ["aws", "gcp", "azure"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }

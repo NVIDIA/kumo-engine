@@ -761,3 +761,46 @@ fn resume_wipes_stale_pk_map_outputs() -> Result<()> {
     assert_indexes_byte_identical(&baseline_root, &split_root)?;
     Ok(())
 }
+
+#[test]
+fn resume_keeps_recorded_shards_unless_too_few() -> Result<()> {
+    let tmp = tempdir()?;
+    let baseline_root = tmp.path().join("baseline");
+    let config_path = write_synthetic_graph(&tmp.path().join("input"), "resume_resized")?;
+    let options = |resume_from_phase| IngestOptions {
+        resume_from_phase,
+        source_loader_threads: Some(1),
+        source_encoder_threads: Some(1),
+        pk_map_threads: Some(1),
+        edges_map_threads: Some(1),
+        index_threads: Some(1),
+        parent_index_path: None,
+        ..Default::default()
+    };
+    let ingest = |root: &Path, resume_from_phase| {
+        ingest_with_stats(
+            &config_path,
+            root.to_str().unwrap(),
+            Dest::Local,
+            options(resume_from_phase),
+        )
+    };
+    let set_shards = |num_shards: u64| -> Result<()> {
+        let mut config: serde_json::Value = serde_json::from_slice(&fs::read(&config_path)?)?;
+        config["num_shards"] = num_shards.into();
+        Ok(fs::write(&config_path, serde_json::to_vec(&config)?)?)
+    };
+    ingest(&baseline_root, None)?;
+    for (resumed_with, expected_shards) in [(1, 2), (4, 4)] {
+        let split_root = tmp.path().join(format!("split-{resumed_with}"));
+        set_shards(2)?;
+        run_partial(&config_path, &split_root, IngestPhase::Encode)?;
+        set_shards(resumed_with)?;
+        ingest(&split_root, Some(IngestPhase::PkMap))?;
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&fs::read(split_root.join("index_metadata.json"))?)?;
+        let shards = metadata["node_types"][0]["shards"].as_array().map(Vec::len);
+        assert_eq!(shards, Some(expected_shards));
+    }
+    assert_indexes_byte_identical(&baseline_root, &tmp.path().join("split-1"))
+}

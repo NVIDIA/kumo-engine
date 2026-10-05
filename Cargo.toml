@@ -9,6 +9,7 @@ members = [
     "diskgraph-datagenerator",
     "diskgraph-index",
     "diskgraph-fs",
+    "diskgraph-limits",
     "diskgraph-rowpack",
     "diskgraph-infer",
     "diskgraph-ptrhash",

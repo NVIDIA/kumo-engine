@@ -193,9 +193,7 @@ pub async fn download_job(job_spec: &str, options: DownloadOptions) -> Result<Pa
     }
 
     let transfer_ref = transfer.clone();
-    let max_requests = std::thread::available_parallelism()
-        .map(|v| v.get() * 2)
-        .unwrap_or(2);
+    let max_requests = diskgraph_ingest::effective_parallelism() * 2;
 
     stream::iter(download_items)
         .map(Ok::<_, anyhow::Error>)
