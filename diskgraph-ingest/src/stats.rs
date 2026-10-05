@@ -183,6 +183,22 @@ pub struct KeyFailureCounts {
     /// [`IngestStats::key_membership_failures`]).
     #[serde(default)]
     pub membership_failures: u64,
+    /// Non-null FK values that were not valid keys (wrong type or too long).
+    #[serde(default)]
+    pub non_null_parse_failures: u64,
+}
+
+impl KeyFailureCounts {
+    pub fn merge(&mut self, other: &KeyFailureCounts) {
+        self.parse_failures = self.parse_failures.saturating_add(other.parse_failures);
+        self.lookup_failures = self.lookup_failures.saturating_add(other.lookup_failures);
+        self.membership_failures = self
+            .membership_failures
+            .saturating_add(other.membership_failures);
+        self.non_null_parse_failures = self
+            .non_null_parse_failures
+            .saturating_add(other.non_null_parse_failures);
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -203,12 +219,7 @@ impl KeyFailureState {
             .membership_failures
             .saturating_add(other.membership_failures);
         for (context, counts) in other.by_context {
-            let entry = self.by_context.entry(context).or_default();
-            entry.parse_failures = entry.parse_failures.saturating_add(counts.parse_failures);
-            entry.lookup_failures = entry.lookup_failures.saturating_add(counts.lookup_failures);
-            entry.membership_failures = entry
-                .membership_failures
-                .saturating_add(counts.membership_failures);
+            self.by_context.entry(context).or_default().merge(&counts);
         }
         for sample in other.samples {
             if self.samples.len() >= 10 {

@@ -1215,6 +1215,7 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
     let stats = ctx.build_stats(&index_metadata, perf);
     let mut stats = stats;
     stats.num_shards = Some(ctx.num_shards);
+    warn_non_null_key_parse_failures(&stats.key_failures_by_context);
     stats.ts_groupings = ts_groupings;
     stats.sample_weight_indexes = sample_weight_indexes;
     stats.binary_label_indexes = binary_label_indexes;
@@ -6992,12 +6993,10 @@ impl IngestContext {
             .key_membership_failures
             .saturating_add(state.membership_failures);
         for (context, counts) in state.by_context {
-            let entry = self.key_failures_by_context.entry(context).or_default();
-            entry.parse_failures = entry.parse_failures.saturating_add(counts.parse_failures);
-            entry.lookup_failures = entry.lookup_failures.saturating_add(counts.lookup_failures);
-            entry.membership_failures = entry
-                .membership_failures
-                .saturating_add(counts.membership_failures);
+            self.key_failures_by_context
+                .entry(context)
+                .or_default()
+                .merge(&counts);
         }
         for sample in state.samples {
             if self.key_failure_samples.len() >= 10 {
@@ -8813,7 +8812,7 @@ impl IngestContext {
         } else {
             (*row_id as usize) % num_shards
         };
-        for (_rel_name, rel_idx, _rel_pos, _fk_col_name, target_type) in rel_specs {
+        for (rel_name, rel_idx, _rel_pos, _fk_col_name, target_type) in rel_specs {
             let col = table
                 .columns
                 .get(*rel_idx)
@@ -8832,6 +8831,12 @@ impl IngestContext {
                     &mut key_failures.by_context,
                     &context,
                     sample_from_access(access, *rel_idx),
+                );
+                record_non_null_parse_failure(
+                    &mut key_failures.by_context,
+                    access,
+                    *rel_idx,
+                    &format!("dst_lookup:{rel_name}"),
                 );
                 buf.clear();
                 continue;
@@ -8990,6 +8995,10 @@ impl IngestContext {
         let src_context = format!("edge_fk:{}.{}", table.name, edge.src_fk.edge_column);
         let dst_context = format!("edge_fk:{}.{}", table.name, edge.dst_fk.edge_column);
         let rel_name = std::sync::Arc::<str>::from(format!("edge_{}_src_to_dst", table.name));
+        let lookup_contexts = [
+            format!("src_lookup:{rel_name}"),
+            format!("dst_lookup:{rel_name}"),
+        ];
         let buffer_limit = edge_batch_buffer_limit(num_shards);
         let mut batcher = EdgeSrcBatcher::new(
             std::sync::Arc::clone(&rel_name),
@@ -9056,6 +9065,7 @@ impl IngestContext {
                         dst_target_type,
                         &src_context,
                         &dst_context,
+                        &lookup_contexts,
                         &mut access,
                         $src_key_buf,
                         $dst_key_buf,
@@ -9114,6 +9124,7 @@ impl IngestContext {
         dst_target_type: &IngestedType,
         src_context: &str,
         dst_context: &str,
+        lookup_contexts: &[String; 2],
         access: &mut RowAccess<'_>,
         src_key_buf: &mut Vec<u8>,
         dst_key_buf: &mut Vec<u8>,
@@ -9136,6 +9147,12 @@ impl IngestContext {
                 src_context,
                 sample_from_access(access, src_idx),
             );
+            record_non_null_parse_failure(
+                &mut key_failures.by_context,
+                access,
+                src_idx,
+                &lookup_contexts[0],
+            );
             return Ok(());
         }
 
@@ -9147,6 +9164,12 @@ impl IngestContext {
                 &mut key_failures.by_context,
                 dst_context,
                 sample_from_access(access, dst_idx),
+            );
+            record_non_null_parse_failure(
+                &mut key_failures.by_context,
+                access,
+                dst_idx,
+                &lookup_contexts[1],
             );
             return Ok(());
         }
@@ -16921,6 +16944,37 @@ fn record_key_parse_failure(
     if samples.len() < 10 {
         let sample = format_bytes_sample_prefix(row);
         samples.push(format!("{context}: len={} {sample}", row.len()));
+    }
+}
+
+fn warn_non_null_key_parse_failures(by_context: &HashMap<String, KeyFailureCounts>) {
+    let mut entries: Vec<_> = by_context
+        .iter()
+        .filter(|(_, counts)| counts.non_null_parse_failures > 0)
+        .collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    for (context, counts) in entries {
+        tracing::warn!(
+            "{context}: dropped {} non-null foreign key values that are not valid keys \
+             (wrong type, unparsable, or longer than {MAX_VAR_KEY_LEN} bytes)",
+            counts.non_null_parse_failures
+        );
+    }
+}
+
+fn record_non_null_parse_failure(
+    by_context: &mut HashMap<String, KeyFailureCounts>,
+    access: &RowAccess<'_>,
+    idx: usize,
+    context: &str,
+) {
+    let is_null = access
+        .array(idx)
+        .map(|array| array.is_null(access.row()))
+        .unwrap_or(false);
+    if !is_null {
+        let entry = by_context.entry(context.to_string()).or_default();
+        entry.non_null_parse_failures = entry.non_null_parse_failures.saturating_add(1);
     }
 }
 

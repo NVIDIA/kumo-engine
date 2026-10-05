@@ -1869,3 +1869,201 @@ fn test_matrix_with_limits() {
         );
     }
 }
+
+fn ingest_fk_column(
+    pk: ArrayRef,
+    pk_dtype: &str,
+    fk: ArrayRef,
+    fk_dtype: &str,
+) -> Result<diskgraph_ingest::stats::IngestStats> {
+    let dir = tempdir()?;
+    let input_root = dir.path().join("input");
+    let pk_schema = Schema::new(vec![Field::new("id", pk.data_type().clone(), false)]);
+    write_parquet(&input_root.join("pk.parquet"), pk_schema, vec![pk])?;
+    let fk_id: ArrayRef = Arc::new(ArrowInt64Array::from_iter_values(0..fk.len() as i64));
+    let fk_schema = Schema::new(vec![
+        Field::new("row_id", DataType::Int64, false),
+        Field::new("fk_col", fk.data_type().clone(), true),
+    ]);
+    write_parquet(&input_root.join("fk.parquet"), fk_schema, vec![fk_id, fk])?;
+    let config = serde_json::json!({
+        "dataset_name": "fk_non_null_failures",
+        "tables": [
+            {
+                "name": "Pk",
+                "source": {"type": "parquet", "paths": [input_root.join("pk.parquet").to_string_lossy()]},
+                "primary_key": "id",
+                "columns": [{"name": "id", "ingested_dtype": pk_dtype}]
+            },
+            {
+                "name": "Fk",
+                "source": {"type": "parquet", "paths": [input_root.join("fk.parquet").to_string_lossy()]},
+                "primary_key": "row_id",
+                "columns": [
+                    {"name": "row_id", "ingested_dtype": "int64"},
+                    {"name": "fk_col", "ingested_dtype": fk_dtype}
+                ],
+                "fkeys": [{"src_column": "fk_col", "dst_table": "Pk"}]
+            }
+        ]
+    });
+    let config_path = dir.path().join("config.json");
+    fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
+    let output_root = dir.path().join("output");
+    let (_metadata, stats) = ingest_with_stats(
+        &config_path,
+        output_root.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    )?;
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(output_root.join("ingest_stats.json"))?)?;
+    assert_eq!(
+        report["stats"]["key_failures_by_context"]["dst_lookup:Fk_fk_col_to_Pk_id"]
+            ["non_null_parse_failures"]
+            .as_u64(),
+        stats
+            .key_failures_by_context
+            .get("dst_lookup:Fk_fk_col_to_Pk_id")
+            .map(|c| c.non_null_parse_failures),
+    );
+    Ok(stats)
+}
+
+fn fk_failures(stats: &diskgraph_ingest::stats::IngestStats, context: &str) -> (u64, u64) {
+    let counts = &stats.key_failures_by_context[context];
+    (counts.parse_failures, counts.non_null_parse_failures)
+}
+
+#[test]
+fn oversized_string_fk_values_count_as_non_null_parse_failures() -> Result<()> {
+    let oversized = "x".repeat(65_536);
+    let mut values: Vec<Option<&str>> = vec![Some("a"), Some("b"), Some("c")];
+    values.extend(std::iter::repeat_n(Some(oversized.as_str()), 7));
+    values.extend([None, None]);
+    let pk: ArrayRef = Arc::new(ArrowStringArray::from(vec!["a", "b", "c", "d"]));
+    let fk: ArrayRef = Arc::new(ArrowStringArray::from(values));
+    let stats = ingest_fk_column(pk, "string", fk, "string")?;
+    assert_eq!(
+        stats.edge_counts.get("Fk_fk_col_to_Pk_id").copied(),
+        Some(3)
+    );
+    // nulls stay in parse_failures only
+    assert_eq!(fk_failures(&stats, "fkey:Fk.fk_col"), (9, 0));
+    assert_eq!(fk_failures(&stats, "dst_lookup:Fk_fk_col_to_Pk_id"), (0, 7));
+    Ok(())
+}
+
+#[test]
+fn wrong_typed_fk_values_count_as_non_null_parse_failures() -> Result<()> {
+    let pk: ArrayRef = Arc::new(ArrowInt64Array::from(vec![1i64, 2]));
+    let fk: ArrayRef = Arc::new(ArrowStringArray::from(vec![
+        Some("1"),
+        Some("not_int"),
+        None,
+        Some("2"),
+        Some("1.5"),
+    ]));
+    let stats = ingest_fk_column(pk, "int64", fk, "string")?;
+    assert_eq!(
+        stats.edge_counts.get("Fk_fk_col_to_Pk_id").copied(),
+        Some(2)
+    );
+    assert_eq!(fk_failures(&stats, "fkey:Fk.fk_col"), (3, 0));
+    assert_eq!(fk_failures(&stats, "dst_lookup:Fk_fk_col_to_Pk_id"), (0, 2));
+    Ok(())
+}
+
+#[test]
+fn edge_table_counts_non_null_parse_failures_per_side() -> Result<()> {
+    let dir = tempdir()?;
+    let input = dir.path().join("input");
+    let oversized = "x".repeat(65_536);
+    let users: ArrayRef = Arc::new(ArrowStringArray::from(vec!["a", "b"]));
+    write_parquet(
+        &input.join("users.parquet"),
+        Schema::new(vec![Field::new("id", DataType::Utf8, false)]),
+        vec![users],
+    )?;
+    let items: ArrayRef = Arc::new(ArrowInt64Array::from(vec![1i64, 2]));
+    write_parquet(
+        &input.join("items.parquet"),
+        Schema::new(vec![Field::new("id", DataType::Int64, false)]),
+        vec![items],
+    )?;
+    let user_ids: ArrayRef = Arc::new(ArrowStringArray::from(vec![
+        Some("a"),
+        Some(oversized.as_str()),
+        None,
+        Some("a"),
+        Some("b"),
+    ]));
+    let item_ids: ArrayRef = Arc::new(ArrowStringArray::from(vec![
+        Some("1"),
+        Some("1"),
+        Some("1"),
+        Some("not_int"),
+        None,
+    ]));
+    write_parquet(
+        &input.join("clicks.parquet"),
+        Schema::new(vec![
+            Field::new("user_id", DataType::Utf8, true),
+            Field::new("item_id", DataType::Utf8, true),
+        ]),
+        vec![user_ids, item_ids],
+    )?;
+    let config = serde_json::json!({
+        "dataset_name": "edge_table_non_null_failures",
+        "tables": [
+            {
+                "name": "users",
+                "source": {"type": "parquet", "paths": [input.join("users.parquet")]},
+                "columns": [{"name": "id", "ingested_dtype": "string"}],
+                "primary_key": "id"
+            },
+            {
+                "name": "items",
+                "source": {"type": "parquet", "paths": [input.join("items.parquet")]},
+                "columns": [{"name": "id", "ingested_dtype": "int64"}],
+                "primary_key": "id"
+            },
+            {
+                "name": "clicks",
+                "source": {"type": "parquet", "paths": [input.join("clicks.parquet")]},
+                "columns": [
+                    {"name": "user_id", "ingested_dtype": "string"},
+                    {"name": "item_id", "ingested_dtype": "string"}
+                ],
+                "edge_table": {
+                    "src_fk": {"edge_column": "user_id", "ref_table": "users"},
+                    "dst_fk": {"edge_column": "item_id", "ref_table": "items"}
+                }
+            }
+        ]
+    });
+    let config_path = dir.path().join("config.json");
+    fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
+    let output = dir.path().join("output");
+    let (_metadata, stats) = ingest_with_stats(
+        &config_path,
+        output.to_str().unwrap(),
+        Dest::Local,
+        IngestOptions::default(),
+    )?;
+    assert_eq!(
+        stats.edge_counts.get("edge_clicks_src_to_dst").copied(),
+        Some(1)
+    );
+    assert_eq!(fk_failures(&stats, "edge_fk:clicks.user_id"), (2, 0));
+    assert_eq!(fk_failures(&stats, "edge_fk:clicks.item_id"), (2, 0));
+    assert_eq!(
+        fk_failures(&stats, "src_lookup:edge_clicks_src_to_dst"),
+        (0, 1)
+    );
+    assert_eq!(
+        fk_failures(&stats, "dst_lookup:edge_clicks_src_to_dst"),
+        (0, 1)
+    );
+    Ok(())
+}
