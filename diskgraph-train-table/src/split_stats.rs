@@ -152,7 +152,7 @@ impl KumoStageStats {
 
     fn observe_string_target(&mut self, value: &str) {
         self.target_observation_count += 1;
-        self.target_hll.observe_bytes(value.as_bytes());
+        self.target_hll.observe_str(value);
     }
 }
 
@@ -449,7 +449,7 @@ fn observe_entities(batch: &RecordBatch, stats: &mut KumoStageStats) -> TTGenRes
     if let Some(a) = arr.as_any().downcast_ref::<StringArray>() {
         for i in 0..a.len() {
             if !a.is_null(i) {
-                stats.entity_hll.observe_bytes(a.value(i).as_bytes());
+                stats.entity_hll.observe_str(a.value(i));
             }
         }
         return Ok(());

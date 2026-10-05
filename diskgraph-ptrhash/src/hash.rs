@@ -92,6 +92,73 @@ impl<Key: KeyT + ?Sized> Hasher<Key> for PkHash {
     }
 }
 
+/// 64-bit hash of a string that keys an exact identity: gxhash up to
+/// [`MAX_GXHASH_INJECTIVE_LEN`] bytes, xxh3 above, where gxhash collisions
+/// are constructible.
+///
+/// [`MAX_GXHASH_INJECTIVE_LEN`]: crate::MAX_GXHASH_INJECTIVE_LEN
+#[inline]
+pub fn hash_str(value: &str, seed: u64) -> u64 {
+    let bytes = value.as_bytes();
+    if bytes.len() > crate::MAX_GXHASH_INJECTIVE_LEN {
+        return xxh3_64_with_seed(bytes, seed);
+    }
+    let mut hasher = GxHasher::with_seed(seed as i64);
+    hasher.write(bytes);
+    hasher.finish()
+}
+
+/// Two distinct printable 33-byte strings that gxhash cannot separate, under
+/// any seed.
+///
+/// `compress_all` folds `a = s[1..17]` into `b = s[17..33]` as
+/// `aesenc(a, 0) ^ b`. Changing `a[15]` moves that fold by a fixed `delta`,
+/// which the same change to `b` cancels.
+#[cfg(all(any(test, feature = "test-utils"), target_arch = "x86_64"))]
+pub fn gxhash_twins() -> (String, String) {
+    use std::arch::x86_64::*;
+    const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789._-+";
+    let fold = |x: u8| {
+        let mut a = [0u8; 16];
+        a[15] = x;
+        let mut out = [0u8; 16];
+        unsafe {
+            let v = _mm_loadu_si128(a.as_ptr() as *const __m128i);
+            let v = _mm_aesenc_si128(v, _mm_setzero_si128());
+            _mm_storeu_si128(out.as_mut_ptr() as *mut __m128i, v);
+        }
+        out
+    };
+    for &x in CHARS {
+        for &y in CHARS.iter().filter(|&&y| y != x) {
+            let (fx, fy) = (fold(x), fold(y));
+            let mut left = b"category-witness-0000.example.com".to_vec();
+            left[16] = x;
+            let mut right = left.clone();
+            right[16] = y;
+            let fits = (0..16).all(|i| {
+                let delta = fx[i] ^ fy[i];
+                if delta == 0 {
+                    return true;
+                }
+                let Some(c) = CHARS.iter().find(|&&c| CHARS.contains(&(c ^ delta))) else {
+                    return false;
+                };
+                left[17 + i] = *c;
+                right[17 + i] = c ^ delta;
+                true
+            });
+            if fits {
+                return (
+                    String::from_utf8(left).unwrap(),
+                    String::from_utf8(right).unwrap(),
+                );
+            }
+        }
+    }
+    unreachable!("no printable gxhash twins")
+}
+
 /// Collects the bytes `Hash` feeds a hasher, so xxh3 sees what gxhash would.
 struct KeyBytes {
     inline: [u8; 64],

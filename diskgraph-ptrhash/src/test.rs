@@ -254,38 +254,12 @@ fn retry_stress_tight_params() {
     }
 }
 
-/// A 33-byte twin of `key` that gxhash cannot separate from it, under any seed.
-///
-/// `compress_all` folds `a = key[1..17]` with `b = key[17..33]` as
-/// `M(a) ^ b`, so `b' = b ^ M(a) ^ M(a')` cancels a change to `a`.
-#[cfg(target_arch = "x86_64")]
-fn seed_independent_twin(key: &[u8]) -> Vec<u8> {
-    use std::arch::x86_64::*;
-    assert_eq!(key.len(), 33);
-    unsafe {
-        let load = |s: &[u8]| _mm_loadu_si128(s.as_ptr() as *const __m128i);
-        let m = |v: __m128i| _mm_aesenc_si128(v, _mm_setzero_si128());
-
-        let mut a2 = [0u8; 16];
-        a2.copy_from_slice(&key[1..17]);
-        a2[15] ^= 0x5a;
-
-        let delta = _mm_xor_si128(m(load(&key[1..17])), m(load(&a2)));
-        let b2 = _mm_xor_si128(load(&key[17..33]), delta);
-
-        let mut out = key.to_vec();
-        out[1..17].copy_from_slice(&a2);
-        _mm_storeu_si128(out[17..33].as_mut_ptr() as *mut __m128i, b2);
-        out
-    }
-}
-
 /// Keys gxhash cannot separate must build with the fallback.
 #[test]
 #[cfg(target_arch = "x86_64")]
 fn fallback_hash_builds_what_gxhash_cannot() {
-    let base = b"kumo30356-collision-witness-key01".to_vec();
-    let twin = seed_independent_twin(&base);
+    let (base, twin) = hash::gxhash_twins();
+    let (base, twin) = (base.into_bytes(), twin.into_bytes());
     assert_ne!(base, twin);
     for seed in [0u64, 1, 12_345, u64::MAX] {
         assert_eq!(

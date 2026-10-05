@@ -56,8 +56,9 @@ use std::{borrow::Borrow, default::Default, marker::PhantomData};
 
 use crate::{hash::*, pack::Packed, reduce::*};
 
-/// Longest key for which gxhash's compression is injective. Above it,
-/// collisions are constructible and hold under every seed.
+/// Longest key for which gxhash's compression is injective, given UTF-8; with
+/// a length prefix any collision is seed-dependent. Above it, collisions are
+/// constructible and hold under every seed.
 pub const MAX_GXHASH_INJECTIVE_LEN: usize = 16;
 
 #[derive(Debug)]

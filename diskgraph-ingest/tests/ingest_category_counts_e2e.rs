@@ -214,3 +214,125 @@ fn ingest_scalar_float_signed_zero_serializes_one_category() -> Result<()> {
     );
     Ok(())
 }
+
+/// Through the ingest binary: long gxhash twins now hash apart, and short
+/// strings and integers whose 64-bit hashes still collide are counted apart.
+#[test]
+#[cfg(target_arch = "x86_64")]
+fn ingest_binary_counts_colliding_categories_apart() -> Result<()> {
+    use diskgraph_core::accumulators::HyperLogLog;
+
+    let dir = tempdir()?;
+    let data_dir = dir.path().join("data");
+    let output_dir = dir.path().join("output");
+    fs::create_dir_all(&data_dir)?;
+
+    let (left, right) = ptr_hash::hash::gxhash_twins();
+    let (code_a, code_b) = ("c6e7edf31ad42508", "1226478a63bc70d3");
+    let (id_a, id_b) = (
+        -6_792_358_849_790_161_234_i64,
+        -3_036_548_811_846_647_200_i64,
+    );
+    assert_eq!(HyperLogLog::hash_str(code_a), HyperLogLog::hash_str(code_b));
+    assert_eq!(HyperLogLog::hash_i64(id_a), HyperLogLog::hash_i64(id_b));
+
+    let pick = |i: usize| [0, 1, 0, 1, 1, 2][i];
+    let emails = [left.as_str(), right.as_str(), "short@example.com"];
+    let codes = [code_a, code_b, "other"];
+    let ids = [id_a, id_b, 7];
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("row_id", DataType::Int64, false),
+        Field::new("email", DataType::Utf8, false),
+        Field::new("code", DataType::Utf8, false),
+        Field::new("account", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from_iter_values(0..6)) as ArrayRef,
+            Arc::new(StringArray::from_iter_values(
+                (0..6).map(|i| emails[pick(i)]),
+            )) as ArrayRef,
+            Arc::new(StringArray::from_iter_values(
+                (0..6).map(|i| codes[pick(i)]),
+            )) as ArrayRef,
+            Arc::new(Int64Array::from_iter_values((0..6).map(|i| ids[pick(i)]))) as ArrayRef,
+        ],
+    )?;
+    write_parquet(&data_dir.join("rows.parquet"), &batch);
+
+    let config = serde_json::json!({
+        "dataset_name": "cat_colliding",
+        "num_shards": 1,
+        "tables": [{
+            "name": "rows",
+            "columns": [
+                {"name": "row_id", "ingested_dtype": "int64"},
+                {"name": "email", "ingested_dtype": "string", "semantic_type": "categorical"},
+                {"name": "code", "ingested_dtype": "string", "semantic_type": "categorical"},
+                {"name": "account", "ingested_dtype": "int64", "semantic_type": "categorical"}
+            ],
+            "primary_key": "row_id",
+            "data_version": "v1",
+            "source": {"type": "parquet", "paths": [data_dir.join("rows.parquet").to_str().unwrap()]}
+        }]
+    });
+    let config_path = data_dir.join("config.json");
+    fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
+
+    let process = std::process::Command::new(env!("CARGO_BIN_EXE_ingest"))
+        .env("NO_COLOR", "1")
+        .arg("--source")
+        .arg(&config_path)
+        .arg("--output")
+        .arg(&output_dir)
+        .args([
+            "--dest",
+            "local",
+            "--col-stats",
+            "--cat-count-strategy",
+            "hybrid",
+        ])
+        .output()?;
+    assert!(
+        process.status.success(),
+        "{}",
+        String::from_utf8_lossy(&process.stderr)
+    );
+
+    let log = String::from_utf8_lossy(&process.stdout);
+    let warnings = log
+        .lines()
+        .filter(|line| line.contains("share a 64-bit hash"))
+        .collect::<Vec<_>>();
+    assert_eq!(warnings.len(), 2, "{log}");
+    for column in ["code", "account"] {
+        let field = format!("column=\"{column}\" colliding_values=1");
+        assert!(warnings.iter().any(|w| w.contains(&field)), "{log}");
+    }
+    assert!(warnings
+        .iter()
+        .all(|w| !w.contains(code_b) && !w.contains(&id_b.to_string())));
+
+    let stats = read_kumo_stats(&output_dir, "rows")?;
+    let expected = |values: [String; 3]| {
+        HashMap::from([
+            (values[0].clone(), 2),
+            (values[1].clone(), 3),
+            (values[2].clone(), 1),
+        ])
+    };
+    assert_eq!(
+        category_counts(&stats, "email"),
+        expected(emails.map(str::to_owned))
+    );
+    assert_eq!(
+        category_counts(&stats, "code"),
+        expected(codes.map(str::to_owned))
+    );
+    assert_eq!(
+        category_counts(&stats, "account"),
+        expected(ids.map(|id| id.to_string()))
+    );
+    Ok(())
+}

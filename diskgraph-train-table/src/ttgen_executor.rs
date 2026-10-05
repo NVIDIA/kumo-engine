@@ -96,6 +96,7 @@ fn drain_required_target_category_counts(
     }
 
     Ok(target.map(|counts| {
+        counts.warn_collisions_once("TARGET1");
         counts
             .drain_to_map()
             .expect("non-aborted target counts must drain")
@@ -2200,7 +2201,7 @@ fn write_target<U: UnitSystem, D: SplitDecider<U>>(
                                     // `update_exact_stats` → `observe_target_hll`).
                                     // Using an unconditional `hash_value` basis here
                                     // double-registered multicat LP targets whose
-                                    // first-target observation used `hash_bytes`.
+                                    // first-target observation used `hash_str`.
                                     if let Some(ref mut h) = processor.stats.target_hll {
                                         observe_target_hll(
                                             h,
@@ -2270,7 +2271,7 @@ fn write_target<U: UnitSystem, D: SplitDecider<U>>(
 }
 
 /// Observe an entity primary key into the entity HLL using the canonical
-/// type-aware RAW basis (Int→observe_i64, Str→observe_bytes, Float→observe_f64).
+/// type-aware RAW basis (Int→observe_i64, Str→observe_str, Float→observe_f64).
 ///
 /// Both the main `update_exact_stats` path and the empty-target-row branch must
 /// call this so the same logical entity id lands on the SAME HLL hash basis.
@@ -2280,7 +2281,7 @@ fn write_target<U: UnitSystem, D: SplitDecider<U>>(
 pub(crate) fn observe_entity_hll(hll: &mut HyperLogLog, entity_pk: &Value) {
     match entity_pk {
         Value::Int(i) => hll.observe_i64(*i),
-        Value::Str(s) => hll.observe_bytes(s.as_bytes()),
+        Value::Str(s) => hll.observe_str(s),
         Value::Float(f) => hll.observe_f64(*f),
         _ => {}
     }
@@ -2288,13 +2289,13 @@ pub(crate) fn observe_entity_hll(hll: &mut HyperLogLog, entity_pk: &Value) {
 
 /// Observe a target value into the target HLL replicating `update_exact_stats`'
 /// per-stype dispatch: numerical→raw (`observe_i64`/`observe_f64`),
-/// multicategorical→per-token `hash_bytes(token_string)`, other
+/// multicategorical→per-token `hash_str(token_string)`, other
 /// categorical→`observe_i64(hash_value(target))`.
 ///
 /// The first target (in `update_exact_stats`) and every additional target (the
 /// `skip(1)` loop) must observe through this SAME stype-aware logic. Previously
 /// the additional-targets loop unconditionally used `hash_value`, so for
-/// multicategorical LP the first target (hashed via `hash_bytes(token)`) and the
+/// multicategorical LP the first target (hashed via `hash_str(token)`) and the
 /// additional targets (hashed via `hash_value`) landed on different bases and
 /// the same target registered twice, over-counting `num_targets`.
 #[inline]
@@ -2318,14 +2319,14 @@ pub(crate) fn observe_target_hll(
                     for item in items {
                         let tok_str = value_to_string(item);
                         let tok = tok_str.trim();
-                        hll.observe_hash(HyperLogLog::hash_bytes(tok.as_bytes()));
+                        hll.observe_hash(HyperLogLog::hash_str(tok));
                     }
                 }
                 _ => {
                     let target_str = value_to_string(target);
                     for_each_split_ascii_byte(&target_str, b'|', |tok| {
                         let tok = tok.trim();
-                        hll.observe_hash(HyperLogLog::hash_bytes(tok.as_bytes()));
+                        hll.observe_hash(HyperLogLog::hash_str(tok));
                     });
                 }
             }
@@ -2458,7 +2459,7 @@ pub(crate) fn update_exact_stats<U: UnitSystem>(
                     for item in items {
                         let tok_str = value_to_string(item);
                         let tok = tok_str.trim();
-                        let hash = HyperLogLog::hash_bytes(tok.as_bytes());
+                        let hash = HyperLogLog::hash_str(tok);
                         if let Some(ref mut local) = local_target_counts {
                             local.observe(hash, tok);
                         }
@@ -2468,7 +2469,7 @@ pub(crate) fn update_exact_stats<U: UnitSystem>(
                     let target_str = value_to_string(target);
                     for_each_split_ascii_byte(&target_str, b'|', |tok| {
                         let tok = tok.trim();
-                        let hash = HyperLogLog::hash_bytes(tok.as_bytes());
+                        let hash = HyperLogLog::hash_str(tok);
                         if let Some(ref mut local) = local_target_counts {
                             local.observe(hash, tok);
                         }
@@ -2476,10 +2477,10 @@ pub(crate) fn update_exact_stats<U: UnitSystem>(
                 }
             }
         } else {
+            // Keyed by the published spelling: 1 and 1.0 are one category.
             let target_str = value_to_string(target);
-            let target_hash = hash_value(target);
             if let Some(ref mut local) = local_target_counts {
-                local.observe(target_hash, &target_str);
+                local.observe(HyperLogLog::hash_str(&target_str), &target_str);
             }
         }
     }
@@ -3495,9 +3496,39 @@ mod tests {
     }
 
     #[test]
+    fn targets_that_print_alike_share_one_exact_count() {
+        let target = category_count_accumulators(true, false).unwrap();
+        let mut local = Some(LocalColumnCounts::with_capacity(4));
+        let mut stats = ChunkStats::<Seconds>::default();
+        for value in [
+            Value::Int(1),
+            Value::Float(1.0),
+            Value::Float(1.0),
+            Value::Int(2),
+        ] {
+            update_exact_stats(
+                &mut stats,
+                &Value::Int(0),
+                Abs::from_raw(0),
+                &value,
+                None,
+                false,
+                true,
+                "categorical",
+                &mut local,
+            );
+        }
+        target.merge_local_batch(local.as_mut().unwrap());
+        assert_eq!(
+            target.drain_to_map().unwrap(),
+            HashMap::from([("1".to_owned(), 3), ("2".to_owned(), 1)])
+        );
+    }
+
+    #[test]
     fn target_category_limit_is_a_generation_error() {
-        let target = category_count_accumulators(true, false)
-            .expect("categorical target accumulator");
+        let target =
+            category_count_accumulators(true, false).expect("categorical target accumulator");
         target.unique_count.store(
             MAX_TRAIN_TABLE_TARGET_CATEGORIES,
             std::sync::atomic::Ordering::Relaxed,
@@ -3565,7 +3596,7 @@ mod tests {
 
     /// A multicategorical LP target observed through BOTH the first-target path
     /// and the additional-target `skip(1)` path must land on the SAME HLL
-    /// register. Previously the first target used `hash_bytes(token)` and the
+    /// register. Previously the first target used `hash_str(token)` and the
     /// additional targets used `hash_value`, so the same target double-registered
     /// (num_targets over-count).
     #[test]
@@ -3593,7 +3624,7 @@ mod tests {
         );
 
         // Regression guard: the OLD additional-target basis (`hash_value`) differs
-        // from the multicat token basis (`hash_bytes`), so mixing over-counts.
+        // from the multicat token basis (`hash_str`), so mixing over-counts.
         let mut mixed = HyperLogLog::new();
         for t in &targets {
             observe_target_hll(&mut mixed, t, false, true, "multicategorical"); // canonical

@@ -29,5 +29,9 @@ arrow-schema = { workspace = true }
 arrow-buffer = { workspace = true }
 bincode = { workspace = true }
 gxhash = "3.5.0"
+ptr_hash = { workspace = true }
 dashmap = "6"
 arc-swap = { workspace = true }
+
+[dev-dependencies]
+ptr_hash = { workspace = true, features = ["test-utils"] }

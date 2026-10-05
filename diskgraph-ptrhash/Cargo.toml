@@ -31,4 +31,5 @@ name = "ptr_hash"
 
 [features]
 epserde = ["dep:epserde", "dep:epserde-derive", "cacheline-ef/epserde"]
+test-utils = []
 default = ["epserde"]

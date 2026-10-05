@@ -67,6 +67,7 @@ path = "src/bin/ingest_tui.rs"
 required-features = ["ingest-tui"]
 
 [dev-dependencies]
+ptr_hash = { workspace = true, features = ["test-utils"] }
 bincode = "1.3"
 diskgraph-engine = { path = "../diskgraph-engine" }
 # Used by disk_manager::tests to force serial execution of the

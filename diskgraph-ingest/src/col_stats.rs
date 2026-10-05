@@ -804,7 +804,13 @@ impl FileColStats {
         // to avoid overlapping borrows with self.cols.iter_mut().
         let cat_counts: Vec<Option<HashMap<String, u64>>> = (0..self.cols.len())
             .map(|col_idx| {
-                get_category_counts_for_col(self.cat_strategy, &self.cat_local, table_cat, col_idx)
+                get_category_counts_for_col(
+                    self.cat_strategy,
+                    &self.cat_local,
+                    table_cat,
+                    col_idx,
+                    column_names.get(col_idx).map_or("", String::as_str),
+                )
             })
             .collect();
         let cat_capped: Vec<Option<bool>> = (0..self.cols.len())
@@ -881,12 +887,14 @@ fn get_category_counts_for_col(
     _cat_local: &[Option<LocalColumnCounts>],
     table_cat: Option<&TableCategoryCounts>,
     col_idx: usize,
+    column_name: &str,
 ) -> Option<HashMap<String, u64>> {
     match strategy {
         CategoryCountStrategy::None => None,
         CategoryCountStrategy::Hybrid | CategoryCountStrategy::Graduation => {
             let cat = table_cat?;
             let col_shared = cat.columns.get(col_idx)?.as_ref()?;
+            col_shared.warn_collisions_once(column_name);
             let mut counts = col_shared.drain_to_map()?;
             // Scale counts for per-row subsampling (except Graduation which outputs min_occ).
             if cat.row_subsample && strategy != CategoryCountStrategy::Graduation {
@@ -1591,7 +1599,13 @@ impl FileColStats {
         // Pre-collect category counts (same pattern as to_json to avoid borrow issues).
         let cat_counts: Vec<Option<HashMap<String, u64>>> = (0..self.cols.len())
             .map(|col_idx| {
-                get_category_counts_for_col(self.cat_strategy, &self.cat_local, table_cat, col_idx)
+                get_category_counts_for_col(
+                    self.cat_strategy,
+                    &self.cat_local,
+                    table_cat,
+                    col_idx,
+                    column_names.get(col_idx).map_or("", String::as_str),
+                )
             })
             .collect();
         let cat_capped: Vec<Option<bool>> = (0..self.cols.len())
@@ -2306,7 +2320,7 @@ impl FileColStats {
     /// pins the per-token cost; keep it ≈ Categorical observe.
     #[inline]
     fn observe_multicat_token_str(&mut self, col_idx: usize, tok: &str, count_category: bool) {
-        let hash = HyperLogLog::hash_bytes(tok.as_bytes());
+        let hash = HyperLogLog::hash_str(tok);
         if let ColumnStatsCollector::Multicategorical { hll, .. } = &mut self.cols[col_idx] {
             hll.observe_hash(hash);
         }
@@ -2409,7 +2423,7 @@ impl ColumnValueObserver for FileColStats {
                 // unchanged and continues through `observe_float_list`.
                 let canonical = if value == 0.0 { 0.0 } else { value };
                 let string = canonical.to_string();
-                Some((HyperLogLog::hash_bytes(string.as_bytes()), string))
+                Some((HyperLogLog::hash_str(&string), string))
             }
             _ => None,
         };
@@ -2466,7 +2480,7 @@ impl ColumnValueObserver for FileColStats {
         // Pre-compute hash for categorical/id (shared between HLL and category counts).
         let cat_hash = match &self.cols[col_idx] {
             ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. } => {
-                Some(HyperLogLog::hash_bytes(value.as_bytes()))
+                Some(HyperLogLog::hash_str(value))
             }
             _ => None,
         };
@@ -2482,7 +2496,7 @@ impl ColumnValueObserver for FileColStats {
             }
             ColumnStatsCollector::Text { count, hll, .. } => {
                 *count += 1;
-                hll.observe_bytes(value.as_bytes());
+                hll.observe_str(value);
             }
             ColumnStatsCollector::ImageUrl { count, .. } => {
                 *count += 1;
@@ -2887,7 +2901,7 @@ mod tests {
         let n = 50_000;
         for i in 0..n {
             let s = format!("value_{i}");
-            hll.observe_bytes(s.as_bytes());
+            hll.observe_str(&s);
         }
         let est = hll.estimate();
         let error = (est - n as f64).abs() / n as f64;
@@ -3068,7 +3082,7 @@ mod tests {
     #[test]
     fn test_graduation_basic() {
         let shared = SharedColumnCounts::new_graduation();
-        let hash = HyperLogLog::hash_bytes(b"hello");
+        let hash = HyperLogLog::hash_str("hello");
         // Merge a batch with count=200 (well above default min_occ=100)
         let mut local = local_batch(hash, "hello", 200);
         shared.merge_local_batch_graduation(&mut local);
@@ -3082,7 +3096,7 @@ mod tests {
     #[test]
     fn test_graduation_below_threshold() {
         let shared = SharedColumnCounts::new_graduation();
-        let hash = HyperLogLog::hash_bytes(b"rare");
+        let hash = HyperLogLog::hash_str("rare");
         // Merge a batch with count=1 — should NOT graduate
         let mut local = local_batch(hash, "rare", 1);
         shared.merge_local_batch_graduation(&mut local);
@@ -3130,10 +3144,10 @@ mod tests {
     #[test]
     fn test_shared_counts_cap_policy() {
         let capped = SharedColumnCounts::new_hashed_capped_with_max_categories(2);
-        assert!(capped.observe_hashed(HyperLogLog::hash_bytes(b"a"), "a"));
-        assert!(capped.observe_hashed(HyperLogLog::hash_bytes(b"b"), "b"));
-        assert!(!capped.observe_hashed(HyperLogLog::hash_bytes(b"c"), "c"));
-        assert!(capped.observe_hashed(HyperLogLog::hash_bytes(b"a"), "a"));
+        assert!(capped.observe_hashed(HyperLogLog::hash_str("a"), "a"));
+        assert!(capped.observe_hashed(HyperLogLog::hash_str("b"), "b"));
+        assert!(!capped.observe_hashed(HyperLogLog::hash_str("c"), "c"));
+        assert!(capped.observe_hashed(HyperLogLog::hash_str("a"), "a"));
         assert!(capped.is_capped());
         assert!(!capped.is_aborted());
         assert_eq!(
@@ -3142,8 +3156,8 @@ mod tests {
         );
 
         let exhaustive = SharedColumnCounts::new_hashed_with_max_categories(1);
-        assert!(exhaustive.observe_hashed(HyperLogLog::hash_bytes(b"a"), "a"));
-        assert!(exhaustive.observe_hashed(HyperLogLog::hash_bytes(b"b"), "b"));
+        assert!(exhaustive.observe_hashed(HyperLogLog::hash_str("a"), "a"));
+        assert!(exhaustive.observe_hashed(HyperLogLog::hash_str("b"), "b"));
         assert!(exhaustive.is_aborted());
         assert!(!exhaustive.is_capped());
         assert!(exhaustive.drain_to_map().is_none());

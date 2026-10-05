@@ -6,7 +6,7 @@
 //! TT-gen (training table generation).
 //!
 //! These are pure data structures with no crate-specific dependencies beyond
-//! `gxhash` (for HyperLogLog hashing).
+//! `gxhash` and `ptr_hash` (for value hashing).
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
@@ -24,7 +24,7 @@ use serde_json::{json, Value as JsonValue};
 
 /// HyperLogLog cardinality estimator with 2^14 = 16384 registers.
 ///
-/// Hash function: gxhash (hardware-accelerated).
+/// Hash function: [`HyperLogLog::hash_str`], `hash_i64`, `hash_f64`.
 pub struct HyperLogLog {
     registers: Box<[u8; Self::M]>,
 }
@@ -48,13 +48,11 @@ impl HyperLogLog {
         }
     }
 
-    /// Compute a u64 hash for a byte slice using the fixed HLL seed.
+    /// Compute a u64 hash for a string using the fixed HLL seed.
     /// Used by both HLL and category counts to share a single hash computation.
     #[inline]
-    pub fn hash_bytes(bytes: &[u8]) -> u64 {
-        let mut hasher = gxhash::GxHasher::with_seed(Self::HASH_SEED);
-        hasher.write(bytes);
-        hasher.finish()
+    pub fn hash_str(value: &str) -> u64 {
+        ptr_hash::hash::hash_str(value, Self::HASH_SEED as u64)
     }
 
     /// Compute a u64 hash for an i64 value using the fixed HLL seed.
@@ -73,10 +71,10 @@ impl HyperLogLog {
         hasher.finish()
     }
 
-    /// Hash and observe a byte slice.
+    /// Hash and observe a string.
     #[inline]
-    pub fn observe_bytes(&mut self, bytes: &[u8]) {
-        self.observe_hash(Self::hash_bytes(bytes));
+    pub fn observe_str(&mut self, value: &str) {
+        self.observe_hash(Self::hash_str(value));
     }
 
     /// Observe an i64 value.
@@ -388,7 +386,7 @@ mod tests {
     fn test_hll_strings() {
         let mut hll = HyperLogLog::new();
         for i in 0..5_000 {
-            hll.observe_bytes(format!("item_{}", i).as_bytes());
+            hll.observe_str(&format!("item_{}", i));
         }
         let est = hll.estimate();
         assert!(
@@ -532,35 +530,119 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "category hash collision between canonical values")]
-    fn shared_hash_collision_fails_explicitly() {
-        let counts = SharedColumnCounts::new_hashed();
+    fn colliding_values_are_counted_apart() {
+        for counts in [
+            SharedColumnCounts::new_hashed(),
+            SharedColumnCounts::new_hashed_with_max_categories(10),
+        ] {
+            let mut local = LocalColumnCounts::with_capacity(1);
+            local.observe(7, "left");
+            local.observe(7, "right");
+            local.observe(7, "right");
+            counts.merge_local_batch(&mut local);
+            assert!(counts.observe_hashed(7, "right"));
+            assert!(counts.observe_hashed(7, "third"));
+            assert!(counts.observe_hashed_i64(8, 11));
+            assert!(counts.observe_hashed_i64(8, 12));
+            assert_eq!(counts.unique_count.load(Ordering::Relaxed), 5);
+            assert_eq!(
+                counts.drain_to_map().unwrap(),
+                HashMap::from([
+                    ("left".to_owned(), 1),
+                    ("right".to_owned(), 3),
+                    ("third".to_owned(), 1),
+                    ("11".to_owned(), 1),
+                    ("12".to_owned(), 1),
+                ])
+            );
+        }
+    }
+
+    #[test]
+    fn colliding_value_respects_the_cap() {
+        let counts = SharedColumnCounts::new_hashed_capped_with_max_categories(2);
         assert!(counts.observe_hashed(7, "left"));
-        counts.observe_hashed(7, "right");
+        assert!(counts.observe_hashed(7, "right"));
+        assert!(!counts.observe_hashed(7, "late"));
+        assert!(!counts.observe_hashed(9, "other"));
+        assert!(counts.observe_hashed(7, "right"));
+        assert!(counts.is_capped());
+        assert_eq!(
+            counts.drain_to_map().unwrap(),
+            HashMap::from([("left".to_owned(), 1), ("right".to_owned(), 2)])
+        );
+
+        let exhaustive = SharedColumnCounts::new_hashed_with_max_categories(1);
+        assert!(exhaustive.observe_hashed(7, "left"));
+        exhaustive.observe_hashed(7, "right");
+        assert!(exhaustive.is_aborted());
     }
 
     #[test]
-    #[should_panic(expected = "category hash collision between canonical values")]
-    fn shared_integer_hash_collision_fails_explicitly() {
-        let counts = SharedColumnCounts::new_hashed();
-        assert!(counts.observe_hashed_i64(7, 11));
-        counts.observe_hashed_i64(7, 12);
+    fn concurrent_colliding_values_count_exactly() {
+        use std::thread;
+
+        let values: Vec<String> = (0..48).map(|i| format!("value-{i}")).collect();
+        for cap in [MAX_CATEGORIES, 20] {
+            let counts = Arc::new(SharedColumnCounts::new_hashed_capped_with_max_categories(
+                cap,
+            ));
+            let handles: Vec<_> = (0..8)
+                .map(|worker| {
+                    let (counts, values) = (Arc::clone(&counts), values.clone());
+                    thread::spawn(move || {
+                        let mut local = LocalColumnCounts::with_capacity(4);
+                        let mut admitted = HashMap::<String, u64>::new();
+                        for step in 0..20_000usize {
+                            let value = &values[(step * 7 + worker) % values.len()];
+                            let hash = (value.len() % 4) as u64;
+                            if local.increment_if_present(hash, value)
+                                || counts.observe_hashed(hash, value)
+                            {
+                                *admitted.entry(value.clone()).or_default() += 1;
+                                local.cache_admitted(hash, value);
+                            }
+                            if step % 1_000 == 0 {
+                                counts.merge_local_batch(&mut local);
+                                local.clear();
+                            }
+                        }
+                        counts.merge_local_batch(&mut local);
+                        admitted
+                    })
+                })
+                .collect();
+            let mut expected = HashMap::<String, u64>::new();
+            for handle in handles {
+                for (value, count) in handle.join().unwrap() {
+                    *expected.entry(value).or_default() += count;
+                }
+            }
+            let drained = counts.drain_to_map().unwrap();
+            assert_eq!(drained.len() as u64, cap.min(48));
+            for (value, count) in drained {
+                assert_eq!(expected[&value], count, "{value}");
+            }
+        }
     }
 
     #[test]
-    #[should_panic(expected = "category hash collision between canonical values")]
-    fn local_fast_path_hash_collision_fails_explicitly() {
-        let mut local = LocalColumnCounts::with_capacity(1);
-        local.cache_admitted(7, "left");
-        local.increment_if_present(7, "right");
-    }
-
-    #[test]
-    #[should_panic(expected = "category hash collision between canonical values")]
-    fn local_integer_fast_path_hash_collision_fails_explicitly() {
-        let mut local = LocalColumnCounts::with_capacity(1);
-        local.cache_admitted_i64(7, 11);
-        local.increment_i64_if_present(7, 12);
+    #[cfg(target_arch = "x86_64")]
+    fn long_gxhash_twins_hash_apart() {
+        use std::hash::Hasher as _;
+        let gxhash = |bytes: &[u8]| {
+            let mut hasher = gxhash::GxHasher::with_seed(HyperLogLog::HASH_SEED);
+            hasher.write(bytes);
+            hasher.finish()
+        };
+        let (left, right) = ptr_hash::hash::gxhash_twins();
+        assert_ne!(left, right);
+        assert_eq!(gxhash(left.as_bytes()), gxhash(right.as_bytes()));
+        assert_ne!(HyperLogLog::hash_str(&left), HyperLogLog::hash_str(&right));
+        assert_eq!(
+            HyperLogLog::hash_str("sixteen-bytes-ok"),
+            gxhash(b"sixteen-bytes-ok")
+        );
     }
 
     #[test]
@@ -582,7 +664,7 @@ mod tests {
     fn shared_count_overflow_fails_explicitly() {
         let counts = SharedColumnCounts::new_hashed();
         assert!(counts.observe_hashed(7, "value"));
-        let CountStorage::Hashed { counts: values } = &counts.storage else {
+        let CountStorage::Hashed { counts: values, .. } = &counts.storage else {
             unreachable!();
         };
         values.get_mut(&7).unwrap().count = u64::MAX;
@@ -971,6 +1053,8 @@ pub enum CategoryIdentity {
 /// A canonical value and its exact occurrence count. Keeping typed identity
 /// beside the hash makes the DashMap entry the single admission/counting
 /// arbitration point and lets us detect otherwise-silent 64-bit collisions.
+/// A value whose hash is already held by a different value is counted in
+/// `CountStorage::Hashed::collided` instead.
 pub struct HashedCategoryCount {
     value: CategoryIdentity,
     count: u64,
@@ -981,8 +1065,10 @@ pub enum CountStorage {
     /// Hash-based exact retained counts (Hybrid).
     Hashed {
         counts: DashMap<u64, HashedCategoryCount, IdentityBuildHasher>,
+        collided: Mutex<Vec<HashedCategoryCount>>,
     },
     /// Graduation v2: ArcSwap frozen graduated set + DashMap pending + inbox coordinator.
+    /// Identity is the hash alone; rejected with col_stats, so never published.
     Graduation {
         /// Frozen graduated set — swapped atomically via ArcSwap.
         graduated: ArcSwap<HashSet<u64>>,
@@ -1049,6 +1135,7 @@ pub struct SharedColumnCounts {
     /// DashMap shard access.
     admitted_snapshot: ArcSwapOption<HashSet<u64>>,
     capped: AtomicBool,
+    collision_warned: AtomicBool,
     max_categories: Option<u64>,
     limit_policy: CategoryLimitPolicy,
     #[cfg(test)]
@@ -1090,6 +1177,7 @@ impl SharedColumnCounts {
                     IdentityBuildHasher,
                     256,
                 ),
+                collided: Mutex::new(Vec::new()),
             },
             unique_count: AtomicU64::new(0),
             aborted: AtomicBool::new(false),
@@ -1097,6 +1185,7 @@ impl SharedColumnCounts {
             admission_gate: RwLock::new(()),
             admitted_snapshot: ArcSwapOption::empty(),
             capped: AtomicBool::new(false),
+            collision_warned: AtomicBool::new(false),
             max_categories,
             limit_policy,
             #[cfg(test)]
@@ -1134,6 +1223,7 @@ impl SharedColumnCounts {
             admission_gate: RwLock::new(()),
             admitted_snapshot: ArcSwapOption::empty(),
             capped: AtomicBool::new(false),
+            collision_warned: AtomicBool::new(false),
             max_categories,
             limit_policy: CategoryLimitPolicy::Abort,
             #[cfg(test)]
@@ -1188,7 +1278,7 @@ impl SharedColumnCounts {
         if self.admitted_snapshot.load().is_some() {
             return;
         }
-        let CountStorage::Hashed { counts } = &self.storage else {
+        let CountStorage::Hashed { counts, .. } = &self.storage else {
             return;
         };
         let snapshot = counts.iter().map(|entry| *entry.key()).collect();
@@ -1211,6 +1301,79 @@ impl SharedColumnCounts {
         }
     }
 
+    /// Retained-policy admission of one new distinct value. Callers hold the
+    /// admission gate for reading.
+    fn try_admit_retained(&self, publish_snapshot: &mut bool) -> bool {
+        let at_limit = self.max_categories.is_some_and(|max_categories| {
+            self.unique_count.load(Ordering::Relaxed) >= max_categories
+        });
+        if self.admissions_closed.load(Ordering::Acquire) || at_limit {
+            self.admissions_closed.store(true, Ordering::Release);
+            self.capped.store(true, Ordering::Relaxed);
+            *publish_snapshot = true;
+            return false;
+        }
+        #[cfg(test)]
+        if let Some(barrier) = &self.admission_barrier {
+            barrier.wait();
+        }
+        let new_unique = self.unique_count.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Some(max_categories) = self.max_categories {
+            if new_unique >= max_categories {
+                // Freeze membership at capacity. Admission readers already in
+                // flight may still win; the publisher waits for all of them.
+                self.admissions_closed.store(true, Ordering::Release);
+                *publish_snapshot = true;
+                if new_unique > max_categories {
+                    self.capped.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+        true
+    }
+
+    /// Exhaustive-policy admission: always admits, aborts past the cap.
+    fn admit_exhaustive(&self) -> bool {
+        let new_unique = self.unique_count.fetch_add(1, Ordering::Relaxed) + 1;
+        if self
+            .max_categories
+            .is_some_and(|max_categories| new_unique > max_categories)
+        {
+            self.aborted.store(true, Ordering::Relaxed);
+        }
+        true
+    }
+
+    /// Counts a value whose hash is held by a different value.
+    fn merge_collided<F, V>(
+        collided: &Mutex<Vec<HashedCategoryCount>>,
+        delta: u64,
+        identity_matches: F,
+        value_factory: V,
+        admit: impl FnOnce() -> bool,
+    ) -> bool
+    where
+        F: Fn(&CategoryIdentity) -> bool,
+        V: FnOnce() -> CategoryIdentity,
+    {
+        let mut collided = collided.lock();
+        if let Some(stored) = collided
+            .iter_mut()
+            .find(|stored| identity_matches(&stored.value))
+        {
+            Self::checked_add_count(&mut stored.count, delta);
+            return true;
+        }
+        if !admit() {
+            return false;
+        }
+        collided.push(HashedCategoryCount {
+            value: value_factory(),
+            count: delta,
+        });
+        true
+    }
+
     fn merge_hashed_with<F, V>(
         &self,
         hash: u64,
@@ -1219,13 +1382,13 @@ impl SharedColumnCounts {
         value_factory: V,
     ) -> bool
     where
-        F: Fn(&HashedCategoryCount) -> bool,
+        F: Fn(&CategoryIdentity) -> bool,
         V: FnOnce() -> CategoryIdentity,
     {
         if self.aborted.load(Ordering::Relaxed) {
             return false;
         }
-        let CountStorage::Hashed { counts } = &self.storage else {
+        let CountStorage::Hashed { counts, collided } = &self.storage else {
             return false;
         };
 
@@ -1241,12 +1404,10 @@ impl SharedColumnCounts {
             // not need the admission gate after membership is frozen.
             self.record_hashed_map_access();
             if let Some(mut stored) = counts.get_mut(&hash) {
-                assert!(
-                    identity_matches(&stored),
-                    "category hash collision between canonical values"
-                );
-                Self::checked_add_count(&mut stored.count, delta);
-                return true;
+                if identity_matches(&stored.value) {
+                    Self::checked_add_count(&mut stored.count, delta);
+                    return true;
+                }
             }
 
             let mut publish_snapshot = false;
@@ -1264,47 +1425,28 @@ impl SharedColumnCounts {
                 match counts.entry(hash) {
                     dashmap::mapref::entry::Entry::Occupied(mut entry) => {
                         let stored = entry.get_mut();
-                        assert!(
-                            identity_matches(stored),
-                            "category hash collision between canonical values"
-                        );
-                        Self::checked_add_count(&mut stored.count, delta);
-                        true
+                        if identity_matches(&stored.value) {
+                            Self::checked_add_count(&mut stored.count, delta);
+                            true
+                        } else {
+                            Self::merge_collided(
+                                collided,
+                                delta,
+                                identity_matches,
+                                value_factory,
+                                || self.try_admit_retained(&mut publish_snapshot),
+                            )
+                        }
                     }
                     dashmap::mapref::entry::Entry::Vacant(entry) => {
-                        let at_limit = self.max_categories.is_some_and(|max_categories| {
-                            self.unique_count.load(Ordering::Relaxed) >= max_categories
-                        });
-                        if self.admissions_closed.load(Ordering::Acquire) || at_limit {
-                            self.admissions_closed.store(true, Ordering::Release);
-                            self.capped.store(true, Ordering::Relaxed);
-                            publish_snapshot = true;
-                            false
-                        } else {
-                            #[cfg(test)]
-                            if let Some(barrier) = &self.admission_barrier {
-                                barrier.wait();
-                            }
-
+                        let admitted = self.try_admit_retained(&mut publish_snapshot);
+                        if admitted {
                             entry.insert(HashedCategoryCount {
                                 value: value_factory(),
                                 count: delta,
                             });
-                            let new_unique = self.unique_count.fetch_add(1, Ordering::Relaxed) + 1;
-                            if let Some(max_categories) = self.max_categories {
-                                if new_unique >= max_categories {
-                                    // Freeze membership at capacity. Admission
-                                    // readers already in flight may still win;
-                                    // the publisher waits for all of them.
-                                    self.admissions_closed.store(true, Ordering::Release);
-                                    publish_snapshot = true;
-                                    if new_unique > max_categories {
-                                        self.capped.store(true, Ordering::Relaxed);
-                                    }
-                                }
-                            }
-                            true
                         }
+                        admitted
                     }
                 }
             };
@@ -1317,26 +1459,25 @@ impl SharedColumnCounts {
             match counts.entry(hash) {
                 dashmap::mapref::entry::Entry::Occupied(mut entry) => {
                     let stored = entry.get_mut();
-                    assert!(
-                        identity_matches(stored),
-                        "category hash collision between canonical values"
-                    );
-                    Self::checked_add_count(&mut stored.count, delta);
-                    true
+                    if identity_matches(&stored.value) {
+                        Self::checked_add_count(&mut stored.count, delta);
+                        true
+                    } else {
+                        Self::merge_collided(
+                            collided,
+                            delta,
+                            identity_matches,
+                            value_factory,
+                            || self.admit_exhaustive(),
+                        )
+                    }
                 }
                 dashmap::mapref::entry::Entry::Vacant(entry) => {
                     entry.insert(HashedCategoryCount {
                         value: value_factory(),
                         count: delta,
                     });
-                    let new_unique = self.unique_count.fetch_add(1, Ordering::Relaxed) + 1;
-                    if self
-                        .max_categories
-                        .is_some_and(|max_categories| new_unique > max_categories)
-                    {
-                        self.aborted.store(true, Ordering::Relaxed);
-                    }
-                    true
+                    self.admit_exhaustive()
                 }
             }
         }
@@ -1346,7 +1487,7 @@ impl SharedColumnCounts {
         self.merge_hashed_with(
             hash,
             delta,
-            |stored| matches!(&stored.value, CategoryIdentity::String(value) if value == value_str),
+            |stored| matches!(stored, CategoryIdentity::String(value) if value == value_str),
             || CategoryIdentity::String(value_str.to_owned()),
         )
     }
@@ -1355,7 +1496,7 @@ impl SharedColumnCounts {
         self.merge_hashed_with(
             hash,
             delta,
-            |stored| matches!(&stored.value, CategoryIdentity::I64(stored) if *stored == value),
+            |stored| matches!(stored, CategoryIdentity::I64(stored) if *stored == value),
             || CategoryIdentity::I64(value),
         )
     }
@@ -1389,6 +1530,12 @@ impl SharedColumnCounts {
                 } else {
                     continue;
                 }
+                if self.aborted.load(Ordering::Relaxed) {
+                    return;
+                }
+            }
+            for (hash, value, count) in &local.collided {
+                self.merge_hashed(*hash, value, *count);
                 if self.aborted.load(Ordering::Relaxed) {
                     return;
                 }
@@ -1503,15 +1650,17 @@ impl SharedColumnCounts {
             return None;
         }
         match &self.storage {
-            CountStorage::Hashed { counts } => {
+            CountStorage::Hashed { counts, collided } => {
                 let mut entries = Vec::with_capacity(counts.len());
-                for entry in counts.iter() {
-                    let value = match &entry.value().value {
+                let publish = |stored: &HashedCategoryCount| {
+                    let value = match &stored.value {
                         CategoryIdentity::String(value) => value.clone(),
                         CategoryIdentity::I64(value) => value.to_string(),
                     };
-                    entries.push((value, entry.value().count));
-                }
+                    (value, stored.count)
+                };
+                entries.extend(counts.iter().map(|entry| publish(entry.value())));
+                entries.extend(collided.lock().iter().map(publish));
                 if let Some(max_categories) = self.max_categories {
                     if entries.len() > max_categories as usize {
                         self.capped.store(true, Ordering::Relaxed);
@@ -1556,6 +1705,26 @@ impl SharedColumnCounts {
         }
     }
 
+    /// Values counted on the collision path.
+    pub fn collided_count(&self) -> usize {
+        match &self.storage {
+            CountStorage::Hashed { collided, .. } => collided.lock().len(),
+            CountStorage::Graduation { .. } => 0,
+        }
+    }
+
+    /// Warns once per column if any value took the collision path.
+    pub fn warn_collisions_once(&self, column: &str) {
+        let colliding_values = self.collided_count();
+        if colliding_values > 0 && !self.collision_warned.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                column,
+                colliding_values,
+                "category values share a 64-bit hash with another value; counted separately"
+            );
+        }
+    }
+
     pub fn is_aborted(&self) -> bool {
         self.aborted.load(Ordering::Relaxed)
     }
@@ -1576,6 +1745,8 @@ pub struct LocalColumnCounts {
     pub counts: HashMap<u64, u64>,
     pub strings: HashMap<u64, String>,
     integer_values: HashMap<u64, i64>,
+    /// `(hash, value, count)` for values whose hash `strings` holds for another value.
+    collided: Vec<(u64, String, u64)>,
 }
 
 impl LocalColumnCounts {
@@ -1587,6 +1758,7 @@ impl LocalColumnCounts {
             // footprint. Integer identity storage allocates lazily only when
             // an integer category actually wins admission.
             integer_values: HashMap::new(),
+            collided: Vec::new(),
         }
     }
 
@@ -1596,13 +1768,19 @@ impl LocalColumnCounts {
         use std::collections::hash_map::Entry;
         match self.counts.entry(hash) {
             Entry::Occupied(mut e) => {
-                assert_eq!(
-                    self.strings.get(&hash).map(String::as_str),
-                    Some(value_str),
-                    "category hash collision between canonical values"
-                );
-                *e.get_mut() = e
-                    .get()
+                let count = if self.strings.get(&hash).map(String::as_str) == Some(value_str) {
+                    e.get_mut()
+                } else if let Some((_, _, count)) = self
+                    .collided
+                    .iter_mut()
+                    .find(|(h, value, _)| *h == hash && value == value_str)
+                {
+                    count
+                } else {
+                    self.collided.push((hash, value_str.to_owned(), 1));
+                    return true;
+                };
+                *count = count
                     .checked_add(1)
                     .expect("exact local category occurrence count overflowed u64");
                 false
@@ -1621,11 +1799,9 @@ impl LocalColumnCounts {
         let Some(count) = self.counts.get_mut(&hash) else {
             return false;
         };
-        assert_eq!(
-            self.strings.get(&hash).map(String::as_str),
-            Some(value_str),
-            "category hash collision between canonical values"
-        );
+        if self.strings.get(&hash).map(String::as_str) != Some(value_str) {
+            return false;
+        }
         *count = count
             .checked_add(1)
             .expect("exact local category occurrence count overflowed u64");
@@ -1639,11 +1815,9 @@ impl LocalColumnCounts {
         let Some(count) = self.counts.get_mut(&hash) else {
             return false;
         };
-        assert_eq!(
-            self.integer_values.get(&hash),
-            Some(&value),
-            "category hash collision between canonical values"
-        );
+        if self.integer_values.get(&hash) != Some(&value) {
+            return false;
+        }
         *count = count
             .checked_add(1)
             .expect("exact local category occurrence count overflowed u64");
@@ -1651,23 +1825,26 @@ impl LocalColumnCounts {
     }
 
     /// Cache a key whose current observation was already counted by shared
-    /// admission. Subsequent local values are unmerged deltas only.
+    /// admission. Subsequent local values are unmerged deltas only. A hash
+    /// already cached for another value stays uncached.
     pub fn cache_admitted(&mut self, hash: u64, value_str: &str) {
-        assert!(!self.counts.contains_key(&hash));
-        self.counts.insert(hash, 0);
-        self.strings.insert(hash, value_str.to_owned());
+        if let std::collections::hash_map::Entry::Vacant(e) = self.counts.entry(hash) {
+            e.insert(0);
+            self.strings.insert(hash, value_str.to_owned());
+        }
     }
 
     /// Cache a newly admitted integer without formatting it. Publication owns
     /// the one eventual integer-to-string conversion.
     pub fn cache_admitted_i64(&mut self, hash: u64, value: i64) {
-        assert!(!self.counts.contains_key(&hash));
-        self.counts.insert(hash, 0);
-        self.integer_values.insert(hash, value);
+        if let std::collections::hash_map::Entry::Vacant(e) = self.counts.entry(hash) {
+            e.insert(0);
+            self.integer_values.insert(hash, value);
+        }
     }
 
     pub fn len(&self) -> usize {
-        self.counts.len()
+        self.counts.len() + self.collided.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1678,6 +1855,7 @@ impl LocalColumnCounts {
         self.counts.clear();
         self.strings.clear();
         self.integer_values.clear();
+        self.collided.clear();
     }
 }
 
