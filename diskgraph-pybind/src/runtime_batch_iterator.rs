@@ -13,6 +13,7 @@ use rand::seq::SliceRandom;
 use rand::Rng;
 use rand::{rngs::StdRng, SeedableRng};
 use serde::Deserialize;
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crate::{map_engine_err, DiskgraphConfigError, DiskgraphDataError, DiskgraphSystemError};
@@ -44,16 +45,8 @@ fn epoch_shuffle_seed(base_seed: u64, epoch: u64, stage_key: &str) -> u64 {
 /// `consecutive_rows_of_a_shard_are_far_apart`.
 const FEISTEL_ROUNDS: usize = 10;
 
-/// Below this many rows, shuffle by materialising the order instead.
-///
-/// This is a COMPATIBILITY boundary, not a correctness or quality one. The
-/// generator is a valid permutation at any size, and the mixing tests run
-/// well above this.
-///
-/// Below a million rows the problem being solved does not exist: a million
-/// u64 offsets is 8 MB. Keeping Fisher-Yates there means every table under
-/// that size produces a BYTE-IDENTICAL ordering, which confines the
-/// behaviour change to the tables actually large enough to need it.
+/// Keep Fisher–Yates for small domains; avoid offset arrays for large ones.
+/// This also preserves the ordinary shuffler's existing small-table order.
 const MATERIALISE_BELOW: u64 = 1_000_000;
 
 /// A seeded pseudorandom permutation of `[0, n)`, evaluable POINTWISE in
@@ -214,6 +207,38 @@ enum Order {
     Generated(FeistelPerm),
 }
 
+impl Order {
+    fn shuffled(count: u64, seed: u64) -> Self {
+        Self::shuffled_below(count, seed, MATERIALISE_BELOW)
+    }
+
+    fn shuffled_below(count: u64, seed: u64, materialise_below: u64) -> Self {
+        if count < materialise_below {
+            let mut offsets: Vec<u64> = (0..count).collect();
+            offsets.shuffle(&mut StdRng::seed_from_u64(seed));
+            Self::Materialised(Arc::new(offsets))
+        } else {
+            Self::Generated(FeistelPerm::new(count, seed))
+        }
+    }
+
+    #[inline]
+    fn at(&self, position: u64) -> u64 {
+        match self {
+            Self::Identity => position,
+            Self::Materialised(offsets) => offsets[position as usize],
+            Self::Generated(permutation) => permutation.at(position),
+        }
+    }
+
+    fn stored_rows(&self) -> u64 {
+        match self {
+            Self::Materialised(offsets) => offsets.len() as u64,
+            _ => 0,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct ShardStream {
     order: Order,
@@ -263,15 +288,8 @@ impl ShardStream {
         let seed = epoch_shuffle_seed(rnd_seed.unwrap_or(0), epoch, stage_key);
         let order = if !shuffle {
             Order::Identity
-        } else if input_count < MATERIALISE_BELOW {
-            // Small domain: materialise, both because Feistel is weakest here
-            // and because 8 MB is not worth avoiding. Byte-identical to the
-            // ordering this replaces.
-            let mut v: Vec<u64> = (0..input_count).collect();
-            v.shuffle(&mut StdRng::seed_from_u64(seed));
-            Order::Materialised(Arc::new(v))
         } else {
-            Order::Generated(FeistelPerm::new(input_count, seed))
+            Order::shuffled(input_count, seed)
         };
         Ok(Self { order, stride: num_workers, start: worker_id, base, len })
     }
@@ -290,12 +308,7 @@ impl ShardStream {
             self.len
         );
         let pos = self.start + (j as u64) * self.stride;
-        let v = match &self.order {
-            Order::Identity => pos,
-            Order::Materialised(v) => v[pos as usize],
-            Order::Generated(p) => p.at(pos),
-        };
-        v + self.base
+        self.order.at(pos) + self.base
     }
 
     fn take(&self, from: usize, count: usize) -> Vec<u64> {
@@ -811,63 +824,73 @@ fn make_weighted_stage_node_ids(
 // little-endian `u64` array of FINAL node-ids; bucket `b` occupies
 // `[offset_b, offset_b + count_b)` (units = node-ids, byte range ×8).
 //
-// The schedule is LAZY and O(D)+O(one bucket) RAM (D = #buckets = distinct
-// timestamps): we hold only the ordered bucket list + a prefix-sum of
-// per-bucket batch counts + the bin path, and read/permute one bucket at a time
-// as batches are pulled. Determinism: bucket ORDER and WITHIN-bucket order
-// depend only on `(base_seed, epoch, stage_key[, ts])`, never on `worker_id`,
-// so every worker computes the identical global order and then keeps its own
-// residue class of global batch indices (`i % num_workers == worker_id`) — a
-// true partition of all node-ids, single-timestamp by construction.
-// ---------------------------------------------------------------------------
-
-/// One bucket in the (epoch-shuffled) schedule: its timestamp (shuffle-seed
-/// input + metadata, units = SECONDS — never compared to `seed_time` ns), its
-/// `[offset, offset + count)` slice of `bucket_index.bin` (units = node-ids),
-/// and the global batch index of its FIRST batch (`batch_start`). The bucket
-/// owns global batch indices `[batch_start, batch_start + ceil(count/bs))`.
+// Permute batch slots globally and row positions within each timestamp.
 struct ScheduledBucket {
-    ts: i64,
     offset: u64,
     count: u64,
     batch_start: u64,
+    seed: u64,
 }
 
-/// Lazy single-timestamp batch schedule. Holds O(D) state (the ordered buckets,
-/// bin path, and params) plus a cache of at most ONE materialized (permuted)
-/// bucket's node-ids. Owned by the iterator when `group_by_timestamp` is set.
+// A bucket order is stored only if it spans under this many batches and fits
+// the cache on its own; otherwise it is generated.
+const STORED_BUCKET_BATCHES: u64 = 64;
+const MAX_STORED_ROWS: u64 = 32 * 1024 * 1024 / size_of::<u64>() as u64;
+const MAX_STORED_ENTRIES: usize = 16;
+
+struct BucketOrders {
+    entries: VecDeque<(usize, Order)>,
+    stored_rows: u64,
+    store_below: u64,
+}
+
+impl BucketOrders {
+    fn new(batch_size: usize) -> Self {
+        let store_below = STORED_BUCKET_BATCHES
+            .saturating_mul(batch_size as u64)
+            .min(MAX_STORED_ROWS + 1);
+        Self::with_store_below(store_below)
+    }
+
+    fn with_store_below(store_below: u64) -> Self {
+        Self { entries: VecDeque::new(), stored_rows: 0, store_below }
+    }
+
+    fn get(&mut self, bucket: usize, count: u64, seed: u64) -> &Order {
+        if let Some(position) = self.entries.iter().position(|(id, _)| *id == bucket) {
+            let entry = self.entries.remove(position).unwrap();
+            self.entries.push_back(entry);
+        } else {
+            let rows = if count < self.store_below { count } else { 0 };
+            while self.entries.len() >= MAX_STORED_ENTRIES
+                || self.stored_rows + rows > MAX_STORED_ROWS
+            {
+                let Some((_, evicted)) = self.entries.pop_front() else {
+                    break;
+                };
+                self.stored_rows -= evicted.stored_rows();
+            }
+            let order = Order::shuffled_below(count, seed, self.store_below);
+            self.stored_rows += order.stored_rows();
+            self.entries.push_back((bucket, order));
+        }
+        &self.entries.back().unwrap().1
+    }
+}
+
 struct BucketSchedule {
-    /// Buckets in epoch-shuffled order, each tagged with its global batch range
-    /// start. `batch_start` is the running prefix-sum of `ceil(count/bs)`.
     buckets: Vec<ScheduledBucket>,
-    /// Total batches across all buckets (`Σ ceil(count_b / batch_size)`).
     total_batches: u64,
-    /// Absolute path of `bucket_index.bin`.
-    bin_path: std::path::PathBuf,
-    /// Shuffle base seed and epoch (within-bucket permutations key off these
-    /// plus the bucket `ts`).
-    base_seed: u64,
-    epoch: u64,
-    stage_key: String,
+    ids: U64Sidecar,
+    batches: Order,
+    row_orders: BucketOrders,
     batch_size: usize,
     num_workers: u64,
     worker_id: u64,
-    /// Next owned global batch index to emit. Owned indices are
-    /// `{ worker_id, worker_id + num_workers, ... } ∩ [0, total_batches)`.
     next_global: u64,
-    /// Cache of the currently-materialized bucket: its index into `buckets` and
-    /// its permuted node-ids. `None` until the first read; replaced whenever a
-    /// batch lands in a different bucket. Because owned global indices are
-    /// monotonic, bucket reads are monotonic → each bucket is read ~once.
-    cached: Option<(usize, Vec<u64>)>,
 }
 
 impl BucketSchedule {
-    /// Build the schedule from the manifest bucket list. `raw_buckets` are the
-    /// `(ts, offset, count)` triples from `diskgraph_manifest.json` (ingest
-    /// order = ascending ts). The schedule shuffles the BUCKET ORDER by
-    /// `epoch_shuffle_seed(base, epoch, stage_key)` and prefix-sums the
-    /// per-bucket batch counts. O(D) RAM.
     #[allow(clippy::too_many_arguments)]
     fn build(
         raw_buckets: Vec<RawBucket>,
@@ -878,124 +901,77 @@ impl BucketSchedule {
         batch_size: usize,
         num_workers: u64,
         worker_id: u64,
-    ) -> Self {
-        // Shuffle the bucket order deterministically by (base, epoch, stage_key)
-        // — identical across workers.
-        let mut order: Vec<usize> = (0..raw_buckets.len()).collect();
-        let mut rng = StdRng::seed_from_u64(epoch_shuffle_seed(base_seed, epoch, &stage_key));
-        order.shuffle(&mut rng);
-
+    ) -> PyResult<Self> {
+        if batch_size == 0 || num_workers == 0 || worker_id >= num_workers {
+            return Err(DiskgraphConfigError::new_err(
+                "invalid bucket batch size or worker assignment",
+            ));
+        }
+        let ids = U64Sidecar::open(&bin_path.to_string_lossy())?;
         let mut buckets = Vec::with_capacity(raw_buckets.len());
-        let mut acc: u64 = 0;
-        for idx in order {
-            let (ts, offset, count) = raw_buckets[idx];
-            // Empty buckets contribute zero batches; skip so binary search and
-            // the prefix-sum stay tight (an empty bucket would share a
-            // batch_start with its successor and never be selected anyway).
+        let mut total_batches = 0u64;
+        for (ts, offset, count) in raw_buckets {
+            if offset > ids.len() || count > ids.len() - offset {
+                return Err(DiskgraphDataError::new_err(format!(
+                    "bucket at timestamp {ts} exceeds {}",
+                    bin_path.display()
+                )));
+            }
             if count == 0 {
                 continue;
             }
-            let nbatches = count.div_ceil(batch_size as u64);
             buckets.push(ScheduledBucket {
-                ts,
                 offset,
                 count,
-                batch_start: acc,
+                batch_start: total_batches,
+                seed: epoch_shuffle_seed(base_seed, epoch, &format!("{stage_key}:rows:{ts}")),
             });
-            acc += nbatches;
+            total_batches = total_batches
+                .checked_add(count.div_ceil(batch_size as u64))
+                .ok_or_else(|| DiskgraphDataError::new_err("bucket batch count overflow"))?;
         }
-        let total_batches = acc;
-        BucketSchedule {
+        Ok(Self {
             buckets,
             total_batches,
-            bin_path,
-            base_seed,
-            epoch,
-            stage_key,
+            ids,
+            row_orders: BucketOrders::new(batch_size),
+            batches: Order::shuffled(
+                total_batches,
+                epoch_shuffle_seed(base_seed, epoch, &format!("{stage_key}:batches")),
+            ),
             batch_size,
             num_workers,
             worker_id,
             next_global: worker_id,
-            cached: None,
-        }
+        })
     }
 
-    /// This worker's batch count = number of owned global indices in
-    /// `[0, total_batches)`.
     fn worker_batch_count(&self) -> u64 {
         worker_batch_count(self.total_batches, self.num_workers, self.worker_id)
     }
 
-    /// Resolve a global batch index to `(bucket index, chunk index within the
-    /// bucket)` via binary search over the per-bucket batch ranges. `g` must be
-    /// `< total_batches`.
     fn locate(&self, g: u64) -> (usize, u64) {
-        // partition_point: first bucket whose batch_start > g; the owning bucket
-        // is the one before it.
-        let after = self
-            .buckets
-            .partition_point(|b| b.batch_start <= g);
-        debug_assert!(after >= 1, "g < total_batches implies a non-empty prefix");
-        let b = after - 1;
-        let chunk = g - self.buckets[b].batch_start;
-        (b, chunk)
+        let b = self.buckets.partition_point(|b| b.batch_start <= g) - 1;
+        (b, g - self.buckets[b].batch_start)
     }
 
-    /// Read bucket `b`'s node-id slice from `bucket_index.bin` and apply the
-    /// within-bucket shuffle keyed by `(base, epoch, "{stage_key}:{ts}")`.
-    /// O(count_b) RAM. Caller caches the result.
-    fn materialize_bucket(&self, b: usize) -> PyResult<Vec<u64>> {
-        use std::os::unix::fs::FileExt;
-        let bucket = &self.buckets[b];
-        let f = std::fs::File::open(&self.bin_path).map_err(|e| {
-            DiskgraphSystemError::new_err(format!(
-                "open bucket_index.bin {}: {e}",
-                self.bin_path.display()
-            ))
-        })?;
-        let mut bytes = vec![0u8; (bucket.count as usize) * 8];
-        f.read_exact_at(&mut bytes, bucket.offset * 8).map_err(|e| {
-            DiskgraphDataError::new_err(format!(
-                "read bucket [{}, {}) from {}: {e}",
-                bucket.offset,
-                bucket.offset + bucket.count,
-                self.bin_path.display()
-            ))
-        })?;
-        let mut ids: Vec<u64> = bytes
-            .as_chunks::<8>()
-            .0
-            .iter()
-            .map(|c| u64::from_le_bytes(*c))
-            .collect();
-        let key = format!("{}:{}", self.stage_key, bucket.ts);
-        let mut rng =
-            StdRng::seed_from_u64(epoch_shuffle_seed(self.base_seed, self.epoch, &key));
-        ids.shuffle(&mut rng);
-        Ok(ids)
-    }
-
-    /// Pull this worker's next single-timestamp batch of FINAL node-ids, or
-    /// `None` when the worker's owned global indices are exhausted.
     fn next_node_ids(&mut self) -> PyResult<Option<Vec<u64>>> {
         if self.next_global >= self.total_batches {
             return Ok(None);
         }
-        let g = self.next_global;
-        self.next_global += self.num_workers;
-
+        let g = self.batches.at(self.next_global);
+        self.next_global = self.next_global.saturating_add(self.num_workers);
         let (b, chunk) = self.locate(g);
-        // (Re)materialize the bucket if it isn't the cached one. Owned indices
-        // are monotonic ⇒ bucket index is non-decreasing ⇒ ~one read per bucket.
-        if self.cached.as_ref().map(|(idx, _)| *idx) != Some(b) {
-            let ids = self.materialize_bucket(b)?;
-            self.cached = Some((b, ids));
-        }
-        let ids = &self.cached.as_ref().unwrap().1;
-        let bs = self.batch_size as u64;
-        let start = (chunk * bs) as usize;
-        let end = (((chunk + 1) * bs).min(self.buckets[b].count)) as usize;
-        Ok(Some(ids[start..end].to_vec()))
+        let bucket = &self.buckets[b];
+        let start = chunk * self.batch_size as u64;
+        let end = start
+            .saturating_add(self.batch_size as u64)
+            .min(bucket.count);
+        let rows = self.row_orders.get(b, bucket.count, bucket.seed);
+        (start..end)
+            .map(|position| self.ids.get(bucket.offset + rows.at(position)))
+            .collect::<PyResult<Vec<_>>>()
+            .map(Some)
     }
 }
 
@@ -1791,7 +1767,7 @@ impl RuntimeBatchIterator {
                 batch_size,
                 num_workers,
                 worker_id,
-            ))
+            )?)
         } else {
             None
         };
@@ -2048,15 +2024,7 @@ impl RuntimeBatchIterator {
         // sub-index whose shard ranges don't match what ingest wrote) in dev
         // builds; it is compiled out of the release .so.
         //
-        // Disjoint-field borrows: `sched` borrows ONLY `self.bucket_schedule`
-        // mutably, leaving every other field free to borrow immutably. This lets
-        // the `detach` (GIL-release) closure capture only the specific Rust
-        // fields the sample needs (no `&self`, no `Py<…>` field) so it stays
-        // `Send`. `next_node_ids` (which triggers `materialize_bucket`'s blocking
-        // file IO) touches NO Python, so we fold it INTO the closure: both the
-        // per-bucket IO and the multi-threaded rayon sample run with the GIL
-        // released. Only `runtime_batch_to_pydict` (Python construction) stays
-        // under the GIL.
+        // Fetch bucket IDs and sample without holding the GIL.
         if let Some(sched) = self.bucket_schedule.as_mut() {
             let engine = &self.engine;
             let reader = &self.reader;
@@ -2332,7 +2300,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::make_worker_offsets;
-    use super::{read_bucket_index, worker_batch_count, BucketSchedule, F64Sidecar, U64Sidecar};
+    use super::{read_bucket_index, worker_batch_count, BucketOrders, BucketSchedule, F64Sidecar, U64Sidecar};
     use pyo3::Python;
     use std::collections::HashSet;
     use std::io::Write;
@@ -2446,6 +2414,13 @@ mod tests {
             ],
         ];
 
+        let mut bucket_dists = bucket_dists;
+        bucket_dists.push(
+            (0..20)
+                .map(|ts| (ts, (ts as u64 * 31..(ts as u64 + 1) * 31).collect()))
+                .collect(),
+        );
+
         for (di, dist) in bucket_dists.iter().enumerate() {
             let sub = tmp.path().join(format!("dist{di}"));
             std::fs::create_dir_all(&sub).unwrap();
@@ -2470,7 +2445,8 @@ mod tests {
                             batch_size,
                             num_workers,
                             worker_id,
-                        );
+                        )
+                        .unwrap();
                         // __len__ must match the batches actually yielded.
                         let reported = sched.worker_batch_count();
                         let batches = drain(&mut sched);
@@ -2516,7 +2492,8 @@ mod tests {
                         batch_size,
                         1,
                         0,
-                    );
+                    )
+                    .unwrap();
                     assert_eq!(
                         total_batches_seen, one.total_batches,
                         "dist{di} nw={num_workers} bs={batch_size}: Σ len != B"
@@ -2524,6 +2501,105 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn bucket_orders_store_only_buckets_under_64_batches() {
+        let mut cache = BucketOrders::new(10);
+        assert_eq!(cache.get(0, 639, 1).stored_rows(), 639);
+        assert_eq!(cache.get(1, 640, 1).stored_rows(), 0);
+        let order = cache.get(1, 640, 1);
+        let mut seen: Vec<u64> = (0..640).map(|p| order.at(p)).collect();
+        seen.sort_unstable();
+        assert_eq!(seen, (0..640).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn bucket_orders_preserve_selection_across_memory_budget_evictions() {
+        let mut cache = BucketOrders::new(20_000);
+        let positions = [0, 1, 400_000, 799_999];
+        let mut expected = Vec::new();
+        for bucket in 0..6 {
+            let order = cache.get(bucket, 800_000, bucket as u64);
+            expected.push(positions.map(|position| order.at(position)));
+            let bytes: usize = cache
+                .entries
+                .iter()
+                .map(|(_, order)| order.stored_rows() as usize * size_of::<u64>())
+                .sum();
+            assert!(bytes <= 32 * 1024 * 1024);
+        }
+        for (bucket, expected) in expected.iter().enumerate() {
+            let order = cache.get(bucket, 800_000, bucket as u64);
+            assert_eq!(&positions.map(|position| order.at(position)), expected);
+        }
+    }
+
+    #[test]
+    fn a_bucket_larger_than_the_cache_is_generated_whatever_the_cache_holds() {
+        let generated = FeistelPerm::new(4_500_000, 17);
+        let positions = [0, 1, 2_250_000, 4_499_999];
+        let expected = positions.map(|position| generated.at(position));
+        let mut cache = BucketOrders::new(100_000);
+        assert_eq!(cache.get(0, 4_500_000, 17).stored_rows(), 0);
+        assert_eq!(positions.map(|p| cache.get(0, 4_500_000, 17).at(p)), expected);
+        let mut warm = BucketOrders::new(100_000);
+        for bucket in 1..20 {
+            warm.get(bucket, 200_000, bucket as u64);
+        }
+        assert_eq!(warm.get(0, 4_500_000, 17).stored_rows(), 0);
+        assert_eq!(positions.map(|p| warm.get(0, 4_500_000, 17).at(p)), expected);
+    }
+
+    #[test]
+    fn capped_timestamp_batches_give_each_row_equal_inclusion() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = vec![
+            (10, (0..31).collect()),
+            (20, (31..101).collect()),
+            (30, vec![101, 102, 103]),
+        ];
+        let (path, raw, _) = write_bin(tmp.path(), &dist);
+        let mut counts = [0usize; 104];
+        let mut mixed = 0;
+        for epoch in 0..2000 {
+            let mut schedule = BucketSchedule::build(
+                raw.clone(),
+                path.clone(),
+                17,
+                epoch,
+                "train".into(),
+                8,
+                1,
+                0,
+            )
+            .unwrap();
+            let mut selected = HashSet::new();
+            let mut timestamps = HashSet::new();
+            for _ in 0..2 {
+                let batch = schedule.next_node_ids().unwrap().unwrap();
+                timestamps.insert(if batch[0] < 31 {
+                    10
+                } else if batch[0] < 101 {
+                    20
+                } else {
+                    30
+                });
+                for row in batch {
+                    assert!(selected.insert(row));
+                    counts[row as usize] += 1;
+                }
+            }
+            mixed += usize::from(timestamps.len() > 1);
+        }
+        let expected = 2000.0 * 2.0 / 14.0;
+        for count in counts {
+            assert!(
+                (count as f64 - expected).abs() < 65.0,
+                "row selected {count} times"
+            );
+        }
+        assert!(mixed > 900);
     }
 
     /// An all-empty / zero-bucket schedule (`total_batches == 0`) drained
@@ -2552,7 +2628,8 @@ mod tests {
                         4,
                         num_workers,
                         worker_id,
-                    );
+                    )
+                    .unwrap();
                     assert_eq!(sched.total_batches, 0, "case{ci}: total_batches != 0");
                     assert_eq!(
                         sched.worker_batch_count(),
@@ -2595,6 +2672,7 @@ mod tests {
             1,
             0,
         )
+        .unwrap()
         .total_batches;
         assert_eq!(total, 3, "expected 3 total batches");
 
@@ -2612,7 +2690,8 @@ mod tests {
                 1,
                 num_workers,
                 worker_id,
-            );
+            )
+            .unwrap();
             let reported = sched.worker_batch_count();
             let batches = drain(&mut sched);
             assert_eq!(
@@ -2664,7 +2743,8 @@ mod tests {
                 3,
                 num_workers,
                 worker_id,
-            );
+            )
+            .unwrap();
             drain(&mut s)
         };
 
