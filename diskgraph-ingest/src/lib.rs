@@ -8434,8 +8434,16 @@ impl IngestContext {
                 .get(&fk_key)
                 .map(|t| t.target_type.clone())
                 .unwrap_or_else(|| table.columns[idx].ingested_dtype.clone());
-            rel_specs.push((rel_name, idx, rel_pos, rel.src_column.clone(), target_type));
+            let contexts = [
+                format!("fkey:{}.{}", table.name, rel.src_column),
+                format!("dst_lookup:{rel_name}"),
+            ];
+            rel_specs.push((rel_name, idx, rel_pos, contexts, target_type));
         }
+        let mut key_drops = NodeKeyDrops {
+            pk: 0,
+            fk: vec![FkDropCounts::default(); rel_specs.len()],
+        };
         let mut total_rows = 0u64;
         let row_access_hints = build_row_access_hints(table);
         let stats = RowAccessStats::new(Some(trimmed_strings.as_ref()));
@@ -8568,6 +8576,7 @@ impl IngestContext {
                         &mut node_data_dropped,
                         num_shards,
                         key_failures,
+                        &mut key_drops,
                         timestamp_valid,
                         resolve_overrides.as_deref(),
                         observer,
@@ -8589,6 +8598,22 @@ impl IngestContext {
         }
         batcher.flush_all(&mut sort_key_batchers)?;
         dest_fkey_batcher.flush_all()?;
+        if let Some(pk_col) = pk_col {
+            fold_key_drops(
+                key_failures,
+                &format!("pkey:{}.{}", table.name, pk_col.name),
+                None,
+                FkDropCounts {
+                    parse_failures: key_drops.pk,
+                    non_null: 0,
+                },
+            );
+        }
+        for ((_, _, _, [parse_context, lookup_context], _), drops) in
+            rel_specs.iter().zip(&key_drops.fk)
+        {
+            fold_key_drops(key_failures, parse_context, Some(lookup_context), *drops);
+        }
         Ok(TempNodeFileResult {
             total_rows,
             node_data_dropped,
@@ -8746,14 +8771,14 @@ impl IngestContext {
         }
     }
 
-    // rel_specs is `&[(name, rel_id, fkey_idx, fkey_col, key_type)]` — the
-    // per-relation spec table threaded through ingest's per-row FK-resolution
+    // rel_specs is `&[(name, rel_id, fkey_idx, [fkey_ctx, dst_lookup_ctx], key_type)]`
+    // — the per-relation spec table threaded through ingest's per-row FK-resolution
     // path. Kept as a tuple to avoid allocating per call.
     #[allow(clippy::too_many_arguments, clippy::ptr_arg, clippy::type_complexity)]
     fn write_node_row_from_access<O: diskgraph_rowpack::ColumnValueObserver>(
         table: &TableSpec,
         pk_idx: Option<usize>,
-        rel_specs: &[(std::sync::Arc<str>, usize, usize, String, IngestedType)],
+        rel_specs: &[(std::sync::Arc<str>, usize, usize, [String; 2], IngestedType)],
         row: usize,
         access: &mut RowAccess<'_>,
         node_encoder: &RowPackEncoder,
@@ -8770,6 +8795,7 @@ impl IngestContext {
         node_data_dropped: &mut u64,
         num_shards: usize,
         key_failures: &mut KeyFailureState,
+        key_drops: &mut NodeKeyDrops,
         timestamp_valid: bool,
         // FK-free LP resolution overrides for this row (per-column), or `None`
         // when not in resolution mode. Forwarded to `encode_row_observed`.
@@ -8798,21 +8824,18 @@ impl IngestContext {
                     shard_for_key(buf, num_shards)
                 }
                 Err(_) => {
-                    let context = format!("pkey:{}.{}", table.name, pk_col.name);
-                    record_key_parse_failure_sample(
-                        &mut key_failures.parse_failures,
-                        &mut key_failures.samples,
-                        &mut key_failures.by_context,
-                        &context,
-                        sample_from_access(access, idx),
-                    );
+                    key_drops.pk += 1;
+                    if key_failures.samples.len() < 10 {
+                        let context = format!("pkey:{}.{}", table.name, pk_col.name);
+                        push_key_failure_sample(key_failures, &context, access, idx);
+                    }
                     return Ok(());
                 }
             }
         } else {
             (*row_id as usize) % num_shards
         };
-        for (rel_name, rel_idx, _rel_pos, _fk_col_name, target_type) in rel_specs {
+        for (_rel_name, rel_idx, rel_pos, [parse_context, _], target_type) in rel_specs {
             let col = table
                 .columns
                 .get(*rel_idx)
@@ -8824,20 +8847,10 @@ impl IngestContext {
             let res = key_from_access_into_buf(access, *rel_idx, col, target_type, buf);
 
             if res.is_err() {
-                let context = format!("fkey:{}.{}", table.name, col.name);
-                record_key_parse_failure_sample(
-                    &mut key_failures.parse_failures,
-                    &mut key_failures.samples,
-                    &mut key_failures.by_context,
-                    &context,
-                    sample_from_access(access, *rel_idx),
-                );
-                record_non_null_parse_failure(
-                    &mut key_failures.by_context,
-                    access,
-                    *rel_idx,
-                    &format!("dst_lookup:{rel_name}"),
-                );
+                key_drops.fk[*rel_pos].record(access, *rel_idx);
+                if key_failures.samples.len() < 10 {
+                    push_key_failure_sample(key_failures, parse_context, access, *rel_idx);
+                }
                 buf.clear();
                 continue;
             }
@@ -8940,7 +8953,7 @@ impl IngestContext {
         for sort_key in sort_key_batchers.iter_mut() {
             sort_key.push_row(shard, access)?;
         }
-        for (_rel_name, rel_idx, rel_pos, _fk_col_name, _) in rel_specs {
+        for (_rel_name, rel_idx, rel_pos, _contexts, _) in rel_specs {
             if let Some(buf) = key_bufs.get(*rel_idx) {
                 if buf.is_empty() {
                     batcher.push_fkey_empty(shard, *rel_pos)?;
@@ -8999,6 +9012,7 @@ impl IngestContext {
             format!("src_lookup:{rel_name}"),
             format!("dst_lookup:{rel_name}"),
         ];
+        let mut drops = [FkDropCounts::default(); 2];
         let buffer_limit = edge_batch_buffer_limit(num_shards);
         let mut batcher = EdgeSrcBatcher::new(
             std::sync::Arc::clone(&rel_name),
@@ -9065,7 +9079,7 @@ impl IngestContext {
                         dst_target_type,
                         &src_context,
                         &dst_context,
-                        &lookup_contexts,
+                        &mut drops,
                         &mut access,
                         $src_key_buf,
                         $dst_key_buf,
@@ -9111,6 +9125,13 @@ impl IngestContext {
         consume_edge_reader!(batches);
         batcher.flush_all(&mut sort_key_batchers)?;
         edge_key_batcher.flush_all()?;
+        for ((parse_context, lookup_context), counts) in [src_context, dst_context]
+            .iter()
+            .zip(&lookup_contexts)
+            .zip(drops)
+        {
+            fold_key_drops(key_failures, parse_context, Some(lookup_context), counts);
+        }
         Ok(edge_dropped)
     }
 
@@ -9124,7 +9145,7 @@ impl IngestContext {
         dst_target_type: &IngestedType,
         src_context: &str,
         dst_context: &str,
-        lookup_contexts: &[String; 2],
+        drops: &mut [FkDropCounts; 2],
         access: &mut RowAccess<'_>,
         src_key_buf: &mut Vec<u8>,
         dst_key_buf: &mut Vec<u8>,
@@ -9140,37 +9161,19 @@ impl IngestContext {
         dst_key_buf.clear();
         if key_from_access_into_buf(access, src_idx, src_col, src_target_type, src_key_buf).is_err()
         {
-            record_key_parse_failure_sample(
-                &mut key_failures.parse_failures,
-                &mut key_failures.samples,
-                &mut key_failures.by_context,
-                src_context,
-                sample_from_access(access, src_idx),
-            );
-            record_non_null_parse_failure(
-                &mut key_failures.by_context,
-                access,
-                src_idx,
-                &lookup_contexts[0],
-            );
+            drops[0].record(access, src_idx);
+            if key_failures.samples.len() < 10 {
+                push_key_failure_sample(key_failures, src_context, access, src_idx);
+            }
             return Ok(());
         }
 
         if key_from_access_into_buf(access, dst_idx, dst_col, dst_target_type, dst_key_buf).is_err()
         {
-            record_key_parse_failure_sample(
-                &mut key_failures.parse_failures,
-                &mut key_failures.samples,
-                &mut key_failures.by_context,
-                dst_context,
-                sample_from_access(access, dst_idx),
-            );
-            record_non_null_parse_failure(
-                &mut key_failures.by_context,
-                access,
-                dst_idx,
-                &lookup_contexts[1],
-            );
+            drops[1].record(access, dst_idx);
+            if key_failures.samples.len() < 10 {
+                push_key_failure_sample(key_failures, dst_context, access, dst_idx);
+            }
             return Ok(());
         }
         let forward_shard = shard_for_key(src_key_buf, num_shards);
@@ -16962,19 +16965,64 @@ fn warn_non_null_key_parse_failures(by_context: &HashMap<String, KeyFailureCount
     }
 }
 
-fn record_non_null_parse_failure(
-    by_context: &mut HashMap<String, KeyFailureCounts>,
+#[derive(Clone, Copy, Default)]
+struct FkDropCounts {
+    parse_failures: u64,
+    non_null: u64,
+}
+
+impl FkDropCounts {
+    fn record(&mut self, access: &RowAccess<'_>, idx: usize) {
+        self.parse_failures += 1;
+        let is_null = access
+            .array(idx)
+            .map(|array| array.is_null(access.row()))
+            .unwrap_or(false);
+        if !is_null {
+            self.non_null += 1;
+        }
+    }
+}
+
+struct NodeKeyDrops {
+    pk: u64,
+    fk: Vec<FkDropCounts>,
+}
+
+fn push_key_failure_sample(
+    key_failures: &mut KeyFailureState,
+    context: &str,
     access: &RowAccess<'_>,
     idx: usize,
-    context: &str,
 ) {
-    let is_null = access
-        .array(idx)
-        .map(|array| array.is_null(access.row()))
-        .unwrap_or(false);
-    if !is_null {
-        let entry = by_context.entry(context.to_string()).or_default();
-        entry.non_null_parse_failures = entry.non_null_parse_failures.saturating_add(1);
+    if let Some(sample) = sample_from_access(access, idx) {
+        key_failures.samples.push(format!("{context}: {sample}"));
+    }
+}
+
+fn fold_key_drops(
+    key_failures: &mut KeyFailureState,
+    parse_context: &str,
+    lookup_context: Option<&str>,
+    drops: FkDropCounts,
+) {
+    if drops.parse_failures > 0 {
+        key_failures.parse_failures = key_failures
+            .parse_failures
+            .saturating_add(drops.parse_failures);
+        let entry = key_failures
+            .by_context
+            .entry(parse_context.to_string())
+            .or_default();
+        entry.parse_failures = entry.parse_failures.saturating_add(drops.parse_failures);
+    }
+    if let (Some(context), true) = (lookup_context, drops.non_null > 0) {
+        let entry = key_failures
+            .by_context
+            .entry(context.to_string())
+            .or_default();
+        entry.non_null_parse_failures =
+            entry.non_null_parse_failures.saturating_add(drops.non_null);
     }
 }
 
