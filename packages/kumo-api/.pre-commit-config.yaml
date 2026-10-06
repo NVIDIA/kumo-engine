@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: MIT
+
+---
+default_language_version:
+  python: python3.11
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: no-commit-to-branch
+        name: No commits to master
+      - id: end-of-file-fixer
+        name: End-of-file fixer
+      - id: trailing-whitespace
+        name: Remove trailing whitespaces
+      - id: check-toml
+        name: Check toml
+      - id: check-yaml
+        name: Check yaml
+  - repo: https://github.com/regebro/pyroma
+    rev: '5.0.1'
+    hooks:
+      - id: pyroma
+        name: Check packaging
+        args: [--min=10, packages/kumo-api]
+        language_version: python3.11
+  - repo: https://github.com/adrienverge/yamllint.git
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        name: Lint yaml
+        args:
+          - -d
+          - '{extends: default, rules: {line-length: disable, document-start: disable,
+            truthy: {level: error}, braces: {max-spaces-inside: 1}}}'
+  - repo: https://github.com/google/yapf
+    rev: v0.43.0
+    hooks:
+      - id: yapf
+        name: Format code
+        additional_dependencies: [toml]
+        language_version: python3.11
+  - repo: https://github.com/pycqa/isort
+    rev: 7.0.0
+    hooks:
+      - id: isort
+        name: Sort imports
+        language_version: python3.11
+  - repo: https://github.com/PyCQA/flake8
+    rev: 7.3.0
+    hooks:
+      - id: flake8
+        name: Check PEP8
+        additional_dependencies: [Flake8-pyproject]

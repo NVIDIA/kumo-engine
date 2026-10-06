@@ -1,0 +1,87 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[project]
+name="kumo-engine"
+dynamic=["dependencies", "version"]
+authors=[
+    {name="Kumo.AI", email="hello@kumo.ai"},
+]
+license="Apache-2.0"
+license-files=["LICENSE"]
+description="Local, in-process relational deep learning with Kumo"
+readme="README.md"
+requires-python=">=3.11"
+keywords=[
+    "deep-learning",
+    "graph-neural-networks",
+]
+classifiers=[
+    "Development Status :: 1 - Planning",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3 :: Only",
+]
+
+[project.optional-dependencies]
+test=[
+    "boto3>=1.34,<2",
+    "botocore>=1.34,<2",
+    "diskgraph>=0.1.0",
+    "numpy>=1.26,<3",
+    "pytest",
+    "pytest-mock",
+    "torch>=2.9,<2.13",
+]
+# kumo-core (Torch/PyG/DiskGraph/faiss-gpu included, via the `gpu` extra) is
+# a required dependency of this package now, not an extra -- see setup.py.
+# Unlike kumo-sdk, where the equivalent `core` extra is optional because
+# CloudBackend is the default path, this package has no non-training use
+# case. These per-vendor extras only need to add their own plugin package on
+# top of that.
+snowflake=[
+    "kumo-snowflake[sdk]>=0.1.0.dev1",
+]
+databricks=[
+    "kumo-databricks>=0.1.0.dev1",
+]
+bigquery=[
+    "kumo-bigquery>=0.1.0.dev1",
+]
+s3=[
+    "kumo-s3>=0.1.0.dev1",
+]
+# glove.6B 50d, the default model for text columns.
+text=[
+    "kumo-glove-6b-50d==1.0.0",
+]
+gcs=[
+    "kumo-gcs>=0.1.0.dev1",
+]
+
+[project.urls]
+homepage="https://kumo.ai"
+documentation="https://kumo.ai/docs"
+
+[build-system]
+requires = ["setuptools>=77", "setuptools_scm"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where=["."]
+include=["kumo*"]
+namespaces=true
+
+[tool.setuptools.dynamic]
+version = {attr = "kumo.engine._version.__version__"}
+
+[tool.pytest.ini_options]
+addopts = [
+    "--capture=no",
+    "--color=yes",
+    "-vv",
+]

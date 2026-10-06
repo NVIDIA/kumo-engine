@@ -1,0 +1,244 @@
+{
+  "name": "HOME_CREDIT_DEFAULT_RISK",
+  "data_source_dict": {
+    "csv": {
+      "name": "csv",
+      "root_dir": "/home/ubuntu/kumo/test/csv_data/HOME_CREDIT_DEFAULT_RISK",
+      "suffix": "csv",
+      "sep": null,
+      "na_values": "?",
+      "compression": "infer",
+      "on_bad_lines": "skip",
+      "escapechar": null,
+      "_target_": "kumo.connector.csv_connector.CSVConnector"
+    }
+  },
+  "tables": [
+    {
+      "table_name": "APPLICATION",
+      "data_source": "csv",
+      "data_version": "1674885810",
+      "pkey": {
+        "name": "SK_ID_CURR",
+        "stype": "ID",
+        "dtype": null,
+        "na_values": null,
+        "metadata": {},
+        "timestamp_unit": null,
+        "drop_duplicates": false
+      },
+      "fkeys": [],
+      "cols": [
+        {
+          "name": "DAYS_ID_PUBLISH",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "timestamp_unit": null,
+          "encoder": null,
+          "stats": {}
+        }
+      ],
+      "time_col": null,
+      "source_name": "APPLICATION",
+      "stats": {}
+    },
+    {
+      "table_name": "BUREAU",
+      "data_source": "csv",
+      "data_version": "1674885810",
+      "pkey": {
+        "name": "SK_ID_BUREAU",
+        "stype": "ID",
+        "dtype": null,
+        "na_values": null,
+        "metadata": {},
+        "timestamp_unit": null,
+        "drop_duplicates": false
+      },
+      "fkeys": [
+        {
+          "name": "SK_ID_CURR",
+          "stype": "ID",
+          "dtype": null,
+          "na_values": null,
+          "metadata": {},
+          "timestamp_unit": null,
+          "dst_table": "csv.APPLICATION",
+          "dst_key": null,
+          "dst_data_source": "csv",
+          "stats": {}
+        }
+      ],
+      "cols": [],
+      "time_col": null,
+      "source_name": "BUREAU",
+      "stats": {}
+    },
+    {
+      "table_name": "BUREAU_BALANCE",
+      "data_source": "csv",
+      "data_version": "1674885810",
+      "pkey": null,
+      "fkeys": [
+        {
+          "name": "SK_ID_BUREAU",
+          "stype": "ID",
+          "dtype": null,
+          "na_values": null,
+          "metadata": {},
+          "timestamp_unit": null,
+          "dst_table": "csv.BUREAU",
+          "dst_key": null,
+          "dst_data_source": "csv",
+          "stats": {}
+        }
+      ],
+      "cols": [],
+      "time_col": null,
+      "source_name": "BUREAU_BALANCE",
+      "stats": {}
+    },
+    {
+      "table_name": "PREVIOUS_APPLICATION",
+      "data_source": "csv",
+      "data_version": "1674885810",
+      "pkey": {
+        "name": "SK_ID_PREV",
+        "stype": "ID",
+        "dtype": null,
+        "na_values": null,
+        "metadata": {},
+        "timestamp_unit": null,
+        "drop_duplicates": false
+      },
+      "fkeys": [
+        {
+          "name": "SK_ID_CURR",
+          "stype": "ID",
+          "dtype": null,
+          "na_values": null,
+          "metadata": {},
+          "timestamp_unit": null,
+          "dst_table": "csv.APPLICATION",
+          "dst_key": null,
+          "dst_data_source": "csv",
+          "stats": {}
+        }
+      ],
+      "cols": [],
+      "time_col": null,
+      "source_name": "PREVIOUS_APPLICATION",
+      "stats": {}
+    },
+    {
+      "table_name": "POS_CASH_BALANCE",
+      "data_source": "csv",
+      "data_version": "1674885810",
+      "pkey": null,
+      "fkeys": [
+        {
+          "name": "SK_ID_CURR",
+          "stype": "ID",
+          "dtype": null,
+          "na_values": null,
+          "metadata": {},
+          "timestamp_unit": null,
+          "dst_table": "csv.APPLICATION",
+          "dst_key": null,
+          "dst_data_source": "csv",
+          "stats": {}
+        },
+        {
+          "name": "SK_ID_PREV",
+          "stype": "ID",
+          "dtype": null,
+          "na_values": null,
+          "metadata": {},
+          "timestamp_unit": null,
+          "dst_table": "csv.PREVIOUS_APPLICATION",
+          "dst_key": null,
+          "dst_data_source": "csv",
+          "stats": {}
+        }
+      ],
+      "cols": [],
+      "time_col": null,
+      "source_name": "POS_CASH_BALANCE",
+      "stats": {}
+    },
+    {
+      "table_name": "CREDIT_CARD_BALANCE",
+      "data_source": "csv",
+      "data_version": "1674885810",
+      "pkey": null,
+      "fkeys": [
+        {
+          "name": "SK_ID_CURR",
+          "stype": "ID",
+          "dtype": null,
+          "na_values": null,
+          "metadata": {},
+          "timestamp_unit": null,
+          "dst_table": "csv.APPLICATION",
+          "dst_key": null,
+          "dst_data_source": "csv",
+          "stats": {}
+        },
+        {
+          "name": "SK_ID_PREV",
+          "stype": "ID",
+          "dtype": null,
+          "na_values": null,
+          "metadata": {},
+          "timestamp_unit": null,
+          "dst_table": "csv.PREVIOUS_APPLICATION",
+          "dst_key": null,
+          "dst_data_source": "csv",
+          "stats": {}
+        }
+      ],
+      "cols": [],
+      "time_col": null,
+      "source_name": "CREDIT_CARD_BALANCE",
+      "stats": {}
+    },
+    {
+      "table_name": "INSTALLMENTS_PAYMENTS",
+      "data_source": "csv",
+      "data_version": "1674885810",
+      "pkey": null,
+      "fkeys": [
+        {
+          "name": "SK_ID_CURR",
+          "stype": "ID",
+          "dtype": null,
+          "na_values": null,
+          "metadata": {},
+          "timestamp_unit": null,
+          "dst_table": "csv.APPLICATION",
+          "dst_key": null,
+          "dst_data_source": "csv",
+          "stats": {}
+        },
+        {
+          "name": "SK_ID_PREV",
+          "stype": "ID",
+          "dtype": null,
+          "na_values": null,
+          "metadata": {},
+          "timestamp_unit": null,
+          "dst_table": "csv.PREVIOUS_APPLICATION",
+          "dst_key": null,
+          "dst_data_source": "csv",
+          "stats": {}
+        }
+      ],
+      "cols": [],
+      "time_col": null,
+      "source_name": "INSTALLMENTS_PAYMENTS",
+      "stats": {}
+    }
+  ]
+}

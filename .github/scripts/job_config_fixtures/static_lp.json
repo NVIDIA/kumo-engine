@@ -1,0 +1,334 @@
+{
+    "predictive_query": "PREDICT LIST_DISTINCT(DISP.CLIENT_ID)\nRANK TOP 10\nFOR EACH ACCOUNT.ACCOUNT_ID\n",
+    "graph_definition": {
+        "tables": {
+            "ACCOUNT": {
+                "cols": [
+                    {
+                        "name": "ACCOUNT_ID",
+                        "stype": "ID",
+                        "dtype": "int64",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "DISTRICT_ID",
+                        "stype": "ID",
+                        "dtype": "int64",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "FREQUENCY",
+                        "stype": "categorical",
+                        "dtype": "string",
+                        "timestamp_format": null
+                    }
+                ],
+                "source_table": {
+                    "s3_path": "s3://kumo-public-datasets/financial/parquet/ACCOUNT.parquet",
+                    "connector_id": "FINANCIAL_1782214596014",
+                    "source_table_name": "ACCOUNT",
+                    "file_type": null,
+                    "data_source_type": "S3"
+                },
+                "pkey": "ACCOUNT_ID",
+                "time_col": null,
+                "end_time_col": null
+            },
+            "CLIENT": {
+                "cols": [
+                    {
+                        "name": "CLIENT_ID",
+                        "stype": "ID",
+                        "dtype": "int64",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "GENDER",
+                        "stype": "categorical",
+                        "dtype": "string",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "DISTRICT_ID",
+                        "stype": "ID",
+                        "dtype": "int64",
+                        "timestamp_format": null
+                    }
+                ],
+                "source_table": {
+                    "s3_path": "s3://kumo-public-datasets/financial/parquet/CLIENT.parquet",
+                    "connector_id": "FINANCIAL_1782214596014",
+                    "source_table_name": "CLIENT",
+                    "file_type": null,
+                    "data_source_type": "S3"
+                },
+                "pkey": "CLIENT_ID",
+                "time_col": null,
+                "end_time_col": null
+            },
+            "DISP": {
+                "cols": [
+                    {
+                        "name": "DISP_ID",
+                        "stype": "ID",
+                        "dtype": "int64",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "CLIENT_ID",
+                        "stype": "ID",
+                        "dtype": "int64",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "ACCOUNT_ID",
+                        "stype": "ID",
+                        "dtype": "int64",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "TYPE",
+                        "stype": "categorical",
+                        "dtype": "string",
+                        "timestamp_format": null
+                    }
+                ],
+                "source_table": {
+                    "s3_path": "s3://kumo-public-datasets/financial/parquet/DISP.parquet",
+                    "connector_id": "FINANCIAL_1782214596014",
+                    "source_table_name": "DISP",
+                    "file_type": null,
+                    "data_source_type": "S3"
+                },
+                "pkey": "DISP_ID",
+                "time_col": null,
+                "end_time_col": null
+            }
+        },
+        "col_groups": [
+            {
+                "columns": [
+                    {
+                        "table_name": "DISP",
+                        "col_name": "CLIENT_ID"
+                    },
+                    {
+                        "table_name": "CLIENT",
+                        "col_name": "CLIENT_ID"
+                    }
+                ]
+            },
+            {
+                "columns": [
+                    {
+                        "table_name": "DISP",
+                        "col_name": "ACCOUNT_ID"
+                    },
+                    {
+                        "table_name": "ACCOUNT",
+                        "col_name": "ACCOUNT_ID"
+                    }
+                ]
+            }
+        ]
+    },
+    "training_table_gen_plan": {
+        "split": "RandomSplit(ratio=[0.8, 0.1, 0.1], seed=None)",
+        "weight_col": null
+    },
+    "model_plan": {
+        "training_table_generation": {
+            "split": "RandomSplit(ratio=[0.8, 0.1, 0.1], seed=None)",
+            "weight_col": null
+        },
+        "training_job": {
+            "num_experiments": 4,
+            "metrics": [
+                "map@1",
+                "map@10",
+                "f1@100",
+                "map@100",
+                "recall@1",
+                "f1@10",
+                "precision@10",
+                "f1@1",
+                "recall@100",
+                "precision@100",
+                "precision@1",
+                "recall@10"
+            ],
+            "tune_metric": "map@10",
+            "pruning": {
+                "min_epochs": 1,
+                "k": 3,
+                "min_delta": 0,
+                "patience": 1
+            },
+            "refit_trainval": false,
+            "refit_full": false
+        },
+        "column_processing": {
+            "encoder_overrides": null,
+            "na_strategy": null
+        },
+        "neighbor_sampling": {
+            "num_neighbors": [
+                {
+                    "hop1": {
+                        "default": 12,
+                        "ACCOUNT.ACCOUNT_ID->DISP.ACCOUNT_ID": "inferred"
+                    },
+                    "hop2": {
+                        "default": 12
+                    }
+                }
+            ],
+            "adaptive_sampling": false
+        },
+        "optimization": {
+            "max_epochs": 1,
+            "min_steps_per_epoch": 30,
+            "max_steps_per_epoch": 50,
+            "max_val_steps": 50,
+            "max_test_steps": 50,
+            "loss": [
+                "cross_entropy"
+            ],
+            "optimizer": [
+                "Adam"
+            ],
+            "base_lr": [
+                0.0001,
+                0.0005,
+                0.001,
+                0.005,
+                0.01,
+                0.05
+            ],
+            "weight_decay": [
+                0,
+                5e-8,
+                5e-7,
+                0.000005
+            ],
+            "batch_size": [
+                512,
+                1024
+            ],
+            "lookup_optimization": [
+                "inferred"
+            ],
+            "early_stopping": [
+                {
+                    "min_delta": 0,
+                    "patience": 3
+                }
+            ],
+            "lr_scheduler": [
+                {
+                    "name": "cosine_with_warmup_restarts",
+                    "interval": "step",
+                    "kwargs": {
+                        "warmup_ratio_or_steps": 0.1
+                    }
+                },
+                {
+                    "name": "constant_with_warmup",
+                    "interval": "step",
+                    "kwargs": {
+                        "warmup_ratio_or_steps": 0.1
+                    }
+                },
+                {
+                    "name": "linear_with_warmup",
+                    "interval": "step",
+                    "kwargs": {
+                        "warmup_ratio_or_steps": 0.1
+                    }
+                },
+                {
+                    "name": "cosine_with_warmup",
+                    "interval": "step",
+                    "kwargs": {
+                        "warmup_ratio_or_steps": 0.1
+                    }
+                }
+            ],
+            "target_fraction": [
+                1
+            ],
+            "overlap_ratio": [
+                1
+            ]
+        },
+        "model_architecture": {
+            "model": [
+                {
+                    "name": "GNN",
+                    "channels": [
+                        64,
+                        128,
+                        256
+                    ],
+                    "aggregation": [
+                        [
+                            "sum",
+                            "mean",
+                            "max"
+                        ],
+                        [
+                            "sum",
+                            "mean",
+                            "min",
+                            "max",
+                            "std"
+                        ]
+                    ],
+                    "dropout": [
+                        0
+                    ]
+                }
+            ],
+            "num_pre_message_passing_layers": [
+                0,
+                1,
+                2
+            ],
+            "num_post_message_passing_layers": [
+                1,
+                2
+            ],
+            "activation": [
+                "relu",
+                "leaky_relu",
+                "elu",
+                "gelu"
+            ],
+            "normalization": [
+                "layer_norm"
+            ],
+            "module": "shallow_rhs",
+            "handle_new_target_entities": false,
+            "target_embedding_mode": [
+                "lookup"
+            ],
+            "output_embedding_dim": [
+                32
+            ],
+            "embedding_norm_reg_coeff": [
+                0
+            ],
+            "distance_measure": [
+                "dot_product"
+            ],
+            "use_seq_id": [
+                false
+            ]
+        }
+    },
+    "enable_baselines": false,
+    "job_tags": {
+        "FINANCIAL_STATIC_LP_1782214596014": "FINANCIAL_STATIC_LP_1782214596014"
+    },
+    "user": "John Doe"
+}

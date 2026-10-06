@@ -1,0 +1,86 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Workflow security policy
+
+"on":
+  pull_request:
+  pull_request_target:
+  push:
+    branches: [master]
+    paths:
+      - '**/.github/actions/**'
+      - '.github/scripts/workflow-security*'
+      - '.github/workflow-security-baseline.json'
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+jobs:
+  candidate-policy:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Test proposed policy code
+        run: node --test .github/scripts/workflow-security.test.cjs
+      - name: Test proposed metadata reader
+        run: node --test .github/scripts/workflow-security-materialize.test.cjs
+      - name: Scan proposed policy code
+        run: node .github/scripts/workflow-security.cjs
+
+  validate:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - name: Mark PR policy check pending
+        if: ${{ github.event_name == 'pull_request_target' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" -f context='PR workflow security' -f state=pending -f description='Checking workflow security policy' -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+      - name: Check out trusted policy
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: policy
+          persist-credentials: false
+      - name: Read candidate metadata without checkout
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          git init --bare candidate-git
+          trap 'rm -rf candidate-git' EXIT
+          git -C candidate-git remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          if [ -n "$PR_NUMBER" ]; then
+            git -C candidate-git -c credential.helper='!gh auth git-credential' fetch --no-tags --depth=1 origin "refs/pull/$PR_NUMBER/head"
+          else
+            git -C candidate-git -c credential.helper='!gh auth git-credential' fetch --no-tags --depth=1 origin "$HEAD_SHA"
+          fi
+          node policy/.github/scripts/workflow-security-materialize.cjs candidate-git candidate "$HEAD_SHA"
+      - name: Run unit tests
+        run: node --test policy/.github/scripts/workflow-security.test.cjs
+      - name: Test trusted metadata reader
+        run: node --test policy/.github/scripts/workflow-security-materialize.test.cjs
+      - name: Reject new workflow security findings
+        run: node policy/.github/scripts/workflow-security.cjs candidate --baseline policy/.github/workflow-security-baseline.json
+      - name: Report required status on the PR head
+        if: ${{ always() && github.event_name == 'pull_request_target' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RESULT: ${{ job.status == 'success' && 'success' || 'failure' }}
+        run: gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" -f context='PR workflow security' -f state="$RESULT" -f description='Trusted workflow security policy' -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

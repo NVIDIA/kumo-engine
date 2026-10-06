@@ -1,0 +1,35 @@
+[
+    {
+        "id": "group-001",
+        "slug": "engineering-team",
+        "display_name": "Engineering Team",
+        "normalized_display_name": "engineering team",
+        "description": "All engineers in the organization",
+        "timestamps": {
+            "created_at": "2024-01-10T10:00:00Z",
+            "updated_at": "2024-01-10T10:00:00Z"
+        }
+    },
+    {
+        "id": "group-002",
+        "slug": "data-science-team",
+        "display_name": "Data Science Team",
+        "normalized_display_name": "data science team",
+        "description": "Data scientists and analysts",
+        "timestamps": {
+            "created_at": "2024-01-11T09:00:00Z",
+            "updated_at": "2024-01-11T09:00:00Z"
+        }
+    },
+    {
+        "id": "group-003",
+        "slug": "administrators",
+        "display_name": "Administrators",
+        "normalized_display_name": "administrators",
+        "description": "Platform administrators",
+        "timestamps": {
+            "created_at": "2024-01-12T08:00:00Z",
+            "updated_at": "2024-01-12T08:00:00Z"
+        }
+    }
+]

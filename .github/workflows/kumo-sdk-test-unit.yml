@@ -1,0 +1,119 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kumo SDK - Unit and wheel validation
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches:
+      - master
+    paths:
+      - 'packages/kumo-api/**'
+      - 'packages/kumo-sdk/**'
+      - '.github/workflows/kumo-sdk-*'
+      # The fat wheel bundles these; test_fat_wheel_vendored_tags.py checks
+      # they still match its default target, so a retag has to run this.
+      - '3rdparty/kumo-wheels/**'
+  pull_request:
+    paths:
+      - 'packages/kumo-api/**'
+      - 'packages/kumo-sdk/**'
+      - '.github/workflows/kumo-sdk-*'
+      - '3rdparty/kumo-wheels/**'
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ startsWith(github.ref, 'refs/pull/') || github.run_number }}  # yamllint disable-line
+  # Only cancel intermediate builds if on a PR:
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  generate-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.generate-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Generate matrix
+        id: generate-matrix
+        run: |
+          # Trigger full matrix on main and PRs with the ci-full label.
+          if [[ ${{ contains(github.event.pull_request.labels.*.name, 'ci-full') }} == true || ${{ github.ref_name }} == master ]]; then
+            echo 'matrix={"os": ["ubuntu-22.04", "macos-14", "windows-2022"], "python-version": ["3.11", "3.12", "3.13", "3.14"]}' >> $GITHUB_OUTPUT
+          else
+            echo 'matrix={"os": ["ubuntu-22.04", "macos-14", "windows-2022"], "python-version": ["3.11"]}' >> $GITHUB_OUTPUT
+          fi
+
+  build-wheels:
+    needs: [generate-matrix]
+    uses: ./.github/workflows/kumo-sdk-build-wheels.yml
+    with:
+      temporary-version: ''
+      artifact-name: wheels-${{ github.sha }}-${{ github.run_id }}
+      is-release: false
+
+  pytest:
+    needs: [generate-matrix, build-wheels]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          activate-environment: true
+
+      - name: Download a wheel
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: wheels-${{ github.sha }}-${{ github.run_id }}
+          path: ./packages/kumo-sdk/dist
+
+      - name: Build and install colocated Kumo API
+        run: |
+          uv build --wheel --out-dir packages/kumo-api/dist packages/kumo-api
+          uv pip install packages/kumo-api/dist/*.whl
+
+      - name: Install Kumo SDK from built wheel
+        run: |
+          rm -rf packages/kumo-sdk/kumoai_studio  # Avoid importing local package.
+          uv pip install "$(find packages/kumo-sdk/dist/ -name '*.whl')[test]"
+          # The Snowflake client libraries, named directly rather than through
+          # `kumoai-studio[snowflake]`: that extra now installs the `kumo-snowflake`
+          # plugin and `kumo-core` with it, which are first-party and absent
+          # from this matrix's index -- and `core` would put Torch on three
+          # operating systems. This job wants the clients alone, exactly as
+          # before.
+          uv pip install snowflake-connector-python snowflake-snowpark-python
+
+      - name: Run unit tests
+        run: |
+          set -o pipefail
+          cd "$RUNNER_TEMP"
+          GLOG_logtostdout=1 uv run --no-project pytest -c "$GITHUB_WORKSPACE/packages/kumo-sdk/pyproject.toml" -s -o log_cli=true --durations=10 "$GITHUB_WORKSPACE/packages/kumo-sdk/test/"
+        env:
+          # The windows runner uses a different default encoding and it leads
+          # to unicode errors since we use emoji.
+          PYTHONIOENCODING: 'utf-8'

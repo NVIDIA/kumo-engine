@@ -1,0 +1,22 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- include "kumo-platform-eks.validate" . -}}
+{{- if .Values.storageClass.create }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storageClass.name | quote }}
+  labels:
+    {{- include "kumo-platform-eks.labels" . | nindent 4 }}
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: {{ .Values.storageClass.reclaimPolicy }}
+parameters:
+  type: {{ .Values.storageClass.volumeType | quote }}
+  csi.storage.k8s.io/fstype: {{ .Values.storageClass.fsType | quote }}
+  encrypted: {{ .Values.storageClass.encrypted | quote }}
+{{- end }}

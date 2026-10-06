@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kumo-s3"
+version = "0.1.0.dev1"
+description = "AWS S3 session binding for Kumo object-store reads"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+  "kumo-core==0.1.0.dev1",
+  "kumo-api>=3.0.0",
+  "boto3>=1.34",
+  "botocore>=1.34,<2",
+  "pydantic>=2.11",
+  "pyarrow>=14",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=7.4",
+]
+
+# Installing this distribution is what activates the plugin: a `LocalBackend`
+# reads these groups and needs no `sources=` argument to reach S3.
+#
+# Each name is the `DataSourceType` / `IdentityType` value it serves, matched
+# without regard to case, so the SDK knows which type each entry point covers
+# before importing any of the modules below.
+[project.entry-points."kumoai_studio.sources"]
+s3 = "kumo_s3.backend:S3SourceBackend"
+
+[project.entry-points."kumoai_studio.sinks"]
+s3 = "kumo_s3.sink:S3SinkBackend"
+
+# The module, not a name inside it: the lifecycle is `probe` alone -- S3
+# opens a connection per call and caches nothing here, so there is no `close`
+# to register.
+[project.entry-points."kumoai_studio.identities"]
+s3 = "kumo_s3.backend"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["src", "../kumo-core/src", "../kumo-core/tests"]

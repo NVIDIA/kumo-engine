@@ -1,0 +1,115 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+default_language_version:
+  python: python3.11
+repos:
+  # The SDK retains its standalone tool versions and policy in
+  # packages/kumo-sdk/.pre-commit-config.yaml; package CI runs it separately.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.2.0
+    hooks:
+      - id: no-commit-to-branch
+        args: ['--branch', 'master']
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.2.0
+    hooks:
+      - id: end-of-file-fixer
+        exclude: ^(packages/(diskgraph|kumo-ui-catalog)/)
+      - id: trailing-whitespace
+        exclude: ^(packages/(diskgraph|kumo-ui-catalog)/|THIRD-PARTY\.txt)
+      - id: check-yaml
+        exclude: ^(helm/kumo-helm/(templates/|examples/)|packages/diskgraph/)
+
+  - repo: https://github.com/adrienverge/yamllint.git
+    rev: v1.26.3
+    hooks:
+      - id: yamllint
+        args: [-c=.yamllint.yml]
+        exclude: ^(packages/(diskgraph|kumo-ui-catalog)/)
+
+  - repo: https://github.com/regebro/pyroma
+    rev: '5.0'
+    hooks:
+      - id: pyroma
+        name: Check packaging
+        args: [--min=9, .]
+        additional_dependencies: ["setuptools-scm[toml]==8.3.1"]
+
+  - repo: https://github.com/PyCQA/autoflake
+    rev: v2.3.1
+    hooks:
+      - id: autoflake
+        name: Remove unused imports and variables
+        exclude: ^(kumo/pquery/grammar/|packages/(diskgraph/|kumo-(api|core|sdk)/))
+        args: [
+          --remove-all-unused-imports,
+          --remove-unused-variables,
+          --remove-duplicate-keys,
+          --in-place,
+        ]
+
+  - repo: https://github.com/google/yapf
+    rev: v0.40.2
+    hooks:
+      - id: yapf
+        name: Format code
+        exclude: ^(kumo/pquery/grammar/|packages/(diskgraph/|kumo-(api|core|sdk)/))
+        additional_dependencies: ["toml>=0.10.2"]
+
+  - repo: https://github.com/pycqa/isort
+    rev: 5.12.0
+    hooks:
+      - id: isort
+        name: Sort imports
+        exclude: ^(kumo/pquery/grammar/|packages/(diskgraph/|kumo-(api|core|sdk)/))
+
+  - repo: https://github.com/PyCQA/flake8
+    rev: 6.1.0
+    hooks:
+      - id: flake8
+        name: Check PEP8
+        exclude: ^(kumo/pquery/grammar/|packages/(diskgraph/|kumo-(api|core|sdk)/))
+
+  - repo: https://github.com/RobertCraigie/pyright-python
+    rev: v1.1.283
+    hooks:
+      - id: pyright
+        name: pyright
+        entry: env PYRIGHT_PYTHON_GLOBAL_NODE=0 env PYRIGHT_PYTHON_ENV_DIR=.nodeenv pyright -p precommit-pyrightconfig.json
+        require_serial: true
+        pass_filenames: false
+        files: '.*\.py'
+        additional_dependencies: [kubernetes-stubs]
+
+  - repo: local
+    hooks:
+      - id: license-headers
+        name: Check source license headers
+        entry: python3 scripts/check_license_headers.py
+        language: system
+        pass_filenames: false
+      - id: python-license-metadata
+        name: Check Python license metadata
+        entry: python scripts/check_python_license_metadata.py
+        language: python
+        additional_dependencies: ["tomli==2.2.1; python_version < '3.11'"]
+        pass_filenames: false
+      - id: third-party-notice
+        name: third-party notice freshness and policy
+        entry: python3 scripts/gen_third_party.py --check THIRD-PARTY.txt
+        language: system
+        pass_filenames: false
+        files: ^(THIRD-PARTY\.txt|3rdparty/BUILD|3rdparty/kumo-wheels/|3rdparty/notices/|packages/diskgraph/(Cargo\.lock|diskgraph-ptrhash/|scripts/generate_artifact_manifest\.py|third_party/(artifact-manifest|source-provenance)\.json)|packages/kumo-core/src/kumo_core/evaluation/distribution\.py|packages/kumo-engine/scripts/build_fat_wheel\.sh|scripts/gen_third_party\.py|tools/glove-6b-50d/(build_wheel\.sh|pyproject\.toml))
+      - id: lint-staged
+        name: ui-lint-staged
+        entry: bash -c 'cd ui/ && npx lint-staged --config package.json --allow-empty'
+        language: system
+        pass_filenames: false
+  - repo: https://github.com/lk16/detect-missing-init
+    rev: v0.1.6
+    hooks:
+      - id: detect-missing-init
+        args: ['--create', "--track", "--python-folders", "async_utils,io_utils,kumo,rest,scripts,statedb,test,temporalio_commons,tools"]

@@ -1,0 +1,1226 @@
+{
+    "subgraph_store": {
+        "root_id": 10,
+        "task_type": "binary_classification",
+        "seed_time": "1998-12-01T00:00:00",
+        "nodes": {
+            "10": {
+                "id": 10,
+                "pkey_name": "ACCOUNT_ID",
+                "pkey": 136
+            },
+            "963": {
+                "id": 963,
+                "pkey_name": "TRANS_ID",
+                "pkey": 41391
+            },
+            "964": {
+                "id": 964,
+                "pkey_name": "TRANS_ID",
+                "pkey": 41484
+            },
+            "965": {
+                "id": 965,
+                "pkey_name": "TRANS_ID",
+                "pkey": 41355
+            },
+            "966": {
+                "id": 966,
+                "pkey_name": "TRANS_ID",
+                "pkey": 41424
+            },
+            "967": {
+                "id": 967,
+                "pkey_name": "TRANS_ID",
+                "pkey": 41426
+            },
+            "968": {
+                "id": 968,
+                "pkey_name": "TRANS_ID",
+                "pkey": 41428
+            },
+            "969": {
+                "id": 969,
+                "pkey_name": "TRANS_ID",
+                "pkey": 41440
+            },
+            "970": {
+                "id": 970,
+                "pkey_name": "TRANS_ID",
+                "pkey": 41458
+            },
+            "971": {
+                "id": 971,
+                "pkey_name": "TRANS_ID",
+                "pkey": 3534974
+            },
+            "972": {
+                "id": 972,
+                "pkey_name": "TRANS_ID",
+                "pkey": 41392
+            },
+            "973": {
+                "id": 973,
+                "pkey_name": "TRANS_ID",
+                "pkey": 41485
+            },
+            "974": {
+                "id": 974,
+                "pkey_name": "TRANS_ID",
+                "pkey": 41356
+            },
+            "975": {
+                "id": 975,
+                "pkey_name": "TRANS_ID",
+                "pkey": 41459
+            },
+            "976": {
+                "id": 976,
+                "pkey_name": "TRANS_ID",
+                "pkey": 3534975
+            },
+            "977": {
+                "id": 977,
+                "pkey_name": "TRANS_ID",
+                "pkey": 41393
+            },
+            "978": {
+                "id": 978,
+                "pkey_name": "TRANS_ID",
+                "pkey": 41486
+            },
+            "9570": {
+                "id": 9570,
+                "pkey_name": "ORDERS_ID",
+                "pkey": 29618
+            },
+            "-1": {
+                "id": -1,
+                "pkey_name": "TRANS_ID",
+                "pkey": null
+            },
+            "-2": {
+                "id": -2,
+                "pkey_name": "TRANS_ID",
+                "pkey": null
+            }
+        },
+        "edges": {
+            "10": {
+                "ACCOUNT_ID": [
+                    963, 964, 965, 966, 967, 968, 969, 970, 971, 972, 973, 974,
+                    975, 976, 977, 978, -1, 9570, -2
+                ]
+            }
+        },
+        "tables": {
+            "FINANCE_ACCOUNT": [10],
+            "FINANCE_TRANS": [
+                963, 964, 965, 966, 967, 968, 969, 970, 971, 972, 973, 974, 975,
+                976, 977, 978, -1, -2
+            ],
+            "FINANCE_ORDERS": [9570]
+        }
+    },
+    "feature_store": {
+        "features": {
+            "10": {
+                "DISTRICT_ID": {
+                    "table_name": "FINANCE_ACCOUNT",
+                    "name": "DISTRICT_ID",
+                    "value": 74,
+                    "stype": "categorical",
+                    "score": 0.0636536255478859
+                },
+                "FREQUENCY": {
+                    "table_name": "FINANCE_ACCOUNT",
+                    "name": "FREQUENCY",
+                    "value": "POPLATEK MESICNE",
+                    "stype": "categorical",
+                    "score": 0.2849496603012085
+                },
+                "DATE": {
+                    "table_name": "FINANCE_ACCOUNT",
+                    "name": "DATE",
+                    "value": "1996-05-14T00:00:00",
+                    "stype": "timestamp",
+                    "score": 1
+                }
+            },
+            "963": {
+                "DATE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "DATE",
+                    "value": "1997-01-07T00:00:00",
+                    "stype": "timestamp",
+                    "score": 0.007957007735967636
+                },
+                "TYPE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "TYPE",
+                    "value": "VYDAJ",
+                    "stype": "categorical",
+                    "score": 0.0013824213529005647
+                },
+                "OPERATION": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "OPERATION",
+                    "value": "PREVOD NA UCET",
+                    "stype": "categorical",
+                    "score": 0.001263268175534904
+                },
+                "K_SYMBOL": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "K_SYMBOL",
+                    "value": "SIPO",
+                    "stype": "categorical",
+                    "score": 0.00025766444741748273
+                },
+                "BANK": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BANK",
+                    "value": "MN",
+                    "stype": "categorical",
+                    "score": 0.00011467346485005692
+                },
+                "AMOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "AMOUNT",
+                    "value": 2932,
+                    "stype": "numerical",
+                    "score": 0.00020880487863905728
+                },
+                "BALANCE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BALANCE",
+                    "value": 22231,
+                    "stype": "numerical",
+                    "score": 0.0024070527870208025
+                },
+                "ACCOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "ACCOUNT",
+                    "value": 78733888,
+                    "stype": "numerical",
+                    "score": 0.000018669228666112758
+                }
+            },
+            "964": {
+                "DATE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "DATE",
+                    "value": "1997-01-09T00:00:00",
+                    "stype": "timestamp",
+                    "score": 0.006357709877192974
+                },
+                "TYPE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "TYPE",
+                    "value": "VYDAJ",
+                    "stype": "categorical",
+                    "score": 0.0012166086817160249
+                },
+                "OPERATION": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "OPERATION",
+                    "value": "VYBER",
+                    "stype": "categorical",
+                    "score": 0.001572204171679914
+                },
+                "K_SYMBOL": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "K_SYMBOL",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.0004376409633550793
+                },
+                "BANK": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BANK",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.0011015416821464896
+                },
+                "AMOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "AMOUNT",
+                    "value": 800,
+                    "stype": "numerical",
+                    "score": 0.00008387505658902228
+                },
+                "BALANCE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BALANCE",
+                    "value": 21431,
+                    "stype": "numerical",
+                    "score": 0.0006130498368293047
+                },
+                "ACCOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "ACCOUNT",
+                    "value": null,
+                    "stype": "numerical",
+                    "score": 0.0000019232838894822635
+                }
+            },
+            "965": {
+                "DATE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "DATE",
+                    "value": "1997-01-11T00:00:00",
+                    "stype": "timestamp",
+                    "score": 0.009497467428445816
+                },
+                "TYPE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "TYPE",
+                    "value": "PRIJEM",
+                    "stype": "categorical",
+                    "score": 0.0032201302237808704
+                },
+                "OPERATION": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "OPERATION",
+                    "value": "PREVOD Z UCTU",
+                    "stype": "categorical",
+                    "score": 0.001107949879951775
+                },
+                "K_SYMBOL": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "K_SYMBOL",
+                    "value": "DUCHOD",
+                    "stype": "categorical",
+                    "score": 0.002694439608603716
+                },
+                "BANK": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BANK",
+                    "value": "OP",
+                    "stype": "categorical",
+                    "score": 0.0001200435362989083
+                },
+                "AMOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "AMOUNT",
+                    "value": 6378,
+                    "stype": "numerical",
+                    "score": 0.0005071844789199531
+                },
+                "BALANCE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BALANCE",
+                    "value": 27809,
+                    "stype": "numerical",
+                    "score": 0.002054849872365594
+                },
+                "ACCOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "ACCOUNT",
+                    "value": 11218095,
+                    "stype": "numerical",
+                    "score": 0.0004032643628306687
+                }
+            },
+            "966": {
+                "DATE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "DATE",
+                    "value": "1997-01-22T00:00:00",
+                    "stype": "timestamp",
+                    "score": 0.0035901772789657116
+                },
+                "TYPE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "TYPE",
+                    "value": "VYDAJ",
+                    "stype": "categorical",
+                    "score": 0.0016507247928529978
+                },
+                "OPERATION": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "OPERATION",
+                    "value": "VYBER",
+                    "stype": "categorical",
+                    "score": 0.002005826449021697
+                },
+                "K_SYMBOL": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "K_SYMBOL",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.0005035426001995802
+                },
+                "BANK": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BANK",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.0011117869289591908
+                },
+                "AMOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "AMOUNT",
+                    "value": 2000,
+                    "stype": "numerical",
+                    "score": 0.00007993201143108308
+                },
+                "BALANCE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BALANCE",
+                    "value": 25809,
+                    "stype": "numerical",
+                    "score": 0.00032641299185343087
+                },
+                "ACCOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "ACCOUNT",
+                    "value": null,
+                    "stype": "numerical",
+                    "score": 0.00004389572495711036
+                }
+            },
+            "967": {
+                "DATE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "DATE",
+                    "value": "1997-01-27T00:00:00",
+                    "stype": "timestamp",
+                    "score": 0.003602823941037059
+                },
+                "TYPE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "TYPE",
+                    "value": "VYDAJ",
+                    "stype": "categorical",
+                    "score": 0.0005100895068608224
+                },
+                "OPERATION": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "OPERATION",
+                    "value": "VYBER",
+                    "stype": "categorical",
+                    "score": 0.0010020834160968661
+                },
+                "K_SYMBOL": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "K_SYMBOL",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.0008322084322571754
+                },
+                "BANK": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BANK",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.0008955866214819252
+                },
+                "AMOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "AMOUNT",
+                    "value": 1360,
+                    "stype": "numerical",
+                    "score": 0.000008865615200193133
+                },
+                "BALANCE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BALANCE",
+                    "value": 24449,
+                    "stype": "numerical",
+                    "score": 0.00006124788342276588
+                },
+                "ACCOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "ACCOUNT",
+                    "value": null,
+                    "stype": "numerical",
+                    "score": 0.00006558918539667502
+                }
+            },
+            "968": {
+                "DATE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "DATE",
+                    "value": "1997-01-30T00:00:00",
+                    "stype": "timestamp",
+                    "score": 0.003258508862927556
+                },
+                "TYPE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "TYPE",
+                    "value": "VYDAJ",
+                    "stype": "categorical",
+                    "score": 0.0007944379467517138
+                },
+                "OPERATION": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "OPERATION",
+                    "value": "VYBER",
+                    "stype": "categorical",
+                    "score": 0.0010091869626194239
+                },
+                "K_SYMBOL": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "K_SYMBOL",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.000794631487224251
+                },
+                "BANK": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BANK",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.0008847665740177035
+                },
+                "AMOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "AMOUNT",
+                    "value": 1120,
+                    "stype": "numerical",
+                    "score": 0.00007745103357592598
+                },
+                "BALANCE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BALANCE",
+                    "value": 23329,
+                    "stype": "numerical",
+                    "score": 0.00009754385246196762
+                },
+                "ACCOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "ACCOUNT",
+                    "value": null,
+                    "stype": "numerical",
+                    "score": 0.00008653011900605634
+                }
+            },
+            "969": {
+                "DATE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "DATE",
+                    "value": "1997-01-31T00:00:00",
+                    "stype": "timestamp",
+                    "score": 0.0035983684938400984
+                },
+                "TYPE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "TYPE",
+                    "value": "VYDAJ",
+                    "stype": "categorical",
+                    "score": 0.0006397269899025559
+                },
+                "OPERATION": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "OPERATION",
+                    "value": "VYBER",
+                    "stype": "categorical",
+                    "score": 0.0009984029456973076
+                },
+                "K_SYMBOL": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "K_SYMBOL",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.000817525782622397
+                },
+                "BANK": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BANK",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.0009244588436558843
+                },
+                "AMOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "AMOUNT",
+                    "value": 800,
+                    "stype": "numerical",
+                    "score": 0.000011604603969317395
+                },
+                "BALANCE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BALANCE",
+                    "value": 22637,
+                    "stype": "numerical",
+                    "score": 0.00005356875408324413
+                },
+                "ACCOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "ACCOUNT",
+                    "value": null,
+                    "stype": "numerical",
+                    "score": 0.000091549038188532
+                }
+            },
+            "970": {
+                "DATE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "DATE",
+                    "value": "1997-01-31T00:00:00",
+                    "stype": "timestamp",
+                    "score": 0.003207615576684475
+                },
+                "TYPE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "TYPE",
+                    "value": "VYDAJ",
+                    "stype": "categorical",
+                    "score": 0.0006937689613550901
+                },
+                "OPERATION": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "OPERATION",
+                    "value": "VYBER",
+                    "stype": "categorical",
+                    "score": 0.0004124786937609315
+                },
+                "K_SYMBOL": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "K_SYMBOL",
+                    "value": "SLUZBY",
+                    "stype": "categorical",
+                    "score": 0.0024150926619768143
+                },
+                "BANK": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BANK",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.0009382028365507722
+                },
+                "AMOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "AMOUNT",
+                    "value": 15,
+                    "stype": "numerical",
+                    "score": 0.0005900189862586558
+                },
+                "BALANCE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BALANCE",
+                    "value": 22623,
+                    "stype": "numerical",
+                    "score": 0.001274149981327355
+                },
+                "ACCOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "ACCOUNT",
+                    "value": null,
+                    "stype": "numerical",
+                    "score": 0.00006280713569140062
+                }
+            },
+            "971": {
+                "DATE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "DATE",
+                    "value": "1997-01-31T00:00:00",
+                    "stype": "timestamp",
+                    "score": 0.003766159527003765
+                },
+                "TYPE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "TYPE",
+                    "value": "PRIJEM",
+                    "stype": "categorical",
+                    "score": 0.0017736313166096807
+                },
+                "OPERATION": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "OPERATION",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.0003806417516898364
+                },
+                "K_SYMBOL": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "K_SYMBOL",
+                    "value": "UROK",
+                    "stype": "categorical",
+                    "score": 0.0004909441340714693
+                },
+                "BANK": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BANK",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.00027442563441582024
+                },
+                "AMOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "AMOUNT",
+                    "value": 108,
+                    "stype": "numerical",
+                    "score": 0.00012939106090925634
+                },
+                "BALANCE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BALANCE",
+                    "value": 23437,
+                    "stype": "numerical",
+                    "score": 0.0008406912675127387
+                },
+                "ACCOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "ACCOUNT",
+                    "value": null,
+                    "stype": "numerical",
+                    "score": 0.00016283607692457736
+                }
+            },
+            "972": {
+                "DATE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "DATE",
+                    "value": "1997-02-07T00:00:00",
+                    "stype": "timestamp",
+                    "score": 0.03615345060825348
+                },
+                "TYPE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "TYPE",
+                    "value": "VYDAJ",
+                    "stype": "categorical",
+                    "score": 0.0003931935643777251
+                },
+                "OPERATION": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "OPERATION",
+                    "value": "PREVOD NA UCET",
+                    "stype": "categorical",
+                    "score": 0.006862528622150421
+                },
+                "K_SYMBOL": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "K_SYMBOL",
+                    "value": "SIPO",
+                    "stype": "categorical",
+                    "score": 0.001964083407074213
+                },
+                "BANK": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BANK",
+                    "value": "MN",
+                    "stype": "categorical",
+                    "score": 0.0032057620119303465
+                },
+                "AMOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "AMOUNT",
+                    "value": 2932,
+                    "stype": "numerical",
+                    "score": 0.0005610019434243441
+                },
+                "BALANCE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BALANCE",
+                    "value": 19691,
+                    "stype": "numerical",
+                    "score": 0.008492781780660152
+                },
+                "ACCOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "ACCOUNT",
+                    "value": 78733888,
+                    "stype": "numerical",
+                    "score": 0.00015049090143293142
+                }
+            },
+            "973": {
+                "DATE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "DATE",
+                    "value": "1997-02-08T00:00:00",
+                    "stype": "timestamp",
+                    "score": 0.0019304552115499973
+                },
+                "TYPE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "TYPE",
+                    "value": "VYDAJ",
+                    "stype": "categorical",
+                    "score": 0.000576039485167712
+                },
+                "OPERATION": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "OPERATION",
+                    "value": "VYBER",
+                    "stype": "categorical",
+                    "score": 0.000774067419115454
+                },
+                "K_SYMBOL": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "K_SYMBOL",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.0009753528283908963
+                },
+                "BANK": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BANK",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.0009627284598536789
+                },
+                "AMOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "AMOUNT",
+                    "value": 600,
+                    "stype": "numerical",
+                    "score": 0.0000319052160193678
+                },
+                "BALANCE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BALANCE",
+                    "value": 19091,
+                    "stype": "numerical",
+                    "score": 0.00010176497016800568
+                },
+                "ACCOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "ACCOUNT",
+                    "value": null,
+                    "stype": "numerical",
+                    "score": 0.00009872057853499427
+                }
+            },
+            "974": {
+                "DATE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "DATE",
+                    "value": "1997-02-11T00:00:00",
+                    "stype": "timestamp",
+                    "score": 0.0145465899258852
+                },
+                "TYPE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "TYPE",
+                    "value": "PRIJEM",
+                    "stype": "categorical",
+                    "score": 0.005036633927375078
+                },
+                "OPERATION": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "OPERATION",
+                    "value": "PREVOD Z UCTU",
+                    "stype": "categorical",
+                    "score": 0.0011360490461811423
+                },
+                "K_SYMBOL": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "K_SYMBOL",
+                    "value": "DUCHOD",
+                    "stype": "categorical",
+                    "score": 0.003430654527619481
+                },
+                "BANK": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BANK",
+                    "value": "OP",
+                    "stype": "categorical",
+                    "score": 0.00005604511170531623
+                },
+                "AMOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "AMOUNT",
+                    "value": 6378,
+                    "stype": "numerical",
+                    "score": 0.0007022111094556749
+                },
+                "BALANCE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BALANCE",
+                    "value": 25469,
+                    "stype": "numerical",
+                    "score": 0.0022521880455315113
+                },
+                "ACCOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "ACCOUNT",
+                    "value": 11218095,
+                    "stype": "numerical",
+                    "score": 0.0005141288856975734
+                }
+            },
+            "975": {
+                "DATE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "DATE",
+                    "value": "1997-02-28T00:00:00",
+                    "stype": "timestamp",
+                    "score": 0.007633108180016279
+                },
+                "TYPE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "TYPE",
+                    "value": "VYDAJ",
+                    "stype": "categorical",
+                    "score": 0.002338849939405918
+                },
+                "OPERATION": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "OPERATION",
+                    "value": "VYBER",
+                    "stype": "categorical",
+                    "score": 0.000060805810790043324
+                },
+                "K_SYMBOL": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "K_SYMBOL",
+                    "value": "SLUZBY",
+                    "stype": "categorical",
+                    "score": 0.0052162762731313705
+                },
+                "BANK": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BANK",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.0009592831484042108
+                },
+                "AMOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "AMOUNT",
+                    "value": 15,
+                    "stype": "numerical",
+                    "score": 0.0012382378336042166
+                },
+                "BALANCE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BALANCE",
+                    "value": 25555,
+                    "stype": "numerical",
+                    "score": 0.0024054974783211946
+                },
+                "ACCOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "ACCOUNT",
+                    "value": null,
+                    "stype": "numerical",
+                    "score": 0.000013977189155411907
+                }
+            },
+            "976": {
+                "DATE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "DATE",
+                    "value": "1997-02-28T00:00:00",
+                    "stype": "timestamp",
+                    "score": 0.0055923908948898315
+                },
+                "TYPE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "TYPE",
+                    "value": "PRIJEM",
+                    "stype": "categorical",
+                    "score": 0.0017159751150757074
+                },
+                "OPERATION": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "OPERATION",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.00039403996197506785
+                },
+                "K_SYMBOL": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "K_SYMBOL",
+                    "value": "UROK",
+                    "stype": "categorical",
+                    "score": 0.0003242825041525066
+                },
+                "BANK": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BANK",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.0002658314479049295
+                },
+                "AMOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "AMOUNT",
+                    "value": 100,
+                    "stype": "numerical",
+                    "score": 0.00009222025255439803
+                },
+                "BALANCE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BALANCE",
+                    "value": 25569,
+                    "stype": "numerical",
+                    "score": 0.0008006821153685451
+                },
+                "ACCOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "ACCOUNT",
+                    "value": null,
+                    "stype": "numerical",
+                    "score": 0.00016711252101231366
+                }
+            },
+            "977": {
+                "DATE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "DATE",
+                    "value": "1997-03-07T00:00:00",
+                    "stype": "timestamp",
+                    "score": 0.008426840417087078
+                },
+                "TYPE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "TYPE",
+                    "value": "VYDAJ",
+                    "stype": "categorical",
+                    "score": 0.00179107126314193
+                },
+                "OPERATION": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "OPERATION",
+                    "value": "PREVOD NA UCET",
+                    "stype": "categorical",
+                    "score": 0.0019198120571672916
+                },
+                "K_SYMBOL": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "K_SYMBOL",
+                    "value": "SIPO",
+                    "stype": "categorical",
+                    "score": 0.00031849040533415973
+                },
+                "BANK": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BANK",
+                    "value": "MN",
+                    "stype": "categorical",
+                    "score": 0.00014782161451876163
+                },
+                "AMOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "AMOUNT",
+                    "value": 2932,
+                    "stype": "numerical",
+                    "score": 0.0001912165607791394
+                },
+                "BALANCE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BALANCE",
+                    "value": 22623,
+                    "stype": "numerical",
+                    "score": 0.0032493711914867163
+                },
+                "ACCOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "ACCOUNT",
+                    "value": 78733888,
+                    "stype": "numerical",
+                    "score": 0.000019216573491576128
+                }
+            },
+            "978": {
+                "DATE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "DATE",
+                    "value": "1997-03-10T00:00:00",
+                    "stype": "timestamp",
+                    "score": 0.0065689692273736
+                },
+                "TYPE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "TYPE",
+                    "value": "VYDAJ",
+                    "stype": "categorical",
+                    "score": 0.002005810383707285
+                },
+                "OPERATION": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "OPERATION",
+                    "value": "VYBER",
+                    "stype": "categorical",
+                    "score": 0.0023001262452453375
+                },
+                "K_SYMBOL": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "K_SYMBOL",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.00011668133811326697
+                },
+                "BANK": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BANK",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.0008517311071045697
+                },
+                "AMOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "AMOUNT",
+                    "value": 3900,
+                    "stype": "numerical",
+                    "score": 0.00016200474055949599
+                },
+                "BALANCE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BALANCE",
+                    "value": 18723,
+                    "stype": "numerical",
+                    "score": 0.0006131036207079887
+                },
+                "ACCOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "ACCOUNT",
+                    "value": null,
+                    "stype": "numerical",
+                    "score": 0.00004963249011780135
+                }
+            },
+            "9570": {
+                "BANK_TO": {
+                    "table_name": "FINANCE_ORDERS",
+                    "name": "BANK_TO",
+                    "value": "MN",
+                    "stype": "categorical",
+                    "score": 0.002192534739151597
+                },
+                "K_SYMBOL": {
+                    "table_name": "FINANCE_ORDERS",
+                    "name": "K_SYMBOL",
+                    "value": "SIPO",
+                    "stype": "categorical",
+                    "score": 0.002305833389982581
+                },
+                "ACCOUNT_TO": {
+                    "table_name": "FINANCE_ORDERS",
+                    "name": "ACCOUNT_TO",
+                    "value": 78733888,
+                    "stype": "numerical",
+                    "score": 0.0002946191525552422
+                },
+                "AMOUNT": {
+                    "table_name": "FINANCE_ORDERS",
+                    "name": "AMOUNT",
+                    "value": 2932,
+                    "stype": "numerical",
+                    "score": 0.0007036004099063575
+                }
+            },
+            "-1": {
+                "DATE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "DATE",
+                    "value": null,
+                    "stype": "timestamp",
+                    "score": 0.7162424921989441
+                },
+                "TYPE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "TYPE",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.1451224535703659
+                },
+                "OPERATION": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "OPERATION",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.1341894268989563
+                },
+                "K_SYMBOL": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "K_SYMBOL",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.16364504396915436
+                },
+                "BANK": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BANK",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.07151003926992416
+                },
+                "AMOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "AMOUNT",
+                    "value": null,
+                    "stype": "numerical",
+                    "score": 0.03626552224159241
+                },
+                "BALANCE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BALANCE",
+                    "value": null,
+                    "stype": "numerical",
+                    "score": 0.18922460079193115
+                },
+                "ACCOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "ACCOUNT",
+                    "value": null,
+                    "stype": "numerical",
+                    "score": 0.014462364837527275
+                }
+            },
+            "-2": {
+                "DATE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "DATE",
+                    "value": null,
+                    "stype": "timestamp",
+                    "score": 0.7162424921989441
+                },
+                "TYPE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "TYPE",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.1451224535703659
+                },
+                "OPERATION": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "OPERATION",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.1341894268989563
+                },
+                "K_SYMBOL": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "K_SYMBOL",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.16364504396915436
+                },
+                "BANK": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BANK",
+                    "value": null,
+                    "stype": "categorical",
+                    "score": 0.07151003926992416
+                },
+                "AMOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "AMOUNT",
+                    "value": null,
+                    "stype": "numerical",
+                    "score": 0.03626552224159241
+                },
+                "BALANCE": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "BALANCE",
+                    "value": null,
+                    "stype": "numerical",
+                    "score": 0.18922460079193115
+                },
+                "ACCOUNT": {
+                    "table_name": "FINANCE_TRANS",
+                    "name": "ACCOUNT",
+                    "value": null,
+                    "stype": "numerical",
+                    "score": 0.014462364837527275
+                }
+            }
+        }
+    }
+}

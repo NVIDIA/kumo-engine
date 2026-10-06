@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+temporal:
+  server:
+    config:
+      persistence:
+        datastores:
+          default:
+            sql:
+              connectAddr: temporal.cluster-abcdefghijkl.us-west-2.rds.amazonaws.com:5432
+              user: temporal_runtime
+              existingSecret: temporal-postgres
+          visibility:
+            sql:
+              connectAddr: temporal.cluster-abcdefghijkl.us-west-2.rds.amazonaws.com:5432
+              user: temporal_runtime
+              existingSecret: temporal-postgres

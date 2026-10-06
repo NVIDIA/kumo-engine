@@ -1,0 +1,291 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Build Kumo AMI
+
+on:  # yamllint disable-line rule:truthy
+  workflow_call:
+    inputs:
+      kumo_image_tag:
+        description: 'Docker image tag in ECR to build the AMI from (commit SHA or nightly-YYYYMMDD).'
+        required: false
+        default: ''
+        type: string
+    outputs:
+      ami_id:
+        value: ${{ jobs.build.outputs.ami_id }}
+  # The nightly schedule is paused while failed Packer builds can leave their
+  # temporary GPU builder instances running. Manual and reusable invocations
+  # remain available for controlled builds.
+  workflow_dispatch:
+    inputs:
+      kumo_ref:
+        description: "Branch or full 40-char commit SHA to build from. For branches, the name is slugified (lowercased, non-alphanumeric chars replaced with hyphens) to form the image and AMI tag — e.g. user/my-feature → user-my-feature."
+        required: false
+        default: 'master'
+        type: string
+      ami_tag:
+        description: "Override the AMI name suffix. If omitted, derived from kumo_ref (full SHA for SHA inputs, slugified branch name for branches)."
+        required: false
+        default: ''
+        type: string
+      validate_oidc_only:
+        description: Validate AWS OIDC without building images or an AMI
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  # The ensure-images step dispatches the kumo3 orchestrator; the github.token
+  # fallback cannot do that with contents: read alone.
+  actions: write
+  id-token: write
+
+jobs:
+  build:
+    name: Build Kumo AMI
+    environment: gha-ami-build
+    runs-on: self-hosted
+    outputs:
+      ami_id: ${{ steps.packer.outputs.ami_id }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-ami-build
+          aws-region: us-west-2
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Resolve image tag
+        if: ${{ !inputs.validate_oidc_only }}
+        id: vars
+        shell: bash
+        env:
+          AWS_DEFAULT_REGION: us-west-2
+          # Read as shell variables, not interpolated into the script: these
+          # are caller-supplied and this job runs on a self-hosted runner.
+          IN_KUMO_IMAGE_TAG: ${{ inputs.kumo_image_tag }}
+          IN_KUMO_REF: ${{ inputs.kumo_ref }}
+          IN_AMI_TAG: ${{ inputs.ami_tag }}
+        run: |
+          event="${{ github.event_name }}"
+
+          # Every trigger resolves to a full commit SHA. The firstboot writer and
+          # the image's DSN reader are coupled, so baking a floating tag that
+          # moves or lags in ECR can pair scripts with an unrelated image.
+
+          # nightly-<date> is a floating alias, not a git ref. The promoted
+          # manifest carries both the alias and the commit SHA, so the SHA can be
+          # read straight back off the tag list.
+          resolve_alias_to_sha() {
+            local alias="$1" sha
+            local shas
+            shas=$(aws ecr describe-images \
+                    --repository-name kumo/kumo-backend-cpu \
+                    --image-ids "imageTag=${alias}" \
+                    --query 'imageDetails[0].imageTags' --output text 2>/dev/null \
+                  | tr '\t' '\n' | grep -E '^[0-9a-f]{40}$')
+            if [[ "$(wc -l <<< "${shas}")" -gt 1 && -n "${shas}" ]]; then
+              echo "${alias} names more than one commit: $(tr '\n' ' ' <<< "${shas}")." \
+                   "Refusing to guess which one the AMI should be built from." >&2
+              return 1
+            fi
+            sha="${shas}"
+            if [[ -z "${sha}" ]]; then
+              echo "No commit SHA behind ${alias}. The image set for ${alias}" \
+                   "has not been published — check the most recent" \
+                   "nightly-kumo3-images.yml run." >&2
+              return 1
+            fi
+            echo "${sha}"
+          }
+
+          if [[ "${event}" == "schedule" ]]; then
+            date_utc=$(date -u +'%Y%m%d')
+            alias_tag="nightly-${date_utc}"
+            if ! kumo_ref=$(resolve_alias_to_sha "${alias_tag}"); then
+              exit 1
+            fi
+            image_tag="${kumo_ref}"
+            ami_tag="${alias_tag}"
+            force_deregister=false
+
+          elif [[ "${event}" == "workflow_call" ]]; then
+            image_tag="${IN_KUMO_IMAGE_TAG:-}"
+            ami_tag="${image_tag}"
+            if [[ "${image_tag}" =~ ^nightly- ]]; then
+              if ! kumo_ref=$(resolve_alias_to_sha "${image_tag}"); then
+                exit 1
+              fi
+              image_tag="${kumo_ref}"
+            else
+              kumo_ref="${image_tag}"
+            fi
+            force_deregister=false
+
+          else
+            # workflow_dispatch: kumo_ref is a branch name or full SHA
+            ref="${IN_KUMO_REF:-}"
+            ref="${ref:-master}"
+            force_deregister=true
+
+            if [[ "${ref}" =~ ^[0-9a-f]{40}$ ]]; then
+              # Full SHA: unique by nature, use directly for all three
+              image_tag="${ref}"
+              ami_tag="${ref}"
+              kumo_ref="${ref}"
+            else
+              # Branch name: resolve to an immutable SHA for the image baked into
+              # the AMI, but keep the slug as the friendly AMI name suffix.
+              # Runtime firstboot scripts and backend images are coupled, so
+              # baking a floating branch tag like "master" can pair new scripts
+              # with an older image if the tag moves or lags in ECR.
+              slug=$(echo "${ref}" | sed 's|refs/heads/||' | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/-\+$//')
+              ami_tag="${slug}"
+              kumo_ref=$(git ls-remote origin "refs/heads/${ref}" | cut -f1)
+              if [[ -z "${kumo_ref}" ]]; then
+                echo "Could not resolve branch ref '${ref}'" >&2
+                exit 1
+              fi
+              image_tag="${kumo_ref}"
+            fi
+
+            # Explicit ami_tag overrides the derived value
+            if [[ -n "${IN_AMI_TAG:-}" ]]; then
+              ami_tag="${IN_AMI_TAG}"
+            fi
+          fi
+
+          if [[ ! "${image_tag}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "AMI image_tag must be a full commit SHA, got '${image_tag}'" >&2
+            exit 1
+          fi
+
+          echo "image_tag=${image_tag}" >> $GITHUB_OUTPUT
+          echo "ami_tag=${ami_tag}" >> $GITHUB_OUTPUT
+          echo "kumo_ref=${kumo_ref}" >> $GITHUB_OUTPUT
+          echo "force_deregister=${force_deregister}" >> $GITHUB_OUTPUT
+
+      - name: Install dependencies
+        run: |
+          if ! command -v aws > /dev/null; then
+            sudo apt-get update -q && sudo apt-get install -y awscli
+          fi
+          if ! command -v gh > /dev/null; then
+            sudo apt-get update -q && sudo apt-get install -y curl
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+              | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+              | sudo tee /etc/apt/sources.list.d/github-cli.list
+            sudo apt-get update && sudo apt-get install -y gh
+          fi
+
+      - name: Ensure required ECR images
+        if: ${{ !inputs.validate_oidc_only }}
+        env:
+          AWS_DEFAULT_REGION: us-west-2
+          GH_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN || github.token }}
+          KUMO_REF: ${{ steps.vars.outputs.kumo_ref }}
+          REPO: ${{ github.repository }}
+        run: |
+          wait_for_run() {
+            local run_id=$1 repo=$2
+            echo "Waiting for run $run_id (${repo})..."
+            gh run watch "$run_id" --repo "$REPO" --exit-status --interval 30 || {
+              echo "Build for ${repo} failed (run $run_id)" >&2; exit 1
+            }
+          }
+
+          # The kumo3 orchestrator builds and publishes cpu+gpu+ui as one set,
+          # and owns the decision about what actually needs building: a ref
+          # whose images all exist is a ~1 minute no-op there.
+          ORCHESTRATOR="_docker-kumo3-images-custom.yml"
+
+          # Correlate the dispatch with the run: releases and other AMI builds
+          # dispatch the same workflow, so the most recent run can be theirs.
+          # The orchestrator echoes caller_id into its run-name.
+          caller_id="ami-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "Ensuring kumo3 image set for ${KUMO_REF} via ${ORCHESTRATOR} (${caller_id})"
+          gh workflow run "${ORCHESTRATOR}" \
+            --repo "$REPO" \
+            --field "kumo_repo_ref=$KUMO_REF" \
+            --field bake_glove_level=none \
+            --field "caller_id=${caller_id}"
+
+          run_id=""
+          for _ in $(seq 1 30); do
+            sleep 10
+            run_id=$(gh run list --repo "$REPO" \
+              --workflow "${ORCHESTRATOR}" --limit 30 \
+              --json databaseId,displayTitle \
+              --jq "[.[] | select(.displayTitle | contains(\"${caller_id}\"))] | .[0].databaseId // empty")
+            [[ -n "${run_id}" ]] && break
+          done
+          if [[ -z "${run_id}" ]]; then
+            echo "::error::no ${ORCHESTRATOR} run tagged ${caller_id} appeared within 5 minutes" >&2
+            exit 1
+          fi
+          wait_for_run "$run_id" "kumo3 image set (cpu+gpu+ui)"
+
+      - name: Install Packer
+        if: ${{ !inputs.validate_oidc_only }}
+        run: |
+          curl -fsSL https://apt.releases.hashicorp.com/gpg \
+            | gpg --dearmor --batch --yes \
+            | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg > /dev/null
+
+          echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+            | sudo tee /etc/apt/sources.list.d/hashicorp.list
+
+          sudo apt-get update
+          sudo apt-get install -y packer
+
+      - name: Build AMI with Packer
+        if: ${{ !inputs.validate_oidc_only }}
+        id: packer
+        env:
+          VERSION: ${{ steps.vars.outputs.image_tag }}
+          AMI_TAG: ${{ steps.vars.outputs.ami_tag }}
+          FORCE_DEREGISTER: ${{ steps.vars.outputs.force_deregister }}
+        run: |
+          cd deploy/ami
+          packer init kumo-singlehost.pkr.hcl
+          export PKR_VAR_aws_access_key_id="${AWS_ACCESS_KEY_ID}"
+          export PKR_VAR_aws_secret_access_key="${AWS_SECRET_ACCESS_KEY}"
+          export PKR_VAR_aws_session_token="${AWS_SESSION_TOKEN}"
+          packer build -machine-readable \
+            -var "kumo_image_tag=${VERSION}" \
+            -var "ami_name_tag=${AMI_TAG}" \
+            -var "force_deregister=${FORCE_DEREGISTER}" \
+            kumo-singlehost.pkr.hcl | tee packer.log || true
+
+          AMI_ID=$(grep 'artifact,0,id' packer.log | cut -d, -f6 | cut -d: -f2)
+
+          if [ -z "$AMI_ID" ]; then
+            AMI_ID=$(grep -oP 'is used by an existing AMI: \Kami-[a-z0-9]+' packer.log | head -1 || true)
+            if [ -n "$AMI_ID" ]; then
+              echo "AMI already exists, reusing: $AMI_ID"
+            else
+              echo "Packer build failed with no AMI produced" >&2
+              exit 1
+            fi
+          fi
+
+          echo "AMI: $AMI_ID"
+          echo "ami_id=$AMI_ID" >> $GITHUB_OUTPUT
+
+      - name: Send Slack notification on failure
+        if: ${{ failure() && !inputs.validate_oidc_only }}
+        uses: ./.github/actions/slack-notification-action
+        with:
+          channel-id: "C05MUC2FTRN"
+          job-status: ${{ job.status }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+          slack-bot-token: ${{ secrets.SLACK_BOT_TOKEN }}

@@ -1,0 +1,815 @@
+/* SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+ * All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2023 shadcn
+ * SPDX-License-Identifier: Apache-2.0 AND MIT
+ */
+
+/*
+ * Kumo UI Catalog — Tailwind Theme
+ *
+ * Import this file in your app's Tailwind CSS entry point to get
+ * all catalog design tokens (colors, breakpoints, radii, fonts, etc.)
+ * available as Tailwind utility classes.
+ *
+ * Usage in your app's CSS:
+ *   @import "tailwindcss";
+ *   @import "@kumo-ai/kumo-ui-catalog/kumo-ui-catalog.css";
+ *
+ * Then Tailwind will scan YOUR source files and generate utilities
+ * using the catalog's theme — no @source inline needed.
+ */
+
+@import "tailwindcss";
+/*
+ * NVIDIA Kaizen fonts.
+ * NVIDIA Sans (proprietary) is loaded from NVIDIA's public web-assets CDN
+ * (@import below) — the real font, with no font files committed to the repo.
+ * If the CDN is unreachable (e.g. air-gapped), the browser falls through to the
+ * metric-matched "NVIDIA Sans Fallback" defined below (local()-only, no binary).
+ * JetBrains Mono (open-source, SIL OFL 1.1) IS embedded from public/fonts/ —
+ * see its OFL.txt alongside the WOFF2 files.
+ */
+@import url("https://webassets.nvidia.com/kaizen-ui-foundations/1.1.0/fonts.css");
+@font-face {
+    font-family: NVIDIA Sans Fallback;
+    font-style: normal;
+    font-weight: 300;
+    ascent-override: 93.59%;
+    descent-override: 26.74%;
+    line-gap-override: 0%;
+    size-adjust: 104.71%;
+    src:
+        local(Arial), local(Inter), local(Helvetica), local(DejaVu Sans),
+        local(Liberation Sans), local(Noto Sans), local(Ubuntu),
+        local(FreeSans), local("sans-serif");
+}
+@font-face {
+    font-family: NVIDIA Sans Fallback;
+    font-style: italic;
+    font-weight: 300;
+    ascent-override: 97.18%;
+    descent-override: 27.77%;
+    line-gap-override: 0%;
+    size-adjust: 100.84%;
+    src:
+        local(Arial Italic), local(Inter Italic), local(Helvetica Oblique),
+        local(DejaVu Sans Oblique), local(Liberation Sans Italic),
+        local(Noto Sans Italic), local(Ubuntu Italic), local(FreeSans Oblique),
+        local("sans-serif");
+}
+@font-face {
+    font-family: NVIDIA Sans Fallback;
+    font-style: normal;
+    font-weight: 400;
+    ascent-override: 92.7%;
+    descent-override: 26.49%;
+    line-gap-override: 0%;
+    size-adjust: 105.71%;
+    src:
+        local(Arial), local(Inter), local(Helvetica), local(DejaVu Sans),
+        local(Liberation Sans), local(Noto Sans), local(Ubuntu),
+        local(FreeSans), local("sans-serif");
+}
+@font-face {
+    font-family: NVIDIA Sans Fallback;
+    font-style: italic;
+    font-weight: 400;
+    ascent-override: 96.18%;
+    descent-override: 27.48%;
+    line-gap-override: 0%;
+    size-adjust: 101.89%;
+    src:
+        local(Arial Italic), local(Inter Italic), local(Helvetica Oblique),
+        local(DejaVu Sans Oblique), local(Liberation Sans Italic),
+        local(Noto Sans Italic), local(Ubuntu Italic), local(FreeSans Oblique),
+        local("sans-serif");
+}
+@font-face {
+    font-family: NVIDIA Sans Fallback;
+    font-style: normal;
+    font-weight: 500;
+    ascent-override: 91.53%;
+    descent-override: 26.15%;
+    line-gap-override: 0%;
+    size-adjust: 107.07%;
+    src:
+        local(Arial), local(Inter), local(Helvetica), local(DejaVu Sans),
+        local(Liberation Sans), local(Noto Sans), local(Ubuntu),
+        local(FreeSans), local("sans-serif");
+}
+@font-face {
+    font-family: NVIDIA Sans Fallback;
+    font-style: italic;
+    font-weight: 500;
+    ascent-override: 94.81%;
+    descent-override: 27.09%;
+    line-gap-override: 0%;
+    size-adjust: 103.36%;
+    src:
+        local(Arial Italic), local(Inter Italic), local(Helvetica Oblique),
+        local(DejaVu Sans Oblique), local(Liberation Sans Italic),
+        local(Noto Sans Italic), local(Ubuntu Italic), local(FreeSans Oblique),
+        local("sans-serif");
+}
+@font-face {
+    font-family: NVIDIA Sans Fallback;
+    font-style: normal;
+    font-weight: 700;
+    ascent-override: 97.74%;
+    descent-override: 27.93%;
+    line-gap-override: 0%;
+    size-adjust: 100.26%;
+    src:
+        local(Arial Bold), local(Inter Bold), local(Helvetica Bold),
+        local(DejaVu Sans Bold), local(Liberation Sans Bold),
+        local(Noto Sans Bold), local(Ubuntu Bold), local(FreeSans Bold),
+        local("sans-serif");
+}
+@font-face {
+    font-family: NVIDIA Sans Fallback;
+    font-style: italic;
+    font-weight: 700;
+    ascent-override: 101.13%;
+    descent-override: 28.9%;
+    line-gap-override: 0%;
+    size-adjust: 96.9%;
+    src:
+        local(Arial Bold Italic), local(Inter Bold Italic),
+        local(Helvetica Bold Oblique), local(DejaVu Sans Bold Oblique),
+        local(Liberation Sans Bold Italic), local(Noto Sans Bold Italic),
+        local(Ubuntu Bold Italic), local(FreeSans Bold Oblique),
+        local("sans-serif");
+}
+@font-face {
+    font-family: JetBrains Mono;
+    font-style: normal;
+    font-weight: 300;
+    font-display: swap;
+    src: url(/fonts/jetbrains-mono/1.0.0/JetBrainsMono-Light.woff2)
+        format("woff2");
+}
+@font-face {
+    font-family: JetBrains Mono;
+    font-style: italic;
+    font-weight: 300;
+    font-display: swap;
+    src: url(/fonts/jetbrains-mono/1.0.0/JetBrainsMono-LightItalic.woff2)
+        format("woff2");
+}
+@font-face {
+    font-family: JetBrains Mono;
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url(/fonts/jetbrains-mono/1.0.0/JetBrainsMono-Regular.woff2)
+        format("woff2");
+}
+@font-face {
+    font-family: JetBrains Mono;
+    font-style: italic;
+    font-weight: 400;
+    font-display: swap;
+    src: url(/fonts/jetbrains-mono/1.0.0/JetBrainsMono-Italic.woff2)
+        format("woff2");
+}
+@font-face {
+    font-family: JetBrains Mono;
+    font-style: normal;
+    font-weight: 500;
+    font-display: swap;
+    src: url(/fonts/jetbrains-mono/1.0.0/JetBrainsMono-Medium.woff2)
+        format("woff2");
+}
+@font-face {
+    font-family: JetBrains Mono;
+    font-style: italic;
+    font-weight: 500;
+    font-display: swap;
+    src: url(/fonts/jetbrains-mono/1.0.0/JetBrainsMono-MediumItalic.woff2)
+        format("woff2");
+}
+@font-face {
+    font-family: JetBrains Mono;
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    src: url(/fonts/jetbrains-mono/1.0.0/JetBrainsMono-Bold.woff2)
+        format("woff2");
+}
+@font-face {
+    font-family: JetBrains Mono;
+    font-style: italic;
+    font-weight: 700;
+    font-display: swap;
+    src: url(/fonts/jetbrains-mono/1.0.0/JetBrainsMono-BoldItalic.woff2)
+        format("woff2");
+}
+@font-face {
+    font-family: JetBrains Mono Fallback;
+    font-style: normal;
+    font-weight: 300;
+    ascent-override: 102.02%;
+    descent-override: 30%;
+    line-gap-override: 0%;
+    size-adjust: 99.98%;
+    src:
+        local(Courier New), local(Consolas), local(DejaVu Sans Mono),
+        local(Liberation Mono), local(Noto Sans Mono), local(Ubuntu Mono),
+        local(FreeMono), local("monospace");
+}
+@font-face {
+    font-family: JetBrains Mono Fallback;
+    font-style: italic;
+    font-weight: 300;
+    ascent-override: 102.02%;
+    descent-override: 30%;
+    line-gap-override: 0%;
+    size-adjust: 99.98%;
+    src:
+        local(Courier New Italic), local(Consolas Italic),
+        local(DejaVu Sans Mono Oblique), local(Liberation Mono Italic),
+        local(Noto Sans Mono Italic), local(Ubuntu Mono Italic),
+        local(FreeMono Oblique), local("monospace");
+}
+@font-face {
+    font-family: JetBrains Mono Fallback;
+    font-style: normal;
+    font-weight: 400;
+    ascent-override: 102.02%;
+    descent-override: 30%;
+    line-gap-override: 0%;
+    size-adjust: 99.98%;
+    src:
+        local(Courier New), local(Consolas), local(DejaVu Sans Mono),
+        local(Liberation Mono), local(Noto Sans Mono), local(Ubuntu Mono),
+        local(FreeMono), local("monospace");
+}
+@font-face {
+    font-family: JetBrains Mono Fallback;
+    font-style: italic;
+    font-weight: 400;
+    ascent-override: 102.02%;
+    descent-override: 30%;
+    line-gap-override: 0%;
+    size-adjust: 99.98%;
+    src:
+        local(Courier New Italic), local(Consolas Italic),
+        local(DejaVu Sans Mono Oblique), local(Liberation Mono Italic),
+        local(Noto Sans Mono Italic), local(Ubuntu Mono Italic),
+        local(FreeMono Oblique), local("monospace");
+}
+@font-face {
+    font-family: JetBrains Mono Fallback;
+    font-style: normal;
+    font-weight: 500;
+    ascent-override: 102.02%;
+    descent-override: 30%;
+    line-gap-override: 0%;
+    size-adjust: 99.98%;
+    src:
+        local(Courier New), local(Consolas), local(DejaVu Sans Mono),
+        local(Liberation Mono), local(Noto Sans Mono), local(Ubuntu Mono),
+        local(FreeMono), local("monospace");
+}
+@font-face {
+    font-family: JetBrains Mono Fallback;
+    font-style: italic;
+    font-weight: 500;
+    ascent-override: 102.02%;
+    descent-override: 30%;
+    line-gap-override: 0%;
+    size-adjust: 99.98%;
+    src:
+        local(Courier New Italic), local(Consolas Italic),
+        local(DejaVu Sans Mono Oblique), local(Liberation Mono Italic),
+        local(Noto Sans Mono Italic), local(Ubuntu Mono Italic),
+        local(FreeMono Oblique), local("monospace");
+}
+@font-face {
+    font-family: JetBrains Mono Fallback;
+    font-style: normal;
+    font-weight: 700;
+    ascent-override: 102.02%;
+    descent-override: 30%;
+    line-gap-override: 0%;
+    size-adjust: 99.98%;
+    src:
+        local(Courier New Bold), local(Consolas Bold),
+        local(DejaVu Sans Mono Bold), local(Liberation Mono Bold),
+        local(Noto Sans Mono Bold), local(Ubuntu Mono Bold),
+        local(FreeMono Bold), local("monospace");
+}
+@font-face {
+    font-family: JetBrains Mono Fallback;
+    font-style: italic;
+    font-weight: 700;
+    ascent-override: 102.02%;
+    descent-override: 30%;
+    line-gap-override: 0%;
+    size-adjust: 99.98%;
+    src:
+        local(Courier New Bold Italic), local(Consolas Bold Italic),
+        local(DejaVu Sans Mono Bold Oblique),
+        local(Liberation Mono Bold Italic), local(Noto Sans Mono Bold Italic),
+        local(Ubuntu Mono Bold Italic), local(FreeMono Bold Oblique),
+        local("monospace");
+}
+@font-face {
+    font-family: missing-ligature-font;
+    src: local(Arial), local(Verdana), local(Tahoma), local(Trebuchet MS);
+    size-adjust: 0%;
+}
+
+@source "./**/*.tsx";
+@source "./**/*.ts";
+
+@plugin "tailwindcss-animate";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ── Breakpoints ─────────────────────────────────────────────── */
+
+@theme {
+    --breakpoint-sm: 640px;
+    --breakpoint-md: 980px;
+    --breakpoint-lg: 1300px;
+    --breakpoint-xl: 1600px;
+    --breakpoint-2xl: 1920px;
+}
+
+/* ── Font ────────────────────────────────────────────────────── */
+
+/*
+ * Font sources: NVIDIA Sans (proprietary) loads from NVIDIA's public web-assets
+ * CDN (@import at the top) — real font, nothing committed — with the
+ * metric-matched "NVIDIA Sans Fallback" as the air-gapped safety net. JetBrains
+ * Mono (open, SIL OFL 1.1) is embedded/self-hosted from public/fonts.
+ */
+
+/* ── CSS Variable Definitions ────────────────────────────────── */
+
+:root {
+    /* Kaizen official typography tokens (NVIDIA Sans for text, JetBrains Mono
+     * for code). Matches @kui/foundations-css values exactly. */
+    --font-sans:
+        "NVIDIA Sans", "NVIDIA Sans Fallback", ui-sans-serif, system-ui,
+        sans-serif;
+    --font-mono:
+        "JetBrains Mono", "JetBrains Mono Fallback", ui-monospace, monospace;
+    --font-inter: var(--font-sans); /* kept for backward compatibility */
+    --radius: 0.625rem;
+
+    /* Brand - Base color definitions */
+    --white: #ffffff;
+    --pink: #76b900;
+    --second-pink: #549a00;
+    --primary-dark: #222222;
+    --secondary-light: #636363;
+    --dark-grey: #636363;
+    --light-grey: #cccccc;
+    --surface-grey: #f7f7f7;
+    --dark-blue: #313131;
+
+    /* Surface colors */
+    --surface-primary: var(--white);
+    --surface-secondary: var(--surface-grey);
+    --surface-brand-navigation-primary: var(--dark-blue);
+    --surface-brand-navigation-: #eff6ff;
+
+    /* Border colors */
+    --border-primary: #636363;
+    --border-secondary: var(--light-grey);
+    /* Resting border shared by input-like controls. Several forms already
+       overrode to this darker grey, so it becomes the default and those
+       overrides can be dropped. */
+    --border-input: var(--light-grey);
+
+    /* Icon colors */
+    --icon-primary: var(--title-primary);
+    --icon-secondary: var(--title-secondary);
+
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.145 0 0);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.145 0 0);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.145 0 0);
+    --scrollbar: oklch(92.9% 0.013 255.508);
+    --scrollbar-dark: oklch(55.4% 0.046 257.417);
+    --tooltip-dark: #3a3a41;
+    --primary: var(--pink);
+    --primary-foreground: var(--white);
+    --secondary: var(--surface-grey);
+    --secondary-foreground: var(--secondary-light);
+    --muted: oklch(0.97 0 0);
+    --muted-foreground: #757575;
+
+    /* Chart colors */
+    --chart-primary: #115e59;
+    --chart-secondary: #d1d5db;
+    --chart-ideal: #76b900;
+    --chart-axis-line: #1e293b;
+    --chart-axis-name: #1e293b;
+    --chart-axis-label: #1e293b;
+    --chart-horizontal-axis-line: #e5e7eb;
+    --chart-tooltip-background: #ffffff;
+    --chart-tooltip-foreground: #1e293b;
+    --chart-tooltip-border: #f1f5f9;
+    --chart-primary-light: #14b8a6;
+    --chart-lime-400: #a3e635;
+    --chart-amber-800: #92400e;
+    --chart-lime-700: #4d7c0f;
+    --chart-red-600: #dc2626;
+    --chart-orange-400: #fb923c;
+    --chart-yellow-300: #fde047;
+    --chart-green-600: #16a34a;
+    --chart-blue-600: #2563eb;
+    --chart-fuschia-700: #a21caf;
+    --chart-slate-400: #94a3b8;
+    --chart-slate-500: #64748b;
+    --chart-violet-300: #c4b5fd;
+    --chart-violet-500: #8b5cf6;
+    --chart-rose-300: #fda4af;
+    --chart-rose-400: #fb7185;
+
+    --accent: oklch(0.97 0 0);
+    --accent-foreground: oklch(0.205 0 0);
+    --destructive: oklch(0.577 0.245 27.325);
+    --destructive-foreground: oklch(0.577 0.245 27.325);
+    --border: oklch(0.922 0 0);
+    --input: oklch(0.922 0 0);
+    --ring: oklch(27.9% 0.041 260.031);
+
+    --sidebar: oklch(0.985 0 0);
+    --sidebar-foreground: oklch(0.145 0 0);
+    --sidebar-primary: oklch(0.205 0 0);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.97 0 0);
+    --sidebar-accent-foreground: oklch(0.205 0 0);
+    --sidebar-border: oklch(0.922 0 0);
+    --sidebar-ring: oklch(0.708 0 0);
+
+    --main-background: #f4f6f8;
+    /* Switch / toggle — KUI `.nv-switch` (foundations). On = brand-green track,
+       off = transparent track with an inset ring; dark thumb that slides + recolors.
+       Light theme. Values map 1:1 to KUI interaction tokens. */
+    --switch-off-background: transparent; /* KUI off track: no fill */
+    --switch-on-background: var(
+        --brand-green
+    ); /* KUI interaction-primary-base #76b900 */
+    --switch-on-border: transparent; /* KUI on track has no border */
+    --switch-off-thumb: #222222; /* KUI background-color-interaction-inverse */
+    --switch-on-thumb: #000000; /* KUI text-color-accent-black */
+    --switch-track-ring: #000000b2; /* KUI border-color-interaction-strong (70% black) — off ring */
+    --switch-track-ring-disabled: #00000066; /* KUI border-color-disabled (40% black) */
+    --switch-thumb-disabled: #898989; /* KUI text-color-disabled */
+    /* Switch sizing (KUI medium) + timing (KUI --ease-out). Switch-scoped;
+       consumed only by the Switch component. */
+    --switch-track-width: 44px; /* KUI spacing*11 */
+    --switch-track-height: 24px; /* KUI spacing*6 */
+    --switch-thumb-size: 16px; /* KUI spacing*4 */
+    --switch-thumb-margin: 4px; /* KUI spacing*1 */
+    --switch-thumb-travel: 20px; /* track - thumb - 2*margin (44-16-8) */
+    --switch-duration-thumb: 300ms; /* KUI thumb transition .3s */
+    --switch-duration-fill: 250ms; /* KUI fill transition .25s */
+    --switch-ease: cubic-bezier(0.4, 0, 0.2, 1); /* KUI --ease-out */
+
+    --title-primary: var(
+        --text-color-primary
+    ); /* KUI text-color-primary = #000000 */
+    --title-secondary: var(
+        --text-color-secondary
+    ); /* KUI text-color-secondary = #636363 */
+
+    --kumo-green-50: #dafb7d;
+    --kumo-green-100: #cfff40;
+    --kumo-green-200: #bff230;
+    --kumo-green-300: #a5de15;
+    --kumo-green-400: #76b900;
+    --kumo-green-500: #549a00;
+    --kumo-green-600: #3f8500;
+    --kumo-green-700: #327100;
+    --kumo-green-800: #265600;
+    --kumo-green-900: #193800;
+    --kumo-green-950: #142700;
+
+    /* NVIDIA brand green (rebrand). Defined once here and reused by the
+       buttons, tabs, spinners and list nav — one place to change it later.
+       KUI green-ramp stops. Pink tokens above are intentionally left as-is. */
+    --brand-green: #76b900; /* KUI green-300 — primary brand green */
+    --brand-green-hover: #549a00; /* KUI green-400 — hover */
+    --brand-green-active: #3f8500; /* KUI green-500 — active / pressed */
+    --brand-green-subtle: #dafb7d; /* KUI green-025 — pale track (spinners) */
+
+    /* KUI neutral / interaction tokens (light theme) — used by the secondary
+       button states; reusable for other KUI-aligned neutrals. */
+    --text-color-primary: #000000; /* KUI --text-color-primary = gray-1000 */
+    --text-color-secondary: #636363; /* KUI --text-color-secondary = gray-600 */
+
+    --kui-fg-primary: #000000; /* color/primary/foreground — primary text */
+    --kui-fg-on-brand: #161616; /* color/inverse/brand/foreground — icon on brand */
+    --kui-fg-disabled: #898989; /* color/disabled/foreground */
+    --kui-bg-hover: #0000000d; /* color/interaction/hover/background (5% black) */
+    --kui-bg-pressed: #0000001a; /* color/interaction/pressed/background (10% black) */
+    --kui-border-disabled: #0000001a; /* color/interaction/disabled/border (10% black) */
+    --kui-border-base: #00000033; /* color/base/border (20% black) — tab/nav base line */
+    --kui-hover-border: #000000e5; /* KUI --border-color-interaction-hover = translucent-black-900 (89% black) — shared tab + anchor hover underline */
+    --kui-border-interaction-base: #0000004d; /* KUI --border-color-interaction-base = translucent-black-300 (30% black) — input/upload resting border */
+    --kui-bg-disabled: #0000000d; /* KUI --background-color-interaction-disabled = translucent-black-050 (5% black) */
+    --kui-border-disabled-strong: #0006; /* KUI --border-color-disabled = translucent-black-400 (40% black) — distinct from --kui-border-disabled, which is KUI's --border-color-interaction-disabled */
+    --kui-fg-base: #636363; /* KUI --text-color-base = gray-600 — icon / meta text */
+    --kui-danger: #e52020; /* KUI --border-color-feedback-danger = red-500 */
+    --kui-danger-subtle: #c21e1e; /* KUI --text-color-feedback-danger-subtle = red-600 */
+    --kui-success: #549a00; /* KUI --border-color-feedback-success = green-400 */
+
+    --kumo-grey: #ffffff;
+    --kumo-grey-50: #f7f7f7;
+    --kumo-grey-100: #eeeeee;
+    --kumo-grey-200: #cccccc;
+    --kumo-grey-300: #a7a7a7;
+    --kumo-grey-400: #898989;
+    --kumo-grey-500: #757575;
+    --kumo-grey-600: #636363;
+    --kumo-grey-700: #4b4b4b;
+    --kumo-grey-800: #313131;
+    --kumo-grey-900: #222222;
+    --kumo-grey-950: #161616;
+    --kumo-grey-1000: #000000;
+
+    /* Chart non-color properties */
+    --chart-axis-name-font-size: 14px;
+    --chart-axis-name-font-weight: 500;
+    --chart-axis-label-font-size: 12px;
+    --chart-axis-label-font-weight: 500;
+    --chart-tooltip-padding-x: 12;
+    --chart-tooltip-padding-y: 8;
+    --chart-tooltip-font-size: 14;
+    --chart-tooltip-font-weight: 600;
+    --chart-tooltip-boder-radius: 4;
+    --chart-tooltip-border-width: 1;
+}
+
+.dark {
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+    --card: oklch(0.145 0 0);
+    --card-foreground: oklch(0.985 0 0);
+    --popover: oklch(0.145 0 0);
+    --popover-foreground: oklch(0.985 0 0);
+    --primary: #76b900;
+    --primary-foreground: oklch(0.205 0 0);
+    --secondary: oklch(0.269 0 0);
+    --secondary-foreground: oklch(0.985 0 0);
+    --muted: oklch(0.269 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+
+    --chart-primary: #115e59;
+    --chart-primary-dark: #134e4a;
+    --chart-secondary: #d1d5db;
+    --chart-bar-background: #e5e5e5;
+    --chart-bar-border: #404040;
+    --chart-ideal: #76b900;
+    --chart-axis-line: #1e293b;
+    --chart-axis-name: #1e293b;
+    --chart-axis-label: #1e293b;
+    --chart-tooltip-background: #ffffff;
+    --chart-tooltip-foreground: #1e293b;
+    --chart-tooltip-border: #f1f5f9;
+    --chart-primary-light: #14b8a6;
+    --chart-lime-400: #a3e635;
+    --chart-amber-800: #92400e;
+    --chart-lime-700: #4d7c0f;
+    --chart-red-600: #dc2626;
+    --chart-orange-400: #fb923c;
+    --chart-yellow-300: #fde047;
+    --chart-green-600: #16a34a;
+    --chart-blue-600: #2563eb;
+    --chart-fuschia-700: #a21caf;
+    --chart-slate-400: #94a3b8;
+    --chart-slate-500: #64748b;
+
+    --accent: oklch(0.269 0 0);
+    --accent-foreground: oklch(0.985 0 0);
+    --destructive: oklch(0.396 0.141 25.723);
+    --destructive-foreground: oklch(0.637 0.237 25.331);
+    --border: oklch(0.269 0 0);
+    --input: oklch(0.269 0 0);
+    --ring: oklch(0.439 0 0);
+
+    --sidebar: oklch(0.205 0 0);
+    --sidebar-foreground: oklch(0.985 0 0);
+    --sidebar-primary: oklch(0.488 0.243 264.376);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.269 0 0);
+    --sidebar-accent-foreground: oklch(0.985 0 0);
+    --sidebar-border: oklch(0.269 0 0);
+    --sidebar-ring: oklch(0.439 0 0);
+
+    --switch-off-background: #e0e0e0;
+    --switch-on-background: #d1fae5;
+    --switch-on-border: #a7f3d0;
+    --switch-off-thumb: #404757;
+    --switch-on-thumb: #047857;
+
+    /* Chart non-color properties for dark mode */
+    --chart-tooltip-padding-x: 8;
+    --chart-tooltip-padding-y: 8;
+    --chart-tooltip-font-size: 14px;
+    --chart-tooltip-border-radius: 4;
+}
+
+/* ── Tailwind Theme Mapping ──────────────────────────────────── */
+
+@theme inline {
+    /* Radii */
+    --radius-sm: calc(var(--radius) - 6px);
+    --radius-md: calc(var(--radius) - 2px);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) + 6px);
+
+    /* Fonts — Kaizen official (NVIDIA Sans for text/display, with fallback) */
+    --font-display: var(--font-sans);
+
+    /* Font sizes */
+    --text-3xl: 1.625rem;
+    --text-4xl: 1.875rem;
+
+    /* Semantic colors */
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-destructive: var(--destructive);
+    --color-destructive-foreground: var(--destructive-foreground);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
+
+    /* Sidebar colors */
+    --color-sidebar: var(--sidebar);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-ring: var(--sidebar-ring);
+
+    /* Switch colors */
+    --color-switch-off-background: var(--switch-off-background);
+    --color-switch-on-background: var(--switch-on-background);
+    --color-switch-on-border: var(--switch-on-border);
+    --color-switch-off-thumb: var(--switch-off-thumb);
+    --color-switch-on-thumb: var(--switch-on-thumb);
+
+    /* Title colors */
+    --color-title-primary: var(--title-primary);
+    --color-title-secondary: var(--title-secondary);
+    /* Text color tokens — use these for all body/label/input text */
+    --color-text-primary: var(--title-primary);
+    --color-text-secondary: var(--title-secondary);
+    --color-title-white: var(--white);
+    --color-title-pink: #327100;
+    --color-hover-pink: #3f8500;
+    --color-title-red: #e11d48;
+    --color-title-pq-pink: var(--kumo-green-600);
+
+    /* Surface colors */
+    --color-surface-primary: var(--surface-primary);
+    --color-surface-secondary: var(--surface-secondary);
+    --color-surface-brand-navigation-primary: var(
+        --surface-brand-navigation-primary
+    );
+    --color-surface-brand-navigation-secondary: var(
+        --surface-brand-navigation-secondary
+    );
+
+    /* Border semantic colors */
+    --color-border-primary: var(--border-primary);
+    --color-border-secondary: var(--border-secondary);
+    --color-border-input: var(--border-input);
+
+    /* Icon colors */
+    --color-icon-primary: var(--icon-primary);
+    --color-icon-secondary: var(--icon-secondary);
+
+    /* Brand base colors */
+    --color-white: var(--white);
+    --color-pink: var(--pink);
+    --color-second-pink: var(--second-pink);
+    --color-primary-dark: var(--primary-dark);
+    --color-secondary-light: var(--secondary-light);
+    --color-dark-grey: var(--dark-grey);
+    --color-light-grey: var(--light-grey);
+    --color-surface-grey: var(--surface-grey);
+    --color-dark-blue: var(--dark-blue);
+
+    /* NVIDIA brand green (rebrand) — enables bg-brand-green / border-brand-green etc. */
+    --color-brand-green: var(--brand-green);
+    --color-brand-green-hover: var(--brand-green-hover);
+    --color-brand-green-active: var(--brand-green-active);
+    --color-brand-green-subtle: var(--brand-green-subtle);
+
+    /* KUI neutral / interaction tokens — enables text-kui-fg-primary,
+       fill-kui-fg-on-brand, bg-kui-bg-hover/-pressed, border-kui-border-disabled, etc. */
+    --color-kui-fg-primary: var(--kui-fg-primary);
+    --color-kui-fg-on-brand: var(--kui-fg-on-brand);
+    --color-kui-fg-disabled: var(--kui-fg-disabled);
+    --color-kui-bg-hover: var(--kui-bg-hover);
+    --color-kui-bg-pressed: var(--kui-bg-pressed);
+    --color-kui-border-disabled: var(--kui-border-disabled);
+    --color-kui-border-base: var(--kui-border-base);
+    --color-kui-hover-border: var(--kui-hover-border);
+    --color-kui-border-interaction-base: var(--kui-border-interaction-base);
+    --color-kui-bg-disabled: var(--kui-bg-disabled);
+    --color-kui-border-disabled-strong: var(--kui-border-disabled-strong);
+    --color-kui-fg-base: var(--kui-fg-base);
+    --color-kui-danger: var(--kui-danger);
+    --color-kui-danger-subtle: var(--kui-danger-subtle);
+    --color-kui-success: var(--kui-success);
+
+    /* Kumo Pink scale */
+    --color-kumo-pink-50: var(--kumo-pink-50);
+    --color-kumo-pink-100: var(--kumo-pink-100);
+    --color-kumo-pink-200: var(--kumo-pink-200);
+    --color-kumo-pink-300: var(--kumo-pink-300);
+    --color-kumo-pink-400: var(--kumo-pink-400);
+    --color-kumo-pink-500: var(--kumo-pink-500);
+    --color-kumo-pink-600: var(--kumo-pink-600);
+    --color-kumo-pink-700: var(--kumo-pink-700);
+    --color-kumo-pink-800: var(--kumo-pink-800);
+    --color-kumo-pink-900: var(--kumo-pink-900);
+    --color-kumo-pink-950: var(--kumo-pink-950);
+
+    /* Kumo Grey scale */
+    --color-kumo-grey: var(--kumo-grey);
+    --color-kumo-grey-50: var(--kumo-grey-50);
+    --color-kumo-grey-100: var(--kumo-grey-100);
+    --color-kumo-grey-200: var(--kumo-grey-200);
+    --color-kumo-grey-300: var(--kumo-grey-300);
+    --color-kumo-grey-400: var(--kumo-grey-400);
+    --color-kumo-grey-500: var(--kumo-grey-500);
+    --color-kumo-grey-600: var(--kumo-grey-600);
+    --color-kumo-grey-700: var(--kumo-grey-700);
+    --color-kumo-grey-800: var(--kumo-grey-800);
+    --color-kumo-grey-900: var(--kumo-grey-900);
+    --color-kumo-grey-950: var(--kumo-grey-950);
+    --color-kumo-grey-1000: var(--kumo-grey-1000);
+
+    --color-mauve-500: #79697b;
+    --color-mauve-600: #594c5b;
+
+    --color-mist-600: #4b585b;
+}
+
+/* ── Base Layer ──────────────────────────────────────────────── */
+
+@layer base {
+    * {
+        @apply border-border outline-ring/50;
+    }
+    body {
+        @apply bg-background text-foreground;
+    }
+}
+
+/* ── Tailwind Preflight Resets ───────────────────────────────── */
+
+*,
+::after,
+::before,
+::backdrop,
+::file-selector-button {
+    font-family: var(--font-sans);
+    box-sizing: border-box;
+}
+
+html,
+:host {
+    line-height: 1.5;
+    -webkit-text-size-adjust: 100%;
+    tab-size: 4;
+    font-family: --theme(
+        --default-font-family,
+        ui-sans-serif,
+        system-ui,
+        sans-serif,
+        "Apple Color Emoji",
+        "Segoe UI Emoji",
+        "Segoe UI Symbol",
+        "Noto Color Emoji"
+    );
+    font-feature-settings: --theme(--default-font-feature-settings, normal);
+    font-variation-settings: --theme(--default-font-variation-settings, normal);
+    -webkit-tap-highlight-color: transparent;
+}

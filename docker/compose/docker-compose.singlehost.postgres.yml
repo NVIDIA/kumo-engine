@@ -1,0 +1,72 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Bundled Postgres overlay for Kumo single-host deployments.
+#
+# Include this file when Kumo should manage a local Postgres instance. Omit it
+# for BYO/external Postgres after preflight stores the StateDB and Temporal
+# DSNs in mounted secrets.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "100m"
+    max-file: "5"
+
+x-postgres-dependency: &postgres-dependency
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  # One bundled Postgres instance backs the StateDB plus Temporal's default
+  # and visibility stores, each in its own database.
+  # Pin postgres_data to durable storage on the AMI (EBS), NOT the NVMe
+  # /mnt/localssd which is wiped on stop/start.
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    container_name: ${STACK:-kumo}-postgres
+    networks: [kumo]
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-kumo}
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set (see README)}"
+      POSTGRES_DB: ${KUMO_STATE_DB_NAME:-kumo}
+      TEMPORAL_DB_NAME: ${TEMPORAL_DB_NAME:-temporal}
+      TEMPORAL_VISIBILITY_DB_NAME: ${TEMPORAL_VISIBILITY_DB_NAME:-temporal_visibility}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Creates the separate Temporal database on first init.
+      - ./config/postgres-initdb:/docker-entrypoint-initdb.d:ro,z
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kumo} -d ${KUMO_STATE_DB_NAME:-kumo}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  kumo-rest:
+    <<: *postgres-dependency
+
+  temporal-schema:
+    <<: *postgres-dependency
+
+  kumo-rest-public:
+    <<: *postgres-dependency
+
+  kumo-worker-data:
+    <<: *postgres-dependency
+
+  kumo-worker-mlworkflow:
+    <<: *postgres-dependency
+
+  kumo-pool-controller:
+    <<: *postgres-dependency
+
+  kumo-pool-worker:
+    <<: *postgres-dependency
+
+volumes:
+  postgres_data:

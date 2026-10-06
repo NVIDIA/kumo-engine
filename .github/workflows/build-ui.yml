@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kumo UI Build Test
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches:
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  build:
+    name: Build Kumo UI
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check for lockfile-only changes
+        id: lockfile-only
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        with:
+          files: |
+            3rdparty/*.lock
+
+      - name: Clone Kumo repository
+        if: steps.lockfile-only.outputs.only_changed != 'true'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          repository: kumo-ai/kumo
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: docker/kumo
+          ref: master
+
+      - name: Set up Node.js
+        if: steps.lockfile-only.outputs.only_changed != 'true'
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: '22'
+
+      - name: Install ui dependencies/node_modules
+        if: steps.lockfile-only.outputs.only_changed != 'true'
+        working-directory: ./ui
+        run: node --version && npm --version && rm -rf node_modules && npm run install:catalog && npm ci
+        env:
+          LEGAL_NOTICE_SOURCEMAP: '1'
+
+      - name: Build UI
+        if: steps.lockfile-only.outputs.only_changed != 'true'
+        working-directory: ./ui
+        run: npm run build
+
+      - name: Generate UI third-party notices
+        if: steps.lockfile-only.outputs.only_changed != 'true'
+        run: |
+          node ui/scripts/generate-third-party-notice.mjs --root ui --source-map ui/stacktracer/source_map --css-root ui/src --output "$RUNNER_TEMP/NPM-THIRD-PARTY.txt"
+          node ui/scripts/generate-third-party-notice.mjs --root packages/kumo-ui-catalog --source-map packages/kumo-ui-catalog/dist/index.es.js.map --css-root packages/kumo-ui-catalog/src --output "$RUNNER_TEMP/UI-CATALOG-NPM-THIRD-PARTY.txt"
+
+      - name: Test frontend gateway
+        if: steps.lockfile-only.outputs.only_changed != 'true'
+        run: bash test/gateway/run-frontend-gateway-smoke.sh

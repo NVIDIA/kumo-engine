@@ -1,0 +1,72 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools>=77", "setuptools-scm[toml]==8.3.1", "toml>=0.10.2", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+git_describe_command = "git describe --dirty --tags --long --match v[1-9]*"
+
+[project]
+name = "kumo"
+description = "AI on the Modern Data Stack"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0 AND BSD-3-Clause AND MIT"
+license-files = ["LICENSE", "KUMO-THIRD-PARTY.txt"]
+dynamic = [
+    "version",
+    "authors",
+    "keywords",
+    "classifiers",
+    "dependencies",
+    "optional-dependencies",
+]
+
+[tool.poetry]
+name = "kumo"
+version = "0.1.0"
+description = "AI on the Modern Data Stack"
+authors = []
+readme = "README.md"
+packages = [{include = "kumo"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+
+[tool.uv]
+# Delay newly uploaded artifacts long enough for compromised releases to be
+# detected or yanked before local and CI installs resolve them.
+exclude-newer = "7 days"
+# temporalio: dated override (not a blanket exemption) so 1.30.0
+# (published 2026-07-02) resolves inside the 7-day window — its Rust bridge
+# carries the quinn-proto RUSTSEC-2026-0185 and opentelemetry_sdk
+# GHSA-w9wp-h8wv-79jx fixes. Remove after 2026-07-09 (when 1.30.0 exits the
+# rolling window); left in place it becomes a cap that silently excludes
+# every temporalio release after 2026-07-03.
+# cryptography/pyOpenSSL: permit the 2026-07-31 CVE-2026-69247 fix and its
+# 2026-08-01 compatibility release. Remove both after 2026-08-09.
+exclude-newer-package = { cryptography = "2026-08-01", pyopenssl = "2026-08-02", temporalio = "2026-07-03" }
+
+[tool.vulture]
+# Include high-confidence findings such as unused imports while avoiding the
+# noisier 60% class, function, method, and variable findings for now.
+min_confidence = 80
+paths = ["."]
+exclude = [
+  ".agents/",
+  ".git/",
+  ".venv/",
+  "3rdparty/",
+  "kumo/pquery/grammar/",
+  # Imported DiskGraph files must remain identical to their source.
+  "packages/diskgraph/",
+  "*/conftest.py",
+  "*/examples/*",
+  "*/test/*",
+  "*/tests/*",
+  "*/test_*.py",
+  "*_test.py",
+]

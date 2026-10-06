@@ -1,0 +1,19 @@
+{
+    "mcpServers": {
+        "figma": {
+            "command": "npx",
+            "args": ["-y", "@anthropic-ai/figma-mcp-server@latest"],
+            "env": {
+                "FIGMA_ACCESS_TOKEN": "<PASTE_YOUR_TOKEN_HERE>"
+            }
+        },
+        "chrome-devtools": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "chrome-devtools-mcp@latest",
+                "--no-usage-statistics"
+            ]
+        }
+    }
+}

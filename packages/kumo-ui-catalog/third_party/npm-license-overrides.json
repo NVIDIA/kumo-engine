@@ -1,0 +1,57 @@
+{
+    "packages": {
+        "@radix-ui/number@1.1.1": "radix",
+        "@radix-ui/react-compose-refs@1.1.2": "radix",
+        "@radix-ui/react-context@1.1.2": "radix",
+        "@radix-ui/react-direction@1.1.1": "radix",
+        "@radix-ui/react-id@1.1.1": "radix",
+        "@radix-ui/react-use-callback-ref@1.1.1": "radix",
+        "@radix-ui/react-use-escape-keydown@1.1.1": "radix",
+        "@radix-ui/react-use-layout-effect@1.1.1": "radix",
+        "@radix-ui/react-use-previous@1.1.1": "radix",
+        "@radix-ui/react-use-size@1.1.1": "radix",
+        "format@0.2.2": "format",
+        "heap@0.2.5": "heap",
+        "pathfinding@0.4.18": "pathfinding",
+        "react-remove-scroll-bar@2.3.8": "react-remove-scroll",
+        "size-sensor@1.0.3": "size-sensor",
+        "toggle-selection@1.0.6": "toggle-selection"
+    },
+    "sources": {
+        "format": {
+            "license": "MIT",
+            "path": "third_party/npm-licenses/format-0.2.2.LICENSE",
+            "sha256": "6bccf1ad4d42afdd818753b78e37c19922fbc96fc45c4a984077b3e0529fa7c9"
+        },
+        "heap": {
+            "license": "PSF",
+            "path": "third_party/npm-licenses/heap-0.2.5.LICENSE",
+            "sha256": "584c6f7613d0f6c38fa2a5fa36dd3ee4140afc2c4581f647a5ac3f2f5878bbb9"
+        },
+        "pathfinding": {
+            "license": "MIT",
+            "path": "third_party/npm-licenses/pathfinding-0.4.18.LICENSE",
+            "sha256": "c35bff518c1e8a7934a0d6c112c2a93098d1fce434d0e74c197c5e3515e774e0"
+        },
+        "radix": {
+            "license": "MIT",
+            "path": "node_modules/@radix-ui/primitive/LICENSE",
+            "sha256": "74144f6a3a6cb5150f30b4c09011121201349ea0b2d2a0ec3f0bad1399c0e559"
+        },
+        "react-remove-scroll": {
+            "license": "MIT",
+            "path": "node_modules/react-remove-scroll/LICENSE",
+            "sha256": "07dfb46d2e36d9987c2ed339eb9be60c16819f90d467ccb6777a88c87f23a317"
+        },
+        "size-sensor": {
+            "license": "ISC",
+            "path": "third_party/npm-licenses/size-sensor-1.0.3.LICENSE",
+            "sha256": "9684d60960ff5abe3136b897f136fe03c23447536acce852186bb51f9b2d9c31"
+        },
+        "toggle-selection": {
+            "license": "MIT",
+            "path": "third_party/npm-licenses/toggle-selection-1.0.6.LICENSE",
+            "sha256": "d8934b6b93cb88b4b100dab78994c39c0dc23013ad46c356ee8d7f697d68724c"
+        }
+    }
+}

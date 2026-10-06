@@ -1,0 +1,41 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- if .Values.kumoTemporal.networkPolicy.enabled }}
+{{- $meshLabels := .Values.kumoTemporal.security.transport.meshNamespaceLabels | default dict -}}
+{{- $ambient := and .Values.kumoTemporal.security.transport.encryptionRequired (eq (toString (get $meshLabels "istio.io/dataplane-mode")) "ambient") -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kumo-temporal-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kumo-temporal.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: temporal
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    # Temporal server components, schema hooks, and `helm test`.
+    - from:
+        - podSelector: {}
+    # Kumo clients in explicitly enrolled tenant namespaces.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.kumoTemporal.networkPolicy.clientNamespaceLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 7233
+    {{- if $ambient }}
+    # Ambient mesh delivers mTLS through ztunnel's HBONE listener.
+    - ports:
+        - protocol: TCP
+          port: 15008
+    {{- end }}
+{{- end }}

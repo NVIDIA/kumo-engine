@@ -1,0 +1,71 @@
+{
+  "total_rows": 50000000,
+  "seed": 2025,
+  "batch_size": 200000,
+  "row_group_size": 1000000,
+  "tables": [
+    {
+      "name": "users",
+      "row_percent": 4,
+      "shards": 8,
+      "columns": [
+        { "name": "user_id", "dtype": "int64", "primary_key": true },
+        { "name": "region", "dtype": "string", "gen": { "type": "categorical", "values": ["us", "eu", "apac", "latam"], "weights": [0.4, 0.3, 0.2, 0.1] } },
+        { "name": "signup_ts", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1577836800000, "step_ms": 60000 } },
+        { "name": "activity_score", "dtype": "float32", "gen": { "type": "uniform_float", "min": 0.0, "max": 1.0 } }
+      ]
+    },
+    {
+      "name": "posts",
+      "row_percent": 16,
+      "shards": 16,
+      "columns": [
+        { "name": "post_id", "dtype": "int64", "primary_key": true },
+        { "name": "author_id", "dtype": "int64" },
+        { "name": "created_ts", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1577836800000, "step_ms": 10000 } },
+        { "name": "category", "dtype": "string", "gen": { "type": "categorical", "values": ["news", "memes", "tech", "sports", "music"] } }
+      ]
+    },
+    {
+      "name": "follows",
+      "row_percent": 30,
+      "shards": 32,
+      "columns": [
+        { "name": "follower_id", "dtype": "int64" },
+        { "name": "followee_id", "dtype": "int64" },
+        { "name": "followed_ts", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1577836800000, "step_ms": 3000 } }
+      ]
+    },
+    {
+      "name": "likes",
+      "row_percent": 40,
+      "shards": 32,
+      "columns": [
+        { "name": "user_id", "dtype": "int64" },
+        { "name": "post_id", "dtype": "int64" },
+        { "name": "liked_ts", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1577836800000, "step_ms": 1500 } },
+        { "name": "engagement_score", "dtype": "float32", "gen": { "type": "uniform_float", "min": 0.1, "max": 5.0 } }
+      ]
+    },
+    {
+      "name": "comments",
+      "row_percent": 10,
+      "shards": 16,
+      "columns": [
+        { "name": "user_id", "dtype": "int64" },
+        { "name": "post_id", "dtype": "int64" },
+        { "name": "comment_ts", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1577836800000, "step_ms": 6000 } },
+        { "name": "sentiment_score", "dtype": "float32", "gen": { "type": "uniform_float", "min": 0.0, "max": 1.0 } }
+      ]
+    }
+  ],
+  "relationships": [
+    { "src_table": "posts", "src_column": "author_id", "dst_table": "users", "dst_column": "user_id", "distribution": { "type": "hotspot", "hot_fraction": 0.1, "hot_share": 0.8 } },
+    { "src_table": "follows", "src_column": "follower_id", "dst_table": "users", "dst_column": "user_id", "distribution": { "type": "uniform" } },
+    { "src_table": "follows", "src_column": "followee_id", "dst_table": "users", "dst_column": "user_id", "distribution": { "type": "hotspot", "hot_fraction": 0.05, "hot_share": 0.7 } },
+    { "src_table": "likes", "src_column": "user_id", "dst_table": "users", "dst_column": "user_id", "distribution": { "type": "uniform" } },
+    { "src_table": "likes", "src_column": "post_id", "dst_table": "posts", "dst_column": "post_id", "distribution": { "type": "hotspot", "hot_fraction": 0.1, "hot_share": 0.8 } },
+    { "src_table": "comments", "src_column": "user_id", "dst_table": "users", "dst_column": "user_id", "distribution": { "type": "uniform" } },
+    { "src_table": "comments", "src_column": "post_id", "dst_table": "posts", "dst_column": "post_id", "distribution": { "type": "hotspot", "hot_fraction": 0.1, "hot_share": 0.75 } }
+  ]
+}

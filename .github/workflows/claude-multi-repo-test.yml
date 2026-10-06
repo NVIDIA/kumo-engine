@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Claude Multi-Repo Test
+
+"on":
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref (branch, tag, or SHA) to test"
+        required: true
+        default: "master"
+      event_name:
+        description: "GitHub event name (issues, issue_comment, pull_request_review_comment, pull_request_review, repository_dispatch)"
+        required: true
+        default: "issues"
+      event_json:
+        description: "Raw event JSON to feed the detector"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  test-detect-multi-repo:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout ref
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+
+      - name: Run detector with provided event JSON
+        env:
+          EVENT_NAME: ${{ inputs.event_name }}
+        run: |
+          set -euo pipefail
+          EVENT_PATH="$RUNNER_TEMP/claude-event.json"
+          echo '${{ inputs.event_json }}' > "$EVENT_PATH"
+          GITHUB_EVENT_PATH="$EVENT_PATH" \
+          GITHUB_OUTPUT="$RUNNER_TEMP/claude-output" \
+          bash .github/scripts/check-multi-repo.sh
+          echo "---- Detector outputs ----"
+          cat "$RUNNER_TEMP/claude-output"

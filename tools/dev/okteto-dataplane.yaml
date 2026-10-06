@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+dev:
+  databackend:
+    # command: ['python3', '-m', 'debugpy', '--listen', '5678' ,'/opt/app/temporalio_commons/worker_main.py']
+    command: ['python3', '/opt/app/temporalio_commons/worker_main.py']
+    environment:
+      - PYTHONPATH=/opt/app:/home/kumouser/.local/lib/python3.10/site-packages
+    sync:
+      - ../../temporalio_commons:/opt/app/temporalio_commons
+      - ../..:/opt/app/src
+    forward:
+      - 5678:5678
+    persistentVolume:
+      enabled: true
+      storageClass: gp3
+      size: 30Gi
+    serviceAccount: kumo-temporal
+    image: 926922431314.dkr.ecr.us-west-2.amazonaws.com/kumo/kumo-temporalworker:latest
+    resources:
+      limits:
+        cpu: 8
+        memory: 48Gi
+      requests:
+        cpu: 4
+        memory: 16Gi
+
+  mlworkflow:
+    # command: ['python3', '-m', 'debugpy', '--listen', '5678' ,'/opt/app/temporalio_commons/worker_main.py']
+    command: ['python3', '/opt/app/temporalio_commons/worker_main.py']
+    environment:
+      - PYTHONPATH=/opt/app:/home/kumouser/.local/lib/python3.10/site-packages
+    sync:
+      - ../../temporalio_commons:/opt/app/temporalio_commons
+      - ../..:/opt/app/src
+    forward:
+      - 5678:5678
+    persistentVolume:
+      enabled: true
+      storageClass: gp3
+      size: 30Gi
+    serviceAccount: kumo-temporal
+    image: 926922431314.dkr.ecr.us-west-2.amazonaws.com/kumo/kumo-temporalworker:latest
+    resources:
+      limits:
+        cpu: 8
+        memory: 48Gi
+      requests:
+        cpu: 4
+        memory: 16Gi
+
+  trainer:
+    command: ['bash']
+    environment:
+      - PYTHONPATH=/opt/app:/home/kumouser/.local/lib/python3.10/site-packages
+    sync:
+      - ../../temporalio_commons:/opt/app/temporalio_commons
+      - ../..:/opt/app/src
+    forward:
+      - 5678:5678
+    persistentVolume:
+      enabled: true
+      storageClass: gp3
+      size: 30Gi
+    serviceAccount: kumo-temporal
+    image: 926922431314.dkr.ecr.us-west-2.amazonaws.com/kumo/kumo:latest
+    resources:
+      limits:
+        cpu: 8
+        memory: 48Gi
+        nvidia.com/gpu: '1'
+      requests:
+        cpu: 4
+        memory: 16Gi
+        nvidia.com/gpu: '1'

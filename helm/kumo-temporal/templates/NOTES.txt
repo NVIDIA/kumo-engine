@@ -1,0 +1,17 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+Temporal frontend:
+  temporal-frontend.{{ .Release.Namespace }}.svc:7233
+
+This chart does not create PostgreSQL databases or credentials. It consumes the
+pre-existing Secret configured on both SQL stores and runs the stock Temporal
+schema Job before the server upgrade.
+
+{{- if .Values.kumoTemporal.networkPolicy.enabled }}
+
+Label each Kumo tenant namespace so its workloads may reach the frontend:
+  kubectl label namespace <kumo-namespace> kumo.ai/temporal-client=true
+{{- end }}

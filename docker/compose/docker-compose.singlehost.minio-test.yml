@@ -1,0 +1,176 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Development-only MinIO fixture for exercising Kumo's S3-compatible storage
+# path. Credentials are deliberately fake, live in files under
+# config/minio-test/secrets, and never appear in rendered Compose output.
+
+services:
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: ${STACK:-kumo}-minio
+    networks: [kumo]
+    restart: unless-stopped
+    command: server /data --console-address :9001
+    ports:
+      - "${MINIO_TEST_API_PORT:-19010}:9000"
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/minio_root_user
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
+    secrets:
+      - minio_root_user
+      - minio_root_password
+    volumes:
+      - minio_data:/data
+
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z
+    container_name: ${STACK:-kumo}-minio-init
+    networks: [kumo]
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        root_user="$$(cat /run/secrets/minio_root_user)"
+        root_password="$$(cat /run/secrets/minio_root_password)"
+        access_key="$$(cat /run/secrets/minio_kumo_access_key)"
+        secret_key="$$(cat /run/secrets/minio_kumo_secret_key)"
+        readonly_access_key="$$(cat /run/secrets/minio_readonly_access_key)"
+        readonly_secret_key="$$(cat /run/secrets/minio_readonly_secret_key)"
+        connector_access_key="$$(cat /run/secrets/minio_connector_access_key)"
+        connector_secret_key="$$(cat /run/secrets/minio_connector_secret_key)"
+        until mc alias set fixture "$${MINIO_TEST_INTERNAL_ENDPOINT:-http://minio:9000}" "$$root_user" "$$root_password"; do sleep 1; done
+        mc mb --ignore-existing fixture/kumo-dataplane fixture/kumo-artifacts fixture/kumo-connector fixture/kumo-dev-dataplane-bucket
+        mc admin policy create fixture kumo-storage /fixture/policy.json >/dev/null
+        if ! mc admin user info fixture "$$access_key" >/dev/null 2>&1; then
+          mc admin user add fixture "$$access_key" "$$secret_key" >/dev/null
+        fi
+        mc admin policy attach fixture kumo-storage --user "$$access_key" >/dev/null
+        mc admin policy create fixture kumo-readonly /fixture/readonly-policy.json >/dev/null
+        if ! mc admin user info fixture "$$readonly_access_key" >/dev/null 2>&1; then
+          mc admin user add fixture "$$readonly_access_key" "$$readonly_secret_key" >/dev/null
+        fi
+        mc admin policy attach fixture kumo-readonly --user "$$readonly_access_key" >/dev/null
+        mc admin policy create fixture kumo-connector /fixture/connector-policy.json >/dev/null
+        if ! mc admin user info fixture "$$connector_access_key" >/dev/null 2>&1; then
+          mc admin user add fixture "$$connector_access_key" "$$connector_secret_key" >/dev/null
+        fi
+        mc admin policy attach fixture kumo-connector --user "$$connector_access_key" >/dev/null
+        umask 077
+        printf '{"aws_access_key_id":"%s","aws_secret_access_key":"%s"}\n' \
+          "$$access_key" "$$secret_key" > /opt/kumo/secrets/MINIO_KUMO_CREDENTIALS
+        chown 999:999 /opt/kumo/secrets/MINIO_KUMO_CREDENTIALS
+    secrets:
+      - minio_root_user
+      - minio_root_password
+      - minio_kumo_access_key
+      - minio_kumo_secret_key
+      - minio_readonly_access_key
+      - minio_readonly_secret_key
+      - minio_connector_access_key
+      - minio_connector_secret_key
+    environment:
+      MINIO_TEST_INTERNAL_ENDPOINT: ${MINIO_TEST_INTERNAL_ENDPOINT:-http://minio:9000}
+    volumes:
+      - ./config/minio-test/policy.json:/fixture/policy.json:ro
+      - ./config/minio-test/readonly-policy.json:/fixture/readonly-policy.json:ro
+      - ./config/minio-test/connector-policy.json:/fixture/connector-policy.json:ro
+      - ${KUMO_SECRETS_DIR:-kumo_secrets}:/opt/kumo/secrets
+
+  kumo-bootstrap:
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+
+  # Cold imports on a development host can consume most of the production
+  # 15-second probe budget. Keep the same health commands but allow the pinned
+  # compatibility fixture enough time to finish them.
+  kumo-worker-data:
+    healthcheck:
+      timeout: 60s
+
+  kumo-worker-mlworkflow:
+    healthcheck:
+      timeout: 60s
+
+  kumo-pool-controller:
+    healthcheck:
+      timeout: 60s
+
+  kumo-pool-worker:
+    healthcheck:
+      timeout: 60s
+
+  kumo-rest:
+    environment:
+      KUMO_HOME: /tmp/kumo-runtime
+
+  kumo-rest-public:
+    environment:
+      KUMO_HOME: /tmp/kumo-runtime
+
+  nginx:
+    # The generated HTTP-only config listens on 80; publish a collision-safe
+    # development host port without changing the base stack's production port.
+    ports: !override
+      - "${MINIO_TEST_NGINX_PORT:-18888}:80"
+
+  minio-compose-smoke:
+    profiles: ["smoke"]
+    image: ${KUMO_CPU_IMAGE:-${KUMO_IMAGE_REGISTRY:-kumo}/kumo-backend-cpu:${KUMO_IMAGE_TAG}}
+    container_name: ${STACK:-kumo}-minio-compose-smoke
+    networks: [kumo]
+    restart: "no"
+    working_dir: /opt/smoke
+    environment:
+      KUMO_COMPOSE_SMOKE_BASE_URL: http://nginx/api
+    depends_on:
+      kumo-worker-data:
+        condition: service_healthy
+      kumo-worker-mlworkflow:
+        condition: service_healthy
+      kumo-pool-controller:
+        condition: service_healthy
+      kumo-pool-worker:
+        condition: service_healthy
+      kumo-rest:
+        condition: service_healthy
+      kumo-rest-public:
+        condition: service_healthy
+      nginx:
+        condition: service_started
+    volumes:
+      - ../../test:/opt/smoke/test:ro
+      - ${KUMO_S3_CA_DIR:-kumo_s3_ca}:/etc/kumo/minio-ca:ro
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        if [ -s /etc/kumo/minio-ca/ca.crt ]; then
+          export SSL_CERT_FILE=/etc/kumo/minio-ca/ca.crt
+        fi
+        exec python3 /opt/smoke/test/rest/integ/minio_compose_smoke.py
+
+secrets:
+  minio_root_user:
+    file: ./config/minio-test/secrets/root-user
+  minio_root_password:
+    file: ./config/minio-test/secrets/root-password
+  minio_kumo_access_key:
+    file: ./config/minio-test/secrets/kumo-access-key
+  minio_kumo_secret_key:
+    file: ./config/minio-test/secrets/kumo-secret-key
+  minio_readonly_access_key:
+    file: ./config/minio-test/secrets/readonly-access-key
+  minio_readonly_secret_key:
+    file: ./config/minio-test/secrets/readonly-secret-key
+  minio_connector_access_key:
+    file: ./config/minio-test/secrets/connector-access-key
+  minio_connector_secret_key:
+    file: ./config/minio-test/secrets/connector-secret-key
+
+volumes:
+  minio_data:

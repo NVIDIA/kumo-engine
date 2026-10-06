@@ -1,0 +1,36 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- if eq .Values.kumoTemporal.platform "aws" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kumo-temporal-aws-rds-ca
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kumo-temporal.labels" . | nindent 4 }}
+data:
+  aws-rds-roots.pem: |-
+    {{- .Files.Get "files/aws-rds-roots.pem" | nindent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kumo-temporal-aws-rds-ca-schema
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kumo-temporal.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    # It must remain until the later weight-0 schema Job completes. Helm does
+    # not support deleting one successful hook after a different hook finishes;
+    # the next install/upgrade replaces it, and a dedicated namespace removal
+    # removes it with the rest of Temporal.
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  aws-rds-roots.pem: |-
+    {{- .Files.Get "files/aws-rds-roots.pem" | nindent 4 }}
+{{- end }}

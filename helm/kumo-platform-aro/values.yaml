@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+storageClass:
+  create: true
+  name: managed-csi-xfs
+  skuName: Premium_LRS
+  fsType: xfs
+
+machineAutoscalers:
+  enabled: true
+  minReplicas: 0
+  maxReplicas: 2
+  cacheMachineSets:
+    - REPLACE_CACHE_MACHINESET
+  ephemeralMachineSet: REPLACE_EPHEMERAL_MACHINESET
+
+operators:
+  # existing adopts shared NFD/GPU Operators; dedicated owns their namespaces,
+  # subscriptions, NFD instance, and ClusterPolicy with this Helm release.
+  mode: existing
+  nfdChannel: stable
+  gpuChannel: v26.3
+  sourceNamespace: openshift-marketplace
+  nfdSource: redhat-operators
+  gpuSource: certified-operators
+
+nfd:
+  # Enable only after the installer observes the NodeFeatureDiscovery CRD.
+  create: false
+  name: nfd-instance
+  operandImage: registry.redhat.io/openshift4/ose-node-feature-discovery-rhel9:v4.20
+  imagePullPolicy: Always
+
+clusterPolicy:
+  # Enable only after the installer observes the ClusterPolicy and NFD CRDs.
+  create: false
+  name: gpu-cluster-policy
+  dcgmExporterEnabled: false

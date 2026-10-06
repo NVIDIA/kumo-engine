@@ -1,0 +1,29 @@
+{
+  "instruction_scopes": [
+    ".",
+    "ui",
+    "io_utils/fsutil",
+    "kumo/pquery"
+  ],
+  "skill_adapter": ".claude/commands",
+  "skill_source": ".agents/skills",
+  "instruction_aliases": [
+    "."
+  ],
+  "skill_adapter_kind": "commands",
+  "imported_instruction_scopes": [
+    "packages/diskgraph/diskgraph-train-table",
+    "packages/kumo-pql",
+    "packages/kumo-ui-catalog"
+  ],
+  "skill_commands": [
+    "build-ui",
+    "check-logs",
+    "code-ui",
+    "debug-issue",
+    "investigate-training-stage",
+    "preflight",
+    "review-ml",
+    "review-ui"
+  ]
+}

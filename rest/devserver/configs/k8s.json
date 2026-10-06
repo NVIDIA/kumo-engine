@@ -1,0 +1,25 @@
+{
+  "data_compute": {
+    "type": "DISKGRAPH",
+    "data_root": "/mnt/localssd",
+    "pool_strategy": "k8s",
+    "pool_min_ssd_idle_secs": 10,
+    "pool_max_ssd_idle_secs": 60,
+    "pool_max_dataplane_retention_secs": 120,
+    "k8s_pool": {
+      "pool_diskgraph_node_types": {
+        "g5.8xlarge": { "ssd_gib": 800 },
+        "g6e.16xlarge": { "ssd_gib": 1750 }
+      }
+    }
+  },
+  "orchestration": {
+    "type": "cloud"
+  },
+  "secrets": {
+    "backend": "aws_sm"
+  },
+  "logging": {
+    "backend": "stdout"
+  }
+}

@@ -1,0 +1,544 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Direct Commit Monitor
+
+# This workflow monitors for direct commits to main/master branches and alerts the pod leads team.
+# It automatically skips notifications for bots and configurable users to avoid spam.
+# Enhanced with improved squash merge detection to reduce false positives.
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+    inputs:
+      message:
+        description: "Custom message (optional - auto-generated for direct commits)"
+        required: false
+        type: string
+      dry_run:
+        description: "Use test webhook for dry run"
+        required: false
+        type: boolean
+        default: true
+      simulate_direct_commit:
+        description: "Simulate a direct commit alert for testing"
+        required: false
+        type: boolean
+        default: true
+      skip_users:
+        description: "Comma-separated list of GitHub users to skip (e.g., dependabot,renovate)"
+        required: false
+        type: string
+        default: "dependabot"
+      skip_pod_leads:
+        description: "Skip tagging pod leads (useful for testing without notifications)"
+        required: false
+        type: boolean
+        default: true
+      pod_leads:
+        description: 'Slack user IDs to notify (space-separated, e.g., "<@U123> <@U456>")'
+        required: false
+        type: string
+        # - list below - @devops-oncall, @alex-porter, @dong-wang, @virajith, @hawkeye, @mohinish
+        # append to default -> '<!subteam^S052ZM4S84F> <@U02V20BBA5R> <@U07DLUHDD0E> <@U02H08TMTJ5> <@U066221KK2T> <@U098KQCJYTV>'
+        default: "<@U098KQCJYTV>"
+      enabled:
+        description: "Enable/disable notifications (set to false to disable all alerts)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  notify-slack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 10  # Fetch more history for better merge detection
+
+      - name: Check if notifications are enabled
+        id: check_enabled
+        run: |
+          # For push events (automatic triggers), always enable notifications
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            # Skip for known bot accounts and bot patterns
+            actor="${{ github.actor }}"
+            if [[ "$actor" == "github-actions[bot]" ]] ||
+               [[ "$actor" == "dependabot[bot]" ]] ||
+               [[ "$actor" == "kumo-github-bot" ]] ||
+               [[ "$actor" == *"-bot" ]] ||
+               [[ "$actor" == *"[bot]" ]]; then
+              echo "🚫 Bot push detected by $actor - skipping notifications"
+              exit 0
+            fi
+            echo "enabled=true" >> $GITHUB_OUTPUT
+            echo "✅ Push event detected - notifications enabled automatically"
+          elif [[ "${{ inputs.enabled }}" == "true" ]]; then
+            echo "enabled=true" >> $GITHUB_OUTPUT
+            echo "✅ Manual run with notifications enabled"
+          else
+            echo "enabled=false" >> $GITHUB_OUTPUT
+            echo "🚫 Notifications disabled - skipping all alerts"
+            exit 0
+          fi
+
+      - name: Validate GitHub token
+        run: |
+          echo "🔑 Testing GitHub token..."
+          github_token="${{ secrets.KUMO_GITHUB_BOT_TOKEN }}"
+
+          if [[ -z "$github_token" ]]; then
+            echo "❌ KUMO_GITHUB_BOT_TOKEN not found"
+            exit 1
+          fi
+
+          response=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $github_token" \
+            "https://api.github.com/user")
+
+          if [[ $response == "200" ]]; then
+            echo "✅ Token is valid"
+          else
+            echo "❌ Token failed (HTTP $response)"
+            exit 1
+          fi
+
+      - name: Enhanced merge detection with squash merge support
+        id: check_direct_commit
+        if: steps.check_enabled.outputs.enabled == 'true'
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+          COMMIT_AUTHOR: ${{ github.event.head_commit.author.name }}
+          PUSHER: ${{ github.actor }}
+          COMMIT_AUTHOR_USERNAME: ${{ github.event.head_commit.author.username }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          # For manual runs, always proceed
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "direct_commit=true" >> $GITHUB_OUTPUT
+            echo "✅ Manual workflow run - proceeding"
+            exit 0
+          fi
+
+          # Get commit and event details - safely handle multi-line messages
+          commit_sha="$COMMIT_SHA"
+          commit_author="$COMMIT_AUTHOR"
+          pusher="$PUSHER"
+          commit_author_username="$COMMIT_AUTHOR_USERNAME"
+          ref_name="$REF_NAME"
+
+          # Get commit message using git to avoid GitHub context issues with special chars
+          echo "📝 Getting commit message using git log..."
+          commit_message=$(git log --format=%B -n 1 "$commit_sha" 2>/dev/null || echo "Unknown commit message")
+
+          # Write commit message to a temporary file to handle special characters safely
+          commit_msg_file="/tmp/commit_message_$$.txt"
+          printf '%s' "$commit_message" > "$commit_msg_file"
+
+          # Create safe versions for processing
+          commit_message_first_line=$(head -n1 "$commit_msg_file" 2>/dev/null || echo "")
+          commit_message_oneline=$(tr '\n\r' '  ' < "$commit_msg_file" | tr -s ' ' 2>/dev/null || echo "")
+
+          echo "🔍 Analyzing commit:"
+          echo "  SHA: $commit_sha"
+          echo "  First line: $(head -n1 "$commit_msg_file" | cut -c1-100)..."
+          echo "  Message length: $(wc -c < "$commit_msg_file") chars"
+          echo "  Author: $commit_author ($commit_author_username)"
+          echo "  Pusher: $pusher"
+          echo "  Branch: $ref_name"
+
+          # 1. Check for standard merge commit patterns in message
+          if grep -q '^Merge pull request' "$commit_msg_file" ||
+             grep -q '^Merge branch' "$commit_msg_file" ||
+             grep -q '^Merge remote-tracking branch' "$commit_msg_file"; then
+            echo "direct_commit=false" >> $GITHUB_OUTPUT
+            echo "⏭️ Skipping standard merge - commit message indicates merge: $(head -n1 "$commit_msg_file" | cut -c1-50)..."
+            rm -f "$commit_msg_file"
+            exit 0
+          fi
+
+          # 2. Check if author is GitHub or known merge accounts
+          if [[ "$commit_author" == "GitHub" ]] ||
+             [[ "$commit_author" == "github-merge-queue" ]] ||
+             [[ "$commit_author_username" == "web-flow" ]]; then
+            echo "direct_commit=false" >> $GITHUB_OUTPUT
+            echo "⏭️ Skipping automated merge by: $commit_author"
+            rm -f "$commit_msg_file"
+            exit 0
+          fi
+
+          # 3. Check if this is a merge commit (has multiple parents)
+          parents_count=$(git rev-list --count --parents $commit_sha | head -1 | awk '{print NF-1}')
+          if [[ $parents_count -gt 1 ]]; then
+            echo "direct_commit=false" >> $GITHUB_OUTPUT
+            echo "⏭️ Skipping merge commit - has $parents_count parents"
+            rm -f "$commit_msg_file"
+            exit 0
+          fi
+
+          echo "📊 Single parent commit detected - checking for squash merge indicators..."
+
+          # 4. Enhanced squash merge detection
+          squash_indicators=0
+
+          echo "🔍 Starting squash merge detection checks..."
+
+          # 4a. Check for PR number patterns in commit message
+          echo "📝 Checking for PR number pattern..."
+          echo "  First line: $(head -n1 "$commit_msg_file" | cut -c1-80)..."
+
+          # Look for PR number at the END of the first line (GitHub's squash format)
+          if [[ "$commit_message_first_line" =~ \(#[0-9]+\)$ ]]; then
+            echo "  ✅ Found PR number pattern at end of message (strong indicator)"
+            squash_indicators=$((squash_indicators + 2))  # Worth 2 points as it's very reliable
+            echo "  📊 Squash indicators count: $squash_indicators"
+          elif grep -q '#[0-9]\+' "$commit_msg_file"; then
+            echo "  ✅ Found PR/issue number in message (weak indicator)"
+            squash_indicators=$((squash_indicators + 1))
+            echo "  📊 Squash indicators count: $squash_indicators"
+          else
+            echo "  ❌ No PR number pattern found"
+          fi
+
+          # 4b. Check for "Co-authored-by" lines (common in squash merges)
+          echo "👥 Checking for Co-authored-by lines..."
+          if grep -q 'Co-authored-by:' "$commit_msg_file"; then
+            echo "  ✅ Found Co-authored-by line"
+            squash_indicators=$((squash_indicators + 1))
+            echo "  📊 Squash indicators count: $squash_indicators"
+          else
+            echo "  ❌ No Co-authored-by lines found"
+          fi
+
+          # 4c. Check if pusher differs from commit author (strong squash merge indicator)
+          echo "👤 Checking author/pusher mismatch..."
+          echo "  Author username: '$commit_author_username'"
+          echo "  Pusher: '$pusher'"
+          if [[ -n "$commit_author_username" && "$pusher" != "$commit_author_username" && "$commit_author_username" != "web-flow" ]]; then
+            echo "  ✅ Pusher ($pusher) differs from author ($commit_author_username)"
+            squash_indicators=$((squash_indicators + 2))  # Strong indicator, worth 2 points
+            echo "  📊 Squash indicators count: $squash_indicators"
+          else
+            echo "  ❌ Author and pusher match or author is web-flow"
+          fi
+
+          # 4d. Check commit timing patterns using GitHub API
+          echo "📡 Checking GitHub API for PR merge evidence..."
+
+          # Use custom GitHub token with better error handling
+          github_token="${{ secrets.KUMO_GITHUB_BOT_TOKEN }}"
+          echo "🔑 Token available: $(if [[ -n "$github_token" ]]; then echo "Yes (${#github_token} chars)"; else echo "No"; fi)"
+
+          if [[ -z "$github_token" ]]; then
+            echo "  ⚠️ No GitHub token available - skipping API check"
+            echo "  💡 Consider adding KUMO_GITHUB_BOT_TOKEN secret for better detection"
+          else
+            echo "🌐 Making API call to GitHub events endpoint..."
+            # Make API call with proper error handling
+            api_response=$(curl -s -w "\n%{http_code}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Authorization: Bearer $github_token" \
+              "https://api.github.com/repos/${{ github.repository }}/events" 2>/dev/null)
+
+            # Extract HTTP status code
+            http_code=$(echo "$api_response" | tail -n1)
+            api_body=$(echo "$api_response" | head -n -1)
+
+            echo "📈 API Response - HTTP Code: $http_code"
+            echo "📊 API Response Body Length: ${#api_body} characters"
+
+            if [[ $http_code -ge 200 && $http_code -lt 300 && -n "$api_body" ]]; then
+              echo "  ✅ GitHub API call successful"
+              echo "🔎 Searching for recent PR merge events..."
+
+              # Check if there was a recent PR merge event within the last few events
+              recent_pr_event=$(echo "$api_body" | jq -r --arg sha "$commit_sha" '
+                .[]? | select(.type == "PullRequestEvent" and .payload.action == "closed" and .payload.pull_request.merged == true) |
+                select(.payload.pull_request.merge_commit_sha == $sha or
+                       (.created_at | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime) > (now - 300)) |
+                .payload.pull_request.number' 2>/dev/null | head -n1)
+
+              echo "🔍 jq processing result: '$recent_pr_event'"
+
+              if [[ -n "$recent_pr_event" && "$recent_pr_event" != "null" && "$recent_pr_event" != "" ]]; then
+                echo "  ✅ Found recent PR merge event (#$recent_pr_event) matching this commit"
+                squash_indicators=$((squash_indicators + 2))  # Strong indicator
+                echo "  📊 Squash indicators count: $squash_indicators"
+              else
+                echo "  ❌ No recent PR merge events found in API response"
+              fi
+            else
+              echo "  ⚠️ GitHub API call failed (HTTP $http_code) - continuing without API check"
+              if [[ $http_code == "401" ]]; then
+                echo "  💡 Token may need 'repo' or 'public_repo' permissions"
+              elif [[ $http_code == "403" ]]; then
+                echo "  💡 Rate limit or insufficient permissions"
+              elif [[ $http_code == "404" ]]; then
+                echo "  💡 Repository not found or token lacks access"
+              fi
+              echo "  📄 First 200 chars of response: ${api_body:0:200}"
+            fi
+          fi
+
+          # REMOVED: Single commit check - this was causing false positives
+          # Direct commits are also single commits, so this indicator was unreliable
+
+          # 4f. Check if commit message contains proper conventional commit format - IMPROVED
+          echo "📜 Checking for conventional commit patterns..."
+
+          # More strict check: must have type(optional-scope): description format
+          if [[ "$commit_message_first_line" =~ ^[a-z]+(\([a-z0-9_-]+\))?:[[:space:]] ]]; then
+            echo "  ✅ Commit message follows proper conventional commit format"
+            squash_indicators=$((squash_indicators + 1))
+            echo "  📊 Squash indicators count: $squash_indicators"
+          else
+            echo "  ❌ Commit message doesn't follow conventional commit format"
+          fi
+
+          # 4g. Check for merge-like patterns that don't start with "Merge"
+          echo "🔗 Checking for merge-related keywords..."
+          if grep -qi 'merge\|pull request\|closes #\|fixes #\|resolves #' "$commit_msg_file" &&
+             ! grep -q '^Merge' "$commit_msg_file"; then
+            echo "  ✅ Found merge-related keywords without 'Merge' prefix"
+            squash_indicators=$((squash_indicators + 1))
+            echo "  📊 Squash indicators count: $squash_indicators"
+          else
+            echo "  ❌ No merge-related keywords found (or starts with 'Merge')"
+          fi
+
+          # 4h. Check for multiple commit summary in message body - FIXED
+          echo "🎯 Checking for commit list in message body..."
+          # Fixed: Properly capture grep output and handle potential newlines
+          commit_bullet_output=$(grep -c '^[*-]' "$commit_msg_file" 2>/dev/null || echo "0")
+          commit_bullet_count=$(echo "$commit_bullet_output" | tr -d '\n\r' | head -n1)
+          echo "  📄 Raw bullet count output: '$commit_bullet_output'"
+          echo "  🔢 Processed bullet count: '$commit_bullet_count'"
+
+          # Ensure we have a valid number
+          if [[ "$commit_bullet_count" =~ ^[0-9]+$ ]] && [[ $commit_bullet_count -ge 2 ]]; then
+            echo "  ✅ Found $commit_bullet_count bullet points (likely squashed commit summary)"
+            squash_indicators=$((squash_indicators + 2))  # Strong indicator
+            echo "  📊 Squash indicators count: $squash_indicators"
+          else
+            echo "  ❌ No commit bullet list found (count: $commit_bullet_count)"
+          fi
+
+          # 4i. Check message length - NEW (squash merges tend to be longer)
+          echo "📏 Checking commit message length..."
+          msg_length=$(wc -c < "$commit_msg_file")
+          if [[ $msg_length -gt 200 ]]; then
+            echo "  ✅ Long commit message ($msg_length chars) - possible squash merge"
+            squash_indicators=$((squash_indicators + 1))
+            echo "  📊 Squash indicators count: $squash_indicators"
+          else
+            echo "  ℹ️ Short commit message ($msg_length chars)"
+          fi
+
+          # Clean up temporary file
+          rm -f "$commit_msg_file"
+
+          echo "📈 Final squash merge indicators found: $squash_indicators"
+
+          # Decision logic: Lower threshold to 3+ indicators to catch more squash merges
+          if [[ $squash_indicators -ge 3 ]]; then
+            echo "direct_commit=false" >> $GITHUB_OUTPUT
+            echo "⏭️ Skipping likely squash merge (found $squash_indicators indicators)"
+            echo "  💡 Indicators help distinguish squash merges from direct commits"
+            exit 0
+          elif [[ $squash_indicators -ge 2 ]]; then
+            echo "direct_commit=false" >> $GITHUB_OUTPUT
+            echo "⚠️ Found $squash_indicators squash merge indicators, but below threshold (3)"
+            echo "⏭️ Skipping likely squash merge (found $squash_indicators indicators)"
+            echo "  💭 Consider this might be a squash merge if alert seems incorrect"
+            exit 0
+          else
+            echo "📊 No significant squash merge indicators found"
+          fi
+
+          # Final decision: treat as direct commit
+          echo "direct_commit=true" >> $GITHUB_OUTPUT
+          echo "🚨 Direct commit confirmed - insufficient evidence of squash merge"
+
+      - name: Check if user should be skipped
+        id: check_skip
+        if: steps.check_enabled.outputs.enabled == 'true' && steps.check_direct_commit.outputs.direct_commit == 'true'
+        run: |
+          actor="${{ github.actor }}"
+          skip_users="${{ inputs.skip_users }}"
+
+          # Convert skip_users to array
+          IFS=',' read -ra SKIP_ARRAY <<< "$skip_users"
+
+          # Check if actor contains 'bot' as substring
+          if [[ "$actor" == *"bot"* ]]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "reason=contains 'bot'" >> $GITHUB_OUTPUT
+            echo "🤖 Skipping notification - user '$actor' contains 'bot'"
+            exit 0
+          fi
+
+          # Check if actor is in skip list
+          for skip_user in "${SKIP_ARRAY[@]}"; do
+            skip_user=$(echo "$skip_user" | xargs)  # trim whitespace
+            if [[ "$actor" == "$skip_user" ]]; then
+              echo "skip=true" >> $GITHUB_OUTPUT
+              echo "reason=in skip list" >> $GITHUB_OUTPUT
+              echo "⏭️ Skipping notification - user '$actor' is in skip list"
+              exit 0
+            fi
+          done
+
+          echo "skip=false" >> $GITHUB_OUTPUT
+          echo "✅ User '$actor' will trigger notification"
+
+      - name: Determine webhook URL
+        id: webhook
+        if: steps.check_enabled.outputs.enabled == 'true' && steps.check_direct_commit.outputs.direct_commit == 'true' && steps.check_skip.outputs.skip == 'false'
+        run: |
+          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            echo "url=${{ secrets.ASK_DEVOPS_ONCALL_ALERT_TEST_SLACK_WEBHOOK_URL }}" >> $GITHUB_OUTPUT
+            echo "webhook_name=test" >> $GITHUB_OUTPUT
+          else
+            echo "url=${{ secrets.ASK_DEVOPS_SLACK_WEBHOOK_URL }}" >> $GITHUB_OUTPUT
+            echo "webhook_name=devops-oncall" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set severity emoji and color
+        id: severity
+        if: steps.check_enabled.outputs.enabled == 'true' && steps.check_direct_commit.outputs.direct_commit == 'true' && steps.check_skip.outputs.skip == 'false'
+        run: |
+          # Default to error severity
+          echo "emoji=❌" >> $GITHUB_OUTPUT
+          echo "color=#ff6b6b" >> $GITHUB_OUTPUT
+
+      - name: Build Slack message
+        id: message
+        if: steps.check_enabled.outputs.enabled == 'true' && steps.check_direct_commit.outputs.direct_commit == 'true' && steps.check_skip.outputs.skip == 'false'
+        run: |
+          # Use pod leads from input parameter, with fallback for push events
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            # For push events, use the default since no inputs are passed
+            input_pod_leads="<@U098KQCJYTV>"
+            echo "🚨 Push event - using default pod leads"
+          else
+            input_pod_leads="${{ inputs.pod_leads }}"
+            echo "📝 Manual/workflow call - using input pod leads"
+          fi
+
+          # For push events (real direct commits), always include pod leads regardless of skip_pod_leads setting
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            pod_leads="$input_pod_leads"
+            echo "🚨 Real direct commit detected - using pod leads: $pod_leads"
+          elif [[ "${{ inputs.skip_pod_leads }}" == "true" ]]; then
+            pod_leads=""
+            echo "⏭️ Skipping pod leads tagging for testing"
+          else
+            pod_leads="$input_pod_leads"
+            echo "✅ Using pod leads: $pod_leads"
+          fi
+
+          # Build message based on trigger type or simulation
+          if [[ "${{ github.event_name }}" == "push" || "${{ inputs.simulate_direct_commit }}" == "true" ]]; then
+            # Direct commit alert (real or simulated)
+            message="🚨 Direct commit to ${{ github.ref_name }} by ${{ github.actor }}"
+            message="$message\nCommit: \`${{ github.sha }}\`"
+            message="$message\nRepo: <${{ github.server_url }}/${{ github.repository }}|${{ github.repository }}>"
+            message="$message\nCommit: <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|View commit>"
+
+            # Always add pod leads for direct commits (unless empty)
+            if [[ -n "$pod_leads" ]]; then
+              message="$message\n\n$pod_leads"
+              echo "✅ Added pod leads to message: $pod_leads"
+            else
+              echo "⚠️ No pod leads to add"
+            fi
+
+            # Add test indicator only for simulated commits
+            if [[ "${{ inputs.simulate_direct_commit }}" == "true" ]]; then
+              if [[ -n "$pod_leads" ]]; then
+                message="$message\n\n*This is a test notification*"
+              else
+                message="$message\n\n*This is a test notification (pod leads not tagged)*"
+              fi
+            fi
+
+            color="#ff0000"
+          else
+            # Use provided message for custom notifications
+            message="${{ inputs.message }}"
+            if [[ -n "${{ inputs.message }}" && -n "$pod_leads" ]]; then
+              message="$message\n\n$pod_leads"
+            fi
+            color="${{ steps.severity.outputs.color }}"
+          fi
+
+          # Build the complete payload
+          cat << EOF > payload.json
+          {
+            "attachments": [
+              {
+                "color": "$color",
+                "text": "$message"
+              }
+            ]
+          }
+          EOF
+
+          echo "payload_file=payload.json" >> $GITHUB_OUTPUT
+
+      - name: Send Slack notification
+        if: steps.check_enabled.outputs.enabled == 'true' && steps.check_direct_commit.outputs.direct_commit == 'true' && steps.check_skip.outputs.skip == 'false'
+        run: |
+          if [[ -z "${{ steps.webhook.outputs.url }}" ]]; then
+            echo "❌ Error: Webhook URL not found for type '${{ steps.webhook.outputs.webhook_name }}'"
+            echo "Available webhook secrets should be:"
+            echo "  - ASK_DEVOPS_SLACK_WEBHOOK_URL"
+            echo "  - ASK_DEVOPS_ONCALL_ALERT_TEST_SLACK_WEBHOOK_URL"
+            exit 1
+          fi
+
+          if [[ "${{ inputs.simulate_direct_commit }}" == "true" ]]; then
+            echo "🧪 TESTING: Simulating direct commit alert..."
+          else
+            echo "📤 Sending notification via ${{ steps.webhook.outputs.webhook_name }} webhook..."
+          fi
+
+          response=$(curl -s -w "\n%{http_code}" -X POST \
+            -H 'Content-type: application/json' \
+            --data @${{ steps.message.outputs.payload_file }} \
+            "${{ steps.webhook.outputs.url }}")
+
+          http_code=$(echo "$response" | tail -n1)
+          response_body=$(echo "$response" | head -n -1)
+
+          if [[ $http_code -ge 200 && $http_code -lt 300 ]]; then
+            if [[ "${{ inputs.simulate_direct_commit }}" == "true" ]]; then
+              echo "🧪 Test direct commit alert sent successfully (HTTP $http_code)"
+            else
+              echo "✅ Slack notification sent successfully (HTTP $http_code)"
+            fi
+            if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+              echo "🧪 This was a dry run using the test webhook"
+            fi
+          else
+            echo "❌ Failed to send Slack notification (HTTP $http_code)"
+            echo "Response: $response_body"
+            exit 1
+          fi
+
+      - name: Debug payload (if needed)
+        if: failure() && steps.check_enabled.outputs.enabled == 'true' && steps.check_direct_commit.outputs.direct_commit == 'true' && steps.check_skip.outputs.skip == 'false'
+        run: |
+          echo "🐛 Debug information:"
+          echo "Webhook type: ${{ steps.webhook.outputs.webhook_name }}"
+          echo "Dry run: ${{ inputs.dry_run }}"
+          echo "Payload:"
+          cat ${{ steps.message.outputs.payload_file }} | jq .

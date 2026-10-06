@@ -1,0 +1,190 @@
+{{- if $.Values.server.enabled }}
+{{- $defaultStore := include "temporal.persistence.getStoreByType" (list $ "default") | fromYaml -}}
+{{- $visibilityStore := include "temporal.persistence.getStoreByType" (list $ "visibility") | fromYaml -}}
+{{- $secondaryVisibilityStore := include "temporal.persistence.getStoreByType" (list $ "secondaryVisibility") | fromYaml -}}
+{{- range $service := (list "frontend" "internal-frontend" "history" "matching" "worker") }}
+{{- $serviceValues := index $.Values.server $service }}
+{{- if $serviceValues.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "temporal.componentname" (list $ $service) }}
+  annotations:
+    {{- include "temporal.resourceAnnotations" (list $ $service "deployment") | nindent 4 }}
+  labels:
+    {{- include "temporal.resourceLabels" (list $ $service "deployment") | nindent 4 }}
+spec:
+  replicas: {{ default $.Values.server.replicaCount $serviceValues.replicaCount }}
+  {{- with (default $.Values.server.deploymentStrategy $serviceValues.deploymentStrategy) }}
+  strategy:
+  {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "temporal.name" $ }}
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+      app.kubernetes.io/component: {{ $service }}
+  {{- with (default $.Values.server.minReadySeconds $serviceValues.minReadySeconds) }}
+  minReadySeconds: {{ . }}
+  {{- end }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/server-configmap.yaml") $ | sha256sum }}
+        {{- if (dig "metrics" "annotations" "enabled" $.Values.server.metrics.annotations.enabled $serviceValues) }}
+        prometheus.io/job: {{ $.Chart.Name }}-{{ $service }}
+        prometheus.io/scrape: 'true'
+        prometheus.io/scheme: http
+        prometheus.io/port: '9090'
+        {{- end }}
+        {{- include "temporal.resourceAnnotations" (list $ $service "pod") | nindent 8 }}
+      labels:
+        {{- include "temporal.resourceLabels" (list $ $service "pod") | nindent 8 }}
+    spec:
+      {{ include "temporal.serviceAccount" $ }}
+      {{- with $.Values.server.securityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if $.Values.server.additionalInitContainers }}
+      initContainers:
+        {{- toYaml $.Values.server.additionalInitContainers | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ $.Chart.Name }}-{{ $service }}
+          image: "{{ $.Values.server.image.repository }}:{{ $.Values.server.image.tag }}"
+          imagePullPolicy: {{ $.Values.server.image.pullPolicy }}
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: SERVICES
+              value: {{ $service }}
+            - name: TEMPORAL_SERVICES
+              value: {{ $service }}
+            - name: TEMPORAL_SERVER_CONFIG_FILE_PATH
+              value: /etc/temporal/config/config_template.yaml
+            - name: TEMPORAL_DEFAULT_STORE_PASSWORD
+              {{- include "temporal.password-env" (list $ $defaultStore) | nindent 14 }}
+            - name: TEMPORAL_VISIBILITY_STORE_PASSWORD
+              {{- include "temporal.password-env" (list $ $visibilityStore) | nindent 14 }}
+          {{- if $secondaryVisibilityStore }}
+            - name: TEMPORAL_SECONDARY_VISIBILITY_STORE_PASSWORD
+              {{- include "temporal.password-env" (list $ $secondaryVisibilityStore) | nindent 14 }}
+          {{- end }}
+          {{- if (index $.Values.server "internal-frontend").enabled }}
+            - name: USE_INTERNAL_FRONTEND
+              value: "1"
+          {{- end }}
+          {{- if $.Values.server.versionCheckDisabled }}
+            - name: TEMPORAL_VERSION_CHECK_DISABLED
+              value: "1"
+          {{- end }}
+          {{- if or $.Values.server.additionalEnv $serviceValues.additionalEnv }}
+          {{- toYaml (default $.Values.server.additionalEnv $serviceValues.additionalEnv) | nindent 12 }}
+          {{- end }}
+          {{- if or $.Values.server.additionalEnvSecretName $.Values.server.additionalEnvConfigMapName }}
+          envFrom:
+          {{- if $.Values.server.additionalEnvSecretName }}
+            - secretRef:
+                name: {{ $.Values.server.additionalEnvSecretName }}
+          {{- end }}
+          {{- if $.Values.server.additionalEnvConfigMapName }}
+            - configMapRef:
+                name: {{ $.Values.server.additionalEnvConfigMapName }}
+          {{- end }}
+          {{- end }}
+          # For Istio service mesh - make sure ports are defined here and in the headless service, see:
+          # https://istio.io/latest/docs/ops/configuration/traffic-management/traffic-routing/#headless-services
+          ports:
+          {{- if ne $service "worker" }}
+            - name: rpc
+              containerPort: {{ $serviceValues.service.port }}
+              protocol: TCP
+          {{- end }}
+            - name: membership
+              containerPort: {{ $serviceValues.service.membershipPort }}
+              protocol: TCP
+          {{- if or (eq $service "frontend") (eq $service "internal-frontend") }}
+            - name: http
+              containerPort: {{ $serviceValues.service.httpPort }}
+              protocol: TCP
+          {{- end }}
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          {{- if ne $service "worker" }}
+          livenessProbe:
+            initialDelaySeconds: 150
+            tcpSocket:
+              port: rpc
+          {{- end }}
+          {{- with default $.Values.server.readinessProbe $serviceValues.readinessProbe }}
+          readinessProbe:
+          {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/temporal/config/config_template.yaml
+              subPath: config_template.yaml
+            - name: dynamic-config
+              mountPath: /etc/temporal/dynamic_config
+            {{- if $.Values.shims.dockerize }}
+            - name: shims
+              mountPath: /usr/local/bin/dockerize
+              subPath: dockerize
+            {{- end }}
+            {{- if $.Values.server.additionalVolumeMounts }}
+            {{- toYaml $.Values.server.additionalVolumeMounts | nindent 12}}
+            {{- end }}
+          resources:
+            {{- toYaml (default $.Values.server.resources $serviceValues.resources) | nindent 12 }}
+          {{- with $serviceValues.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+      {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        {{- if $.Values.shims.dockerize }}
+        - name: shims
+          configMap:
+            name: "{{ include "temporal.fullname" $ }}-shims"
+            defaultMode: 0555
+        {{- end }}
+        - name: config
+          configMap:
+            name: "{{ include "temporal.fullname" $ }}-config"
+        - name: dynamic-config
+          configMap:
+            name: "{{ include "temporal.fullname" $ }}-dynamic-config"
+            items:
+            - key: dynamic_config.yaml
+              path: dynamic_config.yaml
+        {{- if $.Values.server.additionalVolumes }}
+        {{- toYaml $.Values.server.additionalVolumes | nindent 8}}
+        {{- end }}
+      {{- with (default $.Values.server.nodeSelector $serviceValues.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- with (default $.Values.server.affinity $serviceValues.affinity) }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    {{- with (default $.Values.server.tolerations $serviceValues.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    {{- with $serviceValues.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+      terminationGracePeriodSeconds: {{ default $.Values.server.terminationGracePeriodSeconds $serviceValues.terminationGracePeriodSeconds }}
+---
+{{- end }}
+{{- end }}
+{{- end }}

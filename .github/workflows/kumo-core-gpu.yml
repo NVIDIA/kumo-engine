@@ -1,0 +1,129 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kumo Core GPU
+
+on:  # yamllint disable-line rule:truthy
+  pull_request:
+    types: [labeled, synchronize, reopened]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  gpu:
+    name: kumo-core-gpu
+    env:
+      FAISS_GPU_AMD64_RELEASE_ASSET_ID: '599288714'
+      FAISS_GPU_AMD64_RELEASE_ASSET: faiss_gpu-1.14.3+cu130sm120-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+      FAISS_GPU_AMD64_RELEASE_SHA256: ed9162596b6b1e9eeffc11675cd57eef622d891c27e8c02e2315930fee0f67aa
+    environment:
+      name: gha-kumo-workflow-tests
+      # This job uses environment-scoped OIDC; it does not deploy an application.
+      deployment: false
+    # The repository labeler owns the path-to-component mapping. Avoid a
+    # second, inevitably divergent list here, and never run fork code on the
+    # trusted CUDA runner.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(github.event.pull_request.labels.*.name, 'ml-algorithms'))
+    runs-on: [self-hosted, cuda]
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-west-2
+
+      - name: Set up Kumo with CUDA dependencies
+        uses: ./.github/actions/setup
+        with:
+          github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+          cuda-version: cu130
+
+      - name: Expose pip-installed CUDA runtime libraries
+        run: |
+          python - <<'PY' >> "$GITHUB_ENV"
+          import os
+          from pathlib import Path
+
+          import nvidia
+
+          library_dirs = sorted({
+              str(path)
+              for root in nvidia.__path__
+              for path in Path(root).glob('*/lib')
+              if path.is_dir()
+          })
+          if not library_dirs:
+              raise SystemExit('No pip-installed NVIDIA library directories found')
+          current = os.environ.get('LD_LIBRARY_PATH', '')
+          print(f"LD_LIBRARY_PATH={':'.join(library_dirs)}:{current}")
+          PY
+
+      - name: Download checksum-pinned CUDA Faiss wheel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 5 --retry-all-errors \
+            --header 'Accept: application/octet-stream' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            --output "3rdparty/kumo-wheels/$FAISS_GPU_AMD64_RELEASE_ASSET" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/assets/$FAISS_GPU_AMD64_RELEASE_ASSET_ID"
+          printf '%s  %s\n' \
+            "$FAISS_GPU_AMD64_RELEASE_SHA256" \
+            "3rdparty/kumo-wheels/$FAISS_GPU_AMD64_RELEASE_ASSET" \
+            | sha256sum --check -
+
+      - name: Install and smoke-test checksum-pinned CUDA Faiss wheel
+        run: |
+          set -euo pipefail
+          uv pip install --force-reinstall --no-deps \
+            "3rdparty/kumo-wheels/$FAISS_GPU_AMD64_RELEASE_ASSET"
+          python - <<'PY'
+          from importlib import metadata
+
+          import faiss
+          import numpy
+
+          assert metadata.version('faiss-gpu') == '1.14.3+cu130sm120'
+          resources = faiss.StandardGpuResources()
+          index = faiss.index_cpu_to_gpu(resources, 0, faiss.IndexFlatL2(1))
+          index.add(numpy.array([[0.0]], dtype='float32'))
+          assert index.ntotal == 1
+          _, neighbors = index.search(numpy.array([[0.0]], dtype='float32'), 1)
+          assert neighbors.tolist() == [[0]]
+          print('Checksum-pinned CUDA Faiss GPU search succeeded')
+          PY
+
+      - name: Show GPU
+        run: nvidia-smi
+
+      - name: Run CUDA-selected package suite
+        run: make test-kumo-core-gpu
+
+      - name: Upload coverage data
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: kumo-core-gpu-coverage
+          path: |
+            packages/kumo-core/.coverage*
+            packages/kumo-core/coverage.xml
+          if-no-files-found: ignore

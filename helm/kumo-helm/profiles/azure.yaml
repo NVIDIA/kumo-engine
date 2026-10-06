@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Azure/AKS platform overlay. Apply this file before tenant-specific values.
+
+image:
+  registry: nvcr.io
+  repoPath: 1000161941370113/kumo-3
+  pullSecretName: kumo-registry
+
+kumoConfig:
+  storage:
+    dataBucket: abfss://REPLACE_CONTAINER@REPLACE_ACCOUNT.dfs.core.windows.net/disk-graph
+    region: ""
+  diskgraph:
+    dataRoot: /mnt/localssd
+    storageClass: managed-csi-xfs
+    # Azure Disk provisions on demand but does not publish CSIStorageCapacity.
+    storageCapacityTracking: advisory
+
+serviceAccounts:
+  control:
+    podLabels:
+      azure.workload.identity/use: "true"
+  worker:
+    podLabels:
+      azure.workload.identity/use: "true"
+  controller:
+    podLabels:
+      azure.workload.identity/use: "true"
+
+
+temporal:
+  # Set this only for an external endpoint that requires client mTLS.
+  clientMtlsSecret: ""
+
+postgres:
+  authMode: azure_entra
+
+workloads:
+  rest:
+    extraEnv:
+      # Enables workload-token exchange after AKS injects the federated token.
+      KUMO_AZURE_WORKLOAD_EXCHANGE_ENABLED: "true"
+  databackend:
+    ingestScratch:
+      enabled: true
+      type: ephemeral
+      storageClass: managed-csi-xfs
+      size: 256Gi
+      fsGroup: 999
+  poolcontroller:
+    runtimeFsGroup: 999

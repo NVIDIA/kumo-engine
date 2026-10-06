@@ -1,0 +1,154 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: GCS Testing
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches:
+      - master
+    paths-ignore: ["ui/**", "tools/**"]
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+    inputs:
+      full_test:
+        description: "Run the full test suite"
+        type: boolean
+        default: true
+        required: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ startsWith(github.ref, 'refs/pull/') || github.run_number }}
+  # Only cancel intermediate builds if on a PR:
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_TEST_ROLE_ARN: arn:aws:iam::926922431314:role/gha-kumo-preprod-test-s3
+  GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+  GITHUB_REF: ${{secrets.GITHUB_REF}}
+  GITHUB_API_URL: ${{secrets.GITHUB_API_URL}}
+  GITHUB_REPOSITORY: ${{secrets.GITHUB_REPOSITORY}}
+  GITHUB_REPOSITORY_OWNER: ${{secrets.GITHUB_REPOSITORY_OWNER}}
+  GITHUB_RUN_ID: ${{secrets.GITHUB_RUN_ID}}
+
+jobs:
+  pytest-gcs:
+    environment:
+      name: gha-kumo-workflow-tests
+      # This job uses environment-scoped OIDC; it does not deploy an application.
+      deployment: false
+    name: gcs-e2e-tests
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      KUMO_RUN_GCP_TESTS: ${{ github.repository == 'kumo-ai/kumo' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '1' || '0' }}
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_TEST_SERVICE_ACCOUNT: ${{ vars.GCP_TEST_SERVICE_ACCOUNT }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        test_dir: [
+          test/rest/integ/test_gcs_e2e.py,
+          test/rest/integ/test_bigquery_diskgraph_e2e.py,
+          test/rest/integ/test_bigquery_ingestion_diskgraph_e2e.py,
+        ]
+
+    steps:
+      - name: Checkout repository and submodules
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 40
+
+      - name: Get GCS related changes
+        id: gcs-files-changed
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
+        with:
+          files: |
+            .github/actions/setup/action.yml
+            .github/workflows/testing_gcs.yml
+            kumo/connector/**
+            kumo/testing/gcs.py
+            io_utils/**
+            rest/**
+            setup.py
+            test/rest/integ/test_gcs_e2e.py
+            test/rest/integ/test_bigquery_diskgraph_e2e.py
+            test/rest/integ/test_bigquery_ingestion_diskgraph_e2e.py
+            test/rest/integ/test_cases/test_bigquery_e2e_fixtures.json
+            rest/devserver/configs/diskgraph-test.json
+            kumo/testing/bigquery.py
+            kumo/testing/rest.py
+
+      - name: Set up Python
+        if: steps.gcs-files-changed.outputs.any_changed == 'true'
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          python-version: "3.14"
+          activate-environment: true
+
+      - name: Configure AWS credentials
+        if: steps.gcs-files-changed.outputs.any_changed == 'true'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-west-2
+
+      - name: Set up packages
+        if: steps.gcs-files-changed.outputs.any_changed == 'true' && !contains(matrix.test_dir, 'diskgraph')
+        uses: ./.github/actions/setup
+        with:
+          github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+
+      - name: Set up packages (with diskgraph)
+        if: steps.gcs-files-changed.outputs.any_changed == 'true' && contains(matrix.test_dir, 'diskgraph')
+        uses: ./.github/actions/setup
+        with:
+          github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+
+      - name: Authenticate to Google Cloud with GitHub OIDC
+        if: steps.gcs-files-changed.outputs.any_changed == 'true' && env.KUMO_RUN_GCP_TESTS == '1'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_TEST_SERVICE_ACCOUNT }}
+
+      - name: Run E2E tests
+        if: steps.gcs-files-changed.outputs.any_changed == 'true'
+        timeout-minutes: 60
+        run: |
+          set -o pipefail
+          export SPARK_LOCAL_IP="127.0.0.1"
+          source ./tools/ci_pytest_log_controls.sh
+          configure_pytest_ci_output
+          GLOG_logtostdout=1 python -X faulthandler -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=50 --timeout=1800 --timeout-method=thread ${{ matrix.test_dir }}
+        env:
+          # GCS-specific environment variables
+          IS_GCP_DEPLOY: "1"
+          GCS_TEST_BUCKET: 'kumo-test-bucket'
+          GCP_STORAGE_TRANSFER_BUCKET: 'kumo-test-bucket'
+          KUMO_GCP_WORKLOAD_EXCHANGE_ENABLED: "true"
+          DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
+          # Standard test environment variables
+          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          AWS_DEFAULT_REGION: "us-west-2"
+          DEPLOY_STAGE: "test"
+          TEMPORAL_SERVER: "localhost"
+          DATA_SPARK_MEM: "1g"
+          MAX_DATA_BACKEND_WORKER_PROCESSES: "1"
+          CUDA: "cpu"
+          KUMO_ENABLE_GLOVE: "False"
+          SPARK_VERSION: "3.5"
+          KUMO_TESTING: "True"

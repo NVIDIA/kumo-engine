@@ -1,0 +1,130 @@
+{{- define "temporal.admintools-env" -}}
+{{- $root := index . 0 -}}
+{{- $store := index . 1 -}}
+{{- if eq $store.driver "cassandra" -}}
+- name: CASSANDRA_HOST
+  value: {{ splitList "," (required (printf "Please specify hosts for %s store" $store.name) $store.config.hosts) | first }}
+- name: CASSANDRA_PORT
+  value: {{ $store.config.port | quote }}
+- name: CASSANDRA_KEYSPACE
+  value: {{ required (printf "Please specify keyspace for %s store" $store.name) $store.config.keyspace }}
+- name: CASSANDRA_USER
+  value: {{ $store.config.user }}
+- name: CASSANDRA_PASSWORD
+  {{- include "temporal.password-env" (list $root $store) | nindent 2 }}
+  {{- with $store.config.tls }}
+- name: CASSANDRA_ENABLE_TLS
+  value: {{ .enabled | quote }}
+    {{- with .caFile }}
+- name: CASSANDRA_TLS_CA
+  value: {{ . }}
+    {{- end }}
+    {{- if hasKey . "enableHostVerification" }}
+- name: CASSANDRA_TLS_DISABLE_HOST_VERIFICATION
+  value: {{ not .enableHostVerification | quote }}
+    {{- end }}
+  {{- end }}
+{{- else if eq $store.driver "sql" -}}
+- name: SQL_PLUGIN
+  value: {{ required (printf "Please specify pluginName for %s store (e.g., mysql8, postgres12, postgres12_pgx)" $store.name) $store.config.pluginName }}
+- name: SQL_HOST
+  value: {{ required (printf "Please specify connectAddr for %s store" $store.name) $store.config.connectAddr | splitList "," | first | splitList ":" | first }}
+- name: SQL_PORT
+  value: {{ required (printf "Port must be specified in connectAddr for %s store. Expected format: 'host:port' (e.g., 'localhost:5432')" $store.name) ($store.config.connectAddr | splitList "," | first | splitList ":" | rest | first) | quote }}
+- name: SQL_DATABASE
+  value: {{ required (printf "Please specify databaseName for %s store" $store.name) $store.config.databaseName }}
+- name: SQL_USER
+  value: {{ $store.config.user | quote }}
+- name: SQL_PASSWORD
+  {{- include "temporal.password-env" (list $root $store) | nindent 2 }}
+  {{- with $store.config.connectAttributes }}
+- name: SQL_CONNECT_ATTRIBUTES
+  value: {{ include "temporal.persistence.sql.connectAttributes" . | quote }}
+  {{- end }}
+  {{- with $store.config.tls }}
+- name: SQL_TLS
+  value: {{ .enabled | quote }}
+    {{- with .caFile }}
+- name: SQL_TLS_CA_FILE
+  value: {{ . }}
+    {{- end }}
+    {{- if and .certFile .keyFile }}
+- name: SQL_TLS_CERT_FILE
+  value: {{ .certFile }}
+- name: SQL_TLS_KEY_FILE
+  value: {{ .keyFile }}
+    {{- end }}
+    {{- with .serverName }}
+- name: SQL_TLS_SERVER_NAME
+  value: {{ . }}
+    {{- end }}
+    {{- if hasKey . "enableHostVerification" }}
+- name: SQL_TLS_DISABLE_HOST_VERIFICATION
+  value: {{ not .enableHostVerification | quote }}
+    {{- end }}
+  {{- end }}
+{{- else if eq $store.driver "elasticsearch" -}}
+{{- $url := $store.config.url }}
+{{- if and (hasKey $store.config "urls") $store.config.urls }}
+{{- $url = index $store.config.urls 0 }}
+{{- end }}
+- name: ES_SCHEME
+  value: {{ $url.scheme }}
+- name: ES_HOST
+  value: {{ splitList ":" $url.host | first }}
+- name: ES_PORT
+  value: {{ splitList ":" $url.host | last | quote }}
+- name: ES_SERVER
+  value: {{ urlJoin $url }}
+- name: ES_USER
+  value: {{ $store.config.username | quote }}
+- name: ES_PWD
+  {{- include "temporal.password-env" (list $root $store) | nindent 2 }}
+- name: ES_VERSION
+  value: {{ $store.config.version }}
+- name: ES_VISIBILITY_INDEX
+  value: {{ $store.config.indices.visibility }}
+  {{- with $store.config.tls }}
+- name: ES_TLS
+  value: {{ .enabled | quote }}
+    {{- with .caFile }}
+- name: ES_TLS_CA_FILE
+  value: {{ . }}
+    {{- end }}
+    {{- if and .certFile .keyFile }}
+- name: ES_TLS_CERT_FILE
+  value: {{ .certFile }}
+- name: ES_TLS_KEY_FILE
+  value: {{ .keyFile }}
+    {{- end }}
+    {{- with .serverName }}
+- name: ES_TLS_SERVER_NAME
+  value: {{ . }}
+    {{- end }}
+    {{- if hasKey . "enableHostVerification" }}
+- name: ES_TLS_DISABLE_HOST_VERIFICATION
+  value: {{ not .enableHostVerification | quote }}
+    {{- end }}
+  {{- end }}
+  {{- with index $store.config "aws-request-signing" }}
+    {{- with .credentialProvider }}
+- name: AWS_CREDENTIALS
+  value: {{ . | quote }}
+    {{- end }}
+    {{- with .region }}
+- name: AWS_REGION
+  value: {{ . | quote }}
+    {{- end }}
+    {{- if eq .credentialProvider "static" }}
+      {{- with .static }}
+        {{- with .token }}
+- name: AWS_SESSION_TOKEN
+  value: {{ . | quote }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
+{{- else -}}
+    {{- fail (printf "No valid persistence driver configuration found for %s store" $store.name) -}}
+{{- end -}}
+{{- end -}}

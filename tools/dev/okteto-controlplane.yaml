@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+dev:
+  kumo-rest:
+    # command: ['python3', '-m', 'debugpy', '--listen', '5678' ,'/opt/app/rest/main.py']
+    # command: ['bash']
+    command: ['python3', '/opt/app/rest/main.py']
+    envFiles:
+      - ../../rest/devserver/.env
+    environment:
+      - FLASK_ENV=development
+      - WORKER_METRICS_PORT=9010
+      - PYTHONPATH=/opt/app:/home/kumouser/.local/lib/python3.10/site-packages
+    sync:
+      - ../../rest:/opt/app/rest
+      - ../..:/opt/app/src
+    forward:
+      - 5678:5678
+    persistentVolume:
+      enabled: true
+      storageClass: gp3
+      size: 30Gi
+    serviceAccount: kumo-rest
+    image: 926922431314.dkr.ecr.us-west-2.amazonaws.com/kumo/kumo-rest:latest
+    resources:
+      limits:
+        cpu: 1
+        memory: 2Gi
+      requests:
+        cpu: 0.5
+        memory: 1Gi
+
+  kumo-api:
+    # command: ['python3', '-m', 'debugpy', '--listen', '5678', '/opt/app/rest/public/main.py']
+    command: ['python3', '/opt/app/rest/public/main.py']
+    envFiles:
+      - ../../rest/devserver/.env
+    environment:
+      - FLASK_ENV=development
+      - WORKER_METRICS_PORT=9010
+      - PYTHONPATH=/opt/app:/home/kumouser/.local/lib/python3.10/site-packages
+    sync:
+      - ../../rest:/opt/app/rest
+      - .:/opt/app/src
+    forward:
+      - 5678:5678
+    persistentVolume:
+      enabled: true
+      storageClass: gp3
+      size: 30Gi
+    serviceAccount: kumo-rest
+    image: 926922431314.dkr.ecr.us-west-2.amazonaws.com/kumo/kumo-rest:latest
+    resources:
+      limits:
+        cpu: 1
+        memory: 2Gi
+      requests:
+        cpu: 0.5
+        memory: 1Gi
+
+  kumo-ui:
+    command: ['bash', '-c', 'cp /tmp/config/env.js /opt/app/env.js && npm start']
+    sync:
+      - ../../ui:/opt/app
+    volumes:
+      - /root/.npm
+      - /opt/app/node_modules
+    persistentVolume:
+      enabled: true
+      storageClass: gp3
+      size: 30Gi
+    serviceAccount: kumo-ui
+    image: 926922431314.dkr.ecr.us-west-2.amazonaws.com/kumo/kumo-ui:latest

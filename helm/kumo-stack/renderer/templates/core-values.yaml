@@ -1,0 +1,85 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- define "stack.coreValues" -}}
+{{- $podLabels := dict -}}
+{{- $extraValues := deepCopy .Values.tenant.extraValues -}}
+{{- $workloads := get $extraValues "workloads" | default dict -}}
+{{- $poolcontroller := get $workloads "poolcontroller" | default dict -}}
+{{- $extraEnv := get $poolcontroller "extraEnv" | default dict -}}
+{{- $_ := set $extraEnv "POOL_INIT_CANARY_ENABLED" "false" -}}
+{{- $_ := set $poolcontroller "extraEnv" $extraEnv -}}
+{{- $_ := set $workloads "poolcontroller" $poolcontroller -}}
+{{- $_ := set $extraValues "workloads" $workloads -}}
+{{- if has .Values.platform (list "aks" "aro") -}}
+{{- $_ := set $podLabels "azure.workload.identity/use" "true" -}}
+{{- end -}}
+global:
+  tenant: {{ .Values.tenant.name }}
+image:
+  registry: {{ .Values.images.kumo.registry }}
+  repoPath: {{ .Values.images.kumo.repoPath | quote }}
+  tag: {{ .Values.images.kumo.tag | quote }}
+  pullPolicy: IfNotPresent
+  pullSecretName: {{ .Values.images.kumo.pullSecretName | quote }}
+exposure:
+  host: {{ .Values.tenant.exposureHost | quote }}
+kumoConfig:
+  storage:
+    dataBucket: {{ .Values.cloud.objectStorage.uri | quote }}
+    region: {{ .Values.cloud.objectStorage.region | quote }}
+  diskgraph:
+    storageClass: {{ include "stack.storageClassName" . | quote }}
+    storageCapacityTracking: {{ .Values.storage.diskgraph.capacityTracking }}
+    nodeTypes:
+      {{- range $tier := .Values.gpu.cacheTiers }}
+      {{ $tier.instanceType }}:
+        ssd_gib: {{ $tier.ssdGiB }}
+        gpu_count: {{ $tier.gpuCount }}
+      {{- end }}
+nodeTargeting:
+  nodeSelector:
+    {{- include "stack.cpuNodeSelector" . | nindent 4 }}
+serviceAccounts:
+  control:
+    annotations:
+      {{- toYaml .Values.stateDbIdentity.controlAnnotations | nindent 6 }}
+    podLabels:
+      {{- toYaml $podLabels | nindent 6 }}
+  worker:
+    annotations:
+      {{- toYaml .Values.stateDbIdentity.workerAnnotations | nindent 6 }}
+    podLabels:
+      {{- toYaml $podLabels | nindent 6 }}
+  controller:
+    annotations:
+      {{- toYaml .Values.stateDbIdentity.controllerAnnotations | nindent 6 }}
+    podLabels:
+      {{- toYaml $podLabels | nindent 6 }}
+temporal:
+  address: {{ if .Values.temporal.enabled }}{{ printf "temporal-frontend.%s.svc:7233" .Values.temporal.namespace | quote }}{{ else }}{{ .Values.temporal.externalAddress | quote }}{{ end }}
+  namespace: {{ .Values.tenant.name | quote }}
+  registerNamespace: {{ .Values.temporal.enabled }}
+postgres:
+  authMode: {{ if eq .Values.platform "eks" }}aws_iam{{ else }}azure_entra{{ end }}
+  host: {{ .Values.cloud.postgres.host | quote }}
+  port: {{ .Values.cloud.postgres.port }}
+  database: {{ .Values.cloud.postgres.stateDatabase | quote }}
+  username: {{ .Values.cloud.postgres.stateUser | quote }}
+  region: {{ if eq .Values.platform "eks" }}{{ .Values.cluster.providers.eks.region }}{{ else }}""{{ end }}
+tenantSecretKey:
+  secretName: {{ .Values.tenant.tenantSecret.name }}
+  secretKey: {{ .Values.tenant.tenantSecret.key }}
+{{- with $extraValues }}
+{{ toYaml . }}
+{{- end }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kumo-stack-core-values
+data:
+  values.yaml: |-
+{{ include "stack.coreValues" . | indent 4 }}

@@ -1,0 +1,32 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- if and (eq .Values.operators.mode "dedicated") .Values.clusterPolicy.create }}
+apiVersion: nvidia.com/v1
+kind: ClusterPolicy
+metadata:
+  name: {{ .Values.clusterPolicy.name }}
+  labels:
+    {{- include "kumo-platform-aro.labels" . | nindent 4 }}
+spec:
+  daemonsets: {}
+  dcgm:
+    enabled: true
+  dcgmExporter:
+    enabled: {{ .Values.clusterPolicy.dcgmExporterEnabled }}
+  devicePlugin:
+    enabled: true
+  driver:
+    enabled: true
+    use_ocp_driver_toolkit: true
+  gfd:
+    enabled: true
+  nodeStatusExporter:
+    enabled: true
+  operator:
+    defaultRuntime: crio
+  toolkit:
+    enabled: true
+{{- end }}

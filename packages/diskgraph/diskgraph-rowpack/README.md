@@ -1,0 +1,189 @@
+# diskgraph-rowpack
+
+Rowpack is a fast, row-oriented compression codec for DiskGraph node payloads. It compresses each node independently while using a shared per-table context (built from a sample) to encode repeated values efficiently. Think of it as a compact, schema-aware alternative to messagepack where the decoder reuses column dictionaries and type hints from the context file.
+
+## Design goals
+
+- **Row-at-a-time:** each node encodes to a standalone binary blob.
+- **Shared context:** small, per-table context file drives encoding/decoding.
+- **Fast decode:** minimal branching, bit-packed tags, no per-row schema.
+- **Graceful fallback:** unexpected values are tolerated without failure.
+- **Deterministic schema:** decoding produces consistent types.
+
+## Context file (what gets stored)
+
+The context file is a binary format with:
+
+- **Schema**: column order, names, and logical types (int/float/string/bytes/bool/timestamp/array/uuid/ip).
+- **Per-column strategy**:
+  - Nullability and tag width (2-bit tags).
+  - Integer strategy (fixed width vs varint; bit width).
+  - Float strategy (float32 vs float64).
+- String strategy (raw, dictionary, alphabet, bpe, lz4).
+  - Bytes strategy (raw, fixed length).
+  - Array strategy for float vectors (float16/float32/float64).
+- **Dictionaries**:
+  - String dictionaries for categorical columns (bounded size, configurable).
+- **Compression knobs**:
+  - Per-column thresholds used during sampling.
+  - Max dictionary size budget.
+  - Decimal precision/scale metadata (when present).
+
+The context is written once during ingestion (one per node table) and loaded by the index reader to decode node blobs.
+
+## Row encoding format
+
+Each row encodes columns in fixed schema order:
+
+1. **Tag bitstream**: 2 bits per column.
+   - `00`: null
+   - `01`: primary encoding for the column
+   - `10`: fallback encoding for the column (unexpected value)
+2. **Boolean bitset** (for bool columns only).
+3. **Column payloads**, in order:
+   - Primary payloads for tags `01`
+   - Fallback payloads for tags `10`
+
+This layout keeps parsing simple: read tags, then parse each column according to tag state.
+
+## Column strategies
+
+## Supported Parquet types
+
+Rowpack is driven by `diskgraph_config.json` and ingestion maps Parquet/Arrow types as:
+
+- **Int**: `Int8`, `Int16`, `Int32`, `Int64`
+- **UInt**: `UInt8`, `UInt16`, `UInt32`, `UInt64`
+- **Float**: `Float32`, `Float64`
+- **Bool**: `Boolean`
+- **String**: `Utf8`
+- **Bytes**: `Binary`
+- **Date**: `Date32`
+- **Timestamp**: `Timestamp` with `Second|Millisecond|Microsecond|Nanosecond` units (timezone accepted, normalized to UTC)
+- **Decimal**: `Decimal128`, `Decimal256` (requires `precision` + `scale`)
+- **Arrays**: `List(Float16)`, `List(Float32)`, and `List(Float64)`
+- **UUID/IP**: `uuid`, `uuid256`, and `ip` types are supported when declared in `diskgraph_config.json` (input values are parsed from string/bytes during ingest).
+
+Other Parquet types are not supported by rowpack at this time.
+
+### Integers
+- **Int8/UInt8**: always stored as a single byte (no varint).
+- **Int16/UInt16**: stored as fixed 16-bit unless varint is smaller for samples.
+- **Int32/Int64**: choose varint when it reduces average size.
+
+Varint uses zigzag for signed values; fixed width uses little-endian.
+
+### Floats
+- Floats are stored as-is (float32 or float64).
+- Fallback tag stores full float32/float64.
+
+### Strings
+Rowpack detects and chooses the most efficient strategy:
+
+- **Dictionary**: for categorical columns; dictionary entries stored in context.
+- **Alphabet**: for short strings with a small character set and high coverage (up to 64 distinct chars, and up to the lz4 long-string threshold, default 128 bytes); length is varint-prefixed.
+- **BPE**: for strings with repeated substrings; uses a column dictionary of common byte sequences and encodes as token streams.
+- **LZ4**: only used when sampled long strings compress well.
+- **Raw**: length-prefixed bytes.
+
+If a value does not match the inferred strategy (e.g., a non-ISO string in an ISO column), it is encoded with the fallback tag as raw bytes.
+
+### Bytes
+- Raw length-prefixed bytes.
+- Optional fixed-length enforcement; mismatches fall back to raw.
+
+### UUID / UUID256 / IP
+- Stored as fixed-width bytes (16, 32, and 16 bytes respectively).
+- Fallback tag stores raw bytes.
+
+### Arrays of floats
+Encodes length as a varint, followed by contiguous float payloads.
+Uses the logical type's float width (float16/float32/float64).
+
+### Nulls and fallback
+Nulls are stored only in the tag stream; no payload.
+Fallback payloads are always self-describing (length + bytes, or full-width numeric).
+
+## Sampling and strategy selection
+
+The builder samples a configurable number of rows per table and:
+
+- Computes cardinality for dictionary eligibility.
+- Measures lz4 compression ratio for long strings.
+- Trains a lightweight BPE dictionary for repeated substrings when it yields a size win (enabled for short-ish strings, default avg len >= 12 and below the lz4 threshold).
+- Chooses integer varint vs fixed width based on average size.
+
+Sample sizes and dictionary budgets are configurable via `SourceMetadata.rowpack`.
+
+## Decoding outputs
+
+Rowpack decodes into:
+
+- **MessagePack**: preserves original scalar types (including timestamp ext).
+- **JSON**: "reasonable" JSON renderings; timestamps formatted to RFC3339, bytes encoded as base64, UUIDs/UUID256 as lowercase hex, and IPs in standard string form.
+
+## Error handling
+
+Rowpack is resilient by design. Unsupported or unexpected values:
+- are encoded with fallback tags when writing,
+- decode to best-effort types when reading.
+
+## Context inspection utility
+
+Use the built-in inspector to print a `.ctx` file summary:
+
+```bash
+cargo run -p diskgraph-rowpack --bin rowpack_ctx_inspect -- /path/to/node_data.ctx
+```
+
+## BPE defaults
+
+- `bpe_max_dict_entries`: 512
+- `bpe_max_dict_bytes`: 256,000
+- `bpe_max_samples`: 2,000
+
+It only errors on structural corruption (invalid tags, truncated payloads).
+
+## ColumnValueObserver trait
+
+The `ColumnValueObserver` trait provides typed callbacks for observing column values during row access/decoding. The encode pipeline invokes these methods for each value as it passes through the encoder.
+
+```rust
+pub trait ColumnValueObserver {
+    fn observe_i64(&mut self, col_idx: usize, value: i64);
+    fn observe_f64(&mut self, col_idx: usize, value: f64);
+    fn observe_string(&mut self, col_idx: usize, value: &str);
+    fn observe_timestamp(&mut self, col_idx: usize, secs: i64);
+    fn observe_float_list(&mut self, col_idx: usize, values: &[f32]);
+    fn observe_null(&mut self, col_idx: usize);
+    fn observe_parse_failure(&mut self, col_idx: usize);
+}
+```
+
+Used by `diskgraph-ingest` for column statistics collection (see `diskgraph-ingest/col_stats.md`). Implementors receive zero-copy references — no allocations per value. The observer cannot slow down the encode pipeline (returns void).
+
+## RowPackConfig fields
+
+All fields are optional. Struct defaults may differ from runtime defaults used by the encode pipeline.
+
+| Field | Runtime Default | Description |
+|-------|----------------|-------------|
+| `sample_rows` | 10,000 | Rows to sample when building context |
+| `max_dict_bytes_per_col` | 1,000,000 | Max bytes per string dictionary |
+| `max_dict_entries` | 50,000 | Max entries per string dictionary |
+| `bpe_max_dict_bytes` | 256,000 | Max bytes for BPE dictionary |
+| `bpe_max_dict_entries` | 512 | Max BPE dictionary entries |
+| `bpe_max_samples` | 2,000 | Max samples for BPE training |
+| `bpe_min_gain_ratio` | 0.95 | Minimum compression gain to keep BPE |
+| `bpe_min_avg_len` | 12 | Min average token length for BPE eligibility |
+| `string_dict_coverage` | 0.7 | Min coverage to enable dictionary encoding |
+| `string_long_min_len` | 128 | Min length for long-string compression |
+| `string_long_min_ratio` | 0.85 | Min ratio to keep long-string compression |
+### Timestamps
+- Encoded as `(secs, nanos)` varints for full unit fidelity.
+- Parquet timestamp units (s/ms/us/ns) are normalized at ingest; timezones are accepted and normalized to UTC on output.
+
+### Decimals
+- Stored as two’s-complement bytes with width derived from logical precision.
+- Encoding chooses varint for small values and falls back to raw bytes when varint would not be smaller.
+- Decimal storage is always lossless.

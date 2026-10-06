@@ -1,0 +1,23 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- if and (eq .Values.operators.mode "dedicated") .Values.nfd.create }}
+apiVersion: nfd.openshift.io/v1
+kind: NodeFeatureDiscovery
+metadata:
+  name: {{ .Values.nfd.name }}
+  namespace: openshift-nfd
+  labels:
+    {{- include "kumo-platform-aro.labels" . | nindent 4 }}
+spec:
+  instance: ""
+  operand:
+    image: {{ .Values.nfd.operandImage | quote }}
+    imagePullPolicy: {{ .Values.nfd.imagePullPolicy }}
+  workerConfig:
+    configData: |
+      core:
+        sleepInterval: 60s
+{{- end }}

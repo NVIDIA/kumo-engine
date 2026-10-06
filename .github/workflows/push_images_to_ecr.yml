@@ -1,0 +1,104 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: (Manual) Push Kumo Images from Quay to ECR
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release Tag'
+        required: true
+      validate_oidc_only:
+        description: Validate AWS OIDC without pulling or pushing images
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  REGISTRY_USER: kumo+kumo_internal
+  QUAY_IMAGE_REGISTRY: quay.io
+  REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+  ECR_IMAGE_REGISTRY: 926922431314.dkr.ecr.us-west-2.amazonaws.com
+
+jobs:
+  build:
+    environment: gha-ecr-publish
+    name: Push Kumo Docker Images
+    runs-on: ubuntu-22.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          [
+            kumo-ui,
+            kumo-rest,
+            kumo-temporalworker,
+            kumo
+          ]
+
+    steps:
+      - name: Free Disk Space (Ubuntu)
+        if: ${{ !inputs.validate_oidc_only }}
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be   #  v1.3.1
+
+      - name: Log in to Quay Registry
+        if: ${{ !inputs.validate_oidc_only }}
+        uses: redhat-actions/podman-login@4934294ad0449894bcd1e9f191899d7292469603   #  v1.7
+        with:
+          username: ${{ env.REGISTRY_USER }}
+          password: ${{ env.REGISTRY_PASSWORD }}
+          registry: ${{ env.QUAY_IMAGE_REGISTRY }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-ecr-publish
+          aws-region: us-west-2
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Log in to AWS ECR
+        shell: bash
+        run: |
+          aws ecr get-login-password --region us-west-2 \
+            | podman login --username AWS --password-stdin "$ECR_IMAGE_REGISTRY"
+
+      - name: Pull from Quay Repository
+        if: ${{ !inputs.validate_oidc_only }}
+        id: pull-image-from-quay
+        uses: nick-fields/retry@ce71cc2ab81d554ebbe88c79ab5975992d79ba08  # v3.0.2
+        with:
+          timeout_minutes: 15
+          max_attempts: 3
+          command: podman pull ${{ env.QUAY_IMAGE_REGISTRY }}/kumo/${{ matrix.image }}:${{ inputs.release_tag }}
+
+      - name: Push To AWS ECR
+        if: ${{ !inputs.validate_oidc_only }}
+        id: push-to-ecr
+        uses: redhat-actions/push-to-registry@5ed88d269cf581ea9ef6dd6806d01562096bee9c   #  v2.8
+        with:
+          image: ${{ matrix.image }}
+          tags: ${{ inputs.release_tag }}
+          registry: ${{ env.ECR_IMAGE_REGISTRY }}/kumo
+
+      - name: Print Image Url
+        if: ${{ !inputs.validate_oidc_only }}
+        run: |
+          echo "Image pushed to AWS ECR: ${{ steps.push-to-ecr.outputs.registry-paths }}"
+
+      - name: Send Slack notification on failure
+        if: ${{ failure() && !inputs.validate_oidc_only }}
+        uses: 8398a7/action-slack@77eaa4f1c608a7d68b38af4e3f739dcd8cba273e # v3
+        with:
+          status: ${{ job.status }}
+          fields: repo,message,commit,author,action,eventName,ref,workflow,job,took
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

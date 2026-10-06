@@ -1,0 +1,861 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+use std::io::{self, SeekFrom, Write};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
+use std::time::Duration;
+
+use anyhow::{anyhow, Result};
+use aws_config::{self, BehaviorVersion};
+use aws_types::region::Region;
+use bytes::Bytes;
+use object_store::aws::{AmazonS3Builder, AwsCredential, AwsCredentialProvider};
+use object_store::azure::MicrosoftAzureBuilder;
+use object_store::gcp::GoogleCloudStorageBuilder;
+use object_store::path::Path as ObjectPath;
+use object_store::ClientOptions;
+use object_store::StaticCredentialProvider;
+use object_store::WriteMultipart;
+use object_store::{ObjectStore, ObjectStoreExt};
+use tokio::runtime::Runtime;
+use tokio::sync::{mpsc, oneshot};
+
+mod s3_credentials;
+use s3_credentials::{aws_runtime_handle, block_on_aws, spawn_on_aws, RefreshingCredentials};
+
+/// Parse a bool environment flag (e.g., "1", "true").
+fn env_flag(name: &str) -> Option<bool> {
+    std::env::var(name)
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+}
+
+#[derive(Clone, Debug)]
+pub struct S3Config {
+    pub bucket: String,
+    pub region: Option<String>,
+    pub endpoint: Option<String>,
+    pub allow_http: Option<bool>,
+    pub virtual_hosted: Option<bool>,
+    pub profile: Option<String>,
+    pub access_key_id: Option<String>,
+    pub secret_access_key: Option<String>,
+    pub session_token: Option<String>,
+}
+
+/// Non-secret settings used to construct the S3 client.
+#[derive(Clone, Debug)]
+pub struct ResolvedS3 {
+    pub bucket: String,
+    pub region: String,
+    pub endpoint: Option<String>,
+    pub allow_http: bool,
+    pub virtual_hosted: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct S3Client {
+    pub store: Arc<dyn ObjectStore>,
+    pub resolved: ResolvedS3,
+}
+
+pub mod cloud_transfer;
+pub use cloud_transfer::{
+    BufferPool, CloudObjectCondition, CloudTransfer, CloudTransferBytesTicket, CloudTransferConfig,
+    CloudTransferDownloadTicket, CloudTransferStatsHandle, CloudTransferStatsSnapshot,
+    CloudTransferTicket, PooledBuffer, PooledBytes,
+};
+
+/// Build `ClientOptions` with a connect timeout for all cloud object stores.
+///
+/// Sets a **connect timeout** (TCP handshake + TLS setup) to detect
+/// unreachable endpoints quickly.  The per-request timeout retains its
+/// `object_store` default (~30 s) which applies to individual HTTP
+/// requests, not to multi-part data transfers.
+pub fn cloud_client_options() -> ClientOptions {
+    ClientOptions::new().with_connect_timeout(Duration::from_secs(60))
+}
+
+pub fn build_s3_client(cfg: S3Config) -> Result<S3Client> {
+    block_on_aws(build_s3_client_inner(cfg, true))
+}
+
+pub fn build_s3_client_without_env_endpoint(cfg: S3Config) -> Result<S3Client> {
+    block_on_aws(build_s3_client_inner(cfg, false))
+}
+
+pub async fn build_s3_client_async(cfg: S3Config) -> Result<S3Client> {
+    spawn_on_aws(build_s3_client_inner(cfg, true)).await
+}
+
+fn static_s3_credentials(cfg: &S3Config) -> Option<AwsCredential> {
+    fn complete(
+        key_id: Option<String>,
+        secret_key: Option<String>,
+        token: Option<String>,
+    ) -> Option<AwsCredential> {
+        Some(AwsCredential {
+            key_id: key_id?,
+            secret_key: secret_key?,
+            token,
+        })
+    }
+
+    complete(
+        cfg.access_key_id.clone(),
+        cfg.secret_access_key.clone(),
+        cfg.session_token.clone(),
+    )
+    .or_else(|| {
+        complete(
+            std::env::var("S3_ACCESS_KEY").ok(),
+            std::env::var("S3_SECRET_KEY").ok(),
+            std::env::var("S3_SESSION_TOKEN").ok(),
+        )
+    })
+    .or_else(|| {
+        complete(
+            std::env::var("AWS_ACCESS_KEY_ID").ok(),
+            std::env::var("AWS_SECRET_ACCESS_KEY").ok(),
+            std::env::var("AWS_SESSION_TOKEN").ok(),
+        )
+    })
+}
+
+async fn resolve_s3_credentials(
+    cfg: &S3Config,
+    aws_conf: &aws_types::sdk_config::SdkConfig,
+) -> Result<AwsCredentialProvider> {
+    if let Some(credential) = static_s3_credentials(cfg) {
+        tracing::debug!("signing S3 requests with statically configured credentials");
+        return Ok(Arc::new(StaticCredentialProvider::new(credential)));
+    }
+
+    let provider = aws_conf.credentials_provider().ok_or_else(|| {
+        anyhow!("No AWS credentials provider found; ensure AWS_PROFILE/SSO is set")
+    })?;
+    let refreshing = RefreshingCredentials::new(provider, aws_runtime_handle()?);
+    // Resolve once so configuration errors surface while the client is built.
+    refreshing.prime().await?;
+    Ok(Arc::new(refreshing))
+}
+
+async fn build_s3_client_inner(cfg: S3Config, inherit_env_endpoint: bool) -> Result<S3Client> {
+    let allow_http = cfg
+        .allow_http
+        .or_else(|| env_flag("S3_ALLOW_HTTP"))
+        .or_else(|| env_flag("AWS_ALLOW_HTTP"))
+        .unwrap_or(false);
+    let endpoint = cfg.endpoint.clone().or_else(|| {
+        inherit_env_endpoint
+            .then(|| std::env::var("S3_ENDPOINT").ok())
+            .flatten()
+    });
+    let profile = cfg
+        .profile
+        .clone()
+        .or_else(|| std::env::var("S3_PROFILE").ok())
+        .or_else(|| std::env::var("AWS_PROFILE").ok());
+    let mut loader = aws_config::defaults(BehaviorVersion::latest());
+    if let Some(p) = profile {
+        loader = loader.profile_name(p);
+    }
+    if let Some(region) = cfg
+        .region
+        .clone()
+        .or_else(|| std::env::var("S3_REGION").ok())
+    {
+        loader = loader.region(Region::new(region));
+    }
+    let aws_conf = loader.load().await;
+
+    let region = cfg
+        .region
+        .clone()
+        .or_else(|| std::env::var("S3_REGION").ok())
+        .or_else(|| aws_conf.region().map(|r| r.as_ref().to_string()))
+        .unwrap_or_else(|| "us-east-1".to_string());
+    let virtual_hosted = cfg
+        .virtual_hosted
+        .or_else(|| env_flag("S3_VIRTUAL_HOSTED"))
+        .unwrap_or_else(|| {
+            endpoint
+                .as_ref()
+                .map_or(true, |ep| ep.contains("amazonaws.com"))
+        });
+    let credentials = resolve_s3_credentials(&cfg, &aws_conf).await?;
+
+    // with_client_options replaces the entire ClientOptions struct,
+    // so it must come before with_allow_http (which writes into it).
+    let mut builder = AmazonS3Builder::new()
+        .with_client_options(cloud_client_options())
+        .with_bucket_name(&cfg.bucket)
+        .with_region(&region)
+        .with_virtual_hosted_style_request(virtual_hosted)
+        .with_allow_http(allow_http)
+        .with_credentials(credentials);
+    if let Some(ep) = &endpoint {
+        builder = builder.with_endpoint(ep);
+    }
+    let store = Arc::new(builder.build()?);
+    Ok(S3Client {
+        store,
+        resolved: ResolvedS3 {
+            bucket: cfg.bucket,
+            region,
+            endpoint,
+            allow_http,
+            virtual_hosted,
+        },
+    })
+}
+
+#[derive(Clone, Debug)]
+pub struct GcsConfig {
+    pub bucket: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct GcsClient {
+    pub store: Arc<dyn ObjectStore>,
+    pub bucket: String,
+}
+
+pub fn build_gcs_client(cfg: GcsConfig) -> Result<GcsClient> {
+    build_gcs_client_with_base_url(cfg, None)
+}
+
+/// Build a GCS client while overriding any worker or credential-provided base
+/// URL. An explicit source authority uses this to pin the public provider
+/// endpoint without changing how ambient credentials are resolved.
+pub fn build_gcs_client_with_base_url(
+    cfg: GcsConfig,
+    source_base_url: Option<&str>,
+) -> Result<GcsClient> {
+    // with_client_options replaces the entire ClientOptions struct.
+    // Calling it after from_env() wipes any env-sourced client
+    // settings (e.g. GOOGLE_ALLOW_HTTP), but those are rarely used.
+    let mut builder = GoogleCloudStorageBuilder::from_env()
+        .with_client_options(cloud_client_options())
+        .with_bucket_name(&cfg.bucket);
+    if let Some(base_url) = source_base_url {
+        builder = builder.with_base_url(base_url);
+    }
+    Ok(GcsClient {
+        store: Arc::new(builder.build()?),
+        bucket: cfg.bucket,
+    })
+}
+
+#[derive(Clone, Debug)]
+pub struct AdlsConfig {
+    pub account: String,
+    pub container: String,
+    pub endpoint: Option<String>,
+    pub allow_http: Option<bool>,
+    pub access_key: Option<String>,
+    pub sas_key: Option<String>,
+    pub bearer_token: Option<String>,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub tenant_id: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolvedAdls {
+    pub account: String,
+    pub container: String,
+    pub endpoint: Option<String>,
+    pub allow_http: bool,
+    pub access_key: Option<String>,
+    pub sas_key: Option<String>,
+    pub bearer_token: Option<String>,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub tenant_id: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct AdlsClient {
+    pub store: Arc<dyn ObjectStore>,
+    pub resolved: ResolvedAdls,
+}
+
+pub fn build_adls_client(cfg: AdlsConfig) -> Result<AdlsClient> {
+    build_adls_client_with_authority(cfg, None)
+}
+
+/// Build an ADLS client while overriding the worker's Azure authority host.
+///
+/// This is used when a source manifest carries provider routing captured by
+/// the control plane. Credentials still come from the worker environment.
+pub fn build_adls_client_with_authority(
+    cfg: AdlsConfig,
+    source_authority_host: Option<String>,
+) -> Result<AdlsClient> {
+    let allow_http = cfg
+        .allow_http
+        .or_else(|| env_flag("AZURE_ALLOW_HTTP"))
+        .unwrap_or(false);
+    // with_client_options replaces the entire ClientOptions struct,
+    // so it must come before with_allow_http.
+    let mut builder = MicrosoftAzureBuilder::new()
+        .with_client_options(cloud_client_options())
+        .with_account(&cfg.account)
+        .with_container_name(&cfg.container)
+        .with_allow_http(allow_http);
+    if let Some(ep) = cfg
+        .endpoint
+        .clone()
+        .or_else(|| std::env::var("AZURE_ENDPOINT").ok())
+    {
+        builder = builder.with_endpoint(ep);
+    }
+    // AZURE_STORAGE_* are the names the Azure SDKs and azcopy use; deployments
+    // that set them expect a shared key rather than a managed identity.
+    if let Some(access_key) = cfg
+        .access_key
+        .clone()
+        .or_else(|| std::env::var("AZURE_ACCESS_KEY").ok())
+        .or_else(|| std::env::var("AZURE_STORAGE_ACCOUNT_KEY").ok())
+        .or_else(|| std::env::var("AZURE_STORAGE_ACCESS_KEY").ok())
+    {
+        builder = builder.with_access_key(access_key);
+    }
+    if let Some(sas) = cfg
+        .sas_key
+        .clone()
+        .or_else(|| std::env::var("AZURE_SAS_KEY").ok())
+    {
+        builder = builder.with_config(object_store::azure::AzureConfigKey::SasKey, sas);
+    }
+    if let Some(bearer) = cfg
+        .bearer_token
+        .clone()
+        .or_else(|| std::env::var("AZURE_BEARER_TOKEN").ok())
+    {
+        builder = builder.with_bearer_token_authorization(bearer);
+    }
+    if let Some(client_id) = cfg
+        .client_id
+        .clone()
+        .or_else(|| std::env::var("AZURE_CLIENT_ID").ok())
+    {
+        builder = builder.with_client_id(client_id);
+    }
+    if let Some(client_secret) = cfg
+        .client_secret
+        .clone()
+        .or_else(|| std::env::var("AZURE_CLIENT_SECRET").ok())
+    {
+        builder = builder.with_client_secret(client_secret);
+    }
+    if let Some(tenant_id) = cfg
+        .tenant_id
+        .clone()
+        .or_else(|| std::env::var("AZURE_TENANT_ID").ok())
+    {
+        builder = builder.with_tenant_id(tenant_id);
+    }
+    // Azure AD Workload Identity. object_store only selects the federated
+    // provider when the token file joins the client and tenant ids; with no
+    // credential at all it falls back to IMDS managed identity, which pods
+    // cannot reach on clusters that expose no instance metadata endpoint (such
+    // as ARO). An empty value would be treated as set and then fail on read.
+    if let Some(token_file) = std::env::var("AZURE_FEDERATED_TOKEN_FILE")
+        .ok()
+        .filter(|token_file| !token_file.is_empty())
+    {
+        builder = builder.with_federated_token_file(token_file);
+    }
+    // object_store joins the authority host to the tenant id without
+    // normalizing, so a trailing slash would yield a double slash.
+    if let Some(authority_host) = source_authority_host
+        .or_else(|| std::env::var("AZURE_AUTHORITY_HOST").ok())
+        .map(|host| host.trim_end_matches('/').to_string())
+        .filter(|host| !host.is_empty())
+    {
+        builder = builder.with_authority_host(authority_host);
+    }
+    Ok(AdlsClient {
+        store: Arc::new(builder.build()?),
+        resolved: ResolvedAdls {
+            account: cfg.account,
+            container: cfg.container,
+            endpoint: cfg.endpoint,
+            allow_http,
+            access_key: cfg.access_key,
+            sas_key: cfg.sas_key,
+            bearer_token: cfg.bearer_token,
+            client_id: cfg.client_id,
+            client_secret: cfg.client_secret,
+            tenant_id: cfg.tenant_id,
+        },
+    })
+}
+
+#[derive(Clone, Debug)]
+pub struct UploadBufferPool {
+    inner: Arc<UploadBufferPoolInner>,
+}
+
+#[derive(Debug)]
+struct UploadBufferPoolInner {
+    buffers: Mutex<Vec<Vec<u8>>>,
+    available: Condvar,
+    buffer_size: usize,
+}
+
+impl UploadBufferPool {
+    pub fn new(buffer_size: usize, buffer_count: usize) -> Self {
+        let mut buffers = Vec::with_capacity(buffer_count);
+        for _ in 0..buffer_count {
+            buffers.push(Vec::with_capacity(buffer_size));
+        }
+        Self {
+            inner: Arc::new(UploadBufferPoolInner {
+                buffers: Mutex::new(buffers),
+                available: Condvar::new(),
+                buffer_size,
+            }),
+        }
+    }
+
+    pub fn buffer_size(&self) -> usize {
+        self.inner.buffer_size
+    }
+
+    fn acquire(&self) -> Vec<u8> {
+        let mut guard = self.inner.buffers.lock().expect("upload buffer pool lock");
+        loop {
+            if let Some(mut buffer) = guard.pop() {
+                buffer.clear();
+                return buffer;
+            }
+            guard = self
+                .inner
+                .available
+                .wait(guard)
+                .expect("upload buffer pool wait");
+        }
+    }
+
+    fn release(&self, mut buffer: Vec<u8>) {
+        buffer.clear();
+        let mut guard = self.inner.buffers.lock().expect("upload buffer pool lock");
+        guard.push(buffer);
+        self.inner.available.notify_one();
+    }
+}
+
+#[derive(Debug)]
+struct PoolBuffer {
+    data: Vec<u8>,
+    len: usize,
+    pool: UploadBufferPool,
+}
+
+impl AsRef<[u8]> for PoolBuffer {
+    fn as_ref(&self) -> &[u8] {
+        &self.data[..self.len]
+    }
+}
+
+impl Drop for PoolBuffer {
+    fn drop(&mut self) {
+        let buffer = std::mem::take(&mut self.data);
+        self.pool.release(buffer);
+    }
+}
+
+#[derive(Debug)]
+enum UploadCommand {
+    Part(PoolBuffer),
+    Finish(oneshot::Sender<Result<()>>),
+    Abort,
+}
+
+#[derive(Debug)]
+pub struct MultipartUploadWriter {
+    sender: mpsc::Sender<UploadCommand>,
+    pool: UploadBufferPool,
+    buffer: Vec<u8>,
+    part_size: usize,
+    position: u64,
+    join: Option<thread::JoinHandle<Result<()>>>,
+    error: Arc<Mutex<Option<anyhow::Error>>>,
+}
+
+impl MultipartUploadWriter {
+    pub fn new(
+        store: Arc<dyn ObjectStore>,
+        path: ObjectPath,
+        pool: UploadBufferPool,
+        max_concurrency: usize,
+    ) -> Result<Self> {
+        let part_size = pool.buffer_size();
+        let (sender, receiver) = mpsc::channel(max_concurrency.max(1) * 2);
+        let error = Arc::new(Mutex::new(None));
+        let error_clone = Arc::clone(&error);
+        let join = thread::spawn(move || {
+            let rt = Runtime::new()?;
+            rt.block_on(run_upload_loop(
+                store,
+                path,
+                receiver,
+                part_size,
+                max_concurrency.max(1),
+                error_clone,
+            ))
+        });
+        Ok(Self {
+            sender,
+            pool: pool.clone(),
+            buffer: pool.acquire(),
+            part_size,
+            position: 0,
+            join: Some(join),
+            error,
+        })
+    }
+
+    pub fn finish(mut self) -> Result<()> {
+        self.flush_buffer(true)?;
+        let (tx, rx) = oneshot::channel();
+        self.sender
+            .blocking_send(UploadCommand::Finish(tx))
+            .map_err(|_| anyhow!("multipart upload worker stopped"))?;
+        let result = rx
+            .blocking_recv()
+            .map_err(|_| anyhow!("multipart upload worker dropped"))?;
+        let join = self.join.take().expect("upload join handle");
+        let join_result = join
+            .join()
+            .map_err(|_| anyhow!("multipart upload thread panicked"))?;
+        result?;
+        join_result
+    }
+
+    fn flush_buffer(&mut self, final_flush: bool) -> Result<()> {
+        if self.buffer.is_empty() && !final_flush {
+            return Ok(());
+        }
+        if self.buffer.is_empty() && final_flush {
+            let buffer = std::mem::take(&mut self.buffer);
+            if buffer.capacity() >= self.part_size && self.part_size > 0 {
+                self.pool.release(buffer);
+            }
+            return Ok(());
+        }
+        let data = std::mem::take(&mut self.buffer);
+        let len = data.len();
+        let part = PoolBuffer {
+            data,
+            len,
+            pool: self.pool.clone(),
+        };
+        self.sender
+            .blocking_send(UploadCommand::Part(part))
+            .map_err(|_| anyhow!("multipart upload worker stopped"))?;
+        if !final_flush {
+            self.buffer = Vec::new();
+        }
+        Ok(())
+    }
+
+    fn check_error(&self) -> io::Result<()> {
+        if let Some(err) = self.error.lock().expect("upload error lock").as_ref() {
+            return Err(io::Error::new(io::ErrorKind::Other, err.to_string()));
+        }
+        Ok(())
+    }
+}
+
+impl Write for MultipartUploadWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.check_error()?;
+        if self.buffer.capacity() == 0 {
+            self.buffer = self.pool.acquire();
+        }
+        let mut offset = 0;
+        while offset < buf.len() {
+            let remaining = self.part_size - self.buffer.len();
+            let to_write = remaining.min(buf.len() - offset);
+            self.buffer
+                .extend_from_slice(&buf[offset..offset + to_write]);
+            offset += to_write;
+            self.position += to_write as u64;
+            if self.buffer.len() == self.part_size {
+                self.flush_buffer(false)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            }
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.check_error()
+    }
+}
+
+impl io::Seek for MultipartUploadWriter {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        match pos {
+            SeekFrom::Current(0) => Ok(self.position),
+            SeekFrom::End(0) => Ok(self.position),
+            SeekFrom::Start(offset) if offset == self.position => Ok(self.position),
+            _ => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "multipart upload writer only supports no-op seeks",
+            )),
+        }
+    }
+}
+
+impl Drop for MultipartUploadWriter {
+    fn drop(&mut self) {
+        if self.join.is_none() {
+            return;
+        }
+        let sender = self.sender.clone();
+        let _ = sender.try_send(UploadCommand::Abort);
+        if self.buffer.capacity() >= self.part_size && self.part_size > 0 {
+            let buffer = std::mem::take(&mut self.buffer);
+            self.pool.release(buffer);
+        }
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+async fn run_upload_loop(
+    store: Arc<dyn ObjectStore>,
+    path: ObjectPath,
+    mut receiver: mpsc::Receiver<UploadCommand>,
+    part_size: usize,
+    max_concurrency: usize,
+    error: Arc<Mutex<Option<anyhow::Error>>>,
+) -> Result<()> {
+    let upload = store.put_multipart(&path).await?;
+    let mut writer = WriteMultipart::new_with_chunk_size(upload, part_size);
+    while let Some(command) = receiver.recv().await {
+        match command {
+            UploadCommand::Part(part) => {
+                writer.wait_for_capacity(max_concurrency).await?;
+                let payload = Bytes::from_owner(part);
+                writer.put(payload);
+            }
+            UploadCommand::Finish(done) => {
+                let result: Result<()> = writer
+                    .finish()
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| anyhow!(e.to_string()));
+                if let Err(err) = &result {
+                    if let Ok(mut guard) = error.lock() {
+                        *guard = Some(anyhow!(err.to_string()));
+                    }
+                }
+                let _ = done.send(result);
+                return Ok(());
+            }
+            UploadCommand::Abort => {
+                let _ = writer.abort().await;
+                return Ok(());
+            }
+        }
+    }
+    let _ = writer.abort().await;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use object_store::memory::InMemory;
+
+    #[test]
+    fn multipart_upload_writer_reuses_buffers() -> Result<()> {
+        let store = Arc::new(InMemory::new()) as Arc<dyn ObjectStore>;
+        let path = ObjectPath::from("test/part.parquet");
+        let pool = UploadBufferPool::new(8, 2);
+        let writer = MultipartUploadWriter::new(store.clone(), path.clone(), pool.clone(), 2)?;
+        let mut writer = writer;
+        writer.write_all(b"abcdef")?;
+        writer.write_all(b"ghijklmnop")?;
+        writer.finish()?;
+        let rt = Runtime::new()?;
+        let data = rt
+            .block_on(async { store.get(&path).await?.bytes().await })
+            .map_err(|e| anyhow!(e.to_string()))?;
+        assert_eq!(data.as_ref(), b"abcdefghijklmnop");
+        Ok(())
+    }
+
+    /// `AdlsClient` erases the store to `Arc<dyn ObjectStore>`, so its Debug
+    /// rendering is the only way to observe which credential provider
+    /// object_store selected. The cases share process-global env vars, so they
+    /// run in one test.
+    #[test]
+    fn adls_client_credential_selection() -> Result<()> {
+        // Anything here would outrank or alter the credential under test.
+        const OVERRIDING_VARS: &[&str] = &[
+            "AZURE_ACCESS_KEY",
+            "AZURE_AUTHORITY_HOST",
+            "AZURE_BEARER_TOKEN",
+            "AZURE_CLIENT_SECRET",
+            "AZURE_FEDERATED_TOKEN_FILE",
+            "AZURE_SAS_KEY",
+            "AZURE_STORAGE_ACCESS_KEY",
+            "AZURE_STORAGE_ACCOUNT_KEY",
+        ];
+        let cfg = AdlsConfig {
+            account: "acct".to_string(),
+            container: "cont".to_string(),
+            endpoint: None,
+            allow_http: None,
+            access_key: None,
+            sas_key: None,
+            bearer_token: None,
+            client_id: Some("client".to_string()),
+            client_secret: None,
+            tenant_id: Some("tenant".to_string()),
+        };
+        // The rendering carries credential material, so callers assert on it
+        // without printing it.
+        let describe = |vars: &[(&str, &str)]| -> Result<String> {
+            for key in OVERRIDING_VARS {
+                std::env::remove_var(key);
+            }
+            for (key, value) in vars {
+                std::env::set_var(key, value);
+            }
+            Ok(format!("{:?}", build_adls_client(cfg.clone())?.store))
+        };
+
+        assert!(
+            describe(&[("AZURE_FEDERATED_TOKEN_FILE", "/run/azure/token")])?
+                .contains("WorkloadIdentityOAuthProvider"),
+            "a federated token file should select workload identity"
+        );
+        // "a2V5" is base64 for "key"; AzureAccessKey rejects anything else.
+        assert!(
+            describe(&[("AZURE_STORAGE_ACCOUNT_KEY", "a2V5")])?.contains("AccessKey"),
+            "AZURE_STORAGE_ACCOUNT_KEY should select a shared key"
+        );
+        assert!(
+            describe(&[])?.contains("ImdsManagedIdentityProvider"),
+            "no credential should fall back to managed identity"
+        );
+        // A sovereign authority host must reach the token URL, and its trailing
+        // slash must not.
+        assert!(
+            describe(&[
+                ("AZURE_FEDERATED_TOKEN_FILE", "/run/azure/token"),
+                ("AZURE_AUTHORITY_HOST", "https://login.microsoftonline.us/"),
+            ])?
+            .contains("https://login.microsoftonline.us/tenant/oauth2/v2.0/token"),
+            "the authority host should be joined to the tenant id with one slash"
+        );
+        for key in OVERRIDING_VARS {
+            std::env::remove_var(key);
+        }
+        std::env::set_var("AZURE_FEDERATED_TOKEN_FILE", "/run/azure/token");
+        std::env::set_var("AZURE_AUTHORITY_HOST", "https://worker-authority.invalid");
+        assert!(
+            format!(
+                "{:?}",
+                build_adls_client_with_authority(
+                    cfg.clone(),
+                    Some("https://login.microsoftonline.com".to_string()),
+                )?
+                .store
+            )
+            .contains("https://login.microsoftonline.com/tenant/oauth2/v2.0/token"),
+            "source-scoped authority should override the worker environment"
+        );
+        for key in OVERRIDING_VARS {
+            std::env::remove_var(key);
+        }
+        Ok(())
+    }
+
+    /// `static_s3_credentials` is the branch that decides whether S3 signs with
+    /// a frozen credential or with the refreshing provider, so it is the seam
+    /// the production incident actually lived on. The cases share
+    /// process-global env vars, so they run in one test.
+    #[test]
+    fn s3_static_credential_selection() {
+        const VARS: &[&str] = &[
+            "S3_ACCESS_KEY",
+            "S3_SECRET_KEY",
+            "S3_SESSION_TOKEN",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+        ];
+        let blank = S3Config {
+            bucket: "bucket".to_string(),
+            region: Some("us-west-2".to_string()),
+            endpoint: None,
+            allow_http: None,
+            virtual_hosted: None,
+            profile: None,
+            access_key_id: None,
+            secret_access_key: None,
+            session_token: None,
+        };
+        let resolve = |vars: &[(&str, &str)]| -> Option<AwsCredential> {
+            for key in VARS {
+                std::env::remove_var(key);
+            }
+            for (key, value) in vars {
+                std::env::set_var(key, value);
+            }
+            static_s3_credentials(&blank)
+        };
+
+        assert!(
+            resolve(&[]).is_none(),
+            "an empty environment must fall through to the refreshing provider"
+        );
+        assert!(
+            resolve(&[("AWS_ACCESS_KEY_ID", "AKIA")]).is_none(),
+            "a key with no secret is not a credential, and must not be paired \
+             with a secret from somewhere else"
+        );
+        assert!(
+            resolve(&[("AWS_SECRET_ACCESS_KEY", "shh")]).is_none(),
+            "a secret with no key is not a credential either"
+        );
+
+        let minio = resolve(&[("S3_ACCESS_KEY", "minio"), ("S3_SECRET_KEY", "miniosecret")])
+            .expect("a whole static pair should be honoured");
+        assert_eq!(minio.key_id, "minio");
+        assert_eq!(minio.secret_key, "miniosecret");
+        assert!(
+            minio.token.is_none(),
+            "a static pair must not borrow a session token from the ambient \
+             IRSA identity - that combination can never sign a valid request"
+        );
+
+        let temporary = resolve(&[
+            ("AWS_ACCESS_KEY_ID", "ASIA"),
+            ("AWS_SECRET_ACCESS_KEY", "shh"),
+            ("AWS_SESSION_TOKEN", "session"),
+        ])
+        .expect("standard temporary credentials should be honoured");
+        assert_eq!(
+            temporary.token.as_deref(),
+            Some("session"),
+            "AWS_SESSION_TOKEN is documented in the README and must be read"
+        );
+
+        for key in VARS {
+            std::env::remove_var(key);
+        }
+    }
+}

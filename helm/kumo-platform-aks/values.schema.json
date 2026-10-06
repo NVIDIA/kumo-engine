@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["storageClass", "devicePlugin"],
+  "properties": {
+    "storageClass": {
+      "type": "object",
+      "required": ["create", "name", "skuName", "fsType", "reclaimPolicy"],
+      "properties": {
+        "create": {"type": "boolean"},
+        "name": {"type": "string", "minLength": 1},
+        "skuName": {"const": "Premium_LRS"},
+        "fsType": {"const": "xfs"},
+        "reclaimPolicy": {"const": "Delete"}
+      }
+    },
+    "devicePlugin": {
+      "type": "object",
+      "required": ["enabled", "image", "nodeSelector"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "image": {
+          "type": "object",
+          "required": ["repository", "tag", "pullPolicy"],
+          "properties": {
+            "repository": {"type": "string", "minLength": 1},
+            "tag": {"type": "string", "minLength": 1},
+            "pullPolicy": {
+              "type": "string",
+              "enum": ["Always", "IfNotPresent", "Never"]
+            }
+          }
+        },
+        "nodeSelector": {"type": "object", "minProperties": 1}
+      }
+    }
+  }
+}

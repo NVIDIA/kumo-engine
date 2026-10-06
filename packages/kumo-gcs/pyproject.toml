@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kumo-gcs"
+version = "0.1.0.dev1"
+description = "Google Cloud Storage session binding for Kumo object-store reads"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+  "kumo-core==0.1.0.dev1",
+  "kumo-api>=3.0.0",
+  "pyarrow>=14",
+  "fsspec",
+  "google-api-core>=2,<3",
+  "google-auth[requests]",
+  "google-cloud-storage>=3.1.0",
+  "google-resumable-media>=2,<3",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=7.4",
+]
+
+# Installing this distribution is what activates the plugin: a `LocalBackend`
+# reads these groups and needs no `sources=` argument to reach GCS.
+#
+# Each name is the `DataSourceType` / `IdentityType` value it serves, matched
+# without regard to case, so the SDK knows which type each entry point covers
+# before importing any of the modules below.
+[project.entry-points."kumoai_studio.sources"]
+gcs = "kumo_gcs.backend:GCSSourceBackend"
+
+[project.entry-points."kumoai_studio.sinks"]
+gcs = "kumo_gcs.sink:GCSSinkBackend"
+
+# The module, not a name inside it: the lifecycle is `probe` alone -- GCS
+# opens a connection per call and caches nothing here, so there is no `close`
+# to register.
+[project.entry-points."kumoai_studio.identities"]
+gcs = "kumo_gcs.backend"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["src", "../kumo-core/src", "../kumo-core/tests"]

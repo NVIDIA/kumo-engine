@@ -1,0 +1,1 @@
+../../.agents/hooks/validate_agent_docs.py

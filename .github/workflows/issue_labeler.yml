@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: "Pull Request and Issue Labeler"
+on:  # yamllint disable-line rule:truthy
+  issues:
+
+permissions: {}
+
+jobs:
+  add-to-project:
+    name: Add issue to project kumo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/add-to-project@244f685bbc3b7adfa8466e08b698b5577571133e
+        with:
+          project-url: https://github.com/orgs/kumo-ai/projects/2
+          github-token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}

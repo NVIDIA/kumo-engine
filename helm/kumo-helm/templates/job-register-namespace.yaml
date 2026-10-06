@@ -1,0 +1,76 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- if .Values.temporal.registerNamespace }}
+# Registers this tenant's Temporal namespace on the shared Temporal cluster.
+# On SaaS this is done out-of-band (kumo-control); on BYOC nothing else does it,
+# so the workers would fail validation with "Namespace <tenant> not found".
+# Runs the app's own wait_server_ready.py (create_namespace() — idempotent) as a
+# pre-install/pre-upgrade hook after preflight and before workload startup.
+# Render the small environment it needs directly because normal release
+# resources do not exist while pre-install hooks run.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-register-temporal-ns
+  labels:
+    {{- include "kumo.commonLabels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-12"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      {{- with (include "kumo.podAnnotations" .) }}
+      annotations:
+        {{- . | nindent 8 }}
+      {{- end }}
+      labels:
+        app: register-temporal-ns
+        {{- include "kumo.commonLabels" . | nindent 8 }}
+        {{- include "kumo.podLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "kumo.podSecurityContext" (dict "root" . "extra" dict) | nindent 8 }}
+      # No serviceAccountName: intentionally runs as the namespace `default` SA — needs no
+      # cloud identity or K8s API access.
+      {{- include "kumo.nodeTargeting" . | nindent 6 }}
+      {{- include "kumo.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: register
+          image: {{ include "kumo.dataplaneImage" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "kumo.containerSecurityContext" (dict "root" . "extra" dict) | nindent 12 }}
+          command: ["python3", "/opt/app/temporalio_commons/wait_server_ready.py", "-t", "150"]
+          env:
+            - name: INSTANCE_ID
+              value: {{ .Values.global.tenant | quote }}
+            - name: DEPLOY_STAGE
+              value: {{ include "kumo.deployStage" . | quote }}
+            - name: DEPLOY_ENV_CONFIG_JSON
+              value: {{ include "kumo.deployEnvConfigJson" . | quote }}
+          {{- if or .Values.temporal.clientMtlsSecret (.Values.postgres.dsnSecret | default dict).secretName }}
+          volumeMounts:
+          {{- include "kumo.temporalVolumeMount" . | nindent 12 }}
+          {{- include "kumo.secretsVolumeMount" . | nindent 12 }}
+          {{- end }}
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      {{- if or .Values.temporal.clientMtlsSecret (.Values.postgres.dsnSecret | default dict).secretName }}
+      volumes:
+      {{- include "kumo.temporalVolume" . | nindent 6 }}
+      {{- include "kumo.secretsVolume" . | nindent 6 }}
+      {{- end }}
+{{- end }}

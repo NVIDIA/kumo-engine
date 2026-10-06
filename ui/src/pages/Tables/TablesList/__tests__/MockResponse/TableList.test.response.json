@@ -1,0 +1,122 @@
+[
+    {
+        "id": "NA.NA-18e2b1a6e499fff45a6f249f3024662f",
+        "name": "transaction_ltv1",
+        "timestamps": {
+            "created_at": "2025-02-13T04:37:03.949636+00:00",
+            "updated_at": "2025-02-13T04:38:11.683211+00:00"
+        }
+    },
+    {
+        "id": "NA.NA-6cc581a46a0e8e89685e941c52e91dcf",
+        "name": "transactions_hnm_demo",
+        "timestamps": {
+            "created_at": "2025-01-23T06:12:04.782813+00:00",
+            "updated_at": "2025-01-23T06:12:04.782982+00:00"
+        }
+    },
+    {
+        "id": "NA.NA-5201df92c4c549b35aead90f4320b2c5",
+        "name": "articles_v2",
+        "timestamps": {
+            "created_at": "2025-01-15T12:53:42.457211+00:00",
+            "updated_at": "2025-01-15T12:53:42.457423+00:00"
+        }
+    },
+    {
+        "id": "NA.NA-ddb30a643eb247a08212b8bf9960cc49",
+        "name": "ratings",
+        "timestamps": {
+            "created_at": "2025-01-23T05:56:40.287534+00:00",
+            "updated_at": "2025-01-23T05:56:40.287691+00:00"
+        }
+    },
+    {
+        "id": "NA.NA-3ba4c08a282125063d56cf3c2c65a7ad",
+        "name": "customer",
+        "timestamps": {
+            "created_at": "2025-01-23T06:03:06.489428+00:00",
+            "updated_at": "2025-01-23T06:03:06.489579+00:00"
+        }
+    },
+    {
+        "id": "NA.NA-b656de36982dfe8ea68ab7ab1ebac6a1",
+        "name": "stock",
+        "timestamps": {
+            "created_at": "2025-01-23T06:05:01.823370+00:00",
+            "updated_at": "2025-01-23T06:05:01.823516+00:00"
+        }
+    },
+    {
+        "id": "NA.NA-69adae35a5b098d0e4a8787636fc3f10",
+        "name": "articles_test_v2_hnm_demo",
+        "timestamps": {
+            "created_at": "2025-01-23T06:10:20.732151+00:00",
+            "updated_at": "2025-01-23T06:10:20.732383+00:00"
+        }
+    },
+    {
+        "id": "NA.NA-d5828d994e8679119b05ec8f07de920a",
+        "name": "transactions_no_time",
+        "timestamps": {
+            "created_at": "2025-02-01T04:22:08.025190+00:00",
+            "updated_at": "2025-02-01T07:05:59.215589+00:00"
+        }
+    },
+    {
+        "id": "NA.NA-9c6faa6d2bca7f7ba8cadb931d7fb2c5",
+        "name": "customer_1",
+        "timestamps": {
+            "created_at": "2024-04-12T05:29:01.758647+00:00",
+            "updated_at": "2024-04-12T05:29:01.758797+00:00"
+        }
+    },
+    {
+        "id": "NA.NA-d5828d994e8679119b05ec8f07de920z",
+        "name": "transactions",
+        "timestamps": {
+            "created_at": "2024-02-01T04:22:08.025190+00:00",
+            "updated_at": "2024-02-01T07:05:59.215589+00:00"
+        }
+    },
+    {
+        "id": "NA.NA-d5828d994e8679119b05ec8f07de920y",
+        "name": "customers",
+        "timestamps": {
+            "created_at": "2024-02-01T04:22:08.025190+00:00",
+            "updated_at": "2024-02-01T07:05:59.215589+00:00"
+        }
+    },
+    {
+        "id": "NA.NA-d5828d994e8679119b05ec8f07de920x",
+        "name": "articles",
+        "timestamps": {
+            "created_at": "2024-02-01T04:22:08.025190+00:00",
+            "updated_at": "2024-02-01T07:05:59.215589+00:00"
+        }
+    },
+    {
+        "id": "NA.NA-bc150313117da0324bfe31ca4ff499e5",
+        "name": "FINANCE_TRANS",
+        "timestamps": {
+            "created_at": "2024-02-01T04:22:08.025190+00:00",
+            "updated_at": "2024-02-01T07:05:59.215589+00:00"
+        }
+    },
+    {
+        "id": "NA.NA-002e03c10b6e6d565f546bc50505145e",
+        "name": "FINANCE_ACCOUNT",
+        "timestamps": {
+            "created_at": "2024-02-01T04:22:08.025190+00:00",
+            "updated_at": "2024-02-01T07:05:59.215589+00:00"
+        }
+    },
+    {
+        "id": "NA.NA-ccaf9a4a904985c04cd0be0c96d6857c",
+        "name": "FINANCE_ORDERS",
+        "timestamps": {
+            "created_at": "2024-02-01T04:22:08.025190+00:00",
+            "updated_at": "2024-02-01T07:05:59.215589+00:00"
+        }
+    }
+]

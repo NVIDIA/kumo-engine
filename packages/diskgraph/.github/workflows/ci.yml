@@ -1,0 +1,190 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  licenses:
+    runs-on: ubuntu-22.04-large
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: 1.98.1
+      - name: Check workspace license declarations
+        run: |
+          cargo metadata --locked --format-version 1 --no-deps | jq -e '
+            [.packages[] | select(.source == null)] as $workspace |
+            any($workspace[]; .name == "diskgraph-ptrhash" and .license == "MIT") and
+            all($workspace[];
+              if .name == "diskgraph-ptrhash" then
+                .license == "MIT"
+              else
+                .license == "Apache-2.0"
+              end)'
+      - uses: taiki-e/install-action@9114bf4d891761788c546334fd37538eae1bf8b3 # v2.87.16
+        with:
+          tool: cargo-about@0.8.4,cargo-deny@0.20.2
+      - name: Fetch locked dependency sources
+        run: cargo fetch --locked
+      - name: Check license policy
+        run: cargo deny check licenses
+      - name: Check artifact-scoped dependency manifests
+        run: python3 scripts/generate_artifact_manifest.py --check third_party/artifact-manifest.json
+      - name: Check extension notice license resolution
+        run: |
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            cargo about generate --locked --offline --fail --manifest-path diskgraph-pybind/Cargo.toml --target "${target}" --features "extension-module pyo3/abi3-py311" --output-file "/tmp/diskgraph-extension-${target}-notice.txt" about.hbs
+          done
+      - name: Check ingest notice license resolution
+        run: |
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            cargo about generate --locked --offline --fail --manifest-path diskgraph-ingest/Cargo.toml --target "${target}" --output-file "/tmp/diskgraph-ingest-${target}-notice.txt" about.hbs
+          done
+      - name: Check vendored source attribution
+        run: |
+          for notice in /tmp/diskgraph-*-notice.txt; do
+            grep -Fq 'diskgraph-ptrhash 1.1.0' "${notice}"
+            grep -Fq 'Copyright (c) 2026 Ragnar Groot Koerkamp' "${notice}"
+          done
+
+  clippy:
+    runs-on: ubuntu-22.04-large
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          # Pinned: a new stable clippy adds lints that fail unchanged code.
+          toolchain: 1.98.1
+          components: clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    runs-on: ubuntu-22.04-large
+    env:
+      # `lld` (LLVM linker, Apache 2.0 + LLVM exception) uses a
+      # fraction of GNU ld's peak RAM on this workspace's link-heavy
+      # crates (AWS SDK, arrow, parquet) — at default cargo
+      # parallelism (`nproc` = 4) GNU ld peaks ~16 GB and gets
+      # OOM-killed; lld peaks well under that. Stripping full DWARF
+      # (line-tables only) further cuts link memory while still
+      # preserving line numbers in panic backtraces. lld picked
+      # over mold to avoid the AGPL-licensed mold 1.x that Ubuntu
+      # 22.04 ships in apt.
+      RUSTFLAGS: "-C target-feature=+aes,+sse2 -C link-arg=-fuse-ld=lld -C debuginfo=line-tables-only"
+    steps:
+      - name: Free disk space
+        # Removes ~40 GB of pre-installed toolchains (.NET, Android,
+        # GHC, hostedtoolcache) we don't use. On the standard runner
+        # (14 GB free) this was load-bearing; on the larger runner
+        # (150 GB free) it's defense in depth — cheap (~10 s) and
+        # gives the cargo target dir room to breathe across runs.
+        run: |
+          sudo rm -rf /usr/share/dotnet &
+          sudo rm -rf /usr/local/lib/android &
+          sudo rm -rf /opt/ghc &
+          sudo rm -rf /opt/hostedtoolcache &
+          wait
+      - uses: actions/checkout@v4
+      - name: Install lld linker
+        run: sudo apt-get update -qq && sudo apt-get install -y lld
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Build and Test
+        run: cargo test --workspace
+
+  python-test:
+    runs-on: ubuntu-22.04-large
+    env:
+      # Same lld + stripped-debug strategy as the `test` job — the
+      # DiskGraph's PEP 517 backend builds the PyO3 extension and stages the
+      # standalone ingest binary. That link step pulls the full AWS-SDK /
+      # arrow chain and is the heaviest single link in the pipeline.
+      RUSTFLAGS: "-C target-feature=+aes,+sse2 -C link-arg=-fuse-ld=lld -C debuginfo=line-tables-only"
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet &
+          sudo rm -rf /usr/local/lib/android &
+          sudo rm -rf /opt/ghc &
+          sudo rm -rf /opt/hostedtoolcache &
+          wait
+      - uses: actions/checkout@v4
+      - name: Install lld linker
+        run: sudo apt-get update -qq && sudo apt-get install -y lld
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: 1.98.1
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Pre-install specific versions to fix kumoapi grpcio-tools build isolation issues
+          pip install "setuptools<82" grpcio-tools maturin pytest
+      - name: Build and Test Python Package
+        env:
+          KUMO_GITHUB_BOT_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+        run: |
+          # Rewrite SSH URLs to HTTPS directly in pyproject.toml so pip uses the token
+          sed -i "s|git+ssh://git@github.com/|git+https://${KUMO_GITHUB_BOT_TOKEN}@github.com/|g" pyproject.toml
+
+          pip install -v ".[test]" --no-build-isolation
+
+          # Build the wheel once for the abi3 / 3.14 forward-compat check
+          # below (single cp311-abi3 artifact, reused across interpreters).
+          python -m pip wheel --no-deps --wheel-dir /tmp/dg-wheels .
+
+          TEST_DIR="$(pwd)/diskgraph-pybind/python/tests"
+          cd /tmp
+          # importlib: test modules cannot import each other, as in the kumo mirror.
+          pytest -v -s --import-mode=importlib "$TEST_DIR"
+
+      # The native module is built abi3 (limited API, floor py311), so the
+      # SAME wheel must load on newer CPython without a rebuild. Prove the
+      # org-wide "switch to Python 3.14" goal by importing the cp311-abi3
+      # wheel under a clean 3.14 interpreter.
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: abi3 forward-compat smoke (import on Python 3.14)
+        run: |
+          WHEEL=$(find /tmp/dg-wheels -maxdepth 1 -name 'diskgraph-*.whl' | sort | tail -n 1)
+          echo "wheel: $WHEEL"
+          case "$(basename "$WHEEL")" in
+            *-abi3-*) echo "OK: wheel is abi3-tagged" ;;
+            *) echo "ERROR: expected an abi3 wheel, got $(basename "$WHEEL")"; exit 1 ;;
+          esac
+          python3.14 -m venv /tmp/dg314
+          /tmp/dg314/bin/python -m pip install --upgrade pip
+          /tmp/dg314/bin/python -m pip install --no-deps "$WHEEL"
+          /tmp/dg314/bin/python - <<'PY'
+          import sys
+          assert sys.version_info[:2] == (3, 14), sys.version
+          import diskgraph._c as c
+          print("imported diskgraph._c on", sys.version.split()[0], "from", c.__file__)
+          assert hasattr(c, "TimeUnit"), "expected TimeUnit symbol on native module"
+          PY

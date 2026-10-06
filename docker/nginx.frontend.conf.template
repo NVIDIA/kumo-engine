@@ -1,0 +1,172 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+worker_processes auto;
+pid /tmp/kumo-ui/nginx.pid;
+error_log /dev/stderr notice;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+    access_log /dev/stdout;
+    sendfile on;
+    proxy_connect_timeout 75s;
+    proxy_send_timeout 300s;
+    proxy_read_timeout 600s;
+    send_timeout 300s;
+    client_max_body_size 128m;
+
+    map $request_method $kumo_spa_method_allowed {
+        default 0;
+        GET 1;
+        HEAD 1;
+    }
+
+    # Classify only the raw path (everything before '?'). Query values are
+    # application data and must not be rejected for containing the same text.
+    map $request_uri $kumo_unsafe_path {
+        default 0;
+        ~*^[^?]*%2f 1;
+        ~*^[^?]*%5c 1;
+        "~^[^?]*\\\\" 1;
+        ~^[^?]*// 1;
+        "~*^[^?]*/(?:%2e|[.]){1,2}(?:/|[?]|$)" 1;
+    }
+
+    map $uri $kumo_upstream_host {
+        default @@PRIVATE_UPSTREAM@@;
+        ~^/api(?:/|$) @@PUBLIC_UPSTREAM@@;
+    }
+
+    upstream kumo_private_api {
+        server @@PRIVATE_UPSTREAM@@;
+    }
+
+    upstream kumo_public_api {
+        server @@PUBLIC_UPSTREAM@@;
+    }
+
+    server {
+        listen 3000;
+        listen [::]:3000;
+        server_name _;
+        absolute_redirect off;
+
+        root /usr/share/nginx/html;
+        index index.html;
+        default_type application/json;
+
+        # Every proxy location inherits this one closed normalization block.
+        # Defining any proxy_set_header at a child location would shadow the
+        # entire block, so route locations deliberately contain none.
+        proxy_pass_request_headers on;
+        proxy_set_header Host $kumo_upstream_host;
+        proxy_set_header X-Forwarded-Proto @@EXTERNAL_SCHEME@@;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_set_header Forwarded "";
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header X-Forwarded-Port "";
+        proxy_set_header X-Forwarded-Prefix "";
+        proxy_set_header X-Forwarded-Scheme "";
+        proxy_set_header X-Forwarded-Server "";
+        proxy_set_header Connection "";
+        proxy_set_header Upgrade "";
+
+        if ($kumo_unsafe_path) {
+            return 400 '{"error":"bad_request"}';
+        }
+
+        location = /-/live {
+            default_type application/json;
+            return 200 '{"status":"live"}';
+        }
+
+        location = /-/ready {
+            default_type application/json;
+            alias /tmp/kumo-ui/ready;
+        }
+
+        location = /env-config.js {
+            error_page 404 = @kumo_not_found;
+            if ($kumo_spa_method_allowed = 0) {
+                return 404;
+            }
+            add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0";
+            try_files $uri @kumo_not_found;
+        }
+
+        location @kumo_not_found {
+            types {}
+            default_type application/json;
+            return 404 '{"error":"not_found"}';
+        }
+
+        location = /v0 {
+            proxy_http_version 1.1;
+            proxy_intercept_errors off;
+            proxy_pass http://kumo_private_api;
+        }
+
+        location ^~ /v0/ {
+            proxy_http_version 1.1;
+            proxy_intercept_errors off;
+            proxy_pass http://kumo_private_api;
+        }
+
+        location = /v1 {
+            proxy_http_version 1.1;
+            proxy_intercept_errors off;
+            proxy_pass http://kumo_private_api;
+        }
+
+        location ^~ /v1/ {
+            proxy_http_version 1.1;
+            proxy_intercept_errors off;
+            proxy_pass http://kumo_private_api;
+        }
+
+        location = /internal {
+            return 308 /internal/$is_args$args;
+        }
+
+        location ^~ /internal/ {
+            proxy_http_version 1.1;
+            proxy_intercept_errors off;
+            proxy_pass http://kumo_private_api/;
+        }
+
+        location = /api {
+            return 308 /api/$is_args$args;
+        }
+
+        location ^~ /api/ {
+            proxy_http_version 1.1;
+            proxy_intercept_errors off;
+            proxy_pass http://kumo_public_api/;
+            proxy_redirect @@EXTERNAL_SCHEME@@://@@PUBLIC_UPSTREAM@@/ /api/;
+            proxy_redirect @@EXTERNAL_SCHEME@@://@@EXTERNAL_HOST@@/ /api/;
+        }
+
+        location = /public_api {
+            return 404 '{"error":"not_found"}';
+        }
+
+        location ^~ /public_api/ {
+            return 404 '{"error":"not_found"}';
+        }
+
+        location / {
+            if ($kumo_spa_method_allowed = 0) {
+                return 404 '{"error":"not_found"}';
+            }
+            try_files $uri $uri/ /index.html;
+        }
+    }
+}

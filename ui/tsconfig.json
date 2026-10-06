@@ -1,0 +1,29 @@
+{
+    "extends": "./tsconfig.local.json",
+    "compilerOptions": {
+        "module": "esnext",
+        "outDir": "dist/",
+        "noImplicitAny": true,
+        "removeComments": true,
+        "preserveConstEnums": true,
+        "sourceMap": true,
+        "target": "ESNext",
+        "allowJs": true,
+        "checkJs": false,
+        "jsx": "react-jsx",
+        "pretty": true,
+        "skipLibCheck": true,
+        "strict": true,
+        "moduleResolution": "node",
+        "esModuleInterop": true,
+        "lib": ["dom", "dom.iterable", "ESNext"],
+        "allowSyntheticDefaultImports": true,
+        "forceConsistentCasingInFileNames": true,
+        "resolveJsonModule": true,
+        "isolatedModules": true,
+        "baseUrl": "src",
+        "types": ["vitest/globals", "node"]
+    },
+    "include": ["src", "src/index.d.ts"],
+    "exclude": ["node_modules", "**/*.spec.ts"]
+}

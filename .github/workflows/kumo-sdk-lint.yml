@@ -1,0 +1,121 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kumo SDK - Lint and type check
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches:
+      - master
+    paths:
+      - 'packages/kumo-api/**'
+      - 'packages/kumo-sdk/**'
+      - '.github/workflows/kumo-sdk-*'
+  pull_request:
+    paths:
+      - 'packages/kumo-api/**'
+      - 'packages/kumo-sdk/**'
+      - '.github/workflows/kumo-sdk-*'
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ startsWith(github.ref, 'refs/pull/') || github.run_number }}  # yamllint disable-line
+  # Only cancel intermediate builds if on a PR:
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: '3.11'
+          activate-environment: true
+
+      - name: Cache pre-commit
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ~/.cache/pre-commit
+          key: kumo-sdk-pre-commit-${{ hashFiles('packages/kumo-sdk/.pre-commit-config.yaml') }}
+
+      - name: Run pre-commit
+        run: |
+          uv pip install pre-commit
+          uv run --no-project pre-commit run \
+            --config packages/kumo-sdk/.pre-commit-config.yaml \
+            --files $(git ls-files packages/kumo-sdk)
+        env:
+          SKIP: 'no-commit-to-branch'
+
+  ty:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: '3.11'
+          activate-environment: true
+
+      - name: Install colocated Kumo API and SDK
+        run: |
+          # ty does not process PEP 660 .pth files, so install API normally.
+          uv pip install packages/kumo-api
+          uv pip install -e 'packages/kumo-sdk[test]'
+          # The Snowflake client libraries, named directly rather than through
+          # `kumoai-studio[snowflake]`: that extra now installs the `kumo-snowflake`
+          # plugin and `kumo-core` with it, which are first-party and absent
+          # from this job's index. The SDK's local identity and connector
+          # modules are what need the clients here, and they need nothing
+          # else the extra would bring.
+          uv pip install snowflake-connector-python snowflake-snowpark-python
+          uv pip install graphviz
+
+      - name: Run type checker
+        run: |
+          cd packages/kumo-sdk
+          uv pip install ty==0.0.74
+          uv run --no-project ty check --error-on-warning
+
+  setup_dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Check setup.py changes
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          api_project = (Path('packages/kumo-api/pyproject.toml')
+                         .read_text(encoding='utf-8'))
+          sdk_setup = Path('packages/kumo-sdk/setup.py').read_text(
+              encoding='utf-8')
+          api_version = re.search(
+              r'^\[project\]\s*$.*?^version\s*=\s*[\'\"]([^\'\"]+)',
+              api_project, re.MULTILINE | re.DOTALL).group(1)
+          sdk_fallback = re.search(
+              r"^kumo_api_release_ver = '([^']+)'$", sdk_setup,
+              re.MULTILINE).group(1)
+          if sdk_fallback != api_version:
+              raise SystemExit(
+                  f'SDK API fallback {sdk_fallback} != API {api_version}')
+          if 'github.com/kumo-ai/kumo-api' in sdk_setup:
+              raise SystemExit('SDK setup still references standalone kumo-api')
+          print(f'SDK uses colocated kumo-api {api_version}')
+          PY

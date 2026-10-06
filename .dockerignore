@@ -1,0 +1,47 @@
+# Excluded from any docker build context that COPYs the kumo repo
+# (e.g. ./docker/kumo via the GH workflow's actions/checkout step).
+# Patterns are relative to the build context root.
+
+# Python virtualenvs (the big one — .venv was 9.6 GB on devapp)
+.venv/
+env/
+venv/
+
+# Build / dist outputs
+db/
+dist/
+*.egg-info/
+build/
+
+# Frontend (separate UI image)
+ui/
+
+# Tests + fixtures (~70 MB, not needed at runtime)
+test/
+tests/
+.pytest_cache/
+.coverage
+.test_durations
+
+# Pants workspace files
+.pants.d/
+.pids
+
+# Editor / agent / git scratch
+.git/
+.github/
+.agents/
+.claude/
+.codex/
+*.log
+*.log.*
+__pycache__/
+*.pyc
+*.pyo
+
+# Docs (READMEs etc. don't ship to runtime)
+docs/
+
+# Pre-built local artifacts that shouldn't escape the dev tree
+.cache/
+.benchmarks/

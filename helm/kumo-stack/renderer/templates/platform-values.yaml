@@ -1,0 +1,68 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- define "stack.platformValues" -}}
+{{- if eq .Values.platform "eks" }}
+clusterName: {{ .Values.cluster.providers.eks.clusterName }}
+karpenter:
+  nodeRole: {{ .Values.cluster.providers.eks.karpenterNodeRole }}
+  cacheGpuInstanceStorePolicy: {{ .Values.cluster.providers.eks.cacheGpuInstanceStorePolicy | quote }}
+  cacheGpuRootVolumeGiB: {{ .Values.cluster.providers.eks.cacheGpuRootVolumeGiB }}
+  subnetSelectorTags:
+    karpenter.sh/discovery: {{ .Values.cluster.providers.eks.clusterName }}
+  securityGroupSelectorTags:
+    karpenter.sh/discovery: {{ .Values.cluster.providers.eks.clusterName }}
+nodePools:
+  # The CPU NodePool this release creates is the capacity core Kumo is targeted
+  # at, so it stamps the very selector core is rendered with.
+  cpu:
+    labels:
+      {{- include "stack.cpuNodeSelector" . | nindent 6 }}
+    instanceTypes:
+      {{- toYaml .Values.cluster.providers.eks.cpuNodePool.instanceTypes | nindent 6 }}
+    maxCpu: {{ .Values.cluster.providers.eks.cpuNodePool.maxCpu | quote }}
+  cacheTiers:
+    {{- range $tier := .Values.gpu.cacheTiers }}
+    - name: {{ $tier.name }}
+      instanceTypes: [{{ $tier.instanceType }}]
+      capacityTypes: [on-demand]
+      ssdGiB: {{ $tier.ssdGiB }}
+      gpuCount: {{ $tier.gpuCount }}
+      maxCpu: {{ mul $.Values.gpu.maxNodes (include "stack.eksVcpu" $tier.instanceType | int) | quote }}
+    {{- end }}
+  ephemeral:
+    instanceTypes: [{{ .Values.gpu.ephemeral.instanceType }}]
+    maxCpu: {{ mul .Values.gpu.maxNodes (include "stack.eksVcpu" .Values.gpu.ephemeral.instanceType | int) | quote }}
+devicePlugin:
+  enabled: {{ .Values.cluster.providers.eks.installDevicePlugin }}
+  image:
+    repository: {{ .Values.images.nvidiaDevicePlugin.repository }}
+    tag: {{ printf "%s@%s" .Values.images.nvidiaDevicePlugin.tag .Values.images.nvidiaDevicePlugin.digest }}
+{{- else if eq .Values.platform "aks" }}
+devicePlugin:
+  enabled: {{ .Values.cluster.providers.aks.installDevicePlugin }}
+  image:
+    repository: {{ .Values.images.nvidiaDevicePlugin.repository }}
+    tag: {{ printf "%s@%s" .Values.images.nvidiaDevicePlugin.tag .Values.images.nvidiaDevicePlugin.digest }}
+{{- else }}
+operators:
+  mode: {{ .Values.cluster.providers.aro.operatorMode }}
+machineAutoscalers:
+  cacheMachineSets:
+    {{- toYaml .Values.cluster.providers.aro.cacheMachineSets | nindent 4 }}
+  ephemeralMachineSet: {{ .Values.cluster.providers.aro.ephemeralMachineSet }}
+  maxReplicas: {{ .Values.gpu.maxNodes }}
+{{- end }}
+storageClass:
+  create: {{ .Values.storage.diskgraph.storageClass.create }}
+  name: {{ include "stack.storageClassName" . | quote }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kumo-stack-platform-values
+data:
+  values.yaml: |-
+{{ include "stack.platformValues" . | indent 4 }}

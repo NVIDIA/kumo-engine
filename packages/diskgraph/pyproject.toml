@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "diskgraph_build_backend"
+backend-path = ["diskgraph-pybind"]
+
+[project]
+name = "diskgraph"
+version = "0.1.0"
+# 3.11 is the org-wide minimum and the abi3 floor of the native module
+# (see diskgraph-pybind/Cargo.toml pyo3 abi3-py311). A single cp311-abi3
+# wheel installs on 3.11 through 3.14+.
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26,<3",
+    # Parquet and Arrow IPC reads/writes in the Python artifact helpers.
+    "pyarrow==24.0.0",
+]
+
+[project.optional-dependencies]
+kumo = [
+    "kumo-api>=3.0.0b1,<4",
+]
+test = [
+    "pytest",
+    "pyarrow",
+    "kumo-api>=3.0.0b1,<4",
+]
+
+[tool.maturin]
+manifest-path = "diskgraph-pybind/Cargo.toml"
+module-name = "diskgraph._c"
+python-source = "diskgraph-pybind/python"
+# extension-module: link the Python extension (no libpython at link time).
+# pyo3/abi3-py311: force the limited-API / stable-ABI build so maturin
+# emits one `cp311-abi3` wheel that runs on CPython 3.11 .. 3.14+. The
+# abi3 floor is also set on the pyo3 dependency in Cargo.toml; declaring
+# it here keeps the wheel tag driven by the build config (not just a
+# transitive crate feature) regardless of which interpreter CI links.
+features = ["extension-module", "pyo3/abi3-py311"]
+include = [
+    { path = "diskgraph-pybind/python/diskgraph/bin/ingest", format = "wheel" },
+]

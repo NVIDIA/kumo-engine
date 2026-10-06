@@ -1,0 +1,118 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Build Kumo Base AMI
+
+# Builds the kumo-base AMI (Ubuntu 22.04 + NVIDIA driver + Docker +
+# nvidia-container-toolkit) via deploy/ami/kumo-base.pkr.hcl and registers it
+# as kumo-base-ubuntu22-<timestamp> in the AWS account.
+#
+# Why this exists as a workflow (not a local `packer build`):
+#   - Auditability: every base AMI is tied to a GitHub Actions run with an
+#     actor, ref, inputs, and full log — not "whoever ran packer on their
+#     laptop with their SSO creds".
+#   - Reproducibility: pinned runner + Packer install, no per-developer drift.
+#
+# The downstream single-host build (build-ami.yml) sources `most_recent`
+# `kumo-base-ubuntu22-*`, so a base rebuild here becomes the new base for
+# subsequent single-host builds. Rebuild base rarely — only when bumping the
+# NVIDIA driver, pulling OS security patches, or changing what install-base.sh
+# bakes/holds. See deploy/ami/README.md "Step 0".
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      nvidia_driver_version:
+        description: "NVIDIA server-edition driver version (580-open or newer for CUDA 13). Leave blank to use the template default."
+        required: false
+        default: ''
+        type: string
+      instance_type:
+        description: "Build instance type. Leave blank to use the template default (g4dn.xlarge — needs a GPU for the smoke test)."
+        required: false
+        default: ''
+        type: string
+      aws_region:
+        description: "AWS region to build/register in. Leave blank to use the template default (us-west-2)."
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    name: Build Kumo Base AMI
+    environment: gha-ami-build
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-ami-build
+          role-duration-seconds: 14400
+          aws-region: us-west-2
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Install Packer
+        run: |
+          curl -fsSL https://apt.releases.hashicorp.com/gpg \
+            | gpg --dearmor --batch --yes \
+            | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg > /dev/null
+
+          echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+            | sudo tee /etc/apt/sources.list.d/hashicorp.list
+
+          sudo apt-get update
+          sudo apt-get install -y packer
+
+      - name: Build base AMI with Packer
+        env:
+          # The amazon-ebs builder authenticates via the standard AWS
+          # credential chain populated by configure-aws-credentials. The base build needs no ECR
+          # access — Docker comes from get.docker.com and the smoke-test image
+          # (nvidia/cuda) is pulled from public Docker Hub.
+          AWS_DEFAULT_REGION: us-west-2
+          NVIDIA_DRIVER_VERSION: ${{ inputs.nvidia_driver_version }}
+          INSTANCE_TYPE: ${{ inputs.instance_type }}
+          AWS_REGION_INPUT: ${{ inputs.aws_region }}
+        run: |
+          cd deploy/ami
+          packer init kumo-base.pkr.hcl
+
+          # Only pass overrides that were actually provided, so blanks fall
+          # back to the template defaults instead of empty strings.
+          extra_vars=()
+          [ -n "$NVIDIA_DRIVER_VERSION" ] && extra_vars+=(-var "nvidia_driver_version=${NVIDIA_DRIVER_VERSION}")
+          [ -n "$INSTANCE_TYPE" ]         && extra_vars+=(-var "instance_type=${INSTANCE_TYPE}")
+          [ -n "$AWS_REGION_INPUT" ]      && extra_vars+=(-var "aws_region=${AWS_REGION_INPUT}")
+
+          packer build -machine-readable \
+            "${extra_vars[@]}" \
+            kumo-base.pkr.hcl | tee packer.log || true
+
+          AMI_ID=$(grep 'artifact,0,id' packer.log | cut -d, -f6 | cut -d: -f2)
+          if [ -z "$AMI_ID" ]; then
+            echo "Packer build failed with no AMI produced" >&2
+            exit 1
+          fi
+
+          echo "Base AMI: $AMI_ID"
+          echo "### Built base AMI \`$AMI_ID\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Send Slack notification on failure
+        if: ${{ failure() }}
+        uses: ./.github/actions/slack-notification-action
+        with:
+          channel-id: "C05MUC2FTRN"
+          job-status: ${{ job.status }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+          slack-bot-token: ${{ secrets.SLACK_BOT_TOKEN }}

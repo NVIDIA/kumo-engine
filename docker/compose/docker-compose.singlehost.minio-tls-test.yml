@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Private-CA TLS variant for the pinned MinIO compatibility fixture. The
+# already-pinned nginx image supplies OpenSSL and generates short-lived test
+# material into a named volume; no private key is checked into the repository.
+
+services:
+  minio-certgen:
+    image: nginx:1.29.7
+    container_name: ${STACK:-kumo}-minio-certgen
+    user: "0"
+    restart: "no"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        if [ -s /certs/ca.crt ] && [ -s /certs/public.crt ] && [ -s /certs/private.key ]; then
+          exit 0
+        fi
+        umask 077
+        openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 3650 \
+          -subj "/CN=Kumo MinIO Test CA" \
+          -addext "basicConstraints=critical,CA:TRUE" \
+          -addext "keyUsage=critical,keyCertSign,cRLSign" \
+          -keyout /certs/ca.key -out /certs/ca.crt
+        openssl req -new -newkey rsa:2048 -sha256 -nodes \
+          -subj "/CN=minio" \
+          -addext "subjectAltName=DNS:minio,DNS:localhost,IP:127.0.0.1" \
+          -addext "basicConstraints=critical,CA:FALSE" \
+          -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+          -addext "extendedKeyUsage=serverAuth" \
+          -keyout /certs/private.key -out /certs/server.csr
+        openssl x509 -req -sha256 -days 3650 -set_serial 1 \
+          -CA /certs/ca.crt -CAkey /certs/ca.key \
+          -copy_extensions copy \
+          -in /certs/server.csr -out /certs/public.crt
+        chown 1000:1000 /certs/private.key /certs/public.crt
+        chmod 0600 /certs/private.key
+        chmod 0644 /certs/ca.crt /certs/public.crt
+    volumes:
+      - minio_tls_certs:/certs
+
+  minio:
+    depends_on:
+      minio-certgen:
+        condition: service_completed_successfully
+    command: server /data --certs-dir /certs --console-address :9001
+    volumes:
+      - minio_tls_certs:/certs:ro
+
+  minio-init:
+    environment:
+      MINIO_TEST_INTERNAL_ENDPOINT: https://minio:9000
+      SSL_CERT_FILE: /fixture/tls/ca.crt
+    volumes:
+      - minio_tls_certs:/fixture/tls:ro
+
+volumes:
+  minio_tls_certs:

@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+machineAutoscalers:
+  cacheMachineSets:
+    - test-worker-gpu-cache-small
+    - test-worker-gpu-cache-medium
+    - test-worker-gpu-cache-large
+  ephemeralMachineSet: test-worker-gpu-ephemeral
+operators:
+  mode: existing

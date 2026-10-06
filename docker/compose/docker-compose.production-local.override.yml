@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+x-local-cpu-backend-image: &local-cpu-backend-image ${KUMO_IMAGE_REGISTRY:-kumo}/kumo-backend-cpu:${KUMO_IMAGE_TAG:-local}
+x-local-pool-worker-image: &local-pool-worker-image ${KUMO_POOL_WORKER_IMAGE:-${KUMO_IMAGE_REGISTRY:-kumo}/kumo-backend-cpu:${KUMO_IMAGE_TAG:-local}}
+
+services:
+  # Relabel local bind mounts for SELinux hosts (for example Fedora). Docker
+  # ignores the label option on hosts where SELinux is disabled.
+  temporal:
+    volumes:
+      - ./config/temporal/dynamicconfig:/etc/temporal/config/dynamicconfig:ro,z
+
+  kumo-rest:
+    image: *local-cpu-backend-image
+
+  kumo-rest-public:
+    image: *local-cpu-backend-image
+
+  kumo-worker-data:
+    image: *local-cpu-backend-image
+    healthcheck:
+      timeout: ${WORKER_HEALTHCHECK_TIMEOUT:-45s}
+
+  kumo-worker-mlworkflow:
+    image: *local-cpu-backend-image
+    healthcheck:
+      timeout: ${WORKER_HEALTHCHECK_TIMEOUT:-45s}
+
+  kumo-pool-controller:
+    image: *local-cpu-backend-image
+    healthcheck:
+      timeout: ${WORKER_HEALTHCHECK_TIMEOUT:-45s}
+
+  kumo-pool-worker:
+    image: *local-pool-worker-image
+    healthcheck:
+      timeout: ${WORKER_HEALTHCHECK_TIMEOUT:-45s}
+
+  kumo-ui:
+    image: ${KUMO_IMAGE_REGISTRY:-kumo}/kumo-ui:${KUMO_IMAGE_TAG:-local}
+
+  # nginx/prometheus read their config from the neutral bootstrap paths (base
+  # nginx `-c` / prometheus `--config.file`); mount the preflight-generated
+  # config file there instead of the image default path.
+  prometheus:
+    volumes:
+      - ${PROMETHEUS_CONFIG:-./config/prometheus.production-local.yml}:${PROMETHEUS_CONFIG_MOUNT:-/etc/kumo/prometheus/prometheus.yml}:ro,z
+
+  nginx:
+    volumes:
+      - ${NGINX_CONFIG:-./config/nginx.production-local.conf}:${NGINX_CONFIG_MOUNT:-/etc/kumo/nginx/nginx.conf}:ro,z

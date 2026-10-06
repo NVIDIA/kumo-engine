@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+python_sources(
+    name="utils",
+    sources=["utils/errors.py"],
+)

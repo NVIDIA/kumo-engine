@@ -1,0 +1,21 @@
+{{- if $.Values.server.enabled }}
+{{- range $service := (list "frontend" "internal-frontend" "history" "matching" "worker") }}
+{{- $serviceValues := index $.Values.server $service }}
+{{- if and $serviceValues.enabled (gt ($serviceValues.replicaCount | int) 0) ($serviceValues.podDisruptionBudget) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "temporal.componentname" (list $ $service) }}-pdb
+  labels:
+    {{- include "temporal.resourceLabels" (list $ $service "") | nindent 4 }}
+spec:
+  {{ toYaml $serviceValues.podDisruptionBudget }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "temporal.name" $ }}
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+      app.kubernetes.io/component: {{ $service }}
+{{- end }}
+---
+{{- end }}
+{{- end }}

@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "sources": [
+    {
+      "license_expression": "BSD-3-Clause",
+      "license_file": "3rdparty/notices/torchtext-LICENSE",
+      "modified": true,
+      "path": "kumo/utils/text.py",
+      "upstream": "https://github.com/pytorch/text",
+      "upstream_path": "torchtext/data/utils.py",
+      "upstream_ref": "9bed85d7a7ae13cf8c28598a88d8e461fe1afcb4"
+    },
+    {
+      "license_expression": "MIT",
+      "license_file": "3rdparty/notices/spacy-LICENSE",
+      "modified": true,
+      "path": "kumo/utils/text.py",
+      "upstream": "https://github.com/explosion/spaCy",
+      "upstream_path": "spacy/lang/en/stop_words.py",
+      "upstream_ref": "32c4b638ae0e042264fadc3ceb3ab67147c7b6f5"
+    },
+    {
+      "license_expression": "MIT",
+      "license_file": "3rdparty/notices/fabric-toolbox-LICENSE",
+      "modified": true,
+      "path": "tools/pquery_tracing/visualize_pquery_plan.py",
+      "upstream": "https://github.com/gbrueckl/Fabric.Toolbox",
+      "upstream_path": "DataEngineering/Library/VisualizeExecutionPlan.py",
+      "upstream_ref": "58212be03380d45c9798ee610d61f2808776941b"
+    },
+    {
+      "license_expression": "MIT",
+      "license_file": "3rdparty/notices/temporal-samples-python-LICENSE",
+      "modified": true,
+      "path": "rest/backends/common/updatable_timer_lib.py",
+      "upstream": "https://github.com/temporalio/samples-python",
+      "upstream_path": "updatable_timer/updatable_timer_lib.py",
+      "upstream_ref": "7577bd6f52652cb82ad9818074931a794d568a39"
+    },
+    {
+      "license_expression": "BSD-3-Clause",
+      "license_file": "3rdparty/notices/scikit-learn-LICENSE",
+      "modified": true,
+      "path": "kumo/utils/visualization.py",
+      "upstream": "https://github.com/scikit-learn/scikit-learn",
+      "upstream_path": "examples/model_selection/plot_roc.py",
+      "upstream_ref": "02b41de8fca096d92aea6a5336fce372b842c5c7"
+    },
+    {
+      "license_expression": "BSD-3-Clause",
+      "license_file": "3rdparty/notices/starlette-LICENSE.md",
+      "modified": true,
+      "path": "packages/kumo-sdk/kumoai_studio/exceptions.py",
+      "upstream": "https://github.com/Kludex/starlette",
+      "upstream_path": "starlette/exceptions.py",
+      "upstream_ref": "b5126b2063dbd6fa46d3e60b4a7117c99dcdbe6e"
+    },
+    {
+      "license_expression": "MIT",
+      "license_file": "3rdparty/notices/pytorch-forecasting-LICENSE",
+      "modified": true,
+      "path": "packages/kumo-core/src/kumo_core/evaluation/distribution.py",
+      "upstream": "https://github.com/sktime/pytorch-forecasting",
+      "upstream_path": "pytorch_forecasting/metrics/base_metrics.py",
+      "upstream_ref": "4039c0da8d3a6ffa687968ec7aea985f047d8658"
+    }
+  ]
+}

@@ -1,0 +1,169 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[project]
+name="kumoai-studio"
+dynamic=["dependencies", "version"]
+authors=[
+    {name="Kumo.AI", email="hello@kumo.ai"},
+]
+license="Apache-2.0 AND BSD-3-Clause"
+license-files=["LICENSE", "THIRD-PARTY.txt"]
+description="AI on the Modern Data Stack"
+readme="README.md"
+requires-python=">=3.11"
+keywords=[
+    "deep-learning",
+    "graph-neural-networks",
+    "cloud-data-warehouse",
+]
+classifiers=[
+    "Development Status :: 5 - Production/Stable",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3 :: Only",
+]
+
+[project.optional-dependencies]
+doc=[
+    "sphinx",
+    "sphinx-book-theme",
+    "sphinx-copybutton",
+    "sphinx-autodoc-typehints",
+    "graphviz",
+    "mermaid-py",
+]
+test=[
+    "packaging>=23",
+    "pytest",
+    "pytest-mock",
+    "requests-mock",
+]
+release=[
+    "packaging>=23",
+]
+snowflake=[
+    "snowflake-connector-python>=4.3",
+    "snowflake-snowpark-python>=1.24",
+]
+
+[project.urls]
+homepage="https://kumo.ai"
+documentation="https://kumo.ai/docs"
+
+[build-system]
+requires = ["setuptools>=77", "setuptools_scm"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where=["."]
+include=["kumoai_studio*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "kumoai_studio._version.__version__"}
+
+[tool.pytest.ini_options]
+addopts = [
+    "--capture=no",
+    "--color=yes",
+    "-vv",
+]
+filterwarnings=[
+    "error::UserWarning",
+    "error::DeprecationWarning",
+    "ignore:.*pkg_resources.*:DeprecationWarning",
+    # snowflake-connector's vendored urllib3/pyOpenSSL calls the deprecated
+    # X509.get_subject during the TLS handshake. Cosmetic; remove once the
+    # connector ships patched vendored code.
+    "ignore:X509.get_subject is deprecated.*:DeprecationWarning",
+]
+markers = [
+    "integration: integration tests",
+]
+
+[tool.yapf]
+based_on_style="pep8"
+split_before_named_assigns=false
+blank_line_before_nested_class_or_def=false
+
+[tool.isort]
+known_first_party=["kumoai_studio"]
+multi_line_output=3
+include_trailing_comma=true
+skip=[".gitignore", "__init__.py"]
+
+[tool.flake8]
+# The NVIDIA SPDX copyright header required for the Apache-2.0 release is a
+# single 103-character line, and SPDX permits only one tag per line, so it
+# cannot be wrapped. Code style is still held to 80 columns by ruff and yapf.
+max-line-length=103
+
+[tool.ruff]  # https://docs.astral.sh/ruff/rules
+src=["kumoai_studio", "setup.py"]
+line-length=80
+indent-width=4
+target-version="py310"
+
+[tool.ruff.lint]
+select=[
+    "D",  # pydocstyle
+]
+ignore = [
+    "D100",  # TODO Don't ignore "Missing docstring in public module"
+    "D101",  # TODO Don't ignore "Missing docstring in public class"
+    "D102",  # TODO Don't ignore "Missing docstring in public method"
+    "D103",  # TODO Don't ignore "Missing docstring in public function"
+    "D104",  # TODO Don't ignore "Missing docstring in public package"
+    "D105",  # Ignore "Missing docstring in magic method"
+    "D107",  # Ignore "Missing docstring in __init__"
+    "D205",  # Ignore "blank line required between summary line and description"
+    "D415",  # First line should end with a period
+]
+
+[tool.ruff.format]
+quote-style="single"
+
+[tool.ruff.lint.pydocstyle]
+convention="google"
+
+[tool.ty.environment]
+python-version = "3.11"
+
+[tool.ty.analysis]
+allowed-unresolved-imports = [
+    "fsspec.**",
+    "setuptools.**",
+    "IPython.**",
+    "google.colab.**",
+    "streamlit.**",
+    "snowflake.**",
+    "google.**",
+]
+
+[[tool.ty.overrides]]
+include = ["test/**"]
+rules = { unresolved-import = "ignore", unresolved-attribute = "ignore" }
+
+# The Kaggle fixture builders and probes reach for two things no resolver can
+# see: `diskgraph`, a native extension not installed for the type-check job,
+# and a sibling row's build module pulled in through a runtime
+# `sys.path.insert`. Scoped to `unresolved-import` alone -- every other rule
+# is held over `scripts/**` exactly as it is over library code.
+[[tool.ty.overrides]]
+include = ["scripts/**"]
+rules = { unresolved-import = "ignore" }
+
+[[tool.ty.overrides]]
+include = ["examples/**"]
+rules = { unresolved-import = "ignore", unresolved-attribute = "ignore", unresolved-reference = "ignore", no-matching-overload = "ignore", unsupported-operator = "ignore", invalid-argument-type = "ignore" }
+
+# Demo notebooks are illustrative material of the same character as
+# `examples/**`: cells carry placeholder literals. They are never executed by
+# CI, so a type error here cannot break anything a user runs.
+[[tool.ty.overrides]]
+include = ["**/*.ipynb"]
+rules = { unresolved-import = "ignore", unresolved-reference = "ignore", unresolved-attribute = "ignore", invalid-argument-type = "ignore" }

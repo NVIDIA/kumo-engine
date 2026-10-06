@@ -1,0 +1,105 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Sync DiskGraph
+
+'on':
+  repository_dispatch:
+    types: [sync-diskgraph]
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: kumo-diskgraph commit to mirror
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+
+      - name: Resolve source revision
+        id: source
+        env:
+          REQUESTED_SHA: ${{ github.event.client_payload.sha || inputs.source_sha }}
+        run: |
+          if ! [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Expected a full kumo-diskgraph commit SHA" >&2
+            exit 1
+          fi
+          echo "sha=$REQUESTED_SHA" >> "$GITHUB_OUTPUT"
+          echo "previous=$(cat tools/migrations/diskgraph/source_revision.txt)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          repository: kumo-ai/kumo-diskgraph
+          ref: ${{ steps.source.outputs.sha }}
+          path: .diskgraph-upstream
+          fetch-depth: 0
+          token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+
+      - name: Synchronize source and provenance
+        run: |
+          python tools/migrations/diskgraph/sync.py \
+            --source-repo .diskgraph-upstream \
+            --source-sha '${{ steps.source.outputs.sha }}'
+
+      - name: Record upstream authors
+        id: commit
+        env:
+          PREVIOUS_SHA: ${{ steps.source.outputs.previous }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          {
+            echo 'message<<EOF'
+            echo "Sync DiskGraph at ${SOURCE_SHA:0:12}"
+            echo
+            git -C .diskgraph-upstream log \
+              --format='Co-authored-by: %aN <%aE>' \
+              "$PREVIOUS_SHA..$SOURCE_SHA" | sort -u
+            echo
+            echo 'Signed-off-by: github-actions <github-actions@github.com>'
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify synchronized mirror
+        run: |
+          git add packages/diskgraph tools/migrations/diskgraph
+          python tools/migrations/diskgraph/verify_import.py \
+            --source-repo .diskgraph-upstream --index
+
+      - name: Create or update synchronization PR
+        id: pr
+        uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0 # v8.1.0
+        with:
+          token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+          branch: automation/sync-diskgraph
+          base: master
+          delete-branch: true
+          add-paths: |
+            packages/diskgraph
+            tools/migrations/diskgraph
+          commit-message: ${{ steps.commit.outputs.message }}
+          title: Sync DiskGraph at ${{ steps.source.outputs.sha }}
+          body: |
+            Mirrors `kumo-ai/kumo-diskgraph@${{ steps.source.outputs.sha }}` into `packages/diskgraph`.
+
+            The synchronization is mechanical. Source path, mode, and blob identity are recorded in the provenance manifest and checked in CI.
+
+            Source comparison: https://github.com/kumo-ai/kumo-diskgraph/compare/${{ steps.source.outputs.previous }}...${{ steps.source.outputs.sha }}
+
+      - name: Add or update change map
+        if: steps.pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+          PR_NUMBER: ${{ steps.pr.outputs.pull-request-number }}
+        run: |
+          python tools/migrations/diskgraph/write_sync_change_map.py "$PR_NUMBER"

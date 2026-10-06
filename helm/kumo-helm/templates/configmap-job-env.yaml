@@ -1,0 +1,18 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: job-env
+  labels:
+    {{- include "kumo.commonLabels" . | nindent 4 }}
+data:
+  {{- if .Values.observability.pushGateway.address }}
+  KUMO_PUSH_GATEWAY_ADDRESS: {{ .Values.observability.pushGateway.address | quote }}
+  {{- end }}
+  # REGION_SUFFIX is consumed by the app (region-suffix appended to resource names);
+  # empty = no suffix, the correct cloud-neutral default.
+  REGION_SUFFIX: ""

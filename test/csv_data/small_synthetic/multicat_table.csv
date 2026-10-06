@@ -1,0 +1,12 @@
+PKEY;COL;DATE;E;BOOL;VALUE;NUM;COL_NOSEP;COL_WITHSEP
+1;a;2023-01-01;1;True;1.0;1;x;abc|b
+2;b;2023-01-02;2;True;1.0;1;y;b|cde
+3;c;2023-01-01;3;False;2.0;0;z;cde|def|e
+4;d;2023-01-02;4;False;3.1;1;x;e|f
+5;e;2023-01-03;2;False;2.2;0;y;abc|b
+6;f,g;2023-01-01;3;True;3.3;1;z;abc|b
+7;h,i;2023-01-03;1;True;2.4;0;x;abc|b
+8;j;2023-01-01;4;True;1.2;0;y;abc|b
+9;a,c;2023-01-01;2;True;3.3;1;;abc|b
+10;;2023-01-02;3;True;2.1;1;w;abc|b
+11;d;2023-01-04;1;False;1.0;1;;abc|b

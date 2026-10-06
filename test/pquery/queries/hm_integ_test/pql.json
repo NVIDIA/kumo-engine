@@ -1,0 +1,9 @@
+{
+    "LTV on Hnm 10k": "PREDICT SUM(transactions.price, 0, 90, days)\nFOR EACH customers.customer_id\nWHERE TEMPORAL ENTITY FILTER IS SUM(transactions.price, -60, 0, days) > 0\nASSUMING COUNT(transactions.*, 0, 90, days) > 0",
+    "LTV on Hnm 10k - AVG": "PREDICT AVG(transactions.price, 0, 90, days)\nFOR EACH customers.customer_id\nWHERE TEMPORAL ENTITY FILTER IS SUM(transactions.price, -60, 0, days) > 0\nASSUMING COUNT(transactions.*, 0, 90, days) > 0",
+    "LTV on Hnm 10k - LAST": "PREDICT LAST(transactions.price, 0, 90, days)\nFOR EACH customers.customer_id\nWHERE TEMPORAL ENTITY FILTER IS SUM(transactions.price, -60, 0, days) > 0\nASSUMING COUNT(transactions.*, 0, 90, days) > 0",
+    "Churn on Hnm 10k": "PREDICT COUNT(transactions.*, 0, 90, days) > 0\nFOR EACH customers.customer_id\nWHERE TEMPORAL ENTITY FILTER IS SUM(transactions.price, -60, 0, days) > 0.05",
+    "LTV with entity filters": "PREDICT SUM(transactions.price, 0, 90, days)\nFOR EACH customers.customer_id\nWHERE TEMPORAL ENTITY FILTER IS LAST(transactions.sales_channel_id, -60, 0, days) = 1\nENTITY FILTER IS (customers.fashion_news_frequency = \"NONE\") AND (customers.age > 30)",
+    "AVG purchase price": "PREDICT AVG(transactions.price, 0, 90, days)\nFOR EACH customers.customer_id\nWHERE TEMPORAL ENTITY FILTER IS LAST(transactions.sales_channel_id, -60, 0, days) = 1\nENTITY FILTER IS (customers.fashion_news_frequency = \"NONE\") AND (customers.age > 30)",
+    "Max purchase price": "PREDICT MAX(transactions.price, 0, 90, days)\nFOR EACH customers.customer_id\nWHERE TEMPORAL ENTITY FILTER IS LAST(transactions.sales_channel_id, -60, 0, days) = 1\nENTITY FILTER IS (customers.fashion_news_frequency = \"NONE\") AND (customers.age > 30)"
+}

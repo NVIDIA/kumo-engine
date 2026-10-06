@@ -1,0 +1,29 @@
+server:
+  replicaCount: 1
+  config:
+    persistence:
+      defaultStore: default
+      visibilityStore: visibility
+      numHistoryShards: 512
+      datastores:
+        default:
+          sql:
+            pluginName: postgres12
+            databaseName: temporal
+            connectAddr: "postgres.default.svc.cluster.local:5432"
+            connectProtocol: "tcp"
+            user: temporal
+            password: temporal
+        visibility:
+          sql:
+            pluginName: postgres12
+            databaseName: temporal_visibility
+            connectAddr: "postgres.default.svc.cluster.local:5432"
+            connectProtocol: "tcp"
+            user: temporal
+            password: temporal
+    namespaces:
+      create: true
+      namespace:
+        - name: test
+          retention: 1d

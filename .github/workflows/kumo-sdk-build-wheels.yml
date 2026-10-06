@@ -1,0 +1,118 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kumo SDK - Build wheels
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      temporary-version:
+        description: >
+          PEP 440-compliant version to bake into the built wheels. If provided,
+          the `kumo-api` version needs to be available in PyPI. This is useful
+          when building wheels without making a git commit. If it's empty, the
+          version `kumoai_studio.__version__` will be used.
+        type: string
+        required: true
+      artifact-name:
+        type: string
+        required: true
+      expected-version:
+        type: string
+        required: false
+        default: ''
+      is-release:
+        type: boolean
+        required: true
+      continue-on-error:
+        type: boolean
+        required: false
+        default: true
+      retention-days:
+        type: number
+        required: false
+        default: 1
+  workflow_call:
+    inputs:
+      temporary-version:
+        description: >
+          PEP 440-compliant version to bake into the built wheels. If provided,
+          the `kumo-api` version needs to be available in PyPI. This is useful
+          when building wheels without making a git commit. If it's empty, the
+          version `kumoai_studio.__version__` will be used.
+        type: string
+        required: true
+      artifact-name:
+        type: string
+        required: true
+      expected-version:
+        type: string
+        required: false
+        default: ''
+      is-release:
+        type: boolean
+        required: true
+      continue-on-error:
+        type: boolean
+        required: false
+        default: true
+      retention-days:
+        type: number
+        required: false
+        default: 1
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+    working-directory: packages/kumo-sdk
+
+jobs:
+  wheel:
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ inputs.continue-on-error }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
+      # For public release, this workflow expects a version is already set in
+      # kumoai_studio.__version__ on the commit, so there's no need to set it here.
+      - name: Set version to kumoai_studio.__version__
+        if: ${{ inputs.temporary-version != '' }}
+        env:
+          TEMPORARY_VERSION: ${{ inputs.temporary-version }}
+        run: |
+          echo "Setting version to ${TEMPORARY_VERSION}"
+          python scripts/set_version.py "${TEMPORARY_VERSION}"
+          git --no-pager diff --color=always
+
+      - name: Build wheel
+        run: |
+          pip install build 'packaging>=23' twine
+          python -m build --wheel --outdir dist
+        env:
+          KUMO_SDK_RELEASE: ${{ inputs.is-release && 1 || 0 }}
+
+      - name: Validate release artifact
+        if: ${{ inputs.expected-version != '' }}
+        env:
+          EXPECTED_VERSION: ${{ inputs.expected-version }}
+        run: ./scripts/validate_wheels_for_release.sh dist/*.whl
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ./packages/kumo-sdk/dist/*.whl
+          retention-days: ${{ inputs.retention-days }}

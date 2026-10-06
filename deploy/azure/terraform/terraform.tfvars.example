@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+subscription_id      = "00000000-0000-0000-0000-000000000000"
+deployment_name      = "example"
+image_id             = "/subscriptions/.../resourceGroups/.../providers/Microsoft.Compute/images/kumo-singlehost"
+admin_ssh_public_key = "ssh-ed25519 AAAA... operator@example"
+location             = "westus2"
+azure_environment    = "public"
+public_url           = "https://kumo.example.com"
+admin_emails         = "admin@example.com"

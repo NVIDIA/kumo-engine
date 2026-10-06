@@ -1,0 +1,365 @@
+{
+  "name": "COHORT_ANALYSIS",
+  "data_source_dict": {},
+  "tables": [
+    {
+      "table_name": "USER",
+      "data_source": null,
+      "data_version": null,
+      "pkey": {
+        "name": "id",
+        "stype": null,
+        "dtype": "string",
+        "na_values": null,
+        "metadata": {},
+        "drop_duplicates": false
+      },
+      "fkeys": [],
+      "cols": [
+        {
+          "name": "active",
+          "stype": null,
+          "dtype": "string",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        },
+        {
+          "name": "created_date",
+          "stype": null,
+          "dtype": "date",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        },
+        {
+          "name": "balance",
+          "stype": null,
+          "dtype": "float",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        },
+        {
+          "name": "credit",
+          "stype": null,
+          "dtype": "float",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        },
+        {
+          "name": "multi_cat",
+          "stype": null,
+          "dtype": "string",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        }
+      ],
+        "time_col":  null,
+        "source_name": null,
+        "stats": {}
+    },
+    {
+      "table_name": "ACCOUNT",
+      "data_source": null,
+      "data_version": null,
+      "pkey": {
+        "name": "account_id",
+        "stype": null,
+        "dtype": "int",
+        "na_values": null,
+        "metadata": {},
+        "drop_duplicates": false
+      },
+      "fkeys": [
+        {
+          "name": "user_id",
+          "stype": null,
+          "dtype": "string",
+          "na_values": null,
+          "metadata": {},
+          "dst_table": "USER",
+          "dst_key": "id",
+          "dst_data_source": null,
+          "stats": {}
+        }
+      ],
+      "cols": [
+        {
+          "name": "account_active",
+          "stype": null,
+          "dtype": "string",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        },
+        {
+          "name": "created_date",
+          "stype": null,
+          "dtype": "date",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        },
+        {
+          "name": "account_balance",
+          "stype": null,
+          "dtype": "float",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        },
+        {
+          "name": "user_id",
+          "stype": null,
+          "dtype": "string",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        },
+        {
+          "name": "single_category",
+          "stype": null,
+          "dtype": "string",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        },
+        {
+          "name": "single_numerical",
+          "stype": null,
+          "dtype": "float",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        },
+        {
+          "name": "group_id",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        }
+      ],
+        "time_col":  null,
+        "source_name": null,
+        "stats": {}
+    },
+    {
+      "table_name": "ACCOUNT_STATE",
+      "data_source": null,
+      "data_version": null,
+      "pkey": {
+        "name": "account_state_id",
+        "stype": null,
+        "dtype": "int",
+        "na_values": null,
+        "metadata": {},
+        "drop_duplicates": false
+      },
+      "fkeys": [
+        {
+          "name": "account_state_id",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "dst_table": "ACCOUNT",
+          "dst_key": "account_state_id",
+          "dst_data_source": null,
+          "stats": {}
+        }
+      ],
+      "cols": [
+        {
+          "name": "account_state_active",
+          "stype": null,
+          "dtype": "string",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        },
+        {
+          "name": "created_date",
+          "stype": null,
+          "dtype": "date",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        },
+        {
+          "name": "account_state_balance",
+          "stype": null,
+          "dtype": "float",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        }
+      ],
+        "time_col":  null,
+        "source_name": null,
+        "stats": {}
+    },
+    {
+      "table_name": "TRANS",
+      "data_source": null,
+      "data_version": null,
+        "pkey": {
+          "name": "trans_id",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "drop_duplicates": false
+        },
+        "fkeys": [
+          {
+            "name": "user_id",
+            "stype": null,
+            "dtype": "string",
+            "na_values": null,
+            "metadata": {},
+            "dst_table": "USER",
+            "dst_key": "id",
+            "dst_data_source": null,
+            "stats": {}
+          }
+        ],
+        "cols": [
+          {
+            "name": "user_id",
+            "stype": null,
+            "dtype": "string",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "amount",
+            "stype": null,
+            "dtype": "float",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "postal_code",
+            "stype": null,
+            "dtype": "string",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "timestamp",
+            "stype": null,
+            "dtype": "date",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "product_id",
+            "stype": null,
+            "dtype": "int",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "trans_multi_cat",
+            "stype": null,
+            "dtype": "string",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          }
+        ],
+      "time_col":  null,
+      "source_name": null,
+      "stats": {}
+    },
+    {
+      "table_name": "PRODUCT",
+      "data_source": null,
+      "data_version": null,
+      "pkey": {
+        "name": "product_id",
+        "stype": null,
+        "dtype": "int",
+        "na_values": null,
+        "metadata": {},
+        "drop_duplicates": false
+      },
+      "fkeys": [
+        {
+          "name": "product_id",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "dst_table": "TRANS",
+          "dst_key": "product_id",
+          "dst_data_source": null,
+          "stats": {}
+        }
+      ],
+      "cols": [
+        {
+          "name": "country",
+          "stype": null,
+          "dtype": "string",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        },
+        {
+          "name": "price",
+          "stype": null,
+          "dtype": "float",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        },
+        {
+          "name": "created_date",
+          "stype": null,
+          "dtype": "date",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        }
+      ],
+      "time_col":  null,
+      "source_name": null,
+      "stats": {}
+    }
+  ]
+}

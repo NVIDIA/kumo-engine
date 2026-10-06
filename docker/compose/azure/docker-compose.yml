@@ -1,0 +1,491 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Kumo Azure single-host deployment: bundled Postgres, one NVIDIA GPU,
+# customer-provided TLS, ADLS data plane, and Databricks source connector.
+# See README.md for the required host, environment values, and startup steps.
+
+name: kumo
+
+x-logging: &default-logging
+    driver: json-file
+    options:
+        max-size: "100m"
+        max-file: "5"
+
+x-core-logging: &core-logging
+    driver: json-file
+    options:
+        max-size: "100m"
+        max-file: "50"
+
+# Digest-pinned Kumo images. These references are immutable and are not
+# configurable through .env.
+x-cpu-backend-image: &cpu-backend-image nvcr.io/1000161941370113/kumo-3/kumo-backend-cpu:5302a53f59355f7f13e50b3ace32961175c2b181@sha256:8d5bcd377d376ece1488917ed1176f79af06c3a223365f66eea9de7d18982206
+x-gpu-backend-image: &gpu-backend-image nvcr.io/1000161941370113/kumo-3/kumo-backend-gpu:5302a53f59355f7f13e50b3ace32961175c2b181@sha256:27294fdc20535399c8409fd426d308ef829f0292dacfff2a2ca2e8dd92a2639a
+
+# Bootstrap populates named volumes from assets baked into the CPU image.
+# DiskGraph scratch space is the only application-data host mount.
+x-common-volumes: &common-volumes
+    - /mnt/localssd/kumo/diskgraph:/mnt/localssd
+    - kumo_config:/etc/kumo/config:ro
+    - kumo_secrets:/opt/kumo/secrets:ro
+
+x-common-env: &common-env
+    DEPLOY_ENV_CONFIG_FILE: /etc/kumo/config/deploy_env_config.json
+    ENABLE_ASYNC_INGESTION: "1"
+    ENABLE_INDIVIDUAL_SPLIT_TABLES: "true"
+    CLEAN_TABLE_VERSION_CACHE: "true"
+    DRIVER_RPC_TIMEOUT_SEC: "600"
+    ML_MAX_CONCURRENT_JOBS_TOTAL: "1"
+    ML_MAX_GPU_WORKER_SLOTS: "1"
+    AZURE_CLIENT_ID: ${AZURE_CLIENT_ID:?Set AZURE_CLIENT_ID in .env}
+    JAEGER_HOSTNAME: jaeger
+
+x-kumo-cpu-service: &kumo-cpu-service
+    image: *cpu-backend-image
+    restart: unless-stopped
+    logging: *core-logging
+    volumes: *common-volumes
+
+x-kumo-dependencies: &kumo-dependencies
+    kumo-bootstrap:
+        condition: service_completed_successfully
+    postgres:
+        condition: service_healthy
+    temporal-namespace:
+        condition: service_completed_successfully
+
+x-kumo-rest-dependencies: &kumo-rest-dependencies
+    <<: *kumo-dependencies
+    kumo-worker-data:
+        condition: service_healthy
+    kumo-worker-mlworkflow:
+        condition: service_healthy
+    kumo-pool-controller:
+        condition: service_healthy
+    kumo-pool-worker:
+        condition: service_healthy
+
+x-healthcheck: &healthcheck
+    interval: 30s
+    timeout: 15s
+    retries: 3
+    start_period: 300s
+
+services:
+    postgres:
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        restart: unless-stopped
+        logging: *default-logging
+        depends_on:
+            kumo-bootstrap:
+                condition: service_completed_successfully
+        environment:
+            POSTGRES_USER: kumo
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+            POSTGRES_DB: kumo
+            TEMPORAL_DB_NAME: temporal
+            TEMPORAL_VISIBILITY_DB_NAME: temporal_visibility
+        volumes:
+            - postgres_data:/var/lib/postgresql/data
+            - kumo_postgres_init:/docker-entrypoint-initdb.d:ro
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U kumo -d kumo"]
+            interval: 10s
+            timeout: 5s
+            retries: 12
+            start_period: 10s
+
+    # Generates secrets and configuration into named volumes from assets baked
+    # into the CPU image. Customer TLS files are mounted directly by nginx.
+    kumo-bootstrap:
+        image: *cpu-backend-image
+        network_mode: none
+        user: "0"
+        logging: *default-logging
+        environment:
+            ENABLE_TLS: "true"
+            KUMO_BOOTSTRAP_GENERATE_TLS: "false"
+            DIRECT_CONNECT_LOGIN_METHOD: password
+            ADMIN_EMAILS: ${ADMIN_EMAILS:?Set ADMIN_EMAILS in .env}
+            PUBLIC_URL: ${PUBLIC_URL:?Set PUBLIC_URL in .env}
+            DIRECT_CONNECT_ADMIN_TEMP_PASSWORD: ${DIRECT_CONNECT_ADMIN_TEMP_PASSWORD:?Set DIRECT_CONNECT_ADMIN_TEMP_PASSWORD in .env}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+            DATAPLANE_ROOT: ${DATAPLANE_ROOT:?Set DATAPLANE_ROOT in .env}
+            ARTIFACT_ROOT: ${DATAPLANE_ROOT:?Set DATAPLANE_ROOT in .env}/artifacts
+            KUMO_BOOTSTRAP_POSTGRES_INIT_FILE: /etc/kumo/postgres-initdb/01-create-kumo-databases.sh
+            KUMO_BOOTSTRAP_TEMPORAL_DYNAMIC_CONFIG_FILE: /etc/kumo/temporal/dynamicconfig/docker.yaml
+        volumes:
+            - /mnt/localssd/kumo/diskgraph:/mnt/localssd
+            - kumo_secrets:/opt/kumo/secrets
+            - kumo_config:/etc/kumo/config
+            - kumo_nginx:/etc/kumo/nginx
+            - kumo_prometheus:/etc/kumo/prometheus
+            - kumo_postgres_init:/etc/kumo/postgres-initdb
+            - kumo_temporal_config:/etc/kumo/temporal/dynamicconfig
+        entrypoint: ["/bin/sh"]
+        command:
+            - -ec
+            - chown 999:999 /mnt/localssd && chmod 0750 /mnt/localssd && exec python3 /opt/kumo/bootstrap/scripts/kumo-bootstrap.py
+
+    # --- Temporal (Postgres persistence) ---
+    temporal-schema:
+        image: temporalio/admin-tools:1.31.1@sha256:0fa94393f6254dea05df1cdacb7a8ee95f6fb51a2ffbde0c6847a73037f788c7
+        logging: *default-logging
+        depends_on:
+            kumo-bootstrap:
+                condition: service_completed_successfully
+            postgres:
+                condition: service_healthy
+        environment:
+            SQL_PLUGIN: postgres12
+            SQL_HOST: postgres
+            SQL_PORT: "5432"
+            SQL_USER: kumo
+            SQL_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+            TEMPORAL_DB_NAME: temporal
+            TEMPORAL_VISIBILITY_DB_NAME: temporal_visibility
+        entrypoint:
+            - sh
+            - -ec
+            - |
+                schema_timeout_seconds=60
+
+                setup_store() {
+                  db="$$1"
+                  schema_dir="$$2"
+
+                  status=0
+                  output="$$(timeout "$$schema_timeout_seconds" \
+                    env SQL_DATABASE="$$db" temporal-sql-tool setup-schema \
+                    --version 0.0 2>&1)" || status="$$?"
+                  if [ "$$status" -ne 0 ]; then
+                    echo "$$output" >&2
+                    if [ "$$status" -eq 124 ]; then
+                      echo "ERROR: timed out setting up Temporal schema for '$$db'." >&2
+                      echo "Timeout: $${schema_timeout_seconds}s." >&2
+                      echo "Check Postgres host/port/user/password, TLS/CA settings," >&2
+                      echo "database existence, and grants." >&2
+                      exit "$$status"
+                    fi
+                    echo "Temporal schema for $$db may already be initialized;" >&2
+                    echo "continuing to update-schema." >&2
+                  elif [ -n "$$output" ]; then
+                    echo "$$output"
+                  fi
+
+                  status=0
+                  output="$$(timeout "$$schema_timeout_seconds" \
+                    env SQL_DATABASE="$$db" temporal-sql-tool update-schema \
+                    --schema-dir "$$schema_dir" 2>&1)" || status="$$?"
+                  if [ "$$status" -ne 0 ]; then
+                    echo "$$output" >&2
+                    if [ "$$status" -eq 124 ]; then
+                      echo "ERROR: timed out updating Temporal schema for '$$db'." >&2
+                      echo "Timeout: $${schema_timeout_seconds}s." >&2
+                    else
+                      echo "ERROR: failed to update Temporal schema for database '$$db'." >&2
+                    fi
+                    echo "Check Postgres DSNs, TLS settings, database grants," >&2
+                    echo "and Temporal schema compatibility." >&2
+                    exit "$$status"
+                  fi
+                  if [ -n "$$output" ]; then
+                    echo "$$output"
+                  fi
+                }
+                setup_store "$$TEMPORAL_DB_NAME" \
+                  /etc/temporal/schema/postgresql/v12/temporal/versioned
+                setup_store "$$TEMPORAL_VISIBILITY_DB_NAME" \
+                  /etc/temporal/schema/postgresql/v12/visibility/versioned
+
+    temporal:
+        image: temporalio/server:1.31.1@sha256:5728db90c9883f5b2a7b8ea0bcdfb84edbc9f6c14479cd3354957aa77d4b8bac
+        restart: unless-stopped
+        logging: *default-logging
+        depends_on:
+            kumo-bootstrap:
+                condition: service_completed_successfully
+            temporal-schema:
+                condition: service_completed_successfully
+        environment:
+            DB: postgres12
+            DBNAME: temporal
+            VISIBILITY_DBNAME: temporal_visibility
+            POSTGRES_SEEDS: postgres
+            DB_PORT: "5432"
+            POSTGRES_USER: kumo
+            POSTGRES_PWD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+            FRONTEND_GRPC_PORT: "7233"
+            FRONTEND_HTTP_PORT: "7243"
+            BIND_ON_IP: 0.0.0.0
+        volumes:
+            - kumo_temporal_config:/etc/temporal/config/dynamicconfig:ro
+        # TCP liveness on the frontend gRPC port.
+        healthcheck:
+            <<: *healthcheck
+            test: ["CMD", "nc", "-z", "-w", "3", "localhost", "7233"]
+
+    temporal-namespace:
+        image: temporalio/admin-tools:1.31.1@sha256:0fa94393f6254dea05df1cdacb7a8ee95f6fb51a2ffbde0c6847a73037f788c7
+        logging: *default-logging
+        depends_on:
+            temporal:
+                condition: service_started
+        environment:
+            TEMPORAL_ADDRESS: temporal:7233
+            TEMPORAL_NAMESPACE: prod
+            TEMPORAL_NAMESPACE_RETENTION: 30d
+        entrypoint:
+            - sh
+            - -ec
+            - |
+                ready_timeout_seconds=120
+                ready_poll_seconds=2
+
+                wait_for() {
+                  description="$$1"
+                  shift
+                  start_time="$$(date +%s)"
+                  attempt=1
+                  while ! "$$@" >/tmp/temporal-wait.err 2>&1; do
+                    now="$$(date +%s)"
+                    elapsed="$$((now - start_time))"
+                    if [ "$$elapsed" -ge "$$ready_timeout_seconds" ]; then
+                      echo "ERROR: timed out waiting for $$description." >&2
+                      echo "Timeout: $${ready_timeout_seconds}s." >&2
+                      echo "Command: $$*" >&2
+                      echo "Last error:" >&2
+                      cat /tmp/temporal-wait.err >&2 || true
+                      echo "Check Temporal server logs, temporal-schema logs," >&2
+                      echo "Postgres DSNs, TLS/CA settings, and namespace configuration." >&2
+                      exit 1
+                    fi
+                    echo "Waiting for $$description." >&2
+                    echo "Elapsed: $${elapsed}s/$${ready_timeout_seconds}s." >&2
+                    echo "Attempt: $$attempt." >&2
+                    attempt="$$((attempt + 1))"
+                    sleep "$$ready_poll_seconds"
+                  done
+                }
+
+                wait_for "Temporal cluster at $$TEMPORAL_ADDRESS" \
+                  temporal --address "$$TEMPORAL_ADDRESS" operator cluster health
+
+                if temporal --address "$$TEMPORAL_ADDRESS" operator namespace describe \
+                  -n "$$TEMPORAL_NAMESPACE" >/dev/null 2>&1; then
+                  exit 0
+                fi
+                if ! temporal --address "$$TEMPORAL_ADDRESS" operator namespace create \
+                  --retention "$$TEMPORAL_NAMESPACE_RETENTION" \
+                  -n "$$TEMPORAL_NAMESPACE"; then
+                  echo "ERROR: failed to create Temporal namespace '$$TEMPORAL_NAMESPACE'." >&2
+                  echo "Temporal address: $$TEMPORAL_ADDRESS." >&2
+                  echo "Check namespace name, retention value, Temporal server logs," >&2
+                  echo "and Postgres persistence configuration." >&2
+                  exit 1
+                fi
+                wait_for "Temporal namespace '$$TEMPORAL_NAMESPACE' to become visible" \
+                  temporal --address "$$TEMPORAL_ADDRESS" operator namespace \
+                  describe -n "$$TEMPORAL_NAMESPACE"
+
+    kumo-rest:
+        <<: *kumo-cpu-service
+        depends_on: *kumo-rest-dependencies
+        environment:
+            <<: *common-env
+            REST_API_PORT: "8000"
+            WORKER_METRICS_PORT: "8002"
+            METRICS_PORT: "8007"
+            FORWARDED_ALLOW_IPS: "*"
+
+        command: python3 /opt/app/rest/main.py
+        healthcheck:
+            <<: *healthcheck
+            test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+
+    kumo-rest-public:
+        <<: *kumo-cpu-service
+        depends_on: *kumo-rest-dependencies
+        environment:
+            <<: *common-env
+            REST_API_PORT: "8001"
+            METRICS_PORT: "8008"
+            FORWARDED_ALLOW_IPS: "*"
+
+        command: python3 /opt/app/rest/public/main.py
+        healthcheck:
+            <<: *healthcheck
+            test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=5)"]
+
+    kumo-worker-data:
+        <<: *kumo-cpu-service
+        depends_on: *kumo-dependencies
+        environment:
+            <<: *common-env
+            WORKERS: data-backend-worker
+            WORKER_METRICS_PORT: "8003"
+
+        command: python3 /opt/app/temporalio_commons/worker_main.py
+        healthcheck:
+            <<: *healthcheck
+            test: python3 /opt/app/temporalio_commons/health_check.py
+            timeout: 30s
+
+    kumo-worker-mlworkflow:
+        <<: *kumo-cpu-service
+        depends_on: *kumo-dependencies
+        environment:
+            <<: *common-env
+            WORKERS: ml-workflow-worker
+            WORKER_METRICS_PORT: "8005"
+
+        command: python3 /opt/app/temporalio_commons/worker_main.py
+        healthcheck:
+            <<: *healthcheck
+            test: python3 /opt/app/temporalio_commons/health_check.py
+            timeout: 30s
+
+    # --- DiskGraph pool controller ---
+    # Owns snapshot lifecycle and placement on the single pool worker.
+    kumo-pool-controller:
+        <<: *kumo-cpu-service
+        depends_on: *kumo-dependencies
+        environment:
+            <<: *common-env
+            WORKER_METRICS_PORT: "8009"
+        command: python3 -m pool.controller_main
+        healthcheck:
+            <<: *healthcheck
+            test: python3 /opt/app/temporalio_commons/health_check.py --worker pool-controller
+            timeout: 30s
+
+    # --- DiskGraph pool worker (single-host GPU) ---
+    # Runs ingest, materialization, training, and prediction activities.
+    kumo-pool-worker:
+        image: *gpu-backend-image
+        restart: unless-stopped
+        logging: *core-logging
+        depends_on: *kumo-dependencies
+        environment:
+            <<: *common-env
+            POOL_WORKER_UID: singlehost
+            POOL_TASK_QUEUE: diskgraph-daemon-tq
+            KUMO_REQUIRE_GPU: "true"
+            WORKER_METRICS_PORT: "8010"
+        command: python3 -m pool.worker_main
+        volumes: *common-volumes
+        shm_size: 8g
+        deploy:
+            resources:
+                reservations:
+                    devices:
+                        - driver: nvidia
+                          count: 1
+                          capabilities: [gpu]
+        # Docker's default soft nofile limit (1024) is too low for diskgraph
+        # ingest, which holds one temp file per (table, shard) open during
+        # the encode phase (~800+ for a 75-shard graph).
+        ulimits:
+            nofile:
+                soft: 65535
+                hard: 524288
+        healthcheck:
+            # GPU cold start can exceed two minutes.
+            <<: *healthcheck
+            test: python3 /opt/app/temporalio_commons/health_check.py --worker pool-worker
+            timeout: 30s
+
+    kumo-ui:
+        image: nvcr.io/1000161941370113/kumo-3/kumo-ui:5302a53f59355f7f13e50b3ace32961175c2b181@sha256:db912500378feefcb4c9ba6223a2ca29e30a28101bcf17737d2d923e628947ee
+        restart: unless-stopped
+        logging: *default-logging
+        environment:
+            KUMO_UI_PORT: "3000"
+            AUTH_DISABLED: "false"
+            # Same-origin API through the published nginx endpoint.
+            API_BASE_URL: /
+        # UI nginx listens on KUMO_UI_PORT (templated by the entrypoint).
+        healthcheck:
+            <<: *healthcheck
+            # Use bash because the image has no HTTP client.
+            test:
+                - CMD
+                - bash
+                - -c
+                - 'exec 3<>/dev/tcp/localhost/3000 && printf ''GET / HTTP/1.0\r\n\r\n'' >&3 && head -1 <&3 | grep -q 200'
+
+    prometheus:
+        image: prom/prometheus:v2.53.4@sha256:502ad90314c7485892ce696cb14a99fceab9fc27af29f4b427f41bd39701a199
+        restart: unless-stopped
+        logging: *default-logging
+        depends_on:
+            kumo-bootstrap:
+                condition: service_completed_successfully
+        volumes:
+            - prometheus_data:/prometheus
+            - kumo_prometheus:/etc/kumo/prometheus:ro
+        command:
+            - "--config.file=/etc/kumo/prometheus/prometheus.yml"
+            - "--web.listen-address=:9090"
+            - "--storage.tsdb.path=/prometheus"
+            - "--storage.tsdb.retention.time=7d"
+            - "--storage.tsdb.retention.size=5GB"
+        healthcheck:
+            <<: *healthcheck
+            test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://localhost:9090/-/healthy"]
+
+    jaeger:
+        image: jaegertracing/all-in-one:1.76.0@sha256:ab6f1a1f0fb49ea08bcd19f6b84f6081d0d44b364b6de148e1798eb5816bacac
+        restart: unless-stopped
+        logging: *default-logging
+        user: "0"
+        environment:
+            - LOG_LEVEL=info
+            - SPAN_STORAGE_TYPE=badger
+            - BADGER_EPHEMERAL=false
+            - BADGER_DIRECTORY_VALUE=/badger/data
+            - BADGER_DIRECTORY_KEY=/badger/key
+        volumes:
+            - jaeger_data:/badger
+        # Jaeger's admin port serves a health endpoint at "/".
+        healthcheck:
+            <<: *healthcheck
+            test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://localhost:14269/"]
+
+    nginx:
+        image: nginx:1.29.7@sha256:1854da86e82d5dfb49a8f3d78b099adcc7e36608b207146ed95cd47937938a40
+        restart: unless-stopped
+        logging: *default-logging
+        ports:
+            - "443:443"
+        volumes:
+            - kumo_nginx:/etc/kumo/nginx:ro
+            - ./tls/server.crt:/etc/kumo/tls/server.crt:ro
+            - ./tls/server.key:/etc/kumo/tls/server.key:ro
+        # -c points at the bootstrap-generated config (TLS or HTTP variant); the
+        # configs are self-contained (no /etc/nginx includes) so this is safe.
+        command: ["nginx", "-c", "/etc/kumo/nginx/nginx.conf", "-g", "daemon off;"]
+        depends_on:
+            kumo-bootstrap:
+                condition: service_completed_successfully
+            kumo-rest:
+                condition: service_started
+            kumo-rest-public:
+                condition: service_started
+            kumo-ui:
+                condition: service_started
+
+volumes:
+    postgres_data:
+    prometheus_data:
+    jaeger_data:
+    # Derived state populated by kumo-bootstrap on first startup.
+    kumo_secrets:
+    kumo_config:
+    kumo_nginx:
+    kumo_prometheus:
+    kumo_postgres_init:
+    kumo_temporal_config:

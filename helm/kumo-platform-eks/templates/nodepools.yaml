@@ -1,0 +1,74 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- $pools := list -}}
+{{- if (or (not (hasKey .Values.nodePools.cpu "enabled")) .Values.nodePools.cpu.enabled) -}}
+{{- $pools = append $pools (dict
+  "name" "cpu"
+  "values" .Values.nodePools.cpu
+  "class" "kumo-cpu"
+  "labels" (merge
+    (dict "kumo.ai/node-pool" "cpu") .Values.nodePools.cpu.labels)) -}}
+{{- end -}}
+{{- range $tier := .Values.nodePools.cacheTiers -}}
+{{- $pools = append $pools (dict
+  "name" (printf "cache-%s" $tier.name)
+  "values" $tier
+  "class" "kumo-gpu"
+  "labels" (dict
+    "kumo.ai/gpu-node" "true"
+    "kumo.ai/diskgraph-pool-type" "cache"
+    "kumo.ai/diskgraph-ssd-size" (toString $tier.ssdGiB)
+    "kumo.ai/diskgraph-gpu-count" (toString $tier.gpuCount))) -}}
+{{- end -}}
+{{- /* Overflow uses emptyDir, so it always needs the RAID0 class. */ -}}
+{{- $pools = append $pools (dict
+  "name" "ephemeral"
+  "values" .Values.nodePools.ephemeral
+  "class" "kumo-gpu-ephemeral"
+  "labels" (dict
+    "kumo.ai/gpu-node" "true"
+    "kumo.ai/diskgraph-pool-type" "ephemeral")) -}}
+{{- range $config := $pools }}
+{{- $pool := $config.values }}
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: kumo-{{ $config.name }}
+  labels:
+    {{- include "kumo-platform-eks.labels" $ | nindent 4 }}
+spec:
+  template:
+    metadata:
+      labels:
+        {{- toYaml $config.labels | nindent 8 }}
+    spec:
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: {{ $config.class }}
+      expireAfter: {{ $.Values.nodePools.expireAfter }}
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: [amd64]
+        - key: kubernetes.io/os
+          operator: In
+          values: [linux]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values:
+            {{- toYaml $pool.capacityTypes | nindent 12 }}
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values:
+            {{- toYaml $pool.instanceTypes | nindent 12 }}
+  limits:
+    cpu: {{ $pool.maxCpu | quote }}
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: {{ $.Values.nodePools.consolidateAfter }}
+---
+{{- end }}

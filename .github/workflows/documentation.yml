@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Documentation
+
+'on':
+  pull_request:
+    paths:
+      - "docs/**"
+      - "helm/**"
+      - "**/*.md"
+      - ".agents/**"
+      - ".claude/**"
+      - ".codex/**"
+      - "scripts/docs/**"
+      - "test/scripts/docs/**"
+      - "packages/kumo-ui-catalog/src/**"
+      - "packages/kumo-ui-catalog/.agents/**"
+      - "packages/kumo-ui-catalog/package.json"
+      - ".github/workflows/documentation.yml"
+  push:
+    branches: [master]
+    paths:
+      - "docs/**"
+      - "helm/**"
+      - "**/*.md"
+      - ".agents/**"
+      - ".claude/**"
+      - ".codex/**"
+      - "scripts/docs/**"
+      - "test/scripts/docs/**"
+      - "packages/kumo-ui-catalog/src/**"
+      - "packages/kumo-ui-catalog/.agents/**"
+      - "packages/kumo-ui-catalog/package.json"
+      - ".github/workflows/documentation.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - run: python3 -m unittest discover -s test/scripts/docs -p 'test_*.py'
+      - run: python3 scripts/docs/check_repository_docs.py --root . --check
+      - run: bash .agents/skills/code-ui/scripts/generate-catalog-docs.sh --check

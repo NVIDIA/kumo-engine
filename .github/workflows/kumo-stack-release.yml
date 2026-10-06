@@ -1,0 +1,119 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Publish Editable Kumo Helm Bundle
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    tags: ["v3.*"]
+  workflow_dispatch:
+    inputs:
+      kumo_version:
+        description: Kumo release version, with or without the leading v
+        required: true
+        type: string
+      replace_existing:
+        description: Delete and republish an existing chart version
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: kumo-helm-${{ inputs.kumo_version || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  NGC_CHART: 1000161941370113/kumo-3/kumo-helm
+  NGC_CLI_ORG: 1000161941370113
+  NGC_CLI_TEAM: kumo-3
+  NGC_REPOSITORY: https://helm.ngc.nvidia.com/1000161941370113/kumo-3
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4  # v4
+        with:
+          version: v3.18.6
+
+      - name: Resolve the Kumo version
+        id: version
+        env:
+          REQUESTED_VERSION: ${{ inputs.kumo_version || github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${REQUESTED_VERSION#v}"
+          [[ "${version}" =~ ^3\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]
+          printf 'version=%s\n' "${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Stage pinned AWS RDS trust bundle
+        run: |
+          bash helm/kumo-stack/release/prepare-aws-rds-ca.sh \
+            helm/kumo-temporal/files/aws-rds-roots.pem
+
+      - name: Package the editable installation bundle
+        id: package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          package_dir="${RUNNER_TEMP}/package"
+          bundle_root="$(bash helm/kumo-stack/build-bundle.sh "${RUNNER_TEMP}/bundle")"
+          test -f "${bundle_root}/Chart.yaml"
+          test -r "${bundle_root}/install.sh"
+          test -f "${bundle_root}/config.yaml"
+          test -f "${bundle_root}/charts/kumo-temporal/charts/temporal/Chart.yaml"
+          if find "${bundle_root}" \( -name '*.tgz' -o -name bom.yaml \) \
+            -print -quit | grep -q .; then
+            echo "::error::bundle contains an archive or version catalog"
+            exit 1
+          fi
+          mkdir -p "${package_dir}"
+          helm package "${bundle_root}" \
+            --destination "${package_dir}" \
+            --version "${VERSION}" \
+            --app-version "${VERSION}"
+          package="${package_dir}/kumo-helm-${VERSION}.tgz"
+          test -f "${package}"
+          printf 'directory=%s\n' "${package_dir}" >> "${GITHUB_OUTPUT}"
+          printf 'path=%s\n' "${package}" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up NGC CLI
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error \
+            --output "${RUNNER_TEMP}/ngccli.zip" \
+            https://api.ngc.nvidia.com/v2/resources/nvidia/ngc-apps/ngc_cli/versions/4.10.0/files/ngccli_linux.zip
+          unzip -q "${RUNNER_TEMP}/ngccli.zip" -d "${RUNNER_TEMP}"
+          chmod +x "${RUNNER_TEMP}/ngc-cli/ngc"
+          printf '%s\n' "${RUNNER_TEMP}/ngc-cli" >> "${GITHUB_PATH}"
+
+      - name: Publish and verify the chart
+        env:
+          NGC_CLI_API_KEY: ${{ secrets.NGC_SDGM_ADMIN }}
+          PACKAGE_DIR: ${{ steps.package.outputs.directory }}
+          PACKAGE: ${{ steps.package.outputs.path }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          test -n "${NGC_CLI_API_KEY}"
+          cd "${PACKAGE_DIR}"
+          if [[ "${{ inputs.replace_existing || false }}" == true ]]; then
+            ngc registry chart remove "${NGC_CHART}:${VERSION}" --yes
+          fi
+          ngc registry chart push "${NGC_CHART}:${VERSION}"
+          helm repo add kumo "${NGC_REPOSITORY}" \
+            --username '$oauthtoken' \
+            --password "${NGC_CLI_API_KEY}"
+          verify_dir="$(mktemp -d)"
+          helm pull kumo/kumo-helm \
+            --version "${VERSION}" \
+            --destination "${verify_dir}"
+          cmp "${PACKAGE}" "${verify_dir}/kumo-helm-${VERSION}.tgz"

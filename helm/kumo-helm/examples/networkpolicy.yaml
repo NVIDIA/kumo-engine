@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Backend isolation — NOT shipped by the chart. Copy, adapt, and apply yourself.
+#
+# The chart deliberately does not own NetworkPolicy: the correct policy depends
+# on your CNI, your ingress source, and whether you run a service mesh, none of
+# which the chart can know. This is a working starting point, not a default.
+#
+# Why you probably want it: kumo-rest and kumo-api listen on :8000, and with
+# auth disabled (the chart default) that port is unauthenticated.
+#
+# Replace <release> with your Helm release name and <ns> with the namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kumo-backend-ingress
+  namespace: <ns>
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: "<release>"
+      app.kubernetes.io/component: "backend"
+  policyTypes:
+  - Ingress
+  ingress:
+  # Application traffic: frontend pods only.
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/instance: "<release>"
+          app.kubernetes.io/component: "frontend"
+    ports:
+    - protocol: TCP
+      port: 8000
+  # Metrics, open to your scraper.
+  - ports:
+    - protocol: TCP
+      port: 9123
+  # If you run Istio ambient, ztunnel delivers mTLS over HBONE on 15008 and the
+  # policy must admit it or all meshed traffic is dropped. Uncomment:
+  # - ports:
+  #   - protocol: TCP
+  #     port: 15008

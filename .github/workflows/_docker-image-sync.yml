@@ -1,0 +1,112 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: (Manual) Sync docker image from ECR to cloud registry
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      source_image_name:
+        description: 'Image repository path in ECR (e.g. kumo/kumo)'
+        required: true
+        type: string
+      source_tag:
+        description: 'Image tag to sync (e.g. my-branch)'
+        required: true
+        type: string
+      target_registry:
+        description: 'Target registry base URL (e.g. kumoacr.azurecr.io)'
+        required: true
+        type: string
+      target_registry_user_secret:
+        description: 'Name of the GitHub secret holding the target registry username'
+        required: true
+        default: 'ACR_CLIENT_ID'
+        type: string
+      target_registry_password_secret:
+        description: 'Name of the GitHub secret holding the target registry password'
+        required: true
+        default: 'ACR_CLIENT_SECRET'
+        type: string
+  workflow_call:
+    inputs:
+      source_image_name:
+        description: 'Image repository path in ECR (e.g. kumo/kumo)'
+        required: true
+        type: string
+      source_tag:
+        description: 'Image tag to sync (e.g. my-branch)'
+        required: true
+        type: string
+      target_registry:
+        description: 'Target registry base URL (e.g. kumoacr.azurecr.io)'
+        required: true
+        type: string
+      target_registry_user_secret:
+        description: 'Name of the GitHub secret holding the target registry username'
+        required: true
+        type: string
+      target_registry_password_secret:
+        description: 'Name of the GitHub secret holding the target registry password'
+        required: true
+        type: string
+
+env:
+  ECR_REGISTRY: 926922431314.dkr.ecr.us-west-2.amazonaws.com
+  ECR_REGION: us-west-2
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  sync:
+    name: >-
+      Sync ${{ inputs.source_image_name }}:${{ inputs.source_tag }}
+      to ${{ inputs.target_registry }}
+    environment: gha-kumo-image-sync-ecr-read
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Install crane
+        run: |
+          CRANE_VERSION="v0.20.2"
+          curl -fsSL \
+            "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
+            | tar -xz -C /usr/local/bin crane
+
+      - name: Validate source ECR repository
+        shell: bash
+        run: |
+          case "${{ inputs.source_image_name }}" in
+            kumo/*) ;;
+            *)
+              echo "::error::Unsupported source ECR repository: ${{ inputs.source_image_name }}"
+              exit 1
+              ;;
+          esac
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-image-sync-ecr-read
+          aws-region: us-west-2
+
+      - name: Log in to ECR (source)
+        run: |
+          aws ecr get-login-password --region ${{ env.ECR_REGION }} \
+            | crane auth login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
+
+      - name: Log in to target registry
+        run: |
+          crane auth login \
+            --username "${{ secrets[inputs.target_registry_user_secret] }}" \
+            --password "${{ secrets[inputs.target_registry_password_secret] }}" \
+            "${{ inputs.target_registry }}"
+
+      - name: Copy image
+        run: |
+          crane copy \
+            "${{ env.ECR_REGISTRY }}/${{ inputs.source_image_name }}:${{ inputs.source_tag }}" \
+            "${{ inputs.target_registry }}/${{ inputs.source_image_name }}:${{ inputs.source_tag }}"

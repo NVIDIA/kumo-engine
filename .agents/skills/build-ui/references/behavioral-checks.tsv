@@ -1,0 +1,21 @@
+scenario	path	pattern
+Headless CI Mode	.agents/skills/build-ui/SKILL.md	references/headless-mode.md
+Headless CI Mode	.agents/skills/build-ui/references/headless-mode.md	Auto-approve and proceed unless a hard blocker is detected.
+Headless CI Mode	.agents/skills/build-ui/references/headless-mode.md	Playwright screenshot capture
+PR Mode Continuation	.agents/skills/build-ui/SKILL.md	recommendation: inspect-only|continue-existing-pr|supersede-with-new-work
+PR Mode Continuation	.agents/skills/build-ui/references/workflow-test-scenarios.md	continues on `{headRefName}` when the user wants to continue existing work
+Bare Number Target	.agents/skills/build-ui/SKILL.md	A bare integer is never inferred as `pr` mode.
+Bare Number Target	.agents/skills/build-ui/references/workflow-test-scenarios.md	treats the target as issue mode
+Catalog Dependency	.agents/skills/build-ui/SKILL.md	If a required catalog variant is missing, stop unless the user explicitly approves the catalog-first path or a temporary local exception.
+Catalog Dependency	.agents/skills/build-ui/references/decision-tables.md	Add it in `packages/kumo-ui-catalog` and update UI callers in the same repository
+Resume Mismatch	.agents/skills/build-ui/SKILL.md	Resume Mismatch
+Resume Mismatch	.agents/skills/build-ui/SKILL.md	trust the branch state and report the mismatch explicitly before continuing
+Resume Mismatch	.agents/skills/build-ui/references/workflow-test-scenarios.md	workflow trusts actual branch state over requested stage
+Pre-Existing Failure Claim	.agents/skills/build-ui/SKILL.md	A failure may only be marked `pre-existing` if there is concrete evidence
+Pre-Existing Failure Claim	.agents/skills/build-ui/references/decision-tables.md	Do not use `pre-existing` without evidence.
+Final Diff Sanity	.agents/skills/build-ui/SKILL.md	Before creating the PR, run a final diff sanity pass:
+Final Diff Sanity	.agents/skills/build-ui/references/decision-tables.md	## Final Diff Sanity
+Shared Component Blast Radius Review	.agents/skills/build-ui/references/decision-tables.md	## Shared Component Blast Radius
+Shared Component Blast Radius Review	.agents/skills/build-ui/references/workflow-test-scenarios.md	Checkpoint 1 records the blast radius explicitly
+No Backend Or No Browser Tooling	.agents/skills/build-ui/references/decision-tables.md	Structure, layout, and navigation only
+No Backend Or No Browser Tooling	.agents/skills/build-ui/references/workflow-test-scenarios.md	browser verification is clearly marked partial or skipped

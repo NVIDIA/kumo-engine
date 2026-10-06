@@ -1,0 +1,1055 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": [
+    "platform",
+    "cluster",
+    "cloud",
+    "images",
+    "gpu",
+    "storage",
+    "stateDbIdentity",
+    "temporal",
+    "tenant"
+  ],
+  "properties": {
+    "platform": {
+      "type": "string",
+      "enum": [
+        "eks",
+        "aks",
+        "aro"
+      ]
+    },
+    "cluster": {
+      "type": "object",
+      "required": [
+        "context",
+        "platformNamespace",
+        "cpuNodeSelector",
+        "providers"
+      ],
+      "properties": {
+        "context": {
+          "$ref": "#/definitions/context"
+        },
+        "platformNamespace": {
+          "$ref": "#/definitions/name"
+        },
+        "cpuNodeSelector": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/definitions/labelKey"
+          },
+          "additionalProperties": {
+            "$ref": "#/definitions/labelValue"
+          }
+        },
+        "providers": {
+          "type": "object"
+        }
+      }
+    },
+    "cloud": {
+      "type": "object",
+      "required": [
+        "mode",
+        "postgres",
+        "objectStorage"
+      ],
+      "properties": {
+        "mode": {
+          "const": "existing"
+        },
+        "postgres": {
+          "type": "object",
+          "required": [
+            "host",
+            "port",
+            "resourceGroup",
+            "stateDatabase",
+            "stateUser",
+            "temporalUser",
+            "temporalSecretName",
+            "temporalSecretKey",
+            "bootstrapTemporal",
+            "admin"
+          ],
+          "properties": {
+            "host": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9.-]+$"
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "resourceGroup": {
+              "type": "string"
+            },
+            "stateDatabase": {
+              "$ref": "#/definitions/sqlName"
+            },
+            "stateUser": {
+              "type": "string",
+              "minLength": 1
+            },
+            "temporalUser": {
+              "$ref": "#/definitions/sqlName"
+            },
+            "temporalSecretName": {
+              "$ref": "#/definitions/name"
+            },
+            "temporalSecretKey": {
+              "$ref": "#/definitions/name"
+            },
+            "bootstrapTemporal": {
+              "type": "boolean"
+            },
+            "admin": {
+              "type": "object",
+              "required": [
+                "mode",
+                "username",
+                "database",
+                "annotations"
+              ],
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "",
+                    "aws_iam",
+                    "azure_entra"
+                  ]
+                },
+                "username": {
+                  "type": "string"
+                },
+                "database": {
+                  "$ref": "#/definitions/sqlName"
+                },
+                "annotations": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "objectStorage": {
+          "type": "object",
+          "required": [
+            "uri",
+            "region"
+          ],
+          "properties": {
+            "uri": {
+              "type": "string",
+              "pattern": "^(s3|abfss)://.+"
+            },
+            "region": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "images": {
+      "type": "object",
+      "required": [
+        "kumo",
+        "temporal",
+        "postgresClient",
+        "nvidiaDevicePlugin",
+        "karpenter",
+        "awsLoadBalancerController"
+      ],
+      "properties": {
+        "kumo": {
+          "type": "object",
+          "required": [
+            "registry",
+            "repoPath",
+            "tag",
+            "pullSecretName"
+          ],
+          "properties": {
+            "registry": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$",
+              "not": {
+                "const": "replace-me"
+              }
+            }
+          }
+        },
+        "temporal": {
+          "type": "object",
+          "required": [
+            "serverRepository",
+            "adminToolsRepository",
+            "tag",
+            "serverDigest",
+            "adminToolsDigest",
+            "pullSecretName"
+          ],
+          "properties": {
+            "serverRepository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "adminToolsRepository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "serverDigest": {
+              "const": "sha256:6b02e5176631c8d28f010735a3a73c69423a9adbcfad7e5dfe23836c904b7e26"
+            },
+            "adminToolsDigest": {
+              "const": "sha256:7e5820112475b3490f011b28d86ca9fd8348f1640b8dd04c62adb906e6b28cb2"
+            }
+          }
+        },
+        "postgresClient": {
+          "type": "object",
+          "required": [
+            "repository",
+            "tag",
+            "digest",
+            "pullSecretName"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "const": "17.10-alpine"
+            },
+            "digest": {
+              "const": "sha256:af194ccf3e2d7fe367012c7b88ce8b816c5c889b18a5b316799a1f0d7eac746a"
+            }
+          }
+        },
+        "nvidiaDevicePlugin": {
+          "type": "object",
+          "required": [
+            "repository",
+            "tag",
+            "digest"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "digest": {
+              "const": "sha256:7bf6ab18378be099493c9fe50f9cd2d559e0d81f17742d7ac188365408579d5d"
+            }
+          }
+        },
+        "karpenter": {
+          "type": "object",
+          "required": [
+            "repository",
+            "tag",
+            "digest"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "const": "1.12.0"
+            },
+            "digest": {
+              "const": "sha256:8128bc8cdd0cc8ca2d2cf68ec61033eceb8cfb24834a08ab278784924013cfd0"
+            }
+          }
+        },
+        "awsLoadBalancerController": {
+          "type": "object",
+          "required": [
+            "repository",
+            "tag"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "const": "v2.14.0@sha256:58d83491b3eb25080e478bdd9a245b773fd9ceb29d9182fa4b198dee5ff31d22"
+            }
+          }
+        }
+      }
+    },
+    "gpu": {
+      "type": "object",
+      "required": [
+        "cacheTiers",
+        "ephemeral",
+        "maxNodes"
+      ],
+      "properties": {
+        "cacheTiers": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "instanceType",
+              "ssdGiB",
+              "gpuCount"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z0-9-]+$"
+              },
+              "instanceType": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ssdGiB": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "gpuCount": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        },
+        "ephemeral": {
+          "type": "object",
+          "required": [
+            "instanceType"
+          ],
+          "properties": {
+            "instanceType": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "maxNodes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "required": [
+        "diskgraph"
+      ],
+      "properties": {
+        "diskgraph": {
+          "type": "object",
+          "required": [
+            "storageClass",
+            "capacityTracking"
+          ],
+          "properties": {
+            "storageClass": {
+              "type": "object",
+              "required": [
+                "name",
+                "create"
+              ],
+              "properties": {
+                "name": {
+                  "$ref": "#/definitions/optionalName"
+                },
+                "create": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "capacityTracking": {
+              "type": "string",
+              "enum": [
+                "required",
+                "advisory"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "stateDbIdentity": {
+      "type": "object",
+      "required": [
+        "controlAnnotations",
+        "workerAnnotations",
+        "controllerAnnotations"
+      ]
+    },
+    "temporal": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "releaseName",
+        "namespace",
+        "externalAddress"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "releaseName": {
+          "$ref": "#/definitions/name"
+        },
+        "namespace": {
+          "$ref": "#/definitions/name"
+        },
+        "externalAddress": {
+          "type": "string",
+          "pattern": "^$|^[A-Za-z0-9.-]+:[0-9]{1,5}$"
+        }
+      }
+    },
+    "tenant": {
+      "type": "object",
+      "required": [
+        "name",
+        "releaseName",
+        "namespace",
+        "exposureHost",
+        "edgeTls",
+        "tenantSecret",
+        "extraValues"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/definitions/name"
+        },
+        "releaseName": {
+          "oneOf": [
+            {
+              "const": ""
+            },
+            {
+              "$ref": "#/definitions/name"
+            }
+          ]
+        },
+        "namespace": {
+          "oneOf": [
+            {
+              "const": ""
+            },
+            {
+              "$ref": "#/definitions/name"
+            }
+          ]
+        },
+        "exposureHost": {
+          "type": "string",
+          "minLength": 1
+        },
+        "edgeTls": {
+          "type": "object",
+          "required": [
+            "secretName",
+            "certificateFile",
+            "privateKeyFile"
+          ],
+          "properties": {
+            "secretName": {
+              "$ref": "#/definitions/name"
+            },
+            "certificateFile": {
+              "type": "string"
+            },
+            "privateKeyFile": {
+              "type": "string"
+            }
+          }
+        },
+        "tenantSecret": {
+          "type": "object",
+          "required": [
+            "name",
+            "key"
+          ],
+          "properties": {
+            "name": {
+              "$ref": "#/definitions/name"
+            },
+            "key": {
+              "$ref": "#/definitions/name"
+            }
+          }
+        },
+        "extraValues": {
+          "type": "object"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "temporal": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            }
+          },
+          "cloud": {
+            "properties": {
+              "postgres": {
+                "properties": {
+                  "bootstrapTemporal": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "cloud": {
+            "properties": {
+              "postgres": {
+                "properties": {
+                  "admin": {
+                    "properties": {
+                      "mode": {
+                        "enum": [
+                          "aws_iam",
+                          "azure_entra"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "platform": {
+            "const": "eks"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "cluster": {
+            "properties": {
+              "providers": {
+                "properties": {
+                  "eks": {
+                    "$ref": "#/definitions/eksProvider"
+                  }
+                }
+              }
+            }
+          },
+          "gpu": {
+            "properties": {
+              "cacheTiers": {
+                "items": {
+                  "properties": {
+                    "instanceType": {
+                      "$ref": "#/definitions/eksGpuInstanceType"
+                    }
+                  }
+                }
+              },
+              "ephemeral": {
+                "properties": {
+                  "instanceType": {
+                    "$ref": "#/definitions/eksGpuInstanceType"
+                  }
+                }
+              }
+            }
+          },
+          "cloud": {
+            "properties": {
+              "objectStorage": {
+                "properties": {
+                  "uri": {
+                    "pattern": "^s3://"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "platform": {
+            "const": "aks"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "cluster": {
+            "properties": {
+              "providers": {
+                "properties": {
+                  "aks": {
+                    "$ref": "#/definitions/aksProvider"
+                  }
+                }
+              }
+            }
+          },
+          "tenant": {
+            "properties": {
+              "edgeTls": {
+                "properties": {
+                  "certificateFile": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "privateKeyFile": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "platform": {
+            "const": "aro"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "cluster": {
+            "properties": {
+              "providers": {
+                "properties": {
+                  "aro": {
+                    "$ref": "#/definitions/aroProvider"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "platform": {
+            "enum": [
+              "aks",
+              "aro"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "cloud": {
+            "properties": {
+              "postgres": {
+                "properties": {
+                  "resourceGroup": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "objectStorage": {
+                "properties": {
+                  "uri": {
+                    "pattern": "^abfss://"
+                  }
+                }
+              }
+            }
+          },
+          "gpu": {
+            "properties": {
+              "cacheTiers": {
+                "items": {
+                  "properties": {
+                    "instanceType": {
+                      "pattern": "^Standard_NC(4|8|16)as_T4_v3$"
+                    },
+                    "gpuCount": {
+                      "const": 1
+                    }
+                  }
+                }
+              },
+              "ephemeral": {
+                "properties": {
+                  "instanceType": {
+                    "const": "Standard_NC4as_T4_v3"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "platform": {
+            "enum": [
+              "eks",
+              "aks"
+            ]
+          },
+          "cluster": {
+            "properties": {
+              "cpuNodeSelector": {
+                "minProperties": 1
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "cluster": {
+            "properties": {
+              "cpuNodeSelector": {
+                "required": [
+                  "kumo.ai/node-pool"
+                ],
+                "properties": {
+                  "kumo.ai/node-pool": {
+                    "const": "cpu"
+                  }
+                },
+                "description": "The stack creates scale-to-zero GPU pools that are labelled but not tainted, so Kumo's own workloads must name the CPU capacity they belong on. The CPU pool the stack creates is stamped with exactly these labels, and they must include kumo.ai/node-pool: cpu so that no GPU pool can satisfy them."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "temporal": {
+            "properties": {
+              "enabled": {
+                "const": false
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "temporal": {
+            "properties": {
+              "externalAddress": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "context": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_.:/@-]+$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
+    },
+    "optionalName": {
+      "type": "string",
+      "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"
+    },
+    "labelKey": {
+      "type": "string",
+      "allOf": [
+        {
+          "pattern": "^(([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\\.)*[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?/)?[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$"
+        },
+        {
+          "not": {
+            "pattern": "^.{254,}/"
+          }
+        }
+      ]
+    },
+    "labelValue": {
+      "type": "string",
+      "pattern": "^$|^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$"
+    },
+    "eksGpuInstanceType": {
+      "type": "string",
+      "enum": [
+        "g4dn.xlarge",
+        "g4dn.2xlarge",
+        "g4dn.4xlarge",
+        "g4dn.8xlarge",
+        "g4dn.12xlarge",
+        "g4dn.16xlarge",
+        "g6e.xlarge",
+        "g6e.2xlarge",
+        "g6e.4xlarge",
+        "g6e.8xlarge",
+        "g6e.12xlarge",
+        "g6e.16xlarge",
+        "g6e.24xlarge",
+        "g6e.48xlarge"
+      ]
+    },
+    "sqlName": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+    },
+    "eksProvider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clusterName",
+        "region",
+        "vpcId",
+        "karpenterNodeRole",
+        "karpenterControllerRoleArn",
+        "ebsCsiRoleArn",
+        "loadBalancerControllerRoleArn",
+        "edgeCertificateArn",
+        "edgeScheme",
+        "installDevicePlugin",
+        "cacheGpuInstanceStorePolicy",
+        "cacheGpuRootVolumeGiB",
+        "cpuNodePool"
+      ],
+      "properties": {
+        "clusterName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "region": {
+          "type": "string",
+          "minLength": 1
+        },
+        "vpcId": {
+          "type": "string",
+          "pattern": "^vpc-[0-9a-f]+$"
+        },
+        "karpenterNodeRole": {
+          "type": "string",
+          "minLength": 1
+        },
+        "karpenterControllerRoleArn": {
+          "$ref": "#/definitions/awsRoleArn"
+        },
+        "ebsCsiRoleArn": {
+          "$ref": "#/definitions/awsRoleArn"
+        },
+        "loadBalancerControllerRoleArn": {
+          "$ref": "#/definitions/awsRoleArn"
+        },
+        "edgeCertificateArn": {
+          "type": "string",
+          "pattern": "^arn:[^:]+:acm:[^:]+:[0-9]{12}:certificate/[A-Za-z0-9-]+$"
+        },
+        "edgeScheme": {
+          "type": "string",
+          "enum": [
+            "internet-facing",
+            "internal"
+          ]
+        },
+        "installDevicePlugin": {
+          "type": "boolean"
+        },
+        "cacheGpuInstanceStorePolicy": {
+          "type": "string",
+          "enum": [
+            "",
+            "RAID0"
+          ],
+          "description": "DiskGraph cache nodes only: RAID0 gives local NVMe to kubelet; \"\" leaves it raw for a local-volume CSI driver."
+        },
+        "cacheGpuRootVolumeGiB": {
+          "type": "integer",
+          "minimum": 50,
+          "description": "Root EBS volume for DiskGraph cache nodes, in GiB. Increase it when /mnt/ebs-scratch ingest spill needs more than the default."
+        },
+        "cpuNodePool": {
+          "$ref": "#/definitions/eksCpuNodePool"
+        }
+      }
+    },
+    "eksCpuNodePool": {
+      "type": "object",
+      "required": [
+        "instanceTypes",
+        "maxCpu"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "instanceTypes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+          },
+          "description": "Every type Karpenter may launch for the CPU pool. The nearby GPU tiers take a singular instanceType, so a misspelling here would otherwise be dropped in silence and leave the pool at its default size; unknown keys are refused for that reason."
+        },
+        "maxCpu": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$",
+          "description": "Karpenter's vCPU ceiling for the CPU NodePool, as a string. It has to leave room for a whole number of nodes of the configured instance types: a ceiling below one node's vCPU count launches nothing."
+        }
+      }
+    },
+    "aksProvider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clusterName",
+        "resourceGroup",
+        "applicationGatewayId",
+        "cpuPoolName",
+        "cpuPoolInstanceType",
+        "cachePoolNames",
+        "ephemeralPoolName",
+        "installDevicePlugin"
+      ],
+      "properties": {
+        "clusterName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resourceGroup": {
+          "type": "string",
+          "minLength": 1
+        },
+        "applicationGatewayId": {
+          "type": "string",
+          "pattern": "^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\\.Network/applicationGateways/[^/]+$"
+        },
+        "cpuPoolName": {
+          "$ref": "#/definitions/aksPoolName"
+        },
+        "cpuPoolInstanceType": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cachePoolNames": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/definitions/aksPoolName"
+          }
+        },
+        "ephemeralPoolName": {
+          "$ref": "#/definitions/aksPoolName"
+        },
+        "installDevicePlugin": {
+          "type": "boolean"
+        }
+      }
+    },
+    "aroProvider": {
+      "type": "object",
+      "required": [
+        "clusterName",
+        "resourceGroup",
+        "operatorMode",
+        "cacheMachineSets",
+        "ephemeralMachineSet"
+      ],
+      "properties": {
+        "clusterName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resourceGroup": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operatorMode": {
+          "type": "string",
+          "enum": [
+            "existing",
+            "dedicated"
+          ]
+        },
+        "cacheMachineSets": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "ephemeralMachineSet": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "aksPoolName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]{0,11}$"
+    },
+    "awsRoleArn": {
+      "type": "string",
+      "pattern": "^arn:[^:]+:iam::[0-9]{12}:role/.+$"
+    }
+  }
+}

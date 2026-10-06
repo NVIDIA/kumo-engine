@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "diskgraph-index"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+gxhash = "3.5.0"
+uuid_simd = { package = "uuid-simd", version = "0.8.0", default-features = false, features = ["std"] }
+epserde = { workspace = true }
+libc = "0.2"
+diskgraph-core = { path = "../diskgraph-core" }
+diskgraph-rowpack = { path = "../diskgraph-rowpack" }
+memmap2 = "0.9"
+ptr_hash = { workspace = true, features = ["epserde"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+thiserror = { workspace = true }
+tracing = { workspace = true }
+bincode = "1.3"
+rustyline = "12"
+tempfile = "3"
+indicatif = "0.17"
+lz4_flex = { version = "0.12", default-features = false, features = ["frame"] }
+half = "2"
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+tracing-subscriber = { workspace = true }
+
+[features]
+pkhash128 = []

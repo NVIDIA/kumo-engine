@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: "Pull Request and Issue Labeler"
+on:  # yamllint disable-line rule:truthy
+  pull_request:
+    branches:
+      - master
+    types:
+      - opened
+      - edited
+      - synchronize
+      - reopened
+      - ready_for_review
+      - converted_to_draft
+      - labeled
+      - unlabeled
+
+permissions:
+  contents: read
+
+jobs:
+  assign-labels:
+    name: Assign labels based on changed files
+    permissions:
+      contents: read
+      pull-requests: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@f27b608878404679385c85cfa523b85ccb86e213
+        with:
+          repo-token: "${{ secrets.GITHUB_TOKEN }}"
+          configuration-path: .github/labeler.yml
+          sync-labels: true
+
+  assign-author:
+    permissions:
+      contents: read
+      pull-requests: write
+    name: Assign to author if unassigned
+    runs-on: ubuntu-latest
+    if: ${{ github.event.pull_request.user.login != 'dependabot[bot]' }}
+    steps:
+      - uses: samspills/assign-pr-to-author@223a87a821f7e7447cfb5221bc53ceeb633341c2
+        with:
+          repo-token: '${{ secrets.GITHUB_TOKEN }}'

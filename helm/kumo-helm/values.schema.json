@@ -1,0 +1,333 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "definitions": {
+    "poolToleration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "key": {"type": "string"},
+        "operator": {"type": "string", "enum": ["Equal", "Exists", ""]},
+        "value": {"type": "string"},
+        "effect": {"type": "string", "enum": ["NoSchedule", "PreferNoSchedule", "NoExecute", ""]},
+        "tolerationSeconds": {"type": ["integer", "null"], "minimum": -9223372036854775808, "maximum": 9223372036854775807}
+      }
+    },
+    "poolResourceQuantity": {
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^[+]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+|[numkMGTPE]|[KMGTPE]i)?$",
+          "not": {"pattern": "^[+]?(?:0+(?:\\.0*)?|\\.0+)(?:[eE][+-]?[0-9]+|[numkMGTPE]|[KMGTPE]i)?$"}
+        },
+        {"type": "number", "exclusiveMinimum": 0, "maximum": 9223372036854775807}
+      ]
+    },
+    "poolCpuQuantity": {
+      "description": "Positive Kubernetes CPU quantity. The render helper also checks exact string bounds and 1m precision.",
+      "allOf": [
+        {"$ref": "#/definitions/poolResourceQuantity"},
+        {"if": {"type": "number"}, "then": {"multipleOf": 0.001}}
+      ]
+    },
+    "poolMemoryQuantity": {
+      "description": "Positive Kubernetes memory quantity. The render helper also checks exact string bounds.",
+      "$ref": "#/definitions/poolResourceQuantity"
+    },
+    "poolCpuMemory": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cpu": {"$ref": "#/definitions/poolCpuQuantity"},
+        "memory": {"$ref": "#/definitions/poolMemoryQuantity"}
+      }
+    },
+    "poolPodResources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": {"$ref": "#/definitions/poolCpuMemory"},
+        "limits": {"$ref": "#/definitions/poolCpuMemory"}
+      }
+    },
+    "stringMap": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "roleServiceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "annotations": {
+          "$ref": "#/definitions/stringMap"
+        },
+        "podLabels": {
+          "$ref": "#/definitions/stringMap"
+        }
+      }
+    }
+  },
+  "properties": {
+    "kumoConfig": {
+      "type": "object",
+      "properties": {
+        "diskgraph": {
+          "type": "object",
+          "properties": {
+            "poolExtraTolerations": {
+              "type": ["array", "null"],
+              "items": {"$ref": "#/definitions/poolToleration"}
+            },
+            "poolResources": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "daemon": {"$ref": "#/definitions/poolPodResources"},
+                "activityDefaults": {"$ref": "#/definitions/poolPodResources"},
+                "trainingOverrides": {"$ref": "#/definitions/poolPodResources"},
+                "predictionOverrides": {"$ref": "#/definitions/poolPodResources"}
+              }
+            },
+            "poolWorkerNofileSoftLimit": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "snapshotCacheTtlSeconds": {
+              "type": "integer",
+              "minimum": 300
+            },
+            "storageCapacityTracking": {
+              "type": "string",
+              "enum": [
+                "required",
+                "advisory"
+              ]
+            }
+          },
+          "additionalProperties": true
+        },
+        "gsaKey": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "existingSecret": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            },
+            "projectId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "existingSecret",
+            "key",
+            "projectId"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "postgres": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "authMode": {
+          "type": "string",
+          "enum": [
+            "",
+            "aws_iam",
+            "azure_entra"
+          ]
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "database": {
+          "type": "string",
+          "minLength": 1
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1
+        },
+        "region": {
+          "type": "string"
+        },
+        "dsnSecret": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "secretName": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            }
+          }
+        },
+        "caSecret": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "secretName": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "required": [
+        "authMode",
+        "port",
+        "database",
+        "username",
+        "region"
+      ]
+    },
+    "temporal": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "address": {
+          "type": "string",
+          "minLength": 1
+        },
+        "namespace": {
+          "type": "string"
+        },
+        "clientMtlsSecret": {
+          "type": "string"
+        },
+        "registerNamespace": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "address",
+        "namespace",
+        "clientMtlsSecret",
+        "registerNamespace"
+      ]
+    },
+    "exposure": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "host"
+      ]
+    },
+    "serviceAccounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "control": {
+          "$ref": "#/definitions/roleServiceAccount"
+        },
+        "worker": {
+          "$ref": "#/definitions/roleServiceAccount"
+        },
+        "controller": {
+          "$ref": "#/definitions/roleServiceAccount"
+        }
+      },
+      "required": [
+        "control",
+        "worker",
+        "controller"
+      ]
+    },
+    "workloads": {
+      "type": "object",
+      "properties": {
+        "databackend": {
+          "type": "object",
+          "properties": {
+            "ingestScratch": {
+              "type": "object",
+              "properties": {
+                "fsGroup": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 1
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        "mlworkflow": {
+          "type": "object",
+          "properties": {
+            "maxConcurrentParquetIO": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": true
+        },
+        "poolcontroller": {
+          "type": "object",
+          "properties": {
+            "runtimeFsGroup": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "global": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tenant": {
+          "type": "string",
+          "minLength": 1
+        },
+        "podLabels": {
+          "type": "object"
+        },
+        "podAnnotations": {
+          "type": "object"
+        },
+        "podSecurityContext": {
+          "type": "object"
+        },
+        "containerSecurityContext": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "tenant",
+        "podSecurityContext",
+        "containerSecurityContext"
+      ]
+    }
+  },
+  "additionalProperties": true
+}

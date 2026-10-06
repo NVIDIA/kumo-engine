@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+/var/log/kumo-watchdog.log
+/var/log/kumo-autostop.log {
+  size 10M
+  rotate 3
+  compress
+  missingok
+  notifempty
+  copytruncate
+}

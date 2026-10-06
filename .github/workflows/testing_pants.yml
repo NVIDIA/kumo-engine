@@ -1,0 +1,103 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Pants Testing
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches:
+      - master
+    paths-ignore: ["ui/**", "tools/**"]
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+    inputs:
+      full_test:
+        description: "Run the full test suite (all targets, not just affected)"
+        type: boolean
+        default: false
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pants-testing-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+env:
+  GITHUB_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+
+jobs:
+  pants-test:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          filter: blob:none
+          fetch-depth: 0  # Required for --changed-since
+
+      - name: Check for only non-pants-test file changes
+        id: non-pants-changes
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        with:
+          files: |
+            ui/**
+            CHANGELOG.md
+            tools/**
+            benchmark/**
+
+      - name: Run Pants Setup
+        if: steps.non-pants-changes.outputs.only_changed != 'true'
+        uses: ./.github/actions/setup-pants/
+        with:
+          github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+
+      - name: Cache Pants
+        if: steps.non-pants-changes.outputs.only_changed != 'true'
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cache/pants/named_caches
+            ~/.cache/nce
+          key: pants-${{ runner.os }}-${{ hashFiles('pants.toml', '3rdparty/BUILD', '3rdparty/*.lock') }}
+          restore-keys: |
+            pants-${{ runner.os }}-
+
+      - name: Run Pants tests on affected targets (PR)
+        if: github.event_name != 'push' && inputs.full_test != true && steps.non-pants-changes.outputs.only_changed != 'true'
+        timeout-minutes: 60
+        run: |
+          echo "Listing affected test targets since origin/${{ github.base_ref || 'master' }}..."
+          scripts/ci/run_with_github_auth.sh pants \
+            --changed-since=origin/${{ github.base_ref || 'master' }} \
+            --changed-dependents=transitive \
+            --filter-target-type=python_test \
+            list
+          echo ""
+          echo "Running Pants tests on affected targets..."
+          scripts/ci/run_with_github_auth.sh pants \
+            --changed-since=origin/${{ github.base_ref || 'master' }} \
+            --changed-dependents=transitive \
+            test
+        env:
+          SPARK_LOCAL_IP: "127.0.0.1"
+          CUDA: cpu
+          DEPLOY_STAGE: "test"
+          KUMO_TESTING: "True"
+
+      - name: Run full Pants test suite (push to master or manual)
+        if: (github.event_name == 'push' || inputs.full_test == true) && steps.non-pants-changes.outputs.only_changed != 'true'
+        timeout-minutes: 90
+        run: |
+          echo "Running full Pants test suite..."
+          scripts/ci/run_with_github_auth.sh pants test ::
+        env:
+          SPARK_LOCAL_IP: "127.0.0.1"
+          CUDA: cpu
+          DEPLOY_STAGE: "test"
+          KUMO_TESTING: "True"

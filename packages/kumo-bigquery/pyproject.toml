@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kumo-bigquery"
+version = "0.1.0.dev1"
+description = "BigQuery source reader for Kumo graph ingestion"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+  "kumo-core==0.1.0.dev1",
+  "kumo-api>=3.0.0",
+  "google-api-core>=2,<3",
+  "google-auth[requests]>=2.14.1,<3",
+  "google-cloud-bigquery>=3.36",
+  "google-cloud-bigquery-storage>=2.39",
+  "google-cloud-storage>=2.14",
+  "google-resumable-media>=2,<3",
+  "pyarrow>=14",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=7.4",
+]
+
+# Installing this distribution is what activates the plugin: a `LocalBackend`
+# reads these groups and needs no `sources=` argument to reach BigQuery.
+#
+# Each name is the `DataSourceType` / `IdentityType` value it serves, matched
+# without regard to case, so the SDK knows which type each entry point covers
+# before importing any of the modules below.
+[project.entry-points."kumoai_studio.sources"]
+bigquery = "kumo_bigquery.backend:BigQuerySourceBackend"
+
+# The module, not a name inside it: the lifecycle is `probe` and `close` --
+# the three clients this module builds are cached (unlike Databricks, which
+# opens a connection per call and closes it after), so `close` is what drops
+# a cached client whose identity was rotated or deleted.
+[project.entry-points."kumoai_studio.identities"]
+bigquery = "kumo_bigquery.session"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["src", "../kumo-core/src", "../kumo-core/tests"]

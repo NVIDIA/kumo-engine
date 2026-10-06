@@ -1,0 +1,157 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: "setup"
+description: "Install dependencies"
+inputs:
+  python-version:
+    required: false
+    default: "3.14"
+  cuda-version:
+    description: 'Runtime selector: cpu or cu130 (GPU development requires CUDA 13)'
+    required: false
+    default: "cpu"
+  kumo-install-options:
+    required: false
+    default: "[full,test]"
+  os-version:
+    required: false
+    default: "22.04"
+  github_token:
+    required: true
+  ref:
+    description: 'The branch, tag or SHA to checkout. Defaults to the triggering SHA when called from kumo-ai/kumo.'
+    required: false
+    default: ''
+  diskgraph-wheel-artifact:
+    description: 'Artifact holding a prebuilt diskgraph wheel. Unset: use a cached wheel, else build from source.'
+    required: false
+    default: ''
+
+
+runs:
+  using: "composite"
+
+  steps:
+    - name: Set working directory
+      id: working-directory
+      run: |
+        if [ ${{ github.repository }} == 'kumo-ai/kumo' ]; then
+          echo working-directory='' >> $GITHUB_OUTPUT
+        else
+          # If called from an external repository, clone it into `kumo` dir,
+          # so that this step doesn't contaminate the checkout of the external
+          # repository.
+          echo working-directory='src/kumo' >> $GITHUB_OUTPUT
+        fi
+      shell: bash
+
+    - name: Checkout kumo-ai/kumo (called from ${{ github.repository }})
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      with:
+        repository: kumo-ai/kumo
+        path: ${{ steps.working-directory.outputs.working-directory }}
+        token: ${{ inputs.github_token }}
+        persist-credentials: false
+        ref: ${{ inputs.ref || (github.repository == 'kumo-ai/kumo' && github.sha) || '' }}
+
+    - name: Set up Python ${{ inputs.python-version }}
+      uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      with:
+        python-version: ${{ inputs.python-version }}
+        activate-environment: true
+        # Persist uv's download cache across runs via the GitHub Actions cache
+        # service (ephemeral runners never reuse local disk). This turns the
+        # cache-hit path into a single tarball fetch instead of hundreds of
+        # requests to pypi.org, which is the main source of the
+        # intermittent connect-timeout install failures. No lockfile exists, so
+        # key on the files that determine the resolved dependency set.
+        enable-cache: true
+        cache-dependency-glob: |
+          pyproject.toml
+          packages/kumo-api/pyproject.toml
+          packages/kumo-pql/pyproject.toml
+          3rdparty/BUILD
+
+    - name: Install graphviz
+      working-directory: ${{ steps.working-directory.outputs.working-directory }}
+      run: |
+        echo ::group::Clean up apt repos
+        # Remove apt repos that are known to break from time to time. None of
+        # them is a source for graphviz/libxml2-dev/libxslt1-dev below, so
+        # dropping them costs nothing but saves `apt-get update` from failing
+        # the whole job over an index it never needed.
+        # See https://github.com/actions/virtual-environments/issues/323
+        for apt_file in `grep -lr microsoft /etc/apt/sources.list.d/`; do sudo rm $apt_file; done
+        # The Chrome repo preinstalled on the runner image has intermittently
+        # served a stale/mismatched Packages.gz, which apt treats as fatal
+        # rather than falling back. Matched by URL rather than the list
+        # file's name, the same way the Microsoft repo is above, so a rename
+        # on a future runner image doesn't silently stop matching it.
+        for apt_file in `grep -lr dl.google.com/linux/chrome /etc/apt/sources.list.d/`; do sudo rm $apt_file; done
+        echo ::endgroup::
+
+        echo ::group::Install graphviz
+        sudo apt-get -qq update
+        # libxml2-dev / libxslt1-dev: redshift-connector caps lxml<6.0.0, and
+        # lxml only ships cp314 wheels from 6.0.1 onward, so on Python 3.14 uv
+        # builds lxml 5.4.0 from its sdist, which needs these dev headers.
+        sudo apt-get install -y -qq --no-install-recommends graphviz libxml2-dev libxslt1-dev
+        echo ::endgroup::
+      shell: bash
+
+    - name: Download diskgraph wheel
+      if: inputs.diskgraph-wheel-artifact != ''
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      with:
+        name: ${{ inputs.diskgraph-wheel-artifact }}
+        path: /tmp/diskgraph-wheel
+
+    - name: Compute diskgraph wheel cache key
+      id: diskgraph-wheel-key
+      if: inputs.diskgraph-wheel-artifact == '' && github.repository == 'kumo-ai/kumo' && runner.environment == 'github-hosted'
+      working-directory: ${{ steps.working-directory.outputs.working-directory }}
+      run: echo "key=$(./scripts/diskgraph wheel-key)" >> "$GITHUB_OUTPUT"
+      shell: bash
+
+    - name: Restore diskgraph wheel
+      id: diskgraph-wheel-cache
+      if: steps.diskgraph-wheel-key.outputs.key != ''
+      uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: /tmp/diskgraph-wheel
+        key: ${{ steps.diskgraph-wheel-key.outputs.key }}
+
+    - name: Install diskgraph
+      working-directory: ${{ steps.working-directory.outputs.working-directory }}
+      run: |
+        echo ::group::Install diskgraph
+        ./scripts/diskgraph install --python "$(command -v python)" -f ${DISKGRAPH_WHEEL_DIR:+--wheel "$DISKGRAPH_WHEEL_DIR"}
+        echo ::endgroup::
+      env:
+        DISKGRAPH_WHEEL_DIR: ${{ (inputs.diskgraph-wheel-artifact != '' || steps.diskgraph-wheel-cache.outputs.cache-hit == 'true') && '/tmp/diskgraph-wheel' || '' }}
+      shell: bash
+
+    - name: Install Kumo
+      working-directory: ${{ steps.working-directory.outputs.working-directory }}
+      run: |
+        echo ::group::Install Kumo
+        uv pip uninstall -q kumo-api kumo-core kumo-pql
+        uv pip install -q --no-deps -e packages/kumo-api -e packages/kumo-pql
+        uv pip install -q --no-deps -e packages/kumo-core -e packages/kumo-snowflake -e packages/kumo-bigquery -e packages/kumo-databricks -e packages/kumo-s3 -e packages/kumo-gcs
+        uv pip install -q --torch-backend="${CUDA}" -e .${{ inputs.kumo-install-options }} -f 3rdparty/kumo-wheels/
+        python - <<'PY'
+        import os
+
+        import faiss
+
+        if os.environ['CUDA'] != 'cpu':
+            assert hasattr(faiss, 'StandardGpuResources')
+        print("Faiss matches the selected CUDA runtime")
+        PY
+        echo ::endgroup::
+      env:
+        # Select the Torch backend and setup.py's CPU or GPU Faiss distribution.
+        CUDA: ${{ inputs.cuda-version }}
+      shell: bash

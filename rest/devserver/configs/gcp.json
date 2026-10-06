@@ -1,0 +1,18 @@
+{
+  "data_compute": {
+    "type": "DISKGRAPH"
+  },
+  "orchestration": {
+    "type": "cloud"
+  },
+  "secrets": {
+    "backend": "gcp_sm"
+  },
+  "storage": {
+    "data_plane_storage_root": "gs://kumo-gcpdemo-data/test/{instance_id}/",
+    "artifact_root": "gs://kumo-public-datasets-bigquery"
+  },
+  "logging": {
+    "backend": "cloud_logging"
+  }
+}

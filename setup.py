@@ -1,0 +1,350 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+import os
+import re
+from pathlib import Path
+from typing import Dict
+
+from setuptools import find_namespace_packages, find_packages, setup
+
+# Regex to parse a version constant definition in a BUILD file, such as:
+#      TORCH_GEOMETRIC_VERSION = "v2.0.0"
+# - variable name must be all UPPERCASE
+# - RHS must be a quoted literal (single/double quotes)
+# - optional trailing comment
+VERSION_CONST_RE = re.compile(
+    r'^\s*([A-Z][A-Z0-9_]*)\s*=\s*([\'"])([^\'"]+)\2\s*(?:#.*)?$',
+    re.MULTILINE,
+)
+
+BUILD_FILE = Path(__file__).parent / "3rdparty" / "BUILD"
+
+
+def parse_version_constants(
+        build_file_path: Path = BUILD_FILE) -> Dict[str, str]:
+    """
+    Parse lines like NAME = "value" (or NAME = 'value') from build_file_path.
+    Only matches UPPERCASE variable names.
+    """
+    text = build_file_path.read_text(encoding="utf8")
+    return {m.group(1): m.group(3) for m in VERSION_CONST_RE.finditer(text)}
+
+
+def parse_project_version(project_file_path: Path) -> str:
+    """Read the static ``[project].version`` from a pyproject file."""
+    text = project_file_path.read_text(encoding="utf8")
+    match = re.search(
+        r'^\[project\]\s*$.*?^version\s*=\s*[\'\"]([^\'\"]+)[\'\"]',
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    if match is None:
+        raise ValueError(f"No [project].version found in {project_file_path}")
+    return match.group(1)
+
+
+cuda = "cpu"
+# If CUDA is not explicitly set, we assume cpu only.
+if 'CUDA' in os.environ and os.environ['CUDA'] != "cpu":
+    cuda = "gpu"
+
+# We're moving version constants of some major dependencies to "3rdparty/BUILD"
+# as single-source-of-truth, and parse them from the "3rdparty/BUILD" file.
+build_versions = parse_version_constants()
+
+# NOTE that for major dependencies, we will check the latest update every year
+# in May and November to ensure that our dependencies are up to date.
+# Please include performance and efficiency critical packages here.
+major_dependencies = [
+    f"torch=={build_versions['TORCH_VERSION']}",
+    "torch-geometric>=2.8.0",
+    f"numpy=={build_versions['NUMPY_VERSION']}",
+    f"pandas=={build_versions['PANDAS_VERSION']}",
+    # Used directly by kumo.utils.dataclass and REST integration tests.
+    "httpx<0.28",
+    "backoff==2.2.1",
+]
+
+observability_requires = [
+    # opentelemetry <1.35 (proto) capped protobuf<5, conflicting with the cp314
+    # protobuf>=6.33 floor; the 1.43.0 / 0.64b0 line relaxed that cap. Kept in
+    # sync with the opentelemetry requirement in 3rdparty/BUILD.
+    "opentelemetry-api==1.43.0",
+    "opentelemetry-sdk==1.43.0",
+    "opentelemetry-exporter-otlp==1.43.0",
+    "pyinstrument==4.6.2",
+]
+
+# Source and consumers change atomically in this repository. Built Kumo wheels
+# retain an ordinary versioned dependency; developer and image builds install
+# packages/kumo-api first so they exercise the colocated source.
+kumo_api_ver = parse_project_version(
+    Path(__file__).parent / "packages" / "kumo-api" / "pyproject.toml")
+kumo_api_dep = f"kumo-api=={kumo_api_ver}"
+
+if cuda == "cpu":
+    faiss_dependency = "faiss-cpu==1.14.2"
+else:
+    faiss_dependency = "faiss-gpu==1.14.3"
+
+install_requires = major_dependencies + observability_requires + [
+    # Internal component distributions imported by the platform package.
+    # scripts/update_packages.sh installs their colocated sources before the
+    # root resolve; keep ordinary requirements here so built metadata records
+    # the real runtime ownership even though they are not public PyPI releases.
+    "kumo-core==0.1.0.dev1",
+    "kumo-bigquery==0.1.0.dev1",
+    "kumo-databricks==0.1.0.dev1",
+    "kumo-gcs==0.1.0.dev1",
+    "kumo-s3==0.1.0.dev1",
+    "kumo-snowflake==0.1.0.dev1",
+    # Sole implementation of temporal detection/parsing and the multicategorical
+    # delimiter decision; kumo imports it directly, not only via kumo-core.
+    "diskgraph>=0.1.0",
+    "cachetools==5.3.1",
+    "scipy<2.0.0",  # Last version to support Python 3.8 :(
+    "jsons==1.6.3",
+    "setuptools-scm==8.3.1",
+    "typing_extensions>=4.12.2",
+    # protobuf <6 ships no cp314 wheel (and the pure-python fallback breaks the
+    # otel/grpc import chain), so a cp314-capable floor is required on py3.14.
+    "protobuf>=6.33,<8",
+    "pydantic>=2.11",
+    "pydantic-core>=2.33,<3",
+    "tabulate==0.8.10",
+    "omegaconf==2.3.0",
+    "PyYAML==6.0.2",
+    # ``tools`` is part of the root wheel, and its memory utilities import
+    # psutil at runtime.
+    "psutil==7.2.2",
+    "tensorboard==2.16.2",
+    "prometheus_client==0.14.1",
+    "scikit-learn>=1.7.2",
+    "smart-open==5.2.1",
+    # pyarrow version must be kept in sync with snowflake-connector-python.
+    # PYARROW_VERSION is a full specifier (e.g. ">=18"), so interpolate it
+    # without an extra "==".
+    f"pyarrow{build_versions['PYARROW_VERSION']}",
+    "kubernetes==24.2.0",
+    # filelock >=3.20.3 fixes CVE-2025-68146 / CVE-2026-22701. (3.29.5+ are
+    # newer than the uv exclude-newer quarantine window at time of writing.)
+    "filelock==3.29.4",
+    # cryptography 50 clears CVE-2026-27459 (critical) and the cryptography
+    # 38.x CVE set. The historical "newer cryptography rejects legacy-cipher
+    # Snowflake keys" concern no longer reproduces: 50.0.0 loads DES3-,
+    # MD5-DES-, RC2- and AES-encrypted PKCS#8 and traditional PEM keys
+    # identically to 38.0.4. test/connector/test_legacy_private_key.py guards
+    # this. It is a base dependency because io_utils/encryption.py and
+    # connector code import it outside the REST-only surface.
+    f"cryptography=={build_versions['CRYPTOGRAPHY_VERSION']}",
+    "inflect==7.5.0",
+    "fsspec>=2025.3.0,<=2025.5.1",
+    "optuna==4.3.0",
+    "watchtower==3.0.1",
+    "asgiref==3.5.2",
+    "blockbuster>=1.5,<1.6",
+    "urllib3>=1.26.18,<3",
+    "requests==2.32.5",
+    "tenacity>=8,<10",
+    # google-api-python-client permits much older httplib2 releases; pin the
+    # patched version so the backend image cannot resolve back to 0.20.4.
+    f"httplib2=={build_versions['HTTPLIB2_VERSION']}",
+    "orjson>=3.10",
+    "ec2-metadata==2.10.0",
+    "deprecated==1.3.1",
+    # NOTE: historically we relied on internal details of the wrapt
+    # `@synchronized` decorator in kumo/connector/snowflake_connector.py;
+    # that usage has since been removed. wrapt <1.17 ships no cp314 wheel, so
+    # bump to a cp314-capable floor.
+    "wrapt>=1.17,<2",
+    # boto3 >=1.42.22 is required by redshift_connector >=2.1.14 (see below).
+    "boto3==1.42.90",
+    "botocore==1.42.90",
+    "boto3-stubs[s3]==1.42.90",
+    "azure-core>=1.31,<2",
+    "azure-storage-blob>=12.27,<13",
+    "azure-storage-file-datalake==12.22.0",
+    "azure-identity==1.25.1",
+    "mypy-boto3-s3==1.42.94",
+    "s3fs==0.4.2",
+    "sqlalchemy>=2.0.14,<2.1",
+    "aiosqlite==0.17.0",
+    # cp314-capable floors (the exact old pins ship no cp314 wheel).
+    "asyncpg>=0.30",
+    # Required for BigQuery connector
+    "google-cloud-bigquery==3.36.0",
+    "google-cloud-bigquery-storage>=2.39.0",
+    "google-cloud-storage-transfer==1.17.0",
+    "google-cloud-storage==3.1.0",
+    "google-api-core>=2,<3",
+    "google-auth>=2.14.1,<3",
+    # Required for GCP Secret Manager (IS_GCP_DEPLOY)
+    "google-cloud-secret-manager==2.26.0",
+    # Required for GCS filesystem in PySpark
+    "gcsfs==2025.5.1",  # Pins fsspec==2025.5.1
+    # Required for reading data from BigQuery to a Pandas dataframe
+    "db-dtypes==1.1.1",
+    # Some runtime deps still import pkg_resources (for example Snowpark).
+    # Pin >=80.10.2 for vendored CVE fixes, <82 because 82 removed
+    # pkg_resources.
+    "setuptools>=80.10.2,<82",
+    "snowflake-connector-python>=4.3",
+    "snowflake-snowpark-python>=1.24",
+    "databricks-sql-connector==4.5.0",
+    "databricks-sdk==0.73.0",
+    "thrift==0.24.0",
+    "certifi==2025.1.31",  # sf support case 01012966
+    "python-logging-loki==0.3.1",
+    f"temporalio{build_versions['TEMPORALIO_VERSION']}",
+    "zstd>=1.5.6",
+    "aiocache==0.12.3",
+    # aiobotocore 3.7.0 supports the botocore 1.42.x line pulled in by the boto3
+    # pin above. Every released aioboto3 version caps botocore below
+    # redshift_connector 2.1.14's boto3 floor.
+    "aiobotocore==3.7.0",
+    "types-aiobotocore[s3]==3.7.0",
+    kumo_api_dep,
+    faiss_dependency,
+    "kumo-pql>=0.1.0,<0.2",
+]
+
+drawing_requires = [
+    # seaborn<0.12 imports `matplotlib.cm.register_cmap`, removed in
+    # matplotlib 3.9; 0.13.2 uses `matplotlib.colormaps.register` and
+    # imports cleanly against matplotlib>=3.10.5 on Python 3.14.
+    "seaborn==0.13.2",
+    "graphviz==0.20.1",
+    "matplotlib>=3.10.5",
+    "plotly==5.13.0",
+]
+
+rest_requires = [
+    # fastapi >=0.137 allows starlette >=1.3.1, which fixes
+    # CVE-2026-48818 / CVE-2026-54283 (high) and the starlette 1.x medium
+    # CVE set. Versions single-sourced from 3rdparty/BUILD.
+    f"fastapi=={build_versions['FASTAPI_VERSION']}",
+    f"starlette=={build_versions['STARLETTE_VERSION']}",
+    "uvicorn==0.38.0",
+    "watchdog[watchmedo]",
+    # Paired with the base cryptography pin above; both versions are
+    # single-sourced from 3rdparty/BUILD.
+    f"pyOpenSSL=={build_versions['PYOPENSSL_VERSION']}",
+    "readerwriterlock==1.0.9",
+    "greenlet>=3.1",
+    # 0.64b0 pairs with the opentelemetry-api/sdk 1.43.0 core above; kept in
+    # sync with the opentelemetry/fastapi requirements in 3rdparty/BUILD.
+    # >=0.62b0 is REQUIRED with starlette 1.x / fastapi >=0.137: older
+    # instrumentation iterates app.routes and crashes on _IncludedRouter
+    # entries (500s every /v0/auth/* request); fixed upstream by
+    # opentelemetry-python-contrib#4700 (_flatten_routes).
+    "opentelemetry-instrumentation==0.64b0",
+    "opentelemetry-instrumentation-fastapi==0.64b0",
+    "opentelemetry-distro[otlp]==0.64b0",
+    "fifolock==0.0.20",
+    # 6.0.0 crashes on starlette 1.x's _IncludedRouter route entries.
+    # Single-sourced from 3rdparty/BUILD.
+    f"prometheus-fastapi-instrumentator=="
+    f"{build_versions['PROM_FASTAPI_INSTRUMENTATOR_VERSION']}",
+    "humanize==4.6.0",
+    "markdown==3.10",
+    "python-dateutil>=2.9,<3",
+    # To prevent test failures
+    "anyio==3.7.1",
+    "pyright==1.1.283",
+    # PyJWT replaces python-jose: jose hard-depends on ecdsa
+    # (CVE-2024-23342, Minerva timing attack — no fixed release exists) and
+    # caps pyasn1 <0.5 (CVE-2026-30922). Single-sourced from 3rdparty/BUILD.
+    f"pyjwt[crypto]=={build_versions['PYJWT_VERSION']}",
+]
+
+# TODO(frg100): Store stats in S3 so we don't have to calculate them with
+# polars
+tools_requires = [
+    "polars==1.19.0",
+    "tqdm>=4.66",
+]
+
+# sql-metadata 2.x caps sqlparse below 0.6. Version 3.x uses sqlglot instead,
+# allowing the patched sqlparse 0.6.0 release while preserving Parser.columns.
+data_platform_requires = [
+    f"sql_metadata=={build_versions['SQL_METADATA_VERSION']}",
+    f"sqlparse=={build_versions['SQLPARSE_VERSION']}",
+    # Custom SQL Tables parse/normalize user SQL via sqlglot
+    # (kumo/data/custom_sql.py); keep in sync with the 3rdparty/BUILD pin.
+    f"sqlglot{build_versions['SQLGLOT_VERSION']}",
+]
+
+full_requires = [
+    *drawing_requires,
+    *rest_requires,
+    *data_platform_requires,
+    *tools_requires,
+]
+
+test_requires = [
+    "moto==4.2.14",
+    "pytest==9.0.3",
+    "pytest-asyncio==1.3.0",
+    "pytest-benchmark==4.0.0",
+    "pytest-cov",
+    "pytest-env==0.6.2",
+    "pytest-mock",
+    "pytest-timeout",
+    "pytest-split",
+    "coverage",
+    "category_encoders",
+    "rocksdict",
+    "respx==0.22.0",
+    "pytorch-frame==0.3.0",
+    "pytorch-lightning==2.6.5",
+]
+
+dev_requires = test_requires + [
+    "pre-commit",
+    "enum-actions",
+    "pick",
+    "packaging>=23",
+    "kubernetes-stubs",
+]
+
+setup(
+    author="Kumo.ai",
+    author_email="support@kumo.ai",
+    url="https://kumo.ai",
+    keywords=[
+        "deep-learning",
+        "graph-neural-networks",
+        "cloud-data-warehouse",
+    ],
+    # Keep in sync with pyproject.toml [project].requires-python.
+    python_requires=">=3.10",
+    install_requires=install_requires,
+    tests_require=test_requires,
+    extras_require={
+        "tracing": observability_requires,
+        "drawing": drawing_requires,
+        "rest": rest_requires,
+        "full": full_requires,
+        "test": test_requires,
+        "dev": dev_requires,
+        "data_platform": data_platform_requires,
+    },
+    scripts=[
+        "bin/kumo-auto",
+        "bin/kumo-pred",
+    ],
+    # `kumo` lost its __init__.py so it can be a shared PEP 420 namespace
+    # package with packages/kumo-engine's own `kumo.engine` -- find_packages()
+    # alone can no longer see it or anything under it (it won't recurse into
+    # a directory without an __init__.py at all), so union in a
+    # namespace-aware pass scoped to just `kumo`/`kumo.*`.
+    packages=find_packages() +
+    find_namespace_packages(include=["kumo", "kumo.*"]),
+    setup_requires=["setuptools-scm==8.3.1"],
+    setup_scm_version={
+        'git_describe_command':
+        'git describe --dirty --tags --long --match v[1-9]*'
+    },
+)

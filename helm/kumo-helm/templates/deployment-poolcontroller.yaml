@@ -1,0 +1,152 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kumo-poolcontroller
+  labels:
+    app: kumo-poolcontroller
+    {{- include "kumo.commonLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.workloads.poolcontroller.replicas }}
+  revisionHistoryLimit: 2
+  {{- include "kumo.noSurgeRollingStrategy" . | nindent 2 }}
+  selector:
+    matchLabels:
+      app: kumo-poolcontroller
+  template:
+    metadata:
+      annotations:
+        checksum/kumo-config: {{ include (print $.Template.BasePath "/configmap-kumo-config.yaml") . | sha256sum }}
+        {{- include "kumo.podAnnotations" . | nindent 8 }}
+      labels:
+        app: kumo-poolcontroller
+        tenant: {{ .Values.global.tenant }}
+        {{- include "kumo.workloadPodLabels" (dict "root" . "role" "controller") | nindent 8 }}
+    spec:
+      # Separate Kubernetes-management identity; runtime data pods use the
+      # worker identity passed through POOL_WORKER_SERVICE_ACCOUNT below.
+      serviceAccountName: {{ include "kumo.serviceAccountName" (dict "root" . "role" "controller") }}
+      automountServiceAccountToken: {{ include "kumo.serviceAccountAutomount" (dict "root" . "role" "controller") }}
+      securityContext:
+        {{- include "kumo.podSecurityContext" (dict "root" . "extra" dict) | nindent 8 }}
+      {{- include "kumo.nodeTargeting" . | nindent 6 }}
+      {{- include "kumo.imagePullSecrets" . | nindent 6 }}
+      containers:
+      - name: kumo-poolcontroller
+        image: {{ include "kumo.poolcontrollerImage" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        securityContext:
+          {{- include "kumo.containerSecurityContext" (dict "root" . "extra" dict) | nindent 10 }}
+        command: ["python3"]
+        args: ["-m", "pool.controller_main"]
+        env:
+        - name: POOL_METRICS_PORT
+          value: "9123"
+        - name: KUMO_IMAGE_TAG
+          value: {{ .Values.image.tag | quote }}
+        - name: POOL_WORKER_TENANT
+          value: {{ .Values.global.tenant | quote }}
+        # Controller-only: the StorageClass the controller sizes cache PVCs against.
+        # Not part of the deploy-config JSON (read directly via os.environ).
+        - name: POOL_STORAGE_CLASS_NAME
+          value: {{ .Values.kumoConfig.diskgraph.storageClass | quote }}
+        # Controller-only: substrate the controller stamps onto the diskgraph
+        # pool pods it creates at runtime, so they get the same wiring the chart
+        # gives the static workers (envFrom kumo-config plus optional Temporal
+        # mTLS, StateDB, and static GCP ADC Secrets). Without this,
+        # pool daemon/activity pods crash at import (Auth0) and can't reach
+        # self-hosted Temporal (no cert files). Read via os.environ in
+        # pool/service.py.
+        - name: POOL_WORKER_ENV_CONFIGMAP
+          value: kumo-config
+        - name: POOL_WORKER_TEMPORAL_CERT_SECRET
+          # Empty for mesh-protected plaintext Temporal; pool/worker_manager
+          # mounts the cert only when both secret and chart-owned cert dir are set.
+          value: {{ ternary .Values.temporal.clientMtlsSecret "" (ne .Values.temporal.clientMtlsSecret "") | quote }}
+        - name: POOL_WORKER_POD_LABELS_JSON
+          value: {{ (include "kumo.serviceAccountConfig" (dict "root" . "role" "worker") | fromJson).podLabels | toJson | quote }}
+        # Runtime-created pods use the worker identity, not the controller's
+        # Kubernetes-management identity.
+        - name: POOL_WORKER_SERVICE_ACCOUNT
+          value: {{ include "kumo.serviceAccountName" (dict "root" . "role" "worker") | quote }}
+        - name: POOL_WORKER_FS_GROUP
+          value: {{ .Values.workloads.poolcontroller.runtimeFsGroup | default "" | quote }}
+        {{- with .Values.tenantSecretKey }}
+        {{- if .secretName }}
+        # Coordinates of the deployment secret key so runtime-created pool pods
+        # receive the same FERNET_SECRET_NAME + secretKeyRef env as the
+        # chart-managed workloads (kumo#29822).
+        - name: POOL_WORKER_TENANT_SECRET_SECRET
+          value: {{ .secretName | quote }}
+        - name: POOL_WORKER_TENANT_SECRET_KEY
+          value: {{ .secretKey | quote }}
+        {{- end }}
+        {{- end }}
+        {{- with (.Values.postgres.dsnSecret | default dict) }}
+        {{- if .secretName }}
+        # Password auth: runtime-created pool pods open StateDB too, and resolve
+        # dsn_secret_name as a file under secrets.mount_path. Without this the
+        # controller mounts nothing and every spawned pod fails to connect.
+        - name: POOL_WORKER_STATEDB_SECRET
+          value: {{ .secretName | quote }}
+        {{- end }}
+        {{- end }}
+        {{- with (.Values.postgres.caSecret | default dict) }}
+        {{- if .secretName }}
+        - name: POOL_WORKER_STATEDB_CA_SECRET
+          value: {{ .secretName | quote }}
+        - name: POOL_WORKER_STATEDB_CA_SECRET_KEY
+          value: {{ .key | default "ca.pem" | quote }}
+        {{- end }}
+        {{- end }}
+        {{- with (.Values.kumoConfig.gsaKey | default dict) }}
+        {{- if .existingSecret }}
+        # Selected GCP ADC Secret coordinates for the daemon and both activity
+        # Job paths the controller creates at runtime.
+        - name: POOL_WORKER_GCP_APPLICATION_CREDENTIALS_SECRET
+          value: {{ .existingSecret | quote }}
+        - name: POOL_WORKER_GCP_APPLICATION_CREDENTIALS_KEY
+          value: {{ .key | quote }}
+        {{- end }}
+        {{- end }}
+        {{- include "kumo.downwardApiEnv" . | nindent 8 }}
+        {{- include "kumo.tenantSecretKeyEnv" . | nindent 8 }}
+        {{- range $name, $value := .Values.workloads.poolcontroller.extraEnv }}
+        - name: {{ $name }}
+          value: {{ $value | quote }}
+        {{- end }}
+        envFrom:
+        - configMapRef:
+            name: kumo-config
+        ports:
+        - containerPort: 9123
+          name: metrics
+        # The metrics listener starts before the pool canary. Gate readiness on
+        # the controller's post-canary sentinel instead of an open metrics port.
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - test -f /tmp/kumo-poolcontroller-ready
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 1
+        resources:
+          {{- toYaml .Values.workloads.poolcontroller.resources | nindent 10 }}
+        {{- if or .Values.temporal.clientMtlsSecret (.Values.postgres.dsnSecret | default dict).secretName (.Values.kumoConfig.gsaKey | default dict).existingSecret }}
+        volumeMounts:
+        {{- include "kumo.temporalVolumeMount" . | nindent 8 }}
+        {{- include "kumo.secretsVolumeMount" . | nindent 8 }}
+        {{- include "kumo.gcpApplicationCredentialsVolumeMount" . | nindent 8 }}
+        {{- end }}
+      {{- if or .Values.temporal.clientMtlsSecret (.Values.postgres.dsnSecret | default dict).secretName (.Values.kumoConfig.gsaKey | default dict).existingSecret }}
+      volumes:
+      {{- include "kumo.temporalVolume" . | nindent 6 }}
+      {{- include "kumo.secretsVolume" . | nindent 6 }}
+      {{- include "kumo.gcpApplicationCredentialsVolume" . | nindent 6 }}
+      {{- end }}

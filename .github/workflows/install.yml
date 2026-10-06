@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kumo Installation
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches:
+      - master
+    paths-ignore: ["ui/**"]
+  pull_request:
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ startsWith(github.ref, 'refs/pull/') || github.run_number }}
+  # Only cancel intermediate builds if on a PR:
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  import:
+    environment: gha-kumo-workflow-tests
+    runs-on: ubuntu-latest
+    env:
+      AWS_TEST_ROLE_ARN: arn:aws:iam::926922431314:role/gha-kumo-preprod-test-s3
+
+    steps:
+      - name: Checkout repository and submodules
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      # This enables us to skip the import test for ui or lockfile-only changes.
+      # Note, it's not possible use the standard `on.pull_request` method to
+      # do this, as we need to mark the overall workflow as success to satisfy
+      # the master branch protection rule, and this does not happen if we skip
+      # the entire workflow
+      - name: Check for only ui file changes
+        id: ui-changes
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        with:
+          files: |
+            ui/**
+            3rdparty/*.lock
+
+      - name: Set up Python ${{ matrix.python-version }}
+        if: steps.ui-changes.outputs.only_changed != 'true'
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          python-version: '3.14'
+          activate-environment: true
+
+      - name: Configure AWS credentials
+        if: steps.ui-changes.outputs.only_changed != 'true'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-west-2
+
+      - name: Install Kumo package
+        if: steps.ui-changes.outputs.only_changed != 'true'
+        uses: ./.github/actions/setup
+        with:
+          github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+
+      - name: Test imports
+        if: steps.ui-changes.outputs.only_changed != 'true'
+        run: |
+          python -c "import kumo"
+          python -c "import kumo.connector"
+          python -c "import kumo.graph"
+          python -c "import kumo.task"
+          python -c "import kumo.train"
+          python -c "import kumo.data"
+          python -c "import io_utils"

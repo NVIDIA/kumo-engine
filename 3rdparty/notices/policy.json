@@ -1,0 +1,53 @@
+{
+  "allowed_licenses": [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MIT-CMU",
+    "OLDAP-2.8",
+    "PDDL-1.0",
+    "PSF-2.0",
+    "Python-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Unlicense",
+    "Zlib"
+  ],
+  "exceptions": [
+    {
+      "review_reference": "Kumo PR #31202",
+      "ecosystem": "binary",
+      "license_expression": "GPL-3.0-or-later WITH GCC-exception-3.1",
+      "name": "faiss-cpu libgfortran and libgomp",
+      "obligations": "retain the GPL-3.0 and GCC Runtime Library Exception texts and provide corresponding GCC 8.5.0 source",
+      "reason": "The upstream faiss-cpu Linux wheels bundle unmodified GCC runtime libraries.",
+      "version": "8.5.0-28.el8_10.alma.1"
+    },
+    {
+      "review_reference": "Kumo PR #31202",
+      "ecosystem": "binary",
+      "license_expression": "GPL-3.0-or-later WITH GCC-exception-3.1 AND LGPL-2.1-or-later",
+      "name": "faiss-cpu libquadmath",
+      "obligations": "retain the GPL-3.0, LGPL-2.1, and GCC Runtime Library Exception texts and provide corresponding GCC 8.5.0 source",
+      "reason": "The upstream faiss-cpu Linux AMD64 wheel bundles unmodified libquadmath.",
+      "version": "8.5.0-28.el8_10.alma.1"
+    },
+    {
+      "review_reference": "Kumo PR #31202",
+      "ecosystem": "binary",
+      "license_expression": "GPL-3.0-or-later WITH GCC-exception-3.1 AND LGPL-2.1-or-later",
+      "name": "faiss-gpu GCC runtimes",
+      "obligations": "retain the GPL-3.0, LGPL-2.1, and GCC Runtime Library Exception texts and provide corresponding GCC 8.5.0 source",
+      "reason": "The custom AMD64 faiss-gpu wheel bundles unmodified GCC runtime libraries.",
+      "version": "8.5.0-28.el8_10"
+    }
+  ],
+  "schema": 1
+}

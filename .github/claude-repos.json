@@ -1,0 +1,17 @@
+{
+  "repositories": [
+    {
+      "name": "kumo",
+      "owner": "kumo-ai",
+      "default_branch": "master",
+      "description": "Main Kumo repository"
+    }
+  ],
+  "multi_repo_keywords": [
+    "multi-repo",
+    "all repos",
+    "across repos",
+    "every repo",
+    "all repositories"
+  ]
+}

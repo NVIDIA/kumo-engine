@@ -1,0 +1,382 @@
+{
+    "pquery_definition": {
+        "query_string": "PREDICT COUNT(FINANCE_TRANS.*, 0, 30,days)=0\nFOR EACH FINANCE_ACCOUNT.ACCOUNT_ID",
+        "graph": {
+            "tables": {
+                "FINANCE_TRANS": {
+                    "cols": [
+                        {
+                            "name": "TRANS_ID",
+                            "stype": "ID",
+                            "dtype": "int32",
+                            "timestamp_format": null
+                        },
+                        {
+                            "name": "ACCOUNT_ID",
+                            "stype": "ID",
+                            "dtype": "int32",
+                            "timestamp_format": null
+                        },
+                        {
+                            "name": "DATE",
+                            "stype": "timestamp",
+                            "dtype": "date",
+                            "timestamp_format": null
+                        },
+                        {
+                            "name": "TYPE",
+                            "stype": "categorical",
+                            "dtype": "string",
+                            "timestamp_format": null
+                        },
+                        {
+                            "name": "OPERATION",
+                            "stype": "categorical",
+                            "dtype": "string",
+                            "timestamp_format": null
+                        },
+                        {
+                            "name": "AMOUNT",
+                            "stype": "numerical",
+                            "dtype": "int32",
+                            "timestamp_format": null
+                        },
+                        {
+                            "name": "BALANCE",
+                            "stype": "numerical",
+                            "dtype": "int32",
+                            "timestamp_format": null
+                        },
+                        {
+                            "name": "K_SYMBOL",
+                            "stype": "categorical",
+                            "dtype": "string",
+                            "timestamp_format": null
+                        },
+                        {
+                            "name": "BANK",
+                            "stype": "categorical",
+                            "dtype": "string",
+                            "timestamp_format": null
+                        },
+                        {
+                            "name": "ACCOUNT",
+                            "stype": "numerical",
+                            "dtype": "int32",
+                            "timestamp_format": null
+                        }
+                    ],
+                    "source_table": {
+                        "s3_path": "s3://kumo-public-datasets/financial/parquet/TRANS",
+                        "connector_id": "FINANCIAL_DOWNSAMPLED_DATASET_V2",
+                        "source_table_name": "TRANS",
+                        "file_type": null,
+                        "data_source_type": "S3"
+                    },
+                    "pkey": "TRANS_ID",
+                    "time_col": "DATE",
+                    "end_time_col": null
+                },
+                "FINANCE_ACCOUNT": {
+                    "cols": [
+                        {
+                            "name": "ACCOUNT_ID",
+                            "stype": "ID",
+                            "dtype": "int32",
+                            "timestamp_format": null
+                        },
+                        {
+                            "name": "DISTRICT_ID",
+                            "stype": "ID",
+                            "dtype": "int64",
+                            "timestamp_format": null
+                        },
+                        {
+                            "name": "FREQUENCY",
+                            "stype": "categorical",
+                            "dtype": "string",
+                            "timestamp_format": null
+                        },
+                        {
+                            "name": "DATE",
+                            "stype": "timestamp",
+                            "dtype": "date",
+                            "timestamp_format": null
+                        }
+                    ],
+                    "source_table": {
+                        "s3_path": "s3://kumo-public-datasets/financial/parquet/ACCOUNT.parquet",
+                        "connector_id": "FINANCIAL_DOWNSAMPLED_DATASET_V2",
+                        "source_table_name": "ACCOUNT",
+                        "file_type": null,
+                        "data_source_type": "S3"
+                    },
+                    "pkey": "ACCOUNT_ID",
+                    "time_col": "DATE",
+                    "end_time_col": null
+                },
+                "FINANCE_ORDERS": {
+                    "cols": [
+                        {
+                            "name": "ORDERS_ID",
+                            "stype": "ID",
+                            "dtype": "int32",
+                            "timestamp_format": null
+                        },
+                        {
+                            "name": "ACCOUNT_ID",
+                            "stype": "ID",
+                            "dtype": "int64",
+                            "timestamp_format": null
+                        },
+                        {
+                            "name": "BANK_TO",
+                            "stype": "categorical",
+                            "dtype": "string",
+                            "timestamp_format": null
+                        },
+                        {
+                            "name": "ACCOUNT_TO",
+                            "stype": "numerical",
+                            "dtype": "int64",
+                            "timestamp_format": null
+                        },
+                        {
+                            "name": "AMOUNT",
+                            "stype": "numerical",
+                            "dtype": "float64",
+                            "timestamp_format": null
+                        },
+                        {
+                            "name": "K_SYMBOL",
+                            "stype": "categorical",
+                            "dtype": "string",
+                            "timestamp_format": null
+                        }
+                    ],
+                    "source_table": {
+                        "s3_path": "s3://kumo-public-datasets/financial/parquet/ORDERS.parquet",
+                        "connector_id": "FINANCIAL_DOWNSAMPLED_DATASET_V2",
+                        "source_table_name": "ORDERS",
+                        "file_type": null,
+                        "data_source_type": "S3"
+                    },
+                    "pkey": "ORDERS_ID",
+                    "time_col": null,
+                    "end_time_col": null
+                }
+            },
+            "col_groups": [
+                {
+                    "columns": [
+                        {
+                            "table_name": "FINANCE_TRANS",
+                            "col_name": "ACCOUNT_ID"
+                        },
+                        {
+                            "table_name": "FINANCE_ORDERS",
+                            "col_name": "ACCOUNT_ID"
+                        },
+                        {
+                            "table_name": "FINANCE_ACCOUNT",
+                            "col_name": "ACCOUNT_ID"
+                        }
+                    ]
+                }
+            ]
+        },
+        "name": null,
+        "desc": ""
+    },
+    "training_job": {
+        "id": "trainingjob-9f8b259b4f764c8f932ad5912a926ec2",
+        "execution": {
+            "status": "FAILED",
+            "log": {
+                "stage_name": "Failed",
+                "last_updated_at": "2025-03-17T21:36:46.303882+00:00",
+                "detail": "TRAINING_JOB failed: Workflow did not complete due to the following validation issues.\nErrors:\n1. Failed to ingest custom training table. Traceback (most recent call last):\n  File \"/home/kumouser/.local/lib/python3.10/site-packages/rest/backends/data_backend/activities/custom_train_table.py\", line 54, in ingest_custom_train_table\n    backend.copy_table_to_internal_path(connector, table_name,\n  File \"/home/kumouser/.local/lib/python3.10/site-packages/kumo/data/hybrid_backend.py\", line 415, in copy_table_to_internal_path\n    return self._compute_backend.copy_table_to_internal_path(\n  File \"/home/kumouser/.local/lib/python3.10/site-packages/kumo/data/spark_backend.py\", line 957, in copy_table_to_internal_path\n    table_df.write.mode('overwrite').parquet(path)\n  File \"/home/kumouser/.local/lib/python3.10/site-packages/pyspark/sql/readwriter.py\", line 1721, in parquet\n    self._jwrite.parquet(path)\n  File \"/home/kumouser/.local/lib/python3.10/site-packages/py4j/java_gateway.py\", line 1322, in __call__\n    return_value = get_return_value(\n  File \"/home/kumouser/.local/lib/python3.10/site-packages/pyspark/errors/exceptions/captured.py\", line 179, in deco\n    return f(*a, **kw)\n  File \"/home/kumouser/.local/lib/python3.10/site-packages/py4j/protocol.py\", line 326, in get_return_value\n    raise Py4JJavaError(\npy4j.protocol.Py4JJavaError: An error occurred while calling o129.parquet.\n: org.apache.hadoop.fs.UnsupportedFileSystemException: No FileSystem for scheme \"s3\"\n\tat org.apache.hadoop.fs.FileSystem.getFileSystemClass(FileSystem.java:3443)\n\tat org.apache.hadoop.fs.FileSystem.createFileSystem(FileSystem.java:3466)\n\tat org.apache.hadoop.fs.FileSystem.access$300(FileSystem.java:174)\n\tat org.apache.hadoop.fs.FileSystem$Cache.getInternal(FileSystem.java:3574)\n\tat org.apache.hadoop.fs.FileSystem$Cache.get(FileSystem.java:3521)\n\tat org.apache.hadoop.fs.FileSystem.get(FileSystem.java:540)\n\tat org.apache.hadoop.fs.Path.getFileSystem(Path.java:365)\n\tat org.apache.spark.sql.execution.datasources.DataSource.planForWritingFileFormat(DataSource.scala:454)\n\tat org.apache.spark.sql.execution.datasources.DataSource.planForWriting(DataSource.scala:530)\n\tat org.apache.spark.sql.DataFrameWriter.saveToV1Source(DataFrameWriter.scala:388)\n\tat org.apache.spark.sql.DataFrameWriter.saveInternal(DataFrameWriter.scala:361)\n\tat org.apache.spark.sql.DataFrameWriter.save(DataFrameWriter.scala:240)\n\tat org.apache.spark.sql.DataFrameWriter.parquet(DataFrameWriter.scala:792)\n\tat java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method)\n\tat java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:77)\n\tat java.base/jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)\n\tat java.base/java.lang.reflect.Method.invoke(Method.java:569)\n\tat py4j.reflection.MethodInvoker.invoke(MethodInvoker.java:244)\n\tat py4j.reflection.ReflectionEngine.invoke(ReflectionEngine.java:374)\n\tat py4j.Gateway.invoke(Gateway.java:282)\n\tat py4j.commands.AbstractCommand.invokeMethod(AbstractCommand.java:132)\n\tat py4j.commands.CallCommand.execute(CallCommand.java:79)\n\tat py4j.ClientServerConnection.waitForCommands(ClientServerConnection.java:182)\n\tat py4j.ClientServerConnection.run(ClientServerConnection.java:106)\n\tat java.base/java.lang.Thread.run(Thread.java:840)\n\n"
+            },
+            "start_time": "2025-03-17T21:35:05.908374+00:00",
+            "last_updated_at": "2025-03-17T21:36:46.304781+00:00",
+            "workflow_end_state": 2,
+            "failure_info": {
+                "message": "Workflow did not complete due to the following validation issues.\nErrors:\n1. Failed to ingest custom training table. Traceback (most recent call last):\n  File \"/home/kumouser/.local/lib/python3.10/site-packages/rest/backends/data_backend/activities/custom_train_table.py\", line 54, in ingest_custom_train_table\n    backend.copy_table_to_internal_path(connector, table_name,\n  File \"/home/kumouser/.local/lib/python3.10/site-packages/kumo/data/hybrid_backend.py\", line 415, in copy_table_to_internal_path\n    return self._compute_backend.copy_table_to_internal_path(\n  File \"/home/kumouser/.local/lib/python3.10/site-packages/kumo/data/spark_backend.py\", line 957, in copy_table_to_internal_path\n    table_df.write.mode('overwrite').parquet(path)\n  File \"/home/kumouser/.local/lib/python3.10/site-packages/pyspark/sql/readwriter.py\", line 1721, in parquet\n    self._jwrite.parquet(path)\n  File \"/home/kumouser/.local/lib/python3.10/site-packages/py4j/java_gateway.py\", line 1322, in __call__\n    return_value = get_return_value(\n  File \"/home/kumouser/.local/lib/python3.10/site-packages/pyspark/errors/exceptions/captured.py\", line 179, in deco\n    return f(*a, **kw)\n  File \"/home/kumouser/.local/lib/python3.10/site-packages/py4j/protocol.py\", line 326, in get_return_value\n    raise Py4JJavaError(\npy4j.protocol.Py4JJavaError: An error occurred while calling o129.parquet.\n: org.apache.hadoop.fs.UnsupportedFileSystemException: No FileSystem for scheme \"s3\"\n\tat org.apache.hadoop.fs.FileSystem.getFileSystemClass(FileSystem.java:3443)\n\tat org.apache.hadoop.fs.FileSystem.createFileSystem(FileSystem.java:3466)\n\tat org.apache.hadoop.fs.FileSystem.access$300(FileSystem.java:174)\n\tat org.apache.hadoop.fs.FileSystem$Cache.getInternal(FileSystem.java:3574)\n\tat org.apache.hadoop.fs.FileSystem$Cache.get(FileSystem.java:3521)\n\tat org.apache.hadoop.fs.FileSystem.get(FileSystem.java:540)\n\tat org.apache.hadoop.fs.Path.getFileSystem(Path.java:365)\n\tat org.apache.spark.sql.execution.datasources.DataSource.planForWritingFileFormat(DataSource.scala:454)\n\tat org.apache.spark.sql.execution.datasources.DataSource.planForWriting(DataSource.scala:530)\n\tat org.apache.spark.sql.DataFrameWriter.saveToV1Source(DataFrameWriter.scala:388)\n\tat org.apache.spark.sql.DataFrameWriter.saveInternal(DataFrameWriter.scala:361)\n\tat org.apache.spark.sql.DataFrameWriter.save(DataFrameWriter.scala:240)\n\tat org.apache.spark.sql.DataFrameWriter.parquet(DataFrameWriter.scala:792)\n\tat java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method)\n\tat java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:77)\n\tat java.base/jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)\n\tat java.base/java.lang.reflect.Method.invoke(Method.java:569)\n\tat py4j.reflection.MethodInvoker.invoke(MethodInvoker.java:244)\n\tat py4j.reflection.ReflectionEngine.invoke(ReflectionEngine.java:374)\n\tat py4j.Gateway.invoke(Gateway.java:282)\n\tat py4j.commands.AbstractCommand.invokeMethod(AbstractCommand.java:132)\n\tat py4j.commands.CallCommand.execute(CallCommand.java:79)\n\tat py4j.ClientServerConnection.waitForCommands(ClientServerConnection.java:182)\n\tat py4j.ClientServerConnection.run(ClientServerConnection.java:106)\n\tat java.base/java.lang.Thread.run(Thread.java:840)\n\n",
+                "stacktrace": ""
+            },
+            "progress": null,
+            "results": null
+        },
+        "advanced_options": {
+            "training_table_generation": {
+                "split": "ApproxDateOffsetSplit(ratio=[0.8, 0.1, 0.1])",
+                "train_start_offset": "inferred",
+                "train_end_offset": "inferred",
+                "timeframe_step": "inferred",
+                "forecast_length": "???",
+                "lag_timesteps": "???",
+                "year_over_year": "???",
+                "entity_candidate": null,
+                "entity_candidate_aggregation": null,
+                "task_path_override": null,
+                "train_table_path_override": null
+            },
+            "training_job": {
+                "num_experiments": 2,
+                "metrics": ["auroc", "ap", "auprc"],
+                "tune_metric": "auroc",
+                "disable_compilation": true,
+                "refit_trainval": false,
+                "refit_full": false,
+                "disable_explain": false,
+                "manual_seed": null,
+                "enable_baselines": false
+            },
+            "column_processing": {
+                "encoder_overrides": null
+            },
+            "neighbor_sampling": {
+                "max_target_neighbors_per_entity": "???",
+                "num_neighbors": [
+                    {
+                        "hop1": {
+                            "default": 12,
+                            "FINANCE_ACCOUNT.ACCOUNT_ID->FINANCE_TRANS.ACCOUNT_ID": "inferred"
+                        },
+                        "hop2": {
+                            "default": 12
+                        },
+                        "hop3": null,
+                        "hop4": null,
+                        "hop5": null,
+                        "hop6": null
+                    }
+                ],
+                "sample_from_entity_table": "???"
+            },
+            "optimization": {
+                "max_epochs": 8,
+                "min_steps_per_epoch": 30,
+                "max_steps_per_epoch": 1000,
+                "max_val_steps": 1000,
+                "max_test_steps": 2000,
+                "loss": ["binary_cross_entropy"],
+                "base_lr": [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05],
+                "weight_decay": [0.0, 5e-8, 5e-7, 5e-6],
+                "batch_size": [512, 1024],
+                "early_stopping": [
+                    {
+                        "min_delta": 0.0,
+                        "patience": 3
+                    }
+                ],
+                "lr_scheduler": [
+                    {
+                        "name": "cosine_with_warmup_restarts",
+                        "interval": "step",
+                        "kwargs": {
+                            "warmup_ratio_or_steps": 0.1
+                        }
+                    },
+                    {
+                        "name": "constant_with_warmup",
+                        "interval": "step",
+                        "kwargs": {
+                            "warmup_ratio_or_steps": 0.1
+                        }
+                    },
+                    {
+                        "name": "linear_with_warmup",
+                        "interval": "step",
+                        "kwargs": {
+                            "warmup_ratio_or_steps": 0.1
+                        }
+                    },
+                    {
+                        "name": "cosine_with_warmup",
+                        "interval": "step",
+                        "kwargs": {
+                            "warmup_ratio_or_steps": 0.1
+                        }
+                    }
+                ],
+                "majority_sampling_ratio": [null],
+                "weight_mode": ["sample"]
+            },
+            "model_architecture": {
+                "channels": [64, 128, 256],
+                "num_pre_message_passing_layers": [0, 1, 2],
+                "num_post_message_passing_layers": [1, 2],
+                "aggregation": [
+                    ["sum", "mean", "max"],
+                    ["sum", "mean", "min", "max", "std"]
+                ],
+                "activation": ["relu", "leaky_relu", "elu", "gelu"],
+                "normalization": ["layer_norm"],
+                "module": "???",
+                "handle_new_target_entities": "???",
+                "target_embedding_mode": "???",
+                "output_embedding_dim": "???",
+                "ranking_embedding_loss_coeff": "???",
+                "distance_measure": "???",
+                "use_seq_id": [false],
+                "prediction_time_encodings": [false],
+                "past_encoder": "???",
+                "handle_new_entities": "???",
+                "forecast_type": "???"
+            }
+        },
+        "pquery_id": null,
+        "pquery_def_fpid": "629e15c329bb119cbae6de2fc2021165",
+        "graph_data_version": "6f0ae33ac31edb0c321fbe182e39e460",
+        "generate_train_table_job_id": "gen-traintable-job-9f8b259b4f764c8f932ad5912a926ec2",
+        "job_source": "UI",
+        "tags": {
+            "pquery_id": "pquery-629e15c329bb119cbae6de2fc2021165"
+        },
+        "enable_baselines": false
+    },
+    "task_type": "binary_classification",
+    "query_type": "temporal",
+    "generation_job": {
+        "job_id": "gen-traintable-job-9f8b259b4f764c8f932ad5912a926ec2",
+        "job_status_report": {
+            "status": "DONE",
+            "tracking_url": "n/a (under development)",
+            "start_time": "2025-03-12T14:55:39.208629+00:00",
+            "end_time": "2025-03-12T14:59:22.825522+00:00",
+            "event_log": [
+                {
+                    "stage_name": "Generating Training Data",
+                    "last_updated_at": "2025-03-12T14:59:22.669626+00:00",
+                    "detail": "Successfully completed generating train table."
+                }
+            ],
+            "validation_response": null
+        },
+        "created_at": "2025-03-12T14:55:39.208629+00:00",
+        "tags": {},
+        "config": {
+            "job_tags": {},
+            "pquery_id": "pquery-629e15c329bb119cbae6de2fc2021165",
+            "plan": {
+                "split": "ApproxDateOffsetSplit(ratio=[0.8, 0.1, 0.1])",
+                "train_start_offset": "inferred",
+                "train_end_offset": "inferred",
+                "timeframe_step": "inferred",
+                "forecast_length": "???",
+                "lag_timesteps": "???",
+                "year_over_year": "???",
+                "entity_candidate": null,
+                "entity_candidate_aggregation": null,
+                "task_path_override": null,
+                "train_table_path_override": null
+            },
+            "graph_snapshot_id": "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460"
+        },
+        "source": "UI"
+    },
+    "legacy_graph_id": null,
+    "job_source": "UI",
+    "graph_snapshot_id": "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460"
+}

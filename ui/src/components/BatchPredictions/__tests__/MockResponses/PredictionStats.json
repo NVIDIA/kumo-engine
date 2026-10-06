@@ -1,0 +1,194 @@
+{
+    "raw_predictions": {
+        "statistics_available": true,
+        "columns": [
+            {
+                "name": "ENTITY",
+                "stype": "ID",
+                "dtype": "String",
+                "sample_rows": [
+                    "841",
+                    "15",
+                    "3759",
+                    "3504",
+                    "1485",
+                    "1345",
+                    "1809",
+                    "4473",
+                    "824",
+                    "2411"
+                ],
+                "statistics": {
+                    "counts": {
+                        "total": 4500,
+                        "missing_percentage": 0.0,
+                        "num_unique": 4500,
+                        "invalid_percentage": 0.0
+                    },
+                    "summary_stats": [],
+                    "distribution_points": null,
+                    "distribution_category": null,
+                    "distribution_date": null,
+                    "bp_stats": null,
+                    "approx": false
+                }
+            },
+            {
+                "name": "TARGET_PRED",
+                "stype": "Categorical",
+                "dtype": "Bool",
+                "sample_rows": [
+                    "False",
+                    "False",
+                    "False",
+                    "False",
+                    "False",
+                    "False",
+                    "False",
+                    "False",
+                    "False",
+                    "False"
+                ],
+                "statistics": {
+                    "counts": {
+                        "total": 4500,
+                        "missing_percentage": 0.0,
+                        "num_unique": 2,
+                        "invalid_percentage": 0.0
+                    },
+                    "summary_stats": [],
+                    "distribution_points": null,
+                    "distribution_category": [
+                        ["False", 99.42],
+                        ["True", 0.58],
+                        ["MISSING (<NA>)", 0.0]
+                    ],
+                    "distribution_date": null,
+                    "bp_stats": null,
+                    "approx": false
+                }
+            },
+            {
+                "name": "False_PROB",
+                "stype": "Numerical",
+                "dtype": "Float",
+                "sample_rows": [
+                    "0.99997133",
+                    "0.99994123",
+                    "0.99997526",
+                    "0.9999638",
+                    "0.9999752",
+                    "0.99993885",
+                    "0.9999787",
+                    "0.9999756",
+                    "0.9999699",
+                    "0.9999124"
+                ],
+                "statistics": {
+                    "counts": {
+                        "total": 4500,
+                        "missing_percentage": 0.0,
+                        "num_unique": 4500,
+                        "invalid_percentage": 0.0
+                    },
+                    "summary_stats": [
+                        ["Mean", 0.9934079555008146],
+                        ["Min", 0.08192676305770874],
+                        ["25%", 0.999945342540741],
+                        ["50%", 0.9999675154685974],
+                        ["75%", 0.9999748468399048],
+                        ["Max", 0.9999802708625793]
+                    ],
+                    "distribution_points": [
+                        [0.08192676, 0.28888889],
+                        [0.12782944, 0.04444444],
+                        [0.17373211, 0.02222222],
+                        [0.21963479, 0.04444444],
+                        [0.26553746, 0.0],
+                        [0.31144014, 0.04444444],
+                        [0.35734282, 0.11111111],
+                        [0.40324549, 0.0],
+                        [0.44914817, 0.02222222],
+                        [0.49505084, 0.02222222],
+                        [0.54095352, 0.04444444],
+                        [0.58685619, 0.04444444],
+                        [0.63275887, 0.02222222],
+                        [0.67866154, 0.02222222],
+                        [0.72456422, 0.13333333],
+                        [0.77046689, 0.06666667],
+                        [0.81636957, 0.15555556],
+                        [0.86227224, 0.22222222],
+                        [0.90817492, 0.28888889],
+                        [0.9540776, 98.4]
+                    ],
+                    "distribution_category": null,
+                    "distribution_date": null,
+                    "bp_stats": {},
+                    "approx": false
+                }
+            },
+            {
+                "name": "True_PROB",
+                "stype": "Numerical",
+                "dtype": "Float",
+                "sample_rows": [
+                    "2.8666955e-05",
+                    "5.8758505e-05",
+                    "2.4746518e-05",
+                    "3.61995e-05",
+                    "2.4819927e-05",
+                    "6.113022e-05",
+                    "2.1256305e-05",
+                    "2.4390509e-05",
+                    "3.0126472e-05",
+                    "8.7644716e-05"
+                ],
+                "statistics": {
+                    "counts": {
+                        "total": 4500,
+                        "missing_percentage": 0.0,
+                        "num_unique": 4500,
+                        "invalid_percentage": 0.0
+                    },
+                    "summary_stats": [
+                        ["Mean", 0.006592044718770517],
+                        ["Min", 0.000019711424101842567],
+                        ["25%", 0.00002516631138860248],
+                        ["50%", 0.00003242229649913497],
+                        ["75%", 0.00005457017323351465],
+                        ["Max", 0.9180732369422913]
+                    ],
+                    "distribution_points": [
+                        [0.00001971, 98.4],
+                        [0.04592239, 0.28888889],
+                        [0.09182506, 0.22222222],
+                        [0.13772774, 0.15555556],
+                        [0.18363042, 0.06666667],
+                        [0.22953309, 0.13333333],
+                        [0.27543577, 0.02222222],
+                        [0.32133845, 0.02222222],
+                        [0.36724112, 0.04444444],
+                        [0.4131438, 0.04444444],
+                        [0.45904647, 0.02222222],
+                        [0.50494915, 0.02222222],
+                        [0.55085183, 0.0],
+                        [0.5967545, 0.11111111],
+                        [0.64265718, 0.04444444],
+                        [0.68855986, 0.0],
+                        [0.73446253, 0.04444444],
+                        [0.78036521, 0.02222222],
+                        [0.82626788, 0.04444444],
+                        [0.87217056, 0.28888889]
+                    ],
+                    "distribution_category": null,
+                    "distribution_date": null,
+                    "bp_stats": {},
+                    "approx": false
+                }
+            }
+        ],
+        "approx": false,
+        "rows_used": 4500
+    },
+    "transformed_predictions": null
+}

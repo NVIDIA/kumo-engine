@@ -1,0 +1,706 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+set -Eeuo pipefail
+
+STACK_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+if [[ -d "${STACK_ROOT}/charts/kumo-helm" ]]; then
+  # Customer OCI bundle: leaf charts are editable children of the source tree.
+  REPO_ROOT="${STACK_ROOT}/charts"
+else
+  # Repository checkout: leaf charts are siblings of kumo-stack.
+  REPO_ROOT=$(cd "${STACK_ROOT}/.." && pwd)
+fi
+RENDERER="${STACK_ROOT}/renderer"
+VALUES_FILE=""
+PLATFORM_ARG=""
+OUTPUT_DIR=""
+TIMEOUT="${KUMO_INSTALL_TIMEOUT:-20m}"
+TEMPORAL_TIMEOUT="${KUMO_TEMPORAL_TIMEOUT:-10m}"
+VERIFY_TIMEOUT="${KUMO_VERIFY_TIMEOUT:-5m}"
+GPU_VERIFY_TIMEOUT="${KUMO_GPU_VERIFY_TIMEOUT:-60m}"
+# Bound each canary sweep and retry it with backoff inside the budget above: a cache tier
+# pins one GPU SKU, so transient EC2 capacity shortfalls are worth waiting out.
+GPU_CANARY_ATTEMPT_TIMEOUT="${KUMO_GPU_CANARY_ATTEMPT_TIMEOUT:-20m}"
+GPU_CANARY_RETRY_DELAY="${KUMO_GPU_CANARY_RETRY_DELAY:-60s}"
+GPU_CANARY_RETRY_MAX_DELAY="${KUMO_GPU_CANARY_RETRY_MAX_DELAY:-5m}"
+WORK_DIR=""
+TARGET=""
+FROM_STAGE=""
+THROUGH_STAGE=""
+HELM_WAIT_CHECKED=""
+
+usage() {
+  cat <<'EOF'
+Usage:
+  kumo render --values FILE [--output-dir DIR]
+  kumo check cloud --values FILE
+  kumo install [platform|temporal|core] --values FILE
+  kumo install [--from STAGE] [--through STAGE] --values FILE
+  kumo bootstrap database --values FILE
+  kumo verify platform|database|temporal|core|gpu-lifecycle|container-policy --values FILE
+  kumo preflight --values FILE
+  kumo upgrade [platform|temporal|core] --values FILE
+  kumo status --values FILE
+  kumo conformance --values FILE
+  kumo uninstall-tenant --values FILE
+  kumo decommission --values FILE
+
+Install stages are cloud, platform, database, temporal, and core. The default
+install runs all stages; --from and --through bound that same ordered pipeline.
+The values file selects exactly one platform. Every command passes its declared
+kube context to kubectl and Helm; it never relies on current-context.
+Shared Temporal, provider infrastructure, cloud data, and credentials are
+retained by uninstall-tenant. Decommission removes the stack-owned Kubernetes
+releases and provider capacity, but retains adopted cloud data and credentials.
+EOF
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 ||
+    die "required command not found: $1"
+}
+
+cleanup() {
+  # A second interrupt aborts the installer outright instead of re-entering
+  # this handler while it is still deleting.
+  trap - INT TERM HUP
+  # Remove live database credentials and identities before local scratch state.
+  remove_temporal_database_artifacts || true
+  remove_state_database_artifacts || true
+  if [[ -n "${WORK_DIR}" && -d "${WORK_DIR}" ]]; then
+    rm -rf "${WORK_DIR}"
+  fi
+}
+
+extract_configmap_data() {
+  local template="$1" key="$2" output="$3"
+  "${HELM}" template kumo-stack "${RENDERER}" \
+    -f "${VALUES_FILE}" \
+    --show-only "templates/${template}" |
+    awk -v marker="  ${key}: |-" '
+      $0 == marker { found = 1; next }
+      found && /^    / { sub(/^    /, ""); print; next }
+      found && $0 == "" { print; next }
+      found { exit }
+      END { if (!found) exit 2 }
+    ' >"${output}"
+}
+
+render_values() {
+  umask 077
+  WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/kumo-stack.XXXXXX")
+
+  "${HELM}" lint "${RENDERER}" \
+    -f "${VALUES_FILE}" >/dev/null
+
+  extract_configmap_data runtime.txt runtime.txt "${WORK_DIR}/runtime.env"
+  extract_configmap_data namespace-labels.txt labels.txt \
+    "${WORK_DIR}/namespace-labels.txt"
+  extract_configmap_data platform-values.yaml values.yaml \
+    "${WORK_DIR}/platform-values.yaml"
+  extract_configmap_data temporal-values.yaml values.yaml \
+    "${WORK_DIR}/temporal-values.yaml"
+  extract_configmap_data core-values.yaml values.yaml \
+    "${WORK_DIR}/core-values.yaml"
+  extract_configmap_data edge-values.yaml values.yaml \
+    "${WORK_DIR}/edge-values.yaml"
+
+  PLATFORM=$(runtime_value PLATFORM)
+  CONTEXT=$(runtime_value CONTEXT)
+  PLATFORM_NAMESPACE=$(runtime_value PLATFORM_NAMESPACE)
+  CPU_NODE_SELECTOR=$(runtime_value CPU_NODE_SELECTOR)
+  TENANT=$(runtime_value TENANT)
+  TENANT_RELEASE=$(runtime_value TENANT_RELEASE)
+  TENANT_NAMESPACE=$(runtime_value TENANT_NAMESPACE)
+  TEMPORAL_ENABLED=$(runtime_value TEMPORAL_ENABLED)
+  TEMPORAL_RELEASE=$(runtime_value TEMPORAL_RELEASE)
+  TEMPORAL_NAMESPACE=$(runtime_value TEMPORAL_NAMESPACE)
+  POSTGRES_HOST=$(runtime_value POSTGRES_HOST)
+  POSTGRES_PORT=$(runtime_value POSTGRES_PORT)
+  POSTGRES_RESOURCE_GROUP=$(runtime_value POSTGRES_RESOURCE_GROUP)
+  POSTGRES_STATE_DATABASE=$(runtime_value POSTGRES_STATE_DATABASE)
+  POSTGRES_STATE_USER=$(runtime_value POSTGRES_STATE_USER)
+  POSTGRES_STATE_AUTH_MODE=$(runtime_value POSTGRES_STATE_AUTH_MODE)
+  POSTGRES_ADMIN_MODE=$(runtime_value POSTGRES_ADMIN_MODE)
+  POSTGRES_ADMIN_USER=$(runtime_value POSTGRES_ADMIN_USER)
+  POSTGRES_ADMIN_DATABASE=$(runtime_value POSTGRES_ADMIN_DATABASE)
+  POSTGRES_ADMIN_ANNOTATION_KEY=$(runtime_value POSTGRES_ADMIN_ANNOTATION_KEY)
+  POSTGRES_ADMIN_ANNOTATION_VALUE=$(runtime_value POSTGRES_ADMIN_ANNOTATION_VALUE)
+  POSTGRES_TEMPORAL_USER=$(runtime_value POSTGRES_TEMPORAL_USER)
+  POSTGRES_SECRET=$(runtime_value POSTGRES_SECRET)
+  POSTGRES_SECRET_KEY=$(runtime_value POSTGRES_SECRET_KEY)
+  POSTGRES_BOOTSTRAP=$(runtime_value POSTGRES_BOOTSTRAP)
+  OBJECT_STORAGE_URI=$(runtime_value OBJECT_STORAGE_URI)
+  STORAGE_CLASS=$(runtime_value STORAGE_CLASS)
+  STORAGE_CLASS_CREATE=$(runtime_value STORAGE_CLASS_CREATE)
+  STORAGE_CAPACITY_TRACKING=$(runtime_value STORAGE_CAPACITY_TRACKING)
+  KUMO_CPU_IMAGE=$(runtime_value KUMO_CPU_IMAGE)
+  KUMO_GPU_IMAGE=$(runtime_value KUMO_GPU_IMAGE)
+  KUMO_UI_IMAGE=$(runtime_value KUMO_UI_IMAGE)
+  TEMPORAL_SERVER_IMAGE=$(runtime_value TEMPORAL_SERVER_IMAGE)
+  TEMPORAL_ADMIN_TOOLS_IMAGE=$(runtime_value TEMPORAL_ADMIN_TOOLS_IMAGE)
+  POSTGRES_CLIENT_IMAGE=$(runtime_value POSTGRES_CLIENT_IMAGE)
+  POSTGRES_CLIENT_PULL_SECRET=$(runtime_value POSTGRES_CLIENT_PULL_SECRET)
+  NVIDIA_DEVICE_PLUGIN_IMAGE=$(runtime_value NVIDIA_DEVICE_PLUGIN_IMAGE)
+  KARPENTER_IMAGE=$(runtime_value KARPENTER_IMAGE)
+  KARPENTER_IMAGE_REPOSITORY=$(runtime_value KARPENTER_IMAGE_REPOSITORY)
+  KARPENTER_IMAGE_TAG=$(runtime_value KARPENTER_IMAGE_TAG)
+  KARPENTER_IMAGE_DIGEST=$(runtime_value KARPENTER_IMAGE_DIGEST)
+  AWS_LOAD_BALANCER_CONTROLLER_IMAGE=$(runtime_value AWS_LOAD_BALANCER_CONTROLLER_IMAGE)
+  AWS_LOAD_BALANCER_CONTROLLER_IMAGE_REPOSITORY=$(runtime_value AWS_LOAD_BALANCER_CONTROLLER_IMAGE_REPOSITORY)
+  AWS_LOAD_BALANCER_CONTROLLER_IMAGE_TAG=$(runtime_value AWS_LOAD_BALANCER_CONTROLLER_IMAGE_TAG)
+  KUMO_PULL_SECRET=$(runtime_value KUMO_PULL_SECRET)
+  TENANT_SECRET=$(runtime_value TENANT_SECRET)
+  TENANT_SECRET_KEY=$(runtime_value TENANT_SECRET_KEY)
+  AUTH_ENABLED=$(runtime_value AUTH_ENABLED)
+  AUTH_METHOD=$(runtime_value AUTH_METHOD)
+  AUTH_SECRET=$(runtime_value AUTH_SECRET)
+  STATE_CONTROL_CLIENT_ID=$(runtime_value STATE_CONTROL_CLIENT_ID)
+  STATE_WORKER_CLIENT_ID=$(runtime_value STATE_WORKER_CLIENT_ID)
+  STATE_CONTROLLER_CLIENT_ID=$(runtime_value STATE_CONTROLLER_CLIENT_ID)
+  STATE_CONTROL_ANNOTATION_KEY=$(runtime_value STATE_CONTROL_ANNOTATION_KEY)
+  STATE_CONTROL_ANNOTATION_VALUE=$(runtime_value STATE_CONTROL_ANNOTATION_VALUE)
+  PROVIDER_CLUSTER=$(runtime_value PROVIDER_CLUSTER)
+  PROVIDER_REGION=$(runtime_value PROVIDER_REGION)
+  PROVIDER_RESOURCE_GROUP=$(runtime_value PROVIDER_RESOURCE_GROUP)
+  EDGE_HOST=$(runtime_value EDGE_HOST)
+  EDGE_TLS_SECRET=$(runtime_value EDGE_TLS_SECRET)
+  EDGE_TLS_CERTIFICATE_FILE=$(runtime_value EDGE_TLS_CERTIFICATE_FILE)
+  EDGE_TLS_PRIVATE_KEY_FILE=$(runtime_value EDGE_TLS_PRIVATE_KEY_FILE)
+  EKS_VPC_ID=$(runtime_value EKS_VPC_ID)
+  EKS_KARPENTER_NODE_ROLE=$(runtime_value EKS_KARPENTER_NODE_ROLE)
+  EKS_KARPENTER_CONTROLLER_ROLE_ARN=$(runtime_value EKS_KARPENTER_CONTROLLER_ROLE_ARN)
+  EKS_EBS_CSI_ROLE_ARN=$(runtime_value EKS_EBS_CSI_ROLE_ARN)
+  EKS_LOAD_BALANCER_CONTROLLER_ROLE_ARN=$(runtime_value EKS_LOAD_BALANCER_CONTROLLER_ROLE_ARN)
+  EKS_EDGE_CERTIFICATE_ARN=$(runtime_value EKS_EDGE_CERTIFICATE_ARN)
+  EKS_EDGE_SCHEME=$(runtime_value EKS_EDGE_SCHEME)
+  GPU_MAX_NODES=$(runtime_value GPU_MAX_NODES)
+  GPU_CACHE_TIERS=$(runtime_value GPU_CACHE_TIERS)
+  GPU_EPHEMERAL_INSTANCE_TYPE=$(runtime_value GPU_EPHEMERAL_INSTANCE_TYPE)
+  AKS_CACHE_POOL_NAMES=$(runtime_value AKS_CACHE_POOL_NAMES)
+  AKS_EPHEMERAL_POOL_NAME=$(runtime_value AKS_EPHEMERAL_POOL_NAME)
+  AKS_CPU_POOL_NAME=$(runtime_value AKS_CPU_POOL_NAME)
+  AKS_CPU_POOL_INSTANCE_TYPE=$(runtime_value AKS_CPU_POOL_INSTANCE_TYPE)
+  AKS_APPLICATION_GATEWAY_ID=$(runtime_value AKS_APPLICATION_GATEWAY_ID)
+  ARO_CACHE_MACHINESETS=$(runtime_value ARO_CACHE_MACHINESETS)
+  ARO_EPHEMERAL_MACHINESET=$(runtime_value ARO_EPHEMERAL_MACHINESET)
+  ARO_OPERATOR_MODE=$(runtime_value ARO_OPERATOR_MODE)
+  if [[ -n "${PLATFORM_ARG}" && "${PLATFORM_ARG}" != "${PLATFORM}" ]]; then
+    die "--platform ${PLATFORM_ARG} does not match platform: ${PLATFORM}"
+  fi
+
+  export PROVIDER_CLUSTER PROVIDER_REGION PROVIDER_RESOURCE_GROUP
+  export EDGE_HOST EDGE_TLS_SECRET EDGE_TLS_CERTIFICATE_FILE
+  export EDGE_TLS_PRIVATE_KEY_FILE
+  export EKS_VPC_ID EKS_KARPENTER_NODE_ROLE
+  export EKS_KARPENTER_CONTROLLER_ROLE_ARN EKS_EBS_CSI_ROLE_ARN
+  export EKS_LOAD_BALANCER_CONTROLLER_ROLE_ARN
+  export EKS_EDGE_CERTIFICATE_ARN EKS_EDGE_SCHEME
+  export GPU_MAX_NODES GPU_CACHE_TIERS
+  export GPU_EPHEMERAL_INSTANCE_TYPE
+  export AKS_CACHE_POOL_NAMES AKS_EPHEMERAL_POOL_NAME AKS_CPU_POOL_NAME
+  export AKS_CPU_POOL_INSTANCE_TYPE
+  export AKS_APPLICATION_GATEWAY_ID
+  export ARO_CACHE_MACHINESETS ARO_EPHEMERAL_MACHINESET
+  export ARO_OPERATOR_MODE
+}
+
+runtime_value() {
+  local key="$1"
+  sed -n "s/^${key}=//p" "${WORK_DIR}/runtime.env" | tail -n 1
+}
+
+kubectl_cmd() {
+  "${KUBECTL}" --context "${CONTEXT}" "$@"
+}
+
+duration_seconds() {
+  local duration="$1"
+  [[ "${duration}" =~ ^[0-9]+[smh]$ ]] ||
+    die "duration must be a positive integer followed by s, m, or h: ${duration}"
+  case "${duration}" in
+    *s) printf '%s' "${duration%s}" ;;
+    *m) printf '%s' "$(( ${duration%m} * 60 ))" ;;
+    *h) printf '%s' "$(( ${duration%h} * 3600 ))" ;;
+    *) die "duration must end in s, m, or h: ${duration}" ;;
+  esac
+}
+
+wait_for_job_terminal() {
+  local namespace="$1" job="$2" timeout="$3"
+  local deadline status
+  deadline=$((SECONDS + $(duration_seconds "${timeout}")))
+  while (( SECONDS < deadline )); do
+    if ! status=$(kubectl_cmd -n "${namespace}" get job "${job}" -o json); then
+      sleep 2
+      continue
+    fi
+    if "${JQ}" -e '(.status.succeeded // 0) > 0' \
+      <<<"${status}" >/dev/null; then
+      return
+    fi
+    if "${JQ}" -e '(.status.failed // 0) > 0' \
+      <<<"${status}" >/dev/null; then
+      return 1
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+# Helm 4.2.1 has helm/helm#32214: waited hook deletion hangs until timeout
+# but still reports success.
+# Reject only that patch on waited paths; adjacent releases work. Unparseable
+# versions warn and continue so wrappers and unfamiliar builds are not blocked.
+require_wait_capable_helm() {
+  [[ -z "${HELM_WAIT_CHECKED}" ]] || return 0
+  HELM_WAIT_CHECKED=1
+
+  local semver='^[[:space:]]*v?([0-9]+\.[0-9]+\.[0-9]+)(\+[^[:space:]]*)?[[:space:]]*$'
+  local reported version
+  reported=$("${HELM}" version --short 2>/dev/null </dev/null) || reported=""
+
+  if [[ ! "${reported}" =~ ${semver} ]]; then
+    printf 'warning: could not read a version from %s (got %s); proceeding without the Helm 4.2.1 check\n' \
+      "${HELM}" "${reported:-no output}" >&2
+    return 0
+  fi
+  version="${BASH_REMATCH[1]}"
+
+  [[ "${version}" != 4.2.1 ]] || die "Helm 4.2.1 cannot install kumo-stack.
+That patch release has an upstream bug, https://github.com/helm/helm/issues/32214:
+every release installed with --wait stalls for the full --timeout on each chart
+hook and then reports success anyway, so an install that should take minutes
+takes hours. The Kumo charts are not at fault; only this one Helm build is.
+Upgrade Helm to 4.2.2 or later, or use any 3.x release, then re-run. Setting
+HELM_BIN to a working binary also works.
+Rendering and status reporting are unaffected and still work on 4.2.1."
+}
+
+helm_upgrade() {
+  require_wait_capable_helm
+  "${HELM}" upgrade --kube-context "${CONTEXT}" --install "$@"
+}
+
+helm_status() {
+  "${HELM}" status --kube-context "${CONTEXT}" "$@"
+}
+
+helm_release_is_deployed() {
+  local release="$1" namespace="$2"
+  helm_status "${release}" --namespace "${namespace}" -o json |
+    "${JQ}" -e '.info.status == "deployed"' >/dev/null ||
+    die "Helm release ${namespace}/${release} is not deployed"
+}
+
+# Return the exact release status, or empty when absent. Helm 3 requires --all;
+# Helm 4 removed it. Fail on unreadable or unknown majors so omitted states are
+# not mistaken for absence. Helm itself cannot list status=unknown.
+helm_release_status() {
+  local release="$1" namespace="$2" releases version
+  local -a list_args=()
+  version=$("${HELM}" version --short) ||
+    die "cannot determine the Helm version"
+  case "${version}" in
+    v3.*) list_args=(--all) ;;
+    v4.*) list_args=() ;;
+    *) die "cannot place Helm version '${version}' as major 3 or 4, so the release listing cannot be made as broad as it has to be" ;;
+  esac
+  releases=$("${HELM}" list --kube-context "${CONTEXT}" \
+    --namespace "${namespace}" "${list_args[@]}" \
+    --filter "^${release}$" --output json) ||
+    die "cannot list Helm releases in ${namespace}"
+  # Reject anything other than one JSON array; jq otherwise accepts empty input.
+  "${JQ}" -sr --arg release "${release}" '
+    if length == 1 and (.[0] | type) == "array" then
+      [.[0][] | select(.name == $release)][0].status // empty
+    else
+      error("release listing is not one JSON array")
+    end
+  ' <<<"${releases}" ||
+    die "cannot read the Helm release listing in ${namespace}"
+}
+
+# Read computed values from Helm storage rather than mutable object annotations.
+helm_release_values() {
+  local release="$1" namespace="$2"
+  "${HELM}" get values --kube-context "${CONTEXT}" \
+    "${release}" --namespace "${namespace}" --all --output json
+}
+
+ensure_namespace() {
+  local namespace="$1"
+  if ! kubectl_cmd get namespace "${namespace}" >/dev/null 2>&1; then
+    kubectl_cmd create namespace "${namespace}" >/dev/null
+  fi
+}
+
+label_namespace() {
+  local namespace="$1" include_temporal_client="$2" label
+  while IFS= read -r label; do
+    [[ -n "${label}" ]] || continue
+    if [[ "${include_temporal_client}" != true &&
+          "${label}" == "kumo.ai/temporal-client=true" ]]; then
+      continue
+    fi
+    kubectl_cmd label namespace "${namespace}" "${label}" \
+      --overwrite >/dev/null
+  done <"${WORK_DIR}/namespace-labels.txt"
+}
+
+provider_profile() {
+  if [[ "${PLATFORM}" == eks ]]; then
+    printf 'aws'
+  else
+    printf 'azure'
+  fi
+}
+
+platform_chart() {
+  printf '%s/kumo-platform-%s' "${REPO_ROOT}" "${PLATFORM}"
+}
+
+core_profile_args() {
+  CORE_PROFILE_ARGS=(-f "${REPO_ROOT}/kumo-helm/profiles/$(provider_profile).yaml")
+  if [[ "${PLATFORM}" == aro ]]; then
+    CORE_PROFILE_ARGS+=(-f "${REPO_ROOT}/kumo-helm/profiles/openshift.yaml")
+  fi
+  CORE_PROFILE_ARGS+=(-f "${WORK_DIR}/core-values.yaml")
+}
+
+edge_profile_args() {
+  EDGE_PROFILE_ARGS=(-f "${WORK_DIR}/edge-values.yaml")
+}
+
+temporal_profile_args() {
+  TEMPORAL_PROFILE_ARGS=(-f "${REPO_ROOT}/kumo-temporal/profiles/$(provider_profile).yaml")
+  if [[ "${PLATFORM}" == aro ]]; then
+    TEMPORAL_PROFILE_ARGS+=(-f "${REPO_ROOT}/kumo-temporal/profiles/openshift.yaml")
+  fi
+  TEMPORAL_PROFILE_ARGS+=(-f "${WORK_DIR}/temporal-values.yaml")
+}
+
+validate_leaf_charts() {
+  local platform_manifest temporal_manifest core_manifest
+  core_profile_args
+
+  platform_manifest="${WORK_DIR}/platform-manifest.yaml"
+  "${HELM}" lint "$(platform_chart)" \
+    -f "${WORK_DIR}/platform-values.yaml" >/dev/null
+  "${HELM}" template kumo-platform "$(platform_chart)" \
+    -f "${WORK_DIR}/platform-values.yaml" >"${platform_manifest}"
+  if [[ "${PLATFORM}" == eks || "${PLATFORM}" == aks ]]; then
+    validate_rendered_image_policy platform "${platform_manifest}" \
+      "${NVIDIA_DEVICE_PLUGIN_IMAGE}"
+  else
+    validate_rendered_image_policy platform "${platform_manifest}"
+  fi
+
+  if [[ "${TEMPORAL_ENABLED}" == true ]]; then
+    temporal_profile_args
+    temporal_manifest="${WORK_DIR}/temporal-manifest.yaml"
+    "${HELM}" lint "${REPO_ROOT}/kumo-temporal" \
+      "${TEMPORAL_PROFILE_ARGS[@]}" >/dev/null
+    "${HELM}" template "${TEMPORAL_RELEASE}" \
+      "${REPO_ROOT}/kumo-temporal" \
+      --namespace "${TEMPORAL_NAMESPACE}" \
+      "${TEMPORAL_PROFILE_ARGS[@]}" >"${temporal_manifest}"
+    validate_rendered_image_policy temporal "${temporal_manifest}" \
+      "${TEMPORAL_SERVER_IMAGE}" "${TEMPORAL_ADMIN_TOOLS_IMAGE}"
+  fi
+
+  core_manifest="${WORK_DIR}/core-manifest.yaml"
+  "${HELM}" lint "${REPO_ROOT}/kumo-helm" \
+    "${CORE_PROFILE_ARGS[@]}" >/dev/null
+  "${HELM}" template "${TENANT_RELEASE}" "${REPO_ROOT}/kumo-helm" \
+    --namespace "${TENANT_NAMESPACE}" \
+    "${CORE_PROFILE_ARGS[@]}" >"${core_manifest}"
+  validate_rendered_image_policy core "${core_manifest}" \
+    "${KUMO_CPU_IMAGE}" "${KUMO_UI_IMAGE}"
+
+  # The edge chart carries no images, so only its shape is validated.
+  edge_profile_args
+  "${HELM}" lint "${REPO_ROOT}/kumo-edge" \
+    "${EDGE_PROFILE_ARGS[@]}" >/dev/null
+  "${HELM}" template "${TENANT_RELEASE}-edge" "${REPO_ROOT}/kumo-edge" \
+    --namespace "${TENANT_NAMESPACE}" \
+    "${EDGE_PROFILE_ARGS[@]}" >"${WORK_DIR}/edge-manifest.yaml"
+}
+
+load_provider() {
+  # Provider modules define provider_preflight and provider_prepare_cloud.
+  # shellcheck source=/dev/null
+  source "${STACK_ROOT}/providers/common.sh"
+  # shellcheck source=/dev/null
+  source "${STACK_ROOT}/providers/${PLATFORM}.sh"
+}
+
+show_status() {
+  local failed=false
+  helm_status "kumo-platform-${PLATFORM}" \
+    --namespace "${PLATFORM_NAMESPACE}" || failed=true
+  if [[ "${TEMPORAL_ENABLED}" == true ]]; then
+    helm_status "${TEMPORAL_RELEASE}" \
+      --namespace "${TEMPORAL_NAMESPACE}" || failed=true
+  fi
+  helm_status "${TENANT_RELEASE}-edge" \
+    --namespace "${TENANT_NAMESPACE}" || failed=true
+  helm_status "${TENANT_RELEASE}" \
+    --namespace "${TENANT_NAMESPACE}" || failed=true
+  [[ "${failed}" == false ]]
+}
+
+run_conformance() {
+  core_profile_args
+  local -a conformance_env=(
+    "HELM_BIN=${HELM}"
+    "KUBECTL_BIN=${KUBECTL}"
+  )
+  if [[ "${PLATFORM}" == aks ]]; then
+    conformance_env+=("KUMO_CONFORMANCE_INSECURE_TLS=true")
+  fi
+  env "${conformance_env[@]}" \
+    "${BASH}" "${REPO_ROOT}/kumo-helm/conformance/check.sh" \
+      --chart "${REPO_ROOT}/kumo-helm" \
+      --kube-context "${CONTEXT}" \
+      --namespace "${TENANT_NAMESPACE}" \
+      "${CORE_PROFILE_ARGS[@]}" all
+}
+
+helm_uninstall_if_present() {
+  local release="$1" namespace="$2"
+  if helm_status "${release}" --namespace "${namespace}" >/dev/null 2>&1; then
+    require_wait_capable_helm
+    "${HELM}" uninstall --kube-context "${CONTEXT}" \
+      "${release}" --namespace "${namespace}" \
+      --wait --timeout "${TIMEOUT}"
+  fi
+}
+
+wait_for_pvs_deleted() {
+  local pv_names="$1" pv attempt
+  [[ -n "${pv_names}" ]] || return 0
+  for pv in ${pv_names}; do
+    for attempt in $(seq 1 60); do
+      if ! kubectl_cmd get pv "${pv}" >/dev/null 2>&1; then
+        break
+      fi
+      if [[ "${attempt}" -eq 60 ]]; then
+        die "PV ${pv} still exists; CSI has not released its cloud disk"
+      fi
+      sleep 2
+    done
+  done
+}
+
+uninstall_tenant() {
+  local runtime_selector pv_names
+  runtime_selector='app in (diskgraph-daemon,diskgraph-activity-pod,diskgraph-eph-activity-pod)'
+  helm_uninstall_if_present "${TENANT_RELEASE}-edge" "${TENANT_NAMESPACE}"
+  helm_uninstall_if_present "${TENANT_RELEASE}" "${TENANT_NAMESPACE}"
+
+  pv_names=$(kubectl_cmd -n "${TENANT_NAMESPACE}" get pvc \
+    -l "app=diskgraph-daemon" \
+    -o jsonpath='{range .items[*]}{.spec.volumeName}{" "}{end}' || true)
+  kubectl_cmd -n "${TENANT_NAMESPACE}" delete job,deployment,pdb \
+    -l "${runtime_selector}" --ignore-not-found --wait=true \
+    --timeout="${TIMEOUT}" || true
+  kubectl_cmd -n "${TENANT_NAMESPACE}" delete pvc \
+    -l "app=diskgraph-daemon" \
+    --ignore-not-found --wait=true --timeout="${TIMEOUT}" || true
+  wait_for_pvs_deleted "${pv_names}"
+
+  printf 'Removed tenant %s and verified its cache PVs were released. Shared layers and cloud data were retained.\n' \
+    "${TENANT}"
+}
+
+decommission_environment() {
+  uninstall_tenant
+  if [[ "${TEMPORAL_ENABLED}" == true ]]; then
+    helm_uninstall_if_present "${TEMPORAL_RELEASE}" "${TEMPORAL_NAMESPACE}"
+    remove_temporal_database_remnants
+  fi
+
+  load_provider
+  provider_decommission
+  helm_uninstall_if_present "kumo-platform-${PLATFORM}" \
+    "${PLATFORM_NAMESPACE}"
+  printf 'Removed stack-owned releases and %s capacity. Adopted PostgreSQL, object storage, identities, networking, DNS, registries, and credentials were retained.\n' \
+    "${PLATFORM}"
+}
+
+write_rendered_output() {
+  local destination="${OUTPUT_DIR:-${PWD}/kumo-stack-rendered}"
+  mkdir -p "${destination}"
+  cp "${WORK_DIR}/runtime.env" "${destination}/runtime.env"
+  cp "${WORK_DIR}/namespace-labels.txt" "${destination}/namespace-labels.txt"
+  cp "${WORK_DIR}/platform-values.yaml" "${destination}/platform-values.yaml"
+  cp "${WORK_DIR}/temporal-values.yaml" "${destination}/temporal-values.yaml"
+  cp "${WORK_DIR}/core-values.yaml" "${destination}/core-values.yaml"
+  cp "${WORK_DIR}/edge-values.yaml" "${destination}/edge-values.yaml"
+  printf 'Rendered independent release values to %s\n' "${destination}"
+}
+
+# Stage modules use the shared rendered configuration and command wrappers
+# above. Keeping orchestration here avoids a second configuration format.
+for stage_module in \
+  cloud platform database temporal core gpu orchestrator; do
+  # shellcheck source=/dev/null
+  source "${STACK_ROOT}/stages/${stage_module}.sh"
+done
+
+# Route interrupts through cleanup so database credentials and identities are
+# removed before the installer exits.
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+[[ $# -gt 0 ]] || {
+  usage
+  exit 2
+}
+COMMAND="$1"
+shift
+
+case "${COMMAND}" in
+  check|bootstrap|verify)
+    [[ $# -gt 0 && "$1" != -* ]] ||
+      die "${COMMAND} requires a stage"
+    TARGET="$1"
+    shift
+    ;;
+  install|upgrade)
+    if [[ $# -gt 0 && "$1" != -* ]]; then
+      TARGET="$1"
+      shift
+    fi
+    ;;
+esac
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --values|-f)
+      [[ $# -ge 2 ]] || die "$1 requires a file"
+      VALUES_FILE="$2"
+      shift 2
+      ;;
+    --platform)
+      [[ $# -ge 2 ]] || die "--platform requires eks, aks, or aro"
+      PLATFORM_ARG="$2"
+      shift 2
+      ;;
+    --output-dir)
+      [[ $# -ge 2 ]] || die "--output-dir requires a directory"
+      OUTPUT_DIR="$2"
+      shift 2
+      ;;
+    --from)
+      [[ $# -ge 2 ]] || die "--from requires a stage"
+      FROM_STAGE="$2"
+      shift 2
+      ;;
+    --through)
+      [[ $# -ge 2 ]] || die "--through requires a stage"
+      THROUGH_STAGE="$2"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      die "unknown argument: $1"
+      ;;
+  esac
+done
+
+[[ -n "${VALUES_FILE}" ]] || die "--values is required"
+[[ -r "${VALUES_FILE}" ]] || die "cannot read values file: ${VALUES_FILE}"
+
+HELM="${HELM_BIN:-helm}"
+KUBECTL="${KUBECTL_BIN:-kubectl}"
+JQ="${JQ_BIN:-jq}"
+OPENSSL="${OPENSSL_BIN:-openssl}"
+require_command "${HELM}"
+if [[ "${COMMAND}" != render ]]; then
+  require_command "${KUBECTL}"
+  require_command "${JQ}"
+fi
+if [[ "${COMMAND}" == install || "${COMMAND}" == upgrade ||
+      "${COMMAND}" == bootstrap || "${COMMAND}" == verify ]]; then
+  require_command "${OPENSSL}"
+fi
+if [[ "${COMMAND}" == conformance ]]; then
+  require_command curl
+fi
+
+render_values
+
+case "${COMMAND}" in
+  render)
+    validate_leaf_charts
+    write_rendered_output
+    ;;
+  check)
+    [[ "${TARGET}" == cloud ]] || die "check supports only cloud"
+    stage_cloud_check
+    printf '✓ cloud\n'
+    ;;
+  preflight)
+    stage_cloud_check
+    printf '✓ cloud\n'
+    ;;
+  install|upgrade)
+    if [[ -n "${TARGET}" ]]; then
+      [[ -z "${FROM_STAGE}${THROUGH_STAGE}" ]] ||
+        die "a named install stage cannot be combined with --from/--through"
+      run_named_install "${TARGET}"
+    else
+      run_install_range
+      printf 'Installed tenant %s through %s.\n' \
+        "${TENANT}" "${THROUGH_STAGE:-core}"
+    fi
+    ;;
+  bootstrap)
+    [[ "${TARGET}" == database ]] ||
+      die "bootstrap supports only database"
+    run_database_bootstrap
+    ;;
+  verify)
+    case "${TARGET}" in
+      platform) stage_platform_verify ;;
+      database) stage_database_verify ;;
+      temporal) stage_temporal_verify ;;
+      core) stage_core_verify ;;
+      gpu-lifecycle) stage_gpu_lifecycle_verify ;;
+      container-policy) stage_container_policy_verify ;;
+      *) die "unknown verify stage: ${TARGET}" ;;
+    esac
+    printf '✓ %s\n' "${TARGET}"
+    ;;
+  status)
+    show_status
+    ;;
+  conformance)
+    run_conformance
+    ;;
+  uninstall-tenant)
+    uninstall_tenant
+    ;;
+  decommission)
+    decommission_environment
+    ;;
+  *)
+    usage
+    die "unknown command: ${COMMAND}"
+    ;;
+esac

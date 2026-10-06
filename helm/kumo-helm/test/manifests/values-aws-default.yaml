@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# CI test: AWS full — role identities, Postgres enabled, external UI host.
+global:
+  tenant: "test"
+
+image:
+  registry: "000000000000.dkr.ecr.us-west-2.amazonaws.com"
+  tag: "test-version"
+
+
+kumoConfig:
+  storage:
+    dataBucket: "s3://test-bucket"
+    region: "us-west-2"
+  diskgraph:
+    storageClass: ebs-gp3-xfs
+    storageCapacityTracking: advisory
+    nodeTypes:
+      test-gpu: { ssd_gib: 800 }
+
+# Workload identity (AWS IRSA).
+serviceAccounts:
+  control:
+    annotations:
+      eks.amazonaws.com/role-arn: "arn:aws:iam::000000000000:role/test-control"
+  worker:
+    annotations:
+      eks.amazonaws.com/role-arn: "arn:aws:iam::000000000000:role/test-worker"
+  controller:
+    annotations:
+      eks.amazonaws.com/role-arn: "arn:aws:iam::000000000000:role/test-controller"
+
+postgres:
+  authMode: aws_iam
+  host: state.test.us-west-2.rds.amazonaws.com
+  database: test
+  username: kumo_state
+  region: us-west-2
+
+# External DNS name; the customer-owned edge serves this host.
+exposure:
+  host: test.example.com

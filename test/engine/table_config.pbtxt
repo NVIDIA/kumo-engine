@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: "users_relational"
+feature_configs {
+  name: "timestamp_first_active"
+  dtype: INT64
+}
+feature_configs {
+  name: "language"
+  dtype: BYTES
+}

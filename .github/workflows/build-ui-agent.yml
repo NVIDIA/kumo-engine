@@ -1,0 +1,2014 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Build UI Agent Workflow
+#
+# Runs the /build-ui skill headlessly via Claude Code Action.
+#
+# Trigger: Comment "/build-ui <issue-number> [flags]" on any issue.
+# Example: /build-ui 12345
+#          /build-ui 12345 --mode standard
+#          /build-ui 12345 --dry-run
+#
+# Reuses existing secrets:
+# - ANTHROPIC_API_KEY (Claude API)
+# - KUMO_GITHUB_BOT_TOKEN (workflow-owned screenshot publication, branch push, PR creation)
+# - GITHUB_TOKEN (checkout, npm registry, issue comments)
+# - BUILD_UI_SCREENSHOT_EMAIL, BUILD_UI_SCREENSHOT_PASSWORD (Direct Connect test account)
+# - BUILD_UI_BACKEND_URL (staging backend for screenshot testing)
+# - FIGMA_ACCESS_TOKEN (optional, Figma REST API token for design context)
+
+name: Build UI Agent
+
+"on":
+  issue_comment:
+    types: [created]
+
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to implement"
+        required: true
+        type: number
+      flags:
+        description: "Optional flags (e.g. --mode standard --dry-run)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build-ui:
+    # Run on /build-ui comment (issues only, not PRs) or manual trigger
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' &&
+       startsWith(github.event.comment.body, '/build-ui') &&
+       !github.event.issue.pull_request)
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    concurrency:
+      group: build-ui-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.issue_number || github.event.issue.number }}
+      cancel-in-progress: false
+
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: write
+      packages: read
+      actions: read
+
+    steps:
+      - name: Parse command
+        id: parse
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        env:
+          WORKFLOW_ISSUE_NUMBER: ${{ github.event.inputs.issue_number }}
+          WORKFLOW_FLAGS: ${{ github.event.inputs.flags }}
+        with:
+          script: |
+            let issueNumber, flags;
+
+            if (context.eventName === 'workflow_dispatch') {
+              issueNumber = process.env.WORKFLOW_ISSUE_NUMBER || '';
+              flags = process.env.WORKFLOW_FLAGS || '';
+            } else {
+              const body = context.payload.comment.body.trim();
+              const match = body.match(/^\/build-ui\s+(\d+)\s*(.*)?$/);
+              if (!match) {
+                core.setFailed('Could not parse /build-ui command. Usage: /build-ui <issue-number> [flags]');
+                return;
+              }
+              issueNumber = match[1];
+              flags = (match[2] || '').trim();
+            }
+
+            if (!/^\d+$/.test(issueNumber)) {
+              core.setFailed('Issue number must be numeric');
+              return;
+            }
+
+            const booleanFlags = new Set([
+              '--dry-run',
+              '--skip-figma',
+              '--skip-screenshots',
+              '--skip-browser',
+              '--no-review',
+              '--validate-only'
+            ]);
+            const valueFlags = new Set([
+              '--base-branch',
+              '--mode',
+              '--resume',
+              '--screenshot-route',
+              '--screenshot-recipe',
+              '--screenshot-coverage',
+              '--screenshot-fixture'
+            ]);
+
+            const tokenizeFlags = (value) => value.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+            const stripQuotes = (value) => value.replace(/^(['"])(.*)\1$/, '$2');
+            const rejectFlags = (message) => {
+              core.setFailed(`Invalid /build-ui flags: ${message}`);
+              return false;
+            };
+            const validateFlags = (value) => {
+              if (!value) return true;
+              if (/[\r\n`]/.test(value) || value.includes('$(') || value.includes('${')) {
+                return rejectFlags('shell/prompt interpolation characters are not allowed');
+              }
+
+              const tokens = tokenizeFlags(value).map(stripQuotes);
+              for (let i = 0; i < tokens.length; i += 1) {
+                const token = tokens[i];
+                if (!token.startsWith('--')) {
+                  return rejectFlags(`unexpected argument "${token}"`);
+                }
+
+                const [flag, inlineValue] = token.includes('=')
+                  ? token.split(/=(.*)/s, 2)
+                  : [token, undefined];
+                if (booleanFlags.has(flag)) {
+                  if (inlineValue !== undefined) {
+                    return rejectFlags(`${flag} does not accept a value`);
+                  }
+                  continue;
+                }
+                if (!valueFlags.has(flag)) {
+                  return rejectFlags(`unsupported flag "${flag}"`);
+                }
+
+                let flagValue = inlineValue;
+                if (flagValue === undefined) {
+                  i += 1;
+                  flagValue = tokens[i];
+                }
+                if (!flagValue || flagValue.startsWith('--')) {
+                  return rejectFlags(`${flag} requires a value`);
+                }
+                if (flag === '--mode' && !['light', 'standard', 'full'].includes(flagValue)) {
+                  return rejectFlags('--mode must be one of light, standard, or full');
+                }
+              }
+              return true;
+            };
+
+            if (!validateFlags(flags)) {
+              return;
+            }
+
+            core.setOutput('issue_number', issueNumber);
+            core.setOutput('flags', flags);
+
+      - name: Determine screenshot expectation
+        id: screenshot_mode
+        env:
+          BUILD_UI_FLAGS: ${{ steps.parse.outputs.flags }}
+        run: |
+          FLAGS="$BUILD_UI_FLAGS"
+          MODE="light"
+          if [[ "$FLAGS" =~ (^|[[:space:]])--mode(=|[[:space:]]+)([a-zA-Z0-9_-]+) ]]; then
+            MODE="${BASH_REMATCH[3]}"
+          fi
+
+          SKIP_SCREENSHOTS=false
+          if [[ "$FLAGS" =~ (^|[[:space:]])--skip-screenshots($|[[:space:]]) ]]; then
+            SKIP_SCREENSHOTS=true
+          fi
+          DRY_RUN=false
+          if [[ "$FLAGS" =~ (^|[[:space:]])--dry-run($|[[:space:]]) ]]; then
+            DRY_RUN=true
+          fi
+
+          REQUIRE_SCREENSHOT=false
+          if [[ "$DRY_RUN" != "true" && "$SKIP_SCREENSHOTS" != "true" && ( "$MODE" == "standard" || "$MODE" == "full" ) ]]; then
+            REQUIRE_SCREENSHOT=true
+          fi
+
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "require_screenshot=$REQUIRE_SCREENSHOT" >> "$GITHUB_OUTPUT"
+          echo "skip_screenshots=$SKIP_SCREENSHOTS" >> "$GITHUB_OUTPUT"
+
+      - name: Determine PR creation mode
+        id: pr_mode
+        env:
+          BUILD_UI_FLAGS: ${{ steps.parse.outputs.flags }}
+        run: |
+          FLAGS="$BUILD_UI_FLAGS"
+          VALIDATE_ONLY=false
+          DRY_RUN=false
+          if [[ "$FLAGS" =~ (^|[[:space:]])--dry-run($|[[:space:]]) ]]; then
+            DRY_RUN=true
+          fi
+          if [[ "$FLAGS" =~ (^|[[:space:]])--validate-only($|[[:space:]]) || "$DRY_RUN" == "true" ]]; then
+            VALIDATE_ONLY=true
+          fi
+
+          echo "validate_only=$VALIDATE_ONLY" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$DRY_RUN" >> "$GITHUB_OUTPUT"
+
+      - name: Initialize headless artifact directory
+        run: |
+          ARTIFACT_DIR="/tmp/build-ui-artifacts/${{ steps.parse.outputs.issue_number }}"
+          mkdir -p "$ARTIFACT_DIR"
+          echo "BUILD_UI_ARTIFACT_DIR=$ARTIFACT_DIR" >> "$GITHUB_ENV"
+
+      - name: Parse screenshot override flags
+        id: screenshot_overrides
+        env:
+          BUILD_UI_FLAGS: ${{ steps.parse.outputs.flags }}
+        run: |
+          OVERRIDE_PATH="$BUILD_UI_ARTIFACT_DIR/screenshot-overrides.json"
+          rm -f "$OVERRIDE_PATH"
+          node - <<'NODE' "$OVERRIDE_PATH"
+          const fs = require('node:fs');
+
+          const overridePath = process.argv[2];
+          const flags = process.env.BUILD_UI_FLAGS || '';
+          const override = {};
+
+          function valuesFor(name) {
+            const values = [];
+            const pattern = new RegExp(`(?:^|\\s)--${name}(?:=|\\s+)(?:"([^"]+)"|'([^']+)'|(\\S+))`, 'g');
+            let match;
+            while ((match = pattern.exec(flags)) !== null) {
+              values.push(match[1] || match[2] || match[3]);
+            }
+            return values.filter(Boolean);
+          }
+
+          const recipe = valuesFor('screenshot-recipe').at(-1);
+          const route = valuesFor('screenshot-route').at(-1);
+          const coverageIds = valuesFor('screenshot-coverage')
+            .flatMap((value) => value.split(','))
+            .map((value) => value.trim())
+            .filter(Boolean);
+          const fixtures = valuesFor('screenshot-fixture')
+            .flatMap((value) => value.split(','))
+            .map((value) => value.trim())
+            .filter(Boolean);
+
+          if (recipe) {
+            override.recipeKey = recipe;
+          }
+          if (route) {
+            override.route = route;
+          }
+          if (coverageIds.length > 0) {
+            override.coverageIds = [...new Set(coverageIds)];
+          }
+          if (fixtures.length > 0) {
+            override.fixtures = [...new Set(fixtures)];
+          }
+
+          if (Object.keys(override).length > 0) {
+            fs.writeFileSync(overridePath, JSON.stringify(override, null, 2) + '\n');
+          }
+          NODE
+          if [[ -f "$OVERRIDE_PATH" ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "path=$OVERRIDE_PATH" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "path=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check permissions
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          script: |
+            const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: context.payload.comment.user.login
+            });
+            if (!['admin', 'write'].includes(data.permission)) {
+              core.setFailed(`User ${context.payload.comment.user.login} does not have write access`);
+            }
+
+      - name: React to acknowledge
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'eyes'
+            });
+
+      - name: Post starting comment
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        env:
+          BUILD_UI_FLAGS: ${{ steps.parse.outputs.flags }}
+        with:
+          script: |
+            const issueNumber = ${{ steps.parse.outputs.issue_number }};
+            const flags = process.env.BUILD_UI_FLAGS || '';
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const flagsLine = flags ? `\n**Flags:** \`${flags}\`` : '';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: `## Build UI Starting\n\nImplementing issue #${issueNumber} with \`/build-ui\`.${flagsLine}\n\n[View workflow run](${runUrl})\n\n---\n*build-ui agent*`
+            });
+
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          token: ${{ github.token }}
+          persist-credentials: false
+
+      - name: Prepare dedicated ticket branch
+        id: work_branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ISSUE_NUMBER="${{ steps.parse.outputs.issue_number }}"
+          BRANCH="build-ui-${ISSUE_NUMBER}-${{ github.run_id }}-${{ github.run_attempt }}"
+          RUNNER_TOOLING_REF="$(git rev-parse HEAD)"
+          TOOLING_FILES="/tmp/build-ui-runner-tooling-files.txt"
+          TRACKED_TOOLING_FILES="/tmp/build-ui-runner-tooling-tracked-files.txt"
+          AUTH_HEADER="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH_HEADER" fetch origin master
+          git diff --name-only --diff-filter=ACMRT origin/master "$RUNNER_TOOLING_REF" -- \
+            .agents/skills/build-ui \
+            .github/workflows/build-ui-agent.yml \
+            ui/scripts/build-ui-pr-body.mjs \
+            ui/scripts/ci-screenshot.mjs \
+            ui/src/screenshot \
+            > "$TOOLING_FILES"
+          git checkout -B "$BRANCH" origin/master
+
+          # When testing workflow changes from a feature branch, the ticket
+          # implementation branch still starts from master, but the runner must
+          # use the triggering ref's build-ui tooling. Keep that overlay out of
+          # the ticket diff/commit.
+          : > "$TRACKED_TOOLING_FILES"
+          if [ -s "$TOOLING_FILES" ]; then
+            xargs -a "$TOOLING_FILES" git restore --source="$RUNNER_TOOLING_REF" --worktree --
+            while IFS= read -r file; do
+              if git ls-files --error-unmatch "$file" >/dev/null 2>&1; then
+                echo "$file" >> "$TRACKED_TOOLING_FILES"
+              else
+                echo "/$file" >> .git/info/exclude
+              fi
+            done < "$TOOLING_FILES"
+            if [ -s "$TRACKED_TOOLING_FILES" ]; then
+              git update-index --skip-worktree --stdin < "$TRACKED_TOOLING_FILES"
+            fi
+          fi
+
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "BUILD_UI_WORK_BRANCH=$BRANCH" >> "$GITHUB_ENV"
+          echo "BUILD_UI_RUNNER_TOOLING_FILES=$TOOLING_FILES" >> "$GITHUB_ENV"
+          echo "BUILD_UI_RUNNER_TOOLING_TRACKED_FILES=$TRACKED_TOOLING_FILES" >> "$GITHUB_ENV"
+
+      - name: Initialize run-state artifact
+        env:
+          BUILD_UI_FLAGS: ${{ steps.parse.outputs.flags }}
+        run: |
+          BASE_SHA_START="$(git rev-parse origin/master)"
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          SKIP_FIGMA=false
+          SKIP_BROWSER=false
+          NO_REVIEW=false
+          RESUME_STAGE="null"
+          if [[ "$BUILD_UI_FLAGS" =~ (^|[[:space:]])--skip-figma($|[[:space:]]) ]]; then
+            SKIP_FIGMA=true
+          fi
+          if [[ "$BUILD_UI_FLAGS" =~ (^|[[:space:]])--skip-browser($|[[:space:]]) ]]; then
+            SKIP_BROWSER=true
+          fi
+          if [[ "$BUILD_UI_FLAGS" =~ (^|[[:space:]])--no-review($|[[:space:]]) ]]; then
+            NO_REVIEW=true
+          fi
+          if [[ "$BUILD_UI_FLAGS" =~ --resume-stage[[:space:]]+([a-zA-Z0-9_-]+) ]]; then
+            RESUME_STAGE="${BASH_REMATCH[1]}"
+          fi
+          bash .agents/skills/build-ui/scripts/write-headless-artifact.sh \
+            --type run-state \
+            --target "${{ steps.parse.outputs.issue_number }}" \
+            --output "$BUILD_UI_ARTIFACT_DIR/run-state.json"
+          jq -n \
+            --arg runId "${{ github.run_id }}" \
+            --arg runUrl "$RUN_URL" \
+            --arg trigger "${{ github.event_name }}" \
+            --arg actor "${{ github.actor }}" \
+            --arg flags "$BUILD_UI_FLAGS" \
+            --arg dryRun "${{ steps.pr_mode.outputs.dry_run }}" \
+            --arg validateOnly "${{ steps.pr_mode.outputs.validate_only }}" \
+            --arg skipFigma "$SKIP_FIGMA" \
+            --arg skipBrowser "$SKIP_BROWSER" \
+            --arg noReview "$NO_REVIEW" \
+            --arg skipScreenshots "${{ steps.screenshot_mode.outputs.skip_screenshots }}" \
+            --arg screenshotMode "${{ steps.screenshot_mode.outputs.mode }}" \
+            --arg resumeStage "$RESUME_STAGE" \
+            --arg baseShaAtStart "$BASE_SHA_START" \
+            --arg artifactDir "$BUILD_UI_ARTIFACT_DIR" \
+            '{
+              runId: $runId,
+              runUrl: $runUrl,
+              trigger: $trigger,
+              actor: $actor,
+              flags: {
+                raw: $flags,
+                dryRun: ($dryRun == "true"),
+                validateOnly: ($validateOnly == "true"),
+                skipFigma: ($skipFigma == "true"),
+                skipScreenshots: ($skipScreenshots == "true"),
+                skipBrowser: ($skipBrowser == "true"),
+                noReview: ($noReview == "true"),
+                mode: $screenshotMode,
+                baseBranch: "master",
+                resumeStage: $resumeStage
+              },
+              baseBranch: "master",
+              baseShaAtStart: $baseShaAtStart,
+              jobStatus: "in_progress",
+              artifactDir: $artifactDir
+            }' > /tmp/build-ui-run-state-init.json
+          bash .agents/skills/build-ui/scripts/update-headless-artifact.sh \
+            --input "$BUILD_UI_ARTIFACT_DIR/run-state.json" \
+            --payload-file /tmp/build-ui-run-state-init.json
+          echo "BUILD_UI_BASE_SHA_START=$BASE_SHA_START" >> "$GITHUB_ENV"
+
+      - name: Snapshot related PR overlap
+        id: overlap
+        env:
+          GH_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+        run: |
+          gh pr list \
+            --search "#${{ steps.parse.outputs.issue_number }}" \
+            --state open \
+            --json number,title,url,headRefName,updatedAt \
+            > /tmp/build-ui-related-prs.json
+
+          COUNT="$(jq 'length' /tmp/build-ui-related-prs.json)"
+          HAS_OVERLAP=false
+          if [ "$COUNT" -gt 0 ]; then
+            HAS_OVERLAP=true
+          fi
+
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "has_overlap=$HAS_OVERLAP" >> "$GITHUB_OUTPUT"
+
+          python3 - <<'PY' /tmp/build-ui-related-prs.json > /tmp/build-ui-related-prs-summary.txt
+          import json
+          import sys
+
+          prs = json.load(open(sys.argv[1]))
+          if not prs:
+              print("none")
+          else:
+              for pr in prs:
+                  print(f"- #{pr['number']} {pr['headRefName']} {pr['url']}")
+          PY
+
+          jq -n \
+            --argjson relatedPrs "$(cat /tmp/build-ui-related-prs.json)" \
+            --arg hasOverlap "$HAS_OVERLAP" \
+            --arg count "$COUNT" \
+            '{
+              relatedPrOverlap: ($hasOverlap == "true"),
+              relatedPrCount: ($count | tonumber),
+              relatedPrs: $relatedPrs
+            }' > /tmp/build-ui-related-prs-payload.json
+
+          bash .agents/skills/build-ui/scripts/update-headless-artifact.sh \
+            --input "$BUILD_UI_ARTIFACT_DIR/run-state.json" \
+            --payload-file /tmp/build-ui-related-prs-payload.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "22"
+
+      - name: Install UI dependencies
+        run: |
+          cd ui
+          cp package.json /tmp/build-ui-package.json.orig
+          cp package-lock.json /tmp/build-ui-package-lock.json.orig
+
+          npm run install:catalog
+          npm ci
+
+          mv /tmp/build-ui-package.json.orig package.json
+          mv /tmp/build-ui-package-lock.json.orig package-lock.json
+
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+        working-directory: ui
+
+      # Fail fast if the staging backend is unreachable before the expensive
+      # implement-and-screenshot run. The organization fallback covers staging
+      # images predating #29630 (which replaced that endpoint with
+      # client-config); delete the fallback once staging is post-#29630.
+      - name: Check staging backend readiness
+        run: |
+          if curl -sf --url "${BUILD_UI_BACKEND_URL}/v0/authentication/client-config" >/dev/null; then
+            echo "Staging backend ready (client-config)"
+          elif curl -sf --url "${BUILD_UI_BACKEND_URL}/v0/authentication/organization" >/dev/null; then
+            echo "Staging backend ready (legacy organization endpoint)"
+          else
+            echo "::error::Staging backend did not answer client-config or organization"
+            exit 1
+          fi
+        env:
+          BUILD_UI_BACKEND_URL: ${{ secrets.BUILD_UI_BACKEND_URL }}
+
+      - name: Start UI dev server
+        run: |
+          cd ui
+          UI_REMOTE=true API_TARGET=${{ secrets.BUILD_UI_BACKEND_URL }} npm start >/tmp/build-ui-ui.log 2>&1 &
+          echo $! >/tmp/build-ui-ui.pid
+          npx --yes wait-on http://localhost:3000 --timeout 60000
+          deadline=$((SECONDS + 60))
+          until curl -sf http://localhost:3000/v0/authentication/client-config >/dev/null \
+             || curl -sf http://localhost:3000/v0/authentication/organization >/dev/null; do
+            if (( SECONDS >= deadline )); then
+              echo "::error::UI dev server proxy to staging backend did not become ready"
+              exit 1
+            fi
+            sleep 3
+          done
+
+      - name: Capture and publish pre-flight status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_UI_DEV_SERVER_URL: http://localhost:3000
+          BUILD_UI_BACKEND_URL: ${{ secrets.BUILD_UI_BACKEND_URL }}
+          CI_SCREENSHOT_SCRIPT: "true"
+        run: |
+          PRECHECK_TSV="$BUILD_UI_ARTIFACT_DIR/preflight.tsv"
+          PRECHECK_JSON="$BUILD_UI_ARTIFACT_DIR/preflight.json"
+          GH_AUTH_STATUS="$BUILD_UI_ARTIFACT_DIR/gh-auth-status.txt"
+          GIT_STATUS_PORCELAIN="$BUILD_UI_ARTIFACT_DIR/git-status-porcelain.txt"
+
+          gh auth status > "$GH_AUTH_STATUS" 2>&1 || true
+          git status --porcelain=v1 > "$GIT_STATUS_PORCELAIN"
+
+          (
+            cd ui
+            bash ../.agents/skills/build-ui/scripts/check-preflight.sh
+          ) | tee "$PRECHECK_TSV"
+
+          python3 - <<'PY' "$PRECHECK_TSV" "$PRECHECK_JSON" "$GH_AUTH_STATUS" "$GIT_STATUS_PORCELAIN" "${{ steps.parse.outputs.issue_number }}"
+          import json
+          import sys
+
+          tsv_path, json_path, gh_auth_path, git_status_path, target = sys.argv[1:6]
+          payload = {}
+          with open(tsv_path, "r", encoding="utf-8") as f:
+              for line in f:
+                  line = line.rstrip("\n")
+                  if not line:
+                      continue
+                  key, value = line.split("\t", 1)
+                  payload[key] = value
+          payload["ghAuthStatus"] = open(gh_auth_path, "r", encoding="utf-8", errors="replace").read()
+          payload["gitStatusPorcelain"] = open(git_status_path, "r", encoding="utf-8", errors="replace").read()
+
+          doc = {
+              "artifactType": "preflight",
+              "generatedAt": __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "headless": True,
+              "target": target,
+              "payload": payload,
+          }
+          with open(json_path, "w", encoding="utf-8") as f:
+              json.dump(doc, f, indent=2, sort_keys=True)
+              f.write("\n")
+          PY
+
+          python3 - <<'PY' "$PRECHECK_TSV" "$GH_AUTH_STATUS" "$GIT_STATUS_PORCELAIN" > /tmp/build-ui-preflight-payload.json
+          import json
+          import sys
+
+          payload = {}
+          tsv_path, gh_auth_path, git_status_path = sys.argv[1:4]
+          with open(tsv_path, "r", encoding="utf-8") as f:
+              for line in f:
+                  line = line.rstrip("\n")
+                  if not line:
+                      continue
+                  key, value = line.split("\t", 1)
+                  payload[key] = value
+          payload["ghAuthStatus"] = open(gh_auth_path, "r", encoding="utf-8", errors="replace").read()
+          payload["gitStatusPorcelain"] = open(git_status_path, "r", encoding="utf-8", errors="replace").read()
+          json.dump({"preflight": payload}, sys.stdout)
+          PY
+          bash .agents/skills/build-ui/scripts/update-headless-artifact.sh \
+            --input "$BUILD_UI_ARTIFACT_DIR/run-state.json" \
+            --payload-file /tmp/build-ui-preflight-payload.json
+
+          {
+            echo "## Build UI Pre-flight"
+            echo
+            echo "| Probe | Status |"
+            echo "| --- | --- |"
+            while IFS=$'\t' read -r key value; do
+              echo "| $key | $value |"
+            done < "$PRECHECK_TSV"
+            echo
+            echo "### GitHub Auth Status"
+            echo
+            echo '```text'
+            cat "$GH_AUTH_STATUS"
+            echo '```'
+            echo
+            echo "### Git Status Porcelain"
+            echo
+            echo '```text'
+            if [ -s "$GIT_STATUS_PORCELAIN" ]; then
+              cat "$GIT_STATUS_PORCELAIN"
+            else
+              echo "(clean)"
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Extract Figma context
+        id: figma_context
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+          FIGMA_ACCESS_TOKEN: ${{ secrets.FIGMA_ACCESS_TOKEN }}
+          FIGMA_FILE_ALLOWLIST: ${{ vars.FIGMA_FILE_ALLOWLIST }}
+          BUILD_UI_FLAGS: ${{ steps.parse.outputs.flags }}
+        run: |
+          FIGMA_CONTEXT_PATH="$BUILD_UI_ARTIFACT_DIR/figma-context.json"
+          SKIP_ARGS=()
+          if [[ "$BUILD_UI_FLAGS" =~ (^|[[:space:]])--skip-figma($|[[:space:]]) ]]; then
+            SKIP_ARGS+=(--skip)
+          fi
+
+          FIGMA_EXIT_CODE=0
+          python3 .agents/skills/build-ui/scripts/extract-figma-context.py \
+            --repo "${{ github.repository }}" \
+            --issue-number "${{ steps.parse.outputs.issue_number }}" \
+            --output "$FIGMA_CONTEXT_PATH" \
+            "${SKIP_ARGS[@]}" || FIGMA_EXIT_CODE=$?
+
+          STATUS="$(jq -r '.status // "unknown"' "$FIGMA_CONTEXT_PATH")"
+          REASON="$(jq -r '.reason // ""' "$FIGMA_CONTEXT_PATH")"
+          LINKS="$(jq -r '(.links // []) | length' "$FIGMA_CONTEXT_PATH")"
+          NODES="$(jq -r '(.nodes // []) | length' "$FIGMA_CONTEXT_PATH")"
+          IMAGES="$(jq -r '(.images // []) | length' "$FIGMA_CONTEXT_PATH")"
+
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "path=$FIGMA_CONTEXT_PATH" >> "$GITHUB_OUTPUT"
+          echo "summary_path=$BUILD_UI_ARTIFACT_DIR/figma-summary.md" >> "$GITHUB_OUTPUT"
+
+          jq -n \
+            --arg status "$STATUS" \
+            --arg reason "$REASON" \
+            --arg path "$FIGMA_CONTEXT_PATH" \
+            --arg links "$LINKS" \
+            --arg nodes "$NODES" \
+            --arg images "$IMAGES" \
+            --arg exitCode "$FIGMA_EXIT_CODE" \
+            '{
+              figmaContext: {
+                status: $status,
+                reason: $reason,
+                path: $path,
+                exitCode: ($exitCode | tonumber),
+                linkCount: ($links | tonumber),
+                nodeCount: ($nodes | tonumber),
+                imageCount: ($images | tonumber)
+              }
+            }' > /tmp/build-ui-figma-context-payload.json
+
+          bash .agents/skills/build-ui/scripts/update-headless-artifact.sh \
+            --input "$BUILD_UI_ARTIFACT_DIR/run-state.json" \
+            --payload-file /tmp/build-ui-figma-context-payload.json
+
+          {
+            echo
+            echo "## Figma Context"
+            echo
+            echo "- Status: \`$STATUS\`"
+            echo "- Links: \`$LINKS\`"
+            echo "- Nodes: \`$NODES\`"
+            echo "- Images: \`$IMAGES\`"
+            if [[ -n "$REASON" ]]; then
+              echo "- Reason: $REASON"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run build-ui via Claude
+        id: claude
+        uses: anthropics/claude-code-action@e2f03d97c9a5b5e8f08b144ff1444d3ee6d3fb49 # v1.0.124
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ github.token }}
+          claude_args: "--model opus --max-turns 200"
+          prompt: |
+            Run /build-ui ${{ steps.parse.outputs.issue_number }} ${{ steps.parse.outputs.flags }}
+
+            HEADLESS MODE INSTRUCTIONS:
+            This is an automated headless run triggered from a GitHub comment.
+            - Auto-approve Checkpoint 1 and proceed with implementation unless there are hard blockers (missing APIs, ambiguous AC, catalog gaps that cannot be worked around).
+            - Auto-approve Checkpoint 2 for validation flow.
+            - If you encounter a hard blocker at any checkpoint, post the blocker details as a comment on issue #${{ steps.parse.outputs.issue_number }} and stop.
+            - Use commit messages in the format: feat(ui): <description> (#${{ steps.parse.outputs.issue_number }})
+            - Use the PR title format: UI: <issue title>. If the issue title already starts with `UI:` or `[UI]`, normalize it to a single `UI: ` prefix.
+            - The workflow already checked out dedicated ticket branch `${{ steps.work_branch.outputs.branch }}` from `origin/master`; keep all implementation commits on this branch.
+            - Build-ui runner tooling may be overlaid from the workflow ref for CI validation; do not modify `.agents/skills/build-ui`, `.github/workflows/build-ui-agent.yml`, `ui/scripts/ci-screenshot.mjs`, `ui/scripts/build-ui-pr-body.mjs`, or `ui/src/screenshot` for ticket implementation.
+            - Do not push the branch or create a PR from the agent step. The workflow owns push/PR creation after workflow-owned screenshot validation succeeds.
+            - If `${{ steps.pr_mode.outputs.dry_run }}` is `true`, stop after planning artifacts and do not make implementation commits.
+            - If `${{ steps.pr_mode.outputs.validate_only }}` is `true`, stop after local commits, handoff, and workflow-owned screenshot validation artifacts.
+            - If `${{ steps.pr_mode.outputs.validate_only }}` is `false`, leave committed changes on the current branch; the workflow will push and create/update the PR only after required screenshots are captured with complete coverage.
+            - Post the final Handoff output as a comment on issue #${{ steps.parse.outputs.issue_number }}.
+            - Persist headless artifacts under ${{ env.BUILD_UI_ARTIFACT_DIR }} using .agents/skills/build-ui/scripts/write-headless-artifact.sh.
+            - Do not use interactive Figma MCP in headless mode. The workflow owns Figma REST extraction.
+            - Figma REST context path: `${{ steps.figma_context.outputs.path }}`.
+            - Figma REST context status: `${{ steps.figma_context.outputs.status }}`.
+            - If `figma-context.json` exists and has status `extracted` or `partial`, read it and `figma-summary.md` before implementation. Inspect relevant files under `figma-nodes/` and rendered PNGs under `figma-images/` as advisory design context.
+            - If Figma status is `not-found`, `skipped`, or `failed`, continue without design context and record that in handoff/verification.
+            - Keep run-state.json updated as phases complete.
+            - Write verification-status.json when validation begins.
+            - Write blocker.json if you stop on a hard blocker.
+            - Write handoff.json before you finish.
+            - Existing open PRs already referencing this issue: ${{ steps.overlap.outputs.count }}.
+            - If overlap exists and you are not intentionally continuing that PR path, stop and emit a blocker instead of creating a competing PR.
+            - Do not execute the screenshot script directly in headless mode. The workflow owns screenshot execution; your job is to write a capture plan that the workflow will execute with Playwright.
+            - In `standard` or `full` mode, writing `${{ env.BUILD_UI_ARTIFACT_DIR }}/screenshot-plan.json` is mandatory before you finish, even for non-visual changes. If the change is purely non-visual (utility helper, pure logic fix), still write a plan using the default app-shell routes (`/connectors/`, `/tables/`, `/graphs/`) and note the rationale in the handoff. The workflow fails with `BLOCKER_SCREENSHOT_PLAN_MISSING` if this file is absent.
+            - In `light` mode, `screenshot-plan.json` is optional; skip it if no route is affected.
+            - Do not claim screenshot caveats like missing auth or skipped visual testing unless you actually wrote `screenshot-plan.json` and the workflow-owned capture produced that failure evidence.
+
+            SCREENSHOT INSTRUCTIONS:
+            - The UI dev server is running at http://localhost:3000 proxying to the staging backend.
+            - For Phase 8, decide the relevant routes and write them to `${{ env.BUILD_UI_ARTIFACT_DIR }}/screenshot-plan.json` before final handoff or completion.
+            - Use a simple route plan when the changed UI is visible on initial page load.
+            - Use a scenario plan when the changed UI only appears after user interaction, async state changes, or form input.
+            - Simple route plan shape:
+              {
+                "routes": ["/primary-route/"],
+                "readySelectors": {
+                  "*": "[data-testid=\"main-layout\"]",
+                  "/primary-route/": "[data-testid=\"route-ready-selector\"]"
+                }
+              }
+            - Scenario plan shape:
+              {
+                "scenarios": [
+                  {
+                    "name": "primary-changed-state",
+                    "route": "/primary-route/",
+                    "setup": [
+                      { "action": "fill", "selector": "[data-testid=\"query-editor\"]", "value": "SELECT ..." },
+                      { "action": "click", "selector": "[data-testid=\"graph-selector\"]" }
+                    ],
+                    "readySelector": "[data-testid=\"changed-surface\"]",
+                    "assertions": [
+                      { "type": "text", "selector": "[data-testid=\"changed-surface\"]", "contains": "Expected text" }
+                    ]
+                  }
+                ]
+              }
+            - The first route must be the primary page changed by the work. Prefer the exact edited page over a nearby list or landing page.
+            - Only include a secondary route when there is a concrete shared-component or cross-page validation reason tied to the diff. Do not add unrelated list pages or generic overview routes just to have a second screenshot.
+            - If the change is isolated to a single page, include only that page.
+            - If no route-specific selector is needed, omit `readySelectors` or use only `*`.
+            - If the change requires user interaction to reveal the changed UI, do not fall back to an unrelated static route. Encode the interaction in `scenarios[0].setup` and prove the fix with `assertions`.
+            - If you changed shared UI and multiple routes are plausible, choose the most representative changed route first and add at most one secondary validation route with a brief rationale in the handoff.
+            - Prefer catalog-backed screenshot recipes for known surfaces over inventing a freeform plan.
+            - If the command includes `--screenshot-route`, `--screenshot-recipe`, `--screenshot-coverage`, or `--screenshot-fixture`, treat those as the user's explicit screenshot intent. The workflow will write `screenshot-overrides.json` and the resolver will enforce that it matches a catalog-backed plan.
+            - A screenshot plan is only good if it proves the changed UI itself. Do not assert on broad containers such as tab lists, page shells, or generic headings when the change is to a specific tab label, panel, card, or text block.
+            - Cover every user-visible requirement that the screenshot is meant to verify with assertions. For example, if the issue changes both a tab label and an info label, include assertions for both instead of only one.
+            - If a stable exact selector for the changed element does not exist, add a `data-testid` in the implementation rather than relying on aggregated container text.
+        env:
+          CI_SCREENSHOT_SCRIPT: "true"
+          CI_SCREENSHOT_OUTPUT: /tmp/build-ui-screenshots/${{ steps.parse.outputs.issue_number }}
+          BUILD_UI_ARTIFACT_DIR: ${{ env.BUILD_UI_ARTIFACT_DIR }}
+
+      - name: Check screenshot plan artifact presence
+        if: always() && steps.screenshot_mode.outputs.require_screenshot == 'true'
+        id: screenshot_plan_presence
+        run: |
+          PLAN_PATH="$BUILD_UI_ARTIFACT_DIR/screenshot-plan.json"
+          if [[ -f "$PLAN_PATH" ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Synthesize or correct screenshot plan from changed files
+        if: always() && steps.screenshot_mode.outputs.require_screenshot == 'true'
+        run: |
+          PLAN_PATH="$BUILD_UI_ARTIFACT_DIR/screenshot-plan.json"
+          CHANGED_FILES_PATH="$BUILD_UI_ARTIFACT_DIR/changed-files.txt"
+          RESOLUTION_PATH="$BUILD_UI_ARTIFACT_DIR/screenshot-plan-resolution.json"
+          OVERRIDE_PATH="$BUILD_UI_ARTIFACT_DIR/screenshot-overrides.json"
+          git diff --name-only "${BUILD_UI_BASE_SHA_START}"...HEAD > "$CHANGED_FILES_PATH"
+          if [[ -f "$OVERRIDE_PATH" ]]; then
+            python3 .agents/skills/build-ui/scripts/ensure-screenshot-plan.py "$PLAN_PATH" "$CHANGED_FILES_PATH" "$RESOLUTION_PATH" "$OVERRIDE_PATH"
+          else
+            python3 .agents/skills/build-ui/scripts/ensure-screenshot-plan.py "$PLAN_PATH" "$CHANGED_FILES_PATH" "$RESOLUTION_PATH"
+          fi
+
+      - name: Re-check screenshot plan artifact presence
+        if: always() && steps.screenshot_mode.outputs.require_screenshot == 'true'
+        id: screenshot_plan_presence_after_synthesis
+        run: |
+          PLAN_PATH="$BUILD_UI_ARTIFACT_DIR/screenshot-plan.json"
+          if [[ -f "$PLAN_PATH" ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Recover screenshot plan via Claude
+        if: always() && steps.screenshot_mode.outputs.require_screenshot == 'true' && steps.screenshot_plan_presence_after_synthesis.outputs.exists == 'false'
+        uses: anthropics/claude-code-action@e2f03d97c9a5b5e8f08b144ff1444d3ee6d3fb49 # v1.0.124
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ github.token }}
+          claude_args: "--model opus --max-turns 60"
+          prompt: |
+            Recover the missing screenshot plan for /build-ui ${{ steps.parse.outputs.issue_number }}.
+
+            RECOVERY TASK:
+            - Do not modify source files, branches, PRs, or Git history.
+            - Do not post comments.
+            - Do not run the screenshot script.
+            - Read the current issue context, current diff, and the headless artifacts in `${{ env.BUILD_UI_ARTIFACT_DIR }}`.
+            - Write `${{ env.BUILD_UI_ARTIFACT_DIR }}/screenshot-plan.json`.
+
+            PLAN RULES:
+            - Prefer the exact changed page over adjacent list, overview, or landing pages.
+            - If the changed UI is visible on initial load, write a simple route plan.
+            - If the changed UI requires user interaction, async state changes, or form input, write a scenario plan with deterministic `setup` actions and at least one assertion proving the intended state.
+            - Do not use generic fallback routes like `/connectors/`, `/tables/`, or `/graphs/` unless the diff genuinely changed those pages.
+            - Include only the minimum number of routes needed to verify the changed UI.
+            - For New Training Job work, use `/newjob/training/`.
+            - Do not use `/models/training/`, `/models/training/new`, or `/jobs/training/new` for New Training Job work.
+            - For New Prediction work, use `/newjob/prediction/`.
+            - For Connectors work, prefer `/connectors/`.
+            - For Tables work, prefer `/tables/`.
+            - For Graphs list/overview work, prefer `/graphs/`.
+            - If `${{ steps.screenshot_overrides.outputs.exists }}` is `true`, inspect `${{ steps.screenshot_overrides.outputs.path }}` and recover a plan that satisfies those explicit override values using a catalog-backed route/state.
+            - Do not use `[data-testid="main-layout"]` as the only ready signal for a recovery-generated scenario.
+            - Recovery-generated scenarios must include at least one page-specific assertion.
+
+            SIMPLE ROUTE PLAN SHAPE:
+            {
+              "routes": ["/primary-route/"],
+              "readySelectors": {
+                "*": "[data-testid=\"main-layout\"]",
+                "/primary-route/": "[data-testid=\"route-ready-selector\"]"
+              }
+            }
+
+            SCENARIO PLAN SHAPE:
+            {
+              "scenarios": [
+                {
+                  "name": "primary-changed-state",
+                  "route": "/primary-route/",
+                  "setup": [
+                    { "action": "type", "selector": "[data-testid=\"query-editor\"]", "value": "SELECT ..." },
+                    { "action": "click", "selector": "[data-testid=\"graph-selector\"]" }
+                  ],
+                  "readySelector": "[data-testid=\"changed-surface\"]",
+                  "assertions": [
+                    { "type": "text", "selector": "[data-testid=\"changed-surface\"]", "matches": "^Expected text$" }
+                  ]
+                }
+              ]
+            }
+        env:
+          BUILD_UI_ARTIFACT_DIR: ${{ env.BUILD_UI_ARTIFACT_DIR }}
+
+      - name: Block premature PR creation
+        if: always() && steps.pr_mode.outputs.validate_only != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BRANCH="${BUILD_UI_WORK_BRANCH:-${{ steps.work_branch.outputs.branch }}}"
+          if [ -z "$BRANCH" ]; then
+            echo "No build-ui work branch is available; skipping premature PR check."
+            exit 0
+          fi
+          PR_JSON="$(gh pr list --head "$BRANCH" --state all --json number,baseRefName,state,url --jq '.[0] // empty' 2>/dev/null || true)"
+          if [ -z "$PR_JSON" ]; then
+            exit 0
+          fi
+
+          PR_NUMBER="$(printf '%s' "$PR_JSON" | jq -r '.number // ""')"
+          PR_BASE="$(printf '%s' "$PR_JSON" | jq -r '.baseRefName // ""')"
+          PR_STATE="$(printf '%s' "$PR_JSON" | jq -r '.state // ""')"
+          PR_URL="$(printf '%s' "$PR_JSON" | jq -r '.url // ""')"
+          REASON="PR #$PR_NUMBER already exists for $BRANCH before workflow-owned PR creation. State: $PR_STATE. Base: $PR_BASE. URL: $PR_URL"
+          echo "$REASON"
+          bash .agents/skills/build-ui/scripts/write-headless-artifact.sh \
+            --type blocker \
+            --target "${{ steps.parse.outputs.issue_number }}" \
+            --output "$BUILD_UI_ARTIFACT_DIR/blocker.json"
+          PAYLOAD="$(jq -n \
+            --arg code "BLOCKER_PREMATURE_PR_CREATED" \
+            --arg branch "$BRANCH" \
+            --arg prNumber "$PR_NUMBER" \
+            --arg prBase "$PR_BASE" \
+            --arg prState "$PR_STATE" \
+            --arg prUrl "$PR_URL" \
+            --arg reason "$REASON" \
+            '{code: $code, branch: $branch, prNumber: $prNumber, prBase: $prBase, prState: $prState, prUrl: $prUrl, reason: $reason}')"
+          bash .agents/skills/build-ui/scripts/update-headless-artifact.sh \
+            --input "$BUILD_UI_ARTIFACT_DIR/blocker.json" \
+            --payload-json "$PAYLOAD"
+          exit 1
+
+      - name: Require screenshot plan artifact
+        if: always() && steps.screenshot_mode.outputs.require_screenshot == 'true'
+        run: |
+          PLAN_PATH="$BUILD_UI_ARTIFACT_DIR/screenshot-plan.json"
+          STATUS_PATH="$BUILD_UI_ARTIFACT_DIR/screenshot-plan-status.txt"
+          ERROR_PATH="$BUILD_UI_ARTIFACT_DIR/screenshot-error.txt"
+
+          if [[ -f "$PLAN_PATH" ]]; then
+            exit 0
+          fi
+
+          echo "plan-missing" > "$STATUS_PATH"
+          echo "Headless agent did not write required screenshot-plan.json at $PLAN_PATH" > "$ERROR_PATH"
+
+          if [[ ! -f "$BUILD_UI_ARTIFACT_DIR/blocker.json" ]]; then
+            bash .agents/skills/build-ui/scripts/write-headless-artifact.sh \
+              --type blocker \
+              --target "${{ steps.parse.outputs.issue_number }}" \
+              --output "$BUILD_UI_ARTIFACT_DIR/blocker.json"
+          fi
+
+          bash .agents/skills/build-ui/scripts/update-headless-artifact.sh \
+            --input "$BUILD_UI_ARTIFACT_DIR/blocker.json" \
+            --payload-json "{\"code\":\"BLOCKER_SCREENSHOT_PLAN_MISSING\",\"jobStatus\":\"${{ job.status }}\",\"requestedMode\":\"${{ steps.screenshot_mode.outputs.mode }}\",\"runUrl\":\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\",\"reason\":\"Headless agent did not write required screenshot-plan.json.\",\"screenshotPlanPath\":\"$PLAN_PATH\"}"
+
+          echo "Required screenshot mode is on, but screenshot-plan.json is missing."
+          exit 1
+
+      - name: Ensure minimum headless artifacts exist
+        if: always()
+        run: |
+          for artifact in run-state verification-status handoff; do
+            file="$BUILD_UI_ARTIFACT_DIR/$artifact.json"
+            if [ ! -f "$file" ]; then
+              bash .agents/skills/build-ui/scripts/write-headless-artifact.sh \
+                --type "$artifact" \
+                --target "${{ steps.parse.outputs.issue_number }}" \
+                --output "$file"
+            fi
+          done
+
+          if [ "${{ job.status }}" != "success" ] && [ ! -f "$BUILD_UI_ARTIFACT_DIR/blocker.json" ]; then
+            bash .agents/skills/build-ui/scripts/write-headless-artifact.sh \
+              --type blocker \
+              --target "${{ steps.parse.outputs.issue_number }}" \
+              --output "$BUILD_UI_ARTIFACT_DIR/blocker.json"
+            bash .agents/skills/build-ui/scripts/update-headless-artifact.sh \
+              --input "$BUILD_UI_ARTIFACT_DIR/blocker.json" \
+              --payload-json "{\"code\":\"BLOCKER_WORKFLOW_FAILURE\",\"jobStatus\":\"${{ job.status }}\",\"runUrl\":\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+          fi
+
+      - name: Run workflow-owned screenshots from plan
+        if: always() && steps.screenshot_mode.outputs.require_screenshot == 'true'
+        id: workflow_screenshots
+        continue-on-error: true
+        env:
+          CI_SCREENSHOT_OUTPUT: /tmp/build-ui-screenshots/${{ steps.parse.outputs.issue_number }}
+          SCREENSHOT_AUTH_EMAIL: ${{ secrets.BUILD_UI_SCREENSHOT_EMAIL }}
+          SCREENSHOT_AUTH_PASSWORD: ${{ secrets.BUILD_UI_SCREENSHOT_PASSWORD }}
+        run: |
+          PLAN_PATH="$BUILD_UI_ARTIFACT_DIR/screenshot-plan.json"
+          NORMALIZED_PLAN_PATH="$BUILD_UI_ARTIFACT_DIR/screenshot-plan.normalized.json"
+          STATUS_PATH="$BUILD_UI_ARTIFACT_DIR/screenshot-plan-status.txt"
+          ERROR_PATH="$BUILD_UI_ARTIFACT_DIR/screenshot-error.txt"
+          SCREENSHOT_DIR="/tmp/build-ui-screenshots/${{ steps.parse.outputs.issue_number }}"
+          LOG_PATH="$SCREENSHOT_DIR/ci-screenshot.log"
+          mkdir -p "$SCREENSHOT_DIR"
+          rm -f "$NORMALIZED_PLAN_PATH" "$LOG_PATH"
+
+          if [[ -f "$PLAN_PATH" ]]; then
+            :
+          elif [[ -f "$STATUS_PATH" && "$(tr -d '\n' < "$STATUS_PATH")" == "plan-missing" ]]; then
+            echo "Screenshot execution skipped because the required screenshot plan artifact is missing."
+            exit 0
+          fi
+
+          if [ ! -f "$PLAN_PATH" ]; then
+            echo "plan-missing" > "$STATUS_PATH"
+            echo "No screenshot plan found at $PLAN_PATH" > "$ERROR_PATH"
+            echo "No screenshot plan found at $PLAN_PATH"
+            exit 0
+          fi
+
+          if ! python3 - <<'PY' "$PLAN_PATH" "$NORMALIZED_PLAN_PATH" "$ERROR_PATH"
+          import json
+          import sys
+          from pathlib import Path
+
+          VALID_ACTIONS = {"click", "fill", "type", "paste", "press", "select", "waitFor"}
+          VALID_WAIT_STATES = {"visible", "hidden", "attached", "detached"}
+          VALID_ASSERTION_TYPES = {"visible", "text"}
+          BUILT_IN_FIXTURES = {
+              "seeded_query_editor",
+              "selected_tab_model_planner",
+              "open_graph_table_view",
+              "opened_dialog",
+              "list_page_loaded",
+              "empty_state_loaded",
+              "selected_connector_state",
+              "selected_graph_state",
+              "selected_table_state",
+          }
+          WEAK_SELECTORS = {
+              "main",
+              "h1",
+              "[data-testid=\"main-layout\"]",
+              "[data-testid='main-layout']",
+              "[role=\"tablist\"]",
+              "[role='tablist']",
+          }
+
+          def is_weak_selector(value):
+              if not isinstance(value, str):
+                  return False
+              normalized = value.strip()
+              if normalized in WEAK_SELECTORS:
+                  return True
+              lowered = normalized.lower()
+              return (
+                  normalized.startswith("h1")
+                  or "main-layout" in lowered
+                  or "tablist" in lowered
+                  or "tabs-list" in lowered
+              )
+
+          def is_optional_string_or_string_list(value):
+              return (
+                  value is None
+                  or (isinstance(value, str) and value.strip())
+                  or (
+                      isinstance(value, list)
+                      and value
+                      and all(isinstance(item, str) and item.strip() for item in value)
+                  )
+              )
+
+          def normalize_string_list(value):
+              if isinstance(value, str) and value.strip():
+                  return [value.strip()]
+              if isinstance(value, list):
+                  return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+              return []
+
+          plan_path, normalized_plan_path, error_path = sys.argv[1:4]
+          try:
+              data = json.loads(Path(plan_path).read_text(encoding="utf-8"))
+          except Exception as exc:
+              Path(error_path).write_text(f"Invalid screenshot plan JSON: {exc}\n", encoding="utf-8")
+              sys.exit(1)
+
+          if not isinstance(data, dict):
+              Path(error_path).write_text("Screenshot plan must be a JSON object.\n", encoding="utf-8")
+              sys.exit(1)
+
+          recipe_key = data.get("_recipeKey")
+          if recipe_key is not None:
+              if not isinstance(recipe_key, str) or not recipe_key.strip():
+                  Path(error_path).write_text("Screenshot plan _recipeKey must be a non-empty string when present.\n", encoding="utf-8")
+                  sys.exit(1)
+              recipe_key = recipe_key.strip()
+
+          coverage_items = data.get("_visualCoverage", [])
+          coverage_ids = set()
+          normalized_coverage_items = []
+          if coverage_items is None:
+              coverage_items = []
+          if coverage_items and not isinstance(coverage_items, list):
+              Path(error_path).write_text("Screenshot plan _visualCoverage must be a list when present.\n", encoding="utf-8")
+              sys.exit(1)
+          for coverage_index, coverage in enumerate(coverage_items):
+              if not isinstance(coverage, dict) or isinstance(coverage, list):
+                  Path(error_path).write_text(f"Screenshot plan _visualCoverage item {coverage_index} must be an object.\n", encoding="utf-8")
+                  sys.exit(1)
+              coverage_id = coverage.get("id")
+              coverage_label = coverage.get("label")
+              if not isinstance(coverage_id, str) or not coverage_id.strip():
+                  Path(error_path).write_text(f"Screenshot plan _visualCoverage item {coverage_index} requires id.\n", encoding="utf-8")
+                  sys.exit(1)
+              if not isinstance(coverage_label, str) or not coverage_label.strip():
+                  Path(error_path).write_text(f"Screenshot plan _visualCoverage item {coverage_index} requires label.\n", encoding="utf-8")
+                  sys.exit(1)
+              coverage_ids.add(coverage_id.strip())
+              normalized_coverage_items.append({
+                  "id": coverage_id.strip(),
+                  "label": coverage_label.strip(),
+              })
+
+          ready_selectors = data.get("readySelectors", {})
+          if ready_selectors is None:
+              ready_selectors = {}
+          if not isinstance(ready_selectors, dict):
+              Path(error_path).write_text("Screenshot plan readySelectors must be an object when present.\n", encoding="utf-8")
+              sys.exit(1)
+
+          fixtures = data.get("fixtures", {})
+          if fixtures is None:
+              fixtures = {}
+          if not isinstance(fixtures, dict):
+              Path(error_path).write_text("Screenshot plan fixtures must be an object when present.\n", encoding="utf-8")
+              sys.exit(1)
+          for fixture_name, fixture in fixtures.items():
+              if not isinstance(fixture_name, str) or not fixture_name.strip():
+                  Path(error_path).write_text("Screenshot plan fixture names must be non-empty strings.\n", encoding="utf-8")
+                  sys.exit(1)
+              if not isinstance(fixture, dict):
+                  Path(error_path).write_text(f"Screenshot fixture {fixture_name} must be an object.\n", encoding="utf-8")
+                  sys.exit(1)
+          normalized_fixtures = fixtures
+
+          routes = data.get("routes")
+          scenarios = data.get("scenarios")
+          has_routes = isinstance(routes, list) and len(routes) > 0
+          has_scenarios = isinstance(scenarios, list) and len(scenarios) > 0
+
+          if has_routes == has_scenarios:
+              Path(error_path).write_text("Screenshot plan must define exactly one of routes or scenarios.\n", encoding="utf-8")
+              sys.exit(1)
+
+          requires_uncataloged_coverage = has_scenarios and not recipe_key and not coverage_ids
+          normalized_routes = []
+          if has_routes:
+              seen = set()
+              for route in routes:
+                  if not isinstance(route, str) or not route.strip():
+                      Path(error_path).write_text("Screenshot plan routes must be non-empty strings.\n", encoding="utf-8")
+                      sys.exit(1)
+                  route = route.strip()
+                  if not route.startswith("/"):
+                      Path(error_path).write_text(f"Screenshot route must start with '/': {route}\n", encoding="utf-8")
+                      sys.exit(1)
+                  if route not in seen:
+                      normalized_routes.append(route)
+                      seen.add(route)
+          else:
+              normalized_scenarios = []
+              covered_visual_ids = set()
+              for index, scenario in enumerate(scenarios):
+                  if not isinstance(scenario, dict):
+                      Path(error_path).write_text(f"Screenshot scenario {index} must be an object.\n", encoding="utf-8")
+                      sys.exit(1)
+                  route = scenario.get("route")
+                  if not isinstance(route, str) or not route.strip() or not route.strip().startswith("/"):
+                      Path(error_path).write_text(f"Screenshot scenario {index} route must be a non-empty string starting with '/'.\n", encoding="utf-8")
+                      sys.exit(1)
+                  route = route.strip()
+                  normalized_routes.append(route)
+
+                  name = scenario.get("name")
+                  if name is not None and (not isinstance(name, str) or not name.strip()):
+                      Path(error_path).write_text(f"Screenshot scenario {index} name must be a non-empty string when present.\n", encoding="utf-8")
+                      sys.exit(1)
+
+                  scenario_fixtures = scenario.get("fixtures")
+                  if scenario_fixtures is not None and not is_optional_string_or_string_list(scenario_fixtures):
+                      Path(error_path).write_text(f"Screenshot scenario {index} fixtures must be a non-empty string or string list when present.\n", encoding="utf-8")
+                      sys.exit(1)
+                  for fixture_name in normalize_string_list(scenario_fixtures):
+                      if fixture_name not in normalized_fixtures and fixture_name not in BUILT_IN_FIXTURES:
+                          Path(error_path).write_text(f"Screenshot scenario {index} references unknown fixture: {fixture_name}\n", encoding="utf-8")
+                          sys.exit(1)
+
+                  for bootstrap_field in ("historyState", "localStorage", "sessionStorage"):
+                      bootstrap_value = scenario.get(bootstrap_field)
+                      if bootstrap_value is not None and (
+                          not isinstance(bootstrap_value, dict) or
+                          any(not isinstance(key, str) or not key.strip() for key in bootstrap_value.keys())
+                      ):
+                          Path(error_path).write_text(f"Screenshot scenario {index} {bootstrap_field} must be an object with non-empty string keys when present.\n", encoding="utf-8")
+                          sys.exit(1)
+
+                  scenario_ready = scenario.get("readySelector", scenario.get("readySelectors"))
+                  if scenario_ready is not None and not (
+                      (isinstance(scenario_ready, str) and scenario_ready.strip()) or
+                      (isinstance(scenario_ready, list) and scenario_ready and all(isinstance(item, str) and item.strip() for item in scenario_ready))
+                  ):
+                      Path(error_path).write_text(f"Screenshot scenario {index} readySelector(s) must be a non-empty string or list of non-empty strings.\n", encoding="utf-8")
+                      sys.exit(1)
+
+                  setup = scenario.get("setup", [])
+                  if setup is None:
+                      setup = []
+                  if not isinstance(setup, list):
+                      Path(error_path).write_text(f"Screenshot scenario {index} setup must be a list when present.\n", encoding="utf-8")
+                      sys.exit(1)
+                  for action_index, action in enumerate(setup):
+                      if not isinstance(action, dict):
+                          Path(error_path).write_text(f"Screenshot scenario {index} setup action {action_index} must be an object.\n", encoding="utf-8")
+                          sys.exit(1)
+                      kind = action.get("action")
+                      selector = action.get("selector")
+                      if kind not in VALID_ACTIONS:
+                          Path(error_path).write_text(f"Screenshot scenario {index} setup action {action_index} has unsupported action: {kind}\n", encoding="utf-8")
+                          sys.exit(1)
+                      if not isinstance(selector, str) or not selector.strip():
+                          Path(error_path).write_text(f"Screenshot scenario {index} setup action {action_index} selector must be a non-empty string.\n", encoding="utf-8")
+                          sys.exit(1)
+                      if kind in {"fill", "type", "paste"} and not isinstance(action.get("value"), str):
+                          Path(error_path).write_text(f"Screenshot scenario {index} {kind} action {action_index} requires string value.\n", encoding="utf-8")
+                          sys.exit(1)
+                      if kind == "press" and (not isinstance(action.get("key"), str) or not action.get("key").strip()):
+                          Path(error_path).write_text(f"Screenshot scenario {index} press action {action_index} requires key.\n", encoding="utf-8")
+                          sys.exit(1)
+                      if kind == "select":
+                          value = action.get("value")
+                          if not (
+                              isinstance(value, str) or
+                              (isinstance(value, list) and value and all(isinstance(item, str) and item.strip() for item in value))
+                          ):
+                              Path(error_path).write_text(f"Screenshot scenario {index} select action {action_index} requires string or string list value.\n", encoding="utf-8")
+                              sys.exit(1)
+                      if kind == "waitFor" and action.get("state") not in (None, *VALID_WAIT_STATES):
+                          Path(error_path).write_text(f"Screenshot scenario {index} waitFor action {action_index} has invalid state.\n", encoding="utf-8")
+                          sys.exit(1)
+                      if not is_optional_string_or_string_list(action.get("covers")):
+                          Path(error_path).write_text(f"Screenshot scenario {index} setup action {action_index} covers must be a non-empty string or string list when present.\n", encoding="utf-8")
+                          sys.exit(1)
+                      for coverage_id in normalize_string_list(action.get("covers")):
+                          if coverage_ids and coverage_id not in coverage_ids:
+                              Path(error_path).write_text(f"Screenshot scenario {index} setup action {action_index} covers unknown _visualCoverage id: {coverage_id}\n", encoding="utf-8")
+                              sys.exit(1)
+                          covered_visual_ids.add(coverage_id)
+
+                  assertions = scenario.get("assertions", [])
+                  if assertions is None:
+                      assertions = []
+                  if not isinstance(assertions, list):
+                      Path(error_path).write_text(f"Screenshot scenario {index} assertions must be a list when present.\n", encoding="utf-8")
+                      sys.exit(1)
+                  if not assertions:
+                      Path(error_path).write_text(f"Screenshot scenario {index} must include at least one assertion.\n", encoding="utf-8")
+                      sys.exit(1)
+                  for assertion_index, assertion in enumerate(assertions):
+                      if not isinstance(assertion, dict):
+                          Path(error_path).write_text(f"Screenshot scenario {index} assertion {assertion_index} must be an object.\n", encoding="utf-8")
+                          sys.exit(1)
+                      kind = assertion.get("type")
+                      selector = assertion.get("selector")
+                      if kind not in VALID_ASSERTION_TYPES:
+                          Path(error_path).write_text(f"Screenshot scenario {index} assertion {assertion_index} has unsupported type: {kind}\n", encoding="utf-8")
+                          sys.exit(1)
+                      if not isinstance(selector, str) or not selector.strip():
+                          Path(error_path).write_text(f"Screenshot scenario {index} assertion {assertion_index} selector must be a non-empty string.\n", encoding="utf-8")
+                          sys.exit(1)
+                      if kind == "text" and not (
+                          isinstance(assertion.get("contains"), str) or
+                          isinstance(assertion.get("equals"), str) or
+                          isinstance(assertion.get("matches"), str)
+                      ):
+                          Path(error_path).write_text(f"Screenshot scenario {index} text assertion {assertion_index} requires contains, equals, or matches.\n", encoding="utf-8")
+                          sys.exit(1)
+                      if kind == "text" and is_weak_selector(selector):
+                          Path(error_path).write_text(
+                              f"Screenshot scenario {index} text assertion {assertion_index} is too broad; target the exact changed element instead of a container selector.\n",
+                              encoding="utf-8",
+                          )
+                          sys.exit(1)
+                      if not is_optional_string_or_string_list(assertion.get("covers")):
+                          Path(error_path).write_text(f"Screenshot scenario {index} assertion {assertion_index} covers must be a non-empty string or string list when present.\n", encoding="utf-8")
+                          sys.exit(1)
+                      if requires_uncataloged_coverage and not normalize_string_list(assertion.get("covers")):
+                          Path(error_path).write_text(
+                              f"Screenshot scenario {index} assertion {assertion_index} must include covers because no catalog recipe or _visualCoverage metadata was selected.\n",
+                              encoding="utf-8",
+                          )
+                          sys.exit(1)
+                      for coverage_id in normalize_string_list(assertion.get("covers")):
+                          if coverage_ids and coverage_id not in coverage_ids:
+                              Path(error_path).write_text(f"Screenshot scenario {index} assertion {assertion_index} covers unknown _visualCoverage id: {coverage_id}\n", encoding="utf-8")
+                              sys.exit(1)
+                          covered_visual_ids.add(coverage_id)
+
+                  scenario_ready_list = []
+                  if isinstance(scenario_ready, str):
+                      scenario_ready_list = [scenario_ready.strip()]
+                  elif isinstance(scenario_ready, list):
+                      scenario_ready_list = [item.strip() for item in scenario_ready if isinstance(item, str) and item.strip()]
+
+                  assertion_selectors = [
+                      assertion.get("selector", "").strip()
+                      for assertion in assertions
+                      if isinstance(assertion.get("selector"), str) and assertion.get("selector").strip()
+                  ]
+                  has_seeded_state = any(
+                      isinstance(scenario.get(field), dict) and scenario.get(field)
+                      for field in ("historyState", "localStorage", "sessionStorage")
+                  )
+                  has_setup = isinstance(setup, list) and len(setup) > 0
+                  if (
+                      not has_seeded_state
+                      and not has_setup
+                      and scenario_ready_list
+                      and all(is_weak_selector(selector) for selector in scenario_ready_list)
+                      and assertion_selectors
+                      and all(is_weak_selector(selector) for selector in assertion_selectors)
+                  ):
+                      Path(error_path).write_text(
+                          f"Screenshot scenario {index} is too weak: it relies only on generic selectors without seeded state or setup.\n",
+                          encoding="utf-8",
+                      )
+                      sys.exit(1)
+
+                  normalized_scenarios.append(scenario)
+
+              if coverage_ids:
+                  missing_coverage = sorted(coverage_ids - covered_visual_ids)
+                  if missing_coverage:
+                      Path(error_path).write_text(
+                          f"Screenshot plan _visualCoverage ids are not covered by setup/actions/assertions: {', '.join(missing_coverage)}\n",
+                          encoding="utf-8",
+                      )
+                      sys.exit(1)
+
+              data = {
+                  "scenarios": normalized_scenarios,
+                  "readySelectors": ready_selectors,
+              }
+
+          valid_keys = set(normalized_routes) | {"*"}
+          normalized_selectors = {}
+          for key, value in ready_selectors.items():
+              if key not in valid_keys:
+                  Path(error_path).write_text(
+                      f"Screenshot readySelectors key must be '*' or one of the planned routes: {key}\n",
+                      encoding="utf-8",
+                  )
+                  sys.exit(1)
+              if isinstance(value, str) and value.strip():
+                  normalized_selectors[key] = value.strip()
+                  continue
+              if isinstance(value, list) and value and all(isinstance(item, str) and item.strip() for item in value):
+                  normalized_selectors[key] = [item.strip() for item in value]
+                  continue
+              else:
+                  Path(error_path).write_text(
+                      f"Screenshot selector for {key} must be a non-empty string or list of non-empty strings.\n",
+                      encoding="utf-8",
+                  )
+                  sys.exit(1)
+
+          metadata = {}
+          if recipe_key:
+              metadata["_recipeKey"] = recipe_key
+          required_feature_flags = data.get("_requiredFeatureFlags")
+          if required_feature_flags is not None and not isinstance(required_feature_flags, dict):
+              Path(error_path).write_text(
+                  "Screenshot plan _requiredFeatureFlags must be an object when present.\n",
+                  encoding="utf-8",
+              )
+              sys.exit(1)
+
+          if normalized_coverage_items:
+              metadata["_visualCoverage"] = normalized_coverage_items
+          if required_feature_flags:
+              metadata["_requiredFeatureFlags"] = required_feature_flags
+          if normalized_fixtures:
+              metadata["fixtures"] = normalized_fixtures
+
+          if has_routes:
+              data = {
+                  **metadata,
+                  "routes": normalized_routes,
+                  "readySelectors": normalized_selectors,
+              }
+          else:
+              data = {
+                  **metadata,
+                  **data,
+              }
+              data["readySelectors"] = normalized_selectors
+
+          Path(normalized_plan_path).write_text(json.dumps(data), encoding="utf-8")
+          PY
+          then
+            echo "plan-invalid" > "$STATUS_PATH"
+            echo "Screenshot plan validation failed"
+            exit 1
+          fi
+
+          cd ui
+          if ! node scripts/ci-screenshot.mjs \
+            --plan "$NORMALIZED_PLAN_PATH" \
+            --output "$CI_SCREENSHOT_OUTPUT" \
+            >"$LOG_PATH" 2>&1; then
+            echo "capture-failed" > "$STATUS_PATH"
+            python3 -c 'import sys; from pathlib import Path; log_path, error_path = sys.argv[1:3]; lines = Path(log_path).read_text(encoding="utf-8", errors="replace").splitlines() if Path(log_path).exists() else []; tail = " | ".join(line.strip() for line in lines[-10:] if line.strip()); message = f"Playwright screenshot capture failed. Log: {log_path}"; message += f". Recent output: {tail}" if tail else ""; Path(error_path).write_text(message + "\n", encoding="utf-8")' "$LOG_PATH" "$ERROR_PATH"
+            exit 1
+          fi
+
+          echo "captured" > "$STATUS_PATH"
+
+      - name: Evaluate screenshot attempt status
+        if: always()
+        id: screenshot_status
+        run: |
+          SCREENSHOT_DIR="/tmp/build-ui-screenshots/${{ steps.parse.outputs.issue_number }}"
+          MANIFEST_PATH="$SCREENSHOT_DIR/results.json"
+          PLAN_PATH="$BUILD_UI_ARTIFACT_DIR/screenshot-plan.json"
+          STATUS_PATH="$BUILD_UI_ARTIFACT_DIR/screenshot-plan-status.txt"
+          ERROR_PATH="$BUILD_UI_ARTIFACT_DIR/screenshot-error.txt"
+
+          STATUS="not-requested"
+          FAILURE_REASON=""
+          if [[ "${{ steps.screenshot_mode.outputs.require_screenshot }}" == "true" ]]; then
+            STATUS="plan-missing"
+          fi
+
+          if [[ -f "$STATUS_PATH" ]]; then
+            STATUS="$(tr -d '\n' < "$STATUS_PATH")"
+          elif [[ "${{ steps.screenshot_mode.outputs.require_screenshot }}" == "true" && -f "$PLAN_PATH" ]]; then
+            STATUS="planned"
+          fi
+
+          if [[ -f "$MANIFEST_PATH" ]]; then
+            if jq -e '(.failed // 0) == 0 and (.coverageFailed // 0) == 0 and ([.results[]? | select(.success != true)] | length) == 0 and ([.results[]? as $result | ($result.coverage // [])[]? | select(.passed != true)] | length) == 0' "$MANIFEST_PATH" >/dev/null; then
+              STATUS="captured"
+            elif jq -e '(.coverageFailed // 0) > 0 or ([.results[]? as $result | ($result.coverage // [])[]? | select(.passed != true)] | length) > 0' "$MANIFEST_PATH" >/dev/null; then
+              STATUS="coverage-missing"
+            else
+              STATUS="capture-failed"
+            fi
+          elif [[ "$STATUS" == "planned" ]]; then
+            STATUS="capture-failed"
+          fi
+
+          if [[ "$STATUS" == "coverage-missing" && -f "$MANIFEST_PATH" ]]; then
+            FAILURE_REASON="$(jq -c '[.missingCoverage[]? | "\(.route // "unknown"): missing coverage \(.id // "unknown")"] | if length > 0 then (.[0:8] | join("; ")) else "Screenshot captured but required coverage was missing." end' "$MANIFEST_PATH")"
+          elif [[ -f "$ERROR_PATH" ]]; then
+            FAILURE_REASON="$(jq -Rs 'rtrimstr("\n")' "$ERROR_PATH")"
+          elif [[ "$STATUS" == "capture-failed" && -f "$MANIFEST_PATH" ]]; then
+            FAILURE_REASON="$(jq -c '[.results[]? | select(.success != true) | "\(.route // "unknown"): \(.error // "unknown screenshot failure")"] | if length > 0 then (.[0:5] | join("; ")) else "Playwright screenshot capture failed without a recorded route error." end' "$MANIFEST_PATH")"
+          else
+            FAILURE_REASON='""'
+          fi
+
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+
+          bash .agents/skills/build-ui/scripts/update-headless-artifact.sh \
+            --input "$BUILD_UI_ARTIFACT_DIR/verification-status.json" \
+            --payload-json "{\"screenshotAttemptStatus\":\"$STATUS\",\"requestedMode\":\"${{ steps.screenshot_mode.outputs.mode }}\",\"screenshotPlanPresent\":$( [ -f "$PLAN_PATH" ] && echo true || echo false ),\"screenshotWorkflowOutcome\":\"${{ steps.workflow_screenshots.outcome }}\",\"screenshotFailureReason\":$FAILURE_REASON}"
+
+          if [[ "$STATUS" == "plan-missing" || "$STATUS" == "plan-invalid" || "$STATUS" == "capture-failed" || "$STATUS" == "coverage-missing" ]]; then
+            if [[ ! -f "$BUILD_UI_ARTIFACT_DIR/blocker.json" ]]; then
+              bash .agents/skills/build-ui/scripts/write-headless-artifact.sh \
+                --type blocker \
+                --target "${{ steps.parse.outputs.issue_number }}" \
+                --output "$BUILD_UI_ARTIFACT_DIR/blocker.json"
+            fi
+
+            BLOCKER_CODE="BLOCKER_SCREENSHOT_PLAN_MISSING"
+            if [[ "$STATUS" == "plan-invalid" ]]; then
+              BLOCKER_CODE="BLOCKER_SCREENSHOT_PLAN_INVALID"
+            elif [[ "$STATUS" == "capture-failed" ]]; then
+              BLOCKER_CODE="BLOCKER_SCREENSHOT_CAPTURE_FAILED"
+            elif [[ "$STATUS" == "coverage-missing" ]]; then
+              BLOCKER_CODE="BLOCKER_SCREENSHOT_COVERAGE_MISSING"
+            fi
+
+            EXISTING_CODE="$(jq -r '.payload.code // ""' "$BUILD_UI_ARTIFACT_DIR/blocker.json" 2>/dev/null || echo "")"
+            if [[ -z "$EXISTING_CODE" || "$EXISTING_CODE" == "BLOCKER_WORKFLOW_FAILURE" ]]; then
+              PAYLOAD="{\"code\":\"$BLOCKER_CODE\",\"jobStatus\":\"${{ job.status }}\",\"requestedMode\":\"${{ steps.screenshot_mode.outputs.mode }}\",\"runUrl\":\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\",\"reason\":$FAILURE_REASON,\"screenshotPlanPath\":\"$PLAN_PATH\",\"screenshotManifestPath\":\"$MANIFEST_PATH\",\"screenshotLogPath\":\"$SCREENSHOT_DIR/ci-screenshot.log\",\"screenshotWorkflowOutcome\":\"${{ steps.workflow_screenshots.outcome }}\"}"
+            else
+              PAYLOAD="{\"screenshotBlockerCode\":\"$BLOCKER_CODE\",\"screenshotRequestedMode\":\"${{ steps.screenshot_mode.outputs.mode }}\",\"screenshotReason\":$FAILURE_REASON,\"screenshotPlanPath\":\"$PLAN_PATH\",\"screenshotManifestPath\":\"$MANIFEST_PATH\",\"screenshotLogPath\":\"$SCREENSHOT_DIR/ci-screenshot.log\",\"screenshotWorkflowOutcome\":\"${{ steps.workflow_screenshots.outcome }}\"}"
+            fi
+
+            bash .agents/skills/build-ui/scripts/update-headless-artifact.sh \
+              --input "$BUILD_UI_ARTIFACT_DIR/blocker.json" \
+              --payload-json "$PAYLOAD"
+          fi
+
+      - name: Normalize screenshot status
+        if: always()
+        id: normalized_screenshot_status
+        run: |
+          STATUS="${{ steps.screenshot_status.outputs.status }}"
+          if [[ -z "$STATUS" ]]; then
+            if [[ "${{ steps.screenshot_status.outcome }}" == "failure" ]]; then
+              STATUS="status-evaluation-failed"
+            else
+              STATUS="unknown"
+            fi
+          fi
+
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+
+          if [[ "$STATUS" == "status-evaluation-failed" ]]; then
+            REASON_JSON='"Screenshot status evaluation step failed before emitting a final status."'
+            if [[ ! -f "$BUILD_UI_ARTIFACT_DIR/blocker.json" ]]; then
+              bash .agents/skills/build-ui/scripts/write-headless-artifact.sh \
+                --type blocker \
+                --target "${{ steps.parse.outputs.issue_number }}" \
+                --output "$BUILD_UI_ARTIFACT_DIR/blocker.json"
+            fi
+
+            bash .agents/skills/build-ui/scripts/update-headless-artifact.sh \
+              --input "$BUILD_UI_ARTIFACT_DIR/verification-status.json" \
+              --payload-json "{\"screenshotAttemptStatus\":\"$STATUS\",\"requestedMode\":\"${{ steps.screenshot_mode.outputs.mode }}\",\"screenshotFailureReason\":$REASON_JSON,\"screenshotStatusStepOutcome\":\"${{ steps.screenshot_status.outcome }}\"}"
+
+            EXISTING_CODE="$(jq -r '.payload.code // ""' "$BUILD_UI_ARTIFACT_DIR/blocker.json" 2>/dev/null || echo "")"
+            if [[ -z "$EXISTING_CODE" || "$EXISTING_CODE" == "BLOCKER_WORKFLOW_FAILURE" ]]; then
+              PAYLOAD="{\"code\":\"BLOCKER_SCREENSHOT_STATUS_EVALUATION_FAILED\",\"jobStatus\":\"${{ job.status }}\",\"requestedMode\":\"${{ steps.screenshot_mode.outputs.mode }}\",\"runUrl\":\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\",\"reason\":$REASON_JSON,\"screenshotStatusStepOutcome\":\"${{ steps.screenshot_status.outcome }}\"}"
+            else
+              PAYLOAD="{\"screenshotBlockerCode\":\"BLOCKER_SCREENSHOT_STATUS_EVALUATION_FAILED\",\"screenshotRequestedMode\":\"${{ steps.screenshot_mode.outputs.mode }}\",\"screenshotReason\":$REASON_JSON,\"screenshotStatusStepOutcome\":\"${{ steps.screenshot_status.outcome }}\"}"
+            fi
+
+            bash .agents/skills/build-ui/scripts/update-headless-artifact.sh \
+              --input "$BUILD_UI_ARTIFACT_DIR/blocker.json" \
+              --payload-json "$PAYLOAD"
+          fi
+
+      - name: Update workflow-native verification and handoff artifacts
+        if: always()
+        run: |
+          jq -n \
+            --arg jobStatus "${{ job.status }}" \
+            --arg runUrl "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --arg hasOverlap "${{ steps.overlap.outputs.has_overlap }}" \
+            --arg screenshotStatus "${{ steps.normalized_screenshot_status.outputs.status }}" \
+            '{
+              workflowJobStatus: $jobStatus,
+              workflowRunUrl: $runUrl,
+              relatedPrOverlap: ($hasOverlap == "true"),
+              screenshotAttemptStatus: $screenshotStatus
+            }' > /tmp/build-ui-verification-native.json
+
+          bash .agents/skills/build-ui/scripts/update-headless-artifact.sh \
+            --input "$BUILD_UI_ARTIFACT_DIR/verification-status.json" \
+            --payload-file /tmp/build-ui-verification-native.json
+
+          jq -n \
+            --arg jobStatus "${{ job.status }}" \
+            --arg runUrl "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --arg screenshotStatus "${{ steps.normalized_screenshot_status.outputs.status }}" \
+            --arg nextAction "$( [ "${{ job.status }}" = "success" ] && echo "Review generated PR and artifacts" || echo "Inspect blocker.json, verification-status.json, and workflow logs" )" \
+            '{
+              workflowJobStatus: $jobStatus,
+              workflowRunUrl: $runUrl,
+              screenshotAttemptStatus: $screenshotStatus,
+              nextAction: $nextAction
+            }' > /tmp/build-ui-handoff-native.json
+
+          bash .agents/skills/build-ui/scripts/update-headless-artifact.sh \
+            --input "$BUILD_UI_ARTIFACT_DIR/handoff.json" \
+            --payload-file /tmp/build-ui-handoff-native.json
+
+      - name: Finalize headless run-state and artifact manifest
+        if: always()
+        run: |
+          BASE_SHA_END="$(git ls-remote origin refs/heads/master | awk '{print $1}')"
+          STALE=false
+          if [ -n "${BUILD_UI_BASE_SHA_START:-}" ] && [ -n "$BASE_SHA_END" ] && [ "$BUILD_UI_BASE_SHA_START" != "$BASE_SHA_END" ]; then
+            STALE=true
+          fi
+
+          cat > /tmp/build-ui-run-state-final.json <<EOF
+          {
+            "baseShaAtEnd": "$BASE_SHA_END",
+            "staleBaseBranch": $STALE,
+            "jobStatus": "${{ job.status }}"
+          }
+          EOF
+          bash .agents/skills/build-ui/scripts/update-headless-artifact.sh \
+            --input "$BUILD_UI_ARTIFACT_DIR/run-state.json" \
+            --payload-file /tmp/build-ui-run-state-final.json
+
+          python3 - <<'PY' "$BUILD_UI_ARTIFACT_DIR" "${{ steps.parse.outputs.issue_number }}"
+          import json
+          import os
+          import sys
+
+          artifact_dir, target = sys.argv[1:3]
+          manifest_path = os.path.join(artifact_dir, "artifact-manifest.json")
+          if not os.path.exists(manifest_path):
+              with open(manifest_path, "w", encoding="utf-8") as f:
+                  f.write("{}\n")
+          expected = [
+              "preflight.json",
+              "run-state.json",
+              "verification-status.json",
+              "handoff.json",
+              "artifact-manifest.json",
+          ]
+          optional = [
+              "checkpoint-1.json",
+              "checkpoint-2.json",
+              "blocker.json",
+              "screenshot-plan.json",
+              "screenshot-plan-resolution.json",
+              "screenshot-overrides.json",
+              "figma-context.json",
+              "figma-summary.md",
+          ]
+          artifacts = []
+          for root, _, files in os.walk(artifact_dir):
+              for name in sorted(files):
+                  path = os.path.join(root, name)
+                  rel_path = os.path.relpath(path, artifact_dir)
+                  artifacts.append({"name": rel_path, "path": path})
+          missing = [name for name in expected if not os.path.exists(os.path.join(artifact_dir, name))]
+          doc = {
+              "artifactType": "artifact-manifest",
+              "generatedAt": __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "headless": True,
+              "target": target,
+              "payload": {
+                  "artifacts": artifacts,
+                  "count": len(artifacts),
+                  "missingExpected": missing,
+                  "optionalArtifacts": optional,
+              },
+          }
+          with open(manifest_path, "w", encoding="utf-8") as f:
+              json.dump(doc, f, indent=2, sort_keys=True)
+              f.write("\n")
+          PY
+
+          {
+            echo
+            echo "## Build UI Artifacts"
+            echo
+            echo "| Artifact | Present |"
+            echo "| --- | --- |"
+            for file in preflight.json run-state.json verification-status.json handoff.json checkpoint-1.json checkpoint-2.json blocker.json artifact-manifest.json screenshot-plan.json screenshot-plan-resolution.json screenshot-overrides.json figma-context.json figma-summary.md; do
+              if [ -f "$BUILD_UI_ARTIFACT_DIR/$file" ]; then
+                echo "| $file | yes |"
+              else
+                echo "| $file | no |"
+              fi
+            done
+            echo
+            echo "Stale base branch: $STALE"
+            echo "Screenshot attempt status: ${{ steps.normalized_screenshot_status.outputs.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enforce visual verification before PR creation
+        if: always() && steps.pr_mode.outputs.validate_only != 'true' && steps.screenshot_mode.outputs.require_screenshot == 'true' && steps.normalized_screenshot_status.outputs.status != 'captured'
+        run: |
+          echo "PR creation is blocked until required screenshot verification is captured. Current status: ${{ steps.normalized_screenshot_status.outputs.status }}"
+          exit 1
+
+      - name: Upload screenshots
+        if: always() && steps.screenshot_mode.outputs.skip_screenshots != 'true'
+        id: upload_screenshots
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+        run: |
+          SCREENSHOT_DIR="/tmp/build-ui-screenshots/${{ steps.parse.outputs.issue_number }}"
+          MANIFEST_PATH="$SCREENSHOT_DIR/results.json"
+
+          if [ ! -f "$MANIFEST_PATH" ]; then
+            echo "No screenshot manifest found"
+            exit 0
+          fi
+
+          ISSUE_NUMBER="${{ steps.parse.outputs.issue_number }}"
+          RESOLUTION_PATH="$BUILD_UI_ARTIFACT_DIR/screenshot-plan-resolution.json"
+          OVERRIDE_PATH="$BUILD_UI_ARTIFACT_DIR/screenshot-overrides.json"
+          BRANCH=$(git branch --show-current)
+          PR_NUMBER=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number' 2>/dev/null || true)
+          COMMENT_TARGET="${PR_NUMBER:-$ISSUE_NUMBER}"
+          COMMENT_TYPE="${PR_NUMBER:+pr}"
+          COMMENT_TYPE="${COMMENT_TYPE:-issue}"
+          ARGS=(
+            --repo "${{ github.repository }}"
+            --issue "$ISSUE_NUMBER"
+            --manifest "$MANIFEST_PATH"
+            --resolution "$RESOLUTION_PATH"
+            --override "$OVERRIDE_PATH"
+            --output-section "$BUILD_UI_ARTIFACT_DIR/screenshot-section.md"
+            --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            --comment-type "$COMMENT_TYPE"
+            --comment-target "$COMMENT_TARGET"
+          )
+          if [ -n "$PR_NUMBER" ]; then
+            ARGS+=(--pr-number "$PR_NUMBER" --patch-pr)
+          fi
+
+          node ui/scripts/build-ui-publish-screenshots.mjs "${ARGS[@]}"
+
+      - name: Upload screenshot artifacts
+        if: always() && steps.screenshot_mode.outputs.skip_screenshots != 'true'
+        id: upload_screenshot_artifacts
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: build-ui-screenshots-${{ steps.parse.outputs.issue_number }}
+          path: /tmp/build-ui-screenshots/
+          if-no-files-found: ignore
+
+      - name: Evaluate screenshot upload status
+        if: always() && steps.screenshot_mode.outputs.require_screenshot == 'true' && steps.normalized_screenshot_status.outputs.status == 'captured' && (steps.upload_screenshots.outcome == 'failure' || steps.upload_screenshot_artifacts.outcome == 'failure')
+        run: |
+          REASON_JSON='"Screenshot capture succeeded, but uploading or publishing screenshots failed."'
+          if [[ ! -f "$BUILD_UI_ARTIFACT_DIR/blocker.json" ]]; then
+            bash .agents/skills/build-ui/scripts/write-headless-artifact.sh \
+              --type blocker \
+              --target "${{ steps.parse.outputs.issue_number }}" \
+              --output "$BUILD_UI_ARTIFACT_DIR/blocker.json"
+          fi
+
+          bash .agents/skills/build-ui/scripts/update-headless-artifact.sh \
+            --input "$BUILD_UI_ARTIFACT_DIR/verification-status.json" \
+            --payload-json "{\"screenshotUploadStatus\":\"failed\",\"screenshotFailureType\":\"screenshot-upload\",\"screenshotFailureReason\":$REASON_JSON}"
+
+          EXISTING_CODE="$(jq -r '.payload.code // ""' "$BUILD_UI_ARTIFACT_DIR/blocker.json" 2>/dev/null || echo "")"
+          if [[ -z "$EXISTING_CODE" || "$EXISTING_CODE" == "BLOCKER_WORKFLOW_FAILURE" ]]; then
+            PAYLOAD="{\"code\":\"BLOCKER_SCREENSHOT_UPLOAD_FAILED\",\"jobStatus\":\"${{ job.status }}\",\"requestedMode\":\"${{ steps.screenshot_mode.outputs.mode }}\",\"runUrl\":\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\",\"reason\":$REASON_JSON,\"screenshotFailureType\":\"screenshot-upload\"}"
+          else
+            PAYLOAD="{\"screenshotBlockerCode\":\"BLOCKER_SCREENSHOT_UPLOAD_FAILED\",\"screenshotRequestedMode\":\"${{ steps.screenshot_mode.outputs.mode }}\",\"screenshotReason\":$REASON_JSON,\"screenshotFailureType\":\"screenshot-upload\"}"
+          fi
+          bash .agents/skills/build-ui/scripts/update-headless-artifact.sh \
+            --input "$BUILD_UI_ARTIFACT_DIR/blocker.json" \
+            --payload-json "$PAYLOAD"
+          exit 1
+
+      - name: Create or update PR after screenshot publication
+        if: success() && steps.pr_mode.outputs.validate_only != 'true'
+        id: workflow_pr
+        env:
+          GH_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+        run: |
+          ISSUE_NUMBER="${{ steps.parse.outputs.issue_number }}"
+          BRANCH="${BUILD_UI_WORK_BRANCH:-${{ steps.work_branch.outputs.branch }}}"
+          CURRENT_BRANCH="$(git branch --show-current)"
+          if [ "$CURRENT_BRANCH" != "$BRANCH" ]; then
+            echo "Expected to be on build-ui work branch '$BRANCH' but found '$CURRENT_BRANCH'."
+            exit 1
+          fi
+
+          # Claude Code may update local agent settings in headless mode. This
+          # is runner-local metadata and should never block or enter UI PRs.
+          if git ls-files --error-unmatch .claude/settings.json >/dev/null 2>&1; then
+            git restore --worktree -- .claude/settings.json
+          fi
+
+          if [ -n "${BUILD_UI_RUNNER_TOOLING_TRACKED_FILES:-}" ] && [ -s "$BUILD_UI_RUNNER_TOOLING_TRACKED_FILES" ]; then
+            git update-index --no-skip-worktree --stdin < "$BUILD_UI_RUNNER_TOOLING_TRACKED_FILES"
+          fi
+          if [ -n "${BUILD_UI_RUNNER_TOOLING_FILES:-}" ] && [ -s "$BUILD_UI_RUNNER_TOOLING_FILES" ]; then
+            while IFS= read -r file; do
+              if [ "$file" = "ui/scripts/build-ui-pr-body.mjs" ]; then
+                continue
+              fi
+              if git cat-file -e "HEAD:$file" 2>/dev/null; then
+                git restore --source=HEAD --worktree -- "$file"
+              else
+                rm -f "$file"
+              fi
+            done < "$BUILD_UI_RUNNER_TOOLING_FILES"
+          fi
+
+          ISSUE_TITLE="$(gh issue view "$ISSUE_NUMBER" --json title --jq '.title')"
+          NORMALIZED_TITLE="$(python3 -c 'import re, sys; title=sys.argv[1].strip(); title=re.sub(r"^(?:\\[UI\\]\\s*|UI:\\s*)+", "", title, flags=re.I).strip(); print("UI: " + title)' "$ISSUE_TITLE")"
+          COMMIT_TITLE="$(python3 -c 'import re, sys; title=sys.argv[1].strip(); title=re.sub(r"^(?:\\[UI\\]\\s*|UI:\\s*)+", "", title, flags=re.I).strip(); print(title)' "$ISSUE_TITLE")"
+
+          if ! git diff --quiet || ! git diff --cached --quiet; then
+            echo "Working tree has uncommitted implementation changes after the agent run; committing them before PR creation."
+            git status --short
+            git config user.name "kumo-github-bot"
+            git config user.email "kumo-github-bot@users.noreply.github.com"
+            git add -A
+            if [ -n "${BUILD_UI_RUNNER_TOOLING_FILES:-}" ] && [ -s "$BUILD_UI_RUNNER_TOOLING_FILES" ]; then
+              while IFS= read -r file; do
+                if git cat-file -e "HEAD:$file" 2>/dev/null; then
+                  git restore --staged -- "$file" 2>/dev/null || true
+                fi
+              done < "$BUILD_UI_RUNNER_TOOLING_FILES"
+            fi
+            if git diff --cached --quiet; then
+              echo "Only workflow runner tooling changed; skipping implementation commit."
+            else
+              git commit -m "feat(ui): ${COMMIT_TITLE} (#${ISSUE_NUMBER})"
+            fi
+          fi
+
+          AUTH_HEADER="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH_HEADER" push origin "$BRANCH"
+
+          PR_JSON="$(gh pr list --head "$BRANCH" --json number,baseRefName,url --jq '.[0] // empty' 2>/dev/null || true)"
+          PR_NUMBER="$(printf '%s' "$PR_JSON" | jq -r '.number // ""' 2>/dev/null || true)"
+          PR_BASE="$(printf '%s' "$PR_JSON" | jq -r '.baseRefName // ""' 2>/dev/null || true)"
+          PR_URL="$(printf '%s' "$PR_JSON" | jq -r '.url // ""' 2>/dev/null || true)"
+          if [ -n "$PR_NUMBER" ] && [ "$PR_BASE" != "master" ]; then
+            REASON="Existing PR #$PR_NUMBER for $BRANCH targets '$PR_BASE', expected 'master'. Refusing to update a wrong-base PR."
+            echo "$REASON"
+            bash .agents/skills/build-ui/scripts/write-headless-artifact.sh \
+              --type blocker \
+              --target "$ISSUE_NUMBER" \
+              --output "$BUILD_UI_ARTIFACT_DIR/blocker.json"
+            PAYLOAD="$(jq -n \
+              --arg code "BLOCKER_EXISTING_PR_WRONG_BASE" \
+              --arg branch "$BRANCH" \
+              --arg prNumber "$PR_NUMBER" \
+              --arg prBase "$PR_BASE" \
+              --arg expectedBase "master" \
+              --arg prUrl "$PR_URL" \
+              --arg reason "$REASON" \
+              '{code: $code, branch: $branch, prNumber: $prNumber, prBase: $prBase, expectedBase: $expectedBase, prUrl: $prUrl, reason: $reason}')"
+            bash .agents/skills/build-ui/scripts/update-headless-artifact.sh \
+              --input "$BUILD_UI_ARTIFACT_DIR/blocker.json" \
+              --payload-json "$PAYLOAD"
+            exit 1
+          fi
+          SCREENSHOT_SECTION_PATH="$BUILD_UI_ARTIFACT_DIR/screenshot-section.md"
+          ISSUE_JSON_PATH="/tmp/build-ui-issue.json"
+          gh issue view "$ISSUE_NUMBER" --json title,body > "$ISSUE_JSON_PATH"
+          node ui/scripts/build-ui-pr-body.mjs \
+            --base \
+            /tmp/build-ui-pr-body.md \
+            "$ISSUE_NUMBER" \
+            "$ISSUE_JSON_PATH" \
+            "$BUILD_UI_ARTIFACT_DIR/handoff.json" \
+            "$BUILD_UI_ARTIFACT_DIR/verification-status.json" \
+            "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            "${{ steps.normalized_screenshot_status.outputs.status }}"
+
+          if [ -s "$SCREENSHOT_SECTION_PATH" ]; then
+            node ui/scripts/build-ui-pr-body.mjs /tmp/build-ui-pr-body.md "$SCREENSHOT_SECTION_PATH"
+          fi
+
+          if [ -n "$PR_NUMBER" ]; then
+            python3 -c 'import json, sys; json.dump({"title": sys.argv[2], "body": open(sys.argv[1], encoding="utf-8").read()}, open(sys.argv[3], "w", encoding="utf-8"))' /tmp/build-ui-pr-body.md "$NORMALIZED_TITLE" /tmp/build-ui-pr-payload.json
+            gh api -X PATCH "repos/${{ github.repository }}/pulls/$PR_NUMBER" --input /tmp/build-ui-pr-payload.json >/dev/null
+          else
+            gh pr create \
+              --repo "${{ github.repository }}" \
+              --base master \
+              --head "$BRANCH" \
+              --title "$NORMALIZED_TITLE" \
+              --body-file /tmp/build-ui-pr-body.md
+          fi
+
+      - name: Upload UI dev server log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: build-ui-ui-log-${{ steps.parse.outputs.issue_number }}
+          path: /tmp/build-ui-ui.log
+          if-no-files-found: ignore
+
+      - name: Upload headless CI artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: build-ui-headless-artifacts-${{ steps.parse.outputs.issue_number }}
+          path: /tmp/build-ui-artifacts/
+          if-no-files-found: ignore
+
+      - name: Stop UI dev server
+        if: always()
+        run: |
+          if [ -f /tmp/build-ui-ui.pid ]; then
+            kill "$(cat /tmp/build-ui-ui.pid)" || true
+          fi
+
+      - name: Enforce required screenshot capture
+        if: always() && steps.screenshot_mode.outputs.require_screenshot == 'true' && steps.normalized_screenshot_status.outputs.status != 'captured'
+        run: |
+          echo "Required screenshot capture did not complete successfully: ${{ steps.normalized_screenshot_status.outputs.status }}"
+          exit 1
+
+      - name: Add completion reaction
+        if: success() && github.event_name == 'issue_comment'
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'rocket'
+            });
+
+      - name: Post completion metadata comment
+        if: success()
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          script: |
+            const issueNumber = ${{ steps.parse.outputs.issue_number }};
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const overlap = `${{ steps.overlap.outputs.has_overlap }}` === 'true' ? 'yes' : 'no';
+            const overlapCount = `${{ steps.overlap.outputs.count }}`;
+            const screenshotStatus = `${{ steps.normalized_screenshot_status.outputs.status }}`;
+            const artifactLines = [
+              `- Artifact bundle: \`build-ui-headless-artifacts-${issueNumber}\``,
+              `- Related PR overlap at start: ${overlap} (${overlapCount})`,
+              `- Screenshot attempt status: ${screenshotStatus}`
+            ];
+            if (screenshotStatus === 'captured') {
+              artifactLines.splice(1, 0, `- Screenshot bundle: \`build-ui-screenshots-${issueNumber}\``);
+            }
+            const body = [
+              '## Headless Run',
+              '',
+              'Run status: success',
+              `Workflow run: ${runUrl}`,
+              '',
+              '## Verification Status',
+              '',
+              'Workflow-native artifacts were finalized and uploaded.',
+              '',
+              '## Artifacts',
+              '',
+              ...artifactLines,
+              '',
+              '## Next Action',
+              '',
+              'Review the generated PR, screenshots, and headless artifact bundle.',
+              '',
+              '---',
+              '*build-ui agent*'
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body
+            });
+
+      - name: Post failure comment
+        if: failure()
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          script: |
+            const fs = require('fs');
+            const issueNumber = ${{ steps.parse.outputs.issue_number }};
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const overlap = `${{ steps.overlap.outputs.has_overlap }}` === 'true' ? 'yes' : 'no';
+            const overlapCount = `${{ steps.overlap.outputs.count }}`;
+            const screenshotStatus = `${{ steps.normalized_screenshot_status.outputs.status }}`;
+            const blockerPath = `${process.env.BUILD_UI_ARTIFACT_DIR}/blocker.json`;
+            let blockerCode = 'BLOCKER_WORKFLOW_FAILURE';
+            let blockerReason = '';
+            try {
+              const blocker = JSON.parse(fs.readFileSync(blockerPath, 'utf8'));
+              blockerCode = blocker?.payload?.code || blockerCode;
+              blockerReason = blocker?.payload?.reason || '';
+            } catch (error) {
+              blockerReason = '';
+            }
+            const artifactLines = [
+              `- Artifact bundle: \`build-ui-headless-artifacts-${issueNumber}\``,
+              `- UI log bundle: \`build-ui-ui-log-${issueNumber}\``,
+              `- Screenshot attempt status: ${screenshotStatus}`
+            ];
+            if (screenshotStatus === 'captured') {
+              artifactLines.splice(1, 0, `- Screenshot bundle: \`build-ui-screenshots-${issueNumber}\``);
+            }
+            const body = [
+              '## Headless Run',
+              '',
+              'Run status: failure',
+              `Workflow run: ${runUrl}`,
+              '',
+              '## Blocker',
+              '',
+              `- Code: \`${blockerCode}\``,
+              `- Related PR overlap at start: ${overlap} (${overlapCount})`,
+              ...(blockerReason ? [`- Reason: ${blockerReason}`] : []),
+              '',
+              '## Verification Status',
+              '',
+              'The workflow failed before a fully successful completion. Inspect `verification-status.json` and `blocker.json` in the uploaded artifact bundle.',
+              '',
+              '## Artifacts',
+              '',
+              ...artifactLines,
+              '',
+              '## Next Action',
+              '',
+              'Inspect the workflow logs and uploaded headless artifacts, then resume or rerun with corrected inputs.',
+              '',
+              '---',
+              '*build-ui agent*'
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body
+            });

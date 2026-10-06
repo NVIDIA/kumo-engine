@@ -1,0 +1,17 @@
+{
+    "name": "stack-tracer",
+    "description": "Tool for mapping minified source file name and location to actual source name and location ",
+    "version": "0.0.1",
+    "private": true,
+    "license": "Apache-2.0",
+    "scripts": {
+        "trace": "node_modules/source-map-cli/bin/source-map.js resolve"
+    },
+    "dependencies": {
+        "source-map-cli": "^1.0.0"
+    },
+    "overrides": {
+        "qs": "6.16.0",
+        "form-data": "4.0.6"
+    }
+}

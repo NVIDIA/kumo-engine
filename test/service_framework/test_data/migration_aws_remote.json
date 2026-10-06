@@ -1,0 +1,37 @@
+{
+  "data_compute": {
+    "type": "DISKGRAPH",
+    "data_root": "/mnt/localssd",
+    "local_ingest_root": null,
+    "ingest_space_multiplier": 4,
+        "snapshot_estimate_buffer_gib": null,
+    "pool_strategy": "k8s",
+    "pool_min_ssd_idle_secs": null,
+    "pool_max_ssd_idle_secs": null,
+    "pool_max_dataplane_retention_secs": null,
+    "pool_lease_sweep_interval_secs": null,
+    "pool_maintenance_interval_secs": null,
+    "pool_tombstone_gc_grace_secs": null,
+    "k8s_pool": null
+  },
+  "orchestration": {
+    "type": "cloud",
+    "namespace": "devtest"
+  },
+  "secrets": {
+    "backend": "aws_sm",
+    "fallbacks": [],
+    "mount_path": null
+  },
+  "storage": {
+    "data_plane_storage_root": null,
+    "control_plane_storage_root": null,
+    "artifact_root": null
+  },
+  "logging": {
+    "backend": "cloudwatch",
+    "output_format": "text"
+  },
+  "azure_storage": null,
+  "auth": null
+}

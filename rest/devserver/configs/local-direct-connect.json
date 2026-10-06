@@ -1,0 +1,51 @@
+{
+  "data_compute": {
+    "type": "DISKGRAPH",
+    "data_root": "/mnt/localssd",
+    "pool_strategy": "singlehost",
+    "pool_min_ssd_idle_secs": 10,
+    "pool_max_ssd_idle_secs": 60,
+    "pool_max_dataplane_retention_secs": 120
+  },
+  "orchestration": {
+    "type": "custom",
+    "server_address": "localhost:7233"
+  },
+  "secrets": {
+    "backend": "k8s_mount",
+    "mount_path": "/tmp/kumo-phase1b-direct-connect-secrets"
+  },
+  "storage": {
+    "data_plane_storage_root": "{kumo_home}",
+    "artifact_root": "{kumo_home}/artifacts"
+  },
+  "auth": {
+    "enabled": true,
+    "backend": "direct_connect",
+    "direct_connect": {
+      "login_method": "password",
+      "allowed_return_origins": [
+        "http://localhost:19400"
+      ],
+      "admin_emails": ["phase1b-admin@example.com"],
+      "oidc": {
+        "issuer": "http://localhost:19591",
+        "client_id": "phase1b-direct-connect",
+        "client_secret_ref": {
+          "secret_name": "phase1b-direct-connect-oidc-client",
+          "secret_key": "client_secret"
+        },
+        "groups_claim": "groups"
+      },
+      "password": {
+        "temporary_password_ref": {
+          "secret_name": "phase1b-direct-connect-admin-password",
+          "secret_key": "password"
+        }
+      }
+    }
+  },
+  "logging": {
+    "backend": "stdout"
+  }
+}

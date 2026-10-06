@@ -1,0 +1,302 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Kumo conformance contract (deploy-level, DiskGraph mode, disable-auth).
+# Versioned with the chart. Read-only: the probe (check.sh) reports; it never mutates.
+#
+# The probe is VALUES-DRIVEN: it renders the chart with your values
+# (helm template -f your-values.yaml --show-only templates/tests/probe-inputs.yaml)
+# and checks the cluster against the config you will actually install — nothing here
+# is hardcoded to a particular StorageClass, Temporal location, or cloud.
+#
+# The chart additionally SELF-ENFORCES the in-cluster subset of this contract at
+# install time via a pre-install/pre-upgrade hook (templates/preflight/ +
+# conformance/preflight.py): TEMPORAL_MTLS, POSTGRES_CA, TEMPORAL_ACCESS,
+# PG_ACCESS. Reachability failures are blocking for internal and
+# external dependencies; a change to any of those checks must update BOTH
+# check.sh and preflight.py. Toggle: values preflight.enabled.
+#
+# Checks run in dependency order; a check whose `depends_on` did not PASS reports
+# BLOCK by default. CSI_CAPACITY and CSI_NODE_COVERAGE explicitly report ADV for
+# a failed dependency instead, so unavailable live signals never add a second
+# blocking failure. Each item lists:
+#   id · what (capability) · reads (which value drives it) · probe · depends_on · satisfied_by
+# Phases: prereq = must exist before `helm install`; health = after install.
+version: 1.0.0-dev.0
+tenant_default: from values.global.tenant
+namespace: the Helm release namespace (helm -n)
+
+prereqs:
+  - id: K8S
+    what: Kubernetes API reachable, server >= 1.28
+    reads: (kube context)
+    probe: kubectl version (server major==1 and minor >= 28)
+    depends_on: []
+    satisfied_by: CUSTOMER (cluster)
+  - id: CSI
+    what: configured StorageClass uses late-binding CSI, deletes retired volumes, and satisfies the selected capacity policy
+    reads: kumoConfig.diskgraph.storageClass, kumoConfig.diskgraph.storageCapacityTracking
+    probe: >-
+      StorageClass exists with volumeBindingMode=WaitForFirstConsumer and reclaimPolicy=Delete;
+      its provisioner resolves to a CSIDriver. When storageCapacityTracking=required, that driver must set
+      spec.storageCapacity=true; advisory permits drivers that provision network block storage
+      without publishing CSIStorageCapacity
+    depends_on: [K8S]
+    satisfied_by: >-
+      CUSTOMER (late-binding CSI driver; use required for topology-constrained local capacity and
+      advisory only when dynamic provisioning plus the pool-controller bind canary is authoritative)
+  - id: CSI_CAPACITY
+    what: configured StorageClass currently publishes nonzero topology-aware capacity
+    reads: kumoConfig.diskgraph.storageClass, kumoConfig.diskgraph.storageCapacityTracking
+    probe: >-
+      PASS when a CSIStorageCapacity object for the StorageClass has nonzero capacity; ADV when the
+      list succeeds but no nonzero capacity is published because a node-local autoscaled pool may
+      be scaled to zero; ADV capacity unknown/unqueryable when the list fails (check RBAC/API
+      availability); ADV without a list query when the driver does not advertise capacity and the
+      configured policy is advisory; ADV needs CSI when CSI configuration has not passed
+    depends_on: [CSI]
+    satisfied_by: >-
+      CUSTOMER (live CSI node capacity when published; pool controller init canary is authoritative)
+  - id: CSI_NODE_COVERAGE
+    what: the configured CSI node plugin is registered on eligible DiskGraph cache nodes
+    reads: >-
+      the fully merged data_compute.k8s_pool.pool_diskgraph_node_types runtime config, including
+      kumoConfig.extra overrides; effective pool_extra_tolerations from
+      kumoConfig.diskgraph.poolExtraTolerations plus raw overrides;
+      kumoConfig.diskgraph.storageClass; global.tenant and
+      the auth.enabled-derived deploy stage for the built-in cache-pod toleration
+    probe: >-
+      For every effective (ssd_gib, gpu_count) tier, list nodes using the pool controller's exact
+      cache nodeSelector and verify the StorageClass provisioner appears in each eligible node's
+      CSINode.spec.drivers. Eligible means Ready, non-cordoned, and not blocked by a hard taint that
+      the cache pod does not tolerate. PreferNoSchedule does not block eligibility. The cache pod
+      uses the built-in dedicated=diskgraph-<runtime-pool-tenant>:NoSchedule toleration plus
+      the effective configured extra tolerations. FAIL names uncovered eligible
+      nodes; SKIP/ADV preserves scale-to-zero only when a tier has no matching nodes, while tiers
+      with only ineligible nodes are reported separately. An empty or invalid effective tier set,
+      query-only failures, a runtime pool tenant that cannot be derived, and a failed CSI dependency
+      are ADV, never false PASS.
+    depends_on: [CSI]
+    satisfied_by: >-
+      CUSTOMER — the CSI node DaemonSet must schedule on every DiskGraph cache pool
+  - id: NODE_TARGETING
+    what: a nonempty nodeTargeting.nodeSelector has at least one Ready matching node
+    reads: nodeTargeting.nodeSelector
+    probe: >-
+      render the resolved nodeSelector; kubectl get nodes -l <labels> for Ready matches
+      (empty selector → no label restriction). A nonempty selector with no Ready match fails.
+      Taints must also be tolerated via nodeTargeting.tolerations — not asserted here.
+    depends_on: [K8S]
+    satisfied_by: >-
+      CUSTOMER (provide Ready nodes matching an explicit selector, or leave the selector empty)
+    limitation: >-
+      does NOT verify aggregate pool capacity or whether each pod fits a node. Size steady-state aggregate capacity from
+      resolved workloads.* replicas/requests, and per-node fit from every rendered Pod, including
+      pre-install hook Jobs and ephemeral-storage requests. An undersized matching node passes the
+      label check but leaves pods Pending.
+  - id: NAMESPACES
+    what: the release namespace exists (created before the mTLS cert)
+    reads: (helm -n)
+    probe: kubectl get ns <namespace>
+    depends_on: [K8S]
+    satisfied_by: CUSTOMER
+  - id: IMAGE_PULL_SECRET
+    what: configured private-registry pull Secret exists with the Kubernetes docker-config contract
+    reads: image.registry, image.pullSecretName
+    probe: >-
+      when image.pullSecretName is set, the Secret exists in the release namespace with type
+      kubernetes.io/dockerconfigjson and data key .dockerconfigjson; SKIP when node/kubelet
+      credentials are used instead; ADLS plus ECR requires the Secret. Registry-token freshness
+      is not encoded in the Secret
+    depends_on: [NAMESPACES]
+    satisfied_by: >-
+      CUSTOMER (registry integration or pull Secret); ECR pull Secrets must be refreshed before
+      install and rotated because ECR authorization tokens expire
+  - id: EDGE_HTTPS
+    what: the provider edge provides verified public HTTPS and the expected frontend behavior
+    reads: exposure.host
+    probe: >-
+      when exposure.host is set, a successful curl verifies DNS, certificate trust, and HTTPS
+      reachability before install; an unreachable pre-install backend is advisory because the
+      edge may depend on the not-yet-created Service. After install, /-/ready,
+      /internal/health, and /api/health must all return 200, behaviorally validating the frontend
+      route. Empty host is allowed only for diagnostic port-forward use.
+    depends_on: []
+    satisfied_by: >-
+      STACK (provider load balancer, mesh gateway, and one catch-all route to the frontend
+      Service) + CUSTOMER (DNS and cloud certificate)
+  - id: TEMPORAL_MTLS
+    what: >-
+      optional Temporal native client-mTLS Secret is well formed when configured
+    reads: temporal.clientMtlsSecret
+    probe: >-
+      a nonempty clientMtlsSecret selects native mTLS and must name a kubernetes.io/tls Secret
+      carrying tls.crt/tls.key/ca.crt. An empty value is accepted: securing the Temporal
+      transport is the operator's decision, not the chart's.
+    depends_on: [NAMESPACES]
+    satisfied_by: >-
+      CUSTOMER (native client-mTLS Secret or a Temporal Service enrolled in the supported mesh)
+  - id: TEMPORAL_ACCESS
+    what: Temporal reachable for this tenant (self-hosted, in-cluster)
+    reads: orchestration.server_address (temporal.address)
+    probe: >-
+      in encrypted mode without client mTLS, only an explicit
+      <service>.<namespace>.svc[.cluster.local][:port] is eligible and its captured Service
+      endpoints must exist. Native client mTLS may use an external address. Plaintext mode dials
+      the configured address directly. The install preflight always fails an unreachable endpoint.
+    depends_on: [TEMPORAL_MTLS]
+    satisfied_by: CUSTOMER (shared/self-hosted Temporal reachable at temporal.address)
+  - id: TEMPORAL_NS
+    what: the tenant's Temporal namespace is registered
+    reads: temporal.registerNamespace
+    probe: none — registered by the chart's pre-install hook Job (wait_server_ready.py)
+    depends_on: []
+    satisfied_by: "CHART (hook) ; out-of-band on SaaS"
+  - id: STORAGE_IDENTITY
+    what: workload identity granting the pods storage access
+    reads: storage scheme, resolved backend ServiceAccount annotations and pod labels
+    probe: >-
+      validates the provider's standard identity annotation on control, worker, and controller
+      (plus Azure's pod opt-in label)
+    depends_on: [K8S]
+    satisfied_by: CUSTOMER (annotate each backend role SA with its cloud workload identity)
+    limitation: does not prove that the cloud role exists, trusts the SA, or grants storage access
+  - id: STORAGE_ACCESS
+    what: the data-plane object-storage root is reachable
+    reads: storage.data_plane_storage_root (scheme s3:// / gs:// / abfss://)
+    probe: >-
+      matching cloud CLI lists the bucket (aws s3 / gcloud storage / az); SKIP if CLI absent;
+      ADV rather than FAIL when the operator principal cannot list it because workload identity
+      is a separate principal and must be verified from a workload after install
+    depends_on: []
+    satisfied_by: CUSTOMER (bucket + prefix <data_plane_storage_root> + verified workload access)
+  - id: STATE_DB_RUNTIME
+    what: passwordless managed-Postgres StateDB configuration
+    reads: postgres.authMode
+    probe: >-
+      authMode is aws_iam or azure_entra; cloud permissions are verified by
+      workload startup
+    depends_on: [NAMESPACES]
+    satisfied_by: CUSTOMER (managed Postgres and workload-identity permissions)
+  - id: POSTGRES_CA
+    what: provider CA bundle for managed Postgres
+    reads: postgres.authMode
+    probe: >-
+      chart selects the provider bundle baked into the Kumo image; install
+      preflight verifies the selected file is readable
+    depends_on: []
+    satisfied_by: KUMO IMAGE
+  - id: PG_ACCESS
+    what: the configured Postgres server is reachable
+    reads: postgres.host, postgres.port
+    probe: >-
+      in-cluster Service existence from the operator; install preflight performs
+      a TCP dial from the workload network
+    depends_on: [STATE_DB_RUNTIME]
+    satisfied_by: CUSTOMER (DNS and network route to managed Postgres)
+  - id: POSTGRES_TLS
+    what: hostname-verifying TLS for every StateDB connection
+    reads: postgres.host, postgres.authMode
+    probe: chart always emits sslmode=verify-full and an explicit CA path
+    depends_on: [POSTGRES_CA]
+    satisfied_by: CHART + provider CA bundle
+  # ── Materialize/train-time pre-flight (ADV = advisory, NON-blocking read-only pre-check). ──
+  # The pool controller AUTHORITATIVELY validates these at startup via init canaries
+  # (POOL_INIT_CANARY_ENABLED, default TRUE for the k8s strategy; 600s default grace each).
+  # An expected cache-tier failure is contained: only new provisioning in that tier is excluded,
+  # while existing routable workers remain usable. An expected ephemeral failure disables overflow.
+  # Startup is fatal only when zero cache tiers are available or an unexpected error occurs.
+  - id: GPU
+    what: >-
+      GPU capability (DiskGraph cache/eph activity pods request nvidia.com/gpu). GPU nodes MUST run
+      NVIDIA driver >= 580.65.06 (device-plugin path: baked into the node image/AMI; GPU-Operator
+      path: pin driver.version >= 580.65.06). The probe does NOT check the driver version.
+    reads: (cluster)
+    probe: >-
+      ADV — accepts ANY positive signal: a node advertising allocatable nvidia.com/gpu, the
+      NVIDIA GPU Operator (clusterpolicies.nvidia.com CRD), or a device-plugin DaemonSet. Pre-flight
+      for the pool controller's init canary, which is the authoritative check (so a missed signal
+      here only loses a hint). Node allocatable is often absent at deploy (GPU pools scale-to-zero).
+    depends_on: []
+    satisfied_by: >-
+      CUSTOMER (GPU node pools + EITHER the standalone NVIDIA device plugin OR the
+      NVIDIA GPU Operator OR a cloud-managed GPU stack)
+  - id: DISKGRAPH_POOLS
+    what: per-tier DiskGraph cache + ephemeral node pools the pool controller schedules onto
+    reads: >-
+      the distinct (ssd_gib, gpu_count) tiers in the fully merged
+      data_compute.k8s_pool.pool_diskgraph_node_types runtime config, including kumoConfig.extra
+      overrides; gpu_count defaults to 1
+    probe: >-
+      ADV — for each (ssd_gib, gpu_count) tier, look for a Karpenter NodePool template (or Ready node)
+      labeled kumo.ai/diskgraph-pool-type=cache + kumo.ai/diskgraph-ssd-size=<ssd_gib> +
+      kumo.ai/diskgraph-gpu-count=<gpu_count>, and one labeled kumo.ai/diskgraph-pool-type=ephemeral.
+      Non-blocking (materialize/train-time). The label values MUST equal the tier's integer-coerced
+      ssd_gib and gpu_count in the effective runtime config (canonical decimal string form).
+    depends_on: []
+    satisfied_by: >-
+      CUSTOMER — the PORTABLE requirement is: nodes labelled kumo.ai/diskgraph-pool-type
+      (cache + per-tier kumo.ai/diskgraph-ssd-size + kumo.ai/diskgraph-gpu-count, plus ephemeral),
+      that are GPU-capable, can bind the WFFC cache StorageClass, and provide sufficient
+      ephemeral disk for overflow — provisioned by ANY
+      mechanism (Karpenter NodePool, EKS managed nodegroup, GKE node pool / node auto-provisioning, AKS
+      pool). Taints are OPTIONAL; pods have built-in tolerations for dedicated=diskgraph-<tenant>
+      (cache) and dedicated=diskgraph-eph-<tenant> (ephemeral), plus any customer-configured
+      kumoConfig.diskgraph.poolExtraTolerations. <tenant> is derived from the stage-aware
+      runtime id suffix and normalized to [a-z0-9-]. The kumo-stack platform
+      installation guides define the supported provider-specific pools.
+    limitation: >-
+      checks label presence on NodePool templates / Ready nodes only — not GPU/storage capacity,
+      the taint, or CSI topology. A label match doesn't guarantee a daemon will schedule +
+      bind; the pool controller's init canary (PVC + GPU pod, POOL_CANARY_GRACE_SECS default 600s) is
+      the authoritative bind+schedule check. Expected failure is contained per cache tier: the tier is
+      excluded only from new provisioning and its existing routable workers remain usable. Expected
+      ephemeral failure disables overflow. Startup is fatal only with zero available cache tiers or an
+      unexpected validation error.
+  - id: POOL_RBAC
+    what: pool controller permission to manage cache daemons + the init canary (PVC, PDB, pods/deployments)
+    reads: (chart)
+    probe: >-
+      none — namespaced + chart-provided (workload-manager Role grants policy/poddisruptionbudgets
+      to protect cache nodes and core/persistentvolumeclaims for the cache-daemon + canary volumes)
+    depends_on: []
+    satisfied_by: CHART — no cluster-scoped RBAC required (replaced the former node-patch ClusterRole)
+
+health:
+  - id: PODS
+    what: all workload pods Ready and stable (not crash-looping)
+    reads: (helm -n) namespace
+    probe: >-
+      kubectl get pods -n <namespace> sampled twice ~20s apart; all Ready both times,
+      no Error/CrashLoopBackOff, and no NEW restarts in between (restart delta == 0, so a
+      pod that momentarily shows Running between crashes is caught). Completed hook pods ignored.
+    depends_on: []
+    satisfied_by: CHART
+  - id: REST_HEALTH
+    what: REST API healthy (kumo-rest serving and StateDB schema ready)
+    reads: restSvc, uiSvc, namespace
+    probe: GET /internal/health through the UI service -> 200
+    depends_on: [PODS]
+    satisfied_by: CHART
+  - id: API
+    what: kumo-api public API healthy
+    reads: apiSvc, uiSvc, namespace
+    probe: GET /api/health through the UI service -> 200
+    depends_on: [PODS]
+    satisfied_by: CHART
+  - id: UI
+    what: UI served (reachable)
+    reads: uiSvc, namespace
+    probe: GET http://<uiSvc>/ via port-forward -> 200
+    depends_on: [PODS]
+    satisfied_by: CHART
+  - id: BACKEND_ISOLATION
+    what: only the frontend workload identity can reach backend application ports
+    reads: restSvc, apiSvc, uiSvc, namespace
+    probe: >-
+      a worker can reach the UI and backend metrics port 9123 but cannot reach the REST or API
+      application ports directly. The chart ships no NetworkPolicy, so a reachable backend is
+      advisory: apply examples/networkpolicy.yaml to close it.
+    depends_on: [PODS]
+    satisfied_by: CUSTOMER (examples/networkpolicy.yaml or equivalent mesh authorization)

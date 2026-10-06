@@ -1,0 +1,18 @@
+{
+    "text": "PREDICT COUNT(FINANCE_TRANS.*, 0, 30, days) = 0 FOR EACH FINANCE_ACCOUNT.ACCOUNT_ID",
+    "editable_fields": [
+        {
+            "field_name": "Entity filter",
+            "text": "",
+            "position": [83, 83],
+            "full_filter_format_string": " WHERE {0}",
+            "empty_filter_default": "",
+            "bold_text_position": [83, 83]
+        }
+    ],
+    "validation_response": {
+        "warnings": [],
+        "errors": [],
+        "info_items": []
+    }
+}

@@ -1,0 +1,31 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- /*
+Values for the kumo-edge chart. kumo-helm deliberately does not own the
+provider edge: an Ingress or Route is infrastructure the cluster operator may
+already provide. The bundle still creates one, because a turnkey install needs
+a working front door.
+*/ -}}
+{{- define "stack.edgeValues" -}}
+mode: {{ if eq .Values.platform "aro" }}openshift{{ else if eq .Values.platform "eks" }}alb-acm{{ else }}azure-appgw{{ end }}
+host: {{ .Values.tenant.exposureHost | quote }}
+target:
+  service: kumo-ui
+  port: 80
+  portName: http
+alb:
+  certificateArn: {{ if eq .Values.platform "eks" }}{{ .Values.cluster.providers.eks.edgeCertificateArn | quote }}{{ else }}""{{ end }}
+  scheme: {{ if eq .Values.platform "eks" }}{{ .Values.cluster.providers.eks.edgeScheme | quote }}{{ else }}"internal"{{ end }}
+appgw:
+  tlsSecretName: {{ if eq .Values.platform "aks" }}{{ .Values.tenant.edgeTls.secretName | quote }}{{ else }}""{{ end }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kumo-stack-edge-values
+data:
+  values.yaml: |-
+{{ include "stack.edgeValues" . | indent 4 }}

@@ -1,0 +1,206 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kumo SDK - Prepare release
+
+# To release `kumo-sdk-v3.0.0b1`, run this workflow on `master` at `3.0.0`.
+# Other release lines retain the established `vX.Y.0rc1` start from `dev0`.
+# To advance a beta or RC, run this workflow on `kumo-sdk-vX.Y`.
+# To release `kumo-sdk-vX.Y.0`, run this workflow on `kumo-sdk-vX.Y` with
+# `switch-from-rc-to-final` set to `true`.
+# To release `kumo-sdk-vX.Y.{Z+1}`, run this workflow on `kumo-sdk-vX.Y`.
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        type: boolean
+        required: false
+        default: true
+      switch-from-rc-to-final:
+        description: >
+          Whether to switch from `vX.Y.0bN` or `vX.Y.0rcN` to `vX.Y.0`. The
+          legacy input name is retained for compatibility.
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+    working-directory: packages/kumo-sdk
+
+concurrency:
+  group: sdk-release-refs
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      DRY_RUN: ${{ inputs.dry-run }}
+      PHYSICAL_REF: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          # This token is necessary to push a commit and tag.
+          token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+          fetch-depth: 0  # for verbosity
+          fetch-tags: true  # for verbosity
+
+      - name: Configure release
+        id: config
+        env:
+          SWITCH_TO_FINAL: ${{ inputs.switch-from-rc-to-final }}
+        run: |
+          version=$(python -c 'exec(input()); print(__version__)' < kumoai_studio/_version.py)
+          if [[ $PHYSICAL_REF == master ]]; then
+            if [[ $version == 3.0.0 ]]; then
+              prerelease_kind=b
+            elif [[ $version =~ ^[0-9]+\.[0-9]+\.0\.dev0$ ]]; then
+              prerelease_kind=rc
+            else
+              echo "Error: master must contain X.Y.0.dev0 (or the approved 3.0.0 bootstrap), found $version"
+              exit 1
+            fi
+            echo "create-prerelease-from-main=true" >> "$GITHUB_OUTPUT"
+            echo "prerelease-kind=$prerelease_kind" >> "$GITHUB_OUTPUT"
+          elif [[ $PHYSICAL_REF =~ ^kumo-sdk-v[0-9]+\.[0-9]+$ ]]; then
+            if [[ ! $version =~ ^([0-9]+)\.([0-9]+)\.[0-9]+(b[0-9]+|rc[0-9]+)?$ ]]; then
+              echo "Error: release branch contains unsupported version: $version"
+              exit 1
+            fi
+            version_branch="kumo-sdk-v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+            if [[ $version_branch != $PHYSICAL_REF ]]; then
+              echo "Error: version $version does not belong to branch $PHYSICAL_REF"
+              exit 1
+            fi
+            if [[ $SWITCH_TO_FINAL == true ]]; then
+              if [[ ! $version =~ (b|rc)[0-9]+$ ]]; then
+                echo "Error: only a beta or RC can be switched to final: $version"
+                exit 1
+              fi
+              echo "create-final-from-prerelease=true" >> "$GITHUB_OUTPUT"
+            elif [[ $version =~ (b|rc)([0-9]+)$ ]]; then
+              echo "create-prerelease-from-prerelease=true" >> "$GITHUB_OUTPUT"
+              echo "prerelease-kind=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+            else
+              if [[ $version =~ (b|rc) ]]; then
+                echo "Error: malformed prerelease version: $version"
+                exit 1
+              else
+                echo "create-final-from-final=true" >> "$GITHUB_OUTPUT"
+              fi
+            fi
+          else
+            echo "Error: Unexpected branch name: $PHYSICAL_REF"
+            exit 1
+          fi
+
+      - uses: fregante/setup-git-user@024bc0b8e177d7e77203b48dab6fb45666854b35  # v2.0.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+
+      - name: Create kumo-sdk-vX.Y and its first prerelease from master
+        if: ${{ steps.config.outputs.create-prerelease-from-main == 'true' }}
+        run: |
+          version_source=$(python -c 'exec(input()); print(__version__)' < kumoai_studio/_version.py)
+          version_final=$(npx semver --coerce "$version_source")
+          prerelease_kind="${{ steps.config.outputs.prerelease-kind }}"
+          version_prerelease="${version_final}${prerelease_kind}1"
+          release_branch="kumo-sdk-v${version_final%.*}"
+
+          python scripts/set_version.py "$version_prerelease"
+          git diff --color=always
+          git add kumoai_studio/_version.py
+          git commit -m "Update version from $version_source to $version_prerelease (https://github.com/kumo-ai/kumo/actions/runs/${{ github.run_id }})"
+
+          git tag "kumo-sdk-v$version_prerelease"
+
+          git checkout -b "$release_branch"
+
+          git checkout "$PHYSICAL_REF"
+          version_dev_new=$(npx semver -i minor "$version_final").dev0
+          python scripts/set_version.py "$version_dev_new"
+          git diff --color=always
+          git add kumoai_studio/_version.py
+          git commit -m "Update version from $version_prerelease to $version_dev_new (https://github.com/kumo-ai/kumo/actions/runs/${{ github.run_id }})"
+
+          printf 'UPDATED_REFS=%s %s %s\n' "$PHYSICAL_REF" "$release_branch" \
+            "kumo-sdk-v$version_prerelease" >> "$GITHUB_ENV"
+
+      - name: Create the next beta or RC on kumo-sdk-vX.Y
+        if: ${{ steps.config.outputs.create-prerelease-from-prerelease == 'true' }}
+        run: |
+          version_prerelease=$(python -c 'exec(input()); print(__version__)' < kumoai_studio/_version.py)
+          version_final=$(npx semver --coerce "$version_prerelease")
+          prerelease_kind="${{ steps.config.outputs.prerelease-kind }}"
+          suffix=${version_prerelease#"$version_final"}
+          n=${suffix#"$prerelease_kind"}
+          version_prerelease_new="${version_final}${prerelease_kind}$((n + 1))"
+
+          python scripts/set_version.py "$version_prerelease_new"
+          git diff --color=always
+          git add kumoai_studio/_version.py
+          git commit -m "Update version from $version_prerelease to $version_prerelease_new (https://github.com/kumo-ai/kumo/actions/runs/${{ github.run_id }})"
+
+          git tag "kumo-sdk-v$version_prerelease_new"
+          printf 'UPDATED_REFS=%s %s\n' "$PHYSICAL_REF" \
+            "kumo-sdk-v$version_prerelease_new" >> "$GITHUB_ENV"
+
+      - name: Create kumo-sdk-vX.Y.0 from a prerelease
+        if: ${{ steps.config.outputs.create-final-from-prerelease == 'true' }}
+        run: |
+          version_prerelease=$(python -c 'exec(input()); print(__version__)' < kumoai_studio/_version.py)
+          version_final=$(npx semver --coerce "$version_prerelease")
+
+          python scripts/set_version.py "$version_final"
+          git diff --color=always
+          git add kumoai_studio/_version.py
+          git commit -m "Update version from $version_prerelease to $version_final (https://github.com/kumo-ai/kumo/actions/runs/${{ github.run_id }})"
+
+          git tag "kumo-sdk-v$version_final"
+          printf 'UPDATED_REFS=%s %s\n' "$PHYSICAL_REF" "kumo-sdk-v$version_final" \
+            >> "$GITHUB_ENV"
+
+      - name: Create kumo-sdk-vX.Y.{Z+1} from the release branch
+        if: ${{ steps.config.outputs.create-final-from-final == 'true' }}
+        run: |
+          # Get the next patch release version:
+          # - version_final: X.Y.Z
+          # - version_final_new: X.Y.{Z+1}
+          version_final=$(python -c 'exec(input()); print(__version__)' < kumoai_studio/_version.py)
+          version_final=$(npx semver --coerce $version_final)  # X.Y.Z -> X.Y.Z (just in case)
+          version_final_new=$(npx semver -i patch $version_final)  # X.Y.Z -> X.Y.{Z+1}
+
+          # Update the version in kumoai_studio/_version.py:
+          python scripts/set_version.py "$version_final_new"
+          git diff --color=always
+          git add kumoai_studio/_version.py
+          git commit -m "Update version from $version_final to $version_final_new (https://github.com/kumo-ai/kumo/actions/runs/${{ github.run_id }})"
+
+          # Create a release tag:
+          git tag "kumo-sdk-v$version_final_new"
+
+          # Push the updated SDK release branch and namespaced tag.
+          printf 'UPDATED_REFS=%s %s\n' "$PHYSICAL_REF" \
+            "kumo-sdk-v$version_final_new" >> "$GITHUB_ENV"
+
+      - name: Push changes to the remote repository
+        run: |
+          # For verbosity, show git tags and git logs:
+          git tag --list --sort=-v:refname
+          read -r -a updated_refs <<< "$UPDATED_REFS"
+          for ref in "${updated_refs[@]}"; do
+            echo "git log on $ref:"
+            git log -n 10 --oneline --decorate "$ref"
+          done
+
+          if [[ $DRY_RUN == false ]]; then
+            git push --atomic origin "${updated_refs[@]}"
+          fi

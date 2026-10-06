@@ -1,0 +1,70 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kumo-snowflake"
+version = "0.1.0.dev1"
+description = "Snowflake source reader for Kumo graph ingestion"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+  "kumo-core==0.1.0.dev1",
+  "kumo-api>=3.0.0",
+  "cryptography>=50",
+  "numpy>=1.26,<3",
+  "pydantic>=2.11",
+  "pyarrow>=14",
+  "snowflake-connector-python>=4.3",
+  "requests>=2.31",
+  "pandas>=1.5,<3",
+]
+
+[project.optional-dependencies]
+# What the SDK plugin half needs beyond the platform reader: Snowpark for the
+# session it opens, the model registry for what a sink publishes, and pyyaml
+# for the manifest that carries. The platform installs this distribution
+# without this extra and imports `SnowflakeSourceReader` alone, so none of it
+# is loaded there -- `__init__` exports the plugin lazily to keep that true.
+sdk = [
+  "snowflake-snowpark-python",
+  "snowflake-ml-python",
+  "pyyaml",
+]
+test = [
+  "pytest>=7.4",
+  "pyarrow>=14",
+]
+
+# Installing this distribution is what activates the plugin: a `LocalBackend`
+# reads these groups and needs no `sources=` argument to reach Snowflake.
+#
+# Each name is the `DataSourceType` / `IdentityType` value it serves, matched
+# without regard to case, so the SDK knows which type each entry point covers
+# before importing any of the modules below.
+[project.entry-points."kumoai_studio.sources"]
+snowflake = "kumo_snowflake.backend:SnowflakeSourceBackend"
+
+[project.entry-points."kumoai_studio.sinks"]
+snowflake = "kumo_snowflake.sink:SnowflakeSinkBackend"
+
+# The module, not a name inside it: the lifecycle is `probe` plus an optional
+# `close`, and a plugin says it caches nothing by defining no `close` at all.
+[project.entry-points."kumoai_studio.identities"]
+snowflake = "kumo_snowflake.session"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["src", "../kumo-core/src", "../kumo-core/tests"]

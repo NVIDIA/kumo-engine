@@ -1,0 +1,120 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Test backend images
+
+on:  # yamllint disable-line rule:truthy
+  pull_request:
+    paths:
+      - '.github/workflows/_docker-kumo-backend-*-image-custom.yml'
+      - '.github/workflows/testing_arm_images.yml'
+      - '.pants.bootstrap'
+      - '3rdparty/BUILD'
+      - '3rdparty/notices/**'
+      - '3rdparty/default_cu130_aarch64.lock'
+      - '3rdparty/default_cu130_aarch64.constraints.txt'
+      - '3rdparty/kumo-wheels/**'
+      - 'docker/Dockerfile.kumo_backend_cpu'
+      - 'docker/Dockerfile.kumo_backend_gpu'
+      - 'docker/kumodeps'
+      - 'docker/kumodeps_base'
+      - 'docker/kumodeps_cpu'
+      - 'docker/build_diskgraph_wheel'
+      - 'scripts/diskgraph'
+      - 'scripts/build_faiss_gpu_amd64_wheel.sh'
+      - 'scripts/build_faiss_gpu_arm64_wheel.sh'
+      - 'scripts/gen_third_party.py'
+      - 'scripts/update_packages.sh'
+      - 'docker/Makefile'
+      - 'setup.py'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  arm-lock:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: arm
+    steps:
+      - name: Verify native ARM64 runner
+        run: test "$(uname -m)" = aarch64
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+      - name: Set up Pants
+        uses: ./.github/actions/setup-pants/
+        with:
+          github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+      - name: Verify ARM dependency snapshot
+        run: |
+          grep -v "^//" 3rdparty/default_cu130.lock |
+            jq -r ".locked_resolves[].locked_requirements[] | select(.project_name != \"faiss-gpu\" and .project_name != \"faiss-cuda\") | \"\(.project_name)==\(.version)\"" |
+            sort -u > "$RUNNER_TEMP/default_cu130_aarch64.constraints.txt"
+          diff -u 3rdparty/default_cu130_aarch64.constraints.txt \
+            "$RUNNER_TEMP/default_cu130_aarch64.constraints.txt"
+      - name: Verify ARM64 CUDA lock
+        run: |
+          scripts/ci/run_with_github_auth.sh pants \
+            --pants-workdir="$RUNNER_TEMP/pants-cu130-arm64" \
+            -lwarn check ::
+        env:
+          CUDA: cu130
+          GITHUB_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+
+  gpu:
+    needs: arm-lock
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: arm
+            target_platform: linux/arm64
+            cuda_arch_list: '12.1'
+            image_tag_suffix: '-arm64-ci'
+          - runner: ubuntu-22.04-large
+            target_platform: linux/amd64
+            cuda_arch_list: ''
+            image_tag_suffix: '-amd64-ci'
+    uses: ./.github/workflows/_docker-kumo-backend-gpu-image-custom.yml
+    with:
+      kumo_repo_ref: ${{ github.event.pull_request.head.sha }}
+      bake_glove_level: none
+      runner_label: ${{ matrix.runner }}
+      target_platform: ${{ matrix.target_platform }}
+      cuda_arch_list: ${{ matrix.cuda_arch_list }}
+      # These CI runners have no NVIDIA device; device-backed smoke tests run
+      # separately on GPU hosts.
+      exercise_gpu: false
+      image_tag_suffix: ${{ matrix.image_tag_suffix }}
+      push_image: false
+    secrets: inherit
+
+  cpu:
+    needs: arm-lock
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: arm
+            target_platform: linux/arm64
+            image_tag_suffix: '-arm64-ci'
+          - runner: ubuntu-22.04-large
+            target_platform: linux/amd64
+            image_tag_suffix: '-amd64-ci'
+    uses: ./.github/workflows/_docker-kumo-backend-cpu-image-custom.yml
+    with:
+      kumo_repo_ref: ${{ github.event.pull_request.head.sha }}
+      bake_glove_level: none
+      runner_label: ${{ matrix.runner }}
+      target_platform: ${{ matrix.target_platform }}
+      image_tag_suffix: ${{ matrix.image_tag_suffix }}
+      push_image: false
+    secrets: inherit

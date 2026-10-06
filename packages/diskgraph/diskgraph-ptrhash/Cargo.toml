@@ -1,0 +1,35 @@
+[package]
+name = "diskgraph-ptrhash"
+version = "1.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Ragnar Groot Koerkamp"]
+repository = "https://github.com/RagnarGrootKoerkamp/ptrhash"
+homepage = "https://curiouscoding.nl/posts/ptrhash"
+description = "A high-throughput minimal perfect hash function"
+readme = "README.md"
+keywords = ["hashing", "minimal", "perfect", "mphf"]
+categories = ["data-structures", "science"]
+include = ["src/**/*", "README.md", "LICENSE"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bitvec = { version = "1.0.1", default-features = false, features = ["std"] }
+epserde = { version = "0.8.0", optional = true }
+epserde-derive = { version = "0.8.0", optional = true }
+itertools = "0.14.0"
+fastrand = "2.0.1"
+mem_dbg = "0.3.0"
+gxhash = "3.5.0"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+cacheline-ef = "1.1.0"
+tracing = { workspace = true }
+
+[lib]
+name = "ptr_hash"
+
+[features]
+epserde = ["dep:epserde", "dep:epserde-derive", "cacheline-ef/epserde"]
+test-utils = []
+default = ["epserde"]

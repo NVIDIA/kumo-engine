@@ -1,0 +1,132 @@
+[
+    {
+        "id": "ltv_test",
+        "name": "ltv_test",
+        "identity_id": "identity-s3",
+        "created_by": "user@example.com",
+        "timestamps": {
+            "created_at": "2025-03-02T04:35:09.047000+00:00",
+            "updated_at": "2025-03-02T04:35:09.047164+00:00"
+        },
+        "config": {
+            "target": {
+                "mode": "rooted",
+                "bucket": "kumo-public-datasets",
+                "prefix": "customerltv_integ_test",
+                "region": "us-west-2"
+            },
+            "type": "s3"
+        },
+        "description": "Customer LTV data"
+    },
+    {
+        "id": "hnm",
+        "name": "hnm",
+        "identity_id": "identity-snowflake",
+        "created_by": "admin@example.com",
+        "timestamps": {
+            "created_at": "2025-03-01T04:35:09.047000+00:00",
+            "updated_at": "2025-03-01T04:35:09.047000+00:00"
+        },
+        "config": {
+            "warehouse": "WH_XS",
+            "database": "KUMO",
+            "schema_name": "TEST_SNOWFLAKE_TYPE",
+            "role": "KUMO_READER",
+            "type": "snowflake"
+        },
+        "description": ""
+    },
+    {
+        "id": "finance",
+        "name": "finance",
+        "identity_id": "identity-snowflake",
+        "created_by": "admin@example.com",
+        "timestamps": {
+            "created_at": "2025-03-01T04:36:20.347219+00:00",
+            "updated_at": "2025-03-01T04:36:20.347361+00:00"
+        },
+        "config": {
+            "warehouse": "WH_XS",
+            "database": "KUMO",
+            "schema_name": "FINANCE",
+            "role": "KUMO_READER",
+            "type": "snowflake"
+        },
+        "description": ""
+    },
+    {
+        "id": "test_bigquery",
+        "name": "test_bigquery",
+        "identity_id": "identity-bigquery",
+        "created_by": "admin@example.com",
+        "timestamps": {
+            "created_at": "2025-01-30T05:48:21.235257+00:00",
+            "updated_at": "2025-01-30T05:48:21.235467+00:00"
+        },
+        "config": {
+            "project_id": "example-project",
+            "dataset_id": "large_table",
+            "location": "US",
+            "type": "bigquery"
+        },
+        "description": ""
+    },
+    {
+        "id": "test_databricks",
+        "name": "test_databricks",
+        "identity_id": "identity-databricks",
+        "created_by": "admin@example.com",
+        "timestamps": {
+            "created_at": "2025-01-29T05:48:21.235257+00:00",
+            "updated_at": "2025-01-29T05:48:21.235467+00:00"
+        },
+        "config": {
+            "warehouse_id": "warehouse-id",
+            "catalog": "main",
+            "schema_name": "analytics",
+            "type": "databricks"
+        },
+        "description": ""
+    },
+    {
+        "id": "raw_gcs",
+        "name": "raw_gcs",
+        "identity_id": "identity-gcs",
+        "created_by": "admin@example.com",
+        "timestamps": {
+            "created_at": "2025-01-28T05:48:21.235257+00:00",
+            "updated_at": "2025-01-28T05:48:21.235467+00:00"
+        },
+        "config": {
+            "target": {
+                "mode": "rooted",
+                "bucket": "training-data",
+                "prefix": "raw/"
+            },
+            "type": "gcs"
+        },
+        "description": ""
+    },
+    {
+        "id": "curated_adls",
+        "name": "curated_adls",
+        "identity_id": "identity-adls",
+        "created_by": "admin@example.com",
+        "timestamps": {
+            "created_at": "2025-01-27T05:48:21.235257+00:00",
+            "updated_at": "2025-01-27T05:48:21.235467+00:00"
+        },
+        "config": {
+            "target": {
+                "mode": "rooted",
+                "storage_account": "companydata",
+                "filesystem": "curated",
+                "prefix": "orders/",
+                "endpoint_suffix": "dfs.core.windows.net"
+            },
+            "type": "adls"
+        },
+        "description": ""
+    }
+]

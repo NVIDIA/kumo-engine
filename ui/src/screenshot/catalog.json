@@ -1,0 +1,1362 @@
+[
+    {
+        "key": "new_training_graph_table_view",
+        "patterns": [
+            "^ui/src/components/Graphs/InformationPanel/GraphInformationPanel.tsx$",
+            "^ui/src/components/Graphs/InformationPanel/TableView.tsx$",
+            "^ui/src/components/Graphs/InformationPanel/TableGraphView.tsx$"
+        ],
+        "canonicalRoutes": ["/newjob/training/"],
+        "visualCoverage": [
+            {
+                "id": "graph_table_view_opened",
+                "label": "Graph preview table view opens from the New Training graph panel"
+            },
+            {
+                "id": "column_statistics_visible",
+                "label": "Column statistics table view is visible"
+            },
+            {
+                "id": "graph_table_back_visible",
+                "label": "Back control for returning to graph preview is visible"
+            }
+        ],
+        "legacyRoutes": [],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "new-training-job-table-view-from-graph-preview",
+                    "route": "/newjob/training/",
+                    "historyState": {
+                        "copytrainingargs": {
+                            "graph_id": "graph-eb2650cd1f7c522fc8d513b7965b3f51",
+                            "graph_name": "customer_graph",
+                            "graph": {
+                                "id": "graph-eb2650cd1f7c522fc8d513b7965b3f51",
+                                "name": "customer_graph",
+                                "tables": {
+                                    "stock": {
+                                        "cols": [
+                                            {
+                                                "name": "StockCode",
+                                                "stype": "ID",
+                                                "dtype": "string",
+                                                "timestamp_format": null
+                                            }
+                                        ],
+                                        "source_table": {
+                                            "s3_path": "s3://kumo-public-datasets/momentic-downsampled-parquet/customer_ltv_downsampled/stock.parquet",
+                                            "connector_id": "test",
+                                            "source_table_name": "stock",
+                                            "file_type": null,
+                                            "data_source_type": "S3"
+                                        },
+                                        "pkey": "StockCode",
+                                        "time_col": null,
+                                        "end_time_col": null
+                                    },
+                                    "transaction": {
+                                        "cols": [
+                                            {
+                                                "name": "InvoiceNo",
+                                                "stype": "categorical",
+                                                "dtype": "string",
+                                                "timestamp_format": null
+                                            },
+                                            {
+                                                "name": "StockCode",
+                                                "stype": "ID",
+                                                "dtype": "string",
+                                                "timestamp_format": null
+                                            },
+                                            {
+                                                "name": "Description",
+                                                "stype": "categorical",
+                                                "dtype": "string",
+                                                "timestamp_format": null
+                                            },
+                                            {
+                                                "name": "Quantity",
+                                                "stype": "numerical",
+                                                "dtype": "int64",
+                                                "timestamp_format": null
+                                            },
+                                            {
+                                                "name": "InvoiceDate",
+                                                "stype": "timestamp",
+                                                "dtype": "date",
+                                                "timestamp_format": null
+                                            },
+                                            {
+                                                "name": "UnitPrice",
+                                                "stype": "numerical",
+                                                "dtype": "float64",
+                                                "timestamp_format": null
+                                            },
+                                            {
+                                                "name": "CustomerID",
+                                                "stype": "numerical",
+                                                "dtype": "float64",
+                                                "timestamp_format": null
+                                            },
+                                            {
+                                                "name": "Country",
+                                                "stype": "categorical",
+                                                "dtype": "string",
+                                                "timestamp_format": null
+                                            }
+                                        ],
+                                        "source_table": {
+                                            "s3_path": "s3://kumo-public-datasets/momentic-downsampled-parquet/customer_ltv_downsampled/transaction.parquet",
+                                            "connector_id": "test",
+                                            "source_table_name": "transaction",
+                                            "file_type": null,
+                                            "data_source_type": "S3"
+                                        },
+                                        "pkey": null,
+                                        "time_col": "InvoiceDate",
+                                        "end_time_col": null
+                                    },
+                                    "customer": {
+                                        "cols": [
+                                            {
+                                                "name": "CustomerID",
+                                                "stype": "ID",
+                                                "dtype": "float64",
+                                                "timestamp_format": null
+                                            }
+                                        ],
+                                        "source_table": {
+                                            "s3_path": "s3://kumo-public-datasets/momentic-downsampled-parquet/customer_ltv_downsampled/customer.parquet",
+                                            "connector_id": "test",
+                                            "source_table_name": "customer",
+                                            "file_type": null,
+                                            "data_source_type": "S3"
+                                        },
+                                        "pkey": "CustomerID",
+                                        "time_col": null,
+                                        "end_time_col": null
+                                    }
+                                },
+                                "groups": [
+                                    {
+                                        "columns": [
+                                            {
+                                                "table_name": "stock",
+                                                "col_name": "StockCode"
+                                            },
+                                            {
+                                                "table_name": "transaction",
+                                                "col_name": "StockCode"
+                                            }
+                                        ]
+                                    },
+                                    {
+                                        "columns": [
+                                            {
+                                                "table_name": "transaction",
+                                                "col_name": "CustomerID"
+                                            },
+                                            {
+                                                "table_name": "customer",
+                                                "col_name": "CustomerID"
+                                            }
+                                        ]
+                                    }
+                                ],
+                                "totalLinks": 2,
+                                "totalTables": 3,
+                                "table_name_to_fpid_mapping": {
+                                    "stock": "NA.NA-c8e37d6b963bfcfc5dd691522eca30f6",
+                                    "transaction": "NA.NA-4b1de19e99d03ba91b2f937b2a4292e1",
+                                    "customer": "NA.NA-039bf1683552e2e227a7590644451b7f"
+                                },
+                                "created": "2 months ago",
+                                "dateCreated": "Tue Mar 18, 2025, 12:11:37 PM",
+                                "updated": "1 month ago",
+                                "dateUpdated": "Sat Apr 26, 2025, 10:27:51 AM"
+                            }
+                        }
+                    },
+                    "setup": [
+                        {
+                            "action": "click",
+                            "selector": "[data-testid=\"transaction_show_icon\"]",
+                            "covers": ["graph_table_view_opened"]
+                        }
+                    ],
+                    "readySelector": "[data-testid=\"graph-table-view-column-statistics-heading\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"graph-table-view-column-statistics-heading\"]",
+                            "covers": ["column_statistics_visible"]
+                        },
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"graph-table-view-back\"]",
+                            "covers": ["graph_table_back_visible"]
+                        }
+                    ]
+                }
+            ],
+            "_rationale": "Synthesized for GraphInformationPanel/TableView changes on the new model page. The scenario seeds a stable graph into route state and opens the table view from graph preview so the screenshot captures the actual no-double-scroll surface."
+        }
+    },
+    {
+        "key": "new_training",
+        "patterns": [
+            "^ui/src/pages/NewJob/Training/",
+            "^ui/src/components/NewJob/Training/",
+            "^ui/src/components/PredictiveQueries/Training/ModelPlanner",
+            "^ui/src/components/PredictiveQueries/Write/ModelPlanner"
+        ],
+        "canonicalRoutes": ["/newjob/training/"],
+        "visualCoverage": [
+            {
+                "id": "new_training_task_type_visible",
+                "label": "New Training page renders the inferred task type text"
+            },
+            {
+                "id": "new_training_task_type_sentence_case",
+                "label": "Task type text uses sentence case"
+            },
+            {
+                "id": "new_training_model_planner_tab_sentence_case",
+                "label": "Model planner tab label uses sentence case"
+            }
+        ],
+        "legacyRoutes": [
+            "/jobs/training/new",
+            "/models/training/new",
+            "/models/training/",
+            "/jobs/training/"
+        ],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "new-training-job-task-type-and-model-planner",
+                    "route": "/newjob/training/",
+                    "historyState": {
+                        "taskType": "binary_classification"
+                    },
+                    "setup": [],
+                    "readySelector": "[data-testid=\"infer-task-type\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"infer-task-type\"]",
+                            "covers": ["new_training_task_type_visible"]
+                        },
+                        {
+                            "type": "text",
+                            "selector": "[data-testid=\"infer-task-type\"]",
+                            "matches": "^Task type: [a-z]+(?: [a-z]+)*$",
+                            "covers": ["new_training_task_type_sentence_case"]
+                        },
+                        {
+                            "type": "text",
+                            "selector": "text=Model planner",
+                            "equals": "Model planner",
+                            "covers": [
+                                "new_training_model_planner_tab_sentence_case"
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "_rationale": "Synthesized from changed files touching the New Training Job flow. The scenario seeds task type via route state so the screenshot deterministically captures the updated sentence-case task type and the surrounding new model UI without depending on tenant-specific graph/query validation."
+        }
+    },
+    {
+        "key": "new_prediction",
+        "patterns": [
+            "^ui/src/pages/NewJob/Prediction/",
+            "^ui/src/components/NewJob/Prediction/"
+        ],
+        "canonicalRoutes": ["/newjob/prediction/"],
+        "visualCoverage": [
+            {
+                "id": "new_prediction_route_loaded",
+                "label": "New Prediction page route loads"
+            },
+            {
+                "id": "new_prediction_heading_visible",
+                "label": "New Prediction primary heading is visible"
+            },
+            {
+                "id": "new_prediction_training_job_selected",
+                "label": "New Prediction flow has selected a training job before validating the configuration layout"
+            },
+            {
+                "id": "new_prediction_config_layout_visible",
+                "label": "New Prediction configuration layout is visible after selecting a training job"
+            },
+            {
+                "id": "new_prediction_settings_panel_visible",
+                "label": "New Prediction settings panel is visible in the bottom layout"
+            },
+            {
+                "id": "new_prediction_schema_panel_visible",
+                "label": "New Prediction schema panel is visible in the bottom layout"
+            }
+        ],
+        "legacyRoutes": [],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "new-prediction-config-layout",
+                    "route": "/newjob/prediction/",
+                    "setup": [
+                        {
+                            "action": "waitFor",
+                            "selector": ":nth-match([id^=\"trainingjob-\"], 1)"
+                        },
+                        {
+                            "action": "click",
+                            "selector": ":nth-match([id^=\"trainingjob-\"], 1)",
+                            "covers": ["new_prediction_training_job_selected"]
+                        }
+                    ],
+                    "readySelector": "[data-testid=\"new-prediction-config-layout\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"new-prediction-page-heading\"]",
+                            "covers": [
+                                "new_prediction_route_loaded",
+                                "new_prediction_heading_visible"
+                            ]
+                        },
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"new-prediction-config-layout\"]",
+                            "covers": ["new_prediction_config_layout_visible"]
+                        },
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"new-prediction-settings-panel\"]",
+                            "covers": ["new_prediction_settings_panel_visible"]
+                        },
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"new-prediction-schema-panel\"]",
+                            "covers": ["new_prediction_schema_panel_visible"]
+                        }
+                    ]
+                }
+            ],
+            "_rationale": "Synthesized from changed files touching the New Prediction flow. The scenario selects a training job before capture so screenshots prove the configuration layout rather than only the initial job picker."
+        }
+    },
+    {
+        "key": "new_connector",
+        "patterns": ["^ui/src/pages/Connectors/NewConnector/"],
+        "canonicalRoutes": ["/connectors/new-connector"],
+        "visualCoverage": [
+            {
+                "id": "new_connector_route_loaded",
+                "label": "Add Connector page route loads"
+            },
+            {
+                "id": "new_connector_heading_visible",
+                "label": "Add Connector form heading is visible"
+            },
+            {
+                "id": "new_connector_source_selection_visible",
+                "label": "All six connector type cards are visible"
+            }
+        ],
+        "legacyRoutes": [],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "new-connector-page",
+                    "route": "/connectors/new-connector",
+                    "setup": [],
+                    "readySelector": "[data-screenshot-ready=\"new-connector-page\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"new-connector-page-heading\"]",
+                            "covers": [
+                                "new_connector_route_loaded",
+                                "new_connector_heading_visible"
+                            ]
+                        },
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"connector-type-selection\"]",
+                            "covers": ["new_connector_source_selection_visible"]
+                        },
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"connector-type-databricks\"]"
+                        },
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"connector-type-snowflake\"]"
+                        },
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"connector-type-bigquery\"]"
+                        },
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"connector-type-s3\"]"
+                        },
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"connector-type-gcs\"]"
+                        },
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"connector-type-adls\"]"
+                        }
+                    ]
+                }
+            ],
+            "_rationale": "Synthesized from changed files touching the Add Connector flow. The screenshot targets the actual connector form page."
+        }
+    },
+    {
+        "key": "new_table",
+        "patterns": ["^ui/src/components/Tables/Connect/"],
+        "canonicalRoutes": ["/tables/new-table"],
+        "visualCoverage": [
+            {
+                "id": "new_table_route_loaded",
+                "label": "Add Table page route loads"
+            },
+            {
+                "id": "new_table_heading_visible",
+                "label": "Add New Table form heading is visible"
+            },
+            {
+                "id": "new_table_source_selector_visible",
+                "label": "Add Table source selector is visible"
+            }
+        ],
+        "legacyRoutes": [],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "new-table-page",
+                    "route": "/tables/new-table",
+                    "setup": [],
+                    "readySelector": "[data-screenshot-ready=\"new-table-page\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"new-table-page-heading\"]",
+                            "covers": [
+                                "new_table_route_loaded",
+                                "new_table_heading_visible"
+                            ]
+                        },
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"table-source-selector\"]",
+                            "covers": ["new_table_source_selector_visible"]
+                        }
+                    ]
+                }
+            ],
+            "_rationale": "Synthesized from changed files touching the Add Table flow. The screenshot targets the actual table creation form."
+        }
+    },
+    {
+        "key": "new_graph",
+        "patterns": [
+            "^ui/src/pages/Graphs/NewGraph/",
+            "^ui/src/components/Graphs/GraphConfigPanel/",
+            "^ui/src/components/Graphs/LinkSetup/",
+            "^ui/src/components/Graphs/NameInput/"
+        ],
+        "canonicalRoutes": ["/graphs/new-graph"],
+        "visualCoverage": [
+            {
+                "id": "new_graph_route_loaded",
+                "label": "New Graph page route loads"
+            },
+            {
+                "id": "new_graph_create_action_visible",
+                "label": "Create New Graph builder entry point is visible"
+            },
+            {
+                "id": "new_graph_name_input_visible",
+                "label": "New Graph name input is visible"
+            }
+        ],
+        "legacyRoutes": [],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "new-graph-page",
+                    "route": "/graphs/new-graph",
+                    "setup": [],
+                    "readySelector": "[data-screenshot-ready=\"new-graph-page\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"new-graph-page-heading\"]",
+                            "covers": [
+                                "new_graph_route_loaded",
+                                "new_graph_create_action_visible"
+                            ]
+                        },
+                        {
+                            "type": "visible",
+                            "selector": "#graph-name",
+                            "covers": ["new_graph_name_input_visible"]
+                        }
+                    ]
+                }
+            ],
+            "_rationale": "Synthesized from changed files touching the graph creation flow. The screenshot targets the graph builder page."
+        }
+    },
+    {
+        "key": "new_graph_select_tables",
+        "patterns": ["^ui/src/components/Graphs/SelectTables/"],
+        "canonicalRoutes": ["/graphs/new-graph"],
+        "visualCoverage": [
+            {
+                "id": "new_graph_select_tables_route_loaded",
+                "label": "New Graph page loads the table selection stage"
+            },
+            {
+                "id": "new_graph_select_tables_panel_visible",
+                "label": "Graph table selection panel is visible"
+            },
+            {
+                "id": "new_graph_select_tables_table_visible",
+                "label": "Graph table selection table is visible"
+            }
+        ],
+        "legacyRoutes": [],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "new-graph-select-tables-panel",
+                    "route": "/graphs/new-graph",
+                    "setup": [],
+                    "readySelector": "[data-testid=\"graph-select-tables-panel\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"new-graph-page-heading\"]",
+                            "covers": ["new_graph_select_tables_route_loaded"]
+                        },
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"graph-select-tables-panel\"]",
+                            "covers": ["new_graph_select_tables_panel_visible"]
+                        },
+                        {
+                            "type": "visible",
+                            "selector": "#graph-select-table",
+                            "covers": ["new_graph_select_tables_table_visible"]
+                        }
+                    ]
+                }
+            ],
+            "_rationale": "SelectTables changes need to prove the graph table-selection surface itself, not just the generic graph creation heading/name input."
+        }
+    },
+    {
+        "key": "connectors_list",
+        "patterns": [
+            "^ui/src/pages/Connectors/ConnectorsList/",
+            "^ui/src/components/Connectors/Overview/"
+        ],
+        "canonicalRoutes": ["/connectors/"],
+        "visualCoverage": [
+            {
+                "id": "connectors_list_route_loaded",
+                "label": "Connectors list route loads"
+            },
+            {
+                "id": "connectors_list_heading_visible",
+                "label": "Connectors page heading is visible"
+            },
+            {
+                "id": "connector_detail_metadata_card_visible",
+                "label": "Connector detail panel renders metadata as a labeled card"
+            }
+        ],
+        "legacyRoutes": [],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "connectors-list-page",
+                    "route": "/connectors/",
+                    "setup": [],
+                    "readySelector": "[data-screenshot-ready=\"connector-list-page\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"connector-list-page-heading\"]",
+                            "covers": [
+                                "connectors_list_route_loaded",
+                                "connectors_list_heading_visible"
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "name": "connector-detail-panel",
+                    "route": "/connectors/",
+                    "localStorage": {
+                        "new_user_v2": "1"
+                    },
+                    "setup": [
+                        {
+                            "action": "click",
+                            "selector": "[data-testid=\"entity-name-0\"]"
+                        }
+                    ],
+                    "readySelector": "[data-testid=\"connector-overview-properties\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"connector-overview-properties\"]",
+                            "covers": ["connector_detail_metadata_card_visible"]
+                        }
+                    ]
+                }
+            ]
+        }
+    },
+    {
+        "key": "entity_lists",
+        "patterns": ["^ui/src/components/ListOverview/"],
+        "canonicalRoutes": ["/connectors/", "/tables/", "/graphs/"],
+        "visualCoverage": [
+            {
+                "id": "entity_lists_connectors_visible",
+                "label": "Shared list overview renders the Connectors list page"
+            },
+            {
+                "id": "entity_lists_tables_visible",
+                "label": "Shared list overview renders the Tables list page"
+            },
+            {
+                "id": "entity_lists_graphs_visible",
+                "label": "Shared list overview renders the Graphs list page"
+            }
+        ],
+        "legacyRoutes": [],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "shared-list-overview-connectors-page",
+                    "route": "/connectors/",
+                    "setup": [],
+                    "readySelector": "[data-screenshot-ready=\"connector-list-page\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"connector-list-page-heading\"]",
+                            "covers": ["entity_lists_connectors_visible"]
+                        }
+                    ]
+                },
+                {
+                    "name": "shared-list-overview-tables-page",
+                    "route": "/tables/",
+                    "setup": [],
+                    "readySelector": "[data-screenshot-ready=\"table-list-page\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"table-list-page-heading\"]",
+                            "covers": ["entity_lists_tables_visible"]
+                        }
+                    ]
+                },
+                {
+                    "name": "shared-list-overview-graphs-page",
+                    "route": "/graphs/",
+                    "setup": [],
+                    "readySelector": "[data-screenshot-ready=\"graph-list-page\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"graph-list-page-heading\"]",
+                            "covers": ["entity_lists_graphs_visible"]
+                        }
+                    ]
+                }
+            ],
+            "_rationale": "Shared ListOverview changes affect connectors, tables, and graphs. Capture all three consumers instead of selecting an arbitrary single list page."
+        }
+    },
+    {
+        "key": "tables_list",
+        "patterns": [
+            "^ui/src/pages/Tables/TablesList/",
+            "^ui/src/components/Tables/Overview/"
+        ],
+        "canonicalRoutes": ["/tables/"],
+        "visualCoverage": [
+            {
+                "id": "tables_list_route_loaded",
+                "label": "Tables list route loads"
+            },
+            {
+                "id": "tables_list_heading_visible",
+                "label": "Tables page heading is visible"
+            }
+        ],
+        "legacyRoutes": [],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "tables-list-page",
+                    "route": "/tables/",
+                    "setup": [],
+                    "readySelector": "[data-screenshot-ready=\"table-list-page\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"table-list-page-heading\"]",
+                            "covers": [
+                                "tables_list_route_loaded",
+                                "tables_list_heading_visible"
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+    },
+    {
+        "key": "graphs_list",
+        "patterns": [
+            "^ui/src/pages/Graphs/GraphsList/",
+            "^ui/src/components/Graphs/Overview/"
+        ],
+        "canonicalRoutes": ["/graphs/"],
+        "visualCoverage": [
+            {
+                "id": "graphs_list_route_loaded",
+                "label": "Graphs list route loads"
+            },
+            {
+                "id": "graphs_list_create_action_visible",
+                "label": "Create graph action is visible"
+            }
+        ],
+        "legacyRoutes": [],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "graphs-list-page",
+                    "route": "/graphs/",
+                    "setup": [],
+                    "readySelector": "[data-screenshot-ready=\"graph-list-page\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"graph-list-page-heading\"]",
+                            "covers": ["graphs_list_route_loaded"]
+                        },
+                        {
+                            "type": "visible",
+                            "selector": "#create-new-graph",
+                            "covers": ["graphs_list_create_action_visible"]
+                        }
+                    ]
+                }
+            ]
+        }
+    },
+    {
+        "key": "models_list",
+        "patterns": [
+            "^ui/src/pages/Jobs/JobsList\\.tsx$",
+            "^ui/src/pages/Jobs/__tests__/ModelList\\.test\\.tsx$"
+        ],
+        "canonicalRoutes": ["/models/"],
+        "visualCoverage": [
+            {
+                "id": "models_list_route_loaded",
+                "label": "Models list route loads"
+            },
+            {
+                "id": "models_list_heading_visible",
+                "label": "Models page heading is visible"
+            }
+        ],
+        "legacyRoutes": ["/jobs"],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "models-list-page",
+                    "route": "/models/?page=1&job_type=TRAINING_JOB",
+                    "setup": [],
+                    "readySelector": "[data-testid=\"models-list-page-heading\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"models-list-page-heading\"]",
+                            "covers": [
+                                "models_list_route_loaded",
+                                "models_list_heading_visible"
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+    },
+    {
+        "key": "jobs_lists",
+        "patterns": ["^ui/src/pages/Jobs/JobsList"],
+        "canonicalRoutes": ["/models/", "/predictions/"],
+        "visualCoverage": [
+            {
+                "id": "jobs_lists_models_visible",
+                "label": "Shared jobs list renders the Models list page"
+            },
+            {
+                "id": "jobs_lists_predictions_visible",
+                "label": "Shared jobs list renders the Predictions list page"
+            }
+        ],
+        "legacyRoutes": ["/jobs"],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "shared-jobs-list-models-page",
+                    "route": "/models/?page=1&job_type=TRAINING_JOB",
+                    "setup": [],
+                    "readySelector": "[data-testid=\"models-list-page-heading\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"models-list-page-heading\"]",
+                            "covers": ["jobs_lists_models_visible"]
+                        }
+                    ]
+                },
+                {
+                    "name": "shared-jobs-list-predictions-page",
+                    "route": "/predictions/?page=1&job_type=BATCH_PREDICTION_JOB",
+                    "setup": [],
+                    "readySelector": "[data-testid=\"predictions-list-page-heading\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"predictions-list-page-heading\"]",
+                            "covers": ["jobs_lists_predictions_visible"]
+                        }
+                    ]
+                }
+            ],
+            "_rationale": "JobsList is shared by Models and Predictions. Capture both route variants so a shared jobs-list change cannot be validated by only one page."
+        }
+    },
+    {
+        "key": "model_details",
+        "patterns": [
+            "^ui/src/components/Jobs/Training/TrainingJobOverview",
+            "^ui/src/components/Jobs/Training/TrainingJob.tsx"
+        ],
+        "canonicalRoutes": ["/models/training/", "/models/"],
+        "visualCoverage": [
+            {
+                "id": "model_details_route_loaded",
+                "label": "Model detail route loads"
+            },
+            {
+                "id": "model_details_page_visible",
+                "label": "Model detail overview page is visible"
+            }
+        ],
+        "legacyRoutes": ["/jobs/training/"],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "model-detail-page",
+                    "route": "/models/?page=1&job_type=TRAINING_JOB",
+                    "setup": [
+                        {
+                            "action": "click",
+                            "selector": ":nth-match([id^=\"trainingjob-\"], 1)"
+                        }
+                    ],
+                    "readySelector": "[data-testid=\"model-detail-page\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"model-detail-page\"]",
+                            "covers": [
+                                "model_details_route_loaded",
+                                "model_details_page_visible"
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+    },
+    {
+        "key": "predictions_list",
+        "patterns": [
+            "^ui/src/pages/Jobs/JobsList\\.tsx$",
+            "^ui/src/pages/Jobs/__tests__/PredictionList\\.test\\.tsx$"
+        ],
+        "canonicalRoutes": ["/predictions/"],
+        "visualCoverage": [
+            {
+                "id": "predictions_list_route_loaded",
+                "label": "Predictions list route loads"
+            },
+            {
+                "id": "predictions_list_heading_visible",
+                "label": "Predictions page heading is visible"
+            }
+        ],
+        "legacyRoutes": ["/jobs"],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "predictions-list-page",
+                    "route": "/predictions/?page=1&job_type=BATCH_PREDICTION_JOB",
+                    "setup": [],
+                    "readySelector": "[data-testid=\"predictions-list-page-heading\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"predictions-list-page-heading\"]",
+                            "covers": [
+                                "predictions_list_route_loaded",
+                                "predictions_list_heading_visible"
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+    },
+    {
+        "key": "training_table_details",
+        "patterns": [
+            "^ui/src/components/Jobs/TrainingTable/TrainingTableGeneration\\.tsx$",
+            "^ui/src/components/Jobs/TrainingTable/TrainingTableGenOverview\\.tsx$"
+        ],
+        "canonicalRoutes": ["/models/trainingtable/"],
+        "visualCoverage": [
+            {
+                "id": "training_table_details_route_loaded",
+                "label": "Training table generation detail route loads"
+            },
+            {
+                "id": "training_table_details_page_visible",
+                "label": "Training table generation detail page is visible"
+            }
+        ],
+        "legacyRoutes": ["/jobs/trainingtable/"],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "training-table-detail-page",
+                    "route": "/models/trainingtable/gen-traintable-job-9f8b259b4f764c8f932ad5912a926ec2",
+                    "setup": [],
+                    "readySelector": "[data-screenshot-ready=\"training-table-detail-page\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"training-table-detail-page\"]",
+                            "covers": [
+                                "training_table_details_route_loaded",
+                                "training_table_details_page_visible"
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+    },
+    {
+        "key": "prediction_details",
+        "patterns": [
+            "^ui/src/components/Jobs/Prediction/PredictionJobOverview",
+            "^ui/src/components/Jobs/Prediction/PredictionJob.tsx"
+        ],
+        "canonicalRoutes": ["/predictions/prediction/", "/predictions/"],
+        "visualCoverage": [
+            {
+                "id": "prediction_details_route_loaded",
+                "label": "Prediction detail route loads"
+            },
+            {
+                "id": "prediction_details_page_visible",
+                "label": "Prediction detail overview page is visible"
+            }
+        ],
+        "legacyRoutes": ["/jobs/prediction/"],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "prediction-detail-page",
+                    "route": "/predictions/?page=1&job_type=BATCH_PREDICTION_JOB",
+                    "setup": [
+                        {
+                            "action": "click",
+                            "selector": ":nth-match([id^=\"bp-job-\"], 1)"
+                        }
+                    ],
+                    "readySelector": "[data-testid=\"prediction-detail-page\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"prediction-detail-page\"]",
+                            "covers": [
+                                "prediction_details_route_loaded",
+                                "prediction_details_page_visible"
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+    },
+    {
+        "key": "prediction_table_details",
+        "patterns": [
+            "^ui/src/components/Jobs/PredictionTable/PredictionTableGeneration\\.tsx$",
+            "^ui/src/components/Jobs/PredictionTable/PredictionTableGenOverview\\.tsx$"
+        ],
+        "canonicalRoutes": ["/predictions/predictiontable/"],
+        "visualCoverage": [
+            {
+                "id": "prediction_table_details_route_loaded",
+                "label": "Prediction table generation detail route loads"
+            },
+            {
+                "id": "prediction_table_details_page_visible",
+                "label": "Prediction table generation detail page is visible"
+            }
+        ],
+        "legacyRoutes": ["/jobs/predictiontable/"],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "prediction-table-detail-page",
+                    "route": "/predictions/predictiontable/gen-predtable-job-960dbaace6ef49b8b83d648204f50e27",
+                    "setup": [],
+                    "readySelector": "[data-screenshot-ready=\"prediction-table-detail-page\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"prediction-table-detail-page\"]",
+                            "covers": [
+                                "prediction_table_details_route_loaded",
+                                "prediction_table_details_page_visible"
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+    },
+    {
+        "key": "prediction_outputs",
+        "patterns": [
+            "^ui/src/components/BatchPredictions/PredictionOutputsOverview/"
+        ],
+        "canonicalRoutes": ["/predictions/prediction/", "/predictions/"],
+        "visualCoverage": [
+            {
+                "id": "prediction_outputs_route_loaded",
+                "label": "Prediction detail route loads with outputs"
+            },
+            {
+                "id": "prediction_outputs_panel_visible",
+                "label": "Prediction outputs panel is visible"
+            },
+            {
+                "id": "prediction_outputs_heading_visible",
+                "label": "Prediction outputs heading is visible"
+            }
+        ],
+        "legacyRoutes": ["/jobs/prediction/"],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "prediction-outputs-panel",
+                    "route": "/predictions/?page=1&job_type=BATCH_PREDICTION_JOB",
+                    "setup": [
+                        {
+                            "action": "click",
+                            "selector": ":nth-match([id^=\"bp-job-\"], 1)"
+                        }
+                    ],
+                    "readySelector": "[data-testid=\"prediction-outputs-overview\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"prediction-detail-page\"]",
+                            "covers": ["prediction_outputs_route_loaded"]
+                        },
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"prediction-outputs-overview\"]",
+                            "covers": ["prediction_outputs_panel_visible"]
+                        },
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"prediction-outputs-heading\"]",
+                            "covers": ["prediction_outputs_heading_visible"]
+                        }
+                    ]
+                }
+            ],
+            "_rationale": "PredictionOutputsOverview changes must prove the output panel on a prediction detail route, not only the predictions list heading."
+        }
+    },
+    {
+        "key": "project_settings",
+        "patterns": ["^ui/src/components/Project/ProjectSettings"],
+        "canonicalRoutes": ["/project/settings/"],
+        "visualCoverage": [
+            {
+                "id": "project_settings_route_loaded",
+                "label": "Project settings route loads"
+            },
+            {
+                "id": "project_settings_heading_visible",
+                "label": "Project Settings page heading is visible"
+            },
+            {
+                "id": "project_settings_name_input_visible",
+                "label": "Project Settings project name input is visible"
+            }
+        ],
+        "legacyRoutes": [],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "project-settings-page",
+                    "route": "/project/settings/",
+                    "setup": [],
+                    "readySelector": "[data-testid=\"project-settings-page-heading\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"project-settings-page-heading\"]",
+                            "covers": [
+                                "project_settings_route_loaded",
+                                "project_settings_heading_visible"
+                            ]
+                        },
+                        {
+                            "type": "visible",
+                            "selector": "#project-name",
+                            "covers": ["project_settings_name_input_visible"]
+                        }
+                    ]
+                }
+            ]
+        }
+    },
+    {
+        "key": "project_list",
+        "patterns": ["^ui/src/components/Project/ProjectList"],
+        "canonicalRoutes": ["/connectors/"],
+        "visualCoverage": [
+            {
+                "id": "project_list_dialog_visible",
+                "label": "Project switcher dialog is visible"
+            },
+            {
+                "id": "project_list_group_selector_visible",
+                "label": "Project switcher group selector is visible"
+            },
+            {
+                "id": "project_list_create_button_visible",
+                "label": "Project switcher New project action is visible"
+            }
+        ],
+        "legacyRoutes": [],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "project-switcher-dialog",
+                    "route": "/connectors/",
+                    "localStorage": {
+                        "selected-project": "default"
+                    },
+                    "setup": [
+                        {
+                            "action": "click",
+                            "selector": "[data-testid=\"project-switcher-button\"]"
+                        }
+                    ],
+                    "readySelector": "[data-testid=\"project-details\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"project-list-heading\"]",
+                            "covers": ["project_list_dialog_visible"]
+                        },
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"project-group-selector\"]",
+                            "covers": ["project_list_group_selector_visible"]
+                        },
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"project-create-button\"]",
+                            "covers": ["project_list_create_button_visible"]
+                        }
+                    ]
+                }
+            ],
+            "_rationale": "ProjectList owns the always-on project switcher modal."
+        }
+    },
+    {
+        "key": "new_project",
+        "patterns": ["^ui/src/components/Project/NewProject"],
+        "canonicalRoutes": ["/connectors/"],
+        "visualCoverage": [
+            {
+                "id": "new_project_route_loaded",
+                "label": "Project switcher route loads before opening New Project"
+            },
+            {
+                "id": "new_project_heading_visible",
+                "label": "Create New Project dialog heading is visible"
+            },
+            {
+                "id": "new_project_name_input_visible",
+                "label": "Create New Project project name input is visible"
+            }
+        ],
+        "legacyRoutes": [],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "new-project-dialog",
+                    "route": "/connectors/",
+                    "localStorage": {
+                        "selected-project": "default"
+                    },
+                    "setup": [
+                        {
+                            "action": "click",
+                            "selector": "[data-testid=\"project-switcher-button\"]"
+                        },
+                        {
+                            "action": "click",
+                            "selector": "[data-testid=\"project-group-selector\"]"
+                        },
+                        {
+                            "action": "click",
+                            "selector": ":nth-match([data-testid=\"project-group-option\"], 1)"
+                        },
+                        {
+                            "action": "click",
+                            "selector": "[data-testid=\"project-create-button\"]",
+                            "covers": ["new_project_route_loaded"]
+                        }
+                    ],
+                    "readySelector": "[data-testid=\"new-project-page-heading\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "[data-testid=\"new-project-page-heading\"]",
+                            "covers": [
+                                "new_project_route_loaded",
+                                "new_project_heading_visible"
+                            ]
+                        },
+                        {
+                            "type": "visible",
+                            "selector": "#project-name",
+                            "covers": ["new_project_name_input_visible"]
+                        }
+                    ]
+                }
+            ],
+            "_rationale": "NewProject is opened from the always-on project switcher."
+        }
+    },
+    {
+        "key": "project_forms",
+        "patterns": ["^ui/src/components/Project/NameInput/ProjectNameInput"],
+        "canonicalRoutes": ["/project/settings/", "/connectors/"],
+        "visualCoverage": [
+            {
+                "id": "project_forms_settings_visible",
+                "label": "Shared project form input renders in Project Settings"
+            },
+            {
+                "id": "project_forms_new_project_visible",
+                "label": "Shared project form input renders in New Project dialog"
+            }
+        ],
+        "legacyRoutes": [],
+        "plan": {
+            "scenarios": [
+                {
+                    "name": "shared-project-form-settings-page",
+                    "route": "/project/settings/",
+                    "setup": [],
+                    "readySelector": "[data-testid=\"project-settings-page-heading\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "#project-name",
+                            "covers": ["project_forms_settings_visible"]
+                        }
+                    ]
+                },
+                {
+                    "name": "shared-project-form-new-project-dialog",
+                    "route": "/connectors/",
+                    "localStorage": {
+                        "selected-project": "default"
+                    },
+                    "setup": [
+                        {
+                            "action": "click",
+                            "selector": "[data-testid=\"project-switcher-button\"]"
+                        },
+                        {
+                            "action": "click",
+                            "selector": "[data-testid=\"project-group-selector\"]"
+                        },
+                        {
+                            "action": "click",
+                            "selector": ":nth-match([data-testid=\"project-group-option\"], 1)"
+                        },
+                        {
+                            "action": "click",
+                            "selector": "[data-testid=\"project-create-button\"]"
+                        }
+                    ],
+                    "readySelector": "[data-testid=\"new-project-page-heading\"]",
+                    "assertions": [
+                        {
+                            "type": "visible",
+                            "selector": "#project-name",
+                            "covers": ["project_forms_new_project_visible"]
+                        }
+                    ],
+                    "visualCoverage": [
+                        {
+                            "id": "project_forms_new_project_visible",
+                            "label": "Shared project form input renders in the New Project dialog"
+                        }
+                    ]
+                }
+            ],
+            "_rationale": "ProjectNameInput is visible on Project Settings and the always-on New Project dialog."
+        }
+    }
+]

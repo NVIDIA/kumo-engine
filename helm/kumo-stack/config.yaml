@@ -1,0 +1,74 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Customer environment configuration. Edit the selected provider, cloud
+# endpoints, identities, tenant, and registry. The installer derives release
+# names, namespaces, chart locations, and component ordering.
+#
+# This checked-in example selects EKS. For AKS or ARO, change `platform`,
+# replace the selected provider block, and follow docs/install-{aks,aro}.md.
+platform: eks
+
+cluster:
+  context: replace-me
+  providers:
+    eks:
+      clusterName: replace-me
+      region: us-west-2
+      vpcId: vpc-00000000000000000
+      karpenterNodeRole: KarpenterNodeRole-replace-me
+      karpenterControllerRoleArn: arn:aws:iam::000000000000:role/replace-me-karpenter
+      ebsCsiRoleArn: arn:aws:iam::000000000000:role/replace-me-ebs-csi
+      loadBalancerControllerRoleArn: arn:aws:iam::000000000000:role/replace-me-load-balancer
+      edgeCertificateArn: arn:aws:acm:us-west-2:000000000000:certificate/00000000-0000-0000-0000-000000000000
+      edgeScheme: internal
+
+cloud:
+  postgres:
+    host: replace-me.us-west-2.rds.amazonaws.com
+    stateUser: kumo_state
+    temporalUser: temporal_runtime
+    admin:
+      mode: aws_iam
+      username: postgres_admin
+      annotations:
+        eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/replace-me-postgres-admin
+  objectStorage:
+    uri: s3://replace-me/disk-graph
+    region: us-west-2
+
+# Preserve the repository path when creating an exact private mirror.
+images:
+  kumo:
+    registry: nvcr.io
+    repoPath: 1000161941370113/kumo-3
+
+gpu:
+  cacheTiers:
+    - {name: small, instanceType: g4dn.xlarge, ssdGiB: 256, gpuCount: 1}
+    - {name: medium, instanceType: g4dn.2xlarge, ssdGiB: 512, gpuCount: 1}
+    - {name: large, instanceType: g4dn.8xlarge, ssdGiB: 1024, gpuCount: 1}
+  ephemeral: {instanceType: g4dn.xlarge}
+
+stateDbIdentity:
+  controlAnnotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/replace-me-control
+  workerAnnotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/replace-me-worker
+  controllerAnnotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/replace-me-controller
+
+tenant:
+  name: replace-me
+  exposureHost: kumo.example.com
+  tenantSecret: {name: replace-me-secret-key, key: key}
+  extraValues:
+    auth:
+      enabled: true
+      method: password
+      adminEmails: [admin@example.com]
+      password:
+        temporaryPassword:
+          secretName: replace-me-bootstrap-password
+          secretKey: password

@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# CodeRabbit runs TruffleHog only when a supported configuration file exists.
+# No custom detectors are needed; TruffleHog's built-in detectors remain active.
+detectors: []

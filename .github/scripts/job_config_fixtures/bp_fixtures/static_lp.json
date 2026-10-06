@@ -1,0 +1,20 @@
+{
+    "model_training_job_id": "trainingjob-0f2ae6145a024f108ce6866c251d6f60",
+    "graph_snapshot_id": "graph-ae80e55b2d5719b6ebb0a47b7e12a8c6@0b8ca320ffd0a06663b52c29af260e14",
+    "explanations": false,
+    "filter_overrides": {
+        "entity_filter": "",
+        "target_filter": ""
+    },
+    "job_tags": {
+        "FINANCIAL_STATIC_LP_PRED_1782214596014": "FINANCIAL_STATIC_LP_PRED_1782214596014"
+    },
+    "predict_options": {
+        "num_workers": 1,
+        "num_classes_to_return": 1
+    },
+    "predictive_query": "PREDICT LIST_DISTINCT(DISP.CLIENT_ID) RANK TOP 10 FOR EACH ACCOUNT.ACCOUNT_ID",
+    "user": "John Doe",
+    "graph_id": "ae80e55b2d5719b6ebb0a47b7e12a8c6",
+    "anchor_time": "inferred"
+}

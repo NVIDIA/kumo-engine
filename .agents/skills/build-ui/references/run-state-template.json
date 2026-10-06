@@ -1,0 +1,51 @@
+{
+  "mode": "issue|pr",
+  "target": "12345",
+  "linkedIssue": "12345|null",
+  "linkedPr": "6789|null",
+  "flags": {
+    "dryRun": false,
+    "validateOnly": false,
+    "skipFigma": false,
+    "skipScreenshots": false,
+    "skipBrowser": false,
+    "noReview": false,
+    "mode": "light|standard|full",
+    "baseBranch": "master",
+    "resumeStage": "null|preflight|pr-inspection|ticket-analysis|recon|design|branch-setup|implementation|validation|review|tests|visual|pr"
+  },
+  "workBranch": "ui/12345-example-branch",
+  "lastCompletedPhase": "Phase 0: Pre-flight",
+  "runId": "github-run-id|null",
+  "runUrl": "https://github.com/owner/repo/actions/runs/123|null",
+  "trigger": "issue_comment|workflow_dispatch|null",
+  "actor": "github-username|null",
+  "baseBranch": "master",
+  "baseShaAtStart": "git-sha|null",
+  "baseShaAtEnd": "git-sha|null",
+  "staleBaseBranch": false,
+  "jobStatus": "queued|in_progress|success|failure|cancelled|null",
+  "artifactDir": "/tmp/build-ui-artifacts/12345",
+  "figmaContext": {
+    "status": "not-run|extracted|partial|not-found|skipped|failed",
+    "reason": "string|null",
+    "path": "/tmp/build-ui-artifacts/12345/figma-context.json|null",
+    "linkCount": 0,
+    "nodeCount": 0,
+    "imageCount": 0
+  },
+  "blockerType": "none|requirements|api|catalog|worktree-overlap|introduced-by-change|pre-existing|environmental|flaky-or-unclear|resume-mismatch|adjacent-fix|other",
+  "blockers": [],
+  "verificationStatus": {
+    "type-check": "not-run",
+    "lint-check": "not-run",
+    "format-check": "not-run",
+    "build": "not-run",
+    "targeted-tests": "not-run",
+    "related-tests": "not-run",
+    "coverage-run": "not-run",
+    "browser-verification": "not-run",
+    "figma-verification": "not-run",
+    "screenshot-render-check": "not-run"
+  }
+}

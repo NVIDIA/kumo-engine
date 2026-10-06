@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# CI test: AWS with the customer's own registry (Option B) + image pull secret.
+global:
+  tenant: "test"
+
+image:
+  registry: "111111111111.dkr.ecr.us-west-2.amazonaws.com"
+  tag: "test-version"
+  pullSecretName: "kumo-registry"
+
+
+kumoConfig:
+  storage:
+    dataBucket: "s3://test-bucket"
+  diskgraph:
+    storageClass: ebs-gp3-xfs
+    storageCapacityTracking: advisory
+    nodeTypes:
+      test-gpu: { ssd_gib: 800 }
+
+postgres:
+  authMode: aws_iam
+  host: state.test.us-west-2.rds.amazonaws.com
+  region: us-west-2
+
+serviceAccounts:
+  control:
+    annotations:
+      eks.amazonaws.com/role-arn: "arn:aws:iam::000000000000:role/test-control"
+  worker:
+    annotations:
+      eks.amazonaws.com/role-arn: "arn:aws:iam::000000000000:role/test-worker"
+  controller:
+    annotations:
+      eks.amazonaws.com/role-arn: "arn:aws:iam::000000000000:role/test-controller"

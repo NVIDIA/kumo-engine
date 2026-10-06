@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: HOME_CREDIT_DEFAULT_RISK
+tables:
+  - table_name: APPLICATION
+    pkey:
+      name: SK_ID_CURR
+    cols:
+      - name: DAYS_ID_PUBLISH
+        dtype: int
+  - table_name: BUREAU
+    pkey:
+      name: SK_ID_BUREAU
+    fkeys:
+      - name: SK_ID_CURR
+        dst_table: APPLICATION
+  - table_name: BUREAU_BALANCE
+    fkeys:
+      - name: SK_ID_BUREAU
+        dst_table: BUREAU
+  - table_name: PREVIOUS_APPLICATION
+    pkey:
+      name: SK_ID_PREV
+    fkeys:
+      - name: SK_ID_CURR
+        dst_table: APPLICATION
+  - table_name: POS_CASH_BALANCE
+    fkeys:
+      - name: SK_ID_CURR
+        dst_table: APPLICATION
+      - name: SK_ID_PREV
+        dst_table: PREVIOUS_APPLICATION
+  - table_name: CREDIT_CARD_BALANCE
+    fkeys:
+      - name: SK_ID_CURR
+        dst_table: APPLICATION
+      - name: SK_ID_PREV
+        dst_table: PREVIOUS_APPLICATION
+  - table_name: INSTALLMENTS_PAYMENTS
+    fkeys:
+      - name: SK_ID_CURR
+        dst_table: APPLICATION
+      - name: SK_ID_PREV
+        dst_table: PREVIOUS_APPLICATION

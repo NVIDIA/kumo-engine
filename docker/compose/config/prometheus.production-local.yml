@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: kumo-production-local
+
+scrape_configs:
+  - job_name: rest-api
+    scrape_interval: 10s
+    static_configs:
+      - targets: ["kumo-rest:8007"]
+
+  - job_name: rest-api-public
+    scrape_interval: 10s
+    static_configs:
+      - targets: ["kumo-rest-public:8008"]
+
+  - job_name: worker-data
+    scrape_interval: 10s
+    static_configs:
+      - targets: ["kumo-worker-data:8003"]
+
+  - job_name: worker-data-app
+    scrape_interval: 10s
+    static_configs:
+      - targets: ["kumo-worker-data:8103"]
+
+  - job_name: worker-mlworkflow
+    scrape_interval: 10s
+    static_configs:
+      - targets: ["kumo-worker-mlworkflow:8005"]
+
+  - job_name: worker-mlworkflow-app
+    scrape_interval: 10s
+    static_configs:
+      - targets: ["kumo-worker-mlworkflow:8105"]
+
+  - job_name: pool-controller
+    scrape_interval: 10s
+    static_configs:
+      - targets: ["kumo-pool-controller:8009"]
+
+  - job_name: pool-worker
+    scrape_interval: 10s
+    static_configs:
+      - targets: ["kumo-pool-worker:8010"]
+
+  - job_name: prometheus
+    scrape_interval: 10s
+    static_configs:
+      - targets: ["localhost:9090"]

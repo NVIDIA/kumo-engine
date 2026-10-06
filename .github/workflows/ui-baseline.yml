@@ -1,0 +1,98 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: UI Migration Baseline Ratchet
+
+on: # yamllint disable-line rule:truthy
+  push:
+    branches:
+      - master
+    paths: ["ui/**"]
+  pull_request:
+    paths: ["ui/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  packages: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+  ratchet:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          npm run install:catalog
+          npm ci
+
+      - name: Check for circular dependencies (madge)
+        # Standalone failing gate. Excludes generated code (gen/, ANTLR grammar)
+        # so it tracks only hand-written cycles — matches the audit's circularDeps
+        # scoping. Fails the build on any circular dependency.
+        run: npm run circular-check
+
+      - name: Check for test-only components (knip --production --include files)
+        # Default knip counts test files as consumers, so a component imported
+        # ONLY by its test reads as "used". Production mode drops test files,
+        # surfacing those test-only components as unused files. Scoped to `files`
+        # so it gates exactly that signal; the default knip run below still covers
+        # unused exports/types and dependency hygiene.
+        run: npm run knip:production:files
+
+      - name: Check for dead code (knip)
+        # Phase 4 enforcement gate. Surfaces unused files, exports, types, enum
+        # members, and dependencies so deleted legacy CSS / @ui primitives don't
+        # leave dead exports lingering (which keeps appCssLoc artificially high).
+        # Config + ignore list live in ui/knip.jsonc. Fails the build on any
+        # finding.
+        run: npm run knip
+
+      - name: Check for dead tests and routes (dead-tests)
+        # Complements knip, which structurally cannot see these: test files are
+        # always entry points (so an orphaned/catalog-only test never reads as
+        # "unused"), and a lazy route's `import()` reads as usage even when the
+        # route is unreachable. Script lives in ui/scripts/find-dead-tests.mjs.
+        # Fails the build on any finding.
+        run: npm run dead-tests
+
+      - name: Run baseline ratchet check
+        id: ratchet
+        # Phase 1 TODO: also recompute the baseline against the PR base branch and
+        # compare to the committed .ui-baseline.json. If two PRs in flight
+        # both lower a metric, the second to merge currently keeps the higher
+        # number silently — the ratchet doesn't auto-tighten on improvements.
+        run: npm run audit:check
+
+      - name: Comment on PR if baseline regressed
+        if: failure() && steps.ratchet.conclusion == 'failure' && github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3.0.2
+        with:
+          recreate: true
+          header: ui-baseline
+          message: |
+            ## ❌ UI Migration Baseline Regressed
+
+            This PR increases at least one tracked migration-debt metric. See the [job log](https://github.com/kumo-ai/kumo/actions/runs/${{ github.run_id }}) for the regressed metrics and deltas.
+
+            **Fix:** revert the change that introduced the regression, or migrate the affected code in this PR.
+
+            **If the increase is intentional** (rare — e.g., adding a deliberately-tracked file): update `ui/.ui-baseline.json` in the same commit so future PRs are held to the new floor.

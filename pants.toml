@@ -1,0 +1,94 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[GLOBAL]
+pants_version = "2.28.0"
+pants_ignore = [
+  # Ignore root test conftest.py as it has many complex dependencies
+  # that are not managed by Pants. Individual test directories have
+  # their own conftest.py files.
+  "test/conftest.py",
+  "ui/playwright-report",
+  "ui/test-results",
+]
+backend_packages = [
+  "pants.backend.shell",
+  "pants.backend.docker",
+  "pants.backend.python",
+  "pants.backend.python.lint.autoflake",
+  "pants.backend.python.lint.flake8",
+  "pants.backend.python.lint.isort",
+  "pants.backend.experimental.python.typecheck.pyright",
+]
+
+[pex-cli]
+version = "v2.73.1"
+known_versions = [
+  "v2.73.1|macos_arm64|e6907e079a3f7c917dc88b41d892f732d4b8dbe388abfefc064d19c4a9f3c7e8|4939987",
+  "v2.73.1|macos_x86_64|e6907e079a3f7c917dc88b41d892f732d4b8dbe388abfefc064d19c4a9f3c7e8|4939987",
+  "v2.73.1|linux_x86_64|e6907e079a3f7c917dc88b41d892f732d4b8dbe388abfefc064d19c4a9f3c7e8|4939987",
+  "v2.73.1|linux_arm64|e6907e079a3f7c917dc88b41d892f732d4b8dbe388abfefc064d19c4a9f3c7e8|4939987"
+]
+
+[python]
+interpreter_constraints = ["==3.14.*"]
+enable_resolves = true
+
+[python.resolves]
+python-default = "%(env.PANTS_LOCKFILE_PATH)s"
+
+[pytest]
+# Pants' built-in default pytest (~=7.x) predates Python 3.14 and calls the
+# removed ``ast.Str`` API, so ``pants test`` fails to even collect on 3.14.
+# Install pytest (and the asyncio plugin) from the project resolve, which pins
+# pytest>=8 (3.14-compatible) in 3rdparty/BUILD.
+install_from_resolve = "python-default"
+requirements = ["//3rdparty:pytest", "//3rdparty:pytest_asyncio"]
+
+[generate-lockfiles]
+diff = true
+
+[python-repos]
+find_links = [
+  # Local wheels built or vendored for platform-specific dependencies.
+  "file://%(buildroot)s/3rdparty/kumo-wheels/",
+]
+indexes.add = [
+  "https://download.pytorch.org/whl/%(env.CUDA)s",
+]
+
+[subprocess-environment]
+# SSH_AUTH_SOCK: Pass SSH agent to subprocess that runs git
+# HOME: Allow $HOME/.gitconfig to be read in subprocess that runs git
+# GITHUB_TOKEN: Available to CI commands that resolve private dependencies.
+# GIT_CONFIG_*: Forward the command-scoped GitHub authorization header from
+# scripts/ci/run_with_github_auth.sh to Pants/PEX resolver subprocesses.
+env_vars.add = [
+  "SSH_AUTH_SOCK",
+  "HOME",
+  "GITHUB_TOKEN",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_COUNT",
+  "GIT_CONFIG_KEY_0",
+  "GIT_CONFIG_VALUE_0",
+  "GIT_CONFIG_KEY_1",
+  "GIT_CONFIG_VALUE_1",
+  "GIT_CONFIG_KEY_2",
+  "GIT_CONFIG_VALUE_2",
+]
+
+[source]
+root_patterns = [
+  "/",
+  "src",
+  "packages/kumo-api",
+  "packages/kumo-core/src",
+  "packages/kumo-pql",
+  "packages/kumo-sdk",
+]
+
+[python-infer]
+imports = "True"
+init_files = "always"
+unowned_dependency_behavior = "error"

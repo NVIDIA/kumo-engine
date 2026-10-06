@@ -1,0 +1,135 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kumo SDK - Integration
+
+on: # yamllint disable-line rule:truthy
+  push:
+    branches:
+      - master
+    paths:
+      - 'packages/kumo-api/**'
+      - 'packages/kumo-sdk/**'
+      - '.github/workflows/kumo-sdk-*'
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ startsWith(github.ref, 'refs/pull/') || github.run_number }} # yamllint disable-line
+  # Only cancel intermediate builds if on a PR:
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  pytest:
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      id-token: write
+
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          # Kumo's current runtime baseline is Python 3.14. Its dependency
+          # set (including NumPy 2.3.x) is not installable on Python 3.10.
+          python-version: '3.14'
+          activate-environment: true
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/github-actions-kumo-sdk-integration-e2e-tests
+          aws-region: us-west-2
+          role-session-name: kumo-sdk-int-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Install Kumo
+        uses: ./.github/actions/setup
+        with:
+          github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+          python-version: '3.14'
+          kumo-install-options: '[rest,test]'
+
+      - name: Run Kumo Server
+        run: |
+          : "${AWS_ACCESS_KEY_ID:?AWS_ACCESS_KEY_ID must be set by aws-actions/configure-aws-credentials}"
+          : "${AWS_SECRET_ACCESS_KEY:?AWS_SECRET_ACCESS_KEY must be set by aws-actions/configure-aws-credentials}"
+          : "${AWS_SESSION_TOKEN:?AWS_SESSION_TOKEN must be set by aws-actions/configure-aws-credentials}"
+          export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-west-2}"
+          export DRIVER_RPC_TIMEOUT_SEC=120
+          sed -i 's/pip show/uv pip show/g' rest/devserver/main.py
+          KUMO_ENABLE_UNAUTHENTICATED_API_KEY_STAGING=1 DETACHED=1 DISABLE_AUTH=1 ENABLE_GLUE=1 VENV_PYTHON=$VIRTUAL_ENV/bin/python uv run --no-project make devserver-local
+          timeout 120 bash -lc 'until curl -sS -o /dev/null http://localhost:10002/v1/authentication; do sleep 2; done'
+          echo "Public API is responding at http://localhost:10002/v1/authentication"
+          timeout 120 bash -lc 'until curl -sS -o /dev/null http://localhost:10001/v0/authentication/organization; do sleep 2; done'
+          echo "Private API is responding at http://localhost:10001/v0/authentication/organization"
+
+      - name: Stage owner-bound integration API key
+        run: |
+          response="$(curl --fail --silent --show-error \
+            -X POST http://localhost:10001/v0/api-keys/stage \
+            -H 'Content-Type: application/json' \
+            -d "{\"name\":\"sdk-integration-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}\"}")"
+          api_key_id="$(jq -r '.id' <<<"$response")"
+          api_key="$(jq -r '.value' <<<"$response")"
+          echo "::add-mask::$api_key"
+          test -n "$api_key_id" && test "$api_key_id" != null
+          test -n "$api_key" && test "$api_key" != null
+          echo "KUMO_API_ENDPOINT=http://localhost:10002" >> "$GITHUB_ENV"
+          echo "KUMO_API_KEY=$api_key" >> "$GITHUB_ENV"
+          echo "KUMO_STAGED_API_KEY_ID=$api_key_id" >> "$GITHUB_ENV"
+
+      - name: Install colocated Kumo API and SDK
+        run: |
+          uv pip install -e packages/kumo-api
+          # The Snowflake extra contains only the hosted client's notebook and
+          # connections.toml helpers; it must not pull in local execution code.
+          uv pip install -e 'packages/kumo-sdk[snowflake,test]'
+
+      - name: Run integration test suite
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          GLOG_logtostdout=1 uv run --no-project pytest -c packages/kumo-sdk/pyproject.toml -o log_cli=true --durations=10 --runintegration packages/kumo-sdk/test/
+        env:
+          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+
+      - name: Revoke owner-bound integration API key
+        if: always() && env.KUMO_STAGED_API_KEY_ID != ''
+        run: |
+          curl --fail --silent --show-error \
+            -X DELETE \
+            "http://localhost:10001/v0/api-keys/stage/${KUMO_STAGED_API_KEY_ID}"
+
+      - name: Show Kumo server logs
+        if: always()
+        run: |
+          mkdir -p logs
+          if ! panes=$(tmux -L devserver list-panes -a -F '#{pane_id}' 2>/dev/null); then
+            echo "No devserver panes available."
+            exit 0
+          fi
+          while IFS= read -r pane; do
+            tmux -L devserver capture-pane -pt "$pane" -S -1000000 > "logs/pane_${pane#%}.txt"
+          done <<< "$panes"
+
+      - name: Export Kumo server logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: devserver-logs-${{ github.workflow }}-${{ github.event.pull_request.number || 'master' }}-${{ startsWith(github.ref, 'refs/pull/') || github.run_number }}
+          path: logs
+          retention-days: 2
+          overwrite: true

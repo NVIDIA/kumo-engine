@@ -1,0 +1,494 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Auto UI client code gen using Orval
+
+on: # yamllint disable-line rule:truthy
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '3rdparty/BUILD'
+      - 'rest/app.py'
+      - 'rest/config/**'
+      - 'rest/main.py'
+      - 'rest/routers/**'
+      - 'rest/scripts/download_schema.py'
+      - 'rest/utils/routers.py'
+      - 'ui/src/gen/spec/**'
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}-${{ startsWith(github.ref, 'refs/pull/') || github.run_number }}
+  # Only cancel intermediate builds if on a PR:
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+env:
+  AWS_TEST_ROLE_ARN: arn:aws:iam::926922431314:role/gha-kumo-preprod-test-s3
+  GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+  GITHUB_REF: ${{secrets.GITHUB_REF}}
+  GITHUB_API_URL: ${{secrets.GITHUB_API_URL}}
+  GITHUB_REPOSITORY: ${{secrets.GITHUB_REPOSITORY}}
+  GITHUB_REPOSITORY_OWNER: ${{secrets.GITHUB_REPOSITORY_OWNER}}
+  GITHUB_RUN_ID: ${{secrets.GITHUB_RUN_ID}}
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  packages: read
+
+jobs:
+  check-openapi-changes:
+    environment: gha-kumo-workflow-tests
+    name: Check OpenAPI Changes
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      id-token: write # Required for configure-aws-credentials OIDC.
+      contents: read
+      pull-requests: write
+      issues: write
+      packages: read
+    outputs:
+      spec_changed: ${{steps.openapi-changes.outputs.changed}}
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          # Shallow checkout to avoid a full clone of git history
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          python-version: "3.14"
+          activate-environment: true
+
+      - name: Check for backend/API changes
+        id: backend-changes
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        with:
+          files: |
+            3rdparty/BUILD
+            rest/app.py
+            rest/config/**
+            rest/main.py
+            rest/routers/**
+            rest/scripts/download_schema.py
+            rest/utils/routers.py
+            ui/src/gen/spec/**
+
+      - name: Configure AWS credentials
+        if: steps.backend-changes.outputs.any_changed == 'true'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-west-2
+
+      - name: Set up backend packages
+        if: steps.backend-changes.outputs.any_changed == 'true'
+        uses: ./.github/actions/setup
+        with:
+          python-version: "3.14"
+          github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Download openapi.json files
+        if: steps.backend-changes.outputs.any_changed == 'true'
+        run: |
+          PYTHONPATH="$GITHUB_WORKSPACE" \
+            DEPLOY_STAGE=dev_local python -m rest.scripts.download_schema
+          jq -e '.paths | length > 0' ui/src/gen/spec/v0_openapi.json
+          jq -e '.paths | length > 0' ui/src/gen/spec/v1_openapi.json
+
+      - name: Set up Node.js
+        if: steps.backend-changes.outputs.any_changed == 'true'
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "22"
+
+      - name: Install UI dependencies
+        if: steps.backend-changes.outputs.any_changed == 'true'
+        run: |
+          cd ui
+          npm run install:catalog
+          npm ci --ignore-scripts
+
+      - name: Run linting and prettier
+        if: steps.backend-changes.outputs.any_changed == 'true'
+        run: |
+          cd ui
+          npm run lint-format-codegen --subdir=spec
+
+      - name: Check for Spec changes
+        if: steps.backend-changes.outputs.any_changed == 'true'
+        id: openapi-changes
+        run: |
+          if git diff --quiet --exit-code ui/src/gen/spec/; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post warning comment if changes detected
+        if: steps.backend-changes.outputs.any_changed == 'true' && steps.openapi-changes.outputs.changed == 'true'
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const warningMessage = `⚠️ **OpenAPI spec changes detected in this PR**
+
+            This means the UI client code needs to be regenerated.
+
+            To regenerate the UI client code in this PR, comment:
+            \`/trigger-ui-codegen\``;
+
+            // Find existing warning comment
+            const comments = await github.rest.issues.listComments({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+
+            const existingComment = comments.data.find(comment =>
+              comment.body.includes('⚠️ **OpenAPI spec changes detected in this PR**')
+            );
+
+            // Update existing comment or create new one
+            if (existingComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existingComment.id,
+                body: warningMessage
+              });
+            } else {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: warningMessage
+              });
+            }
+
+  trigger-codegen:
+    environment: gha-kumo-workflow-tests
+    name: Trigger UI Codegen
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # Required for configure-aws-credentials OIDC.
+      contents: write
+      pull-requests: write
+      issues: write
+      packages: read
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '/trigger-ui-codegen')
+    steps:
+      # Capture the PR HEAD SHA as the very first step to minimise the TOCTOU
+      # window between comment submission and checkout. All subsequent steps use
+      # this pinned SHA so that a race-condition push to the PR branch cannot
+      # silently change which code gets checked out and executed.
+      - name: Get PR details
+        id: pr-details
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            core.setOutput('ref', pr.data.head.ref);
+            core.setOutput('sha', pr.data.head.sha);
+
+      - name: Verify commenter has write access
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: perm } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: context.actor,
+            });
+            if (!['admin', 'write'].includes(perm.permission)) {
+              core.setFailed(`User ${context.actor} does not have write access (${perm.permission})`);
+            }
+
+      - name: Verify PR author has write access
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number
+            });
+            const prAuthor = pr.data.user.login;
+            const { data: perm } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: prAuthor,
+            });
+            if (!['admin', 'write'].includes(perm.permission)) {
+              core.setFailed(`PR author ${prAuthor} does not have write access (${perm.permission}). Refusing to execute untrusted code.`);
+            }
+
+      - name: Post starting comment
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'eyes'
+            });
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `🔄 **UI client code generation started**\n\nView progress: ${context.payload.repository.html_url}/actions/runs/${context.runId}`
+            });
+
+      - name: Checkout base branch (trusted local actions)
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+
+      - name: Set up Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          python-version: "3.14"
+          activate-environment: true
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-west-2
+
+      - name: Set up backend packages
+        uses: ./.github/actions/setup
+        with:
+          python-version: "3.14"
+          github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+          ref: ${{ steps.pr-details.outputs.sha }}
+
+      # Must run AFTER "Set up backend packages": that step's setup action
+      # re-checks-out the repo into the workspace root with clean=true, which
+      # deletes any untracked sibling dir (including pr-branch/). Checking out
+      # pr-branch here keeps it intact for the steps below.
+      - name: Checkout PR branch into subdirectory
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ steps.pr-details.outputs.sha }}
+          # Shallow checkout to avoid a full clone of git history
+          fetch-depth: 1
+          path: pr-branch
+          token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+
+      - name: Download openapi.json files
+        run: |
+          cd pr-branch
+          PYTHONPATH="$GITHUB_WORKSPACE/pr-branch" \
+            DEPLOY_STAGE=dev_local python -m rest.scripts.download_schema
+          jq -e '.paths | length > 0' ui/src/gen/spec/v0_openapi.json
+          jq -e '.paths | length > 0' ui/src/gen/spec/v1_openapi.json
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "22"
+
+      - name: Install UI dependencies
+        run: |
+          cd pr-branch/ui
+          npm run install:catalog
+          npm ci --ignore-scripts
+
+      - name: Run linting and prettier
+        run: |
+          cd pr-branch/ui
+          npm run lint-format-codegen --subdir=spec
+
+      - name: Check for Spec changes
+        id: openapi-changes
+        run: |
+          if git -C pr-branch diff --quiet --exit-code ui/src/gen/spec/; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate orval schema/types/api
+        if: steps.openapi-changes.outputs.changed == 'true'
+        run: |
+          cd pr-branch/ui
+          npx orval
+          npm run inject-zod-schemas
+          npm run lint-format-codegen
+
+      - name: Configure Git
+        if: steps.openapi-changes.outputs.changed == 'true'
+        run: |
+          git -C pr-branch config user.name "kumo-github-bot"
+          git -C pr-branch config user.email "github-actions@github.com"
+
+      - name: Revert/Remove unrelated changes
+        if: steps.openapi-changes.outputs.changed == 'true'
+        run: |
+          cd pr-branch
+          # Stash only ui/src/gen/ changes
+          git add ui/src/gen/
+          git stash push -m "Preserve ui/src/gen changes" ui/src/gen/
+
+          # Reset all other changes (both staged and unstaged)
+          git reset --hard HEAD
+
+          # Clean all untracked files and directories
+          git clean -fdx
+
+          # Restore the ui/src/gen/ changes
+          git stash pop
+
+      - name: Commit and push changes
+        if: steps.openapi-changes.outputs.changed == 'true'
+        id: commit-changes
+        run: |
+          cd pr-branch
+          git add ui/src/gen/
+          git commit -m "Regenerated UI client code based on OpenAPI spec changes"
+          git pull --rebase origin ${{ steps.pr-details.outputs.ref }}
+          git push origin HEAD:${{ steps.pr-details.outputs.ref }}
+
+  codegen:
+    environment: gha-kumo-workflow-tests
+    name: Manual Codegen (workflow_dispatch)
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # Required for configure-aws-credentials OIDC.
+      contents: write
+      pull-requests: write
+      packages: read
+    if: github.event_name == 'workflow_dispatch'
+    outputs:
+      spec_changed: ${{steps.openapi-changes.outputs.changed}}
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 40
+
+      - name: Set up Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          python-version: "3.14"
+          activate-environment: true
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-west-2
+
+      - name: Set up backend packages
+        uses: ./.github/actions/setup
+        with:
+          python-version: "3.14"
+          github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+
+      - name: Download openapi.json files
+        run: |
+          PYTHONPATH="$GITHUB_WORKSPACE" \
+            DEPLOY_STAGE=dev_local python -m rest.scripts.download_schema
+          jq -e '.paths | length > 0' ui/src/gen/spec/v0_openapi.json
+          jq -e '.paths | length > 0' ui/src/gen/spec/v1_openapi.json
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "22"
+
+      - name: Install UI dependencies
+        run: |
+          cd ui
+          npm run install:catalog
+          npm ci
+
+      - name: Run linting and prettier
+        run: |
+          cd ui
+          npm run lint-format-codegen --subdir=spec
+
+      - name: Check for Spec changes
+        id: openapi-changes
+        run: |
+          if git diff --quiet --exit-code ui/src/gen/; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate orval schema/types/api
+        if: steps.openapi-changes.outputs.changed == 'true'
+        run: |
+          cd ui
+          npx orval
+          npm run inject-zod-schemas
+          npm run lint-format-codegen
+
+      - name: Revert/Remove unrelated changes
+        if: steps.openapi-changes.outputs.changed == 'true'
+        run: |
+          # Stash only ui/src/gen/ changes
+          git add ui/src/gen/
+          git stash push -m "Preserve ui/src/gen changes" ui/src/gen/
+
+          # Reset all other changes (both staged and unstaged)
+          git reset --hard HEAD
+
+          # Clean all untracked files and directories
+          git clean -fdx
+
+          # Restore the ui/src/gen/ changes
+          git stash pop
+
+      - name: Configure Git
+        if: steps.openapi-changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+      - name: Create branch
+        if: steps.openapi-changes.outputs.changed == 'true'
+        run: |
+          BRANCH="openapi-changes-${{ github.run_id }}"
+          git checkout -b $BRANCH
+          echo "branch_name=$BRANCH" >> $GITHUB_ENV
+          git push origin $BRANCH
+
+      - name: Commit changes and Create Pull Request
+        if: steps.openapi-changes.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@c0f553fe549906ede9cf27b5156039d195d2ece0  # v8.1.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "Regenerated orval code based on OpenAPI spec files"
+          title: "`UI`: Regenerated orval code based on OpenAPI spec files"
+          body: |
+            This PR was automatically generated because changes were detected in:
+            `ui/src/gen/spec/`
+          branch: ${{ env.branch_name }}
+          base: master

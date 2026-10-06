@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# NetworkPolicy to simulate an air-gapped environment.
+# Blocks all egress EXCEPT:
+#   - Intra-cluster (10.0.0.0/8, 172.16.0.0/12)
+#   - DNS (kube-dns on port 53)
+#   - AWS VPC endpoints / ECR (443 to 169.254.169.254 metadata + VPC CIDR)
+#
+# Apply to a test namespace BEFORE deploying to verify no public registry pulls:
+#   kubectl apply -f network-policy-airgap.yaml -n <namespace>
+#
+# NOTE: This requires a CNI that supports NetworkPolicy (Calico, Cilium, etc.).
+# The default AWS VPC CNI does NOT enforce NetworkPolicy unless you enable
+# the network policy agent: https://docs.aws.amazon.com/eks/latest/userguide/cni-network-policy.html
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: airgap-simulation
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  # Allow DNS
+  - ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+  # Allow intra-cluster (pods, services, nodes).
+  # !! VERIFY YOUR CIDRs !! These cover RFC1918 10/8 + 172.16/12 only. Many EKS clusters
+  # use a pod/node CIDR OUTSIDE these (commonly 100.64.0.0/10 for VPC-CNI custom networking,
+  # or 192.168.0.0/16). If yours does and you apply this as-is, intra-cluster traffic AND the
+  # VPC-endpoint egress below (ECR/S3/STS) will be blocked — add your actual CIDR(s) here.
+  - to:
+    - ipBlock:
+        cidr: 10.0.0.0/8
+    - ipBlock:
+        cidr: 172.16.0.0/12
+  # Allow EC2 instance metadata (IMDS). NOTE: IRSA does NOT use IMDS — it authenticates via the
+  # projected ServiceAccount token to AWS STS over 443 (covered by the VPC-endpoint/intra-cluster
+  # rules), and EKS Pod Identity uses the agent at 169.254.170.23 (add it if you use Pod Identity).
+  # IMDS:80 is kept because the AWS SDK may still probe it for region/credential fallback.
+  - to:
+    - ipBlock:
+        cidr: 169.254.169.254/32
+    ports:
+    - port: 80
+      protocol: TCP
+  # Allow HTTPS to VPC endpoints (ECR, S3, STS, Secrets Manager)
+  # These use private IPs within the VPC CIDR, already covered by 10.0.0.0/8 above.
+  # If your VPC uses a different CIDR, adjust accordingly.

@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+##################################################################################
+#                                                                               #
+# Dockerfile to build local image for k8s train/predict worker that runs on
+# CPU machine.  Intended for setting up local docker env in development
+# and github test runner.
+#
+#
+##################################################################################
+
+# Pull "kumo-cpu:worker" image as base with kumo and dependencies installed.
+FROM --platform=linux/amd64 926922431314.dkr.ecr.us-west-2.amazonaws.com/kumo/kumo-cpu:worker-314
+
+ARG GID=999
+ARG GROUPNAME=kumouser
+ARG UID=999
+ARG USERNAME=kumouser
+
+ENV TORCH 2.12.0
+ENV CUDA cpu
+
+# AWS credentials (used for build-time S3 fetches, if any).
+# NOTE(trivy): build-arg secrets are weaker than secret mounts (can land in
+# image history/layers, e.g. via the git-config RUN); migration is a follow-up.
+#trivy:ignore:AVD-DS-0031
+ARG AWS_ACCESS_KEY_ID
+#trivy:ignore:AVD-DS-0031
+ARG AWS_SECRET_ACCESS_KEY
+ARG AWS_REGION=us-west-2
+
+# Github access build arg:
+# - when running on GitHub, provides access to private Kumo repositories
+#trivy:ignore:AVD-DS-0031
+ARG GITHUB_TOKEN
+RUN git config --global url."https://${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
+# - when running on devapp, use SSH key to access github instead of token
+ARG MOUNT_SSH_ARG
+
+USER ${USERNAME}
+
+RUN mkdir -p /home/${USERNAME}/src
+USER root
+RUN mkdir -p /opt/app
+RUN rm -rf /opt/app/*
+RUN mkdir /opt/app/bin
+RUN chown -R ${USERNAME}:${GROUPNAME} /opt/app
+USER ${USERNAME}
+
+COPY . /home/${USERNAME}/src/
+RUN ls -lrt /home/${USERNAME}/src/
+# AWS credentials might be located in ".aws/credentials" file
+USER root
+RUN [ -d /home/${USERNAME}/src/.aws ] && mv /home/${USERNAME}/src/.aws /home/${USERNAME}/.aws && chown -R ${USERNAME}:${GROUPNAME} /home/${USERNAME}/.aws
+USER ${USERNAME}
+COPY ./bin/ /opt/app/bin/
+USER root
+RUN chmod -R 755 /opt/app/bin/
+USER ${USERNAME}
+RUN ls -lrt /opt/app/bin/
+
+COPY busyloop.sh /opt/app/busyloop.sh
+
+# Build and package Kumo
+WORKDIR /home/${USERNAME}/src
+
+RUN python3 -m pip uninstall -y torch-geometric pyg-lib torch-scatter torch-sparse
+RUN mkdir -p -m 0700 ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
+RUN python3 -m pip install --no-deps -e packages/kumo-api -e packages/kumo-pql
+RUN --mount=type=ssh,uid=999 python3 -m pip install ".[full]" -f 3rdparty/kumo-wheels/
+RUN python3 -m pip uninstall databricks-connect -y
+RUN python3 -m pip cache purge
+
+CMD /opt/app/busyloop.sh
+
+# Health is owned by the local compose/CI harness; no Docker-level healthcheck.
+HEALTHCHECK NONE

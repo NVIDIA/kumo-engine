@@ -1,0 +1,130 @@
+#!/bin/bash -e
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+#
+# Download GloVe artifacts to a local directory. Three levels match
+# the three actual deployment shapes:
+#
+#   none   Skip entirely. Used by singlehost Docker images: the AMI host
+#          downloads glove files outside the Docker image and bind-mounts them
+#          into the container at /opt/app/artifacts/glove.
+#   basic  glove.6B/50 + its index (~150 MB). Default for k8s prod
+#          (SaaS, VPC). A model that is not baked is an error.
+#   all    Every supported (model, dim) tuple (~8 GB). For air-gapped
+#          deployments (SPCS), and for the singlehost AMI host-side
+#          download via GLOVE_DEST.
+#
+# Reused by both:
+#   - Docker image build (default DEST=/opt/app/artifacts/glove)
+#   - Singlehost AMI Packer build (GLOVE_DEST=/opt/kumo/glove)
+#
+# Idempotent: skips files already present at the destination.
+#
+# Each model needs a per-model index parquet and one embedding npy per dim.
+
+LEVEL="${BAKE_GLOVE_LEVEL:-basic}"
+DEST="${GLOVE_DEST:-/opt/app/artifacts/glove}"
+HTTP_PREFIX="${GLOVE_HTTP_PREFIX:-https://kumo-public-datasets.s3.amazonaws.com/nlp/glove}"
+S3_PREFIX="${GLOVE_S3_PREFIX:-s3://kumo-public-datasets/nlp/glove}"
+VERIFY_ONLY="${BAKE_GLOVE_VERIFY_ONLY:-false}"
+
+if [ "$VERIFY_ONLY" != true ]; then
+    mkdir -p "$DEST"
+fi
+
+fetch() {
+    if [ "$VERIFY_ONLY" = true ]; then
+        test -s "$DEST/$1" || {
+            echo "missing or empty baked GloVe artifact: $DEST/$1" >&2
+            exit 1
+        }
+        return
+    fi
+    if [ -f "$DEST/$1" ]; then
+        echo "  skip $1 (already present)"
+        return
+    fi
+    tmp="${DEST}/.$1.tmp"
+    rm -f "$tmp"
+    # kumo-public-datasets is private, so every fetch must be SIGNED with the
+    # ambient AWS credentials. Two signed paths cover the two build contexts:
+    #   - AMI Packer host: aws CLI is present -> aws s3 cp.
+    #   - Backend Docker image: no aws CLI by design, but boto3 is a core dep
+    #     and the build RUN receives credentials as scoped build-args -> a
+    #     small boto3 download.
+    # Unsigned HTTP would just 403 against the private bucket, so there is no
+    # silent fallback: if neither signer is available, fail loudly.
+    if command -v aws >/dev/null 2>&1; then
+        aws s3 cp "${S3_PREFIX}/$1" "$tmp" --no-progress
+    elif command -v python3 >/dev/null 2>&1 \
+            && python3 -c "import boto3" >/dev/null 2>&1; then
+        S3_URI="${S3_PREFIX}/$1" TMP_PATH="$tmp" python3 - <<'PY'
+import os
+import sys
+import boto3
+
+uri = os.environ["S3_URI"]
+assert uri.startswith("s3://"), uri
+bucket, _, key = uri[len("s3://"):].partition("/")
+boto3.client("s3").download_file(bucket, key, os.environ["TMP_PATH"])
+sys.stdout.write(f"  downloaded {key}\n")
+PY
+    else
+        echo "install_glove_files: no signed fetch available — need the aws CLI" \
+             "(AMI host) or python3 + boto3 with AWS credentials (Docker build)." >&2
+        exit 1
+    fi
+    mv "$tmp" "${DEST}/$1"
+}
+
+case "$LEVEL" in
+    none)
+        echo "install_glove_files: BAKE_GLOVE_LEVEL=none — skipping bake."
+        exit 0
+        ;;
+    basic|all)
+        echo "install_glove_files: BAKE_GLOVE_LEVEL=${LEVEL}, DEST=${DEST}"
+        ;;
+    *)
+        echo "install_glove_files: invalid BAKE_GLOVE_LEVEL='${LEVEL}' (expected: basic|all|none)" >&2
+        exit 1
+        ;;
+esac
+
+# ---------------------------------------------------------------------------
+# basic — glove.6B/50 (API default + SPCS hard limit) and its indexes.
+# ---------------------------------------------------------------------------
+
+fetch glove_6B_index.parquet
+fetch glove_6B_50d_emb.npy
+
+if [ "$LEVEL" = "basic" ]; then
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# all — every remaining (model, dim) tuple. Required for air-gapped
+# deployments only (and singlehost AMI host download).
+# ---------------------------------------------------------------------------
+
+# glove.6B remaining dims
+fetch glove_6B_100d_emb.npy
+fetch glove_6B_200d_emb.npy
+fetch glove_6B_300d_emb.npy
+
+# glove.42B (300d only)
+fetch glove_42B_index.parquet
+fetch glove_42B_300d_emb.npy
+
+# glove.840B (300d only)
+fetch glove_840B_index.parquet
+fetch glove_840B_300d_emb.npy
+
+# glove_twitter.27B (25/50/100/200d)
+fetch glove_twitter_27B_index.parquet
+fetch glove_twitter_27B_25d_emb.npy
+fetch glove_twitter_27B_50d_emb.npy
+fetch glove_twitter_27B_100d_emb.npy
+fetch glove_twitter_27B_200d_emb.npy

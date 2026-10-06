@@ -1,0 +1,1 @@
+../../.agents/specialists/kumo-gitops-engineer.md

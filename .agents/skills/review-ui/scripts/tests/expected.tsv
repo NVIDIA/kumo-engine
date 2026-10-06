@@ -1,0 +1,18 @@
+console-log	ui/src/components/Foo.tsx	2	console.log('debug this');
+deep-import	ui/src/components/Foo.tsx	4	import { something } from "../../../utils/deep";
+xss	ui/src/components/Foo.tsx	5	<div dangerouslySetInnerHTML={{ __html: data }} />;
+direct-storage	ui/src/components/Foo.tsx	6	localStorage.setItem('key', 'value');
+axios-bypass	ui/src/components/Foo.tsx	7	import axios from 'axios';
+process-env	ui/src/components/Foo.tsx	8	process.env.REACT_APP_BASE_URL;
+hardcoded-route	ui/src/components/Foo.tsx	9	navigate("/some/path");
+hardcoded-route-tpl	ui/src/components/Foo.tsx	10	navigate(`/template/path`);
+hardcoded-route	ui/src/components/Foo.tsx	11	<Link to="/hardcoded">Click</Link>;
+form-library	ui/src/components/Foo.tsx	12	import { useForm } from "react-hook-form";
+hardcoded-querykey	ui/src/components/Foo.tsx	13	const q = useQuery({ queryKey: ['hardcoded-key'], queryFn: fn });
+raw-queryclient	ui/src/components/__tests__/Foo.test.tsx	2	const qc = new QueryClient();
+mock-store	ui/src/components/__tests__/Foo.test.tsx	3	vi.mock("stores/userStore", () => ({}));
+mock-axios	ui/src/components/__tests__/Foo.test.tsx	4	vi.mock("axios", () => ({}));
+mock-router	ui/src/components/__tests__/Foo.test.tsx	5	vi.mock("react-router", () => ({}));
+design-token	ui/src/components/Styled.tsx	1	<div className="text-slate-500 border-gray-300" />;
+arbitrary-tailwind	ui/src/components/Styled.tsx	2	<span className="w-[12px] h-[44px]" />;
+arbitrary-tailwind	ui/src/components/Styled.tsx	3	<p className="text-[#1a1a1a]" />;

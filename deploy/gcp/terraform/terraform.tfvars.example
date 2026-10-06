@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Copy to terraform.tfvars and fill in your values.
+
+project         = "my-gcp-project"
+deployment_name = "acme"
+image_name      = "kumo-singlehost-861aa1b8" # find with: gcloud compute images list --project=<project> --filter="family=kumo-singlehost"
+
+# Optional overrides (defaults shown):
+# zone              = "us-west1-b"
+# machine_type      = "n1-standard-32"
+# accelerator_type  = "nvidia-tesla-t4"    # nvidia-l4 for g2, nvidia-tesla-a100 for a2
+# accelerator_count = 1
+# boot_disk_size_gb = 100
+# boot_disk_type    = "pd-ssd"
+# local_ssd_count   = 1
+# local_ssd_interface = "NVME"
+
+# Kumo config overrides (leave unset to use image defaults):
+# dataplane_root  = "gs://my-bucket/kumo/dataplane"
+# enable_tls      = "true"
+
+# Networking:
+# subnet  = "projects/PROJECT/regions/REGION/subnetworks/NAME"
+# network = "default"   # VPC network name when subnet is not set
+
+# Public IP (simplest setup — skips Private Google Access requirement):
+# enable_public_ip = true
+
+# Private Google Access — two ways:
+#
+# A) Let Terraform create a subnet with PGA pre-enabled (fresh deployments):
+# create_subnet                = true
+# subnet_cidr                  = "10.0.0.0/24"
+# enable_private_google_access = true
+#
+# B) Bring your own subnet — enable PGA on it before applying, then pass it:
+# subnet = "projects/PROJECT/regions/REGION/subnetworks/NAME"
+# (PGA must already be enabled on that subnet)
+
+# IAP SSH firewall rule (required for gcloud compute ssh --tunnel-through-iap):
+# create_iap_firewall_rule = true   # default true; set false if rule already exists
+
+# Persistent data disk (useful when dataplane_root is a local path):
+# data_disk_size_gb = 200
+# data_disk_type    = "pd-ssd"
+
+# Bring your own service account (leave unset to auto-create):
+# service_account_email = "my-sa@my-project.iam.gserviceaccount.com"

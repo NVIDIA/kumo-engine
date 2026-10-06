@@ -1,0 +1,178 @@
+{{- $jobName := include "temporal.componentname" (list $ (printf "schema-%s-%d" $.Chart.Version $.Release.Revision | replace "." "-" | replace "+" "-")) }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $jobName }}
+  labels:
+    {{- include "temporal.resourceLabels" (list $ "database" "") | nindent 4 }}
+  {{- if or $.Values.schema.useHelmHooks $.Values.schema.jobAnnotations }}
+  annotations:
+    {{- if $.Values.schema.useHelmHooks }}
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+    {{- end }}
+    {{- with $.Values.schema.jobAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  backoffLimit: {{ $.Values.schema.backoffLimit }}
+  ttlSecondsAfterFinished: {{ $.Values.schema.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      name: {{ $jobName }}
+      labels:
+        {{- include "temporal.resourceLabels" (list $ "database" "") | nindent 8 }}
+        {{- with $.Values.schema.podLabels }}
+          {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with $.Values.schema.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{ include "temporal.serviceAccount" $ }}
+      restartPolicy: OnFailure
+      initContainers:
+        {{- with $.Values.admintools.additionalInitContainers }}
+          {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- range $_, $store := (include "temporal.persistence.eachStore" $ | fromYaml) }}
+          {{- if $store.config.createDatabase }}
+        - name: create-{{ $store.name }}-store
+          image: "{{ $.Values.admintools.image.repository }}:{{ $.Values.admintools.image.tag }}"
+          imagePullPolicy: {{ $.Values.admintools.image.pullPolicy }}
+            {{- if eq $store.driver "cassandra" }}
+          command: ['temporal-cassandra-tool', 'create', '-k', '{{ $store.config.keyspace }}', '--replication-factor', '{{ $store.config.replicationFactor | default 1 }}'{{- if $store.config.datacenter }}, '--datacenter', '{{ $store.config.datacenter }}'{{- end }}]
+            {{- else if eq $store.driver "sql" }}
+          command: ['temporal-sql-tool', 'create-database']
+            {{- else -}}
+              {{- fail (printf "createDatabase is not supported for %s store" $store.driver) -}}
+            {{- end }}
+          env:
+            {{- include "temporal.admintools-env" (list $ $store) | nindent 12 }}
+            {{- with $.Values.admintools.additionalEnv }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- if or $.Values.admintools.additionalEnvSecretName $.Values.admintools.additionalEnvConfigMapName }}
+          envFrom:
+              {{- with $.Values.admintools.additionalEnvSecretName }}
+            - secretRef:
+                name: {{ . }}
+              {{- end }}
+              {{- with $.Values.admintools.additionalEnvConfigMapName }}
+            - configMapRef:
+                name: {{ . }}
+              {{- end }}
+            {{- end }}
+            {{- with $.Values.admintools.additionalVolumeMounts }}
+          volumeMounts:
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with $.Values.schema.resources }}
+          resources:
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with $.Values.schema.containerSecurityContext }}
+          securityContext:
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          {{- if $store.config.manageSchema }}
+            {{- $schema := include "temporal.persistence.schema" $store }}
+        - name: manage-schema-{{ $store.name }}-store
+          image: "{{ $.Values.admintools.image.repository }}:{{ $.Values.admintools.image.tag }}"
+          imagePullPolicy: {{ $.Values.admintools.image.pullPolicy }}
+          command: ['sh', '-c']
+          args:
+            {{- if eq $store.driver "cassandra" }}
+            - temporal-cassandra-tool setup-schema -v 0.0 && temporal-cassandra-tool update-schema --schema-dir /etc/temporal/schema/cassandra/{{ $schema }}/versioned
+            {{- else if eq $store.driver "sql" }}
+              {{- if eq $store.config.pluginName "mysql8" }}
+            - temporal-sql-tool setup-schema -v 0.0 && temporal-sql-tool update-schema --schema-dir /etc/temporal/schema/mysql/v8/{{ $schema }}/versioned
+              {{- else if or (eq $store.config.pluginName "postgres12") (eq $store.config.pluginName "postgres12_pgx") }}
+            - temporal-sql-tool setup-schema -v 0.0 && temporal-sql-tool update-schema --schema-dir /etc/temporal/schema/postgresql/v12/{{ $schema }}/versioned
+              {{- else -}}
+                {{- fail (printf "manageSchema is not supported for %s SQL database plugin" $store.config.pluginName) -}}
+              {{- end }}
+            {{- else if eq $store.driver "elasticsearch" }}
+            - temporal-elasticsearch-tool update-schema --index "" && temporal-elasticsearch-tool create-index && temporal-elasticsearch-tool update-schema --index "$ES_VISIBILITY_INDEX"
+            {{- end }}
+          env:
+            {{- include "temporal.admintools-env" (list $ $store) | nindent 12 }}
+            {{- with $.Values.admintools.additionalEnv }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- if or $.Values.admintools.additionalEnvSecretName $.Values.admintools.additionalEnvConfigMapName }}
+          envFrom:
+              {{- with $.Values.admintools.additionalEnvSecretName }}
+            - secretRef:
+                name: {{ . }}
+              {{- end }}
+              {{- with $.Values.admintools.additionalEnvConfigMapName }}
+            - configMapRef:
+                name: {{ . }}
+              {{- end }}
+            {{- end }}
+          volumeMounts:
+            {{- with $.Values.admintools.additionalVolumeMounts }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- if $.Values.shims.elasticsearchTool }}
+            - name: shims
+              mountPath: /usr/local/sbin/temporal-elasticsearch-tool
+              subPath: temporal-elasticsearch-tool
+            {{- end }}
+            {{- with $.Values.schema.resources }}
+          resources:
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with $.Values.schema.containerSecurityContext }}
+          securityContext:
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+        {{- end }}
+
+      containers:
+        - name: done
+          image: "{{ $.Values.admintools.image.repository }}:{{ $.Values.admintools.image.tag }}"
+          imagePullPolicy: {{ $.Values.admintools.image.pullPolicy }}
+          command: ['sh', '-c', 'echo "Store setup completed"']
+            {{- with $.Values.schema.resources }}
+          resources:
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- with $.Values.schema.containerSecurityContext }}
+          securityContext:
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+      {{- with $.Values.schema.securityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.admintools.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.admintools.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if or $.Values.admintools.additionalVolumes $.Values.shims.elasticsearchTool }}
+      volumes:
+        {{- with $.Values.admintools.additionalVolumes }}
+          {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if $.Values.shims.elasticsearchTool }}
+        - name: shims
+          configMap:
+            name: "{{ include "temporal.fullname" $ }}-shims"
+            defaultMode: 0555
+        {{- end }}
+      {{- end }}

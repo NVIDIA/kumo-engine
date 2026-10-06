@@ -1,0 +1,259 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: (Manual) Kumo UI build
+
+on: # yamllint disable-line rule:truthy
+  workflow_call:
+    inputs:
+      kumo_repo_ref:
+        description: "Your development branch name"
+        required: true
+        default: "development"
+        type: string
+      snowflake_image:
+        description: "Build Kumo Snowflake image?"
+        required: true
+        default: false
+        type: boolean
+      # allow for specifying the Snowflake image repo as input
+      # We currently assume only the base url changes but rest of the path
+      # and credentials are static.
+      snowflake_image_repo:
+        description: "Base URL for the Snowflake image repo to use"
+        required: false
+        default: "lfwgwbp-kumo-snowservices.registry.snowflakecomputing.com"
+        type: string
+      snowflake_registry_user:
+        description: 'Snowflake registry user to use'
+        required: false
+        default: 'kumo_snowservices'
+        type: string
+      snowflake_registry_pat_secret:
+        description: 'Secret name for the Snowflake registry PAT'
+        required: false
+        default: 'SNOWFLAKE_REGISTRY_PAT'
+        type: string
+      databricks_image:
+        description: "Build Kumo Databricks image?"
+        required: true
+        default: false
+        type: boolean
+      image_tag_suffix:
+        description: "Appended to the pushed tag only, never to the baked
+          version. The kumo3 orchestrator pushes <ref>_tmp and promotes to <ref>
+          once every image in the set has built."
+        required: false
+        default: ''
+        type: string
+    outputs:
+      build_success:
+        value: ${{ jobs.build.outputs.build_success }}
+  workflow_dispatch:
+    inputs:
+      kumo_repo_ref:
+        description: "Your development branch name"
+        required: true
+        default: "development"
+      snowflake_image:
+        description: "Build Kumo Snowflake image?"
+        required: true
+        default: false
+        type: boolean
+      # allow for specifying the Snowflake image repo as input
+      # We currently assume only the base url changes but rest of the path
+      # and credentials are static.
+      snowflake_image_repo:
+        description: "Base URL for the Snowflake image repo to use"
+        required: false
+        default: "lfwgwbp-kumo-snowservices.registry.snowflakecomputing.com"
+        type: string
+      snowflake_registry_user:
+        description: 'Snowflake registry user to use'
+        required: false
+        default: 'kumo_snowservices'
+        type: string
+      snowflake_registry_pat_secret:
+        description: 'Secret name for the Snowflake registry PAT'
+        required: false
+        default: 'SNOWFLAKE_REGISTRY_PAT'
+        type: string
+      databricks_image:
+        description: "Build Kumo Databricks image?"
+        required: true
+        default: false
+        type: boolean
+      image_tag_suffix:
+        description: "Appended to the pushed tag only, never to the baked version"
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+  packages: read
+  pull-requests: write
+
+# Keyed on everything that selects the pushed tag, so runs writing different
+# tags or registries stay parallel. cancel-in-progress is false: a queued build
+# waits rather than killing an in-flight push.
+concurrency:
+  group: kumo-ui-image-${{ inputs.kumo_repo_ref }}${{ inputs.image_tag_suffix }}-${{ inputs.databricks_image }}-${{ inputs.snowflake_image }}-${{ inputs.snowflake_image_repo }}
+  cancel-in-progress: false
+
+env:
+  ECR_IMAGE_REGISTRY: 926922431314.dkr.ecr.us-west-2.amazonaws.com
+  # Snowflake registry
+  SNOWFLAKE_REGISTRY: ${{ inputs.snowflake_image_repo }}
+  SNOWFLAKE_REGISTRY_USER: ${{ inputs.snowflake_registry_user }}
+  SNOWFLAKE_REGISTRY_PAT: ${{ secrets.SNOWFLAKE_REGISTRY_PAT }}
+
+jobs:
+  build:
+    environment: gha-kumo-ui-image-publish
+    name: Build Kumo UI docker image
+    runs-on: ubuntu-22.04
+    outputs:
+      build_success: ${{ steps.set-output.outputs.success }}
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.kumo_repo_ref }}
+
+      - name: Clone Kumo repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          repository: kumo-ai/kumo
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: docker/kumo
+          ref: ${{ inputs.kumo_repo_ref }}
+
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be #  v1.3.1
+
+      - name: Install fuse-overlayfs (upstream)
+        run: |
+          sudo apt -y update
+          sudo apt-get install -y fuse-overlayfs
+          # apt's 1.7.1 (2021) has rmdir/ENOTEMPTY races on heavy pip uninstalls; pin upstream v1.16.
+          sudo curl -fL \
+            "https://github.com/containers/fuse-overlayfs/releases/download/v1.16/fuse-overlayfs-x86_64" \
+            -o /usr/bin/fuse-overlayfs
+          sudo chmod +x /usr/bin/fuse-overlayfs
+          fuse-overlayfs --version
+          mkdir -vp ~/.config/containers
+          printf "[storage]\ndriver=\"overlay\"\n[storage.options]\nmount_program=\"/usr/bin/fuse-overlayfs\"\n" > ~/.config/containers/storage.conf
+          cat ~/.config/containers/storage.conf
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-ui-image-publish
+          aws-region: us-west-2
+
+      - name: Log in to AWS ECR
+        run: |
+          aws ecr get-login-password --region us-west-2 |
+            podman login \
+              --username AWS \
+              --password-stdin "${ECR_IMAGE_REGISTRY}"
+
+      - name: Log in to Snowflake Registry
+        if: ${{ inputs.snowflake_image }}
+        uses: redhat-actions/podman-login@4934294ad0449894bcd1e9f191899d7292469603 #  v1.7v1
+        with:
+          username: ${{ env.SNOWFLAKE_REGISTRY_USER }}
+          password: ${{ env.SNOWFLAKE_REGISTRY_PAT }}
+          registry: ${{ env.SNOWFLAKE_REGISTRY }}
+
+      # Direct buildah-build calls: the Wandalen/wretry.action wrapper is
+      # blocked by the org actions allowlist (its internal
+      # @v3.8.0_js_action ref is not allowlisted).
+      - name: Build Image
+        id: build-image
+        if: ${{ ! inputs.databricks_image }}
+        uses: redhat-actions/buildah-build@7a95fa7ee0f02d552a32753e7414641a04307056 # v2
+        with:
+          image: kumo-ui
+          tags: ${{ inputs.kumo_repo_ref }}${{ inputs.image_tag_suffix }}
+          context: ./docker
+          containerfiles: |
+            ./docker/Dockerfile.ui
+          extra-args: |
+            --ulimit nofile=65535:65535
+
+      # wretry used to export the nested action's inputs as INPUT_* env vars;
+      # later steps rely on them.
+      - name: Export Build Image env
+        if: ${{ ! inputs.databricks_image }}
+        run: |
+          echo "INPUT_IMAGE=kumo-ui" >> "$GITHUB_ENV"
+          echo "INPUT_TAGS=${{ inputs.kumo_repo_ref }}${{ inputs.image_tag_suffix }}" >> "$GITHUB_ENV"
+
+      - name: Build Databricks Image
+        if: ${{ inputs.databricks_image }}
+        id: build-image-databricks
+        uses: redhat-actions/buildah-build@7a95fa7ee0f02d552a32753e7414641a04307056 # v2
+        with:
+          image: kumo-ui
+          tags: ${{ inputs.kumo_repo_ref }}_databricks${{ inputs.image_tag_suffix }}
+          context: ./docker
+          containerfiles: |
+            ./docker/Dockerfile.ui
+          extra-args: |
+            --ulimit nofile=65535:65535
+
+      - name: Export Databricks Build Image env
+        if: ${{ inputs.databricks_image }}
+        run: |
+          echo "INPUT_IMAGE=kumo-ui" >> "$GITHUB_ENV"
+          echo "INPUT_TAGS=${{ inputs.kumo_repo_ref }}_databricks${{ inputs.image_tag_suffix }}" >> "$GITHUB_ENV"
+
+      - name: Check Disk Space and inodes
+        id: check-disk-space
+        if: ${{ always() }}
+        run: |
+          df -h
+          df -i
+
+      - name: Push To AWS ECR
+        if: ${{ ! inputs.snowflake_image }}
+        id: push-to-ecr
+        uses: redhat-actions/push-to-registry@5ed88d269cf581ea9ef6dd6806d01562096bee9c #  v2.8
+        with:
+          image: ${{ env.INPUT_IMAGE }} # env var set by previous Build Image step
+          tags: ${{ env.INPUT_TAGS }} # env var set by previous Build Image step
+          registry: ${{ env.ECR_IMAGE_REGISTRY }}/kumo
+
+      - name: Push To Snowflake Registry
+        id: push-to-snowflake
+        if: ${{ inputs.snowflake_image }}
+        uses: redhat-actions/push-to-registry@5ed88d269cf581ea9ef6dd6806d01562096bee9c   #  v2.8
+        with:
+          # image and tags set by previous Build Image step
+          image: ${{ env.INPUT_IMAGE }}
+          tags: ${{ env.INPUT_TAGS }}
+          registry: ${{ env.SNOWFLAKE_REGISTRY }}/kumo_app_db/image_repo/kumo_repo
+
+      - name: Print Image Url
+        run: |
+          if ${{ ! inputs.snowflake_image }}; then echo "Image pushed to AWS ECR: ${{ steps.push-to-ecr.outputs.registry-paths }}"; fi
+          if ${{ inputs.snowflake_image }}; then echo "Image pushed to Snowflake: ${{ steps.push-to-snowflake.outputs.registry-paths }}"; fi
+
+      - name: Set output
+        if: ${{ success() }}
+        id: set-output
+        run: echo "success=true" >> $GITHUB_OUTPUT
+
+  post-comment-failure:
+    needs: build
+    if: ${{ failure() || cancelled() || needs.build.outputs.build_success != 'true' }}
+    uses: ./.github/workflows/_post_comment_image_build.yml
+    with:
+      image_type: "ui"
+      build_failure: true
+    secrets: inherit

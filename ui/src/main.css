@@ -1,0 +1,139 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+ * All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+@source "./src/**/*.tsx";
+@source "./src/**/*.ts";
+
+@media screen and (max-width: 1280px) {
+    html {
+        width: 1280px;
+        overflow: auto !important;
+    }
+
+    /*
+     * The login screen is fully responsive (stacks below 1024px), so it must
+     * not be forced onto the fixed desktop canvas the rest of the app uses.
+     */
+    html:has([data-login-screen]) {
+        width: auto;
+    }
+}
+
+/*
+ * Login screen card — scoped tokens, intentionally NOT part of the shared
+ * design tokens. The border/shadow are bespoke to the login flow's floating
+ * card on very large monitors; do not reuse these elsewhere.
+ */
+:root {
+    --login-card-border: #e5e7eb;
+    --login-card-shadow:
+        0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.08);
+}
+
+/*
+ * Above 1800px (large external monitors) the login card floats centered on a
+ * gray background, capped at 1440x900 with border + shadow. Below 1800px the
+ * layout is full-bleed (see TwoColumnLoginLayout.tsx for the breakpoints).
+ * Kept here rather than as arbitrary Tailwind values so the bespoke card
+ * dimensions stay next to their login-scoped tokens.
+ */
+@media (min-width: 1800px) {
+    [data-login-screen] {
+        background-color: var(--surface-secondary);
+    }
+
+    [data-login-card] {
+        height: 900px;
+        min-height: 0;
+        max-width: 1440px;
+        overflow: hidden;
+        border-radius: 12px;
+        border: 1px solid var(--login-card-border);
+        box-shadow: var(--login-card-shadow);
+    }
+}
+
+/*
+ * Form layout tokens — kumo-specific, not in the shared catalog.
+ * --form-label-col: width of the label column in two-column form grids.
+ * --form-description-max-h: max height of scrollable description textareas.
+ * Used in AddIdentity and ResourceSlugField; reuse for any form with the same layout.
+ */
+:root {
+    --form-label-col: 7.5rem;
+    --form-description-max-h: 4.75rem;
+}
+
+/*
+ * Typography — NVIDIA Kaizen design system.
+ * Font sources are wired up in index.html: NVIDIA Sans (proprietary) loads from
+ * NVIDIA's public web-assets CDN — the real font, no files committed — and
+ * falls back to the metric-matched "NVIDIA Sans Fallback" if the CDN is
+ * unreachable (air-gapped). JetBrains Mono (open, SIL OFL 1.1) is embedded in
+ * /public/fonts; its @font-face + the fallback faces live in /public/fonts.css.
+ *
+ * These tokens point app text AND catalog components (Button, Card, etc.) at
+ * those families. main.css is imported AFTER the catalog stylesheet, so this
+ * override wins over the older catalog's Inter-based --font-sans.
+ * Values match @kui/foundations-css exactly.
+ */
+:root {
+    /*
+     * The (older) catalog binds everything to Inter via three tokens:
+     *   --font-inter -> "Inter",  --font-sans -> var(--font-inter),
+     *   --font-display -> "Inter". Overriding all three (sans tokens chained to
+     * NVIDIA Sans, plus --font-mono -> JetBrains Mono) flips the whole UI.
+     */
+    --font-inter:
+        "NVIDIA Sans", "NVIDIA Sans Fallback", ui-sans-serif, system-ui,
+        sans-serif;
+    --font-sans: var(--font-inter);
+    --font-display: var(--font-inter);
+    --font-mono:
+        "JetBrains Mono", "JetBrains Mono Fallback", ui-monospace, monospace;
+}
+
+/*
+ * The (older) catalog ships a Tailwind preflight reset that hard-codes
+ * `font-family: "Inter"` on the universal (*) selector, which sets the font
+ * on every element directly (so they don't inherit from body). We mirror that
+ * reset with the Kaizen sans token so the whole tree picks up NVIDIA Sans.
+ * Element selectors below (body/code) still win for their specific cases.
+ */
+*,
+::after,
+::before,
+::backdrop,
+::file-selector-button {
+    font-family: var(--font-sans);
+}
+
+body {
+    height: 100%;
+    margin: 0;
+    font-size: 14px;
+    line-height: 18px;
+    font-family: var(--font-sans);
+}
+
+code,
+pre,
+kbd,
+samp {
+    font-size: 14px;
+    line-height: 18px;
+    font-family: var(--font-mono);
+}
+
+[data-slot="dialog-overlay"],
+[data-slot="sheet-overlay"] {
+    background-color: #000000b2;
+}
+
+body:has([data-slot="dialog-content"]) [data-slot="sheet-overlay"] {
+    opacity: 0;
+    pointer-events: none;
+}

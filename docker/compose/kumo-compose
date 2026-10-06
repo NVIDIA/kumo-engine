@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+set -euo pipefail
+
+COMPOSE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$COMPOSE_DIR"
+
+ENV_FILE="${KUMO_COMPOSE_ENV_FILE:-$COMPOSE_DIR/.env}"
+if [[ ! -f "$ENV_FILE" ]]; then
+    echo "ERROR: $ENV_FILE does not exist." >&2
+    echo "Copy an environment template to .env and replace its placeholders first." >&2
+    exit 1
+fi
+
+if grep -Eq '^[^#=]+=.*REPLACE_' "$ENV_FILE"; then
+    echo "ERROR: $ENV_FILE still contains one or more REPLACE_* placeholders." >&2
+    exit 1
+fi
+
+if ! docker compose version >/dev/null 2>&1; then
+    echo "ERROR: Docker Compose v2 is required (the 'docker compose' command)." >&2
+    exit 1
+fi
+
+env_value() {
+    local key="$1"
+    local value
+    value="$(grep -E "^${key}=" "$ENV_FILE" 2>/dev/null \
+        | tail -1 | cut -d= -f2- || true)"
+    printf '%s' "${value%$'\r'}"
+}
+
+gpu_available() {
+    command -v nvidia-smi >/dev/null 2>&1 \
+        && nvidia-smi >/dev/null 2>&1 \
+        && docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"nvidia"'
+}
+
+backend_variant="${KUMO_BACKEND_VARIANT:-$(env_value KUMO_BACKEND_VARIANT)}"
+backend_variant="${backend_variant:-auto}"
+case "$backend_variant" in
+    auto)
+        if gpu_available; then
+            backend_variant=gpu
+        else
+            backend_variant=cpu
+        fi
+        ;;
+    gpu)
+        if ! gpu_available; then
+            echo "ERROR: GPU mode was requested, but NVIDIA GPU support is not available to Docker." >&2
+            exit 1
+        fi
+        ;;
+    cpu)
+        ;;
+    *)
+        echo "ERROR: KUMO_BACKEND_VARIANT must be auto, cpu, or gpu; got '$backend_variant'." >&2
+        exit 1
+        ;;
+esac
+
+postgres_mode="${KUMO_POSTGRES_MODE:-$(env_value KUMO_POSTGRES_MODE)}"
+postgres_mode="${postgres_mode:-bundled}"
+case "$postgres_mode" in
+    bundled|external) ;;
+    *)
+        echo "ERROR: KUMO_POSTGRES_MODE must be bundled or external; got '$postgres_mode'." >&2
+        exit 1
+        ;;
+esac
+
+compose_args=(
+    --env-file "$ENV_FILE"
+    -f docker-compose.singlehost.yml
+)
+if [[ "$postgres_mode" == "bundled" ]]; then
+    compose_args+=(-f docker-compose.singlehost.postgres.yml)
+fi
+if [[ -f docker-compose.production-local.override.yml ]]; then
+    compose_args+=(-f docker-compose.production-local.override.yml)
+fi
+if [[ "$backend_variant" == "gpu" ]]; then
+    compose_args+=(-f docker-compose.singlehost.gpu.yml)
+    # Default: one GPU worker slot per GPU.
+    if [[ -z "${ML_MAX_GPU_WORKER_SLOTS:-}" \
+            && -z "$(env_value ML_MAX_GPU_WORKER_SLOTS)" ]]; then
+        gpu_slots="$(nvidia-smi -L 2>/dev/null | grep -c '^GPU ' || true)"
+        [[ "$gpu_slots" -ge 1 ]] || gpu_slots=1
+        export ML_MAX_GPU_WORKER_SLOTS="$gpu_slots"
+    fi
+fi
+
+echo "==> Backend mode: $backend_variant" >&2
+exec docker compose "${compose_args[@]}" "$@"

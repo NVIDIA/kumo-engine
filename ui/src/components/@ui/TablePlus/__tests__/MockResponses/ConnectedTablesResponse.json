@@ -1,0 +1,416 @@
+[
+    {
+        "id": "49c337d67d34e62b5b526015e1899a86",
+        "name_alias": "customers_hnm",
+        "table": {
+            "cols": [
+                {
+                    "name": "customer_id",
+                    "stype": "ID",
+                    "dtype": "string",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "FN",
+                    "stype": "numerical",
+                    "dtype": "float64",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "Active",
+                    "stype": "numerical",
+                    "dtype": "float64",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "club_member_status",
+                    "stype": "categorical",
+                    "dtype": "string",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "fashion_news_frequency",
+                    "stype": "categorical",
+                    "dtype": "string",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "age",
+                    "stype": "numerical",
+                    "dtype": "float64",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "postal_code",
+                    "stype": "ID",
+                    "dtype": "string",
+                    "timestamp_format": null
+                }
+            ],
+            "source_table": {
+                "s3_path": "s3://kumo-public-datasets/momentic-downsampled-parquet/hnm_downsampled/customers.parquet",
+                "connector_id": "HNM_Downsampled_Data",
+                "source_table_name": "customers",
+                "file_type": null,
+                "data_source_type": "S3"
+            },
+            "pkey": "customer_id",
+            "time_col": null,
+            "end_time_col": null
+        },
+        "pkey": "customer_id",
+        "timeCol": null,
+        "endTimeCol": null,
+        "connectorId": "HNM_Downsampled_Data",
+        "s3Connector": {
+            "name": "HNM_Downsampled_Data",
+            "id": "HNM_Downsampled_Data"
+        },
+        "source_table": {
+            "s3_path": "s3://kumo-public-datasets/momentic-downsampled-parquet/hnm_downsampled/customers.parquet",
+            "connector_id": "HNM_Downsampled_Data",
+            "source_table_name": "customers",
+            "file_type": null,
+            "data_source_type": "S3"
+        },
+        "num_rows": "100",
+        "size": "19.2 KB",
+        "num_cols": "7",
+        "earliestFact": "-",
+        "earliestFactOrigin": "-",
+        "latestFact": "-",
+        "latestFactOrigin": "-",
+        "created": "2025-02-03",
+        "updated": "2025-07-09"
+    },
+    {
+        "id": "c8532d7bd33cd4695f71371ae03c474d",
+        "name_alias": "no_time_transactions_hnm",
+        "table": {
+            "cols": [
+                {
+                    "name": "customer_id",
+                    "stype": "ID",
+                    "dtype": "string",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "article_id",
+                    "stype": "ID",
+                    "dtype": "int64",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "price",
+                    "stype": "numerical",
+                    "dtype": "float64",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "sales_channel_id",
+                    "stype": "ID",
+                    "dtype": "int64",
+                    "timestamp_format": null
+                }
+            ],
+            "source_table": {
+                "s3_path": "s3://kumo-public-datasets/momentic-downsampled-parquet/hnm_downsampled/transactions_2020.parquet",
+                "connector_id": "HNM_Downsampled_Data",
+                "source_table_name": "transactions_2020",
+                "file_type": null,
+                "data_source_type": "S3"
+            },
+            "pkey": null,
+            "time_col": null,
+            "end_time_col": null
+        },
+        "pkey": null,
+        "timeCol": null,
+        "endTimeCol": null,
+        "connectorId": "HNM_Downsampled_Data",
+        "s3Connector": {
+            "name": "HNM_Downsampled_Data",
+            "id": "HNM_Downsampled_Data"
+        },
+        "source_table": {
+            "s3_path": "s3://kumo-public-datasets/momentic-downsampled-parquet/hnm_downsampled/transactions_2020.parquet",
+            "connector_id": "HNM_Downsampled_Data",
+            "source_table_name": "transactions_2020",
+            "file_type": null,
+            "data_source_type": "S3"
+        },
+        "num_rows": "1.2K",
+        "size": "29.4 KB",
+        "num_cols": "4",
+        "earliestFact": "-",
+        "earliestFactOrigin": "-",
+        "latestFact": "-",
+        "latestFactOrigin": "-",
+        "created": "2025-02-03",
+        "updated": "2025-07-08"
+    },
+    {
+        "id": "c313ee9a357e808ad61db3f3d9d2f5fd",
+        "name_alias": "transactions_hnm",
+        "table": {
+            "cols": [
+                {
+                    "name": "t_dat",
+                    "stype": "timestamp",
+                    "dtype": "date",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "customer_id",
+                    "stype": "ID",
+                    "dtype": "string",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "article_id",
+                    "stype": "ID",
+                    "dtype": "int64",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "price",
+                    "stype": "numerical",
+                    "dtype": "float64",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "sales_channel_id",
+                    "stype": "ID",
+                    "dtype": "int64",
+                    "timestamp_format": null
+                }
+            ],
+            "source_table": {
+                "s3_path": "s3://kumo-public-datasets/momentic-downsampled-parquet/hnm_downsampled/transactions_2020.parquet",
+                "connector_id": "HNM_Downsampled_Data",
+                "source_table_name": "transactions_2020",
+                "file_type": null,
+                "data_source_type": "S3"
+            },
+            "pkey": null,
+            "time_col": "t_dat",
+            "end_time_col": null
+        },
+        "pkey": null,
+        "timeCol": "t_dat",
+        "endTimeCol": null,
+        "connectorId": "HNM_Downsampled_Data",
+        "s3Connector": {
+            "name": "HNM_Downsampled_Data",
+            "id": "HNM_Downsampled_Data"
+        },
+        "source_table": {
+            "s3_path": "s3://kumo-public-datasets/momentic-downsampled-parquet/hnm_downsampled/transactions_2020.parquet",
+            "connector_id": "HNM_Downsampled_Data",
+            "source_table_name": "transactions_2020",
+            "file_type": null,
+            "data_source_type": "S3"
+        },
+        "num_rows": "",
+        "size": "",
+        "num_cols": "",
+        "earliestFact": "-",
+        "earliestFactOrigin": "-",
+        "latestFact": "-",
+        "latestFactOrigin": "-",
+        "created": "2025-02-03",
+        "updated": "2025-02-03"
+    },
+    {
+        "id": "9b40a670e0078d4b153cd6af5ddff862",
+        "name_alias": "articles_hnm",
+        "table": {
+            "cols": [
+                {
+                    "name": "article_id",
+                    "stype": "ID",
+                    "dtype": "int64",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "product_code",
+                    "stype": "ID",
+                    "dtype": "int64",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "prod_name",
+                    "stype": "categorical",
+                    "dtype": "string",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "product_type_no",
+                    "stype": "ID",
+                    "dtype": "int64",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "product_type_name",
+                    "stype": "categorical",
+                    "dtype": "string",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "product_group_name",
+                    "stype": "categorical",
+                    "dtype": "string",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "graphical_appearance_no",
+                    "stype": "ID",
+                    "dtype": "int64",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "graphical_appearance_name",
+                    "stype": "categorical",
+                    "dtype": "string",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "colour_group_code",
+                    "stype": "ID",
+                    "dtype": "int64",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "colour_group_name",
+                    "stype": "categorical",
+                    "dtype": "string",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "perceived_colour_value_id",
+                    "stype": "ID",
+                    "dtype": "int64",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "perceived_colour_value_name",
+                    "stype": "categorical",
+                    "dtype": "string",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "perceived_colour_master_id",
+                    "stype": "ID",
+                    "dtype": "int64",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "perceived_colour_master_name",
+                    "stype": "categorical",
+                    "dtype": "string",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "department_no",
+                    "stype": "ID",
+                    "dtype": "int64",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "department_name",
+                    "stype": "categorical",
+                    "dtype": "string",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "index_code",
+                    "stype": "ID",
+                    "dtype": "string",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "index_name",
+                    "stype": "categorical",
+                    "dtype": "string",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "index_group_no",
+                    "stype": "ID",
+                    "dtype": "int64",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "index_group_name",
+                    "stype": "categorical",
+                    "dtype": "string",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "section_no",
+                    "stype": "ID",
+                    "dtype": "int64",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "section_name",
+                    "stype": "categorical",
+                    "dtype": "string",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "garment_group_no",
+                    "stype": "ID",
+                    "dtype": "int64",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "garment_group_name",
+                    "stype": "categorical",
+                    "dtype": "string",
+                    "timestamp_format": null
+                },
+                {
+                    "name": "detail_desc",
+                    "stype": "categorical",
+                    "dtype": "string",
+                    "timestamp_format": null
+                }
+            ],
+            "source_table": {
+                "s3_path": "s3://kumo-public-datasets/momentic-downsampled-parquet/hnm_downsampled/articles.parquet",
+                "connector_id": "HNM_Downsampled_Data",
+                "source_table_name": "articles",
+                "file_type": null,
+                "data_source_type": "S3"
+            },
+            "pkey": "article_id",
+            "time_col": null,
+            "end_time_col": null
+        },
+        "pkey": "article_id",
+        "timeCol": null,
+        "endTimeCol": null,
+        "connectorId": "HNM_Downsampled_Data",
+        "s3Connector": {
+            "name": "HNM_Downsampled_Data",
+            "id": "HNM_Downsampled_Data"
+        },
+        "source_table": {
+            "s3_path": "s3://kumo-public-datasets/momentic-downsampled-parquet/hnm_downsampled/articles.parquet",
+            "connector_id": "HNM_Downsampled_Data",
+            "source_table_name": "articles",
+            "file_type": null,
+            "data_source_type": "S3"
+        },
+        "num_rows": "2.7K",
+        "size": "233.9 KB",
+        "num_cols": "25",
+        "earliestFact": "-",
+        "earliestFactOrigin": "-",
+        "latestFact": "-",
+        "latestFactOrigin": "-",
+        "created": "2025-02-03",
+        "updated": "2025-02-03"
+    }
+]

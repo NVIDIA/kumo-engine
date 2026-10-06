@@ -1,0 +1,28 @@
+{
+  "data_compute": {
+    "type": "DISKGRAPH",
+    "data_root": "${DISKGRAPH_DATA_ROOT}",
+    "pool_strategy": "singlehost"
+  },
+  "metadata_storage": {
+    "type": "${METADATA_STORAGE_TYPE}",
+    "dsn_secret_name": "${STATE_DB_DSN_SECRET_NAME}"
+  },
+  "orchestration": {
+    "type": "custom",
+    "server_address": "${TEMPORAL_HOST}:${TEMPORAL_PORT}",
+    "namespace": "${TEMPORAL_NAMESPACE}"
+  },
+  "secrets": {
+    "backend": "k8s_mount",
+    "mount_path": "/opt/kumo/secrets"
+  },
+  "storage": {
+    "data_plane_storage_root": "${DATAPLANE_ROOT}",
+    "artifact_root": "${ARTIFACT_ROOT}",
+    "lifecycle_ready": ${LIFECYCLE_READY}
+  },
+  "logging": {
+    "backend": "stdout"
+  }
+}

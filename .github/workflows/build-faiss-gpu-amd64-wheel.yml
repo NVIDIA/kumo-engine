@@ -1,0 +1,147 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Build CUDA 13 faiss-gpu Wheel (AMD64)
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches: [master]
+    paths:
+      - tools/faiss-gpu-amd64/**
+      - .github/workflows/build-faiss-gpu-amd64-wheel.yml
+  pull_request:
+    paths:
+      - tools/faiss-gpu-amd64/**
+      - .github/workflows/build-faiss-gpu-amd64-wheel.yml
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish immutable assets from master after validation
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  FAISS_GPU_AMD64_RELEASE_TAG: faiss-gpu-amd64-1.14.3-cu130sm120-cp314-v1
+
+concurrency:
+  group: faiss-gpu-amd64-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04-large
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+
+      - name: Free up disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be  # v1.3.1
+        with:
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+          tool-cache: true
+
+      - name: Build wheel inside CUDA container
+        run: |
+          docker build -t faiss-builder \
+            -f tools/faiss-gpu-amd64/build.Dockerfile tools/faiss-gpu-amd64/
+          mkdir -p tools/faiss-gpu-amd64/dist
+          docker run --rm \
+            -v "$PWD/tools/faiss-gpu-amd64:/workspace/pkg:ro" \
+            -v "$PWD/tools/faiss-gpu-amd64/dist:/out" \
+            faiss-builder \
+            /workspace/pkg/build_wheel.sh
+          test "$(find tools/faiss-gpu-amd64/dist -maxdepth 1 -name '*.whl' | wc -l)" -eq 1
+
+      - name: Smoke test inside the CUDA 13 build container
+        run: |
+          docker run --rm \
+            -v "$PWD/tools/faiss-gpu-amd64/dist:/dist:ro" \
+            faiss-builder bash -euo pipefail -c '
+              python3.14 -m pip install /dist/*.whl
+              python3.14 -c "import importlib.metadata as m, faiss; assert m.version(\"faiss-gpu\").startswith(\"1.14.3\"); faiss.IndexFlatL2(8); print(\"faiss\", faiss.__version__)"
+              site_packages=$(python3.14 -c "import pathlib, faiss; print(pathlib.Path(faiss.__file__).resolve().parent.parent)")
+              for library in \
+                "$site_packages"/faiss_gpu.libs/libfaiss-[0-9a-f]*.so \
+                "$site_packages"/faiss_gpu.libs/libfaiss_avx2-[0-9a-f]*.so; do
+                test -f "$library"
+                cuobjdump --list-elf "$library" > /tmp/faiss-cubins.txt
+                for arch in 75 80 86 89 90 100 120; do
+                  grep -q "sm_${arch}" /tmp/faiss-cubins.txt
+                done
+              done
+            '
+
+      - name: Create checksum
+        run: |
+          cd tools/faiss-gpu-amd64/dist
+          wheel=$(find . -maxdepth 1 -name '*.whl' -printf '%f\n')
+          sha256sum "$wheel" > "${wheel}.sha256"
+          sha256sum --check "${wheel}.sha256"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: faiss-gpu-amd64-cu130-sm120-wheel
+          path: |
+            tools/faiss-gpu-amd64/dist/*.whl
+            tools/faiss-gpu-amd64/dist/*.whl.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified wheel
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: faiss-gpu-amd64-cu130-sm120-wheel
+          path: dist
+
+      - name: Verify checksum
+        run: cd dist && sha256sum --check ./*.whl.sha256
+
+      - name: Publish immutable release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$FAISS_GPU_AMD64_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$FAISS_GPU_AMD64_RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "CUDA 13 Faiss wheel for CPython 3.14" \
+              --notes "faiss-gpu 1.14.3 built for CUDA 13, CPython 3.14, and SM 75 through SM 120."
+          fi
+
+          mkdir -p "$RUNNER_TEMP/faiss-release-existing"
+          for asset in dist/*; do
+            name=$(basename "$asset")
+            if gh release download "$FAISS_GPU_AMD64_RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern "$name" \
+              --dir "$RUNNER_TEMP/faiss-release-existing"; then
+              cmp "$asset" "$RUNNER_TEMP/faiss-release-existing/$name" || {
+                echo "ERROR: release asset $name already exists with different content" >&2
+                exit 1
+              }
+              echo "Release asset $name already exists with identical content"
+            else
+              gh release upload "$FAISS_GPU_AMD64_RELEASE_TAG" \
+                --repo "$GITHUB_REPOSITORY" \
+                "$asset"
+            fi
+          done

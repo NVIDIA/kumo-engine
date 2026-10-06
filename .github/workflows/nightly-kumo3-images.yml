@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: (Nightly) Kumo 3 images
+
+# Publishes the nightly Kumo 3 image set and the floating nightly-<date> alias
+# that k8s `version=nightly` consumers resolve.
+#
+# AMI builds can explicitly consume one of these aliases after its image run
+# completes; they no longer rely on a coupled nightly schedule.
+
+on:  # yamllint disable-line rule:truthy
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A manual re-run overlapping the scheduled one computes the same
+# nightly-<date> and would race it on the alias.
+concurrency:
+  group: nightly-kumo3-images
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve nightly alias
+    runs-on: ubuntu-22.04
+    outputs:
+      alias_tag: ${{ steps.vars.outputs.alias_tag }}
+    steps:
+      - name: Compute nightly tag
+        id: vars
+        run: |
+          set -euo pipefail
+          # Use UTC so a given calendar date always maps to the same alias.
+          alias_tag="nightly-$(date -u +%Y%m%d)"
+          echo "alias_tag=${alias_tag}" >> "$GITHUB_OUTPUT"
+          echo "Nightly alias: ${alias_tag} (ref ${GITHUB_SHA})"
+
+  images:
+    needs: resolve
+    # Forwarded to the builders: the UI image authenticates to ECR with OIDC,
+    # and a failed build comments on the PR.
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+      packages: read
+      pull-requests: write
+    uses: ./.github/workflows/_docker-kumo3-images-custom.yml
+    with:
+      # On a scheduled run this is the default branch head at trigger time,
+      # i.e. an immutable full SHA.
+      kumo_repo_ref: ${{ github.sha }}
+      alias_tag: ${{ needs.resolve.outputs.alias_tag }}
+      bake_glove_level: basic
+    secrets: inherit

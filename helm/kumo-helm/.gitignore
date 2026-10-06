@@ -1,0 +1,4 @@
+.claude/
+.worktrees/
+charts/*.tgz
+__pycache__/

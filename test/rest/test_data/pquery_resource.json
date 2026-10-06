@@ -1,0 +1,470 @@
+{
+  "name": "bpqv2",
+  "query_string": "PREDICT TRANS.K_SYMBOL = 'DUCHOD' FOR EACH TRANS.TRANS_ID",
+  "desc": "Description of the PQueryResource",
+  "graph": {
+    "tables": {
+      "ACCOUNT": {
+        "cols": [
+          {
+            "name": "ACCOUNT_ID",
+            "stype": "ID",
+            "dtype": "int"
+          },
+          {
+            "name": "DISTRICT_ID",
+            "stype": "ID",
+            "dtype": "int"
+          },
+          {
+            "name": "FREQUENCY",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "DATE",
+            "stype": "timestamp",
+            "dtype": "date"
+          }
+        ],
+        "source_table": {
+          "connector_id": "connector_11111111111111111111111111111111",
+          "source": {
+            "path": "ACCOUNT.csv",
+            "mode": "relative"
+          },
+          "file_type": "CSV",
+          "data_source_type": "S3"
+        },
+        "pkey": "ACCOUNT_ID",
+        "time_col": null
+      },
+      "CARD": {
+        "cols": [
+          {
+            "name": "CARD_ID",
+            "stype": "ID",
+            "dtype": "int"
+          },
+          {
+            "name": "DISP_ID",
+            "stype": "ID",
+            "dtype": "int"
+          },
+          {
+            "name": "TYPE",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "ISSUED",
+            "stype": "timestamp",
+            "dtype": "time"
+          }
+        ],
+        "source_table": {
+          "connector_id": "connector_11111111111111111111111111111111",
+          "source": {
+            "path": "CARD.csv",
+            "mode": "relative"
+          },
+          "file_type": "CSV",
+          "data_source_type": "S3"
+        },
+        "pkey": "CARD_ID",
+        "time_col": null
+      },
+      "CLIENT": {
+        "cols": [
+          {
+            "name": "CLIENT_ID",
+            "stype": "ID",
+            "dtype": "int"
+          },
+          {
+            "name": "GENDER",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "BIRTH_DATE",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "DISTRICT_ID",
+            "stype": "ID",
+            "dtype": "int"
+          }
+        ],
+        "source_table": {
+          "connector_id": "connector_11111111111111111111111111111111",
+          "source": {
+            "path": "CLIENT.csv",
+            "mode": "relative"
+          },
+          "file_type": "CSV",
+          "data_source_type": "S3"
+        },
+        "pkey": "CLIENT_ID",
+        "time_col": null
+      },
+      "DISP": {
+        "cols": [
+          {
+            "name": "DISP_ID",
+            "stype": "ID",
+            "dtype": "int"
+          },
+          {
+            "name": "CLIENT_ID",
+            "stype": "ID",
+            "dtype": "int"
+          },
+          {
+            "name": "ACCOUNT_ID",
+            "stype": "ID",
+            "dtype": "int"
+          },
+          {
+            "name": "TYPE",
+            "stype": "categorical",
+            "dtype": "string"
+          }
+        ],
+        "source_table": {
+          "connector_id": "connector_11111111111111111111111111111111",
+          "source": {
+            "path": "DISP.csv",
+            "mode": "relative"
+          },
+          "file_type": "CSV",
+          "data_source_type": "S3"
+        },
+        "pkey": "DISP_ID",
+        "time_col": null
+      },
+      "DISTRICT": {
+        "cols": [
+          {
+            "name": "DISTRICT_ID",
+            "stype": "ID",
+            "dtype": "int"
+          },
+          {
+            "name": "A2",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "A3",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "A4",
+            "stype": "numerical",
+            "dtype": "float"
+          },
+          {
+            "name": "A5",
+            "stype": "categorical",
+            "dtype": "float"
+          },
+          {
+            "name": "A6",
+            "stype": "categorical",
+            "dtype": "float"
+          },
+          {
+            "name": "A7",
+            "stype": "categorical",
+            "dtype": "float"
+          },
+          {
+            "name": "A8",
+            "stype": "categorical",
+            "dtype": "float"
+          },
+          {
+            "name": "A9",
+            "stype": "categorical",
+            "dtype": "float"
+          },
+          {
+            "name": "A10",
+            "stype": "numerical",
+            "dtype": "float"
+          },
+          {
+            "name": "A11",
+            "stype": "numerical",
+            "dtype": "float"
+          },
+          {
+            "name": "A12",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "A13",
+            "stype": "numerical",
+            "dtype": "float"
+          },
+          {
+            "name": "A14",
+            "stype": "categorical",
+            "dtype": "float"
+          },
+          {
+            "name": "A15",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "A16",
+            "stype": "numerical",
+            "dtype": "float"
+          }
+        ],
+        "source_table": {
+          "connector_id": "connector_11111111111111111111111111111111",
+          "source": {
+            "path": "DISTRICT.csv",
+            "mode": "relative"
+          },
+          "file_type": "CSV",
+          "data_source_type": "S3"
+        },
+        "pkey": "DISTRICT_ID",
+        "time_col": null
+      },
+      "LOAN": {
+        "cols": [
+          {
+            "name": "LOAN_ID",
+            "stype": "ID",
+            "dtype": "int"
+          },
+          {
+            "name": "ACCOUNT_ID",
+            "stype": "ID",
+            "dtype": "int"
+          },
+          {
+            "name": "DATE",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "AMOUNT",
+            "stype": "numerical",
+            "dtype": "float"
+          },
+          {
+            "name": "DURATION",
+            "stype": "categorical",
+            "dtype": "int"
+          },
+          {
+            "name": "PAYMENTS",
+            "stype": "numerical",
+            "dtype": "float"
+          },
+          {
+            "name": "STATUS",
+            "stype": "categorical",
+            "dtype": "string"
+          }
+        ],
+        "source_table": {
+          "connector_id": "connector_11111111111111111111111111111111",
+          "source": {
+            "path": "LOAN.csv",
+            "mode": "relative"
+          },
+          "file_type": "CSV",
+          "data_source_type": "S3"
+        },
+        "pkey": "LOAN_ID",
+        "time_col": "DATE"
+      },
+      "ORDERS": {
+        "cols": [
+          {
+            "name": "ORDERS_ID",
+            "stype": "ID",
+            "dtype": "int"
+          },
+          {
+            "name": "ACCOUNT_ID",
+            "stype": "ID",
+            "dtype": "int"
+          },
+          {
+            "name": "BANK_TO",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "ACCOUNT_TO",
+            "stype": "numerical",
+            "dtype": "int"
+          },
+          {
+            "name": "AMOUNT",
+            "stype": "numerical",
+            "dtype": "float"
+          },
+          {
+            "name": "K_SYMBOL",
+            "stype": "categorical",
+            "dtype": "string"
+          }
+        ],
+        "source_table": {
+          "connector_id": "connector_11111111111111111111111111111111",
+          "source": {
+            "path": "ORDERS.csv",
+            "mode": "relative"
+          },
+          "file_type": "CSV",
+          "data_source_type": "S3"
+        },
+        "pkey": "ORDERS_ID",
+        "time_col": null
+      },
+      "TRANS": {
+        "cols": [
+          {
+            "name": "TRANS_ID",
+            "stype": "ID",
+            "dtype": "int"
+          },
+          {
+            "name": "ACCOUNT_ID",
+            "stype": "ID",
+            "dtype": "int"
+          },
+          {
+            "name": "DATE",
+            "stype": "timestamp",
+            "dtype": "date"
+          },
+          {
+            "name": "TYPE",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "OPERATION",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "AMOUNT",
+            "stype": "numerical",
+            "dtype": "float"
+          },
+          {
+            "name": "BALANCE",
+            "stype": "numerical",
+            "dtype": "float"
+          },
+          {
+            "name": "K_SYMBOL",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "BANK",
+            "stype": "categorical",
+            "dtype": "string"
+          },
+          {
+            "name": "ACCOUNT",
+            "stype": "numerical",
+            "dtype": "int"
+          }
+        ],
+        "source_table": {
+          "connector_id": "connector_11111111111111111111111111111111",
+          "source": {
+            "path": "TRANS.csv",
+            "mode": "relative"
+          },
+          "file_type": "CSV",
+          "data_source_type": "S3"
+        },
+        "pkey": "TRANS_ID",
+        "time_col": "DATE"
+      }
+    },
+    "col_groups": [
+      {
+        "columns": [
+          {
+            "table_name": "ACCOUNT",
+            "col_name": "DISTRICT_ID"
+          },
+          {
+            "table_name": "DISTRICT",
+            "col_name": "DISTRICT_ID"
+          },
+          {
+            "table_name": "CLIENT",
+            "col_name": "DISTRICT_ID"
+          }
+        ]
+      },
+      {
+        "columns": [
+          {
+            "table_name": "CARD",
+            "col_name": "DISP_ID"
+          },
+          {
+            "table_name": "DISP",
+            "col_name": "DISP_ID"
+          }
+        ]
+      },
+      {
+        "columns": [
+          {
+            "table_name": "DISP",
+            "col_name": "CLIENT_ID"
+          },
+          {
+            "table_name": "CLIENT",
+            "col_name": "CLIENT_ID"
+          }
+        ]
+      },
+      {
+        "columns": [
+          {
+            "table_name": "DISP",
+            "col_name": "ACCOUNT_ID"
+          },
+          {
+            "table_name": "ACCOUNT",
+            "col_name": "ACCOUNT_ID"
+          },
+          {
+            "table_name": "ORDERS",
+            "col_name": "ACCOUNT_ID"
+          },
+          {
+            "table_name": "LOAN",
+            "col_name": "ACCOUNT_ID"
+          },
+          {
+            "table_name": "TRANS",
+            "col_name": "ACCOUNT_ID"
+          }
+        ]
+      }
+    ]
+  }
+}

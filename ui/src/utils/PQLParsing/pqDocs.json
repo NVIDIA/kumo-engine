@@ -1,0 +1,307 @@
+{
+    "activation": [
+        "activation",
+        "`activation: <list[relu | leaky_relu | elu | gelu]>` (Optional)",
+        "A list of activation functions for AutoML to explore. Possible values are `relu`, `leaky_relu`, `elu`, and `gelu`."
+    ],
+    "and": [
+        "AND",
+        "`<expression_A> AND <expression_B>`",
+        "Allows joining multiple filter expressions with a CONJUNCTION operator. Each `<expression>` must itself be a filter operation.\n\nThis operator is supported for all filter fields and targets."
+    ],
+    "base_lr": [
+        "base_lr",
+        "`base_lr: <list[float]>` (Optional)",
+        "A list of potential learning rates in model optimizer during model optimization.\n\n* `base_lr` must be `> 0`."
+    ],
+    "batch_size": [
+        "batch_size",
+        "`batch_size: <list[int]>` (Optional)",
+        "A list of potential batch sizes during data loading.\n\n* `batch_size` must be `<=2048`."
+    ],
+    "contains": [
+        "CONTAINS",
+        "`<expression> CONTAINS <value>`",
+        "Evaluates to True if the value returned by `<expression>` has `<value>` as a substring at any point. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can only be applied to `text` columns."
+    ],
+    "distance_measure": [
+        "distance_measure",
+        "`distance_measure: <list[dot_product | cosine]>` (Optional)",
+        "Distance measure when measuring distance between node vector embeddings in link prediction. Using cosine similarity (`cosine`) instead of dot product (`dot_product`) tends to reduce popularity bias and tends to increase the diversity of predictions, often at the expense of accuracy."
+    ],
+    "early_stopping": [
+        "early_stopping",
+        "`early_stopping: <list[list[EarlyStopper]]>` (Optional)",
+        "A list of potential early stopping strategies for AutoML to explore.\n\nAn early stopping strategy can be empty (in which case no early stopping is applied), or it can be configured through two parameters: `min_delta` and `patience`:\n\n* `min_delta` (default: `0.0`): The minimum absolute change in the monitored tune metric to qualify as an improvement. Must be `>= 0.0`.\n* `patience` (default: `3`): The number of epochs with no improvement after which training will be stopped. Must be `> 0`.\n\nBy default, training is stopped after `3` consecutive epochs with no improvements of the tune metric on the validation set."
+    ],
+    "end_time": [
+        "end_time",
+        "`end_time: <integer | str>` (Optional)",
+        "Defines the timestamp for the ending of the training data or numerical offset from the most recent entry to not use to generate training data labels. Unless a custom time unit is specified in the aggregation, this value is in `days`. This can be used to make sure the query only generates labels on data from the last `end_time` days. Regardless of this value, all data is used as an input to the model, but this value can help limit what labels are generated.\n\n- `end_time` needs to be \\<= 0 or the string format of a timestamp, i.e. \u20182024-04-01\u2019\n- If used at the same time as `start_time`, `end_time` should be strictly larger."
+    ],
+    "ends_with": [
+        "ENDS WITH",
+        "`<expression> ENDS WITH <value>`",
+        "Evaluates to True if the value returned by `<expression>` has `<value>` as a substring at the end. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can only be applied to `text` columns."
+    ],
+    "forecast_length": [
+        "forecast_length",
+        "`forecast_length: <integer>` (Optional)",
+        "Turns a node regression problem into a forecasting problem. The given target is forecasted for `forecast_length` steps into the future. This only applies to temporal queries (queries that include a temporal aggregation such as `SUM(TRANSACTIONS.AMOUNT, 0, 2, days))`."
+    ],
+    "forecast_type": [
+        "forecast_type",
+        "`forecast_type: <str>` (Optional)",
+        "Chooses the type of forecasting model being used. Possible options are:\n\n* `mlp`: Uses an MLP to make the final prediction across all future timestamps.\n\n* `implicit`: Uses a shared MLP across all future timestamps, conditioned on the future timestamp.\n\n* `autoregressive`: Uses an RNN-based forecasting head with support for autoregressive prediction.\n\nThe default setting is `forecast_type=mlp`."
+    ],
+    "gnn_aggregation": [
+        "aggregation",
+        "`aggregation: <list[list[sum | mean | max | min | std | var]]>` (Optional)",
+        "A nested list of aggregation operators in graph neural network aggregation process."
+    ],
+    "gnn_channels": [
+        "channels",
+        "`channels: <list[int]>` (Optional)",
+        "A list of dimension of layers in the graph neural network model for AutoML to explore.\n\n* `channels` must be an even number between `>= 2` and `<= 1024`."
+    ],
+    "handle_new_target_entities": [
+        "handle_new_target_entities",
+        "`handle_new_target_entities: <bool>` (Optional)",
+        "Controls whether [Link Prediction](/task-types) model handles predictions on new target entities at batch prediction time.\n\nKeeping this option to `false` generally provides better model performance. It is recommended to keep this option `false` unless you need to predict unseen target entities at batch prediction time."
+    ],
+    "in": [
+        "IN",
+        "`<expression> IN <value>`",
+        "Evaluates to True if the value returned by `<expression>` is included in `<value>` as an element at any point. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`."
+    ],
+    "is_not_null": [
+        "IS NOT NULL",
+        "`<expression> IS NOT NULL <value>`",
+        "Evaluates to True if the value returned by `<expression>` doesn't equate to **Null or N/A**. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can be applied to columns of all types."
+    ],
+    "is_null": [
+        "IS NULL",
+        "`<expression> IS NULL <value>`",
+        "Evaluates to True if the value returned by `<expression>` equals **Null or N/A**. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can be applied to columns of all types."
+    ],
+    "lag_timesteps": [
+        "lag_timesteps",
+        "`lag_timesteps: <integer>` (Optional)",
+        "For forecasting problems, leverage the auto-regressive labels as inputs. This parameter controls the number of previous values should be considered as auto-regressive labels."
+    ],
+    "like": [
+        "LIKE",
+        "`<expression> LIKE <value>`",
+        "Corresponds to the SQL LIKE operation, which matches `<expression>` with `<value>` using `%` as a wildcard. This functionality can be replicated using the `STARTS WITH`, `ENDS WITH`, and `CONTAINS` operators. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can only be applied to `text` columns."
+    ],
+    "loss": [
+        "loss",
+        "`loss: <list[str]>` **(Optional)**",
+        "The loss type to use during model optimization depending on the task type.\n\n**Available Options:**\n\n| Task Type                                       | Available loss options                          |\n| :---------------------------------------------- | :---------------------------------------------- |\n| Binary Classification/Multilabel Classification | `binary_cross_entropy` (default) <br /> `focal` |\n| Multiclass Classification                       | `cross_entropy` (default) <br /> `ordinal_log`  |\n| Regression/Forecasting                          | `mae` <br /> `mse` <br /> `huber` (default) <br /> `wape` <br /> `multi_quantile` |\n| Temporal Link Prediction                        | `cross_entropy` (default) <br /> `binary_cross_entropy` |\n| Static Link Prediction                          | `cross_entropy` (default) <br /> `binary_cross_entropy` |\n| Multilabel Ranking                              | `cross_entropy` (default) <br /> `ordinal_log`  |\n\nBy default, `focal` loss uses an `alpha` value of `0.25` (the weighting factor to balance positive vs. negative examples), and a `gamma` value of `2.0` (the balance between easy vs. hard examples). You can further customize this in the model plan by replacing the string by a dictionary:\n\n```\nloss:\n- name: focal\n  alpha: 0.5\n  gamma: 4.0\n```\n\nBy default, `huber` loss uses a delta value of `1.0`. You can further customize this in the model plan by replacing the string by a dictionary:\n\n```\nloss:\n- name: huber\n  delta: 2.0\n```\n\nUse `multi_quantile` for regression or forecasting tasks when you want prediction intervals in addition to the median prediction. It trains multiple quantiles with pinball loss and writes `TARGET_PRED` together with 27 quantile columns named `q_0.005`, `q_0.01`, ..., `q_0.995`:\n\n```\nloss:\n- multi_quantile\n```\n\nThe full quantile column set is:\n\n```\nq_0.005 q_0.01  q_0.02  q_0.025 q_0.05  q_0.1   q_0.15\nq_0.2   q_0.25  q_0.3   q_0.35  q_0.4   q_0.45  q_0.5\nq_0.55  q_0.6   q_0.65  q_0.7   q_0.75  q_0.8   q_0.85\nq_0.9   q_0.95  q_0.975 q_0.98  q_0.99  q_0.995\n```"
+    ],
+    "lr_scheduler": [
+        "lr_scheduler",
+        "`lr_scheduler: <list[list[LRScheduler]]` (Optional)",
+        "A list of potential learning rate schedulers for AutoML to explore.\n\nA learning rate scheduler strategy can be empty (in which case no learning rate scheduling is applied), or can be configured through three parameters: `name`, `interval` and `kwargs`:\n\n* `name`: The name of the learning rate scheduler strategy. Valid learning rate scheduler strategies are:\n\n  * `constant_with_warmup`: Uses a constant learning rate preceded by a warmup period which increases the learning rate from 0 to `base_lr`. Number of warmup steps can be specified through `kwargs` via `warmup_ratio_or_steps`.\n  * `linear_with_warmup`: Decays the learning rate linearly from `base_lr` to `0`, preceded by a warmup period which increases the learning rate from 0 to `base_lr`. Number of warmup steps can be specified through `kwargs` via `warmup_ratio_or_steps`.\n  * `exponential`: Decays the learning rate by `gamma`. `gamma` can be specified through `kwargs`.\n  * `cosine_with_warmup`: Adjusts the learning rate between `base_lr` and `0` following a cosine function, preceded by a warmup period which increases the learning rate from 0 to `base_lr`. Number of warmup steps can be specified through `kwargs` via `warmup_ratio_or_steps`.\n  * `cosine_with_warmup_restarts`: Adjusts the learning rate between `base_lr` and `0` following a cosine function, with several hard restarts. Preceded by a warmup period which increases the learning rate from `0` to `base_lr`. Number of hard restarts can be configured through `kwargs` via `num_cycles` (`3` by default). Number of warmup steps can be specified through `kwargs` via `warmup_ratio_or_steps`.\n\n* `interval`: Specifies whether learning rate scheduling is applied per optimization step (`step`) or per epoch (`epoch`).\n\n* `kwargs`: Additional arguments depending on the chosen LR scheduler strategy. See above for detailed information."
+    ],
+    "majority_sampling_ratio": [
+        "majority_sampling_ratio",
+        "`majority_sampling_ratio: <list[float]>` (Optional)",
+        "A list of majority sampling ratios for AutoML to explore.\n\nThe `majority_sampling_ratio` parameter controls undersampling of the majority class in binary classification tasks.\\\nIt specifies how many majority-class examples to keep **per minority-class example** during training."
+    ],
+    "max_epochs": [
+        "max_epochs",
+        "`max_epochs: <int>` (Optional)",
+        "The maximum number of epochs to train. An epoch is defined as the process of completing the specified number of steps, i.e., `max_steps_per_epoch` steps, and Kumo evaluates your model on the validation set at the end of each epoch.\n\n* `max_epochs`must be `> 0`."
+    ],
+    "max_steps_per_epoch": [
+        "max_steps_per_epoch",
+        "`max_steps_per_epoch: <int>` (Optional)",
+        "`max_steps_per_epoch` controls the maximum number of steps performed in a single epoch during training.\n\n* A step is defined as training your model on a single mini-batch of size `batch_size`\n* An epoch is defined as the process of completing the specified number of steps, i.e., `max_steps_per_epoch` steps, after which validation is performed.\n\nThis is particularly useful for managing the trade-off between training time and validation frequency.\n\nFor example, to double the validation frequency while keeping the total number of mini-batches the model processes unchanged, halve `max_steps_per_epoch` and double `max_epochs`.\n\n* `max_steps_per_epoch` must be `> 0`."
+    ],
+    "max_test_steps": [
+        "max_test_steps",
+        "`max_test_steps: <integer>` (Optional)",
+        "The maximum number of test steps to perform. If set, `max_test_steps` will override the number of test steps set by [`run_mode`](/run-mode). Setting `max_test_steps` is useful for customizing the time spent on testing the model.\n\n* By default `max_test_steps` is set according to [`run_mode`](/run-mode).\n* `max_test_steps`must be `> 0`."
+    ],
+    "max_val_steps": [
+        "max_val_steps",
+        "`max_val_steps: <integer>` (Optional)",
+        "The maximum number of validation steps to perform. If set, `max_val_steps` will override the number of steps set by [`run_mode`](/run-mode). Setting `max_val_steps` is useful for customizing the time spent on validation the model.\n\n* By default `max_val_steps` is set according to [`run_mode`](/run-mode).\n\n* `max_val_steps`must be `> 0`."
+    ],
+    "metrics": [
+        "metrics",
+        "`metrics: List[str]` (Optional)",
+        "This field specifies the metrics to use for evaluating your model. Available metrics vary per task, with incompatible metrics resulting in a validation error."
+    ],
+    "module": [
+        "module",
+        "`module: <ranking | embedding>` (Optional)",
+        "By default, Kumo selects the model architecture and designs the hyperparameter search space that best fits your query. However, if you have specific requirements for your use case, you can customize the model architecture to suit your desired output/objective.\n\nThe module to choose from:\n\n* `embedding`: A link prediction GNN model that optimizes link prediction with entity embedding outputs. The ranking scores can be obtained by fast vector calculations (default to inner product) on the embedding space.\n* `ranking`: A link prediction GNN that is optimized for link prediction performance. It produces the ranking scores directly. It can also produce embeddings but their inner product is not perfectly aligned to the ranking."
+    ],
+    "normalization": [
+        "normalization",
+        "`normalization: <list[layer_norm | batch_norm | None]>` (Optional)",
+        "The normalization layer to apply. Possible values are `batch_norm`, `layer_norm` or `None` to skip normalization."
+    ],
+    "not-like": [
+        "NOT LIKE",
+        "`<expression> NOT LIKE <value>`",
+        "Corresponds to the SQL NOT LIKE operation, which matches `<expression>` with `<value>` using `%` as a wildcard. This functionality can be replicated using the `STARTS WITH`, `ENDS WITH`, and `CONTAINS` operators. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can only be applied to `text` columns."
+    ],
+    "not": [
+        "NOT",
+        "`NOT <expression>`",
+        "Allows conditioning an expression with a NEGATION operator. The `<expression>` must itself be a filter operation.\n\nThis operator is supported for all filter fields and targets."
+    ],
+    "not_contains": [
+        "NOT CONTAINS",
+        "`<expression> NOT CONTAINS <value>`",
+        "Evaluates to True if the value returned by `<expression>` does not have `<value>` as a substring at any point. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can only be applied to `text` columns."
+    ],
+    "num_experiments": [
+        "num_experiments",
+        "`num_experiments: <int>` (Optional)",
+        "The number of experiments to run during AutoML. AutoML selects hyperparameter configurations via random sampling without replacement (best effort). If the candidate search space is smaller than `num_experiments`, or constraints/pruning reduce the viable pool, Kumo may reuse a configuration or run fewer unique experiments.\n\n* `num_experiments` must be `> 0`."
+    ],
+    "num_neighbors": [
+        "num_neighbors",
+        "`num_neighbors: <list[NumNeighbors]>` (Optional)",
+        "Kumo generates embeddings and predictions by sampling and aggregating features from a node\u2019s local neighborhood. The `num_neighbors` parameter determines how Kumo samples these local subgraphs by specifying how many neighbors are sampled for each node in each iteration.\n\nBy default, `num_neighbors` is determined using the [`run_mode`](/run-mode) argument , and a two-hop subgraph is sampled. Different sampling strategies can be specified and tuned via AutoML:\n\n<CodeGroup>\n  ```yaml Field\n  num_neighbors:\n  - hop1:\n      default: 16\n    hop2:\n      default: 8\n  ```\n</CodeGroup>\n\nThis configuration means that Kumo samples a maximum of 16 nodes for each primary key/foreign key connection in the first hop, and a maximum of 8 nodes for each primary key/foreign key connection in the second hop. Kumo supports sampling depths of up to 6 hops. Note that deeper subgraphs will increase runtime and memory requirements of the model, and it is advised to specify a smaller batch size in case deeper subgraphs are desired.\n\nIn each hop, we can also customize the neighborhood count to sample for specific connections. For example,\n\n<CodeGroup>\n  ```yaml yaml\n  num_neighbors:\n  - hop1:\n      default: 16\n      USERS.USER_ID->TRANSACTIONS.USER_ID: 128\n    hop2:\n      default: 8\n      TRANSACTIONS.STORE_ID->STORES.STORE_ID: 0\n  ```\n</CodeGroup>\n\nmeans that we sample a maximum of 128 transactions per user in the first hop, while we don\u2019t want to sample any stores from these transactions in the second hop. This allows for fine-grained control to give more or less importance to specific connections.\n\nThe maximum neighbors to sample per hop by default is 128, and 512 for specific connections.\n\nFor temporal queries, the default model planner will give special treatment to the `{entity}->{target}` connection, e.g., in queries such as:\n\n<CodeGroup>\n  ```Text PQL\n  PREDICT COUNT(TRANSACTIONS.*, 0, 7) FOR EACH USERS.USER_ID\n  ```\n</CodeGroup>\n\nThe model trainer will be set as:\n\n<CodeGroup>\n  ```yaml yaml\n  num_neighbors:\n  - hop1:\n      default: 16\n      USERS.USER_ID->TRANSACTIONS.USER_ID: inferred\n    hop2:\n      default: 16\n  ```\n</CodeGroup>\n\nHere, the inferred value indicates to Kumo that it should determine an optimal value based on edge degree statistics between the entity table and the target table. The inferred option is currently only supported for the entity/target connection in the first hop. You are able to confirm the inferred value in the final model plan once training finishes."
+    ],
+    "num_post_message_passing_layers": [
+        "num_post_message_passing_layers",
+        "`num_post_message_passing_layers: <list[int]>` (Optional)",
+        "A list of potential number of multilayer perceptron layers after message passing layer in the graph neural network model for AutoML to explore.\n\n* Each value in `num_post_message_passing_layers` must satisfy `1 <= num_post_mp_layers <= 8`."
+    ],
+    "num_pre_message_passing_layers": [
+        "num_pre_message_passing_layers",
+        "`num_pre_message_passing_layers: <list[int]>` (Optional)",
+        "A list of potential number of multilayer perceptron layers before message passing layer in the graph neural network model for AutoML to explore.\n\n* Each value in `num_pre_message_passing_layers` must satisfy `0 <= num_pre_message_passing_layers <= 4`."
+    ],
+    "or": [
+        "OR",
+        "`<expression_A> OR <expression_B>`",
+        "Allows joining multiple filter expressions with a DISJUNCTION operator. Each `<expression>` must itself be a filter operation.\n\nThis operator is supported for all filter fields and targets."
+    ],
+    "output_embedding_dim": [
+        "output_embedding_dim",
+        "`output_embedding_dim: <list[int]>` (Optional)",
+        "A list of output embedding dimensions for link prediction models for AutoML to explore.\n\n`output_embedding_dim` must satisfy `0 < output_embedding <= 256`."
+    ],
+    "page-1": [
+        "<",
+        "`<expression> < <value>`",
+        "Implements the LESS THAN operator. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can only be applied to `numerical` and `timestamp` columns."
+    ],
+    "page-2": [
+        "<=",
+        "`<expression> <= <value>`",
+        "Implements the LESS THAN OR EQUAL TO operator. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can only be applied to `numerical` and `timestamp` columns."
+    ],
+    "page-3": [
+        "=",
+        "`<expression> = <value>`",
+        "Implements the EQUAL TO operator. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can be applied to columns of all types. The constant data type needs to match the aggregation/column data type."
+    ],
+    "page-4": [
+        ">",
+        "`<expression> > <value>`",
+        "Implements the GREATER THAN operator. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can only be applied to `numerical` and `timestamp` columns."
+    ],
+    "page-5": [
+        ">=",
+        "`<expression> >= <value>`",
+        "Implements the GREATER THAN OR EQUAL TO operator. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can only be applied to `numerical` and `timestamp` columns."
+    ],
+    "page": [
+        "!=",
+        "`<expression> != <value>`",
+        "Implements the NOT EQUAL TO operator. `<expression>` can be `<table>.<column>` or `AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can be applied to columns of all types. The constant data type needs to match the aggregation/column data type."
+    ],
+    "ranking_embedding_loss_coeff": [
+        "ranking_embedding_loss_coeff",
+        "`ranking_embedding_loss_coeff: <list[float]>` (Optional)",
+        "A list of coefficients of the embedding loss applied to train ranking-based link prediction model for AutoML to explore.\n\nBy default, `ranking_embedding_loss_coeff` is set to `0.0`, which means that the model is solely trained to optimize for the final predicted ranking.\n\nIt is only recommended to change this value in case you are interested in embeddings. For embedding-based ranking predictions, the recommended value of `ranking_embedding_loss_coeff` is `0.2`, or a positive value otherwise. This instructs Kumo to explicitly train embeddings to produce high-quality inner-product scores for ranking prediction."
+    ],
+    "refit_full": [
+        "refit_full",
+        "`refit_full: (false (default) | true)` (Optional)",
+        "Specifies whether to refit the best AutoML model (fitted on train data) on the full (train+val+test) data.\n\nAfter we complete all the requested experiments by training on the train split and using the validation split for early stopping, Kumo will take the best-performing model and retrain it using all available data, which includes the training, validation, and holdout data splits. This allows us the final model used to generate predictions to use as much and as recent data as possible while avoiding leakage in AutoML.\n\nNOTE: This option can be used together with [`refit_trainval`](/reference/refit_trainval) option. If [`refit_trainval`](/reference/refit_trainval) is also set to `true`, Kumo reports the holdout results based on a model re-trained on train+val data. The Batch Predictions will still be based on a model refitted on the full data."
+    ],
+    "refit_trainval": [
+        "refit_trainval",
+        "`refit_trainval: (false (default) | true)` (Optional)",
+        "Specifies whether to refit the best AutoML model (fitted on train+validation data) to new training values. After we complete all the requested experiments by training on the train split and using the validation split for early stopping, Kumo will take the best-performing model and retrain it using both the training and validation data splits. This allows us the final model used to generate predictions to use as much and as recent data as possible while avoiding leakage in AutoML."
+    ],
+    "sample_from_entity_table": [
+        "sample_from_entity_table",
+        "`sample_from_entity_table: <bool>` (Optional)",
+        "Whether to allow sampling of other entities in the entity table besides the seed entity. It is useful to set it to `false` in case entities represent candidates/hypothetical examples and to restrict information flow between different candidates."
+    ],
+    "split": [
+        "split",
+        "`split: (ApproxDateOffsetSplit | DateOffsetSplit | RandomSplit | TemporalSplit | TimeRangeSplit)` (Optional)",
+        "Kumo will generate a training table with entities and labels according to your predictive query to be used in GNN training. A default split method will be used to split the generated training table to 3 disjoint training, validation, and holdout sets for training the predictive query\n\n- When the predictive query is temporal node prediction, the default split method is `ApproxDateOffsetSplit([0.8, 0.1, 0.1])`.\n- When the predictive query is temporal link prediction, the default split method is `DateOffsetSplit([-target_aggregation_end_date, 0])`\n- When the predictive query is static and the entity or the target table has a time column, the default split method is `TemporalSplit([0.8, 0.1, 0.1])`.\n- When the predictive query is static and the entity and target table does not have a time column, the default split method is `RandomSplit([0.8, 0.1, 0.1])`.\n\nYou can specify a custom split method and parameter to generate a training, validation, and test set by setting the `split`value in the Model Planner input field."
+    ],
+    "start_time": [
+        "start_time",
+        "`start_time: <integer | str>` (Optional)",
+        "Defines the timestamp for the beginning of the training data or numerical offset from the most recent entry to use to generate training data labels. Unless a custom time unit is specified in the aggregation, this value is in `days`. This can be used to make sure the query only generates labels on data from the last `start_time` days. Regardless of this value, all data is used as an input to the model, but this value can help limit what labels are generated.\n\n- `start_time` needs to be \\<= 0 or the string format of a timestamp, i.e. \u20182024-04-01\u2019"
+    ],
+    "starts_with": [
+        "STARTS WITH",
+        "`<expression> STARTS WITH <value>`",
+        "Evaluates to True if the value returned by `<expression>` has `<value>` as a substring at the start. `<expression>` can be `<table>.<column>` or`AGG(<table>.<column>, <start>, <end>)`.\n\nThis operator can only be applied to `text` columns."
+    ],
+    "target_embedding_mode": [
+        "target_embedding_mode",
+        "`target_embedding_mode: list[lookup | feature | fusion]` (Optional)",
+        "A list of target embedding modes use in the final link prediction calculation, i.e., dot product, for AutoML to explore. The mode should be either `lookup`, `feature`, or `fusion`.\n\n* The `lookup` mode uses lookup embeddings for target nodes.\n* The `feature` mode generates target node embeddings based purely on target node features.\n* The `fusion` mode fuses the lookup embeddings and feature-based embeddings."
+    ],
+    "timeframe_step": [
+        "timeframe_step",
+        "`timeframe_step: <integer>` (Optional)",
+        "Defines the step size of generating time intervals for training table generation. This only applies to temporal queries (queries that include a temporal aggregation such as `SUM(TRANSACTIONS.AMOUNT, 0, 2, days)`). The time unit of this step is the same as the time unit in the aggregation.\n\n* `timeframe_step` must be `< full time range - target aggregation`."
+    ],
+    "train_end_offset": [
+        "train_end_offset",
+        "`train_end_offset: <integer>` (Optional)",
+        "Defines the numerical offset from the most recent entry to not use to generate training data labels. Unless a custom time unit is specified in the aggregation, this value is in `days`. This can be used to make sure the query does not generate labels on data from the last `train_end_offset` days. Regardless of this value, all data is used as an input to the model, but this value can help limit what labels are generated.\n\n* `train_end_offset`must be > `0`.\n* If used at the same time as `train_start_offset`, `train_end_offset` should be strictly smaller."
+    ],
+    "train_start_offset": [
+        "train_start_offset",
+        "`train_start_offset: <integer>` (Optional)",
+        "Defines the numerical offset from the most recent entry to use to generate training data labels. Unless a custom time unit is specified in the aggregation, this value is in `days`. This can be used to make sure the query only generates labels on data from the last `train_start_offset` days. Regardless of this value, all data is used as an input to the model, but this value can help limit what labels are generated.\n\n* `train_start_offset`must be > ` 0`."
+    ],
+    "tune_metric": [
+        "tune_metric",
+        "`tune_metric: <string>` (Optional)",
+        "Specifies a metric that you want AutoML to use for optimizing training experiments.\n\n* The tune metric needs to be present in the list of metrics in the model plan.\n* The tune metric is used for early stopping and model selection.\n* For available metrics, please refer to [Kumo Evaluation Metrics](/evaluation-metrics).\n\n**Valid values:** Any metric accepted by [`metrics`](/reference/metrics) for the task, provided it is included in the model plan's `metrics` list. `loss` is also valid for non-link-prediction tasks and does not need to be listed in `metrics`."
+    ],
+    "use_seq_id": [
+        "use_seq_id",
+        "`use_seq_id: <list[bool]>` (Optional)",
+        "If set to `true`, Kumo uses positional encodings of the sequence order of facts as an additional model feature."
+    ],
+    "weight_col": [
+        "weight_col",
+        "`weight_col: <table.column>` (Optional)",
+        "`weight_col` specifies the target-table column used to generate a canonical `WEIGHT` column in the training table.\n\nThis enables native weighted training directly from training table generation, without requiring a custom weighted training table override.\n\n- `weight_col` must be in strict `table.column` form.\n- `weight_col` must reference a column on the inferred target table.\n- The referenced column must be numerical (`int`, `float`, or `decimal`).\n- Expressions are not supported (for example: `SUM(...)`, `AVG(...)`, `MAX(...)`, `COUNT(*)`).\n\n- When set, training table generation produces a canonical `WEIGHT` column.\n- Rows with null `WEIGHT` are dropped before final stats/materialization.\n- For link prediction (non-array targets), if multiple rows map to one `(ENTITY, TARGET[, time bucket])`, `WEIGHT` is aggregated with `MAX` by default.\n- For `LIST_DISTINCT` array-target link prediction, weights are aggregated per `(ENTITY, TARGET)` and emitted as a list aligned with `TARGET`.\n- For temporal link prediction, weight aggregation is bucket-local and uses the same time bucketing as label construction.\n- For binary classification, if both `weight_col` and `majority_sampling_ratio` are set, both are applied according to [weight_mode](/reference/weight_mode)."
+    ],
+    "weight_decay": [
+        "weight_decay",
+        "`weight_decay: <list[float]>` (Optional)",
+        "A list of potential `weight_decay` values for AutoML to explore.\n\nWeight decay, also known as L2 regularization, is a technique that penalizes large weights in neural networks. It encourages smaller, more stable weight values, which can help the model generalize better and avoid overfitting.\n\nEach value in `weight_decay` must be `>= 0.0`."
+    ],
+    "weight_mode": [
+        "weight_mode",
+        "`weight_mode: (sample | weighted_loss)` (Optional)",
+        "`weight_mode` specifies how Kumo applies training weights when either a training-table `WEIGHT` column is present and/or `majority_sampling_ratio` is configured for binary classification.\n\nThe training-table `WEIGHT` column can come from either:\n\n- SDK/custom training-table workflows (see [How do I assign different weights to training samples?](/troubleshooting/can-i-perform-weighted-training))\n- generated weights via [weight_col](/reference/weight_col) in `training_table_generation`\n\n- `sample`: samples training examples with replacement according to the effective weight distribution.\n- `weighted_loss`: weighs training examples in the loss function according to the effective weight distribution.\n\nWhen both a training-table weight column and `majority_sampling_ratio` are set for binary classification:\n\n- In `sample` mode, row and class weights are combined for sampling.\n- In `weighted_loss` mode, row and class weights are combined in loss weighting."
+    ],
+    "year_over_year": [
+        "year_over_year",
+        "`year_over_year: <boolean>` (Optional, default=False)",
+        "For forecasting problems, incorporate year-over-year (YoY) features as additional inputs.\\\nWhen enabled, the model includes the target value from the same period in the previous year (e.g., 364 days earlier for daily windows) as an auto-regressive signal to help capture seasonal patterns."
+    ]
+}

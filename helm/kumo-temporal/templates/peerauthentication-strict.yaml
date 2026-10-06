@@ -1,0 +1,21 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- $transport := .Values.kumoTemporal.security.transport -}}
+{{- $labels := $transport.meshNamespaceLabels | default dict -}}
+{{- $ambient := eq (toString (get $labels "istio.io/dataplane-mode")) "ambient" -}}
+{{- $aksManaged := hasPrefix "asm-" (toString (get $labels "istio.io/rev")) -}}
+{{- if and $transport.encryptionRequired (or $ambient $aksManaged) }}
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: kumo-temporal-strict-mtls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kumo-temporal.labels" . | nindent 4 }}
+spec:
+  mtls:
+    mode: STRICT
+{{- end }}

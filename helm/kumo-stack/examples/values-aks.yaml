@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+platform: aks
+cluster:
+  context: test-aks
+  providers:
+    aks:
+      clusterName: test-aks
+      resourceGroup: test-aks-rg
+      applicationGatewayId: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/test-aks-rg/providers/Microsoft.Network/applicationGateways/test-aks-private
+cloud:
+  postgres:
+    host: test.postgres.database.azure.com
+    resourceGroup: test-aks-rg
+    stateDatabase: kumo
+    stateUser: kumo_workload
+    temporalUser: temporal_runtime
+    admin:
+      mode: azure_entra
+      username: entra_admin
+      database: postgres
+      annotations:
+        azure.workload.identity/client-id: 00000000-0000-0000-0000-000000000000
+  objectStorage:
+    uri: abfss://kumo@examplestorage.dfs.core.windows.net/disk-graph
+images:
+  kumo:
+    registry: example.azurecr.io
+gpu:
+  maxNodes: 1
+  cacheTiers:
+    - {name: small, instanceType: Standard_NC4as_T4_v3, ssdGiB: 256, gpuCount: 1}
+    - {name: medium, instanceType: Standard_NC8as_T4_v3, ssdGiB: 512, gpuCount: 1}
+    - {name: large, instanceType: Standard_NC16as_T4_v3, ssdGiB: 1024, gpuCount: 1}
+  ephemeral: {instanceType: Standard_NC4as_T4_v3}
+stateDbIdentity:
+  controlAnnotations: {azure.workload.identity/client-id: 00000000-0000-0000-0000-000000000000}
+  workerAnnotations: {azure.workload.identity/client-id: 00000000-0000-0000-0000-000000000000}
+  controllerAnnotations: {azure.workload.identity/client-id: 00000000-0000-0000-0000-000000000000}
+tenant:
+  name: acme
+  releaseName: acme
+  namespace: kumo-acme
+  exposureHost: kumo.example.com
+  edgeTls:
+    secretName: kumo-edge-tls
+    certificateFile: /secure/kumo.example.com.crt
+    privateKeyFile: /secure/kumo.example.com.key
+  tenantSecret: {name: kumo-acme-secret-key, key: key}
+  extraValues:
+    auth:
+      enabled: true
+      method: password
+      adminEmails: [admin@example.com]
+      password:
+        temporaryPassword:
+          secretName: kumo-bootstrap-password
+          secretKey: password

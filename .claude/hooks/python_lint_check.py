@@ -1,0 +1,1 @@
+../../.agents/hooks/python_lint_check.py

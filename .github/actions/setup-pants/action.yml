@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: 'Setup Pants environment'
+description: 'Checkout code, install Pants, configure Git, etc.'
+inputs:
+  github_token:
+    description: 'GitHub token with access to private repositories'
+    required: true
+
+runs:
+  using: 'composite'
+
+  steps:
+    - name: Set up Python
+      # Provision 3.14 so Pants' interpreter search (interpreter_constraints
+      # ==3.14.* in pants.toml) finds a matching interpreter on the runner.
+      # Pinned to the same setup-uv SHA/version as the lint jobs in
+      # .github/workflows/linting.yml.
+      uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      with:
+        python-version: "3.14"
+        activate-environment: true
+        enable-cache: false
+
+    - name: Add ~/.local/bin to PATH
+      run: echo "$HOME/.local/bin" >> $GITHUB_PATH
+      shell: bash
+
+    - name: Install Pants v2
+      run: |
+        curl --proto '=https' --tlsv1.2 -fsSL https://static.pantsbuild.org/setup/get-pants.sh | bash
+        pants version
+      shell: bash
+
+    - name: Validate Git auth for private repos
+      run: |
+        if [ -z "${GITHUB_TOKEN_VALUE}" ]; then
+          echo "::error::KUMO_GITHUB_BOT_TOKEN secret is not set or empty. Please configure it in repository settings."
+          exit 1
+        fi
+
+        TOKEN_LENGTH=${#GITHUB_TOKEN_VALUE}
+        if [ "$TOKEN_LENGTH" -lt 20 ]; then
+          echo "::error::GitHub token appears invalid. Please verify KUMO_GITHUB_BOT_TOKEN."
+          exit 1
+        fi
+        echo "GitHub token is available for command-scoped dependency authentication"
+      shell: bash
+      env:
+        GITHUB_TOKEN_VALUE: ${{ inputs.github_token }}

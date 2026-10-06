@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Azure/AKS overlay. Apply before site-specific values.
+#
+# Azure Database for PostgreSQL presents a chain rooted in public Microsoft or
+# DigiCert roots already carried by the stock Temporal images. No ConfigMap or
+# customer-supplied CA is needed. The default stack does not mesh-enroll
+# Temporal; an advanced encrypted deployment must supply its own mesh labels.
+kumoTemporal:
+  platform: azure
+  security:
+    transport:
+      meshNamespaceLabels: {}

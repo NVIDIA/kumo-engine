@@ -1,0 +1,28 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+set -euo pipefail
+
+readonly SOURCE_DIR="${1:-/tmp/postgres-ca-bundles}"
+readonly CERT_DIR="${2:-/opt/kumo/certs}"
+readonly AWS_ARCHIVE="${SOURCE_DIR}/aws-rds-roots.pem.gz"
+
+mkdir -p "${CERT_DIR}"
+
+[[ "$(sha256sum "${AWS_ARCHIVE}" | cut -d ' ' -f 1)" == \
+  "ff835c838e93979c7f5e4afdc18cbf00c49b685aadb24260747299ba049b7e6a" ]]
+
+gzip -dc "${AWS_ARCHIVE}" >"${CERT_DIR}/aws-rds-roots.pem"
+
+aws_subjects="$(
+  openssl crl2pkcs7 -nocrl \
+    -certfile "${CERT_DIR}/aws-rds-roots.pem" |
+    openssl pkcs7 -print_certs -noout
+)"
+for family in "Root CA RSA2048 G1" "Root CA RSA4096 G1" "Root CA ECC384 G1"; do
+  grep -q "${family}" <<<"${aws_subjects}"
+done
+
+chmod 0444 "${CERT_DIR}"/*.pem

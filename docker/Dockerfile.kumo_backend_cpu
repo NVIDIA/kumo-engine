@@ -1,0 +1,395 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# kumo backend CPU image.
+#
+# Hosts long-lived control-plane services on the CPU torch stack:
+#   - REST   (rest/main.py, rest/public/main.py)
+#   - Temporal worker  (temporalio_commons/worker_main.py)
+#   - Pool controller  (python -m pool.controller_main)
+#   - Pool worker daemon  (python -m pool.worker_main)
+#
+# Self-contained build: the `base` stage below (Python 3.14 + CPU torch +
+# heavy stable deps) derives directly from NVIDIA's public ubuntu image, so
+# there is no separate kumo-base image / intermediate ECR base to certify.
+#
+# Pairs with: Dockerfile.kumo_backend_gpu (same source tree, GPU torch + bin/).
+
+# ---------------------------------------------------------------------------
+# base stage — OS + Python 3.14 toolchain + torch (CPU) + heavy stable pip
+# deps (numpy, wheel). Formerly the standalone kumo-base-cpu image; inlined
+# here so the backend builds directly on NVIDIA's public ubuntu base with no
+# intermediate ECR image. Both stages below derive from it.
+#
+# NVIDIA-hosted ubuntu:24.04 (noble) keeps the lineage on nvcr.io (no Docker
+# Hub / ECR base) for NGC supply-chain provenance.
+# ---------------------------------------------------------------------------
+FROM nvcr.io/nvidia/base/ubuntu:noble-20260217 AS base
+
+ARG GID=999
+ARG GROUPNAME=kumouser
+ARG UID=999
+ARG USERNAME=kumouser
+
+RUN apt-get update -y \
+ && apt-get install -y --no-install-recommends sudo \
+ && groupadd -g ${GID} ${GROUPNAME} \
+ && useradd -m -d /home/${USERNAME} -g ${GID} -u ${UID} -s /bin/bash ${USERNAME} \
+ && echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers \
+ && chown -R ${USERNAME}:${GROUPNAME} /home/${USERNAME} \
+ && rm -rf /var/lib/apt/lists/*
+
+USER ${USERNAME}
+
+ENV PATH=/home/${USERNAME}/.local/bin:$PATH
+ENV LD_LIBRARY_PATH=/home/${USERNAME}/.local/lib:$LD_LIBRARY_PATH
+
+WORKDIR /home/${USERNAME}
+
+# Install Python toolchain + torch (CPU) + heavy stable pip deps.
+# Build context is the kumo repo root, so the script lives at docker/.
+COPY --chmod=755 docker/kumodeps_base /home/${USERNAME}/kumodeps_base
+RUN CUDA_VERSION=cpu /home/${USERNAME}/kumodeps_base \
+ && rm /home/${USERNAME}/kumodeps_base
+
+COPY docker/postgres-ca-bundles /tmp/postgres-ca-bundles
+COPY --chmod=755 docker/install_postgres_ca_bundles /tmp/
+USER root
+RUN /tmp/install_postgres_ca_bundles /tmp/postgres-ca-bundles \
+ && rm -rf /tmp/install_postgres_ca_bundles /tmp/postgres-ca-bundles
+USER ${USERNAME}
+
+# ---------------------------------------------------------------------------
+# diskgraph-builder — Rust + build tools to compile the DiskGraph wheel.
+# None of this toolchain lands in the runtime stage.
+# ---------------------------------------------------------------------------
+FROM base AS diskgraph-builder
+
+USER root
+ENV PATH=/root/.cargo/bin:$PATH
+RUN apt-get update -y \
+ && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        cmake \
+        curl \
+        git \
+        lld \
+        pkg-config \
+ && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+ | sh -s -- -y --profile minimal --default-toolchain stable
+
+# Build the internal DiskGraph wheel from the staged in-tree source.
+COPY docker/diskgraph-source/ /tmp/staged-diskgraph-source/
+COPY docker/build_diskgraph_wheel /tmp/build_diskgraph_wheel
+RUN chmod +x /tmp/build_diskgraph_wheel \
+ && /tmp/build_diskgraph_wheel /tmp/diskgraph-wheel
+
+FROM base
+
+ARG TARGETARCH
+ARG GID=999
+ARG GROUPNAME=kumouser
+ARG UID=999
+ARG USERNAME=kumouser
+
+ENV TORCH=2.12.0
+ENV CUDA=cpu
+
+# Bake GloVe embeddings into the image. Three levels match the three
+# deployment shapes (see docker/install_glove_files for details):
+#
+#   basic (default) — glove.6B/50 + indexes (~150 MB). For k8s prod
+#                     (SaaS, VPC); the runtime helper falls back to
+#                     deploy_env().storage.artifact_root for the rest.
+#   all             — every supported (model, dim) tuple (~8 GB). For
+#                     air-gapped deployments (SPCS) only.
+#   none            — skip bake entirely. For singlehost AMI, where the
+#                     host downloads glove and bind-mounts the directory.
+ARG BAKE_GLOVE_LEVEL=basic
+
+# Version string for the kumo Python package (consumed by setuptools-scm
+# during `pip install ".[full]"`). Defaults to a dev sentinel so builds
+# work when .git isn't in the build context (e.g. when .dockerignore
+# excludes it). CI can pass a real version (e.g. branch SHA) here.
+ARG KUMO_VERSION=0.0.0+dev
+ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_KUMO=${KUMO_VERSION}
+
+# CVE patches against latest available at backend rebuild time. Kept here
+# (not in base) so we pick up updates without forcing a base rebuild.
+# openssh is purged outright: nothing sshes into these containers (k8s uses
+# exec), and the openssh packages carry unfixable scanner findings.
+USER root
+RUN apt-get update -y \
+ && apt-get upgrade -y \
+ && DEBIAN_FRONTEND=noninteractive apt-get purge -y \
+        ssh openssh-server openssh-client openssh-sftp-server \
+ && apt-get autoremove -y \
+ # Some base tags ship a stray non-dpkg /usr/bin/ssh that survives the apt
+ # purge; remove it explicitly to satisfy the `! command -v ssh` assertion.
+ && rm -f /usr/bin/ssh /usr/bin/scp /usr/bin/sftp /usr/bin/ssh-* /usr/sbin/sshd \
+ && rm -rf /etc/ssh /var/lib/apt/lists/*
+
+RUN mkdir -p /opt/app /opt/app/src \
+ && chown -R ${USERNAME}:${GROUPNAME} /opt/app
+USER ${USERNAME}
+RUN mkdir -p /opt/app/src/scripts
+
+# ---------------------------------------------------------------------------
+# Dependency-install layer.
+#
+# Build context = kumo repo root. To keep `uv pip install ".[full]"` cached
+# across edits to kumo source, we first copy only the files setuptools needs
+# to evaluate setup.py / pyproject.toml and resolve the dep set:
+#   - pyproject.toml / setup.py / setup.cfg     project metadata
+#   - packages/kumo-api                         shared public contracts
+#   - packages/kumo-pql                         PQL parser and validator
+#   - packages/kumo-core                        shared portable implementation
+#   - packages/kumo-snowflake                   Snowflake source reader
+#   - packages/kumo-databricks                  Databricks source reader
+#   - packages/kumo-bigquery                    BigQuery source reader
+#   - packages/kumo-s3                          S3 session binding
+#   - packages/kumo-gcs                         GCS source access
+#   - 3rdparty/BUILD                            pinned dep versions (parsed by setup.py)
+#   - README.md                                 referenced by pyproject.toml
+#   - bin/kumo-*                                console scripts declared in setup.py
+# Plus an empty kumo/__init__.py stub so `find_packages()` returns ['kumo'].
+# After deps are installed we overlay the full source and reinstall with
+# --no-deps to register the real package.
+# ---------------------------------------------------------------------------
+COPY pyproject.toml setup.py setup.cfg README.md /opt/app/src/
+COPY --chown=${USERNAME}:${GROUPNAME} packages/kumo-api/ \
+    /opt/app/src/packages/kumo-api/
+COPY --chown=${USERNAME}:${GROUPNAME} packages/kumo-pql/ \
+    /opt/app/src/packages/kumo-pql/
+COPY --chown=${USERNAME}:${GROUPNAME} packages/kumo-core/ \
+    /opt/app/src/packages/kumo-core/
+COPY --chown=${USERNAME}:${GROUPNAME} packages/kumo-snowflake/ \
+    /opt/app/src/packages/kumo-snowflake/
+COPY --chown=${USERNAME}:${GROUPNAME} packages/kumo-databricks/ \
+    /opt/app/src/packages/kumo-databricks/
+COPY --chown=${USERNAME}:${GROUPNAME} packages/kumo-bigquery/ \
+    /opt/app/src/packages/kumo-bigquery/
+COPY --chown=${USERNAME}:${GROUPNAME} packages/kumo-s3/ \
+    /opt/app/src/packages/kumo-s3/
+COPY --chown=${USERNAME}:${GROUPNAME} packages/kumo-gcs/ \
+    /opt/app/src/packages/kumo-gcs/
+COPY 3rdparty/ /opt/app/src/3rdparty/
+COPY bin/ /opt/app/src/bin/
+USER root
+RUN chmod -R a+rX /opt/app/src
+USER ${USERNAME}
+RUN mkdir -p /opt/app/src/kumo \
+ && touch /opt/app/src/kumo/__init__.py
+
+# DiskGraph wheel is built in the builder stage so Rust/Cargo never land in
+# the runtime image.
+COPY --from=diskgraph-builder /tmp/diskgraph-wheel /tmp/diskgraph-wheel
+COPY docker/install_glove_files /tmp/
+COPY docker/busyloop.sh /opt/app/busyloop.sh
+
+WORKDIR /opt/app/src
+
+# Install system dependencies as root. Rootless Buildah preserves ownership
+# from earlier layers, so a non-root `uv --system` cannot reliably replace
+# packages already present in the base image.
+USER root
+
+# Install kumo + transitive deps in a single uv resolution. Keep this
+# buildah-compatible because the custom image workflows build with buildah.
+RUN python3 -m pip install uv
+
+# DiskGraph is the internal native wheel built from the staged source.
+# Install it before resolving kumo-core so uv uses this artifact.
+RUN UV_LINK_MODE=copy python3 -m uv pip install --system --no-deps \
+        /tmp/diskgraph-wheel/*.whl
+
+# The root Kumo install below owns the monolith dependency resolution and its
+# pinned dependencies. Register the local API, PQL, core and
+# source-reader packages here without resolving a second, conflicting
+# dependency graph -- every vendor SDK they import is already pinned by
+# the root install.
+RUN UV_LINK_MODE=copy python3 -m uv pip install --system --no-deps \
+        /opt/app/src/packages/kumo-api \
+        /opt/app/src/packages/kumo-pql \
+        /opt/app/src/packages/kumo-core \
+        /opt/app/src/packages/kumo-snowflake \
+        /opt/app/src/packages/kumo-databricks \
+        /opt/app/src/packages/kumo-bigquery \
+        /opt/app/src/packages/kumo-s3 \
+        /opt/app/src/packages/kumo-gcs \
+ && rm -rf /home/${USERNAME}/.cache/uv
+
+# `--torch-backend=${CUDA}` scopes the PyTorch index (whl/${CUDA}/) to
+# torch-family packages, so uv resolves the +${CUDA} torch wheel instead of
+# the default linux torch from PyPI, whose Requires-Dist drags in several GB
+# of orphan NVIDIA CUDA + triton wheels on the CPU image. Unlike a general
+# `--extra-index-url`, it never fans unrelated packages (h11, fsspec, ...)
+# out to download.pytorch.org, which has frequent temporary outages.
+# The uv cache is wiped at the end of the RUN — it sits at ~/.cache/uv and is
+# otherwise several GB of unpacked wheels in the final image.
+# The GitHub token (needed for private kumo-* git deps) is available only to
+# this build step and is removed from git configuration in the same layer.
+RUN --mount=type=secret,id=github_token,required=true,mode=0444 \
+    github_token="$(cat /run/secrets/github_token)" \
+ && git config --global \
+        url."https://${github_token}@github.com/".insteadOf \
+        "https://github.com/" \
+ && UV_LINK_MODE=copy python3 -m uv pip install --system \
+        --find-links ./3rdparty/kumo-wheels/ \
+        ".[full]" \
+        --torch-backend="${CUDA}" \
+        -f /opt/app/src/3rdparty/kumo-wheels/ \
+ && rm -f /root/.gitconfig \
+ && rm -rf /root/.cache/uv
+
+# Validate the staged DiskGraph runtime.
+RUN python3 -c "from diskgraph import SamplerEngine; print('diskgraph import ok')" \
+ && python3 -c "import os, diskgraph; from pathlib import Path; ingest = Path(diskgraph.__file__).parent / 'bin' / 'ingest'; assert ingest.is_file() and os.access(ingest, os.X_OK), ingest; print(f'diskgraph ingest binary ok: {ingest}')"
+
+# GloVe embeddings — tier-controlled. install_glove_files fetches the
+# requested set; runtime helper (kumo_core/glove.py) lazy-fetches any
+# (model, dim) not in the baked set from artifact storage.
+#
+# kumo-public-datasets is private, so the bake must sign with AWS
+# credentials. The final image has no aws CLI, so it uses boto3 (a core
+# dep). Credentials arrive as build secrets (never as build args in CI —
+# args used by a RUN are recorded expanded in image history); referenced
+# only as env for the boto3 call, never promoted to ENV.
+# NOTE(trivy): CI passes these via secret mounts (RUN --mount below); the
+# ARGs are the plain-`docker build` fallback, never promoted to ENV.
+#trivy:ignore:AVD-DS-0031
+ARG AWS_ACCESS_KEY_ID
+#trivy:ignore:AVD-DS-0031
+ARG AWS_SECRET_ACCESS_KEY
+ARG AWS_SESSION_TOKEN
+ARG AWS_REGION=us-west-2
+RUN --mount=type=secret,id=aws_access_key_id,mode=0444 \
+    --mount=type=secret,id=aws_secret_access_key,mode=0444 \
+    --mount=type=secret,id=aws_session_token,mode=0444 \
+    AWS_ACCESS_KEY_ID="$([ -f /run/secrets/aws_access_key_id ] && cat /run/secrets/aws_access_key_id || printf '%s' "${AWS_ACCESS_KEY_ID}")" \
+    AWS_SECRET_ACCESS_KEY="$([ -f /run/secrets/aws_secret_access_key ] && cat /run/secrets/aws_secret_access_key || printf '%s' "${AWS_SECRET_ACCESS_KEY}")" \
+    AWS_SESSION_TOKEN="$([ -f /run/secrets/aws_session_token ] && cat /run/secrets/aws_session_token || printf '%s' "${AWS_SESSION_TOKEN}")" \
+    AWS_DEFAULT_REGION=${AWS_REGION} \
+    BAKE_GLOVE_LEVEL=${BAKE_GLOVE_LEVEL} /tmp/install_glove_files
+
+RUN ! command -v aws \
+ && ! command -v cargo \
+ && ! command -v rustc \
+ && ! command -v rustup \
+ && ! command -v java \
+ && ! command -v ssh \
+ && ! command -v sshd \
+ && test ! -f /root/.gitconfig
+
+RUN python3 -c 'import importlib.metadata as m, sys; from pathlib import PurePosixPath; files = {PurePosixPath(str(item)).name for item in m.distribution("faiss-cpu").files or ()}; expected = {"LICENSE", "THIRD_PARTY_NOTICES"}; assert expected <= files, expected - files; prefixes = ("libgfortran-", "libgomp-") + (("libquadmath-",) if sys.argv[1] == "amd64" else ()); missing = {prefix for prefix in prefixes if not any(name.startswith(prefix) for name in files)}; assert not missing, missing' "${TARGETARCH}"
+
+# ---------------------------------------------------------------------------
+# Source overlay.
+#
+# Now copy the real repo over the stub. Cache busts from here on any source
+# change, but the heavy `.[full]` install above is preserved. The follow-up
+# `uv pip install --no-deps .` rebuilds the kumo wheel against real source
+# without re-resolving dependencies.
+# ---------------------------------------------------------------------------
+COPY . /opt/app/src
+COPY kumo_version.txt /home/${USERNAME}/
+
+USER root
+RUN install -D -m 755 /opt/app/src/deploy/shared/scripts/kumo-bootstrap.py /opt/kumo/bootstrap/scripts/kumo-bootstrap.py \
+ && install -D -m 755 /opt/app/src/deploy/shared/scripts/write-postgres-secrets.py /opt/kumo/bootstrap/scripts/write-postgres-secrets.py \
+ && install -D -m 644 /opt/app/src/deploy/shared/configs/deploy_env_config.template.json /opt/kumo/bootstrap/configs/deploy_env_config.template.json \
+ && install -D -m 644 /opt/app/src/deploy/shared/nginx/nginx.conf /opt/kumo/bootstrap/nginx/nginx.conf \
+ && install -D -m 644 /opt/app/src/deploy/shared/nginx/nginx.http.conf /opt/kumo/bootstrap/nginx/nginx.http.conf \
+ && install -D -m 644 /opt/app/src/deploy/shared/prometheus/prometheus.yml /opt/kumo/bootstrap/prometheus/prometheus.yml \
+ && install -D -m 755 /opt/app/src/docker/compose/config/postgres-initdb/01-create-kumo-databases.sh /opt/kumo/bootstrap/runtime-config/postgres-initdb/01-create-kumo-databases.sh \
+ && install -D -m 644 /opt/app/src/docker/compose/config/temporal/dynamicconfig/docker.yaml /opt/kumo/bootstrap/runtime-config/temporal/dynamicconfig/docker.yaml \
+ && chmod -R a+rX /opt/app/src \
+ && chmod a+r /home/${USERNAME}/kumo_version.txt
+RUN rm -rf /opt/app/src/build /opt/app/src/*.egg-info
+RUN UV_LINK_MODE=copy python3 -m uv pip install --system --no-deps \
+        --reinstall-package kumo \
+        /opt/app/src \
+ && rm -rf /root/.cache/uv
+
+# uv and pip are build-time tools only.
+# Retry transient ENOTEMPTY errors from fuse-overlayfs.
+RUN for cleanup_attempt in 1 2 3; do \
+      rm -rf \
+        /usr/local/lib/python*/dist-packages/uv \
+        /usr/local/lib/python*/dist-packages/uv-*.dist-info \
+        /usr/local/lib/python*/dist-packages/pip \
+        /usr/local/lib/python*/dist-packages/pip-*.dist-info \
+        /usr/local/lib/python*/site-packages/uv \
+        /usr/local/lib/python*/site-packages/uv-*.dist-info \
+        /usr/local/lib/python*/site-packages/pip \
+        /usr/local/lib/python*/site-packages/pip-*.dist-info && break; \
+      test "${cleanup_attempt}" -lt 3 || exit 1; \
+      sleep 1; \
+    done \
+ && rm -f \
+        /usr/local/bin/uv \
+        /usr/local/bin/uvx \
+        /usr/local/bin/pip \
+        /usr/local/bin/pip3 \
+        /usr/local/bin/pip3.* \
+ && ! command -v uv \
+ && ! command -v pip \
+ && ! command -v pip3
+
+# Source preservation. kumo is installed into site-packages by .[full]
+# above; what we keep at /opt/app/* is the stuff invoked directly by
+# entry-point CMDs (rest/main.py, temporalio_commons/worker_main.py,
+# pool/{controller,worker}_main.py).
+WORKDIR /opt/app
+USER root
+# restricted-v2 assigns an arbitrary UID in group 0.
+RUN set -- \
+        --artifact backend-antlr4-runtime \
+        --artifact backend-cloudpickle-runtime \
+        --artifact backend-faiss-cpu-native \
+        --artifact diskgraph-extension \
+        --artifact diskgraph-ingest \
+        --artifact kumo-bundled-source \
+        --artifact kumo-core-bundled-source \
+ && if [ "${TARGETARCH}" = "amd64" ]; then set -- "$@" --artifact backend-faiss-cpu-amd64-native; fi \
+ && if [ "${BAKE_GLOVE_LEVEL}" != "none" ]; then set -- "$@" --artifact backend-baked-glove; fi \
+ && python3 -c "import importlib.metadata as m; assert m.version('antlr4-python3-runtime') == '4.9.3'; assert m.version('cloudpickle') == '3.1.1'" \
+ && python3 /opt/app/src/scripts/gen_third_party.py "$@" \
+        --output /usr/share/licenses/kumo/THIRD-PARTY.txt \
+ && install -D -m 0644 /opt/app/src/LICENSE /usr/share/licenses/kumo/LICENSE \
+ && install -D -m 0644 /opt/app/src/packages/kumo-api/LICENSE /usr/share/licenses/kumo/KUMO-API-LICENSE \
+ && test -s /usr/share/licenses/kumo/LICENSE \
+ && test -s /usr/share/licenses/kumo/THIRD-PARTY.txt \
+ && test -s /usr/share/licenses/kumo/KUMO-API-LICENSE \
+ && test -s /usr/share/common-licenses/GPL-3 \
+ && if [ "${TARGETARCH}" = "amd64" ]; then test -s /usr/share/common-licenses/LGPL-2.1; fi \
+ && mv /opt/app/src/rest /opt/app/ \
+ && mv /opt/app/src/temporalio_commons /opt/app/ \
+ && mv /opt/app/src/pool /opt/app/ \
+ && rm -rf /opt/app/src \
+ && chown -R ${USERNAME}:${GROUPNAME} /opt/app \
+ && chgrp -R 0 /home/${USERNAME} \
+ && chmod -R g=u /home/${USERNAME}
+
+# Numeric UID:GID so the kubelet can verify `runAsNonRoot: true` (set by
+# pool/worker_manager/k8s.py); a name here yields "cannot verify user is
+# non-root" and the container never starts.
+USER ${UID}:${GID}
+
+ENV PATH=/home/${USERNAME}/.local/bin:/usr/bin:$PATH
+ENV PYTHONPATH=/opt/app:${PYTHONPATH:-}
+ENV SETTINGS_YAML=/opt/app/config/settings.yaml
+ENV HOME=/home/${USERNAME}
+ENV USER=${USERNAME}
+ENV LOGNAME=${USERNAME}
+ENV KUMO_HOME=/tmp/kumo
+ENV KUMO_GLOVE_PATH=/opt/app/artifacts/glove
+
+EXPOSE 8000 8001
+
+# Health is owned by K8s probes; no Docker-level healthcheck by design.
+HEALTHCHECK NONE
+CMD ["/opt/app/busyloop.sh"]
