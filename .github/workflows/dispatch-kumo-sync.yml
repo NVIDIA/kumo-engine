@@ -8,6 +8,10 @@ on:
   push:
     branches: [main]
 
+# The cross-repo dispatch authenticates with KUMO_GITHUB_BOT_TOKEN; the job
+# never uses GITHUB_TOKEN and does not check out the repo.
+permissions: {}
+
 jobs:
   dispatch:
     runs-on: ubuntu-latest
