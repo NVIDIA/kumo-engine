@@ -9,6 +9,46 @@ targets = [
 ]
 all-features = true
 
+# Advisories that stay in the graph on purpose. Each ignore entry must say
+# why DiskGraph cannot reach the advisory and what removing the crate takes.
+#
+# Scope note: CI runs `cargo deny check licenses` only, so this section is
+# documentation rather than a gate. cargo-deny's default `unsound =
+# "workspace"` scope reports `unsound` advisories only for direct
+# dependencies of workspace crates, so it does not surface the ones against
+# transitive crates such as maligned and lru; cargo-audit and Dependabot do.
+# The same scope makes `cargo deny check advisories` emit
+# `warning[advisory-not-detected]` for an ignore entry it never matches.
+#
+# lru is deliberately absent from this list. It carries RUSTSEC-2026-0002
+# (GHSA-rhfx-m35p-ff5j) and RUSTSEC-2026-0253, which has no GHSA alias and
+# so appears only in cargo-audit. It arrives only through ratatui, an
+# optional dependency behind the off-by-default `diskgraph-ingest/ingest-tui`
+# and `diskgraph-engine/sampler-tui` features, so nothing that ships links it
+# (see third_party/artifact-manifest.json). It is still in Cargo.lock and in
+# this policy graph (`all-features = true` above), so lockfile-based scanners
+# such as cargo-audit and Dependabot still see it, but no shipped artifact
+# can reach it.
+[advisories]
+ignore = [
+    # maligned 0.2.1, a transitive dependency of epserde 0.8 and mem_dbg 0.3
+    # (the MPHF index serialization stack under diskgraph-ptrhash). The
+    # advisory is about `maligned::align_first` deallocating with a layout
+    # that does not match the allocation. maligned's default `alloc` feature
+    # is on, so align_first and its `align_first_boxed*` wrappers are public,
+    # but nothing in the workspace or in any locked dependency calls them.
+    # epserde uses `A16` and `A64` only as element types of buffers it
+    # allocates itself with a matching layout, and mem_dbg only implements
+    # `MemSize` / `MemDbg` over maligned's alignment types.
+    #
+    # maligned has no fixed release. epserde 0.11.5 is the first release
+    # without it, but cacheline-ef 1.x pins epserde ^0.8, and cacheline-ef
+    # 2.0.0 needs epserde ^0.13.1, whose serialization format (header major
+    # version 2) cannot load the ptrhash indexes DiskGraph has already
+    # written.
+    { id = "RUSTSEC-2023-0017", reason = "nothing calls maligned::align_first; removing maligned needs epserde 0.13, which changes the on-disk ptrhash index format" },
+]
+
 [licenses]
 confidence-threshold = 0.93
 unused-allowed-license = "allow"

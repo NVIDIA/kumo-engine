@@ -70,6 +70,18 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy feature-gated TUI binaries
+        # `--all-targets` above does NOT cover these two. Cargo silently skips
+        # any target whose `required-features` are unmet, and both TUI binaries
+        # are gated that way so that ratatui's advisory-carrying `lru` stays
+        # out of the default build and out of every shipped artifact. Without
+        # this step the code behind `sampler-tui` / `ingest-tui` would not be
+        # linted by CI; the `test` job still builds it, but only clippy catches
+        # lint regressions as dependencies change.
+        # Add a line here for each binary that declares `required-features`.
+        run: |
+          cargo clippy -p diskgraph-engine --features sampler-tui --bin sampler_tui -- -D warnings
+          cargo clippy -p diskgraph-ingest --features ingest-tui --bin ingest_tui -- -D warnings
 
   test:
     runs-on: ubuntu-22.04-large
@@ -110,6 +122,17 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Build and Test
         run: cargo test --workspace
+      - name: Build feature-gated TUI binaries
+        # `cargo test --workspace` above builds every binary target it can see,
+        # but cargo silently skips targets with unmet `required-features`, so
+        # both TUI binaries are invisible to it. This runs here rather than in
+        # the `clippy` job because clippy stops at metadata: only a real build
+        # exercises codegen and the link step, and this job is the one with lld
+        # and a warm rustc target dir. As in the clippy job, add a line here for
+        # each binary that declares `required-features`.
+        run: |
+          cargo build -p diskgraph-engine --features sampler-tui --bin sampler_tui
+          cargo build -p diskgraph-ingest --features ingest-tui --bin ingest_tui
 
   python-test:
     runs-on: ubuntu-22.04-large

@@ -30,7 +30,6 @@ diskgraph-rowpack = { path = "../diskgraph-rowpack" }
 parquet = "58.4.0"
 rand = "0.8"
 rayon = "1.10"
-xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 [dev-dependencies]
 tempfile = "3"
