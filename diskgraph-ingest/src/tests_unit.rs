@@ -763,3 +763,95 @@ fn int32_epoch_secs_no_format_unchanged() {
         );
     });
 }
+
+#[test]
+fn shard_routing_matches_golden_values() {
+    // Ingest places every node on shard `gxhash(key) % num_shards` and the
+    // index looks it up again with its own `shard_for_key`, so both functions
+    // must keep returning these values for indexes already on disk. With
+    // `usize::MAX` shards the modulo keeps the whole 64-bit hash, so any
+    // change in gxhash or `GXHASH_SHARD_SEED` shows up. Do not update these
+    // values to make a dependency or toolchain bump pass.
+    use crate::mapping::Key;
+    use diskgraph_index::pkmap::{shard_for_key as index_shard_for_key, Key as IndexKey};
+
+    fn bytes(len: usize) -> Vec<u8> {
+        (0..len)
+            .map(|i| (i as u8).wrapping_mul(31).wrapping_add(7))
+            .collect()
+    }
+    let mut ip = [0_u8; 16];
+    ip[10..].copy_from_slice(&[0xff, 0xff, 192, 168, 1, 1]);
+
+    // The VarBytes lengths reach gxhash's empty, single-vector (1-16 bytes),
+    // 17-32, 33-48 and over 64 byte paths.
+    let cases: [(&str, Key, IndexKey, usize); 10] = [
+        (
+            "Int64 0",
+            Key::Int(0),
+            IndexKey::Int(0),
+            0x1f40_2975_bb21_b447,
+        ),
+        (
+            "Int64",
+            Key::Int(0x0123_4567_89ab_cdef),
+            IndexKey::Int(0x0123_4567_89ab_cdef),
+            0xcd4f_1579_a97c_b6c1,
+        ),
+        (
+            "Uuid",
+            Key::Uuid([0xa5; 16]),
+            IndexKey::Uuid([0xa5; 16]),
+            0x5bf4_4b62_941c_c339,
+        ),
+        ("Ip", Key::Ip(ip), IndexKey::Ip(ip), 0xe1e9_bf31_76ec_1705),
+        (
+            "Uuid256",
+            Key::Uuid256([0x5a; 32]),
+            IndexKey::Uuid256([0x5a; 32]),
+            0x683b_a8b4_0892_a41e,
+        ),
+        (
+            "0 bytes",
+            Key::Bytes(bytes(0)),
+            IndexKey::Bytes(bytes(0)),
+            0x597e_4309_a91b_9d84,
+        ),
+        (
+            "10 bytes",
+            Key::Bytes(b"PK_0000001".to_vec()),
+            IndexKey::Bytes(b"PK_0000001".to_vec()),
+            0x484b_da8d_fc0f_0da2,
+        ),
+        (
+            "20 bytes",
+            Key::Bytes(bytes(20)),
+            IndexKey::Bytes(bytes(20)),
+            0x4091_0ac9_91d0_0fe4,
+        ),
+        (
+            "40 bytes",
+            Key::Bytes(bytes(40)),
+            IndexKey::Bytes(bytes(40)),
+            0xd8f9_15d3_a218_dfd0,
+        ),
+        (
+            "200 bytes",
+            Key::Bytes(bytes(200)),
+            IndexKey::Bytes(bytes(200)),
+            0x85fc_2077_5d3d_13f0,
+        ),
+    ];
+    let mut buf = Vec::new();
+    let mut mismatches = Vec::new();
+    for (name, key, index_key, want) in cases {
+        let ingest = super::shard_for_key_from_key(&key, &mut buf, usize::MAX).unwrap();
+        let index = index_shard_for_key(&index_key, usize::MAX);
+        if ingest != want || index != want {
+            mismatches.push(format!(
+                "{name}: ingest {ingest:#018x}, index {index:#018x}, want {want:#018x}"
+            ));
+        }
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}

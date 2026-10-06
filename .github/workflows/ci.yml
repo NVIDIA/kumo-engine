@@ -72,12 +72,13 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Clippy feature-gated TUI binaries
         # `--all-targets` above does NOT cover these two. Cargo silently skips
-        # any target whose `required-features` are unmet, and both TUI binaries
-        # are gated that way so that ratatui's advisory-carrying `lru` stays
-        # out of the default build and out of every shipped artifact. Without
-        # this step the code behind `sampler-tui` / `ingest-tui` would not be
-        # linted by CI; the `test` job still builds it, but only clippy catches
-        # lint regressions as dependencies change.
+        # any target whose `required-features` are unmet, and `sampler_tui` and
+        # `ingest_tui` require the off-by-default `sampler-tui` and
+        # `ingest-tui` features. Those features are also the only path to
+        # ratatui and its advisory-carrying `lru`, which keeps both out of the
+        # default build and every shipped artifact. Without this step CI would
+        # not lint the TUI code; the `test` job builds it, but only clippy
+        # catches lint regressions as dependencies change.
         # Add a line here for each binary that declares `required-features`.
         run: |
           cargo clippy -p diskgraph-engine --features sampler-tui --bin sampler_tui -- -D warnings

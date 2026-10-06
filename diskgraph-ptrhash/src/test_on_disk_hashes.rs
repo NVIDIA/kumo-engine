@@ -1,22 +1,28 @@
 //! Golden values for hashes that persist in on-disk DiskGraph indexes.
 //!
-//! A built index stores its seed and pilots, and every lookup recomputes the
-//! key hash with [`PkHash`], so both of its hash paths must keep producing
-//! exactly these values. Ingest picks the path per index through
-//! `PtrHashParams::prefer_fallback_hash`, set when the longest key exceeds
-//! [`MAX_GXHASH_INJECTIVE_LEN`] (16 bytes):
+//! This module pins two things:
 //!
-//! - gxhash for Int64 (8-byte), Uuid and Ip (16-byte) keys, and for VarBytes
-//!   keys whose sampled maximum length is at most 16 bytes. The maximum comes
-//!   from a sample, so such an index can still hold longer keys.
-//! - xxh3 for Uuid256 (32-byte) keys and VarBytes keys longer than 16 bytes.
+//! - The MPHF key hash [`PkHash`] computes, on both of its paths. A built
+//!   index stores its seed and pilots, and every lookup recomputes the key
+//!   hash. Ingest picks the path per index through
+//!   `PtrHashParams::prefer_fallback_hash`, set when the longest key exceeds
+//!   [`MAX_GXHASH_INJECTIVE_LEN`] (16 bytes):
+//!   - gxhash for Int64 (8-byte), Uuid and Ip (16-byte) keys, and for
+//!     VarBytes keys whose sampled maximum length is at most 16 bytes. The
+//!     maximum comes from a sample, so such an index can still hold longer
+//!     keys.
+//!   - xxh3 for Uuid256 (32-byte) keys and VarBytes keys longer than 16
+//!     bytes.
+//! - The type and alignment hashes epserde writes into every index header.
+//!   epserde refuses to load a file whose hashes differ.
 //!
-//! gxhash defines its output as identical on every supported platform within
-//! a major version: the x86 AES-NI and the ARM AES/NEON paths compute the
-//! same rounds. These values therefore hold on both x86_64 and aarch64.
+//! Shard routing, which places each key on a shard with gxhash, is pinned
+//! next to the functions that compute it, in diskgraph-ingest's
+//! `shard_routing_matches_golden_values`. The optional `pkhash128` mode,
+//! which hashes keys with `GxHash128`, is not covered.
 //!
-//! epserde writes a type hash and an alignment hash into every index header
-//! and refuses to load a file whose hashes differ.
+//! gxhash documents its output as stable across platforms within a major
+//! version. CI runs this test on x86_64.
 //!
 //! A failure here means existing indexes would route lookups wrongly or fail
 //! to load. Do not update these values to make a dependency or toolchain bump
@@ -28,7 +34,7 @@ use crate::hash::{Hasher, PkHash};
 
 const SEED: u64 = 0x9e37_79b9_7f4a_7c15;
 
-fn gxhash<Key: crate::KeyT + ?Sized>(key: &Key, seed: u64) -> u64
+fn gxhash_path<Key: crate::KeyT + ?Sized>(key: &Key, seed: u64) -> u64
 where
     PkHash: Hasher<Key, H = u64>,
 {
@@ -60,37 +66,57 @@ fn pk_hash_gxhash_matches_golden_values() {
     let cases: [(&str, u64, u64); 11] = [
         (
             "u64, seed 0",
-            gxhash(&0x0123_4567_89ab_cdef_u64, 0),
+            gxhash_path(&0x0123_4567_89ab_cdef_u64, 0),
             0x4bb3_a168_130c_a67d,
         ),
         (
             "u64",
-            gxhash(&0x0123_4567_89ab_cdef_u64, SEED),
+            gxhash_path(&0x0123_4567_89ab_cdef_u64, SEED),
             0x81a3_a15f_9ef8_37c5,
         ),
         (
             "[u8; 16], seed 0",
-            gxhash(&[0xa5_u8; 16], 0),
+            gxhash_path(&[0xa5_u8; 16], 0),
             0x89d6_bb2f_e539_9be3,
         ),
         (
             "[u8; 16]",
-            gxhash(&[0xa5_u8; 16], SEED),
+            gxhash_path(&[0xa5_u8; 16], SEED),
             0x8a1f_de7d_9521_94a9,
         ),
         (
             "0 bytes, seed 0",
-            gxhash(&bytes(0), 0),
+            gxhash_path(&bytes(0), 0),
             0x7c27_6c31_7a1a_784f,
         ),
-        ("0 bytes", gxhash(&bytes(0), SEED), 0x8a1a_14d2_0d97_345b),
-        ("8 bytes", gxhash(&bytes(8), SEED), 0x278d_2161_6a70_21c9),
-        ("16 bytes", gxhash(&bytes(16), SEED), 0x14c1_742c_422d_ec9a),
-        ("20 bytes", gxhash(&bytes(20), SEED), 0xf68d_142b_1495_526f),
-        ("60 bytes", gxhash(&bytes(60), SEED), 0x7196_7502_2840_ac4d),
+        (
+            "0 bytes",
+            gxhash_path(&bytes(0), SEED),
+            0x8a1a_14d2_0d97_345b,
+        ),
+        (
+            "8 bytes",
+            gxhash_path(&bytes(8), SEED),
+            0x278d_2161_6a70_21c9,
+        ),
+        (
+            "16 bytes",
+            gxhash_path(&bytes(16), SEED),
+            0x14c1_742c_422d_ec9a,
+        ),
+        (
+            "20 bytes",
+            gxhash_path(&bytes(20), SEED),
+            0xf68d_142b_1495_526f,
+        ),
+        (
+            "60 bytes",
+            gxhash_path(&bytes(60), SEED),
+            0x7196_7502_2840_ac4d,
+        ),
         (
             "1000 bytes",
-            gxhash(&bytes(1000), SEED),
+            gxhash_path(&bytes(1000), SEED),
             0xd6ae_f85e_5f52_a7fb,
         ),
     ];
