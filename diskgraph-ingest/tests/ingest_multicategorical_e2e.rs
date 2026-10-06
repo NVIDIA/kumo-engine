@@ -30,7 +30,6 @@ use diskgraph_ingest::col_stats::CategoryCountStrategy;
 use diskgraph_ingest::config_converter::{
     convert_kumo_to_diskgraph, ConvertOptions, KumoGraphConfig,
 };
-use diskgraph_ingest::errors::ConvertError;
 use diskgraph_ingest::{ingest_with_stats, Dest, IngestOptions};
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
@@ -1011,8 +1010,7 @@ fn convert_normalizes_multicat_delim_string_to_stringarray() -> Result<()> {
 /// Sparse multi-token data is *valid* under an explicit delimiter: rows with
 /// a single tag tokenize as a one-element list under GE-parity drop-empty.
 /// The validator should not reject a config just because most rows have
-/// only one token — only total mismatch (zero rows containing the delim)
-/// is the real error.
+/// only one token. Even a zero-hit sample is diagnostic, not fatal.
 #[test]
 fn convert_accepts_explicit_delim_with_mostly_single_token_rows() -> Result<()> {
     let dir = tempdir()?;
@@ -1070,8 +1068,7 @@ fn convert_accepts_explicit_delim_with_mostly_single_token_rows() -> Result<()> 
         }),
         source_specs: None,
     };
-    // Should succeed — explicit declarations get the floor of "delim must
-    // appear at least once", not the 50% auto-detect-winner threshold.
+    // Explicit declarations do not use the auto-detection occurrence floor.
     let cfg = convert_kumo_to_diskgraph(&kumo, &opts)?;
     let col = cfg.tables[0]
         .columns
@@ -1170,14 +1167,10 @@ fn convert_and_ingest_accept_explicit_delim_with_hit_after_auto_sample_cap() -> 
     Ok(())
 }
 
-/// Direct DiskGraph configs (i.e. configs hand-authored or emitted by
-/// non-kumo tooling, fed straight to `ingest_with_stats`) must also see
-/// the wrong-delimiter validation. Pre-#28478 the convert path was the
-/// only entry; post-flip we run the validation universally at ingest entry
-/// so a typo'd delimiter on a direct config does not silently bake into the
-/// rowpack on disk.
+/// A declared delimiter remains authoritative when no source row contains it.
+/// Direct ingestion emits a warning and preserves each row as a single token.
 #[test]
-fn ingest_errors_on_direct_config_explicit_delim_mismatch() -> Result<()> {
+fn ingest_warns_on_direct_config_explicit_delim_mismatch() -> Result<()> {
     let dir = tempdir()?;
     let data_dir = dir.path().join("data");
     let index_dir = dir.path().join("index");
@@ -1222,40 +1215,46 @@ fn ingest_errors_on_direct_config_explicit_delim_mismatch() -> Result<()> {
     let config_path = data_dir.join("config.json");
     fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
 
-    let res = ingest_with_stats(
-        &config_path,
-        index_dir.to_str().unwrap(),
-        Dest::Local,
-        IngestOptions {
-            parallel: false,
-            col_stats: true,
-            cat_count_strategy: CategoryCountStrategy::Hybrid,
-            ..IngestOptions::default()
-        },
+    let process = std::process::Command::new(env!("CARGO_BIN_EXE_ingest"))
+        .env("NO_COLOR", "1")
+        .arg("--source")
+        .arg(&config_path)
+        .arg("--output")
+        .arg(&index_dir)
+        .args([
+            "--dest",
+            "local",
+            "--col-stats",
+            "--cat-count-strategy",
+            "hybrid",
+        ])
+        .output()?;
+    let log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&process.stdout),
+        String::from_utf8_lossy(&process.stderr),
     );
-    let err = res.expect_err("ingest should error on declared-vs-data mismatch");
-    let s = err.to_string();
-    assert!(
-        s.contains("does not match the source data") && s.contains("tags"),
-        "expected delim-mismatch error pointing at column `tags`, got: {}",
-        s,
-    );
-    assert!(
-        s.contains("Sample row that did not contain the delimiter: \"<omitted>\""),
-        "expected mismatch diagnostics not to retain source data, got: {}",
-        s,
-    );
+    assert!(process.status.success(), "{log}");
+    assert!(log.contains("using declared delimiter"), "{log}");
+    assert!(log.contains("hits=0"), "{log}");
+    // Occurrence diagnostics never disclose a source row.
+    assert!(!log.contains("a;b;c"), "{log}");
+    let stats = read_kumo_stats(&index_dir, "items")?;
+    let counts = &stats["tags__kumo.multicategorical__MULTI_CATEGORY_COUNTS__False"]["value"];
+    let tokens: Vec<&str> = counts
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pair| pair[0].as_str().unwrap())
+        .collect();
+    assert_eq!(tokens, vec!["a;b;c", "a;c", "d;e", "x;y;z"]);
     Ok(())
 }
 
-/// User declares `multicategorical_delimiter=","` on a column whose source
-/// data uses `;`. Today (pre-#28478) the mistake silently produces
-/// one-token-per-row tokenization at every read site; post-flip it bakes
-/// into the rowpack on disk because ingest pre-splits, so the wrong choice
-/// is irreversible without re-ingest. `convert_kumo_to_diskgraph` must
-/// surface this loudly with column + sample-row context.
+/// Conversion also accepts a zero-hit declared delimiter without replacing it
+/// with the delimiter found in the source.
 #[test]
-fn convert_errors_on_explicit_delim_mismatch_with_data() -> Result<()> {
+fn convert_accepts_explicit_delim_mismatch_with_data() -> Result<()> {
     let dir = tempdir()?;
     let data_dir = dir.path().join("data");
     fs::create_dir_all(&data_dir)?;
@@ -1307,31 +1306,13 @@ fn convert_errors_on_explicit_delim_mismatch_with_data() -> Result<()> {
         }),
         source_specs: None,
     };
-    let err = convert_kumo_to_diskgraph(&kumo, &opts)
-        .expect_err("convert should error on delim mismatch");
-    match err {
-        ConvertError::MulticategoricalDelimiterMismatch {
-            table,
-            column,
-            declared,
-            hits,
-            total,
-            sample,
-            ..
-        } => {
-            assert_eq!(table, "items");
-            assert_eq!(column, "tags");
-            assert_eq!(declared, ",");
-            assert_eq!(hits, 0, "comma absent from every sampled row");
-            assert!(total >= 1, "scan should have sampled at least one row");
-            assert!(
-                sample.contains(';'),
-                "sample row should be a real source row containing the actual delimiter; got {:?}",
-                sample,
-            );
-        }
-        other => panic!("unexpected error variant: {:?}", other),
-    }
+    let converted = convert_kumo_to_diskgraph(&kumo, &opts)?;
+    let tags = converted.tables[0]
+        .columns
+        .iter()
+        .find(|c| c.name == "tags")
+        .unwrap();
+    assert_eq!(tags.multicategorical_delimiter.as_deref(), Some(","));
     Ok(())
 }
 
