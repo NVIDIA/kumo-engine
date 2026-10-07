@@ -184,8 +184,7 @@ def pyarrow_filesystem(path: str):
         # Python credential objects identity-backed connectors carry, so ADLS
         # goes through an fsspec adapter over the credentialed SDK clients.
         # Imported lazily: impl_adls imports this module for scope helpers.
-        from io_utils.fsutil.adls_arrow import \
-            ADLSArrowFileSystem  # pants: no-infer-dep
+        from io_utils.fsutil.adls_arrow import ADLSArrowFileSystem
         return fs.PyFileSystem(  # pyright: ignore[reportPrivateImportUsage]
             fs.FSSpecHandler(ADLSArrowFileSystem.from_uri(path)))
     return filesystem_type.from_uri(path)[0]

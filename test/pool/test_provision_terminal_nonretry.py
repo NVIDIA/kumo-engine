@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-
 """Integration test: ProvisionTerminalError is non-retryable end-to-end.
 
 Covers the full stack from AutoRPC server through wf_coordinator:
@@ -26,7 +25,7 @@ import uuid
 from datetime import timedelta
 from unittest import mock
 
-import pytest  # pants: no-infer-dep
+import pytest
 from temporalio import workflow
 from temporalio.api.enums.v1 import EventType
 from temporalio.client import WorkflowFailureError
@@ -74,6 +73,7 @@ def temporal_config() -> DeployEnvConfig:
     """
     return DeployEnvConfig.for_test()
 
+
 # ---------------------------------------------------------------------------
 # Fake PoolController AutoRPC service
 # ---------------------------------------------------------------------------
@@ -85,13 +85,13 @@ class _FakePoolController:
 
     Raises a configurable exception from place_snapshot() and counts calls.
     """
-
     def __init__(self, exc: Exception | None = None) -> None:
         self.call_count = 0
         self._exc = exc or ProvisionTerminalError('injected by test')
 
     @rpc_handler
-    async def place_snapshot(self, request: PlacementRequest) -> PlacementResult:
+    async def place_snapshot(self,
+                             request: PlacementRequest) -> PlacementResult:
         self.call_count += 1
         raise self._exc
 
@@ -108,12 +108,11 @@ class _FakePoolController:
 @workflow.defn
 class _DummySnapshotWorkflow:
     """Minimal workflow that acquires a pool lease."""
-
     @workflow.run
     async def run(self, snapshot_id: str) -> str:
         async with snapshot_placement_session_ctx(
-            snapshot_id,
-            SnapshotActivity.ENSURE_SNAPSHOT,
+                snapshot_id,
+                SnapshotActivity.ENSURE_SNAPSHOT,
         ) as placement:
             return placement.task_queue
 
@@ -156,8 +155,8 @@ async def test_provision_terminal_error_no_retry_through_placement_context(
     monkeypatch.setattr(_tmod, 'PLACE_START_TO_CLOSE', timedelta(seconds=15))
     monkeypatch.setattr(_tmod, 'PLACE_SCHEDULE_TO_CLOSE', timedelta(seconds=30))
 
-    fake_ctrl = _FakePoolController(
-        exc=ProvisionTerminalError('CrashLoopBackOff: container exited immediately'))
+    fake_ctrl = _FakePoolController(exc=ProvisionTerminalError(
+        'CrashLoopBackOff: container exited immediately'))
 
     # AutoRPC client connecting to the fake controller on its task queue.
     # Single attempt at the AutoRPC level — the outer retry behavior is what
@@ -175,15 +174,18 @@ async def test_provision_terminal_error_no_retry_through_placement_context(
 
     # Workflow worker: runs _DummySnapshotWorkflow + pool activities
     tq = f'test-provision-terminal-{uuid.uuid4().hex[:8]}'
-    worker_env = WorkerEnv('test-worker', WorkerOptions(task_queue=tq), temporal_config)
+    worker_env = WorkerEnv('test-worker', WorkerOptions(task_queue=tq),
+                           temporal_config)
     wf_worker = await worker_env.build_worker(
         activities=[place_snapshot_activity, release_snapshot_activity],
         workflows=[_DummySnapshotWorkflow],
     )
 
     # AutoRPC server worker: serves the fake PoolController
-    server_cfg = AutoRpcServerWorkerConfig(temporal_config, max_executor_threads=2)
-    autorpc_env, autorpc_worker = await create_server_from_config(fake_ctrl, server_cfg)
+    server_cfg = AutoRpcServerWorkerConfig(temporal_config,
+                                           max_executor_threads=2)
+    autorpc_env, autorpc_worker = await create_server_from_config(
+        fake_ctrl, server_cfg)
     autorpc_task = asyncio.create_task(autorpc_worker.run())
 
     try:
@@ -211,17 +213,16 @@ async def test_provision_terminal_error_no_retry_through_placement_context(
         assert fake_ctrl.call_count == 1, (
             f'place_snapshot was called {fake_ctrl.call_count}× at the AutoRPC level; '
             f'expected 1. ProvisionTerminalError is being retried by AutoRPC, '
-            f'meaning is_retryable() returned True (RuntimeError in MRO).'
-        )
+            f'meaning is_retryable() returned True (RuntimeError in MRO).')
 
         # 2. Temporal level: activity scheduled exactly once (_PLACE_RETRY_POLICY)
-        schedules = await _activity_schedule_count(wf_handle, 'place_snapshot_activity')
+        schedules = await _activity_schedule_count(wf_handle,
+                                                   'place_snapshot_activity')
         assert schedules == 1, (
             f'place_snapshot_activity was scheduled {schedules}× by Temporal; '
             f'expected 1. _PLACE_RETRY_POLICY has maximum_attempts='
             f'{_PLACE_RETRY_POLICY.maximum_attempts} but non_retryable=True '
-            f'should stop all retries immediately.'
-        )
+            f'should stop all retries immediately.')
 
     finally:
         await autorpc_worker.shutdown()

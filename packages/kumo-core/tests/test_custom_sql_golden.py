@@ -109,13 +109,13 @@ def _declared_pin() -> str:
 
 
 def _build_pin() -> str:
-    text = (ROOT / '3rdparty' / 'BUILD').read_text()
-    found = re.search(r'^SQLGLOT_VERSION = "([^"]+)"$', text, re.MULTILINE)
-    assert found is not None, 'SQLGLOT_VERSION is not declared in 3rdparty/BUILD'
+    text = (ROOT / 'setup.py').read_text()
+    found = re.search(r'^\s*"sqlglot([^"]*)",\s*$', text, re.MULTILINE)
+    assert found is not None, 'sqlglot is not declared in setup.py'
     return found.group(1)
 
 
-@pytest.mark.skipif(not (ROOT / '3rdparty' / 'BUILD').exists(),
+@pytest.mark.skipif(not (ROOT / 'setup.py').exists(),
                     reason='the monorepo resolve is not present in a wheel')
 def test_the_two_sqlglot_declarations_are_one_constant() -> None:
     assert _build_pin() == _declared_pin()

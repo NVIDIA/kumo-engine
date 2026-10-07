@@ -4,13 +4,15 @@ This directory contains scripts for developer setup, CI checks, operational util
 
 ## Version stamping
 
-The kumo-engine wheel, Studio images, and Helm charts share one version, kept in the root [`VERSION`](../VERSION) file as a PEP 440 string such as `1.1.0.dev0`. After changing it, run:
+kumo-engine, kumo-sdk, the platform, the Studio images, and the Helm charts share one version, kept in the root [`VERSION`](../VERSION) file as a PEP 440 string such as `1.1.0.dev0` (also `1.1.0`, `1.1.0b1` and `1.1.0rc1`). After changing it, run:
 
 ```bash
 python3 scripts/stamp_version.py
 ```
 
-The [script](./stamp_version.py) writes the version into every site that carries it, using the SemVer form (`1.1.0-dev.0`) for Helm. CI runs `python3 scripts/stamp_version.py --check`, which fails when any site differs from `VERSION`.
+The [script](./stamp_version.py) writes the version into every site that carries it: `kumo.engine._version` (the kumo-engine wheel's version), `kumoai_studio/_version.py` (the kumo-sdk wheel's version), `common_utils/version_file.py` (the platform's release version) and the Helm charts, using the SemVer form (`1.1.0-dev.0`, `1.1.0-rc.1`) for Helm. CI runs `python3 scripts/stamp_version.py --check`, which fails when any site differs from `VERSION`.
+
+The kumo-sdk release workflows change the version through [`packages/kumo-sdk/scripts/set_version.py`](../packages/kumo-sdk/scripts/set_version.py), which writes `VERSION` and runs the stamp, so a release branch's `rc`/final versions and the next `.dev0` on master are shared by every artifact. See [releasing kumo-engine](../docs/development/releasing-kumo-engine.md).
 
 ## Python dead-code check
 

@@ -70,6 +70,7 @@ def _save_json(value: Any, path: str) -> None:
 
 
 _ONE_GB: Final[int] = 1024 * 1024 * 1024
+_HOLDOUT_MAX_BYTES: int = _ONE_GB
 _STREAMING_BUFFER_SIZE: Final[int] = 128 * 1024 * 1024
 _MAX_NUM_SAMPLES: Final[int] = 10_000
 _HISTOGRAM_BIN_PRECISION: Final[int] = 8
@@ -262,11 +263,12 @@ class EvalOutput:
         self,
         root_dir: str,
         stage: TrainingStage,
-        max_size: int = _ONE_GB,
+        max_size: int | None = None,
     ) -> None:
         if self.df is None:
             return
 
+        max_size = _HOLDOUT_MAX_BYTES if max_size is None else max_size
         path = self.get_df_path(root_dir, stage)
         total_size = self.df.memory_usage(deep=True).sum()
         lines = len(self.df)
@@ -276,6 +278,14 @@ class EvalOutput:
             lines = int(lines * ratio)
         df = _normalize_mixed_type_class_column(self.df.head(lines))
         write_frame(df, path)
+        write_binary(
+            self.get_df_meta_path(root_dir, stage),
+            json.dumps({
+                'total_rows': len(self.df),
+                'saved_rows': len(df),
+                'truncated': len(df) < len(self.df),
+            }).encode(),
+        )
 
     @staticmethod
     def _generate_prediction_histogram_and_stats(
@@ -582,6 +592,10 @@ class EvalOutput:
     @staticmethod
     def get_df_path(root_dir: str, stage: TrainingStage) -> str:
         return osp.join(root_dir, f'{stage.value}_df.parquet')
+
+    @staticmethod
+    def get_df_meta_path(root_dir: str, stage: TrainingStage) -> str:
+        return osp.join(root_dir, f'{stage.value}_df_meta.json')
 
     @staticmethod
     def get_heatmap_dir_path(root_dir: str, stage: TrainingStage) -> str:

@@ -29,6 +29,11 @@ DEFAULT_DISKGRAPH_MANIFEST = (DISKGRAPH_ROOT / "third_party" /
 DEFAULT_DISKGRAPH_PROVENANCE = (DISKGRAPH_ROOT / "third_party" /
                                 "source-provenance.json")
 DEFAULT_NOTICE = REPO_ROOT / "THIRD-PARTY.txt"
+# Matches the notice step of .github/workflows/sync-diskgraph.yml.
+DISKGRAPH_REFRESH_COMMANDS = (
+    "cargo fetch --locked --manifest-path packages/diskgraph/Cargo.toml && "
+    "python scripts/refresh_diskgraph_notice_inventory.py && "
+    "python scripts/gen_third_party.py --output THIRD-PARTY.txt")
 SCHEMA_VERSION = 1
 BAR = "=" * 78
 RULE = "-" * 78
@@ -787,9 +792,7 @@ def _derived_source_policy_errors(root: Path) -> list[str]:
             errors.append("license header policy has an invalid derived source")
             continue
         try:
-            identifiers = _identifiers(parse_spdx(expression)) - {
-                "Apache-2.0"
-            }
+            identifiers = _identifiers(parse_spdx(expression)) - {"Apache-2.0"}
         except NoticeError as error:
             errors.append(f"{source.get('name', '<unnamed>')}: {error}")
             continue
@@ -807,7 +810,8 @@ def _derived_source_policy_errors(root: Path) -> list[str]:
                     notice_path.relative_to(root.resolve())
                     notice_text = notice_path.read_text("utf-8")
                 except (OSError, ValueError) as error:
-                    errors.append(f"{notice_file}: invalid notice file: {error}")
+                    errors.append(
+                        f"{notice_file}: invalid notice file: {error}")
 
         for path in paths:
             derived_paths.add(path)
@@ -832,8 +836,7 @@ def _derived_source_policy_errors(root: Path) -> list[str]:
                     "SPDX-FileCopyrightText: ")
                 if copyright_text not in notice_text:
                     errors.append(
-                        f"{path}: {notice_file} lacks required copyright text"
-                    )
+                        f"{path}: {notice_file} lacks required copyright text")
 
     for path in sorted(provenance_by_path.keys() - derived_paths):
         errors.append(
@@ -942,8 +945,8 @@ def _diskgraph_manifest_errors(inventory: dict[str, Any],
             missing = sorted(resolved_packages - inventory_packages)[:5]
             extra = sorted(inventory_packages - resolved_packages)[:5]
             errors.append(
-                f"{artifact_id}: Rust package set disagrees with resolved manifest; missing={missing}, extra={extra}"
-            )
+                f"{artifact_id}: Rust package set disagrees with resolved manifest; missing={missing}, extra={extra}; "
+                f"refresh with: {DISKGRAPH_REFRESH_COMMANDS}")
 
         for package in resolved.get("packages", []):
             if package.get("source_kind") == "workspace-first-party":
@@ -1295,11 +1298,11 @@ def _components_for_artifacts(
 
 
 def selected_license_expression(
-    inventory: dict[str, Any],
-    policy: dict[str, Any],
-    *,
-    artifact_ids: Sequence[str] = (),
-    base_licenses: Sequence[str] = (),
+        inventory: dict[str, Any],
+        policy: dict[str, Any],
+        *,
+        artifact_ids: Sequence[str] = (),
+        base_licenses: Sequence[str] = (),
 ) -> str:
     errors = validate(inventory, policy)
     if errors:
@@ -1319,7 +1322,8 @@ def selected_license_expression(
         if "or" in _ops(parsed):
             election = frozenset(component.get("elected_licenses", []))
             selected = {
-                choice for choice, recorded_election in choices
+                choice
+                for choice, recorded_election in choices
                 if recorded_election == election
             }
         else:
@@ -1346,10 +1350,7 @@ def render(
     components, artifact_labels = _components_for_artifacts(
         inventory, artifact_ids)
     selected_artifacts = set(artifact_ids)
-    text_ids = {
-        digest: digest[:12]
-        for digest in inventory["texts"]
-    }
+    text_ids = {digest: digest[:12] for digest in inventory["texts"]}
     emitted_texts: set[str] = set()
     lines = [
         BAR,

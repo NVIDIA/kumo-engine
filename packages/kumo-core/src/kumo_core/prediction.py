@@ -27,8 +27,13 @@ from typing import (
 from uuid import uuid4
 
 import diskgraph
+from pandas import Timestamp
 
-from .pquery import NativeGraph, ValidatedNativeQuery
+from .pquery import (
+    NativeGraph,
+    ValidatedNativeQuery,
+    _temporal_target_time_range,
+)
 from .prediction_options import resolve_prediction_time_options
 from .task_dataset import (
     TaskDatasetMaterializeResult,
@@ -38,6 +43,7 @@ from .task_dataset import (
 )
 from .train.autoregression import FUTURE_LABELS_COL
 from .training.table import apply_reference_resolution
+from .training.validation import validate_anchor_time
 from .types.enums import PredictionArtifactType
 
 if TYPE_CHECKING:
@@ -135,7 +141,6 @@ def generate_prediction_table(
 
     runtime = runtime or diskgraph
     query = request.query
-    compiler = runtime.DiskGraphPlanCompiler()
     options: dict[str, Any] = {
         "query": query.query,
         "timestamps": list(request.timestamps),
@@ -152,6 +157,16 @@ def generate_prediction_table(
         raise ValueError(
             "prediction compiler_options require a forecasting query and "
             "only support forecast offsets")
+    if query.query_type == "temporal" and request.timestamps:
+        minimum, _, _ = _temporal_target_time_range(query, request.index_path)
+        aggregation = query.query.get_all_target_aggregations()[0]
+        table_name = str(aggregation.time_col).rsplit(".", 1)[0]
+        for timestamp in request.timestamps:
+            error = validate_anchor_time(Timestamp(timestamp, unit="ns"),
+                                         minimum, table_name)
+            if error is not None:
+                raise ValueError(f"{error.title}. {error.message}")
+    compiler = runtime.DiskGraphPlanCompiler()
     # Future targets belong to training only. Prediction retains the fitted
     # historical feature layout without asking the compiler for labels.
     forecast_options.pop("future_offsets_secs", None)

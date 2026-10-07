@@ -58,6 +58,9 @@ snowflake = "kumo_snowflake.sink:SnowflakeSinkBackend"
 [project.entry-points."kumoai_studio.identities"]
 snowflake = "kumo_snowflake.session"
 
+[tool.uv.sources]
+kumo-core = { workspace = true }
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 

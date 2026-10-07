@@ -50,6 +50,7 @@ from typing import Any, Dict, Mapping, Sequence
 from kumoapi.graph import Edge, graph_definition_from_edges
 from kumoapi.source_table import (
     BigQuerySourceTable,
+    CustomSQLSourceTable,
     DatabricksSourceTable,
     GCSRelativeSource,
     GCSSourceTable,
@@ -115,11 +116,13 @@ def _source_table_name(source_table: LocalSourceTableType) -> str:
                     source_table.source.uri)
         return '.'.join(('gcs', _escape_dots(source_table.connector_id[:16]),
                          _escape_dots(location)))
+    if isinstance(source_table, CustomSQLSourceTable):
+        return '.'.join(('custom_sql',
+                         _escape_dots(source_table.connector_id[:16]),
+                         _escape_dots(source_table.table)))
     raise PortableGraphError(
         f"no source_table_name coordinate builder for "
-        f"{type(source_table).__name__} -- TODO(local-sdk): add one "
-        "(e.g. for CustomSQLSourceTable, once Custom SQL tables are "
-        "supported).")
+        f"{type(source_table).__name__}.")
 
 
 def portable_graph_config(

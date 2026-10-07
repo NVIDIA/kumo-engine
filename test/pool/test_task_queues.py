@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Tests for ``pool.task_queues`` naming helpers."""
-import pytest  # pants: no-infer-dep
+import pytest
 
 from pool.storage_mode import PoolStorageMode
 from pool.task_queues import (

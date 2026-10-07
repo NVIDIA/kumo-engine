@@ -4,7 +4,7 @@
 """Tests for ``pool.locks.PerSnapshotLocks``."""
 import asyncio
 
-import pytest  # pants: no-infer-dep
+import pytest
 
 from pool.locks import PerSnapshotLocks
 

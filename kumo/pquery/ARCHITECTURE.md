@@ -107,4 +107,4 @@ The retired Python planner and `DataProcessingBackend` execution model are not p
 | Modify compiler semantics | `DiskGraphPlanCompiler`; follow the upstream mirror ownership above |
 | Modify generated parquet behavior | `kumo.data.generic.diskgraph_*` and the `diskgraph` wheel |
 | Add a generation-time check | `pquery_validators/` |
-| Run tests | `pants test test/pquery::` and `pants test test/data/generic::` |
+| Run tests | `.venv/bin/pytest test/pquery` and `.venv/bin/pytest test/data/generic` |

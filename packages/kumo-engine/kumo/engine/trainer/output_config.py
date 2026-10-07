@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Prediction and model export destinations."""
+"""Prediction, training table and model export destinations."""
 
 from dataclasses import dataclass, field
 from typing import List, Mapping, Optional, cast
@@ -12,6 +12,8 @@ from kumoapi.plugin import ModelRegistryLocation, SourceConnector
 from kumoapi.prediction_outputs import resolve_prediction_output_paths
 
 from kumo.engine.connector.base import Connector
+
+_FILE_SOURCES = frozenset({'S3', 'GCS', 'ADLS', 'LOCAL_FILE'})
 
 
 @dataclass(frozen=True)
@@ -34,9 +36,7 @@ class PredictionOutputConfig:
 
     def __post_init__(self) -> None:
         if self.output_paths is not None:
-            if self.connector.source_type not in {
-                    'S3', 'GCS', 'ADLS', 'LOCAL_FILE'
-            }:
+            if self.connector.source_type not in _FILE_SOURCES:
                 raise ValueError(
                     'output_paths requires a file or object-store connector')
             paths = resolve_prediction_output_paths(
@@ -61,6 +61,23 @@ class PredictionOutputConfig:
             return dict(self.output_paths)
         assert self.artifact_type is not None and self.table_name is not None
         return {self.artifact_type.value.lower(): self.table_name}
+
+
+@dataclass(frozen=True)
+class TrainingTableOutputConfig:
+    """Export a training table to ``table_name`` via ``connector``.
+
+    File and object-store destinations are directories.
+    """
+
+    connector: Connector
+    table_name: str
+    write_mode: WriteMode = WriteMode.OVERWRITE
+
+    def __post_init__(self) -> None:
+        if (self.connector.source_type in _FILE_SOURCES
+                and not self.table_name.endswith('/')):
+            object.__setattr__(self, 'table_name', self.table_name + '/')
 
 
 @dataclass(frozen=True)

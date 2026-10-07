@@ -4,7 +4,7 @@
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from kumo_core.model_plan import TrainingTableGenerationPlan
 from kumoapi.model_plan import \
@@ -13,6 +13,9 @@ from kumoapi.train import TrainingTableSpec
 
 from kumo.engine.connector.source_table import SourceTable
 from kumo.engine.graph import GraphSnapshot
+
+if TYPE_CHECKING:
+    from kumo.engine.trainer.output_config import TrainingTableOutputConfig
 
 
 @dataclass(frozen=True)
@@ -34,6 +37,33 @@ class TrainingTable:
     required_stages: tuple[str, ...]
     #: Effective generation settings carried forward into ``Trainer.fit``.
     generation_plan: TrainingTableGenerationPlan
+
+    def export(self, output_config: "TrainingTableOutputConfig") -> str:
+        r"""Write the staged rows with a ``SPLIT`` column (``0`` train, ``1``
+        validation, ``2`` test) for :meth:`from_source_table`. Returns the
+        destination."""
+        import tempfile
+
+        from kumo_core.training.export import (
+            export_train_table,
+            identity,
+            read_spec,
+        )
+
+        from kumo.engine._scratch import get_scratch_dir
+
+        connector = output_config.connector
+        write_files = getattr(connector.sink_backend, "write_files", None)
+        if not callable(write_files):
+            raise NotImplementedError(
+                f"{type(connector).__name__} cannot export a training table")
+        export_id = identity(read_spec(str(self.staging_dir)))
+        root = get_scratch_dir()
+        root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=root) as output:
+            files = export_train_table(str(self.staging_dir), output)
+            return write_files(connector, output_config.table_name, files,
+                               output_config.write_mode, export_id=export_id)
 
     @classmethod
     def from_source_table(

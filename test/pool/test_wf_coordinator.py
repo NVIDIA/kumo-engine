@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-
 """Tests for the workflow-side pool coordinator's node-death-resilient runner.
 
 These exercise ``run_pooled_activity``'s place → dispatch → health-poll →
@@ -10,9 +9,8 @@ module-level ``workflow`` facade (``execute_activity`` / ``sleep``) — the only
 Temporal primitives the runner touches — so no Temporal runtime is needed.
 
 This module imports ``pool.wf_coordinator`` (→ ``pool.activities`` → the kumo
-stack), so it is excluded from the standalone ``//test/pool`` Pants target the
-same way ``test_provision_terminal_nonretry.py`` is, and runs in the
-kumo-stack test environment.
+stack), so it needs the full kumo-stack test environment, like
+``test_provision_terminal_nonretry.py``.
 """
 import asyncio
 from datetime import timedelta
@@ -39,16 +37,15 @@ from pool.task_queues import activity_queue
 
 
 def test_placement_timeout_layers_cover_cold_k8s_path():
-    internal_budget = timedelta(seconds=(
-        timeouts.POOL_WORKER_STARTUP_GRACE_SEC
-        + timeouts.POOL_WORKER_PROVISION_TIMEOUT_SEC
-        + timeouts.ACTIVITY_POD_PROVISION_TIMEOUT_SEC
-        + timeouts.ACTIVITY_POLLER_READY_TIMEOUT_SEC
-        + timeouts.ACTIVITY_JOB_DELETE_TIMEOUT_SEC))
+    internal_budget = timedelta(
+        seconds=(timeouts.POOL_WORKER_STARTUP_GRACE_SEC +
+                 timeouts.POOL_WORKER_PROVISION_TIMEOUT_SEC +
+                 timeouts.ACTIVITY_POD_PROVISION_TIMEOUT_SEC +
+                 timeouts.ACTIVITY_POLLER_READY_TIMEOUT_SEC +
+                 timeouts.ACTIVITY_JOB_DELETE_TIMEOUT_SEC))
 
     assert timeouts.PLACE_SNAPSHOT_RPC_TIMEOUT > internal_budget
-    assert timeouts.PLACE_START_TO_CLOSE > (
-        timeouts.PLACE_SNAPSHOT_RPC_TIMEOUT)
+    assert timeouts.PLACE_START_TO_CLOSE > (timeouts.PLACE_SNAPSHOT_RPC_TIMEOUT)
     assert timeouts.PLACE_SCHEDULE_TO_CLOSE > timeouts.PLACE_START_TO_CLOSE
 
 
@@ -338,10 +335,8 @@ def test_run_pooled_activity_dead_worker_re_places(fake_workflow):
 def test_run_pooled_activity_exhausted_activity_pod_re_places_without_health(
         fake_workflow):
     fake_workflow.handlers[place_snapshot_activity] = [
-        lambda: _result(
-            task_queue=activity_queue('wf-1'), worker='worker-a'),
-        lambda: _result(
-            task_queue=activity_queue('wf-1'), worker='worker-a'),
+        lambda: _result(task_queue=activity_queue('wf-1'), worker='worker-a'),
+        lambda: _result(task_queue=activity_queue('wf-1'), worker='worker-a'),
     ]
     err = _activity_error()
     fake_workflow.handlers['predict_fn'] = [
@@ -447,12 +442,12 @@ def test_run_pooled_activity_exhausts_attempts_and_raises(fake_workflow):
     assert fake_workflow.dispatched.count(place_snapshot_activity) == 1
 
 
-def test_exhausted_poller_replacements_raise_nonretryable_error(
-        fake_workflow):
+def test_exhausted_poller_replacements_raise_nonretryable_error(fake_workflow):
     from temporalio.exceptions import ApplicationError, TimeoutType
 
     fake_workflow.handlers[place_snapshot_activity] = [
-        lambda index=index: _result(worker=f'worker-{index}') for index in range(3)
+        lambda index=index: _result(worker=f'worker-{index}')
+        for index in range(3)
     ]
 
     def raise_schedule_to_start_timeout():
@@ -563,11 +558,11 @@ def _activity_error_from(cause: BaseException):
     ``.cause``; this exercises the dig-through-ActivityError the fix relies on."""
     from temporalio.exceptions import ActivityError
     try:
-        raise ActivityError(
-            message='place_snapshot_activity failed', scheduled_event_id=1,
-            started_event_id=1, identity='x',
-            activity_type='place_snapshot_activity', activity_id='a',
-            retry_state=None) from cause
+        raise ActivityError(message='place_snapshot_activity failed',
+                            scheduled_event_id=1, started_event_id=1,
+                            identity='x',
+                            activity_type='place_snapshot_activity',
+                            activity_id='a', retry_state=None) from cause
     except ActivityError as e:
         return e
 

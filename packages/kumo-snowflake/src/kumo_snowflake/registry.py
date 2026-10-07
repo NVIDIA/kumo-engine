@@ -91,7 +91,7 @@ _EXPORT_DIR = '_registry-export'
 def _require_registry() -> type["Registry"]:
     r"""Returns the ``Registry`` class, or explains how to install it."""
     try:
-        from snowflake.ml.registry import Registry  # pants: no-infer-dep
+        from snowflake.ml.registry import Registry
     except ImportError as error:  # pragma: no cover - depends on environment
         raise ImportError(
             "Publishing a model to the Snowflake Model Registry requires "
@@ -110,7 +110,7 @@ def _bundle_model(bundle_dir: str) -> "custom_model.CustomModel":
     exist at module scope without it.
     """
     import pandas as pd
-    from snowflake.ml.model import custom_model  # pants: no-infer-dep
+    from snowflake.ml.model import custom_model
 
     class _BundleModel(custom_model.CustomModel):
         r"""A Kumo model bundle, in the shape the registry can hold one.
@@ -142,7 +142,7 @@ def _carrier_signature() -> Dict[str, "model_signature.ModelSignature"]:
     the packager down the branch that validates rather than predicts, so
     nothing ever invokes it.
     """
-    from snowflake.ml.model import model_signature  # pants: no-infer-dep
+    from snowflake.ml.model import model_signature
 
     return {
         'predict':

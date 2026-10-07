@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pandas as pd
+from kumo_core.training.validation import validate_anchor_time
 
 from io_utils import logging
 from kumo.graph import Graph
@@ -43,15 +44,9 @@ class PrePredTableValidator():
             ValidationResponse: Errors encountered.
         """
         response = ValidationResponse()
-        if min_date is not None and anchor_date < min_date:
-            response.errors.append(
-                ValidationError(
-                    title="Invalid Prediction Anchor Time",
-                    message=f"The prediction anchor time {anchor_date} is "
-                    f"earlier than the start of your data range in the table "
-                    f"{target_table_name} ({min_date}). "
-                    f"Please select an anchor time within the range of your "
-                    f"data to ensure accurate predictions."))
+        error = validate_anchor_time(anchor_date, min_date, target_table_name)
+        if error is not None:
+            response.errors.append(error)
         return response
 
     def validate_anchor_time_forecasting(

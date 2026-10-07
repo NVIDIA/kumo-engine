@@ -913,7 +913,7 @@ __all__ = [
 def in_streamlit_notebook() -> bool:
     try:
         from snowflake.snowpark.context import get_active_session
-        import streamlit  # noqa: F401  # pants: no-infer-dep
+        import streamlit  # noqa: F401
         get_active_session()
         return True
     except Exception:
@@ -923,7 +923,7 @@ def in_streamlit_notebook() -> bool:
 @lru_cache
 def in_jupyter_notebook() -> bool:
     try:
-        from IPython import get_ipython  # pants: no-infer-dep
+        from IPython import get_ipython
         shell = get_ipython()
         if 'google.colab' in str(shell.__class__):
             return True

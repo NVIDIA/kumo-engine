@@ -9,6 +9,7 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any
 from zlib import crc32
 
@@ -176,6 +177,17 @@ class FakeBlob:
         with open(target, "wb") as handle:
             handle.write(landed)
 
+    def upload_from_string(self, data: bytes) -> None:
+        self.owner.bodies[self.name] = data
+
+    def upload_from_filename(self, path: str, **_: Any) -> None:
+        with open(path, "rb") as handle:
+            self.owner.bodies[self.name] = handle.read()
+        self.owner.uploaded.append(self.name)
+
+    def reload(self) -> None:
+        pass
+
     def delete(self) -> None:
         batch = getattr(self.owner.open_batch, "names", None)
         if batch is not None:
@@ -224,7 +236,10 @@ class FakeStorageClient:
                  corrupt: Callable[[bytes], bytes] = lambda body: body,
                  arrive: Callable[[str], Any] | None = None,
                  delete_raises: Mapping[str, BaseException] | None = None,
-                 on_batch: Callable[[list[str]], Any] | None = None) -> None:
+                 on_batch: Callable[[list[str]], Any] | None = None,
+                 location: str = "US") -> None:
+        self.location = location
+        self.uploaded: list[str] = []
         self.bodies = dict(bodies or {})
         self.delete_raises = dict(delete_raises or {})
         self.on_batch = on_batch
@@ -238,8 +253,11 @@ class FakeStorageClient:
         self.listed: list[str] = []
         self.fetched: list[str] = []
 
-    def list_blobs(self, bucket: str,
-                   prefix: str | None = None) -> list[FakeBlob]:
+    def get_bucket(self, name: str) -> Any:
+        return SimpleNamespace(name=name, location=self.location)
+
+    def list_blobs(self, bucket: str, prefix: str | None = None,
+                   max_results: int | None = None) -> list[FakeBlob]:
         self.listed.append(prefix or "")
         if self.list_raises is not None:
             raise self.list_raises
@@ -247,7 +265,7 @@ class FakeStorageClient:
             FakeBlob(name, body, self, stale=self.stale_listing)
             for name, body in sorted(self.bodies.items())
             if name.startswith(prefix or "")
-        ]
+        ][:max_results]
 
     def bucket(self, name: str) -> FakeBucket:
         return FakeBucket(name, self)

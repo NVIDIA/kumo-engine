@@ -13,6 +13,7 @@ from kumo_core.automl.auto_trainer import (
 )
 from kumo_core.automl.runtime import (
     apply_encoder_overrides,
+    apply_na_strategy,
     collect_resolved_encoders,
 )
 from kumo_core.model_plan import (
@@ -377,6 +378,70 @@ def test_auto_trainer_applies_encoder_overrides_before_persisting(
 
     assert isinstance(trainer.encoders["customers"]["age"], Null)
     assert persisted == [trainer.encoders]
+
+
+def _encoder_input(name: str, stype: str,
+                   encoder: dict) -> ResolvedEncoderInput:
+    stats = ({
+        "MEAN": 3.0,
+        "STD": 1.0
+    } if stype == "numerical" else {
+        "CATEGORY_COUNTS": [["a", 3]]
+    })
+    return ResolvedEncoderInput(column_name=name, dtype="float64",
+                                stype=stype, encoder=encoder, stats=stats)
+
+
+@pytest.mark.parametrize("cached", [False, True], ids=["fresh", "cached"])
+def test_global_na_strategy_applies_and_column_override_wins(
+        monkeypatch, cached: bool) -> None:
+    task = _task(TaskType.REGRESSION)
+    task.encoder_inputs = {
+        "customers": [
+            _encoder_input(name, "numerical", {"name": "Numerical"})
+            for name in ("age", "spend")
+        ]
+    }
+    trainer = object.__new__(AutoTrainer)
+    trainer.task = task
+    trainer.root_dir = "/unused"
+    trainer.checkpoint_path = None
+    trainer._encoders = None
+    trainer.runtime = SimpleNamespace(
+        collect_encoders=collect_resolved_encoders,
+        trainer_runtime_kwargs=dict)
+    trainer.space = ModelPlan()
+    trainer.space.column_processing.na_strategy = {"numerical": "zero"}
+    trainer.space.column_processing.encoder_overrides = {
+        "customers.spend": "Numerical(na_strategy='mean')"
+    }
+    stale = collect_resolved_encoders(task) if cached else None
+    monkeypatch.setattr(auto_trainer_module, "load_encoders",
+                        lambda path: stale)
+    monkeypatch.setattr(auto_trainer_module, "save_encoders",
+                        lambda path, value: None)
+
+    encoders = trainer.encoders["customers"]
+    assert encoders["age"].na_strategy == "zero"
+    assert encoders["spend"].na_strategy == "mean"
+
+
+def test_global_na_strategy_skips_unsupported_encoders_with_warning(
+) -> None:
+    task = _task(TaskType.REGRESSION)
+    task.encoder_inputs = {
+        "customers": [
+            _encoder_input("city", "categorical", {
+                "name": "Hash",
+                "num_components": 7
+            })
+        ]
+    }
+    with pytest.warns(UserWarning,
+                      match="'customers.city' \\(Hash, allowed: separate"):
+        encoders = apply_na_strategy(task, collect_resolved_encoders(task),
+                                     {"categorical": "zero"})
+    assert encoders["customers"]["city"].na_strategy == "separate"
 
 
 def test_encoder_override_uses_the_materialized_column_stats() -> None:

@@ -13,7 +13,7 @@ description = "GloVe 6B 50d word vectors in Kumo's embedding-model format"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0 AND PDDL-1.0"
-license-files = ["THIRD-PARTY.txt"]
+license-files = ["LICENSE", "THIRD-PARTY.txt"]
 authors = [{name = "Kumo.AI", email = "hello@kumo.ai"}]
 
 [project.entry-points."kumo.embedding_models"]

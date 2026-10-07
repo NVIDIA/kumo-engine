@@ -422,6 +422,7 @@ async def validate_weight_table_num_rows(
     connector: Connector,
     source_table: SourceTableType,
     train_table_path: str,
+    train_table_num_rows: Optional[int] = None,
 ) -> ValidationResponse:
     from rest.config.table_v2 import BigQuerySourceTable, S3SourceTable
 
@@ -431,10 +432,12 @@ async def validate_weight_table_num_rows(
     get_table_stats = sync_to_async(connector.get_table_stats, executor=None)
 
     validation = ValidationResponse()
-    tt_metadata = None
+    tt_num_rows = train_table_num_rows
     wtt_num_rows = None
     try:
-        tt_metadata = await get_parquet_metadata(train_table_path)
+        if tt_num_rows is None:
+            tt_num_rows = (
+                await get_parquet_metadata(train_table_path)).num_rows
         logger.info("Successfully fetched training table metadata.")
     except Exception as e:
         error = PublicException(
@@ -481,12 +484,12 @@ async def validate_weight_table_num_rows(
             ))
         return validation
 
-    assert tt_metadata is not None and wtt_num_rows is not None
-    if tt_metadata.num_rows != wtt_num_rows:
+    assert tt_num_rows is not None and wtt_num_rows is not None
+    if tt_num_rows != wtt_num_rows:
         error = PublicException(message=(
             "Your weighted training table and original training table don't "
             "contain the same number of rows. "
-            f"(Train table number of rows == {tt_metadata.num_rows}. "
+            f"(Train table number of rows == {tt_num_rows}. "
             f"Weighted train table number of rows == {wtt_num_rows}.) "
             "Please double check that the joins performed to add a weight "
             "column to the train table are one-to-one and not filtering "
@@ -498,7 +501,7 @@ async def validate_weight_table_num_rows(
             ))
     else:
         logger.info("Row count validation passed: both tables have the same "
-                    f"number of rows ({tt_metadata.num_rows})")
+                    f"number of rows ({tt_num_rows})")
     return validation
 
 

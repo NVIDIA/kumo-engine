@@ -25,6 +25,7 @@ from kumo.connector import (
     DatabricksConnector,
     SnowflakeConnector,
 )
+from kumo.connector.bigquery_connector import BigQueryOutputSchemaError
 from kumo.connector.connector import ConnectorError
 from rest.backends.ml_backend.utils import (
     canonical_file_path,
@@ -404,6 +405,9 @@ def write_artifact_to_bigquery(
                                                artifact_files=artifact_files)
         if local_staging_table_name is not None:
             connector.overwrite_table(local_staging_table_name, table_name)
+    except BigQueryOutputSchemaError as e:
+        raise ArtifactExportError(message=e.message,
+                                  non_retryable=True) from None
     except Exception as e:
         log.warning('BigQuery artifact export failed (%s)', type(e).__name__)
         raise ArtifactExportError(

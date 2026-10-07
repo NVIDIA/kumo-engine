@@ -21,8 +21,6 @@ test_pqlv2_forecast_length_des0/
 .gradio/
 scripts/temp_docs_files/*.mdx
 
-# Pants workspace files
-/.pants.d
 /.pids
 
 # Local fixture exports

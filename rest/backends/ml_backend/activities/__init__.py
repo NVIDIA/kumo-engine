@@ -35,6 +35,7 @@ from .parquet_io_activities import (
     collect_prediction_job_output,
     finalize_prediction_job_output,
     get_artifact_stats,
+    prepare_training_table_export,
     write_artifacts_to_customer,
 )
 from .training_job_activities import (
@@ -74,6 +75,7 @@ __all__ = [
     'cleanup_databricks_volume_outputs',
     'write_artifacts_to_customer',
     'get_artifact_stats',
+    'prepare_training_table_export',
     'persist_job_inputs',
     'xai_aggregation_activity',
 ]

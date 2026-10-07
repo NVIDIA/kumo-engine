@@ -46,3 +46,37 @@ def test_strict_staging_requires_a_uri(staging_uri):
             staging_uri=staging_uri,
             require_staged=True,
         )
+
+
+def test_sink_backend_is_cached_and_carries_configuration():
+    from kumo_bigquery.sink import BigQuerySinkBackend
+
+    identity = BigQueryIdentity()
+    connector = BigQueryConnector(
+        project_id='data-project',
+        dataset_id='analytics',
+        identity=identity,
+        staging_uri='gs://staging/kumo',
+    )
+
+    sink = connector.sink_backend
+
+    assert connector.sink_backend is sink
+    assert isinstance(sink, BigQuerySinkBackend)
+    assert sink._identity is identity
+    assert sink.staging_uri == 'gs://staging/kumo'
+
+
+def test_fit_rejects_model_export_to_bigquery_up_front():
+    from kumoapi.model_plan import ModelPlan
+
+    from kumo.engine.trainer.output_config import ModelOutputConfig
+    from kumo.engine.trainer.trainer import Trainer
+
+    connector = BigQueryConnector(project_id='data-project',
+                                  dataset_id='analytics')
+
+    with pytest.raises(NotImplementedError, match='cannot publish models'):
+        Trainer(ModelPlan()).fit(
+            None, snapshot=None,
+            export_config=ModelOutputConfig(connector, path='m'))

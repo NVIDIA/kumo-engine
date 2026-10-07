@@ -2,10 +2,10 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import datetime
 from typing import Dict, List, Optional, Union
 
 import pandas as pd
+from kumo_core.training.validation import validate_train_offsets
 from kumo_core.types import TaskType
 from kumoapi.pquery import QueryType, ValidatedPredictiveQuery
 from kumoapi.pquery.AST import Aggregation, DateOffsetRange, Join
@@ -285,22 +285,10 @@ class PreTrainTableValidator():
         train_end_offset: Optional[pd.DateOffset],
     ) -> ValidationResponse:
         r"""Validation of `train_start_offset` and `train_end_offset`."""
-        # TODO (vid): Move this to model planer validation
         response = ValidationResponse()
-        if (train_start_offset is not None and train_end_offset is not None):
-            now = datetime.datetime.now()
-            if now + train_end_offset >= now + train_start_offset:
-                train_start_offset_repr = (
-                    DateOffsetRange.date_offset_repr(train_start_offset))
-                train_end_offset_repr = (
-                    DateOffsetRange.date_offset_repr(train_end_offset))
-                response.errors.append(
-                    ValidationError(
-                        'Train start/end offsets error',
-                        f'Argument train_end_offset should be smaller than '
-                        f'train_start_offset, but it is not: '
-                        f'train_start_offset={train_start_offset_repr}, '
-                        f'train_end_offset={train_end_offset_repr}'))
+        error = validate_train_offsets(train_start_offset, train_end_offset)
+        if error is not None:
+            response.errors.append(error)
         return response
 
     def validate_timestamps(

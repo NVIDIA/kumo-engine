@@ -6,11 +6,11 @@ from typing import Any, List, Optional
 
 import pandas as pd
 from kumo_core.training.options import allow_array_targets
+from kumo_core.training.validation import validate_target_classes
 from kumoapi.pquery.AST import DateOffsetRange
 from kumoapi.typing import ProblemType
 
 from io_utils import logging
-from kumo.data import MAX_NUM_CLASSES
 from kumo.graph.column import EncoderGenerator
 
 # isort: off
@@ -201,49 +201,13 @@ class TrainTableValidator(GenerationValidator):
     def validate_class_number(self, stats: Any) -> ValidationResponse:
         r"""Validate that the number of classes is not too large/small."""
         validation_response = ValidationResponse()
-        num_classes = stats.num_targets
-        if num_classes > MAX_NUM_CLASSES:
-            many_num_classes_error = (f'Number of different target classes '
-                                      f'exceeds {MAX_NUM_CLASSES} '
-                                      f'(got {num_classes})')
-            logger.error(many_num_classes_error)
-            validation_response.errors.append(
-                ValidationError(
-                    "Too many classes to predict",
-                    (f'{many_num_classes_error}. Consider using RANK instead '
-                     f'of CLASSIFY.') if self.query.problem_type
-                    == ProblemType.CLASSIFY else many_num_classes_error,
-                ))
-
         classes = list(stats.target_distribution.get('percentage', {}).keys())
-        if num_classes == 1:
-            # If the entity or target filters are too restrictive sometimes
-            # we can get no entity, timeframe x target combinations that are
-            # valid.
-            all_negative_samples = len(classes) == 0
-            if all_negative_samples:
-                all_negative_samples_error = (
-                    "The training table (before split) only contains negative "
-                    "samples. Loosen filters or widen the prediction window "
-                    "to include positive examples.")
-                logger.error(all_negative_samples_error)
-                validation_response.errors.append(
-                    ValidationError(
-                        "No positive samples",
-                        all_negative_samples_error,
-                    ))
-            else:
-                target_key = classes[0]
-                one_num_classes_error = (
-                    f"Training table (before split) has only one target value "
-                    f"({target_key}), so the prediction task is ill-defined. "
-                    f"Adjust the query to produce multiple target values.")
-                logger.error(one_num_classes_error)
-                validation_response.errors.append(
-                    ValidationError(
-                        "Too few classes to predict",
-                        one_num_classes_error,
-                    ))
+        validation_response.errors.extend(
+            validate_target_classes(
+                stats.num_targets, classes,
+                classify=self.query.problem_type == ProblemType.CLASSIFY))
+        for error in validation_response.errors:
+            logger.error(error.message)
         return validation_response
 
     def validate_timeframes_post_generation(self,

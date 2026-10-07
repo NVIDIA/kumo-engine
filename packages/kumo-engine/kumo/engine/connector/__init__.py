@@ -34,7 +34,7 @@ from kumo.engine.connector.identity import (
 )
 from kumo.engine.connector.s3 import S3Connector
 from kumo.engine.connector.snowflake import SnowflakeConnector
-from kumo.engine.connector.source_table import SourceTable
+from kumo.engine.connector.source_table import SourceTable, SQLSourceTable
 
 __all__ = [
     "Connector",
@@ -45,6 +45,7 @@ __all__ = [
     "BigQueryConnector",
     "DatabricksConnector",
     "SourceTable",
+    "SQLSourceTable",
     "Identity",
     "SnowflakeIdentity",
     "S3Identity",

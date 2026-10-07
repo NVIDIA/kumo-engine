@@ -14,9 +14,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import diskgraph
+from kumoapi.typing import ProblemType
 
 from ..model_plan import repr_to_object
 from .splits import PLAN_SPLITS, SplitArguments, uses_pseudo_time
+from .validation import GenerationValidationError, validate_target_classes
 
 _LINK_TASK_TYPES = frozenset({
     "static_link_prediction",
@@ -387,25 +389,49 @@ def _discard_invalid_staging_dir(staging_dir: str,
     shutil.rmtree(candidate)
 
 
-def _observed_target_class_count(staging_dir: str) -> int:
+def _observed_target_classes(staging_dir: str, target_stype: str) -> list[Any]:
     """Read the exact target vocabulary from DiskGraph's staging bundle."""
 
     stats_path = Path(staging_dir) / "train_table_col_stats.json"
     with stats_path.open(encoding="utf-8") as stream:
         payload = json.load(stream)
     if (payload.get("version"), payload.get("kind"),
-            payload.get("stats_format")) != (
-                1, "tt_train_table_col_stats", "kumo_col_stats_v1"):
+            payload.get("stats_format")) != (1, "tt_train_table_col_stats",
+                                             "kumo_col_stats_v1"):
         raise RuntimeError("generated train-table target stats are invalid")
     stats = payload.get("stats")
-    entry = (stats.get(
-        "TARGET1__kumo.multicategorical__MULTI_CATEGORY_COUNTS__False")
+    kind = ("MULTI_CATEGORY_COUNTS"
+            if target_stype == "multicategorical" else "CATEGORY_COUNTS")
+    # Native category statistics canonicalize ID and boolean to categorical.
+    stats_stype = ("categorical"
+                   if target_stype in {"ID", "boolean"} else target_stype)
+    entry = (stats.get(f"TARGET1__kumo.{stats_stype}__{kind}__False")
              if isinstance(stats, dict) else None)
     if (not isinstance(entry, dict) or entry.get("approx") is not False
             or not isinstance(entry.get("value"), list)):
         raise RuntimeError(
             "generated train table is missing exact target-class counts")
-    return len(entry["value"])
+    return [value for value, count in entry["value"] if count > 0]
+
+
+def _observed_target_class_count(staging_dir: str) -> int:
+    return len(_observed_target_classes(staging_dir, "multicategorical"))
+
+
+def _validate_classification_targets(request: TrainTableRequest,
+                                     staging_dir: str) -> None:
+    if request.task_type.lower() not in {
+            "binary_classification", "multiclass_classification",
+            "multilabel_classification"
+    }:
+        return
+    classes = _observed_target_classes(staging_dir, request.target_stype)
+    errors = validate_target_classes(
+        max(1, len(classes)), classes,
+        classify=getattr(request.query, "problem_type",
+                         None) == ProblemType.CLASSIFY)
+    if errors:
+        raise GenerationValidationError(errors[0])
 
 
 def _fact_pseudo_time(request: TrainTableRequest) -> dict[str, str] | None:
@@ -496,6 +522,11 @@ def generate_train_table(
         raise RuntimeError("execute_tt_gen result missing staging_dir")
     if not isinstance(table_path, str) or not table_path:
         raise RuntimeError("execute_tt_gen result missing tt_parquet_path")
+    try:
+        _validate_classification_targets(request, staging_dir)
+    except ValueError:
+        _discard_invalid_staging_dir(staging_dir, request)
+        raise
     top_k = getattr(request.query, "top_k", None)
     if (task_type in {"multilabel_classification", "multilabel_ranking"}
             and top_k is not None):
@@ -568,6 +599,7 @@ def generate_custom_train_table(
     if not isinstance(staging_dir, str) or not staging_dir:
         raise RuntimeError(
             "custom train-table builder result missing staging_dir")
+    _validate_classification_targets(request, staging_dir)
     return GeneratedTrainTableResult(
         train_table_path=custom_table.parquet_path,
         manifest_path=os.path.join(staging_dir, "manifest.json"),

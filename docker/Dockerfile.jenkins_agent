@@ -1,0 +1,110 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+FROM python:3.14-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV PATH=$PATH:$JAVA_HOME/bin
+# mise installs to $HOME/.local/bin and manages tool shims under
+# $HOME/.local/share/mise/shims. Prepend both so `mise`, `uv`, `python`, etc.
+# are on PATH inside subsequent RUN layers.
+ENV PATH=/root/.cargo/bin:/root/.local/bin:/root/.local/share/mise/shims:$PATH
+ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+# This Jenkins agent image is CPU-only. Keep PyG wheel discovery scoped here so
+# `uv pip install /dist/*.whl` can resolve Kumo's compiled PyG dependencies
+# without exposing repo-wide source installs to both CPU and CUDA wheels.
+ENV UV_TORCH_BACKEND=cpu
+ENV UV_FIND_LINKS="https://data.pyg.org/whl/torch-2.12.0+cpu.html,https://data.pyg.org/whl/nightly/torch-2.12.0+cpu.html"
+
+ARG AWS_REGION=us-west-2
+# kumo-ai/kumo commit to build the venv + wheel from. The publisher resolves a
+# branch or tag to an immutable SHA before passing this argument.
+ARG KUMO_REF
+
+# Install dependencies
+# NOTE(trivy): recommends deliberately kept — openjdk/docker-ce/build-essential
+# recommends may be needed at runtime; trimming needs validation on a real agent.
+#trivy:ignore:AVD-DS-0029
+RUN --mount=type=secret,id=aws_credentials \
+    apt-get update && apt-get install -y \
+    curl \
+    git \
+    build-essential \
+    unzip \
+    libnss3-tools \
+    gnupg \
+    lsb-release \
+    ca-certificates \
+    yq \
+    zlib1g-dev \
+    libffi-dev \
+    libssl-dev \
+    libreadline-dev \
+    libncurses-dev \
+    libgdbm-dev \
+    libkrb5-dev \
+    libnss3-dev \
+    openjdk-17-jdk \
+    software-properties-common \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" \
+    && unzip awscliv2.zip \
+    && ./aws/install \
+    && rm -rf awscliv2.zip aws \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null \
+    && apt-get update \
+    && apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
+    && AWS_SHARED_CREDENTIALS_FILE=/run/secrets/aws_credentials aws s3 cp s3://kumo-mlplatform-test/Kumo.AI-RootCA.crt /usr/local/share/ca-certificates/Kumo.AI-RootCA.crt \
+    && update-ca-certificates \
+    && pip3 install requests certifi \
+    && npm config set cafile /etc/ssl/certs/ca-certificates.crt \
+    && mkdir -p /root/.pki/nssdb \
+    && certutil -d sql:/root/.pki/nssdb -A -t "C,," -n "kumoRootCA" -i /usr/local/share/ca-certificates/Kumo.AI-RootCA.crt \
+    && curl -LO https://github.com/stedolan/jq/releases/latest/download/jq-linux64 \
+    && chmod +x jq-linux64 \
+    && mv jq-linux64 /usr/local/bin/jq \
+    && pip3 install jsonnet \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+    && apt-get update \
+    && apt-get install -y gh \
+    && curl -sSL -o argocd-linux-amd64 https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64 \
+    && chmod +x argocd-linux-amd64 \
+    && mv argocd-linux-amd64 /usr/local/bin/argocd \
+    && curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o "session-manager-plugin.deb" \
+    && dpkg -i session-manager-plugin.deb \
+    && rm session-manager-plugin.deb \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Build the Kumo environment and wheel from the immutable source revision.
+WORKDIR /kumo
+RUN --mount=type=secret,id=github_token \
+    test -n "${KUMO_REF}" \
+    && github_token=$(cat /run/secrets/github_token) \
+    && git clone https://${github_token}@github.com/kumo-ai/kumo.git . \
+    && git checkout "${KUMO_REF}" \
+    && ./scripts/install_mise.sh --no-modify-shell \
+    && mise trust --yes \
+    && mise install \
+    && ./scripts/install_rustup.sh \
+    && make install-venv \
+    && mise use -g uv@$(grep '^uv = ' /kumo/.mise.toml | cut -d'"' -f2) \
+    && mise exec python -- pip install build \
+    && mkdir -p /dist && chmod 777 /dist \
+    && mise exec python -- python -m build --wheel --outdir /dist \
+    && ls -l /dist \
+    && git remote set-url origin https://github.com/kumo-ai/kumo.git
+
+WORKDIR /
+
+ENV VIRTUAL_ENV=/kumo/.venv
+ENV PATH=/kumo/.venv/bin:$PATH
+
+# Health is owned by the Jenkins controller connection; no Docker-level healthcheck.
+HEALTHCHECK NONE

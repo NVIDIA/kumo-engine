@@ -133,3 +133,32 @@ def test_graph_validation_warns_when_self_relation_is_omitted(tables):
     events = next(table for table in graph._graph_config['tables']
                   if table['table_name'] == 'events')
     assert events['fkeys'] == []
+
+
+@pytest.mark.parametrize('original_stype', [Stype.numerical, Stype.categorical])
+def test_declared_relation_assigns_id_without_mutating_source(
+        tables, original_stype):
+    source = tables[1].with_column('user_id', stype=original_stype)
+    graph = Graph([tables[0], source], [Edge('events', 'user_id', 'users')])
+    graph.validate()
+    projected = next(table for table in graph._graph_config['tables']
+                     if table['table_name'] == 'events')
+    assert projected['fkeys'][0]['stype'] == 'ID'
+    assert next(col for col in projected['cols']
+                if col['name'] == 'user_id')['stype'] == 'ID'
+    assert next(col for col in source.definition.cols
+                if col.name == 'user_id').stype == original_stype
+
+
+@pytest.mark.parametrize('original_stype', [Stype.numerical, Stype.categorical])
+def test_omitted_self_relation_preserves_column_type(tables, original_stype):
+    source = tables[1].with_column('user_id', stype=original_stype)
+    graph = Graph([source], [Edge('events', 'user_id', 'events')])
+    with pytest.warns(UserWarning, match='Self-relation .* omitted'):
+        graph.validate()
+    projected = graph._graph_config['tables'][0]
+    assert projected['fkeys'] == []
+    assert next(col for col in projected['cols']
+                if col['name'] == 'user_id')['stype'] == original_stype
+    assert next(col for col in source.definition.cols
+                if col.name == 'user_id').stype == original_stype

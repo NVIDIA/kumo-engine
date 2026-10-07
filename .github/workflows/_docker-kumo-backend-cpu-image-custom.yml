@@ -123,7 +123,6 @@ jobs:
       - name: Prepare build secrets
         run: |
           mkdir -p "$RUNNER_TEMP/build-secrets"
-          printf '%s' "${{ secrets.KUMO_GITHUB_BOT_TOKEN }}" > "$RUNNER_TEMP/build-secrets/github_token"
           printf '%s' "${{ env.AWS_ACCESS_KEY_ID }}" > "$RUNNER_TEMP/build-secrets/aws_access_key_id"
           printf '%s' "${{ env.AWS_SECRET_ACCESS_KEY }}" > "$RUNNER_TEMP/build-secrets/aws_secret_access_key"
           printf '%s' "${{ env.AWS_SESSION_TOKEN }}" > "$RUNNER_TEMP/build-secrets/aws_session_token"
@@ -143,7 +142,6 @@ jobs:
             DISKGRAPH_FORCE_REBUILD=${{ inputs.target_platform == 'linux/arm64' && '1' || '0' }}
           extra-args: |
             --platform=${{ inputs.target_platform }}
-            --secret id=github_token,src=${{ runner.temp }}/build-secrets/github_token
             --secret id=aws_access_key_id,src=${{ runner.temp }}/build-secrets/aws_access_key_id
             --secret id=aws_secret_access_key,src=${{ runner.temp }}/build-secrets/aws_secret_access_key
             --secret id=aws_session_token,src=${{ runner.temp }}/build-secrets/aws_session_token

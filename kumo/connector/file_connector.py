@@ -696,8 +696,8 @@ class FileConnector(Connector):
         Per-table NUM_ROWS / SOURCE_SIZE come from `export_table`'s
         `ExportMetrics`, so download itself returns nothing.
         """
-        from kumo.data import MaterializationStage  # pants: no-infer-dep
-        from kumo.data.utils import get_materialize_path  # pants: no-infer-dep
+        from kumo.data import MaterializationStage
+        from kumo.data.utils import get_materialize_path
         source_path = get_materialize_path(table_fp, data_version,
                                            MaterializationStage.INGEST)
         if fsutil.isdir(source_path):

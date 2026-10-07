@@ -25,6 +25,7 @@ from kumoapi.model_plan import (
 from kumoapi.pquery import QueryType
 from kumoapi.typing import Dtype, Stype
 
+from io_utils.json import from_json, to_json
 from kumo.config.graph import (
     ColumnConfig,
     ForeignKeyConfig,
@@ -2925,3 +2926,24 @@ def test_na_strategy():
         has_train_table_time_col=True,
         run_mode=RunMode.FAST,
     )
+
+
+@pytest.mark.parametrize('field', [
+    'entity_candidate',
+    'entity_candidate_aggregation',
+])
+def test_entity_candidate_settings_rejected(field):
+    kwargs = dict(task_type=TaskType.BINARY_CLASSIFICATION,
+                  query_type=QueryType.TEMPORAL,
+                  has_train_table_time_col=True, run_mode=RunMode.FAST)
+    plan = ModelPlan.from_default(**kwargs)
+    plan.validate(**kwargs)
+
+    setattr(plan.training_table_generation, field, 'candidate')
+    plan = from_json(to_json(plan), ModelPlan)
+    assert getattr(plan.training_table_generation, field) == 'candidate'
+
+    with pytest.raises(ValueError,
+                       match=f"'training_table_generation.{field}' is not "
+                       "supported.*WHERE filter"):
+        plan.validate(**kwargs)

@@ -199,8 +199,9 @@ def test_static_node_different_entity_and_target_table(
     # pairs rather than sorting the columns independently.
     assert 'ENTITY1' in train_table_df.columns
     assert 'TARGET1' in train_table_df.columns
-    assert sorted(zip(train_table_df['ENTITY1'], train_table_df['TARGET1'],
-                      strict=True)) == [(0, True), (1, False), (3, True)]
+    assert sorted(
+        zip(train_table_df['ENTITY1'], train_table_df['TARGET1'],
+            strict=True)) == [(0, True), (1, False), (3, True)]
 
 
 @pytest.mark.parametrize('target, expected_task_type', [
@@ -423,7 +424,9 @@ def test_nested_target_with_invert(dg_indexed_node_pred_bank_graph, na_variant,
 
 @patch('kumo.pquery.AST.ast_node.ALLOW_ARRAY_TARGETS', new=False)
 @pytest.mark.parametrize('target_dtype', [Dtype.int64, Dtype.string])
-def test_temporal_node_multilabel_ID_col(target_dtype,
+@pytest.mark.parametrize('window_end', [2, 4],
+                         ids=['single-label', 'two-labels'])
+def test_temporal_node_multilabel_ID_col(target_dtype, window_end,
                                          dg_indexed_node_pred_bank_graph,
                                          tmp_path):
     # LIST_DISTINCT-multilabel node-pred. The BANK fixture column mode
@@ -440,7 +443,7 @@ def test_temporal_node_multilabel_ID_col(target_dtype,
     graph['TRANSACTIONS'].infer_encoders()
     assert graph['TRANSACTIONS', 'BANK_ID'].stype == Stype.ID
 
-    query = ('PREDICT LIST_DISTINCT(TRANSACTIONS.BANK_ID, 0, 2)'
+    query = (f'PREDICT LIST_DISTINCT(TRANSACTIONS.BANK_ID, 0, {window_end})'
              'CLASSIFY FOR EACH USERS.USER_ID')
     validated_query = get_validated_query(graph, query)
     pquery = PredictiveQueryV2(
@@ -450,23 +453,31 @@ def test_temporal_node_multilabel_ID_col(target_dtype,
         split=TemporalSplit([0.5, 0.5]),
     )
     assert pquery.get_task_type() == TaskType.MULTILABEL_CLASSIFICATION
-    train_table_path, _, _ = generate_train_table_dg(
+    train_table_path, _, response = generate_train_table_dg(
         pquery, diskgraph_index_path=index_path, destination=str(tmp_path))
+    if window_end == 2:
+        assert not response.ok
+        assert train_table_path == ''
+        assert any(error.title == 'Too few classes to predict'
+                   for error in response.errors)
+        return
+    assert response.ok, [error.message for error in response.errors]
     train_df = pd.read_parquet(train_table_path)
     train_df = train_df.sort_values('ENTITY1').reset_index(drop=True)
     # The DG-native train table carries the canonical multi-entity
-    # ENTITY1/TIMESTAMP/TARGET1 columns: (4, 3) with 4 entity rows. Only BANK_ID
-    # 1 appears in any in-window distinct list (user 2 has no in-window
-    # transaction so it gets the empty multilabel string).
+    # ENTITY1/TIMESTAMP/TARGET1 columns: (4, 3) with 4 entity rows.
+    # User 1 has both BANK_ID labels in the four-day window; user 2 has none.
     assert set(train_df.columns) == {'ENTITY1', 'TIMESTAMP', 'TARGET1'}
     assert train_df.shape == (4, 3)
     assert list(train_df['ENTITY1']) == [0, 1, 2, 3]
-    assert list(train_df['TARGET1']) == ['1', '1', '', '1']
+    assert list(train_df['TARGET1']) == ['1', '1|0', '', '1']
 
 
 @patch('kumo.pquery.AST.ast_node.ALLOW_ARRAY_TARGETS', new=True)
 @pytest.mark.parametrize('target_dtype', [Dtype.int64, Dtype.string])
-def test_temporal_node_multilabel_ID_col_array(target_dtype,
+@pytest.mark.parametrize('window_end', [2, 4],
+                         ids=['single-label', 'two-labels'])
+def test_temporal_node_multilabel_ID_col_array(target_dtype, window_end,
                                                dg_indexed_node_pred_bank_graph,
                                                tmp_path):
     # ALLOW_ARRAY_TARGETS=True variant of the LIST_DISTINCT-multilabel node-pred
@@ -475,9 +486,9 @@ def test_temporal_node_multilabel_ID_col_array(target_dtype,
     # patched True.
     #
     # The DG producer does NOT array-ify the target column -- it emits the same
-    # comma-joined multilabel string the non-array variant produces
-    # (['1', '1', '', '1']), so the flag does not change the train-table TARGET
-    # shape. This test pins that DG behavior.
+    # pipe-joined multilabel string the non-array variant produces
+    # (['1', '1|0', '', '1']), so the flag does not change the train-table
+    # TARGET shape. This test pins that DG behavior.
     graph, index_path = dg_indexed_node_pred_bank_graph(bank_id_is_col=True)
     # stype inferral needs the per-test autouse persist_dir.
     graph.infer_metadata()
@@ -486,7 +497,7 @@ def test_temporal_node_multilabel_ID_col_array(target_dtype,
     graph['TRANSACTIONS'].infer_encoders()
     assert graph['TRANSACTIONS', 'BANK_ID'].stype == Stype.ID
 
-    query = ('PREDICT LIST_DISTINCT(TRANSACTIONS.BANK_ID, 0, 2)'
+    query = (f'PREDICT LIST_DISTINCT(TRANSACTIONS.BANK_ID, 0, {window_end})'
              'CLASSIFY FOR EACH USERS.USER_ID')
     validated_query = get_validated_query(graph, query)
     pquery = PredictiveQueryV2(
@@ -496,15 +507,22 @@ def test_temporal_node_multilabel_ID_col_array(target_dtype,
         split=TemporalSplit([0.5, 0.5]),
     )
     assert pquery.get_task_type() == TaskType.MULTILABEL_CLASSIFICATION
-    train_table_path, _, _ = generate_train_table_dg(
+    train_table_path, _, response = generate_train_table_dg(
         pquery, diskgraph_index_path=index_path, destination=str(tmp_path))
+    if window_end == 2:
+        assert not response.ok
+        assert train_table_path == ''
+        assert any(error.title == 'Too few classes to predict'
+                   for error in response.errors)
+        return
+    assert response.ok, [error.message for error in response.errors]
     train_df = pd.read_parquet(train_table_path)
     train_df = train_df.sort_values('ENTITY1').reset_index(drop=True)
     assert set(train_df.columns) == {'ENTITY1', 'TIMESTAMP', 'TARGET1'}
     assert train_df.shape == (4, 3)
     assert list(train_df['ENTITY1']) == [0, 1, 2, 3]
-    # DG output is a comma-joined multilabel string (see the docstring above).
-    assert list(train_df['TARGET1']) == ['1', '1', '', '1']
+    # DG output is a pipe-joined multilabel string (see the docstring above).
+    assert list(train_df['TARGET1']) == ['1', '1|0', '', '1']
 
 
 def test_dg_node_pred_txn_sessions_regression_train_table(

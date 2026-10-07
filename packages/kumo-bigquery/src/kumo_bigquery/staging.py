@@ -12,6 +12,7 @@ from functools import partial
 from typing import Any
 
 from kumo_bigquery import errors
+from kumo_core.sources.cpu import download_workers
 from kumo_core.sources.errors import PermanentSourceError, TransientSourceError
 from kumo_core.sources.transfer import (
     StagedFile,
@@ -207,3 +208,113 @@ def _fetch(bucket: Any, staged: StagedFile, target: str) -> None:
     fresh because a listed one pins a generation an overwrite may have already
     removed."""
     bucket.blob(staged.path).download_to_filename(target)
+
+
+def probe_upload(
+    storage_client: Any,
+    *,
+    location: StagingLocation,
+) -> Capability:
+    """The write direction of :func:`probe`: whether this identity may write,
+    list, read and delete objects under ``location``, the four things a staged
+    write does there. Nothing raises out of here."""
+    from google.api_core.exceptions import Forbidden, NotFound
+
+    target = location.child(f"{PROBE_PREFIX}/{uuid.uuid4().hex}")
+    blob = storage_client.bucket(target.bucket).blob(f"{target.directory}probe")
+    try:
+        blob.upload_from_string(b"")
+        list(
+            storage_client.list_blobs(target.bucket, prefix=target.directory,
+                                      max_results=1))
+        blob.reload()
+        blob.delete()
+    except (Forbidden, NotFound):
+        return Capability.DENIED
+    except Exception:
+        logger.warning(
+            "could not establish whether %s may be uploaded to, so it will "
+            "not be used", target.object_uri("probe"), exc_info=True)
+        return Capability.UNKNOWN
+    finally:
+        remove_quietly(lambda: clear_prefix(storage_client, target),
+                       target.object_uri("probe"))
+    return Capability.ALLOWED
+
+
+def upload(
+    storage_client: Any,
+    location: StagingLocation,
+    files: list[Any],
+    *,
+    worker_ceiling: int | None = None,
+) -> list[str]:
+    """``files`` are callables producing a local path, so preparing a file
+    and uploading it share a worker. Waits for every upload, as
+    :func:`kumo_core.sources.transfer.remove_all` does, so no straggler
+    writes after the prefix is cleared."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    bucket = storage_client.bucket(location.bucket)
+
+    def put(index: int, prepared: Any) -> str:
+        name = f"{location.directory}part-{index:08d}.parquet"
+        with prepared() as path:
+            bucket.blob(name).upload_from_filename(
+                str(path), content_type="application/octet-stream")
+        return f"{SCHEME}{location.bucket}/{name}"
+
+    pool = ThreadPoolExecutor(
+        min(download_workers(worker_ceiling), max(len(files), 1)))
+    try:
+        futures = [
+            pool.submit(put, index, prepared)
+            for index, prepared in enumerate(files)
+        ]
+        for future in futures:
+            if future.exception() is not None:
+                pool.shutdown(cancel_futures=True)
+                raise future.exception()  # type: ignore[misc]
+        return [future.result() for future in futures]
+    finally:
+        pool.shutdown(cancel_futures=True)
+
+
+def staged_write(
+    storage_client: Any,
+    *,
+    location: StagingLocation,
+    files: list[Any],
+    load: Any,
+    worker_ceiling: int | None = None,
+) -> None:
+    """The write direction of :func:`staged_read`: upload, one load job over
+    exactly the uploaded objects, and the prefix cleared either way."""
+    try:
+        clear_prefix(storage_client, location)
+        load(
+            upload(storage_client, location, files,
+                   worker_ceiling=worker_ceiling))
+    finally:
+        remove_quietly(lambda: clear_prefix(storage_client, location),
+                       location.object_uri())
+
+
+def bucket_location(storage_client: Any,
+                    location: StagingLocation) -> str | None:
+    """``None`` when the identity may use the bucket's objects but not read
+    the bucket itself."""
+    from google.api_core.exceptions import Forbidden
+    try:
+        return storage_client.get_bucket(location.bucket).location
+    except Forbidden:
+        return None
+
+
+def colocated(bucket: str, dataset: str) -> bool:
+    """Whether a bucket sits in, or inside, the dataset's location."""
+    bucket, dataset = bucket.upper(), dataset.upper()
+    if bucket == dataset:
+        return True
+    within = {"US": ("US-", "NAM4"), "EU": ("EUROPE-", "EUR4")}.get(dataset)
+    return within is not None and bucket.startswith(within)

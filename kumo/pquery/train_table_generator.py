@@ -14,6 +14,7 @@ from kumo_core.training.timestamps import (
     generate_decoupled_timestamps,
     generate_legacy_timestamps,
 )
+from kumo_core.training.validation import GenerationValidationError
 from kumo_core.types.conversions import DataFrame
 from kumo_core.utils.time import PSEUDO_TIME_COL_NAME
 from kumoapi.pquery import QueryType, ValidatedPredictiveQuery
@@ -172,10 +173,14 @@ def _invoke_diskgraph_train_table_seam(
     invocation) so a ``DiskgraphDataError`` / ``DiskgraphSystemError``
     raised for the well-known zero-row case, or the dedicated DiskGraph target
     category limit error, is surfaced as a ``TrainingTableGenerationError``.
+    Shared data-quality failures retain their structured validation response.
     All other exceptions propagate unchanged.
     """
     try:
         return seam_call()
+    except GenerationValidationError as error:
+        raise TrainingTableGenerationError(error.error.title,
+                                           error.error.message) from error
     except Exception as e:
         _raise_training_table_generation_error_for_diskgraph_empty_result(
             e,

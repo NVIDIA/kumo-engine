@@ -4,13 +4,11 @@
 
 import json
 import os
-import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
 from functools import partial
 from typing import Any, Callable, Dict, List, NoReturn, Optional, Union
 
@@ -36,7 +34,18 @@ from kumo_bigquery.sql import (
     sample_request,
     table_names,
 )
+from kumo_bigquery.staging import StagingLocation
 from kumo_bigquery.types import dtype_for
+from kumo_bigquery.write import (
+    MissingWritePermissions,
+    OutputSchemaMismatchError,
+    ProbeCleanupError,
+    existing_table,
+    is_output_table_id,
+    load_uris,
+    probe_write_access,
+    staged_write,
+)
 from kumo_core.custom_sql import SQL_SAMPLE_MAX_SCAN_BYTES
 from kumo_core.sources.errors import PermanentSourceError
 from kumo_core.sources.identity import hour_version
@@ -81,7 +90,6 @@ ENV_GCS_KUMO_BUCKET = EnvVar("GCP_STORAGE_TRANSFER_BUCKET", type=str,
                              default_value="")
 
 BIGQUERY_CONNECTOR_PERMISSIONS_CHECK_TIMEOUT = 30
-_BIGQUERY_OUTPUT_TABLE_ID = re.compile(r'^[A-Za-z0-9_-]{1,1024}$')
 
 logger = logging.getLogger(__name__)
 
@@ -507,12 +515,8 @@ class BigQueryConnector(SQLConnector):
         table_schema: str,
         mode: InternalWriteMode,
     ) -> None:
-        """Verify write access to the connector's exact BigQuery dataset.
-
-        The uniquely named table is deleted in ``finally`` and also receives
-        an expiry as a cleanup backstop. Existing destinations additionally
-        use BigQuery's IAM permission test so APPEND/OVERWRITE failures are
-        caught before a job is accepted.
+        """Verify write access to the connector's exact BigQuery dataset
+        through the shared :func:`kumo_bigquery.write.probe_write_access`.
         """
         self.require_output_table_within_connector_target(
             table_name,
@@ -528,67 +532,28 @@ class BigQueryConnector(SQLConnector):
         if not self.is_connected:
             self.open()
 
-        probe_name = f'__kumo_write_probe_{uuid.uuid4().hex}'
-        probe_ref = self.full_table_name(probe_name)
-        probe = BQTable(probe_ref)
-        probe.expires = datetime.now(timezone.utc) + timedelta(hours=1)
-        created = False
-        operation_error: ConnectorError | None = None
-        cleanup_error: Exception | None = None
         try:
-            self.context.create_table(probe)
-            created = True
-
-            target_ref = self.full_table_name(table_name)
-            try:
-                self.context.get_table(target_ref)
-                target_exists = True
-            except NotFound:
-                target_exists = False
-
-            if target_exists:
-                required_permissions = {
-                    'bigquery.tables.get',
-                    'bigquery.tables.updateData',
-                }
-                if mode == InternalWriteMode.OVERWRITE:
-                    required_permissions.add('bigquery.tables.update')
-                response = self.context.test_iam_permissions(
-                    target_ref,
-                    sorted(required_permissions),
-                )
-                granted = set(response.get('permissions', ()))
-                if not required_permissions.issubset(granted):
-                    raise ConnectorError(
-                        'The selected identity cannot perform the requested '
-                        'write mode on the existing BigQuery output table.')
-        except ConnectorError as error:
-            operation_error = error
+            probe_write_access(self.context,
+                               f'{self.project_id}.{self.dataset_id}',
+                               table_name,
+                               replace=mode == InternalWriteMode.OVERWRITE,
+                               create=True)
+        except MissingWritePermissions:
+            raise ConnectorError(
+                'The selected identity cannot perform the requested write '
+                'mode on the existing BigQuery output table.') from None
+        except ProbeCleanupError:
+            raise ConnectorError(
+                'BigQuery output authorization probe cleanup failed. The '
+                'probe is configured to expire automatically.') from None
         except Exception as error:
             logger.warning(
                 'BigQuery output write authorization failed (%s)',
                 type(error).__name__,
             )
-            operation_error = ConnectorError(
-                'The selected identity cannot create or modify tables in '
-                'the configured BigQuery dataset.')
-        finally:
-            if created:
-                try:
-                    self.context.delete_table(probe_ref, not_found_ok=True)
-                except Exception as error:
-                    cleanup_error = error
-                    logger.warning(
-                        'BigQuery output write probe cleanup failed (%s)',
-                        type(error).__name__,
-                    )
-
-        if operation_error is not None:
-            raise operation_error from None
-        if cleanup_error is not None:
             raise ConnectorError(
-                'BigQuery output authorization probe cleanup failed. The '
-                'probe is configured to expire automatically.') from None
+                'The selected identity cannot create or modify tables in '
+                'the configured BigQuery dataset.') from None
 
     def require_output_table_within_connector_target(
         self,
@@ -598,7 +563,7 @@ class BigQueryConnector(SQLConnector):
         if table_schema is not None and table_schema != self.dataset_id:
             raise ConnectorError(
                 'Output table dataset does not match the connector dataset.')
-        if not _BIGQUERY_OUTPUT_TABLE_ID.fullmatch(table_name):
+        if not is_output_table_id(table_name):
             raise ConnectorError(
                 'BigQuery output table must be an unqualified table ID '
                 'containing only letters, numbers, underscores, or hyphens.')
@@ -1014,9 +979,6 @@ class BigQueryConnector(SQLConnector):
             source_uri = (gcs_path if gcs_path.endswith('.parquet') else
                           gcs_path.rstrip('/') + '/*.parquet')
 
-        write_disposition = (bigquery.WriteDisposition.WRITE_TRUNCATE if replace
-                             else bigquery.WriteDisposition.WRITE_APPEND)
-
         # Preserve the existing table schema if present (mirrors the
         # STS path's behavior — important for embedding array columns).
         schema = None
@@ -1024,34 +986,10 @@ class BigQueryConnector(SQLConnector):
             table = self.client.get_table(self.full_table_name(table_name))
             schema = table.schema
 
-        if schema:
-            job_config = bigquery.LoadJobConfig(
-                source_format=bigquery.SourceFormat.PARQUET,
-                autodetect=False,
-                schema=schema,
-                write_disposition=write_disposition,
-            )
-        else:
-            job_config = bigquery.LoadJobConfig(
-                source_format=bigquery.SourceFormat.PARQUET,
-                autodetect=True,
-                write_disposition=write_disposition,
-            )
-
-        # Tell BigQuery to treat parquet LIST logical types as BQ ARRAY
-        # columns (e.g. embedding columns). Matches the STS path.
-        parquet_options = bigquery.ParquetOptions()
-        parquet_options.enable_list_inference = True
-        job_config.parquet_options = parquet_options
-
         logger.info("Loading artifacts into BigQuery (replace=%s)", replace)
         try:
-            load_job = self.client.load_table_from_uri(
-                source_uri=source_uri,
-                destination=self.full_table_name(table_name),
-                job_config=job_config,
-            )
-            load_job.result()
+            load_uris(self.client, source_uri, self.full_table_name(table_name),
+                      replace=replace, schema=schema)
         except Exception as e:
             logger.warning('BigQuery load job failed (%s)', type(e).__name__)
             raise ConnectorError(
@@ -1090,38 +1028,33 @@ class BigQueryConnector(SQLConnector):
                 'GCP_STORAGE_TRANSFER_BUCKET is not configured; local '
                 'BigQuery artifact output cannot be staged.')
 
-        client = self._initialize_gcs_client()
-        gcs_prefix = (f'gs://{bucket_name}/artifact-export/{uuid.uuid4().hex}/')
-        staged_blobs: list[Any] = []
         try:
-            for index, file_path in enumerate(
-                    local_parquet_files(artifact_path)):
-                blob = self._gcs_blob(client,
-                                      f'{gcs_prefix}part-{index:08d}.parquet')
-                staged_blobs.append(blob)
-                blob.upload_from_filename(
-                    str(file_path), content_type='application/octet-stream')
-            return self._write_artifacts_from_gcs(table_name, gcs_prefix,
-                                                  replace=replace)
+            staged_write(
+                self.client, self._initialize_gcs_client(),
+                StagingLocation(bucket_name,
+                                f'artifact-export/{uuid.uuid4().hex}'),
+                local_parquet_files(artifact_path),
+                self.full_table_name(table_name), replace=replace,
+                existing=existing_table(self.client,
+                                        self.full_table_name(table_name)))
         except ConnectorError:
             raise
+        except OutputSchemaMismatchError as error:
+            message = (
+                'Prediction output does not fit the existing BigQuery output '
+                f'table: {"; ".join(error.problems)}. APPEND needs every '
+                'output column in the table with the same type; use '
+                'OVERWRITE or another table.')
+            logger.warning(message)
+            raise BigQueryOutputSchemaError(message) from None
         except Exception as error:
             logger.warning(
-                'BigQuery local artifact staging failed (%s)',
+                'BigQuery local artifact export failed (%s)',
                 type(error).__name__,
             )
             raise ConnectorError(
-                'Failed to stage local artifacts for BigQuery output.'
-            ) from None
-        finally:
-            for blob in staged_blobs:
-                try:
-                    blob.delete()
-                except Exception as cleanup_error:
-                    logger.warning(
-                        'BigQuery local artifact cleanup failed (%s)',
-                        type(cleanup_error).__name__,
-                    )
+                'Failed to load local artifacts into the configured BigQuery '
+                'output table.') from None
 
     @staticmethod
     def require_supported_artifact_path(artifact_path: str) -> None:
@@ -1212,17 +1145,6 @@ class BigQueryConnector(SQLConnector):
                 logger.warning(
                     "BigQuery read client cleanup failed (error_type=%s)",
                     type(error).__name__)
-
-    @staticmethod
-    def _gcs_blob(client: Any, gcs_uri: str) -> Any:
-        """Return a blob bound to ``client`` without ambient auth lookup."""
-        if not gcs_uri.startswith('gs://'):
-            raise ValueError('Expected a GCS URI')
-        without_scheme = gcs_uri[len('gs://'):]
-        bucket_name, separator, blob_name = without_scheme.partition('/')
-        if not bucket_name or not separator or not blob_name:
-            raise ValueError('Expected a GCS object URI')
-        return client.bucket(bucket_name).blob(blob_name)
 
     @blocking_method()
     def export_table(
@@ -1464,6 +1386,11 @@ class BigQueryConnector(SQLConnector):
             raise ConnectorError(
                 message=f"Kumo failed to retrieve stored {service} credentials.",
             ) from None
+
+
+class BigQueryOutputSchemaError(ConnectorError):
+    """Prediction output does not fit an existing output table; names the
+    columns and types, never the data."""
 
 
 # Explicit dataclass definition ###############################################

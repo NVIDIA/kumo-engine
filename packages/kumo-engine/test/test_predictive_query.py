@@ -683,3 +683,44 @@ def test_custom_prediction_table_materializes_exact_source_rows(
     assert table.row_count == 3
     assert table.required_stages == ('train', 'val')
     assert table.compiler_options == {'lag_offsets_secs': (-1, -2, -3)}
+
+
+@pytest.mark.parametrize('field',
+                         ['train_table_path_override', 'task_path_override'])
+def test_generation_rejects_ignored_path_overrides(tmp_path, field):
+    pq.write_table(pa.table({
+        'id': pa.array(range(10), type=pa.int64()),
+        'label': [True, False] * 5,
+    }), tmp_path / 'users.parquet')
+    graph = Graph([
+        Table.from_source_table(
+            FileConnector(root_dir=str(tmp_path))['users.parquet'],
+            primary_key='id')
+    ])
+    query = PredictiveQuery(graph, 'PREDICT users.label FOR EACH users.id')
+    snapshot = GraphSnapshot(f'{graph.id}@fixture', tmp_path / 'index',
+                             graph._graph_config)
+
+    with pytest.raises(ValueError, match=f"'{field}'.*from_source_table"):
+        query.generate_training_table(
+            snapshot, TrainingTableGenerationPlan(**{field: 's3://x/y'}))
+
+
+@pytest.mark.parametrize('field', [
+    'entity_candidate',
+    'entity_candidate_aggregation',
+])
+def test_entity_candidate_settings_rejected(field, graph_snapshot,
+                                            monkeypatch):
+    graph, snapshot = graph_snapshot
+    query = PredictiveQuery(
+        graph, 'PREDICT COUNT(orders.*, 0, 7, days) > 0 FOR EACH users.id')
+    monkeypatch.setattr('kumo.engine.pquery.predictive_query.new_run_id',
+                        lambda: pytest.fail('started generation'))
+    plan = TrainingTableGenerationPlan(**{field: 'candidate'})
+
+    with pytest.raises(ValueError, match=f"'training_table_generation.{field}'"
+                       " is not supported.*WHERE filter"):
+        query.generate_training_table(snapshot, plan)
+    with pytest.raises(ValueError, match=f"{field}' is not supported"):
+        query.generate_prediction_table(snapshot, plan=plan)

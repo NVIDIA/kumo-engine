@@ -80,7 +80,11 @@ jobs:
 
       - name: Build wheel
         run: |
-          uv build --wheel
+          # kumo-api is a uv workspace member, so a bare `uv build` resolves
+          # the enclosing workspace root and writes the wheel to the repo
+          # root's dist/ instead of here. Force the output location so the
+          # artifact upload below (path: packages/kumo-api/dist/*.whl) finds it.
+          uv build --wheel --out-dir dist
 
       - name: Upload wheel artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

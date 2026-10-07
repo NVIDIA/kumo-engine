@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-
 """Tests for ``pool.service.PoolController``.
 
 We exercise the controller instance directly (bypassing AutoRPC transport).
@@ -27,7 +26,7 @@ from typing import (
 )
 from unittest.mock import AsyncMock, Mock
 
-import pytest  # pants: no-infer-dep
+import pytest
 
 import pool.worker_manager.init_canary as canary_mod
 from common_utils.time import now_utc
@@ -237,8 +236,7 @@ class MockPlacementStrategy:
 
 
 class _FakePoolWorkerInfo:
-    def __init__(self, pool_worker_uid: str,
-                 status: str = 'Registered',
+    def __init__(self, pool_worker_uid: str, status: str = 'Registered',
                  extra_tolerations_match: bool = True) -> None:
         self.pool_worker_uid = pool_worker_uid
         self.status = status
@@ -712,12 +710,13 @@ def test_scrub_unbacked_k8s_placement_ghosts_is_conservative():
     assert set(state.snapshots) == {'leased', 'pvc-backed', 'copy-backed'}
 
 
-def _make_controller(tmp_path, strategy: Optional[PlacementStrategy] = None,
-                     workflow_status_checker=None, dataplane_deleter=None,
-                     local_snapshot_deleter=None, data_plane_storage_root=None,
-                     lifecycle_policy=None, now_utc_fn=None, time_fn=None,
-                     worker_startup_grace_secs: float =
-                     POOL_WORKER_STARTUP_GRACE_SEC) -> PoolController:
+def _make_controller(
+    tmp_path, strategy: Optional[PlacementStrategy] = None,
+    workflow_status_checker=None, dataplane_deleter=None,
+    local_snapshot_deleter=None, data_plane_storage_root=None,
+    lifecycle_policy=None, now_utc_fn=None, time_fn=None,
+    worker_startup_grace_secs: float = POOL_WORKER_STARTUP_GRACE_SEC
+) -> PoolController:
     persistence = PoolStatePersistence(
         str(tmp_path / 'pool_state.json'),
         empty_state_factory=lambda: PoolState(placement_state=K8sPlacementState(
@@ -995,7 +994,9 @@ def _controller_with_starting_worker(
             manager,  # type: ignore[arg-type]
             PoolControllerPlacementContext(controller),
             capacity_tiers=[
-                CapacityTier(50, 4), CapacityTier(1000, 1), CapacityTier(1000, 4)
+                CapacityTier(50, 4),
+                CapacityTier(1000, 1),
+                CapacityTier(1000, 4)
             ],
             pool_worker_uid_factory=lambda: next(uids)))
     _k8s_pvcs(controller)['worker-starting'] = PvcState(
@@ -3788,7 +3789,8 @@ def test_place_snapshot_replans_confirmed_unavailable_worker(tmp_path):
     assert strategy.provision_calls[1][1].reason == 'test'
 
 
-def test_place_snapshot_replan_requires_no_live_pod_or_fresh_heartbeat(tmp_path):
+def test_place_snapshot_replan_requires_no_live_pod_or_fresh_heartbeat(
+        tmp_path):
     controller: PoolController
 
     class HeartbeatDuringRevalidationStrategy(MockPlacementStrategy):
@@ -3958,8 +3960,10 @@ def test_maintenance_once_scrubs_worker_state_from_reconcile_delta(
 def test_maintenance_once_replaces_live_incompatible_worker(
         tmp_path, monkeypatch, reason, cleanup_fails):
     manager = _FakeK8sManager()
-    manager.live_workers = [_FakePoolWorkerInfo(
-        'worker-a', extra_tolerations_match=reason != 'extra-tolerations')]
+    manager.live_workers = [
+        _FakePoolWorkerInfo(
+            'worker-a', extra_tolerations_match=reason != 'extra-tolerations')
+    ]
     state = _state_with_expected_worker()
     placement_state = state.placement_state
     assert isinstance(placement_state, K8sPlacementState)
@@ -3970,14 +3974,16 @@ def test_maintenance_once_replaces_live_incompatible_worker(
         size_bytes=100 * (1 << 30))
     backups = dict(state.dataplane_backups)
     if cleanup_fails:
-        monkeypatch.setattr(manager, 'delete_pool_worker',
-                            AsyncMock(side_effect=RuntimeError('delete failed')))
+        monkeypatch.setattr(
+            manager, 'delete_pool_worker',
+            AsyncMock(side_effect=RuntimeError('delete failed')))
     controller = _make_controller_with_state(tmp_path, state)
     controller._set_placement_strategy(
         build_k8s_placement_strategy(
             manager,  # type: ignore[arg-type]
             PoolControllerPlacementContext(controller),
-            capacity_tiers=[CapacityTier(512), CapacityTier(1024)],
+            capacity_tiers=[CapacityTier(512),
+                            CapacityTier(1024)],
             pool_worker_uid_factory=lambda: 'worker-new',
         ))
     controller._worker_inventory['worker-a'] = WorkerInventory(
@@ -3994,14 +4000,15 @@ def test_maintenance_once_replaces_live_incompatible_worker(
     assert 'worker-a' not in placement_state.pvcs
     assert 'snap-1' not in controller.state.snapshots
     if not cleanup_fails:
-        assert manager.delete_pool_worker_calls[0]['pool_worker_uid'] == 'worker-a'
+        assert manager.delete_pool_worker_calls[0][
+            'pool_worker_uid'] == 'worker-a'
     assert controller.state.dataplane_backups == backups
     assert asyncio.run(controller._persistence.load()) == controller.state
 
     # The old pod can keep heartbeating after failed Kubernetes cleanup.
     # Its report must not revive the drained worker or restore a stale home.
-    asyncio.run(controller.report_status.coroutine(
-        _report(ready_snapshots=['snap-1'])))
+    asyncio.run(
+        controller.report_status.coroutine(_report(ready_snapshots=['snap-1'])))
     assert controller.worker_inventory[
         'worker-a'].status == WorkerStatus.DRAINING
     assert 'snap-1' not in controller.state.snapshots
@@ -5769,14 +5776,11 @@ def test_configured_manager_uses_worker_service_account(monkeypatch):
     assert manager_type.call_args.kwargs['service_account'] == 'kumo-worker'
     assert manager_type.call_args.kwargs['runtime_fs_group'] == 999
     assert manager_type.call_args.kwargs[
-        'gcp_application_credentials_secret'
-    ] == 'gcp-application-credentials'
+        'gcp_application_credentials_secret'] == 'gcp-application-credentials'
     assert manager_type.call_args.kwargs[
-        'gcp_application_credentials_secret_key'
-    ] == 'credentials.json'
+        'gcp_application_credentials_secret_key'] == 'credentials.json'
     assert manager_type.call_args.kwargs[
-        'gcp_application_credentials_path'
-    ] == '/customer/adc/runtime-key.json'
+        'gcp_application_credentials_path'] == '/customer/adc/runtime-key.json'
 
 
 def test_create_pool_controller_tolerates_startup_reconcile_failure(tmp_path):

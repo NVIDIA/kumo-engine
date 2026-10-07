@@ -38,9 +38,8 @@ jobs:
         image:
           [
             kumo-ui,
-            kumo-rest,
-            kumo-temporalworker,
-            kumo
+            kumo-backend-cpu,
+            kumo-backend-gpu
           ]
 
     steps:

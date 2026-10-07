@@ -12,8 +12,7 @@ permissions have been validated.
 ## Development and CI
 
 - Install with `uv pip install -e packages/kumo-api` from the repository root.
-- Pants owns `kumoapi` as first-party source under `//packages/kumo-api`;
-  `3rdparty/BUILD` no longer carries an external `kumo-api` Git pin.
+- `kumo-api` is a uv workspace member, not an external Git pin.
 - Package automation is in `.github/workflows/kumo-api-*`. Pull-request and
   push workflows filter on `packages/kumo-api/**` and their workflow files.
 - Release branches are `kumo-api-vX.Y`; release tags are

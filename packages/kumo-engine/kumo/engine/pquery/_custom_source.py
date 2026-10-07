@@ -21,6 +21,7 @@ def stage_source_table(source_table: SourceTable, destination: Path) -> Path:
         source_table.connector,
         source_table.table_name,
         str(destination / "source"),
+        sql=source_table.sql,
     )
     if prepared.credentials is not None:
         raise NotImplementedError(

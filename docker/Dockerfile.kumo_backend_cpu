@@ -111,7 +111,7 @@ ENV CUDA=cpu
 ARG BAKE_GLOVE_LEVEL=basic
 
 # Version string for the kumo Python package (consumed by setuptools-scm
-# during `pip install ".[full]"`). Defaults to a dev sentinel so builds
+# during the final `uv pip install`). Defaults to a dev sentinel so builds
 # work when .git isn't in the build context (e.g. when .dockerignore
 # excludes it). CI can pass a real version (e.g. branch SHA) here.
 ARG KUMO_VERSION=0.0.0+dev
@@ -140,10 +140,10 @@ RUN mkdir -p /opt/app/src/scripts
 # ---------------------------------------------------------------------------
 # Dependency-install layer.
 #
-# Build context = kumo repo root. To keep `uv pip install ".[full]"` cached
+# Build context = kumo repo root. To keep the uv.lock install cached
 # across edits to kumo source, we first copy only the files setuptools needs
 # to evaluate setup.py / pyproject.toml and resolve the dep set:
-#   - pyproject.toml / setup.py / setup.cfg     project metadata
+#   - pyproject.toml / uv.lock / setup.py / setup.cfg   project metadata + lock
 #   - packages/kumo-api                         shared public contracts
 #   - packages/kumo-pql                         PQL parser and validator
 #   - packages/kumo-core                        shared portable implementation
@@ -152,14 +152,13 @@ RUN mkdir -p /opt/app/src/scripts
 #   - packages/kumo-bigquery                    BigQuery source reader
 #   - packages/kumo-s3                          S3 session binding
 #   - packages/kumo-gcs                         GCS source access
-#   - 3rdparty/BUILD                            pinned dep versions (parsed by setup.py)
 #   - README.md                                 referenced by pyproject.toml
 #   - bin/kumo-*                                console scripts declared in setup.py
 # Plus an empty kumo/__init__.py stub so `find_packages()` returns ['kumo'].
 # After deps are installed we overlay the full source and reinstall with
 # --no-deps to register the real package.
 # ---------------------------------------------------------------------------
-COPY pyproject.toml setup.py setup.cfg README.md /opt/app/src/
+COPY pyproject.toml uv.lock setup.py setup.cfg README.md /opt/app/src/
 COPY --chown=${USERNAME}:${GROUPNAME} packages/kumo-api/ \
     /opt/app/src/packages/kumo-api/
 COPY --chown=${USERNAME}:${GROUPNAME} packages/kumo-pql/ \
@@ -176,6 +175,10 @@ COPY --chown=${USERNAME}:${GROUPNAME} packages/kumo-s3/ \
     /opt/app/src/packages/kumo-s3/
 COPY --chown=${USERNAME}:${GROUPNAME} packages/kumo-gcs/ \
     /opt/app/src/packages/kumo-gcs/
+# kumo-engine, kumo-glove-6b-50d and the DiskGraph source are deliberately not
+# copied here (the first two are excluded via .dockerignore; DiskGraph is built
+# in the diskgraph-builder stage; GloVe is baked separately below). `uv export`
+# and the --no-sources member installs below don't need them on disk.
 COPY 3rdparty/ /opt/app/src/3rdparty/
 COPY bin/ /opt/app/src/bin/
 USER root
@@ -206,12 +209,37 @@ RUN python3 -m pip install uv
 RUN UV_LINK_MODE=copy python3 -m uv pip install --system --no-deps \
         /tmp/diskgraph-wheel/*.whl
 
-# The root Kumo install below owns the monolith dependency resolution and its
-# pinned dependencies. Register the local API, PQL, core and
-# source-reader packages here without resolving a second, conflicting
-# dependency graph -- every vendor SDK they import is already pinned by
-# the root install.
-RUN UV_LINK_MODE=copy python3 -m uv pip install --system --no-deps \
+# Third-party dependencies come from the committed uv.lock, exported for the
+# `full` + `${CUDA}` extras (cpu/cu130, which also select torch and kumo-core's
+# faiss build) and installed with --no-deps so nothing is re-resolved. The
+# workspace members are excluded from the export and installed below.
+#
+# `--torch-backend=${CUDA}` points torch at the matching PyTorch index so the
+# lock's +${CUDA} wheel is found without fanning unrelated packages out to
+# download.pytorch.org. The 3rdparty wheels (torch-geometric, whose lock entry
+# has no registry hash) come from --find-links.
+#
+# diskgraph is already installed above from the prebuilt wheel.
+# The uv cache is wiped at the end of the RUN -- it sits at ~/.cache/uv and is
+# otherwise several GB of unpacked wheels in the final image.
+RUN set -- \
+        --no-emit-package diskgraph \
+ && python3 -m uv export --frozen --no-header --no-emit-workspace \
+        --extra full --extra "${CUDA}" "$@" \
+        --output-file /tmp/requirements.txt \
+ && UV_LINK_MODE=copy python3 -m uv pip install --system --no-deps \
+        --find-links ./3rdparty/kumo-wheels/ \
+        --torch-backend="${CUDA}" \
+        -r /tmp/requirements.txt \
+ && rm -rf /tmp/requirements.txt /root/.cache/uv
+
+# Register the local API, PQL, core and source-reader packages as regular
+# (non-editable) installs: the source overlay below `rm -rf`s /opt/app/src, so
+# editable installs would dangle. Their dependencies are already in the lock
+# export above. --no-sources ignores their `workspace = true` entries (e.g.
+# kumo-glove-6b-50d), which would otherwise require every referenced member to
+# be on disk.
+RUN UV_LINK_MODE=copy python3 -m uv pip install --system --no-deps --no-sources \
         /opt/app/src/packages/kumo-api \
         /opt/app/src/packages/kumo-pql \
         /opt/app/src/packages/kumo-core \
@@ -220,29 +248,6 @@ RUN UV_LINK_MODE=copy python3 -m uv pip install --system --no-deps \
         /opt/app/src/packages/kumo-bigquery \
         /opt/app/src/packages/kumo-s3 \
         /opt/app/src/packages/kumo-gcs \
- && rm -rf /home/${USERNAME}/.cache/uv
-
-# `--torch-backend=${CUDA}` scopes the PyTorch index (whl/${CUDA}/) to
-# torch-family packages, so uv resolves the +${CUDA} torch wheel instead of
-# the default linux torch from PyPI, whose Requires-Dist drags in several GB
-# of orphan NVIDIA CUDA + triton wheels on the CPU image. Unlike a general
-# `--extra-index-url`, it never fans unrelated packages (h11, fsspec, ...)
-# out to download.pytorch.org, which has frequent temporary outages.
-# The uv cache is wiped at the end of the RUN — it sits at ~/.cache/uv and is
-# otherwise several GB of unpacked wheels in the final image.
-# The GitHub token (needed for private kumo-* git deps) is available only to
-# this build step and is removed from git configuration in the same layer.
-RUN --mount=type=secret,id=github_token,required=true,mode=0444 \
-    github_token="$(cat /run/secrets/github_token)" \
- && git config --global \
-        url."https://${github_token}@github.com/".insteadOf \
-        "https://github.com/" \
- && UV_LINK_MODE=copy python3 -m uv pip install --system \
-        --find-links ./3rdparty/kumo-wheels/ \
-        ".[full]" \
-        --torch-backend="${CUDA}" \
-        -f /opt/app/src/3rdparty/kumo-wheels/ \
- && rm -f /root/.gitconfig \
  && rm -rf /root/.cache/uv
 
 # Validate the staged DiskGraph runtime.
@@ -290,7 +295,7 @@ RUN python3 -c 'import importlib.metadata as m, sys; from pathlib import PurePos
 # Source overlay.
 #
 # Now copy the real repo over the stub. Cache busts from here on any source
-# change, but the heavy `.[full]` install above is preserved. The follow-up
+# change, but the heavy lock install above is preserved. The follow-up
 # `uv pip install --no-deps .` rebuilds the kumo wheel against real source
 # without re-resolving dependencies.
 # ---------------------------------------------------------------------------
@@ -339,7 +344,7 @@ RUN for cleanup_attempt in 1 2 3; do \
  && ! command -v pip \
  && ! command -v pip3
 
-# Source preservation. kumo is installed into site-packages by .[full]
+# Source preservation. kumo is installed into site-packages by the final install
 # above; what we keep at /opt/app/* is the stuff invoked directly by
 # entry-point CMDs (rest/main.py, temporalio_commons/worker_main.py,
 # pool/{controller,worker}_main.py).

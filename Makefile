@@ -288,14 +288,14 @@ _COMPOSE_LOCAL_BACKEND_PATHS := \
     packages/kumo-bigquery packages/kumo-databricks \
     packages/kumo-s3 \
     rest temporalio_commons pool statedb service_framework \
-    pyproject.toml setup.py setup.cfg 3rdparty/BUILD bin \
+    pyproject.toml setup.py setup.cfg bin \
     docker/Dockerfile.kumo_backend_cpu docker/Dockerfile.kumo_backend_gpu \
-    docker/kumodeps docker/kumodeps_base docker/kumodeps_cpu \
+    docker/kumodeps_base \
     docker/install_postgres_ca_bundles docker/postgres-ca-bundles \
     docker/build_diskgraph_wheel scripts/diskgraph \
     scripts/build_faiss_gpu_amd64_wheel.sh scripts/build_faiss_gpu_arm64_wheel.sh \
     docker/diskgraph-source \
-    docker/install_glove_files docker/install_kumo \
+    docker/install_glove_files \
     docker/busyloop.sh
 
 # Paths whose contents are baked into the UI image, including the docker-side

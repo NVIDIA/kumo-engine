@@ -13,8 +13,9 @@ inputs:
     required: false
     default: "cpu"
   kumo-install-options:
+    description: 'Space-separated extras to sync for the root `kumo` package, e.g. "full test".'
     required: false
-    default: "[full,test]"
+    default: "full test"
   os-version:
     required: false
     default: "22.04"
@@ -65,14 +66,15 @@ runs:
         # service (ephemeral runners never reuse local disk). This turns the
         # cache-hit path into a single tarball fetch instead of hundreds of
         # requests to pypi.org, which is the main source of the
-        # intermittent connect-timeout install failures. No lockfile exists, so
-        # key on the files that determine the resolved dependency set.
+        # intermittent connect-timeout install failures. Key on
+        # the files that determine the resolved dependency set.
         enable-cache: true
         cache-dependency-glob: |
           pyproject.toml
           packages/kumo-api/pyproject.toml
           packages/kumo-pql/pyproject.toml
-          3rdparty/BUILD
+          setup.py
+          uv.lock
 
     - name: Install graphviz
       working-directory: ${{ steps.working-directory.outputs.working-directory }}
@@ -137,10 +139,31 @@ runs:
       working-directory: ${{ steps.working-directory.outputs.working-directory }}
       run: |
         echo ::group::Install Kumo
-        uv pip uninstall -q kumo-api kumo-core kumo-pql
-        uv pip install -q --no-deps -e packages/kumo-api -e packages/kumo-pql
-        uv pip install -q --no-deps -e packages/kumo-core -e packages/kumo-snowflake -e packages/kumo-bigquery -e packages/kumo-databricks -e packages/kumo-s3 -e packages/kumo-gcs
-        uv pip install -q --torch-backend="${CUDA}" -e .${{ inputs.kumo-install-options }} -f 3rdparty/kumo-wheels/
+        # diskgraph was already installed above from a prebuilt/cached wheel;
+        # excluded here so `uv sync` doesn't rebuild it from source.
+        EXTRA_ARGS=(--extra "${CUDA}")
+        for extra in ${{ inputs.kumo-install-options }}; do
+          EXTRA_ARGS+=(--extra "$extra")
+        done
+        # --inexact: diskgraph was just installed above from a non-workspace
+        # wheel/sdist via `uv pip install`, not as the lock's editable
+        # workspace entry. Without --inexact, `uv sync`'s default exact-sync
+        # prune removes it as "extraneous" even with --no-install-package,
+        # which only skips (re)installing, not the removal pass.
+        #
+        # Not --all-packages: kumo-api/kumo-core/kumo-gcs/kumo-s3/
+        # kumo-snowflake/kumo-bigquery/kumo-databricks are all real root
+        # dependencies now, so a plain sync already installs them. Pulling
+        # in every workspace member would also install kumo-engine, which
+        # has its own install/build/uninstall isolation test later in the
+        # pytest matrix ("packages" job) that assumes it isn't already
+        # present.
+        uv sync --locked --inexact --no-install-package diskgraph "${EXTRA_ARGS[@]}"
+
+        # kumo-sdk (the public SDK, "kumoai-studio") is a workspace member
+        # but deliberately not a root dependency; install it separately so
+        # test/api_contract/test_sdk_api_source_contract.py can import it.
+        uv pip install -q --no-deps -e packages/kumo-sdk
         python - <<'PY'
         import os
 
@@ -152,6 +175,7 @@ runs:
         PY
         echo ::endgroup::
       env:
-        # Select the Torch backend and setup.py's CPU or GPU Faiss distribution.
+        # Selects both the Torch backend and setup.py's faiss-cpu/faiss-gpu
+        # choice for kumo-core.
         CUDA: ${{ inputs.cuda-version }}
       shell: bash

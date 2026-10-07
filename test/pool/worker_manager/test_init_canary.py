@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-
 """Unit tests for :mod:`pool.worker_manager.init_canary` — the init-time
 node-pool validation canary.
 
@@ -11,7 +10,7 @@ toleration / GPU / PVC size), success-path delete, unschedulable-past-
 grace failure classification (label vs GPU), PVC-unbound-past-grace disk
 failure, and cached-fresh-result skip.
 """
-# Stub injection for laptop runs — mirrors test_k8s.py. No-op under pants.
+# Stub injection for laptop runs — mirrors test_k8s.py.
 import os as _os  # noqa: E402,I100
 import sys as _sys  # noqa: E402
 
@@ -266,9 +265,8 @@ def test_classify_scheduled_not_running_is_cold_pull_not_misconfig():
     Running is a cold image pull / slow provision on a delivered node — it
     must NOT be misattributed to a pool/label/taint misconfig, and must
     point operators at POOL_CANARY_GRACE_SECS for slow cold pulls."""
-    msg = _classify(
-        last_phase="Pending", last_unsched=None,
-        pvc_name=None, last_pvc_phase=None)
+    msg = _classify(last_phase="Pending", last_unsched=None, pvc_name=None,
+                    last_pvc_phase=None)
     assert "image" in msg.lower() and "pull" in msg.lower()
     assert "POOL_CANARY_GRACE_SECS" in msg
     # The node WAS delivered → not a misconfig, and the head must not claim
@@ -369,7 +367,9 @@ def test_eph_canary_pod_spec_has_selector_toleration_gpu_no_pvc():
     )
     spec = pod.spec
     assert spec is not None
-    assert spec.node_selector == {DISKGRAPH_POOL_TYPE_LABEL: POOL_TYPE_EPHEMERAL}
+    assert spec.node_selector == {
+        DISKGRAPH_POOL_TYPE_LABEL: POOL_TYPE_EPHEMERAL
+    }
     assert spec.tolerations is not None
     assert spec.tolerations[0].value == f"diskgraph-eph-{TENANT}"
     resources = spec.containers[0].resources
@@ -483,7 +483,8 @@ def test_eph_canary_opt_out_skips_ephemeral_pool(monkeypatch):
     _, kw = apps.patch_namespaced_deployment.call_args
     ann = kw["body"]["metadata"]["annotations"][RESULT_ANNOTATION_KEY]
     assert ann.startswith(_expected_config_hash([800], eph_enabled=False) + "@")
-    assert not ann.startswith(_expected_config_hash([800], eph_enabled=True) + "@")
+    assert not ann.startswith(
+        _expected_config_hash([800], eph_enabled=True) + "@")
 
 
 def _run_mocked_canary(monkeypatch, run_one, *,
@@ -518,7 +519,9 @@ def test_partial_cache_failure_keeps_other_proven_tiers(monkeypatch):
     result, apps = _run_mocked_canary(
         monkeypatch,
         run_one,
-        tier_specs=[PvcSpec(400, 1), PvcSpec(800, 1), PvcSpec(3400, 4)],
+        tier_specs=[PvcSpec(400, 1),
+                    PvcSpec(800, 1),
+                    PvcSpec(3400, 4)],
         prevalidated={(400, 1), (999, 9)},
     )
 
@@ -531,8 +534,8 @@ def test_partial_cache_failure_keeps_other_proven_tiers(monkeypatch):
 
 
 def test_registered_tier_proof_is_not_persisted_as_global_success(monkeypatch):
-    result, apps = _run_mocked_canary(
-        monkeypatch, _fail_if_called, prevalidated={(800, 1)})
+    result, apps = _run_mocked_canary(monkeypatch, _fail_if_called,
+                                      prevalidated={(800, 1)})
 
     assert result.available_cache_tiers == frozenset({(800, 1)})
     assert not apps.patch_namespaced_deployment.called
@@ -592,8 +595,8 @@ def test_insufficient_gpu_classified_as_gpu_failure():
     assert "nvidia.com/gpu" in msg
 
 
-def test_eph_gpu_failure_disables_ephemeral_and_names_gpu_cause(monkeypatch,
-                                                                caplog):
+def test_eph_gpu_failure_disables_ephemeral_and_names_gpu_cause(
+        monkeypatch, caplog):
     """Cache tier passes (Running + Bound); eph canary hits Insufficient
     GPU → message classified as INSUFFICIENT GPU (no PVC to mislead it), and
     the eph failure names the POOL_INIT_EPHEMERAL_CANARY_ENABLED=false opt-out.
@@ -836,8 +839,8 @@ def test_record_success_then_read_gives_non_negative_age():
 # ---------------------------------------------------------------------------
 
 
-def _canary_pvc(size: str, *, terminating: bool = False
-                ) -> V1PersistentVolumeClaim:
+def _canary_pvc(size: str, *,
+                terminating: bool = False) -> V1PersistentVolumeClaim:
     pvc = _build_canary_pvc(
         name="dg-pool-canary-pvc-cache-800",
         namespace=NAMESPACE,
@@ -859,8 +862,7 @@ def test_pvc_is_reusable_size_match_and_mismatch():
     # Different requested size → NOT reusable (PVC size is immutable).
     assert not _pvc_is_reusable(_canary_pvc("400Gi"), "800Gi")
     # Terminating → NOT reusable even at the matching size.
-    assert not _pvc_is_reusable(
-        _canary_pvc("800Gi", terminating=True), "800Gi")
+    assert not _pvc_is_reusable(_canary_pvc("800Gi", terminating=True), "800Gi")
 
 
 def test_create_pvc_size_mismatch_deletes_and_recreates():
@@ -873,15 +875,15 @@ def test_create_pvc_size_mismatch_deletes_and_recreates():
 
     # First create raises 409 (leftover exists); recreate after delete is OK.
     core.create_namespaced_persistent_volume_claim.side_effect = [
-        _api_exc(409), None]
+        _api_exc(409), None
+    ]
     # The existing leftover is bound at the WRONG size (400Gi vs 800Gi).
     core.read_namespaced_persistent_volume_claim.side_effect = [
-        _canary_pvc("400Gi"),   # 409 read: stale, different size
-        _api_exc(404),          # _wait_for_gone(pvc): now gone
+        _canary_pvc("400Gi"),  # 409 read: stale, different size
+        _api_exc(404),  # _wait_for_gone(pvc): now gone
     ]
 
-    asyncio.run(
-        runner._create_pvc(_canary_pvc("800Gi"), storage_size="800Gi"))
+    asyncio.run(runner._create_pvc(_canary_pvc("800Gi"), storage_size="800Gi"))
 
     # Stale PVC deleted, then recreated at the correct size (2 creates total).
     assert core.delete_namespaced_persistent_volume_claim.call_count == 1
@@ -975,8 +977,7 @@ def test_create_pvc_same_size_reuses():
     core.read_namespaced_persistent_volume_claim.return_value = _canary_pvc(
         "800Gi")
 
-    asyncio.run(
-        runner._create_pvc(_canary_pvc("800Gi"), storage_size="800Gi"))
+    asyncio.run(runner._create_pvc(_canary_pvc("800Gi"), storage_size="800Gi"))
 
     assert not core.delete_namespaced_persistent_volume_claim.called
     # Only the initial (409) create attempt — no recreate.

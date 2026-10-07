@@ -743,11 +743,6 @@ def write_flat_manifest(
             "node_types": list(spec.graph_node_types),
             "edge_types": [list(edge) for edge in spec.graph_edge_types],
         },
-        "features": {
-            **spec.feature_schema,
-            "raw_feature_format": "arrow_columnar_v1",
-            "provenance_mode": "node_id_time_keyed_v1",
-        },
         "stages": {
             stage: stage_value(stage, count)
             for stage, count in stage_counts.items()

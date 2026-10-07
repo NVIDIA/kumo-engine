@@ -12,6 +12,7 @@ import pandas as pd
 from diskgraph import MULTICAT_DELIMITERS
 from kumo_core.stype_inference import (
     infer_stype_from_dtype,
+    infer_stype_from_name,
     infer_stype_from_stats,
 )
 from kumo_core.types import ColStatType, ConnectorType, TableStatType
@@ -30,7 +31,7 @@ from pandas.api.types import is_timedelta64_dtype
 import common_utils.string
 from async_utils.sync import blocking_method
 from common_utils import string
-from common_utils.string import contains_identifier, contains_number
+from common_utils.string import contains_identifier
 from io_utils import kumo_dataclass, logging
 from kumo.config import (
     ConfigMixin,
@@ -1059,14 +1060,9 @@ class Table(ConfigMixin, ConnectorMixin, _HasData['TableData']):
             elif stype_inferred_from_dtype(col.dtype):
                 col.stype = self._infer_stype_from_dtype(col.dtype)
                 continue
-            # floats are supported for ID but not recommended
-            elif (Stype.ID.supports_dtype(col.dtype)
-                  and contains_identifier(col.name)
-                  and not col.dtype.is_float()):
-                col.stype = Stype.ID
-            elif (Stype.numerical.supports_dtype(col.dtype)
-                  and contains_number(col.name)):
-                col.stype = Stype.numerical
+            elif (named_stype := infer_stype_from_name(col.name, col.dtype)) \
+                    is not None:
+                col.stype = named_stype
 
         if not require_stats:
             # Determine the stype of the columne without stats, the preference

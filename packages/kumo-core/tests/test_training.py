@@ -10,6 +10,8 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import kumo_core.training.orchestration as training_module
+import kumo_core.automl.runtime as automl_runtime
+from kumo_core.train.trainer import Trainer as CoreTrainer
 import pytest
 from kumo_core.artifacts import VitalArtifactSources
 from kumo_core.io.json import load_json, save_json
@@ -156,11 +158,11 @@ def make_bindings(task, auto_trainer, calls, monkeypatch):
         lambda value, path: calls.append(("save_best", value, path)),
     )
     monkeypatch.setattr(
-        training_module.Trainer,
+        CoreTrainer,
         "load",
         classmethod(lambda cls, *args, **kwargs: auto_trainer.trainer),
     )
-    monkeypatch.setattr(training_module, "load_json",
+    monkeypatch.setattr(automl_runtime, "load_json",
                         lambda path, cls: ModelPlan())
 
     return TrainingBindings(
@@ -446,3 +448,82 @@ def test_trainer_refit_state_round_trip(tmp_path):
             config,
             task=numerical_task(TaskType.BINARY_CLASSIFICATION),
         )
+
+
+@pytest.mark.parametrize('portable', [False, True])
+def test_warm_start_resolves_selected_model_without_copying_training_controls(
+        tmp_path, monkeypatch, portable):
+    task = numerical_task(TaskType.BINARY_CLASSIFICATION)
+    destination = ModelPlan()
+    destination.optimization.max_epochs = 7
+    destination.training_job.refit_full = False
+    source = ModelPlan()
+    source.model_architecture.channels = [16]
+    source.optimization.max_epochs = 100
+    source.training_job.refit_full = True
+    plan_path = tmp_path / 'model_plan.json'
+    save_json(source, str(plan_path))
+    selected = tmp_path / 'checkpoint'
+    encoder_dir = tmp_path / 'bundle-model'
+    selections = []
+    trainer = SimpleNamespace(
+        _set_fit_mode_to_use=lambda: selections.append('selected'),
+        best_ckpt=str(selected),
+    )
+    monkeypatch.setattr(CoreTrainer, 'load', lambda *args, **kwargs: trainer)
+    schema_path = tmp_path / 'prediction_schema.json'
+    save_json({'task_type': task.task_type.value}, str(schema_path))
+    artifacts = {
+        'selected_checkpoint': str(selected),
+        'encoders': str(encoder_dir / 'encoders.json'),
+        'resolved_model_plan': str(plan_path),
+        'prediction_schema': str(schema_path),
+    } if portable else None
+    checkpoint, encoders = automl_runtime.resolve_warm_start(
+        destination, task, Runtime(), trainer_dir=str(tmp_path),
+        artifacts=artifacts)
+    assert checkpoint == str(selected)
+    assert encoders == (str(encoder_dir) if portable else None)
+    assert selections == ([] if portable else ['selected'])
+    assert destination.model_architecture.channels == [16]
+    assert destination.optimization.max_epochs == 7
+    assert destination.training_job.refit_full is False
+
+
+@pytest.mark.parametrize('current,source,message', [
+    (TaskType.BINARY_CLASSIFICATION, TaskType.REGRESSION, 'different'),
+    (TaskType.REGRESSION, TaskType.FORECASTING, 'different'),
+    (TaskType.FORECASTING, TaskType.FORECASTING,
+     'not supported for forecasting'),
+])
+def test_bundle_warm_start_rejects_incompatible_task_before_loading_model(
+        tmp_path, monkeypatch, current, source, message):
+    schema_path = tmp_path / 'prediction_schema.json'
+    save_json({'task_type': source.value}, str(schema_path))
+    artifacts = {
+        'prediction_schema': str(schema_path),
+        'selected_checkpoint': '/must-not-load/checkpoint',
+        'resolved_model_plan': '/must-not-load/model_plan.json',
+        'encoders': '/must-not-load/encoders.json',
+    }
+    monkeypatch.setattr(
+        CoreTrainer, 'load',
+        lambda *args, **kwargs: pytest.fail('trainer loaded before validation'))
+    with pytest.raises(ValueError, match=message):
+        automl_runtime.resolve_warm_start(ModelPlan(), numerical_task(current),
+                                          Runtime(), artifacts=artifacts)
+
+
+def test_hosted_warm_start_rejects_forecasting_before_loading_trainer(
+        monkeypatch):
+    monkeypatch.setattr(
+        CoreTrainer, 'load',
+        lambda *args, **kwargs: pytest.fail('trainer loaded before validation'))
+    with pytest.raises(ValueError, match='not supported for forecasting'):
+        automl_runtime.resolve_warm_start(ModelPlan(),
+                                          numerical_task(TaskType.FORECASTING),
+                                          Runtime(),
+                                          trainer_dir='/must-not-load/trainer')
+    assert automl_runtime.resolve_warm_start(
+        ModelPlan(), numerical_task(TaskType.FORECASTING),
+        Runtime()) == (None, None)

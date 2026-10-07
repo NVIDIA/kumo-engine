@@ -10,6 +10,7 @@ noted otherwise; they require the corresponding prepared toolchain.
 | `packages/kumo-pql/kumopql/grammar/PQLGrammar.g4` | From `packages/kumo-pql`: `python scripts/generate_grammar.py` | Python grammar artifacts; use the pinned ANTLR version and parser tests |
 | The same PQL grammar | `npm --prefix ui run compile-grammar-to-ts` | `ui/src/utils/PQLParsing/grammar/`; review autocomplete consumers too |
 | UI catalog source exports | `.agents/skills/code-ui/scripts/generate-catalog-docs.sh` | Catalog component index; generated summaries require review against the source |
+| `packages/diskgraph/third_party/artifact-manifest.json` (mirrored) and the Cargo source cache | `python scripts/refresh_diskgraph_notice_inventory.py`, then `python scripts/gen_third_party.py --output THIRD-PARTY.txt` | Rust components of `3rdparty/notices/inventory.json` and `THIRD-PARTY.txt`; the DiskGraph synchronization workflow runs both, and its PR's inventory diff is reviewed; see [third-party notices](../../3rdparty/README.md) |
 | Dependency declarations and resolution configuration | Repository/package lockfile tooling | Lockfiles and attribution; use the owning package/release workflow rather than editing resolved records by hand |
 | `.agents/mcp-servers.json` (optional Codex entry) | `python3 .agents/scripts/sync-mcp.py` (manual) | MCP permissions in `.claude/settings.json` and local `.codex/config.toml`; review generated changes before using them |
 

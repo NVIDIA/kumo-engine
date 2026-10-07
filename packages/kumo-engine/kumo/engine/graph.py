@@ -402,6 +402,9 @@ class Graph:
         )
         from kumo_core.sources.layout import staging_dir
         from kumo_core.sources.transfer import discard_destination
+        from kumoapi.source_table import CustomSQLSourceTable
+
+        from kumo.engine.connector.source_table import checked_sql
 
         graph_config = self._graph_config
         store = LocalSnapshotStore(
@@ -420,14 +423,20 @@ class Graph:
                 dest_dir = staging_dir(persist_dir, alias)
                 dest_dir.mkdir(parents=True, exist_ok=True)
 
+                name, sql = table.table_name, None
+                source = table.definition.source_table
+                if isinstance(source, CustomSQLSourceTable):
+                    checked = checked_sql(connector, source.sql)
+                    name, sql = checked.table, checked.sql
                 prepared = source_backend.prepare_ingest(
                     connector,
-                    table.table_name,
+                    name,
                     str(dest_dir),
                     dtypes={
                         col.name: col.dtype
                         for col in table.definition.cols
                     },
+                    sql=sql,
                 )
                 if prepared.credentials is not None:
                     raise NotImplementedError(

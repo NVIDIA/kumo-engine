@@ -4,7 +4,7 @@
 
 ---
 
-![Full Tests](https://github.com/kumo-ai/kumo/actions/workflows/testing.yml/badge.svg?branch=master) ![Pants Tests](https://github.com/kumo-ai/kumo/actions/workflows/testing_pants.yml/badge.svg?branch=master) ![UI Tests](https://github.com/kumo-ai/kumo/actions/workflows/testing_ui.yml/badge.svg?branch=master) ![Linting](https://github.com/kumo-ai/kumo/actions/workflows/linting.yml/badge.svg?branch=master) ![Install](https://github.com/kumo-ai/kumo/actions/workflows/install.yml/badge.svg?branch=master)
+![Full Tests](https://github.com/kumo-ai/kumo/actions/workflows/testing.yml/badge.svg?branch=master) ![UI Tests](https://github.com/kumo-ai/kumo/actions/workflows/testing_ui.yml/badge.svg?branch=master) ![Linting](https://github.com/kumo-ai/kumo/actions/workflows/linting.yml/badge.svg?branch=master) ![Install](https://github.com/kumo-ai/kumo/actions/workflows/install.yml/badge.svg?branch=master)
 
 # Kumo
 
@@ -61,6 +61,7 @@ Apache-licensed Python subprojects retain a copy of the root license at each pac
 | `kumo-databricks` | Apache-2.0 | [packages/kumo-databricks/LICENSE](packages/kumo-databricks/LICENSE) |
 | `kumo-engine` (formerly `kumoai-local`) | Apache-2.0 | [packages/kumo-engine/LICENSE](packages/kumo-engine/LICENSE) |
 | `kumo-gcs` | Apache-2.0 | [packages/kumo-gcs/LICENSE](packages/kumo-gcs/LICENSE) |
+| `kumo-glove-6b-50d` | Apache-2.0 AND PDDL-1.0 | [tools/glove-6b-50d/LICENSE](tools/glove-6b-50d/LICENSE), [third-party notice](tools/glove-6b-50d/THIRD-PARTY.txt) |
 | `kumo-pql` | Apache-2.0 | [packages/kumo-pql/LICENSE](packages/kumo-pql/LICENSE) |
 | `kumo-s3` | Apache-2.0 | [packages/kumo-s3/LICENSE](packages/kumo-s3/LICENSE) |
 | `kumo-sdk` (`kumoai-studio`) | Apache-2.0 AND BSD-3-Clause | [packages/kumo-sdk/LICENSE](packages/kumo-sdk/LICENSE), [third-party notice](packages/kumo-sdk/THIRD-PARTY.txt) |

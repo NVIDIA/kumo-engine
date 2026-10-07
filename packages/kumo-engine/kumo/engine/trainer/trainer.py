@@ -15,6 +15,7 @@ import pandas as pd
 from kumo_core.embedding_models import EmbeddingModelStore
 from kumo_core.model_plan import ModelPlan as CoreModelPlan
 from kumo_core.model_plan import inferred_or_missing_type_to_none
+from kumo_core.model_plan_conversion import public_model_plan_from_internal
 from kumo_core.pquery import (
     build_generated_training_task_dataset,
     resolve_query_forecast,
@@ -62,12 +63,37 @@ class TrainingResult:
 
     `published_model` records the destination's assigned name, version and URI
     when `fit()` exports the bundle. It is `None` without an export.
+
+    `holdout_path` is the holdout Parquet file written by `fit()`, or `None`
+    when the task produced none (also for results of `Trainer.load`). It is
+    not part of the published model bundle. The file is capped at 1 GiB in
+    memory; `holdout_truncated` is true when rows were dropped to fit, and
+    `None` when the size record could not be read.
     """
 
     metrics: Dict[str, float]
     artifact_paths: Dict[str, str]
     bundle_dir: Path
     published_model: Optional[PublishedModel] = None
+    holdout_path: Optional[Path] = None
+    holdout_truncated: Optional[bool] = False
+
+    def holdout_df(self) -> pd.DataFrame:
+        r"""Read the holdout predictions as a pandas DataFrame.
+
+        Raises `FileNotFoundError` if no holdout was produced. Reads the whole
+        file into memory; check `holdout_truncated` for dropped rows.
+        """
+        if self.holdout_path is None:
+            raise FileNotFoundError(
+                'No holdout dataframe was produced for this result')
+        if self.holdout_truncated:
+            logger.warning('Holdout dataframe was truncated to fit the size '
+                           'cap; it does not contain every holdout row.')
+        elif self.holdout_truncated is None:
+            logger.warning('Holdout truncation is unknown; it may not contain '
+                           'every holdout row.')
+        return pd.read_parquet(self.holdout_path)
 
 
 @dataclass(frozen=True)
@@ -130,6 +156,21 @@ class PredictionResult:
             write_files(output_config.connector, destination, list(files),
                         output_config.write_mode,
                         export_id=f'{self.selection.job_id}-{kind.value}')
+
+
+def _find_holdout(log_dir: str) -> tuple[Optional[Path], Optional[bool]]:
+    from kumo_core.train.output import EvalOutput
+    path = Path(EvalOutput.get_df_path(log_dir, TrainingStage.TEST))
+    if not path.is_file():
+        return None, False
+    meta = Path(EvalOutput.get_df_meta_path(log_dir, TrainingStage.TEST))
+    try:
+        truncated = bool(json.loads(meta.read_text())['truncated'])
+    except (OSError, ValueError, KeyError, TypeError):
+        logger.warning('Holdout size record %s is missing or unreadable; '
+                       'truncation is unknown.', meta)
+        truncated = None
+    return path, truncated
 
 
 def _to_core_model_plan(model_plan: ModelPlan) -> CoreModelPlan:
@@ -195,6 +236,7 @@ class Trainer:
         *,
         snapshot: GraphSnapshot,
         export_config: Optional[ModelOutputConfig] = None,
+        warm_start: Optional[Self] = None,
     ) -> TrainingResult:
         r"""Train a model against `train_table`.
 
@@ -215,7 +257,17 @@ class Trainer:
                 generate_training_table(snapshot)`.
             snapshot: graph data and features to train against.
             export_config: if given, publishes the trained model bundle.
+            warm_start: a fitted trainer or one restored with ``load`` or
+                ``load_from_connector``. Reuses its selected weights, optimizer
+                state, fitted encoders, architecture and neighbor sampling;
+                this trainer's training controls still apply. Task types must
+                match. Forecasting warm starts are unsupported.
         """
+        from kumo_core.automl.runtime import (
+            inherit_warm_start_model_plan,
+            validate_warm_start_task_type,
+        )
+        from kumo_core.io.json import load_json
         from kumo_core.training.orchestration import (
             CallableTrainingOptions,
             ResolvedTrainingInput,
@@ -227,9 +279,16 @@ class Trainer:
             PreparedGraph,
             materialize_generated_training_task,
         )
+        from kumo_core.types import TaskType
 
         from kumo.engine.trainer._runtime import local_training_bindings
 
+        if export_config is not None and not callable(
+                getattr(export_config.connector.sink_backend, 'publish_model',
+                        None)):
+            raise NotImplementedError(
+                f'{type(export_config.connector).__name__} cannot publish '
+                f'models')
         run_id = f'{self._id}-fit-{new_run_id()}'
         run_dir = self.scratch_dir / 'runs' / run_id
 
@@ -237,6 +296,20 @@ class Trainer:
             _to_core_model_plan(self._model_plan),
             training_table_generation=train_table.generation_plan,
         )
+        warm_start_artifacts = None
+        effective_plan = self._model_plan
+        if warm_start is not None:
+            if warm_start._training_result is None:
+                raise ValueError(
+                    "warm_start requires a fitted or loaded Trainer")
+            warm_start_artifacts = read_bundle_artifact_paths(
+                warm_start._training_result.bundle_dir)
+            inherit_warm_start_model_plan(
+                model_plan,
+                load_json(warm_start_artifacts['resolved_model_plan'],
+                          CoreModelPlan),
+            )
+            effective_plan = public_model_plan_from_internal(model_plan)
         workflow = TrainingWorkflowRequest.from_spec(
             graph=snapshot.graph_config,
             predictive_query=train_table.query,
@@ -250,6 +323,13 @@ class Trainer:
             model_plan=model_plan,
             search=AutoMLSearchOptions(),
         )
+        if warm_start_artifacts is not None:
+            source_schema = json.loads(
+                Path(warm_start_artifacts['prediction_schema']).read_text())
+            validate_warm_start_task_type(
+                TaskType(workflow.query.task_type),
+                TaskType(source_schema['task_type']),
+            )
         ingest_tt_id = f'tt-{run_id}'
         lag_timesteps = inferred_or_missing_type_to_none(
             train_table.generation_plan.lag_timesteps)
@@ -269,7 +349,7 @@ class Trainer:
         )
         require_embedding_models(
             self._embedding_models, task_dataset.feature_schema,
-            self._model_plan.column_processing.encoder_overrides)
+            effective_plan.column_processing.encoder_overrides)
         run_dir.mkdir(parents=True, exist_ok=True)
         materialized = materialize_generated_training_task(
             workflow,
@@ -286,6 +366,7 @@ class Trainer:
             model_plan=materialized.model_plan,
             home_dir=str(run_dir),
             task_dataset_bundle_dir=materialized.bundle_dir,
+            warm_start_artifacts=warm_start_artifacts,
         )
         result = run_callable_training(
             training_input,
@@ -317,10 +398,14 @@ class Trainer:
                     'failed for run %s. The trained model remains available.',
                     run_id)
 
+        holdout_path, holdout_truncated = _find_holdout(
+            result.best_trainer.log_dir)
         training_result = TrainingResult(
             metrics=dict(result.metrics),
             artifact_paths=dict(result.artifact_paths),
             bundle_dir=run_dir / 'published-model',
+            holdout_path=holdout_path,
+            holdout_truncated=holdout_truncated,
         )
         return self._finish_fit(
             training_result,
@@ -328,6 +413,7 @@ class Trainer:
             snapshot_id=snapshot.id,
             training_table_generation=train_table.generation_plan,
             export_config=export_config,
+            model_plan=effective_plan,
         )
 
     def _finish_fit(
@@ -338,12 +424,14 @@ class Trainer:
         snapshot_id: str,
         training_table_generation: TrainingTableGenerationPlan,
         export_config: Optional[ModelOutputConfig],
+        model_plan: Optional[ModelPlan] = None,
     ) -> TrainingResult:
         """Commit durable fit outputs before making this trainer usable."""
+        effective_plan = model_plan if model_plan is not None else self._model_plan
         write_training_spec(
             training_result.bundle_dir,
             predictive_query=predictive_query,
-            model_plan=self._model_plan,
+            model_plan=effective_plan,
             snapshot_id=snapshot_id,
             training_table_generation=training_table_generation,
         )
@@ -456,7 +544,8 @@ class Trainer:
                                 'preflight_write_files', None)
             if callable(preflight):
                 for destination in destinations.values():
-                    preflight(output_config.connector, destination)
+                    preflight(output_config.connector, destination,
+                              write_mode=output_config.write_mode)
 
         require_trained_embedding_models(
             self._embedding_models,

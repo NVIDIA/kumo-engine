@@ -46,7 +46,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 from kumo_core.model_plan import ModelPlan as CoreModelPlan
-from kumo_core.model_plan import inferred_or_missing_type_to_none
+from kumo_core.model_plan import (
+    ModelPlanValueError,
+    inferred_or_missing_type_to_none,
+    unsupported_entity_candidate_errors,
+)
 from kumo_core.model_plan_conversion import public_model_plan_from_internal
 from kumo_core.pquery import (
     ValidatedNativeQuery,
@@ -216,6 +220,12 @@ class PredictiveQuery:
                 `suggest_training_table_plan` default.
         """
         self._require_matching_snapshot(snapshot)
+        for name in ('train_table_path_override', 'task_path_override'):
+            if plan is not None and getattr(plan, name) is not None:
+                raise ValueError(
+                    f"'{name}' is not supported by native training-table "
+                    "generation; use TrainingTable.from_source_table() to "
+                    "train on existing labeled rows.")
         # Lazy: kumo.engine.trainer.trainer also imports kumo.engine.pquery (this
         # package), so a module-level import here would be circular.
         from kumo.engine.trainer.trainer import _to_core_model_plan
@@ -339,6 +349,8 @@ class PredictiveQuery:
                 snapshot, plan=trainer.training_table_generation_plan)``.
         """
         self._require_matching_snapshot(snapshot)
+        if errors := unsupported_entity_candidate_errors(plan):
+            raise ModelPlanValueError(errors)
 
         run_id = new_run_id()
         run_dir = prediction_table_scratch_dir(run_id)

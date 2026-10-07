@@ -15,7 +15,11 @@ is the one implementation of it, and the hosted platform runs the same one.
 from typing import List, Mapping, Optional, Union
 
 # One rule for what a dtype implies, shared with the table area.
-from kumo_core.custom_sql import sample_timeout, subquery_safe_sql
+from kumo_core.custom_sql import (
+    gate_custom_sql,
+    sample_timeout,
+    subquery_safe_sql,
+)
 from kumo_core.sources.backend import (
     ingest_result,
     sampled_table,
@@ -145,7 +149,8 @@ class SnowflakeSourceBackend(_SnowflakeSessions):
         del project_id
         return SourceTableDataResponse(
             table_name=table_name,
-            cols=self._columns(connector, table_name, self._embeddable(sql)),
+            cols=self._columns(connector, table_name,
+                               self._embeddable(connector, sql)),
         )
 
     def get_sample(
@@ -159,7 +164,7 @@ class SnowflakeSourceBackend(_SnowflakeSessions):
     ) -> SourceTableDataResponse:
         del project_id
 
-        query = self._embeddable(sql)
+        query = self._embeddable(connector, sql)
         source = (f'({query})' if query is not None else self._qualified(
             connector, table_name))
         # One span for both statements: the columns and the rows they name
@@ -225,7 +230,7 @@ class SnowflakeSourceBackend(_SnowflakeSessions):
         del project_id  # a local runtime has no projects
         from kumo_core.sources.prepare import read_table
 
-        query = self._embeddable(sql)
+        query = self._embeddable(connector, sql)
         # One directory per table: a read empties what it is handed, so two
         # tables sharing a `dest_dir` would leave the second holding only its
         # own files.
@@ -238,9 +243,9 @@ class SnowflakeSourceBackend(_SnowflakeSessions):
                 self._reader(connector, session), table_name, str(destination),
                 columns=self._declared(connector, table_name, dtypes, query),
                 mode=self.mode, sql=query, version=data_version)
-        if not staged.paths:
+        if not staged.num_rows:
             raise PermanentSourceError(
-                f'Unloading {table_name} produced no files. An empty source '
+                f'Unloading {table_name} returned no rows. An empty source '
                 f'table cannot be ingested; DiskGraph needs at least one row '
                 f'to infer an encoding.')
 
@@ -286,7 +291,8 @@ class SnowflakeSourceBackend(_SnowflakeSessions):
             finally:
                 cursor.close()
 
-    def _embeddable(self, sql: Optional[str]) -> Optional[str]:
+    def _embeddable(self, connector: SourceConnector,
+                    sql: Optional[str]) -> Optional[str]:
         r"""The only form of a query this reader ever sends: the caller's text
         with its trailing terminator and comment removed, so it stands in
         subquery position.
@@ -298,6 +304,8 @@ class SnowflakeSourceBackend(_SnowflakeSessions):
         if sql is None:
             return None
         from kumo_core.types import ConnectorType
+        gate_custom_sql(sql, ConnectorType.SNOWFLAKE,
+                        _target_config(connector))
         return subquery_safe_sql(sql, ConnectorType.SNOWFLAKE)
 
     def _described(self, connector: SourceConnector,

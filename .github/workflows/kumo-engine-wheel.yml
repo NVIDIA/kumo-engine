@@ -1,0 +1,154 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Builds the single `kumo-engine` wheel (packages/kumo-engine/scripts/
+# build_wheel.sh).
+#
+# Release flow:
+#   1. Change the root VERSION file and run scripts/stamp_version.py, merge it.
+#   2. Create and publish a GitHub release tagged `kumo-engine-v<version>`.
+#   3. This workflow builds the wheel at that tag, attaches it to the release
+#      and uploads it to PyPI.
+# A manual run only builds the wheel (as `<version>+<commit>`) and stores it as
+# a workflow artifact; it never publishes. The wheel never bundles kumo-api or
+# kumo-glove-6b-50d: both must already be on PyPI.
+
+name: Kumo Engine - Build and publish wheel
+
+on:  # yamllint disable-line rule:truthy
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      retention_days:
+        description: How long GitHub keeps the uploaded artifact.
+        type: number
+        required: false
+        default: 30
+      extra_components:
+        description: >
+          Optional packages, e.g. kumo-databricks,kumo-s3. Engine is always
+          included. Leave empty to include all optional components.
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # The repository publishes other releases (e.g. kumo-sdk-v*); only
+    # kumo-engine tags build here.
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch'
+      || startsWith(github.event.release.tag_name, 'kumo-engine-v') }}
+    runs-on: ubuntu-22.04-large
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
+      - name: Check release tag matches the VERSION file
+        if: ${{ github.event_name == 'release' }}
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version=$(tr -d '[:space:]' < VERSION)
+          if [ "${RELEASE_TAG}" != "kumo-engine-v${version}" ]; then
+            echo "Tag ${RELEASE_TAG} does not match the VERSION file ${version}; expected kumo-engine-v${version}."
+            exit 1
+          fi
+          python scripts/stamp_version.py --check
+
+      - name: Set up Rust
+        # This org's Actions allowlist only permits dtolnay/rust-toolchain at
+        # @master or a pinned SHA, not @stable.
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88  # master, allowlisted
+        with:
+          toolchain: stable
+
+      # cargo-zigbuild shells out to `zig`; without it on PATH it falls back
+      # to `python -m ziglang`, which needs the ziglang package installed.
+      - name: Install zig
+        run: pip install ziglang
+
+      - name: Cache Stanford's glove.6B.zip
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
+        with:
+          path: ~/.cache/kumo/glove.6B.zip
+          key: glove-6b-zip-617afb2fe6cbd085c235baf7a465b96f4112bd7f7ccb2b2cbd649fed9cbcf2fb
+
+      - name: Build wheel
+        env:
+          GITHUB_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+          IS_RELEASE: ${{ github.event_name == 'release' }}
+          EXTRA_COMPONENTS_INPUT: ${{ inputs.extra_components }}
+        run: |
+          args=()
+          if [ "${IS_RELEASE}" = "true" ]; then
+            args+=(--release)
+          fi
+          if [ -n "${EXTRA_COMPONENTS_INPUT}" ]; then
+            args+=(--extra-components "${EXTRA_COMPONENTS_INPUT}")
+          fi
+          ./packages/kumo-engine/scripts/build_wheel.sh "${args[@]}"
+
+      # GitHub-hosted artifact storage, not S3: no AWS role to provision.
+      - name: Upload wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: kumo-engine-wheel-${{ github.sha }}
+          path: packages/kumo-engine/dist/*.whl
+          retention-days: ${{ inputs.retention_days || 30 }}
+          if-no-files-found: error
+
+  attach-to-release:
+    needs: [build]
+    if: ${{ github.event_name == 'release' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download wheel
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: kumo-engine-wheel-${{ github.sha }}
+          path: dist
+
+      - name: Attach wheel to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "${RELEASE_TAG}" dist/*.whl --clobber
+
+  publish-pypi:
+    needs: [build]
+    # Release events only, never workflow_dispatch. Off until the PyPI project
+    # and its trusted publisher exist (one-time setup: see docs/development/releasing-kumo-engine.md).
+    if: >-
+      ${{ github.event_name == 'release' && vars.KUMO_ENGINE_PUBLICATION_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    environment: kumo-engine-release
+    permissions:
+      contents: read
+      id-token: write  # PyPI trusted publishing
+    steps:
+      - name: Download wheel
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: kumo-engine-wheel-${{ github.sha }}
+          path: dist
+
+      - name: Upload wheel to PyPI
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
+        with:
+          packages-dir: dist
+          verbose: true

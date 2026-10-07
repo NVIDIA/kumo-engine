@@ -16,6 +16,10 @@ build/
 # Frontend (separate UI image)
 ui/
 
+# Workspace members the backend images deliberately don't ship
+packages/kumo-engine/
+tools/glove-6b-50d/
+
 # Tests + fixtures (~70 MB, not needed at runtime)
 test/
 tests/
@@ -23,8 +27,6 @@ tests/
 .coverage
 .test_durations
 
-# Pants workspace files
-.pants.d/
 .pids
 
 # Editor / agent / git scratch

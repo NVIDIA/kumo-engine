@@ -190,6 +190,14 @@ class LocalAutoTrainingRuntime:
         }
 
 
+def _trainer_validation_metrics(trainer: Any) -> Dict[str, float]:
+    return {
+        name: value
+        for name, value in trainer.get_train_results().items()
+        if name.startswith('val_')
+    }
+
+
 def local_training_bindings(
     training_input: Any,
     run_name: Optional[str] = None,
@@ -217,4 +225,5 @@ def local_training_bindings(
         # upload it to a registry; locally the path is the identity.
         artifact_publisher=FilesystemVitalArtifactPublisher(
             Path(training_input.home_dir) / 'published-model'),
+        load_validation_metrics=_trainer_validation_metrics,
     )

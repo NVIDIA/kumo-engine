@@ -74,8 +74,7 @@ def get_diskgraph_local_ingest_path(table_fingerprint,
     for snapshots produced by older releases. It is always under the local
     DiskGraph ingest root, never the remote persist dir.
     """
-    from statedb.config.diskgraph import \
-        get_diskgraph_local_ingest_root  # pants: no-infer-dep
+    from statedb.config.diskgraph import get_diskgraph_local_ingest_root
     local_root = get_diskgraph_local_ingest_root()
     return osp.join(local_root, MaterializationStage.INGEST.value,
                     table_fingerprint.ingest_path_fpid, data_version)
@@ -87,8 +86,7 @@ def get_diskgraph_snapshot_ingest_dir(snapshot_id: str) -> str:
     The pool worker writes per-snapshot staging here so cleanup can rmtree
     the whole subtree without touching other snapshots' downloads.
     """
-    from statedb.config.diskgraph import \
-        get_diskgraph_local_ingest_root  # pants: no-infer-dep
+    from statedb.config.diskgraph import get_diskgraph_local_ingest_root
     local_root = get_diskgraph_local_ingest_root()
     return osp.join(local_root, MaterializationStage.INGEST.value, snapshot_id)
 

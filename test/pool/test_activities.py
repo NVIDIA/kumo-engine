@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-
 """Tests for ``pool.activities``.
 
 Real activity-body behavior is covered by the diskgraph e2e
@@ -45,7 +44,7 @@ from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import AsyncMock as _MockController
 
-import pytest  # pants: no-infer-dep
+import pytest
 from temporalio import activity
 
 import pool.activities as activities
@@ -393,8 +392,7 @@ async def test_diskgraph_cancellation_cleans_late_credentials(tmp_path):
     activate_blockbuster_guard(mode=BlockBusterMode.RAISE)
     try:
         task = asyncio.create_task(
-            _run_diskgraph_async(prepare,
-                                 abandonment_cleanup_dir=str(target)))
+            _run_diskgraph_async(prepare, abandonment_cleanup_dir=str(target)))
         assert await asyncio.to_thread(started.wait, 1)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -533,8 +531,8 @@ def test_prediction_materialization_upload_failure_releases_for_retry(tmp_path):
     job_input = SimpleNamespace(id='bp-job-1')
     config = SimpleNamespace(diskgraph_index_path=str(tmp_path))
     upload = mock.MagicMock(side_effect=[RuntimeError('upload failed'), None])
-    materialize = mock.MagicMock(
-        return_value=('pred-config.json', 'task', 'response'))
+    materialize = mock.MagicMock(return_value=('pred-config.json', 'task',
+                                               'response'))
 
     with mock.patch('kumo_core.job_config.PredictionConfig.load',
                     return_value=config), \
@@ -543,9 +541,10 @@ def test_prediction_materialization_upload_failure_releases_for_retry(tmp_path):
             mock.patch('pool.activities.upload_job_sidecars_from_config_path',
                        upload):
         with pytest.raises(RuntimeError, match='upload failed'):
-            _materialize_and_upload_prediction_task(
-                'graph-1@v1', job_input, 'settings', False,
-                'pred-config.json', None, 's3://persist')
+            _materialize_and_upload_prediction_task('graph-1@v1', job_input,
+                                                    'settings', False,
+                                                    'pred-config.json', None,
+                                                    's3://persist')
         result = _materialize_and_upload_prediction_task(
             'graph-1@v1', job_input, 'settings', False, 'pred-config.json',
             None, 's3://persist')
@@ -555,7 +554,8 @@ def test_prediction_materialization_upload_failure_releases_for_retry(tmp_path):
     assert upload.call_count == 2
 
 
-def test_prediction_materialization_missing_index_preserves_materializer_error():
+def test_prediction_materialization_missing_index_preserves_materializer_error(
+):
     job_input = SimpleNamespace(id='bp-job-1')
     config = SimpleNamespace(diskgraph_index_path=None)
     precise_error = ValueError('missing exact DiskGraph snapshot binding')
@@ -568,9 +568,10 @@ def test_prediction_materialization_missing_index_preserves_materializer_error()
             mock.patch('pool.activities.upload_job_sidecars_from_config_path',
                        upload):
         with pytest.raises(ValueError) as raised:
-            _materialize_and_upload_prediction_task(
-                'graph-1@v1', job_input, 'settings', False,
-                'pred-config.json', None, 's3://persist')
+            _materialize_and_upload_prediction_task('graph-1@v1', job_input,
+                                                    'settings', False,
+                                                    'pred-config.json', None,
+                                                    's3://persist')
 
     assert raised.value is precise_error
     upload.assert_not_called()
@@ -588,9 +589,10 @@ def test_prediction_materialization_missing_index_cannot_succeed_unpublished():
             mock.patch('pool.activities.upload_job_sidecars_from_config_path',
                        upload):
         with pytest.raises(ValueError, match='cannot be safely published'):
-            _materialize_and_upload_prediction_task(
-                'graph-1@v1', job_input, 'settings', False,
-                'pred-config.json', None, 's3://persist')
+            _materialize_and_upload_prediction_task('graph-1@v1', job_input,
+                                                    'settings', False,
+                                                    'pred-config.json', None,
+                                                    's3://persist')
 
     upload.assert_not_called()
 
@@ -625,9 +627,8 @@ def test_diskgraph_runner_shutdown_joins_writer_and_cleans_exact_tree(tmp_path):
     if process.is_alive():
         process.terminate()
         process.join(timeout=2)
-        pytest.fail(
-            'runner shutdown spun after connector release '
-            f'(connector_finished={connector_finished.exists()})')
+        pytest.fail('runner shutdown spun after connector release '
+                    f'(connector_finished={connector_finished.exists()})')
 
     assert process.exitcode == 0
     assert connector_finished.read_text() == 'complete\n'
@@ -640,8 +641,7 @@ async def test_diskgraph_off_loop_dispatch_preserves_contextvars():
     request_id = contextvars.ContextVar('request_id')
     request_id.set('activity-request-id')
 
-    assert await _run_diskgraph_async(
-        request_id.get) == 'activity-request-id'
+    assert await _run_diskgraph_async(request_id.get) == 'activity-request-id'
 
 
 @pytest.mark.asyncio
@@ -1755,8 +1755,7 @@ async def test_subprocess_output_drain_handles_long_tqdm_carriage_returns(
 
     messages = [record.getMessage() for record in caplog.records]
     assert any(message.endswith('Predicting 0/5000') for message in messages)
-    assert any(message.endswith('Predicting 4999/5000')
-               for message in messages)
+    assert any(message.endswith('Predicting 4999/5000') for message in messages)
     assert sum('Predicting ' in message for message in messages) == 2
     assert any(message.endswith('prediction complete') for message in messages)
     assert any(
@@ -1850,14 +1849,19 @@ async def test_kumo_pred_subprocess_does_not_publish_training_progress(
     heartbeat.side_effect = _finish_on_heartbeat
     monkeypatch.setattr('asyncio.create_subprocess_exec',
                         _fake_create_subprocess_exec)
-    monkeypatch.setattr('pool.activities._SUBPROCESS_HEARTBEAT_INTERVAL_SECS', 0)
+    monkeypatch.setattr('pool.activities._SUBPROCESS_HEARTBEAT_INTERVAL_SECS',
+                        0)
     monkeypatch.setattr('pool.activities.activity.heartbeat', heartbeat)
     monkeypatch.setattr('pool.activities.publish_training_progress', publish)
+    # yapf's auto-wrap for this line produces flake8 E251 (mismatched spaces
+    # around `data_root=` at the wrap point); pin the wrapping by hand.
+    # yapf: disable
     monkeypatch.setattr(
         'pool.activities.deploy_env',
         lambda: SimpleNamespace(
             data_compute=SimpleNamespace(data_root='/mnt/localssd')),
     )
+    # yapf: enable
     monkeypatch.delenv('KUMO_BP_OUTPUT_SPOOL_ROOT', raising=False)
 
     result = await _run_kumo_subprocess('kumo-pred', 'job-1', '/tmp/cfg.json',
@@ -2126,9 +2130,8 @@ child.wait()
     monkeypatch.setenv('PATH', f'{tmp_path}:{os.environ["PATH"]}')
     real_exists = os.path.exists
     monkeypatch.setattr(
-        'pool.activities.osp.exists',
-        lambda path: (False if str(path).endswith('/bin/kumo-pred') else
-                      real_exists(path)))
+        'pool.activities.osp.exists', lambda path:
+        (False if str(path).endswith('/bin/kumo-pred') else real_exists(path)))
     monkeypatch.setattr('pool.activities._SUBPROCESS_TERM_GRACE_SECS', 0.2)
     monkeypatch.setattr('pool.activities._SUBPROCESS_KILL_GRACE_SECS', 1.0)
     monkeypatch.setattr(
@@ -2180,9 +2183,8 @@ Path({str(marker)!r}).write_text('started')
     monkeypatch.setenv('PATH', f'{tmp_path}:{os.environ["PATH"]}')
     real_exists = os.path.exists
     monkeypatch.setattr(
-        'pool.activities.osp.exists',
-        lambda path: (False if str(path).endswith('/bin/kumo-pred') else
-                      real_exists(path)))
+        'pool.activities.osp.exists', lambda path:
+        (False if str(path).endswith('/bin/kumo-pred') else real_exists(path)))
     monkeypatch.setattr(
         'pool.activities._subprocess_supervisor_capabilities_available',
         lambda: True)
@@ -2198,8 +2200,8 @@ Path({str(marker)!r}).write_text('started')
 
 @pytest.mark.parametrize('supervisor_available', [True, False])
 @pytest.mark.asyncio
-async def test_subprocess_success_waits_for_orphan_reap(
-        tmp_path, monkeypatch, supervisor_available):
+async def test_subprocess_success_waits_for_orphan_reap(tmp_path, monkeypatch,
+                                                        supervisor_available):
     """A parent rc=0 cleans its native child before reporting success."""
     if (supervisor_available
             and not _subprocess_supervisor_capabilities_available()):
@@ -2230,9 +2232,8 @@ _os.replace({str(child_pid_path)!r} + '.tmp', {str(child_pid_path)!r})
     monkeypatch.setenv('PATH', f'{tmp_path}:{os.environ["PATH"]}')
     real_exists = os.path.exists
     monkeypatch.setattr(
-        'pool.activities.osp.exists',
-        lambda path: (False if str(path).endswith('/bin/kumo-pred') else
-                      real_exists(path)))
+        'pool.activities.osp.exists', lambda path:
+        (False if str(path).endswith('/bin/kumo-pred') else real_exists(path)))
     monkeypatch.setattr('pool.activities._SUBPROCESS_TERM_GRACE_SECS', 0.2)
     monkeypatch.setattr('pool.activities._SUBPROCESS_KILL_GRACE_SECS', 1.0)
     monkeypatch.setattr(
@@ -2271,9 +2272,8 @@ raise SystemExit(7)
     monkeypatch.setenv('PATH', f'{tmp_path}:{os.environ["PATH"]}')
     real_exists = os.path.exists
     monkeypatch.setattr(
-        'pool.activities.osp.exists',
-        lambda path: (False if str(path).endswith('/bin/kumo-pred') else
-                      real_exists(path)))
+        'pool.activities.osp.exists', lambda path:
+        (False if str(path).endswith('/bin/kumo-pred') else real_exists(path)))
 
     result = await _run_kumo_subprocess('kumo-pred', 'job-1', '/tmp/cfg.json',
                                         None)
@@ -2316,9 +2316,8 @@ time.sleep(60)
     monkeypatch.setenv('PATH', f'{tmp_path}:{os.environ["PATH"]}')
     real_exists = os.path.exists
     monkeypatch.setattr(
-        'pool.activities.osp.exists',
-        lambda path: (False if str(path).endswith('/bin/kumo-pred') else
-                      real_exists(path)))
+        'pool.activities.osp.exists', lambda path:
+        (False if str(path).endswith('/bin/kumo-pred') else real_exists(path)))
     monkeypatch.setattr('pool.activities._SUBPROCESS_TERM_GRACE_SECS', 0.2)
     monkeypatch.setattr('pool.activities._SUBPROCESS_KILL_GRACE_SECS', 1.0)
 
@@ -2332,7 +2331,8 @@ time.sleep(60)
         await asyncio.sleep(0.01)
     assert process_path.exists()
     supervisor_pid, command_pid, child_pid = map(
-        int, process_path.read_text().split())
+        int,
+        process_path.read_text().split())
 
     os.kill(supervisor_pid, signal.SIGKILL)
     with pytest.raises(RuntimeError, match='including zombies'):
@@ -2348,8 +2348,8 @@ def test_process_identity_includes_proc_start_time():
 
     assert identity.start_time_ticks > 0
     assert _OwnedSubprocessSession._same_stable_identity(identity, identity)
-    reused = dataclass_replace(
-        identity, start_time_ticks=identity.start_time_ticks + 1)
+    reused = dataclass_replace(identity,
+                               start_time_ticks=identity.start_time_ticks + 1)
     assert not _OwnedSubprocessSession._same_stable_identity(identity, reused)
 
 
@@ -2583,15 +2583,15 @@ def test_gpu_slots_need_one_gpu_per_slot():
 
 @pytest.mark.skipif(
     subprocess.run('nvidia-smi -L', shell=True, capture_output=True,
-                   check=False).returncode != 0,
-    reason='needs a GPU')
+                   check=False).returncode != 0, reason='needs a GPU')
 def test_visible_gpus_stop_at_invalid_entry():
-    result = subprocess.run(
-        [sys.executable, '-c',
-         'from pool.activities import _visible_gpus; print(_visible_gpus())'],
-        env={**os.environ, 'CUDA_VISIBLE_DEVICES': '0,-1'},
-        cwd=Path(__file__).resolve().parents[2],
-        capture_output=True, text=True, check=True)
+    result = subprocess.run([
+        sys.executable, '-c',
+        'from pool.activities import _visible_gpus; print(_visible_gpus())'
+    ], env={
+        **os.environ, 'CUDA_VISIBLE_DEVICES': '0,-1'
+    }, cwd=Path(__file__).resolve().parents[2], capture_output=True, text=True,
+                            check=True)
     assert result.stdout.strip() == "['0']"
 
 
@@ -2786,8 +2786,7 @@ async def test_predict_merges_bounded_stats_into_ownership_manifest(
         'kumo.train.artifact_manifest.hash_prediction_config',
         lambda _path: 'b' * 64,
     )
-    monkeypatch.setattr(activities, '_run_kumo_subprocess',
-                        fake_subprocess)
+    monkeypatch.setattr(activities, '_run_kumo_subprocess', fake_subprocess)
     sidecars = SimpleNamespace(cleanup=lambda: None)
     monkeypatch.setattr(
         activities,
@@ -2862,8 +2861,7 @@ async def test_predict_stats_cleanup_survives_repeated_cancellation(
         'kumo.train.artifact_manifest.hash_prediction_config',
         lambda _path: 'b' * 64,
     )
-    monkeypatch.setattr(activities, '_run_kumo_subprocess',
-                        fake_subprocess)
+    monkeypatch.setattr(activities, '_run_kumo_subprocess', fake_subprocess)
     monkeypatch.setattr(activities.shutil, 'rmtree', blocking_rmtree)
     monkeypatch.setattr(
         activities,
@@ -3693,9 +3691,7 @@ async def test_ensure_snapshot_local_mixes_direct_object_and_staged_sources(
     fake_service.dataplane_snapshot_path.return_value = str(tmp_path /
                                                             'dataplane-mirror')
     fake_service.restore_snapshot.return_value = None
-    fake_service.prepare_direct_sources.return_value = {
-        'direct': source_spec
-    }
+    fake_service.prepare_direct_sources.return_value = {'direct': source_spec}
     fake_service.prepare_subprocess_environment.return_value = {}
     fake_service.ingest.side_effect = ingest
     snapshot_ingest_dir = str(tmp_path / 'snapshot-download')
@@ -3810,8 +3806,8 @@ async def test_cancelled_ingest_holds_snapshot_lock_until_native_terminal(
     )
     fake_service = mock.MagicMock()
     fake_service.local_snapshot_path.return_value = str(local_dir)
-    fake_service.dataplane_snapshot_path.return_value = str(
-        tmp_path / 'dataplane-mirror')
+    fake_service.dataplane_snapshot_path.return_value = str(tmp_path /
+                                                            'dataplane-mirror')
     fake_service.restore_snapshot.return_value = None
     fake_service.has_resumable_ingest.return_value = False
     fake_service.has_persisted_ingest_config.return_value = False
@@ -4271,8 +4267,7 @@ def test_databricks_upload_uses_immutable_attempt_prefix(
         'get_parquet_metadata',
         lambda _path: SimpleNamespace(num_rows=3, num_cols=2, avg_row_size=4),
     )
-    monkeypatch.setattr(activities, 'local_parquet_files',
-                        lambda _path: [part])
+    monkeypatch.setattr(activities, 'local_parquet_files', lambda _path: [part])
 
     result = _upload_prediction_artifact_to_databricks(
         object(),
@@ -4511,14 +4506,14 @@ def test_ttng_sidecar_retry_restores_exact_winning_generation(
         prediction=True,
         data_persist_dir=str(persist),
     )
-    assert sorted(path.relative_to(bundle).as_posix()
-                  for path in bundle.rglob('*') if path.is_file()) == [
-                      'keep', 'manifest.json', 'runtime_manifest.json'
-                  ]
-    assert sorted(path.relative_to(extension).as_posix()
-                  for path in extension.rglob('*') if path.is_file()) == [
-                      'diskgraph_manifest.json', 'keep'
-                  ]
+    assert sorted(
+        path.relative_to(bundle).as_posix() for path in bundle.rglob('*')
+        if path.is_file()) == [
+            'keep', 'manifest.json', 'runtime_manifest.json'
+        ]
+    assert sorted(
+        path.relative_to(extension).as_posix() for path in extension.rglob('*')
+        if path.is_file()) == ['diskgraph_manifest.json', 'keep']
     assert (bundle / 'keep').read_text() == 'winning'
     assert (extension / 'keep').read_text() == 'winning'
 
@@ -4754,7 +4749,8 @@ def test_ttng_upload_pre_put_failure_cleans_generation_and_retries(
             data_persist_dir=str(persist),
         )
     assert load_json(str(manifest_path), dict) == old_manifest
-    assert sorted(path.name for path in generations_dir.iterdir()) == old_generations
+    assert sorted(path.name
+                  for path in generations_dir.iterdir()) == old_generations
 
     monkeypatch.setattr(fsutil, 'copy', original_copy)
     upload_job_sidecars_from_config_path(

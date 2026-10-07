@@ -72,9 +72,6 @@ export CMAKE_BUILD_PARALLEL_LEVEL=8
 # Install all dependencies
 make update-packages
 
-# Install packages that are convenient for writing code
-uv pip install --python ./.venv/bin/python flake8 pyright autopep8 isort yapf autoflake pip
-
 # If a venv was active when this ran (override path), the caller's shell still
 # has the OLD venv on PATH. Remind them to re-activate the freshly built one.
 if [[ -n "${ACTIVE_VENV_AT_START}" ]]; then

@@ -190,31 +190,26 @@ def copy_file(
     try:
         if isinstance(src_uri, uri.UCURI) or isinstance(dst_uri, uri.UCURI):
             # Runtime import UCV
-            from io_utils.fsutil import impl_ucv  # pants: no-infer-dep
+            from io_utils.fsutil import impl_ucv
             impl_ucv.copy_file(src, dst)
         elif isinstance(src_uri, uri.S3URI) and isinstance(dst_uri, uri.S3URI):
-            from io_utils.fsutil import \
-                s3_filesystem as s3_util  # pants: no-infer-dep
+            from io_utils.fsutil import s3_filesystem as s3_util
             s3_util.copy_file(src, dst)
         elif isinstance(src_uri, uri.S3URI) and isinstance(
                 dst_uri, uri.LocalURI):
-            from io_utils.fsutil import \
-                s3_filesystem as s3_util  # pants: no-infer-dep
+            from io_utils.fsutil import s3_filesystem as s3_util
             s3_util.download_file(src, dst)
         elif isinstance(src_uri, uri.LocalURI) and isinstance(
                 dst_uri, uri.S3URI):
-            from io_utils.fsutil import \
-                s3_filesystem as s3_util  # pants: no-infer-dep
+            from io_utils.fsutil import s3_filesystem as s3_util
             s3_util.put_file(src, dst)
         elif isinstance(src_uri, uri.GCSURI) or isinstance(dst_uri, uri.GCSURI):
-            from io_utils.fsutil.impl_gcs import \
-                copy_file as _gcs_copy_file  # pants: no-infer-dep
+            from io_utils.fsutil.impl_gcs import copy_file as _gcs_copy_file
             _gcs_copy_file(src, dst)
         elif isinstance(src_uri, uri.ADLSURI) or isinstance(
                 dst_uri, uri.ADLSURI):
             # ADLS handling
-            from io_utils.fsutil.impl_adls import \
-                copy_file  # pants: no-infer-dep
+            from io_utils.fsutil.impl_adls import copy_file
             copy_file(src, dst)
         else:
             shutil.copyfile(src, dst)
@@ -289,8 +284,7 @@ def copy(
         if include or exclude:
             raise NotImplementedError("include and exclude are currently not "
                                       "supported for s3 to s3 copy")
-        from io_utils.fsutil import \
-            s3_filesystem as s3_util  # pants: no-infer-dep
+        from io_utils.fsutil import s3_filesystem as s3_util
         s3_util.copydir(src_path, dst_path)
         return
     if (is_adls(src_path) and is_adls(dst_path) and api.isdir(src_path)
@@ -298,7 +292,7 @@ def copy(
         if include or exclude:
             raise NotImplementedError("include and exclude are currently not "
                                       "supported for adls to adls copy")
-        from io_utils.fsutil.impl_adls import copydir  # pants: no-infer-dep
+        from io_utils.fsutil.impl_adls import copydir
         copydir(src_path, dst_path)
         return
     if (is_gcs(src_path) and is_gcs(dst_path) and api.isdir(src_path)
@@ -306,8 +300,7 @@ def copy(
         if include or exclude:
             raise NotImplementedError("include and exclude are currently not "
                                       "supported for gcs to gcs copy")
-        from io_utils.fsutil.impl_gcs import \
-            copydir as gcs_copydir  # pants: no-infer-dep
+        from io_utils.fsutil.impl_gcs import copydir as gcs_copydir
         gcs_copydir(src_path, dst_path)
         return
 

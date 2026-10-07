@@ -28,8 +28,12 @@ parking_lot = { workspace = true }
 byteorder = "1.4"
 tempfile = "3.8"
 bincode = "1.3"
-ratatui = "0.26"
-crossterm = "0.27"
+# Terminal UI stack for the developer-only `sampler_tui` binary. Optional and
+# off by default so that ratatui's `lru` dependency, which carries
+# RUSTSEC-2026-0002 and RUSTSEC-2026-0253 and has no release any ratatui 0.2x
+# accepts, stays out of the default build and out of every shipped artifact.
+ratatui = { version = "0.26", optional = true }
+crossterm = { version = "0.27", optional = true }
 clap = { version = "4.4", features = ["derive"] }
 sysinfo = "0.30"
 hdrhistogram = "7.5"
@@ -40,3 +44,14 @@ rayon = "1.11.0"
 uuid = { workspace = true, features = ["v4", "serde"] }
 arrow = "58.4.0"
 arrow-select = "58.4.0"
+
+[features]
+default = []
+# Build the interactive sampler explorer:
+#   cargo run -p diskgraph-engine --bin sampler_tui --features sampler-tui
+sampler-tui = ["dep:ratatui", "dep:crossterm"]
+
+[[bin]]
+name = "sampler_tui"
+path = "src/bin/sampler_tui.rs"
+required-features = ["sampler-tui"]

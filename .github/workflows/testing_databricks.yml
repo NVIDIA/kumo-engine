@@ -88,6 +88,8 @@ jobs:
           python-version: "3.14"
           activate-environment: true
 
+      # uv.lock is deliberately excluded: a lock-only dependency bump must
+      # still run the real install + test suite (see testing.yml).
       - name: Check for only non pytest required file changes
         id: non-pytest-changes
         uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
@@ -97,7 +99,6 @@ jobs:
             CHANGELOG.md
             tools/**
             benchmark/**
-            3rdparty/*.lock
 
       - name: Configure AWS credentials
         if: env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true'
@@ -147,7 +148,6 @@ jobs:
           KUMO_ENABLE_GLOVE: "False"
           KUMO_TESTING: "True"
           SPARK_VERSION: "3.5"
-          ENABLE_DATABRICKS_DATA_BACKEND: "True"
           DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
 
       - name: Run full test suite
@@ -173,7 +173,6 @@ jobs:
           CUDA: "cpu"
           KUMO_TESTING: "True"
           SPARK_VERSION: "3.5"
-          ENABLE_DATABRICKS_DATA_BACKEND: "True"
           DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
 
       - name: Upload coverage artifact

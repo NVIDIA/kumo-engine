@@ -503,7 +503,7 @@ fn list_range_has_nulls(arr: &dyn Array, start: usize, end: usize) -> bool {
 }
 
 /// Parse a JSON-style string like `"[1.0, 2.0, 3.0]"` or `"1.0, 2.0, 3.0"`
-/// into a `Vec<f32>`. Uses `fast_float` for ~5x faster parsing than stdlib.
+/// into a `Vec<f32>`. Uses `fast_float2` for ~5x faster parsing than stdlib.
 ///
 /// Returns `Ok(vec![])` for empty/whitespace-only strings or `"[]"`.
 /// Returns `Err` for malformed strings (hard error).
@@ -695,7 +695,7 @@ pub fn parse_string_as_float32_array(s: &str) -> Result<Vec<f32>> {
         .split(',')
         .map(|tok| {
             let tok = tok.trim();
-            fast_float::parse::<f32, _>(tok)
+            fast_float2::parse::<f32, _>(tok)
                 .map_err(|_| anyhow!("failed to parse float from {:?}", tok))
         })
         .collect()

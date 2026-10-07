@@ -16,15 +16,11 @@
 #
 #   SaaS images:
 #     python mirror_kumo_images.py --mirror_to azure \
-#       --workflow REST WORKER --tag my-branch
-#
-#   Databricks images (adds _databricks suffix):
-#     python mirror_kumo_images.py --mirror_to azure \
-#       --workflow WORKER TEMPORAL_WORKER --tag my-branch --databricks
+#       --workflow KUMO3_IMAGES --tag my-branch
 #
 #   Dry-run to preview resolved image:tag pairs without triggering anything:
 #     python mirror_kumo_images.py --mirror_to azure \
-#       --workflow REST WORKER --tag my-branch --dry-run
+#       --workflow KUMO3_IMAGES --tag my-branch --dry-run
 #
 # --image mode  (programmatic)
 #   Accept pre-resolved image name + tag pairs directly. Intended to be called
@@ -130,7 +126,7 @@ if __name__ == "__main__":
         help=(
             f"One or more workflow names to resolve and sync "
             f"({', '.join(_SYNCABLE_WORKFLOWS)}). "
-            "Requires --tag. Use --databricks to sync databricks-suffixed variants."
+            "Requires --tag."
         ),
     )
     mode.add_argument(
@@ -150,15 +146,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--tag",
         help="Branch or tag to sync. Required with --workflow; has no effect with --image.",
-    )
-    parser.add_argument(
-        "--databricks",
-        action="store_true",
-        help=(
-            "Sync databricks-suffixed image variants (e.g. my-branch_databricks). "
-            "Only applies with --workflow. "
-            "Has no effect with --image (tags are already fully resolved)."
-        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -182,8 +169,6 @@ if __name__ == "__main__":
 
     if args.workflow and not args.tag:
         parser.error("--tag is required when using --workflow")
-    if args.images and args.databricks:
-        parser.error("--databricks has no effect with --image (tags are already resolved)")
     if args.images and args.tag:
         parser.error("--tag has no effect with --image (tags are already resolved)")
 
@@ -198,12 +183,9 @@ if __name__ == "__main__":
     else:
         image_pairs = []
         for name in args.workflow:
-            image_pairs.extend(get_ecr_images_for_sync(WorkflowFile[name], args.tag, args.databricks))
+            image_pairs.extend(get_ecr_images_for_sync(WorkflowFile[name], args.tag))
         if not image_pairs:
-            print(
-                "No ECR images resolved for the specified workflows. "
-                "Snowflake-only workflows do not produce ECR images."
-            )
+            print("No ECR images resolved for the specified workflows.")
             exit(1)
 
     if args.dry_run:

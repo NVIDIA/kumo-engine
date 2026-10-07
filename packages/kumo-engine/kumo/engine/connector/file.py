@@ -162,7 +162,8 @@ class _FileSinkBackend(ObjectStoreSinkBackend):
         return LocalFileSystem(), str(path) + ('/' if coordinate.endswith('/')
                                                else '')
 
-    def preflight_write_files(self, connector, table_name):
+    def preflight_write_files(self, connector, table_name, write_mode=None):
+        del write_mode
         _, destination = self._destination(connector, table_name)
         path = Path(destination)
         kind = layout.file_type(destination.rstrip('/')) or layout.PARQUET
@@ -231,8 +232,11 @@ class _FileSinkBackend(ObjectStoreSinkBackend):
                                           **kwargs)
         return replace(published, uri=Path(published.version).as_uri())
 
-    def fetch_model(self, *args, **kwargs):
-        raise NotImplementedError('Local model loading is not implemented yet.')
+    def fetch_model(self, connector, local_dir, *, path=None, **kwargs):
+        if path:
+            _disjoint(Path(self._destination(connector, path)[1]),
+                      Path(local_dir))
+        return super().fetch_model(connector, local_dir, path=path, **kwargs)
 
 
 class FileConnector(Connector):

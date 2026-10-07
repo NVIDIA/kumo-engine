@@ -29,7 +29,7 @@ from kumo_core.pquery import (
     to_plan_graph,
 )
 from kumo_core.training.splits import TrainTableTime
-from kumoapi.typing import Stype
+from kumoapi.typing import Stype, TimeUnit
 
 
 def graph_config():
@@ -1777,6 +1777,25 @@ def test_static_link_fact_requires_separate_item_table(item_table):
     else:
         with pytest.raises(ValueError, match="item table distinct"):
             static_link_fact(query.query, query.rhs_node_type)
+
+
+@pytest.mark.parametrize('unit', [TimeUnit.DAYS, TimeUnit.MONTHS])
+@pytest.mark.parametrize('explicit', [(), (1704067200000000000, )])
+@pytest.mark.parametrize('start,end', [(10, 60), (60, 60)])
+def test_invalid_offsets_rejected_before_reading_source_stats(
+        monkeypatch, unit, explicit, start, end):
+    def unexpected_read(*args):
+        pytest.fail('Invalid offsets must fail before source stats are read')
+
+    monkeypatch.setattr('kumo_core.pquery.read_col_stats', unexpected_read)
+    query = SimpleNamespace(query=SimpleNamespace(
+        get_combined_date_offset_range=lambda: SimpleNamespace(unit=unit)))
+    options = TrainingTableGenerationPlan(train_start_offset=start,
+                                          train_end_offset=end)
+    with pytest.raises(PredictiveQueryPlanError,
+                       match='Train start/end offsets error'):
+        _temporal_timestamps(query, '/unused', options, {},
+                             'ApproxDateOffsetSplit', explicit)
 
 
 @pytest.mark.parametrize(

@@ -2,8 +2,10 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+from dataclasses import replace
 from datetime import timedelta
 
+from kumoapi.jobs import TrainingTableArtifactType
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from temporalio.workflow import ActivityCancellationType
@@ -11,6 +13,7 @@ from temporalio.workflow import ActivityCancellationType
 from io_utils import logging
 from rest.backends.ml_backend.activities import (
     get_artifact_stats,
+    prepare_training_table_export,
     write_artifacts_to_customer,
 )
 from rest.config.artifact_export import ArtifactExportInput, NamedOutputConfig
@@ -46,6 +49,23 @@ class ArtifactExportWorkflow:
         self,
         input: ArtifactExportInput,
     ) -> list[OutputArtifactStats]:
+        tables = [
+            kind for kind in input.artifact_paths
+            if isinstance(kind, TrainingTableArtifactType)
+        ]
+        if tables:
+            paths = dict(input.artifact_paths)
+            for kind in tables:
+                paths[kind] = await workflow.execute_activity(
+                    prepare_training_table_export,
+                    args=[paths[kind]],
+                    retry_policy=RetryPolicy(
+                        maximum_attempts=3,
+                        non_retryable_error_types=['ValueError']),
+                    heartbeat_timeout=timedelta(minutes=5),
+                    start_to_close_timeout=timedelta(hours=4),
+                )
+            input = replace(input, artifact_paths=paths)
         # Now export the artifacts to output locations:
         # first, check artifact stats to dynamically determine export
         # deadline.

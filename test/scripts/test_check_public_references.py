@@ -238,7 +238,7 @@ def test_scan_ignores_placeholder_and_public_identifiers(text) -> None:
 
 @pytest.mark.parametrize("path", [
     ".github/workflows/deploy.yml",
-    "docker/Dockerfile.rest",
+    "docker/Dockerfile.kumo_backend_cpu",
     "test/connector/test_snowflake_connector.py",
     "service_framework/deploy_env.py",
 ])

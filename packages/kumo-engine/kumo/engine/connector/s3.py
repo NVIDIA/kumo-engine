@@ -27,6 +27,7 @@ from kumoapi.data_source import (
 )
 from kumoapi.source_table import S3SourceTable
 
+from kumo.engine.connector._extras import import_provider
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.identity import S3Identity
 
@@ -99,12 +100,13 @@ class S3Connector(Connector):
 
     @cached_property
     def source_backend(self):
-        from kumo_s3.backend import S3SourceBackend
+        S3SourceBackend = import_provider("kumo_s3.backend",
+                                          "s3").S3SourceBackend
         return S3SourceBackend(identity=self.identity)
 
     @cached_property
     def sink_backend(self):
-        from kumo_s3.sink import S3SinkBackend
+        S3SinkBackend = import_provider("kumo_s3.sink", "s3").S3SinkBackend
         return S3SinkBackend(identity=self.identity)
 
     def source_table_for(self, table_name: str) -> S3SourceTable:

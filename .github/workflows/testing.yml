@@ -170,10 +170,11 @@ jobs:
           test/graph/,
           "--splits 2 --group 1 test/io_utils/",
           "--splits 2 --group 2 test/io_utils/",
-          # Imports the installed Kumo stack, so Pants intentionally excludes
-          # these files. Keep pool/activity and worker-lifecycle coverage
-          # explicit here.
-          "test/pool/test_activities.py test/pool/test_worker_main.py",
+          # test_provision_terminal_nonretry.py needs a real Temporal Cloud
+          # connection (devapp AWS SM creds or TEMPORAL_SERVER=cloud); it
+          # has no local-dev-server fallback, so it can't run in this matrix.
+          "test/pool --ignore=test/pool/test_provision_terminal_nonretry.py",
+          "test/api_contract test/release_tests/test_build_kumo_images.py test/release_tests/test_check_updated_release_branches.py test/release_tests/test_make_kumo3_hotfix_release.py test/release_tests/test_release_v3_guards.py test/release_tests/test_start_kumo3_release.py",
 
           # Public API tests
           "-k graph-saas_static_multiclassclassification_base test/rest/integ/test_e2e_public_api.py",
@@ -234,6 +235,11 @@ jobs:
       # do this, as we need to mark the overall workflow as success to satisfy
       # the master branch protection rule, and this does not happen if we skip
       # the entire workflow
+      #
+      # uv.lock is deliberately NOT in this list: `uv lock --check` (the
+      # uv_lock job) only proves the lock's metadata is fresh, not that the
+      # resolved versions actually install or import cleanly. A lock-only
+      # dependency bump must still run the real install + test suite.
       - name: Check for only non pytest required file changes
         id: non-pytest-changes
         uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
@@ -243,7 +249,6 @@ jobs:
             CHANGELOG.md
             tools/**
             benchmark/**
-            3rdparty/*.lock
 
       - name: Configure AWS credentials
         if: env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true'
@@ -431,6 +436,39 @@ jobs:
           key: rust-tests-py${{ steps.python.outputs.version }}
       - run: cargo test --locked --workspace
 
+  diskgraph-clippy:
+    permissions:
+      contents: read
+    env:
+      CARGO_BUILD_JOBS: '2'
+      RUSTFLAGS: '-C target-feature=+aes,+sse2 -C link-arg=-fuse-ld=lld -C debuginfo=line-tables-only'
+    runs-on: ubuntu-22.04-large
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: packages/diskgraph
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update -qq && sudo apt-get install -y lld
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          # Pinned: a new stable clippy adds lints that fail unchanged code.
+          toolchain: 1.98.1
+          components: clippy
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: '3.11'
+          activate-environment: true
+          enable-cache: false
+      - id: python
+        run: echo "version=$(python -c 'import platform; print(platform.python_version())')" >> "$GITHUB_OUTPUT"
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: packages/diskgraph -> target
+          key: clippy-py${{ steps.python.outputs.version }}
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
   diskgraph-python:
     needs: [diskgraph-wheel]

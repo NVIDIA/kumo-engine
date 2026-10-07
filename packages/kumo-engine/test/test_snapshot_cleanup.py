@@ -91,7 +91,8 @@ def test_snapshot_discards_only_owned_staging(tmp_path, monkeypatch, failure):
 
     source = Source()
     tables = [
-        SimpleNamespace(table_name=name, definition=SimpleNamespace(cols=[]),
+        SimpleNamespace(table_name=name,
+                        definition=SimpleNamespace(cols=[], source_table=None),
                         connector=SimpleNamespace(
                             source_backend=source,
                             validate_scratch_dir=lambda path: None,

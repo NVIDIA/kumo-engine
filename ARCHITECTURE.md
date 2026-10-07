@@ -71,5 +71,5 @@ The main REST path follows `router -> service -> DAO/driver -> workflow or activ
 ## Generated artifacts
 
 - The UI OpenAPI client is generated under `ui/src/gen/`.
-- Python dependency lockfiles are generated from `3rdparty/BUILD` and `setup.py`.
+- `uv.lock` is generated from `setup.py`, the workspace `pyproject.toml` files.
 - Third-party attribution files are generated from resolved dependency metadata.

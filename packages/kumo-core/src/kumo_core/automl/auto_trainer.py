@@ -16,7 +16,7 @@ import traceback
 import warnings
 from dataclasses import asdict, dataclass, fields, is_dataclass
 from enum import Enum
-from typing import Any, get_args, get_type_hints
+from typing import Any
 
 import pandas as pd
 import torch
@@ -29,6 +29,9 @@ from kumo_core.automl.optuna_searcher import TPESearcher
 from kumo_core.automl.runtime import (
     AutoTrainingRuntime,
     apply_encoder_overrides,
+    apply_na_strategy,
+    resolve_warm_start,
+    with_na_strategy,
 )
 from kumo_core.callbacks.stopper import TopKEarlyStopping
 from kumo_core.embedding_models import require_encoder_models
@@ -218,6 +221,7 @@ class AutoTrainer:
         min_retry_batch_size: int = 16,
         checkpoint_path: str | None = None,
         home_dir: str | None = None,
+        checkpoint_encoder_dir: str | None = None,
         **kwargs: Any,
     ) -> None:
         if not isinstance(task, ResolvedNumericalTask):
@@ -227,6 +231,7 @@ class AutoTrainer:
         self.runtime = runtime
         self.instrumentation = instrumentation
         self.checkpoint_path = checkpoint_path
+        self.checkpoint_encoder_dir = checkpoint_encoder_dir
         self.max_tries = max_tries
         self.min_retry_batch_size = min_retry_batch_size
         # Resolve the process-global home dir once at the boundary, then
@@ -1017,7 +1022,8 @@ class AutoTrainer:
             checkpoint_dir = osp.dirname(self.checkpoint_path)
             # Go up one level to get the automl directory
             # (checkpoint_dir is '.../automl/version_X/checkpoint/')
-            automl_dir = osp.dirname(osp.dirname(checkpoint_dir))
+            automl_dir = (self.checkpoint_encoder_dir
+                          or osp.dirname(osp.dirname(checkpoint_dir)))
             encoders = load_encoders(automl_dir)
             if encoders is None:
                 raise RuntimeError(f"Checkpoint is set to {checkpoint_dir}. "
@@ -1031,17 +1037,13 @@ class AutoTrainer:
         if encoders is None:
             # collect_encoders is fairly expensive, so we only do it once.
             encoders = self.runtime.collect_encoders(self.task)
-            overrides = self.space.column_processing.get_encoder_overrides(
-                self.space.column_processing.encoder_overrides)
-            apply_encoder_overrides(
-                self.task,
-                encoders,
-                overrides,
-            )
-
-            # Save encoders to automl/encoders.json so that we don't need to
-            # re-materialize the same encoders across AutoML trials.
-            save_encoders(self.log_dir, encoders)
+        processing = self.space.column_processing
+        overrides = processing.get_encoder_overrides(
+            processing.encoder_overrides)
+        apply_na_strategy(self.task, encoders, processing.na_strategy,
+                          overridden=overrides.keys())
+        apply_encoder_overrides(self.task, encoders, overrides)
+        save_encoders(self.log_dir, encoders)
 
         return encoders
 
@@ -1200,19 +1202,12 @@ class AutoTrainer:
             model_plan.training_job.tune_metric = task._metrics[0]
 
         # Applying Encoder Overrides ######################################
-        na_strategy_dict = model_plan.column_processing.na_strategy or {}
-        for stype, na_strategy in na_strategy_dict.items():
-            for table in task.tables:
-                for col in table.cols:
-                    if col.encoder is None:
-                        continue
-                    if not hasattr(col.encoder, 'na_strategy'):
-                        continue
-                    if col.stype == stype:
-                        valid_na_strategies = get_args(
-                            get_type_hints(col.encoder)['na_strategy'])
-                        if na_strategy in valid_na_strategies:
-                            col.encoder.na_strategy = na_strategy
+        na_strategy = model_plan.column_processing.na_strategy
+        for table in task.tables:
+            for col in table.cols:
+                updated = with_na_strategy(col.stype, col.encoder, na_strategy)
+                if updated is not None:
+                    col.encoder = updated
 
         encoder_dict = model_plan.column_processing.get_encoder_overrides(
             model_plan.column_processing.encoder_overrides)
@@ -1293,30 +1288,9 @@ class AutoTrainer:
                 job_config.home_dir,
             )
 
-        # Handle warm start if specified
-        checkpoint_path = None
         space = runtime.load_automl_config(job_config)
-
-        if job_config.warm_start_trainer_dir:
-            warm_start_trainer_dir = job_config.warm_start_trainer_dir
-            warm_start_trainer = Trainer.load(
-                task.to_task_config(), warm_start_trainer_dir, version=None,
-                infer_config_path=False, **runtime.trainer_runtime_kwargs())
-            warm_start_trainer._set_fit_mode_to_use()
-            checkpoint_path = warm_start_trainer.best_ckpt
-            # Load the model plan from the warm start job and update space
-            warm_start_model_plan_path = osp.join(warm_start_trainer_dir,
-                                                  'model_plan.json')
-            warm_start_model_plan = load_json(warm_start_model_plan_path,
-                                              ModelPlan)
-
-            # Update space with warm start components
-            space.column_processing = warm_start_model_plan.column_processing
-            space.model_architecture = warm_start_model_plan.model_architecture
-            space.neighbor_sampling = warm_start_model_plan.neighbor_sampling
-            logger.info(
-                f'Loading model plan from {warm_start_model_plan_path}. '
-                f'And warm starting model from {checkpoint_path}')
+        checkpoint_path, checkpoint_encoder_dir = resolve_warm_start(
+            space, task, runtime, trainer_dir=job_config.warm_start_trainer_dir)
 
         # The auto trainer reporter is in pytest if the home dir is not on s3.
         return cls(
@@ -1327,6 +1301,7 @@ class AutoTrainer:
             random_state_seed=random_state_seed,
             overwrite_train_table_edge=overwrite_train_table_edge,
             checkpoint_path=checkpoint_path,
+            checkpoint_encoder_dir=checkpoint_encoder_dir,
             home_dir=job_config.home_dir,
             diskgraph_task_dataset_bundle_dir=(
                 job_config.diskgraph_task_dataset_bundle_dir),

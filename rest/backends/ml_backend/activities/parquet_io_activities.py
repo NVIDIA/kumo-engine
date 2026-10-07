@@ -4,8 +4,11 @@
 
 # Global semaphore for limiting concurrent (parquet) IO operations which lead
 # to high memory consumption.
+import json
+import os
 import os.path as osp
 import tempfile
+import uuid
 from asyncio import CancelledError
 from concurrent.futures import TimeoutError
 from contextlib import ExitStack
@@ -14,6 +17,7 @@ from typing import Dict, List, Mapping, Union
 
 import pyarrow.parquet as pq
 from kumo_core.job_config import PredictionConfig
+from kumo_core.training import export as training_table_export
 from kumo_core.types import PredictionArtifactType
 from kumoapi.jobs import TrainingTableArtifactType
 from temporalio import activity
@@ -29,6 +33,7 @@ from kumo.connector import (
 )
 from kumo.connector.connector import ConnectorError
 from kumo.connector.file_connector import FileConnector
+from kumo.data.generic.diskgraph_train_table import _IMMUTABLE_BUNDLES_DIRNAME
 from kumo.train.artifact_manifest import (
     PredictionManifestRef,
     PredictionProducerMismatchError,
@@ -36,6 +41,9 @@ from kumo.train.artifact_manifest import (
     SelectedPredictionArtifact,
     load_prediction_selection,
     publish_prediction_selection,
+)
+from rest.backends.data_backend.activities.custom_train_table import (
+    _filesystem_and_path,
 )
 from rest.backends.data_backend.connector_activity_registry import (
     connector_authorized_activity,
@@ -324,6 +332,40 @@ def _resolve_output_connectors(
             resolved[artifact_type].append(
                 connector_broker.connector_credential_broker.resolve(reference))
     return resolved
+
+
+@activity.defn
+@auto_heartbeater
+def prepare_training_table_export(train_table_path: str) -> str:
+    return exported_training_table(train_table_path)
+
+
+def exported_training_table(train_table_path: str) -> str:
+    """The generated table's rows with their split, beside its bundle."""
+    bundle = osp.dirname(train_table_path.rstrip('/'))
+    bundles = osp.dirname(bundle)
+    if (osp.basename(bundles) != _IMMUTABLE_BUNDLES_DIRNAME
+            or not fsutil.exists(
+                osp.join(bundle, training_table_export.INGEST_SPEC))):
+        return train_table_path
+    base = osp.join(osp.dirname(bundles), '_exports', osp.basename(bundle))
+    pointer = osp.join(base, f'{training_table_export.FORMAT}.json')
+    if fsutil.exists(pointer):
+        return json.loads(fsutil.read_text(pointer))['path']
+    output = osp.join(base,
+                      f'{training_table_export.FORMAT}-{uuid.uuid4().hex}')
+    fsutil.makedirs(output, exist_ok=True)
+    filesystem, source = _filesystem_and_path(bundle)
+    with fsutil.TemporaryDirectory() as temp:
+        for part in training_table_export.iter_export_parts(
+                source, temp, filesystem):
+            fsutil.copy_file(part, osp.join(output, osp.basename(part)),
+                             overwrite=True)
+            os.remove(part)
+    if fsutil.write_text_if_absent(pointer, json.dumps({'path': output})):
+        return output
+    fsutil.rm(output, ignore_errors=True)
+    return json.loads(fsutil.read_text(pointer))['path']
 
 
 @activity.defn

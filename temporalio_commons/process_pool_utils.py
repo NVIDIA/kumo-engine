@@ -93,7 +93,7 @@ def _init_spawned_process(deploy_stage: DeployStage,
                                    log_process_id=True)
 
     # Temporal workers may not get snowflake credentials from the environment
-    from kumo.graph.graph import Connector  # pants: no-infer-dep
+    from kumo.graph.graph import Connector
     Connector.disable_interactive_input()
 
     # Set environ variables

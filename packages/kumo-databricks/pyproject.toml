@@ -40,6 +40,9 @@ databricks = "kumo_databricks.sink:DatabricksSinkBackend"
 [project.entry-points."kumoai_studio.identities"]
 databricks = "kumo_databricks.session"
 
+[tool.uv.sources]
+kumo-core = { workspace = true }
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 

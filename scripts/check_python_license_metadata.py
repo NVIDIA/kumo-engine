@@ -85,11 +85,13 @@ DISTRIBUTIONS = (
                      ("LICENSE", )),
     DistributionSpec("packages/kumo-engine/pyproject.toml", "kumo-engine",
                      ("LICENSE", )),
+    DistributionSpec("tools/glove-6b-50d/pyproject.toml", "kumo-glove-6b-50d",
+                     ("LICENSE", "THIRD-PARTY.txt"),
+                     notice_artifacts=("glove-6b-50d-bundled-data", )),
 )
 
 SPECIALIZED_MANIFESTS = frozenset({
     "packages/diskgraph/pyproject.toml",
-    "tools/glove-6b-50d/pyproject.toml",
 })
 
 

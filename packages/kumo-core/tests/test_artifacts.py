@@ -170,7 +170,11 @@ def test_vital_policy_never_merges_into_existing_publication(
     assert (destination / "stale-analysis.json").is_file()
 
 
-def test_vital_source_resolution_is_core_owned(tmp_path: Path) -> None:
+@pytest.mark.parametrize('refit', [False, True, 'full'])
+def test_vital_source_resolution_is_core_owned(tmp_path: Path, refit) -> None:
+    from kumo_core.train.trainer import Trainer
+    from kumo_core.training.config import FitMode
+
     bundle = tmp_path / "bundle"
     bundle.mkdir()
     (bundle / "graph.json").write_text("{}", encoding="utf-8")
@@ -184,12 +188,28 @@ def test_vital_source_resolution_is_core_owned(tmp_path: Path) -> None:
     trainer.mkdir()
     (automl / "encoders.json").write_text("{}", encoding="utf-8")
     (trainer / "config.json").write_text("{}", encoding="utf-8")
-    checkpoint = trainer / "model.ckpt"
-    checkpoint.write_bytes(b"checkpoint")
+    from kumo_core.io.json import load_json, save_json
+    from kumo_core.model_plan import ModelPlan
+    selected_plan = ModelPlan()
+    selected_plan.model_architecture.channels = [16]
+    save_json(selected_plan, str(trainer / "model_plan.json"))
+    checkpoints = {mode: trainer / f"{mode.value}.ckpt" for mode in FitMode}
+    for mode, path in checkpoints.items():
+        path.write_bytes(mode.value.encode())
+
+    class SourceTrainer(SimpleNamespace):
+        _set_fit_mode_to_use = Trainer._set_fit_mode_to_use
+
+        @property
+        def best_ckpt(self):
+            return str(checkpoints[self.fit_mode])
+
+    selected_mode = (FitMode.refit_full if refit == 'full' else
+                     FitMode.refit_trainval if refit is True else FitMode.fit)
     training_input = SimpleNamespace(
         task_dataset_bundle_dir=str(bundle),
         home_dir=str(tmp_path / "home"),
-        model_plan={"model": "kumo"},
+        model_plan=ModelPlan(),
         task=SimpleNamespace(
             task_type=SimpleNamespace(value="binary_classification"),
             train_table=SimpleNamespace(target_column="TARGET"),
@@ -200,14 +220,19 @@ def test_vital_source_resolution_is_core_owned(tmp_path: Path) -> None:
     sources = resolve_vital_artifact_sources(
         training_input,
         SimpleNamespace(log_dir=str(automl)),
-        SimpleNamespace(
-            best_ckpt=str(checkpoint),
+        SourceTrainer(
+            fit_mode=FitMode.fit,
+            refit_cfg=SimpleNamespace(fitted=True, refitted_trainval=bool(refit),
+                                      refitted_full=refit == 'full'),
             original_log_dir=str(trainer),
             target_encoder={"target": "categorical"},
         ),
         {"test_accuracy": 0.8},
     )
 
-    assert sources.selected_checkpoint == checkpoint
+    resolved_plan = load_json(str(sources.resolved_model_plan), ModelPlan)
+    assert resolved_plan.model_architecture.channels == [16]
+    assert training_input.model_plan.model_architecture.channels != [16]
+    assert sources.selected_checkpoint == checkpoints[selected_mode]
     assert sources.graph_manifest == bundle / "graph.json"
     assert json.loads(sources.metrics.read_text()) == {"test_accuracy": 0.8}

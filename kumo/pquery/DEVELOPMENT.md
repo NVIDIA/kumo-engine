@@ -109,16 +109,17 @@ Validations in `pquery_validators/` require access to the data (e.g. timestamps 
 
 ```bash
 # Run pquery unit tests
-pants test test/pquery::
+.venv/bin/pytest test/pquery
 
 # Run DiskGraph table-generation adapter tests
-pants test test/data/generic::
+.venv/bin/pytest test/data/generic
 
 # Lint
-pants lint kumo/pquery::
+.venv/bin/flake8 kumo/pquery
+.venv/bin/isort --check kumo/pquery
 
 # Type check
-pants check kumo/pquery::
+.venv/bin/pyright -p pyrightconfig.json
 ```
 
 ### Pull Request Hygiene
@@ -131,9 +132,9 @@ Each PR should contain a brief description of the implemented feature or fix, a 
 
 Before submitting a PR, verify:
 
-- [ ] `pants test test/pquery::` passes
-- [ ] `pants lint kumo/pquery::` passes
-- [ ] `pants check kumo/pquery::` passes
+- [ ] `.venv/bin/pytest test/pquery` passes
+- [ ] `flake8` and `isort --check` pass on `kumo/pquery`
+- [ ] `pyright -p pyrightconfig.json` passes
 - [ ] New tests added for any new or modified behavior
 - [ ] If modifying DiskGraph adapter inputs: verified compatibility with the `diskgraph` APIs
 - [ ] If changing training/prediction table schema: coordinated with `kumo/train/` and `packages/kumo-core` teams

@@ -127,8 +127,7 @@ def _activity_failure_diagnostic(ex: BaseException) -> str:
                 detail = _truncate(str(current), _MAX_DIAGNOSTIC_MESSAGE_CHARS)
             else:
                 detail = _truncate(
-                    safe_exception_message_for_log(current)
-                    or _WITHHELD_DETAIL,
+                    safe_exception_message_for_log(current) or _WITHHELD_DETAIL,
                     _MAX_DIAGNOSTIC_MESSAGE_CHARS,
                 )
             lines.append(f'{type(current).__name__}: {detail}')
@@ -655,10 +654,10 @@ class KumoWorkflowOutboundInterceptor(WorkflowOutboundInterceptor):
         # Try to propagate workflow task timeout setting from parent.
         if not input.task_timeout:
             input.task_timeout = parent_wf_info.task_timeout
-        from rest.backends.data_backend.connector_authorization_client import \
-            connector_execution_references  # pants: no-infer-dep
-        from rest.backends.data_backend.connector_authorization_client import \
-            replace_connector_authorization_tokens  # pants: no-infer-dep
+        from rest.backends.data_backend.connector_authorization_client import (
+            connector_execution_references,
+            replace_connector_authorization_tokens,
+        )
         references = connector_execution_references(input.args)
         delegated_tokens: list[str] = []
         if references:

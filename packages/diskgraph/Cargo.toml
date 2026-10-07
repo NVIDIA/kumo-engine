@@ -53,7 +53,16 @@ chrono = { version = "0.4", features = ["serde"] }
 serde_with = "3.4"
 futures = "0.3"
 half = "2.3"
-fast-float = "0.2"
+# fast-float2 is the maintained fork of the abandoned `fast-float`, which
+# carries RUSTSEC-2024-0379 (multiple soundness issues) and RUSTSEC-2025-0003
+# (out-of-bounds read in `AsciiStr::first` on an empty input). The fork keeps
+# the same `parse` entry point.
+#
+# fast-float2 inherited that empty-input out-of-bounds read (the same upstream
+# issue #38) as RUSTSEC-2025-0002, fixed in 0.2.2. The requirement must stay
+# at or above 0.2.2; do not relax it to a bare "0.2", which would admit 0.2.0
+# and 0.2.1 and the advisory with them.
+fast-float2 = "0.2.4"
 ptr_hash = { package = "diskgraph-ptrhash", path = "diskgraph-ptrhash", features = ["epserde"] }
 epserde = { version = "0.8", features = ["std", "derive"] }
 

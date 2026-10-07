@@ -26,6 +26,14 @@ Training and prediction require an explicit `snapshot=`; retained table rows
 can be used with another snapshot as described under
 [local storage and results](#local-storage-and-results).
 
+Training-table generation rejects classification targets with fewer than two
+classes or more than the configured class limit, including custom training
+tables. Temporal training requires `train_end_offset < train_start_offset`
+when both are supplied. Prediction anchors before the query's source-data
+range are rejected; future anchors are allowed. These checks share the same
+validation rules as Kumo Studio.
+
+
 Temporal PQL windows support calendar months, for example
 `PREDICT COUNT(events.*, 0, 1, months) FOR EACH users.id`. Month windows and
 integer time options use calendar offsets, including month-end and leap-year
@@ -94,6 +102,21 @@ users = Table.from_source_table(files["users"], primary_key="id")
 snapshot = Graph(tables=[users], edges=[]).snapshot()
 ```
 
+Integer and string columns with identifier-like names, such as `user_id`, are
+automatically assigned the `ID` semantic type, including columns that are not
+primary keys. Floating-point columns without a matching name are inferred from
+sampled values.
+Names that indicate numerical quantities, such as `num_items`, `price`, and
+`score`, assign the numerical semantic type to integer and floating-point
+columns, even when the sample contains only a few distinct values.
+Types supplied by the source or set with `with_column()` take precedence over
+automatic inference.
+
+Columns used as foreign keys in supported `Edge` relationships have the `ID`
+semantic type in the graph, even if the source table inferred them as numerical
+or categorical. The source `Table` object retains its original column types.
+Omitted self-relations leave their columns' semantic types unchanged.
+
 Use a table mapping when graph names differ from source names, such as
 `Graph(tables={"users": users})` for a table read from `users.parquet`.
 Edges and PQL use the mapping keys; connector reads keep the original source names.
@@ -113,7 +136,8 @@ Source identities use canonical paths and are not portable across machines.
 Use a separate output root for artifacts. Single-file outputs overwrite; use
 an empty directory for partitioned outputs. Append is unsupported. Model
 publication copies bundles to an empty destination and rejects symlinks and
-overlap. It does not register models; `fetch_model` is unsupported.
+overlap. It does not register models; reload a published bundle by path with
+`Trainer.load_from_connector(connector, path=...)`.
 
 ## Local storage and results
 
@@ -146,6 +170,17 @@ print(prediction_result.files)     # selected Parquet files
 predictions = prediction_result.frame  # collect them into a pandas DataFrame
 ```
 
+### Holdout predictions
+
+`fit_result.holdout_df()` reads the test-split predictions as a pandas
+DataFrame, like `holdout_df()` on a hosted training job. The file is
+`fit_result.holdout_path`; it is not part of the published model bundle.
+Link-prediction tasks produce no holdout: `holdout_path` is `None` and
+`holdout_df()` raises `FileNotFoundError`. The same holds for results from
+`Trainer.load`. Holdouts above 1 GiB in memory are cut to fit, and
+`fit_result.holdout_truncated` is then `True` (`None` if the size record
+is unreadable; `fit()` still succeeds).
+
 `fit()` requires an explicit graph snapshot. To keep an existing table's rows
 and labels but train with updated graph features, pass the updated snapshot:
 
@@ -158,6 +193,38 @@ Each fit builds its training task from the selected snapshot and the saved
 training-table artifacts. The table retains its rows, labels, splits, and
 generation settings; it does not retain a graph-bound training plan. Fitting
 does not regenerate or mutate the table.
+
+### Warm-start training
+
+Pass a fitted or restored trainer to start from its selected checkpoint:
+
+```python
+previous = Trainer.load("/models/previous/published-model")
+# Or: Trainer.load_from_connector(registry, location=location)
+trainer = Trainer(model_plan)
+result = trainer.fit(training_table, snapshot=snapshot, warm_start=previous)
+```
+
+Warm start reuses weights, optimizer state, fitted encoders, architecture, and
+neighbor sampling. The destination plan still controls training and refits.
+Its configured `model_plan` remains unchanged for subsequent ordinary fits;
+the effective warm-start plan is saved in the result's bundle. New bundles
+select the same checkpoint as hosted warm start: full refit, then train/validation
+refit, then the original fit, according to which modes completed.
+The bundle's persisted selected plan is authoritative, even if the source
+trainer's public `model_plan` was subsequently edited. Task types must match;
+forecasting warm starts are unsupported. Graph data is supplied by `snapshot`.
+The source bundle remains unchanged; the result is a separate reloadable bundle.
+
+If the source checkpoint was refitted on train/validation or all rows,
+warm-starting on overlapping data can reuse rows that the destination treats
+as held out. Validation or test metrics on those rows can be optimistic.
+For independent evaluation, use held-out rows that were not used to train
+or refit the source model.
+
+Bundles produced before selected trial plans were persisted may contain an
+AutoML search space instead of the fitted architecture; those bundles are
+still loadable for prediction but are not reliable warm-start sources.
 
 ### Caller-supplied training and prediction rows
 
@@ -182,6 +249,67 @@ result = trainer.fit(training_table, snapshot=snapshot)
 When the source has no split column, the task's normal inferred split assigns
 the supplied rows. Pass `TrainingTableGenerationPlan(split=...)` to select a
 different split explicitly.
+
+### Exporting a generated training table
+
+To train with per-row weights, export a generated table, add a weight column,
+and load it back:
+
+```python
+from pathlib import Path
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+from kumo.engine import FileConnector, TrainingTable, TrainingTableOutputConfig
+from kumoapi.train import TrainingTableSpec
+
+training_table = pquery.generate_training_table(snapshot)
+exports = FileConnector(root_dir="/data/exports")
+training_table.export(TrainingTableOutputConfig(exports, "training_table"))
+
+weighted_dir = Path("/data/exports/weighted")
+weighted_dir.mkdir()
+for part in sorted(Path("/data/exports/training_table").glob("*.parquet")):
+    source = pq.ParquetFile(part)
+    schema = source.schema_arrow.append(pa.field("WEIGHT", pa.float64()))
+    with pq.ParquetWriter(weighted_dir / part.name, schema) as writer:
+        for batch in source.iter_batches():
+            weight = pa.repeat(pa.scalar(1.0), batch.num_rows)
+            writer.write_batch(batch.append_column("WEIGHT", weight))
+
+weighted = TrainingTable.from_source_table(
+    exports["weighted"],
+    TrainingTableSpec(weight_col="WEIGHT", split_col="SPLIT"),
+    pq=pquery,
+    snapshot=snapshot,
+)
+trainer.fit(weighted, snapshot=snapshot)
+```
+
+Replace the constant `1.0` with your own per-row weights. Each exported part
+is read and rewritten one batch at a time, so the table never has to fit in
+memory. When the export goes to a Snowflake or Databricks
+table, add the `WEIGHT` column in the warehouse instead and load that table.
+
+The export holds exactly the rows of the generated train, validation and test
+stages: `ENTITY1`, `TIMESTAMP`, `TARGET1`, any sequence columns the task needs
+(link-prediction target frequencies, forecasting labels), and `SPLIT` (`0`
+train, `1` validation, `2` test). Loading it with `split_col="SPLIT"` keeps
+every row in its original stage. File and object-store destinations (local,
+S3, GCS) are written as a directory of Parquet parts; exporting the same table
+again replaces it, and a different table needs an empty directory. Snowflake
+and Databricks destinations are tables, with `write_mode` choosing overwrite
+or append.
+
+- For link prediction, `WEIGHT` must be a list with one weight per element of
+  `TARGET1`.
+- Forecasting tables are loaded back without `split_col`; their split is
+  recomputed from the timestamps.
+- A static link-prediction table that was split per link loses the rule that
+  excludes a user's training links from validation and test ranking, so its
+  validation metrics can differ from the original.
+- Snowflake stores list columns as JSON strings, so export link-prediction
+  and forecasting tables to files.
 
 A custom prediction table similarly supplies the exact entities and anchor
 times to score. It contains `ENTITY1` and, for a temporal query, `TIMESTAMP`;
@@ -263,6 +391,37 @@ Supplying only `staging_volume_path` keeps the backend's staged-first behavior
 and existing fallback policy. The configured identity needs access to the
 volume as well as the source table.
 
+## Custom SQL tables
+
+A Snowflake, Databricks or BigQuery connector can define a table from a
+read-only `SELECT`. The query runs in the warehouse and only its result is
+ingested, through the same reader (and staging options) as a named table:
+
+```python
+from kumo.engine import Graph, Table
+from kumoapi.graph import Edge
+
+active_users = Table.from_sql(
+    events,
+    "SELECT user_id, country, signup_ts FROM users WHERE active",
+    primary_key="user_id",
+    time_column="signup_ts",
+)
+graph = Graph({"active_users": active_users, "orders": orders},
+              edges=[Edge(src_table="orders", fkey="user_id",
+                          dst_table="active_users")])
+snapshot = graph.snapshot()
+```
+
+`events.sql(query)` returns the `SQLSourceTable` to pass to
+`Table.from_source_table` instead. The query must be one statement with
+named output columns and may only read tables inside the connector's own
+database/catalog/project and schema/dataset; these checks are shared with
+the cloud platform. Schema inference samples the query's result, and on
+BigQuery a query estimated to scan more than 10 GiB is not sampled. To skip
+inference, pass `Table(events, name, definition=kumoapi.table.TableDefinition(
+cols=..., source_table=events.sql(query).to_source_table(), ...))`.
+
 ## Model-plan suggestions
 
 Given a `pquery = PredictiveQuery(graph, query)` and its existing
@@ -290,17 +449,14 @@ training and batch prediction, in-process: `Table`/`Graph`/`Graph.snapshot()`,
 `PredictiveQuery.validate`/`get_task_type`/`suggest_model_plan`/
 `generate_training_table`/`generate_prediction_table`, and
 `Trainer.fit`/`predict`/`load` (direct local bundle reload) and
-`load_from_connector` (model reload from Snowflake/S3/GCS storage).
+`load_from_connector` (model reload from local/S3/GCS paths or Snowflake).
 
 Not yet implemented, or explicitly out of scope for this package:
 
 - `PredictiveQuery.suggest_prediction_table_plan`/`suggest_distilled_model_plan`
   -- deferred by design, not merely unimplemented.
-- Custom SQL tables -- `Table.from_source_table()` reads a table's schema
-  as-is (which may sample source data to resolve ambiguous column types);
-  there is no `sql=` query-table support the cloud SDK has.
-- BigQuery is read-only: no sink, so it can't be an `output_connector`,
-  `export_config` connector, or `Trainer.load_from_connector(...)` target.
+- BigQuery stores predictions and embeddings only: it can't be an
+  `export_config` connector or a `Trainer.load_from_connector(...)` target.
 - Scoped per-table ingest credentials, and a table staged across multiple
   directories, both raise `NotImplementedError` in `Graph.snapshot()`.
 
@@ -390,3 +546,77 @@ completes; this requires permission to delete that marker. Readers should wait
 for `_SUCCESS` before consuming a directory. Exports do not provide a
 transaction across destinations, atomic single-file replacement, or isolation
 from concurrent writers or readers.
+
+## BigQuery prediction output
+
+A `BigQueryConnector` writes predictions or embeddings to a table in its own
+dataset, either during `predict` or later through `result.export`:
+
+```python
+from kumo.engine import (
+    BigQueryConnector,
+    BigQueryIdentity,
+    PredictionOutputConfig,
+)
+from kumoapi.jobs import PredictionArtifactType, WriteMode
+
+output = BigQueryConnector(
+    identity=BigQueryIdentity(),  # application default credentials
+    project_id="data-project",
+    dataset_id="predictions",
+    staging_uri="gs://data-staging/kumo",
+)
+result = trainer.predict(
+    prediction_table,
+    snapshot=snapshot,
+    binary_classification_threshold=0.5,
+    output_config=PredictionOutputConfig(
+        connector=output,
+        artifact_type=PredictionArtifactType.PREDICTIONS,
+        table_name="user_scores",
+    ),
+)
+# Later, without rerunning inference:
+result.export(PredictionOutputConfig(
+    connector=output,
+    artifact_type=PredictionArtifactType.PREDICTIONS,
+    table_name="user_scores_history",
+    write_mode=WriteMode.APPEND,
+))
+```
+
+- `table_name` is an unqualified table ID. Each configuration writes one
+  artifact; `output_paths` is for file and object-store connectors.
+- `OVERWRITE` replaces the table's rows and schema. `APPEND` adds rows and is
+  strict: every output column must be a column of the existing table with the
+  same type (integers may also go into `FLOAT` or `NUMERIC` columns, and an
+  all-null column fits any type); otherwise it fails before writing and names
+  each mismatched column and its types.
+- Every export commits at once, so a failed export leaves the table's rows
+  unchanged. Rerunning an `APPEND` adds the rows again; an `APPEND` to a
+  missing table creates it first.
+- Output is written the way BigQuery input is read. With a usable
+  `staging_uri`, output files are uploaded under
+  `<staging_uri>/_kumo.export/<id>/`, loaded by one load job and deleted.
+  Otherwise they are streamed through the BigQuery Storage Write API into
+  pending streams committed in one call; `OVERWRITE` commits into an expiring
+  `_kumo_export_*` table and replaces the destination with one
+  `WRITE_TRUNCATE` query over it. `require_staged=True` fails instead of
+  streaming when staging is unusable. A bucket outside the dataset's location
+  is not used for staging.
+- Cost: load jobs are free; the Storage Write API is billed per GB beyond its
+  monthly free tier, and a streamed `OVERWRITE` also bills the query over the
+  output. Prefer staging for large or frequent exports.
+- Rows written through the Storage Write API are queryable immediately, but
+  table metadata such as `num_rows` lags, and a copy job run right after may
+  miss them.
+- `OVERWRITE` keeps the table's partitioning and clustering, and the
+  descriptions and policy tags of columns that keep their name and type. A
+  streamed `OVERWRITE` restores them just after replacing the rows.
+- Embeddings land as `REPEATED FLOAT` columns, timestamps as `TIMESTAMP`.
+- `predict` checks the destination before scoring: the dataset exists in the
+  connector's `location`, the identity can create or update the table and run
+  load jobs or write streams, and staging is usable when required. The
+  identity needs `roles/bigquery.dataEditor` on the dataset,
+  `roles/bigquery.jobUser` on the billing project and, with staging,
+  `roles/storage.objectAdmin` on the bucket.

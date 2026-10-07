@@ -27,7 +27,9 @@ Monorepo build integration lives outside the mirrored directory.
 
 Do not edit `packages/diskgraph` in Kumo pull requests. Merge the change into
 `kumo-diskgraph/main`; its dispatch workflow opens or updates the mechanical
-Kumo synchronization pull request and credits the upstream authors.
+Kumo synchronization pull request and credits the upstream authors. That pull
+request also regenerates the
+[third-party notices](../../../3rdparty/README.md).
 
 The mirrored tree retains DiskGraph's formatting and lint policy. Kumo's
 repository-wide format, lint, and type checks exclude only

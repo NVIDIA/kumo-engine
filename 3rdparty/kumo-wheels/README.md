@@ -1,14 +1,13 @@
 # Vendored Python wheels
 
-This directory holds pre-built Python wheels that pants/pex can't resolve
+This directory holds pre-built Python wheels that uv can't resolve
 from the public package index — usually because the upstream package
 doesn't ship binary wheels and has a broken or missing PEP-517 build
 declaration.
 
-`pants.toml`'s `python-repos.find_links` entry already points pants
-here; dropping a wheel into this directory transparently makes it
-available to the resolver, with the wheel content's SHA256 hashing into
-the regenerated lockfile.
+The root `pyproject.toml` lists this directory under `[tool.uv].find-links`;
+dropping a wheel here makes it available to `uv lock` and `uv sync`, with the
+wheel's SHA256 recorded in `uv.lock`.
 
 ## CUDA Faiss artifact
 

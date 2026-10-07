@@ -27,7 +27,7 @@ rand = "0.8"
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-buffer = { workspace = true }
-fast-float = { workspace = true }
+fast-float2 = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

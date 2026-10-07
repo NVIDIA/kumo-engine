@@ -120,6 +120,11 @@ optional `bN` or `rcN` suffixes. See the
 [release preparation workflow](../../.github/workflows/kumo-sdk-release.yml)
 and [tag workflow](../../.github/workflows/kumo-sdk-release-on-tag.yml).
 
+The SDK version is the root [`VERSION`](../../VERSION) file, shared with
+kumo-engine, the platform and the charts: the release workflow changes it through
+`packages/kumo-sdk/scripts/set_version.py`, which also runs
+`scripts/stamp_version.py` and stages every stamped file (`git add -u`).
+
 The [upload workflow](../../.github/workflows/kumo-sdk-upload-wheels.yml)
 requires `KUMO_SDK_PUBLICATION_ENABLED=true` and the `kumo-sdk-release`
 environment, including tokens for the selected PyPI destinations. Before

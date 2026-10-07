@@ -14,17 +14,6 @@ MISSING_IMAGES=()
 
 # Login to registry
 
-# Silently probe whether an image exists for ${VERSION}. Returns 0 if present.
-image_exists() {
-    local repo_name=$1
-    if [[ "${REGISTRY}" == "${SNOWFLAKE_REGISTRY}" ]]; then
-        docker buildx imagetools inspect "${SNOWFLAKE_REGISTRY_PATH}/${repo_name}:${VERSION}" > /dev/null 2>&1
-    else
-        aws ecr describe-images --region "us-west-2" --registry-id "${DOCKER_REGISTRY_ID}" \
-            --repository-name "kumo/${repo_name}" --image-ids imageTag="${VERSION}" &> /dev/null
-    fi
-}
-
 check_image() {
     local repo_name=$1
 
@@ -45,26 +34,9 @@ check_image() {
     fi
 }
 
-# Auto-detect diskgraph build: post-merge versions publish consolidated
-# kumo-backend-cpu / kumo-backend-gpu images in place of kumo-rest / kumo /
-# kumo-temporalworker.
-# Probe for it once to decide which image set to require.
-ENABLE_DISKGRAPH=false
-if image_exists "kumo-backend-cpu"; then
-    ENABLE_DISKGRAPH=true
-    echo "Detected diskgraph build (kumo-backend-cpu present for ${VERSION})"
-else
-    echo "kumo-backend-cpu not present for ${VERSION}; using legacy image set"
-fi
-
 echo "Checking all required images"
 
-# Define images to check
-if [[ "${ENABLE_DISKGRAPH}" == "true" ]]; then
-    IMAGES=("kumo-ui" "kumo-backend-cpu" "kumo-backend-gpu")
-else
-    IMAGES=("kumo-ui" "kumo-rest" "kumo" "kumo-temporalworker")
-fi
+IMAGES=("kumo-ui" "kumo-backend-cpu" "kumo-backend-gpu")
 
 # Check all images
 for image in "${IMAGES[@]}"; do

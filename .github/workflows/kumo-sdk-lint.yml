@@ -74,8 +74,15 @@ jobs:
       - name: Install colocated Kumo API and SDK
         run: |
           # ty does not process PEP 660 .pth files, so install API normally.
+          # kumo-api is now a uv workspace member, so kumo-sdk's
+          # `kumo-api = { workspace = true }` source would otherwise make
+          # this second install silently reinstall kumo-api editable,
+          # clobbering the non-editable install above. --no-editable forces
+          # every dependency (including kumo-api) to install normally; it
+          # doesn't affect kumo-sdk itself since this job re-installs from
+          # the checked-out tree fresh each run.
           uv pip install packages/kumo-api
-          uv pip install -e 'packages/kumo-sdk[test]'
+          uv pip install --no-editable -e 'packages/kumo-sdk[test]'
           # The Snowflake client libraries, named directly rather than through
           # `kumoai-studio[snowflake]`: that extra now installs the `kumo-snowflake`
           # plugin and `kumo-core` with it, which are first-party and absent

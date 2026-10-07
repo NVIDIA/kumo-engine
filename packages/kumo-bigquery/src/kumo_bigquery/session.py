@@ -4,8 +4,8 @@
 r"""Turning a connector into BigQuery clients, and talking to them.
 
 An identity resolves to ``google.auth`` credentials rather than to a client,
-because BigQuery is reached through three clients and credentials are the one
-thing all three are built from. This module is not lazy about the Google
+because BigQuery is reached through four clients and credentials are the one
+thing all four are built from. This module is not lazy about the Google
 client libraries the way the SDK's copy of it was: ``kumo_bigquery`` already
 carries them as unconditional base dependencies (the platform reader needs
 them too), so importing them here costs nothing that importing this package
@@ -135,13 +135,18 @@ def _read_client(credentials: Credentials) -> Any:
     return bigquery_storage.BigQueryReadClient(credentials=credentials)
 
 
+def _write_client(credentials: Credentials) -> Any:
+    return bigquery_storage.BigQueryWriteClient(credentials=credentials)
+
+
 def _storage_client(credentials: Credentials, *, project: str) -> Any:
     return storage.Client(credentials=credentials, project=project)
 
 
 class _ClientCache:
-    r"""The three BigQuery clients :func:`_query_client`, :func:`_read_client`
-    and :func:`_storage_client` build, by identity and target.
+    r"""The BigQuery clients :func:`_query_client`, :func:`_read_client`,
+    :func:`_write_client` and :func:`_storage_client` build, by identity and
+    target.
 
     Module-level rather than per backend, for the reason
     :class:`kumo_snowflake.session._SessionCache` is: a reader and a writer
@@ -155,7 +160,7 @@ class _ClientCache:
     every call is not caching the client at all, and a client is what this
     module is actually asked for on every read.
 
-    Calls the three module-level builders by name rather than inlining the
+    Calls the module-level builders by name rather than inlining the
     client construction, so a caller can still replace one of them (a test
     stands in a fake client this way) and have every path that resolves a
     client -- cached or not -- see the replacement.
@@ -164,6 +169,7 @@ class _ClientCache:
         self._lock = threading.RLock()
         self._query: Dict[Tuple[str, str, str], Any] = {}
         self._read: Dict[str, Any] = {}
+        self._write: Dict[str, Any] = {}
         self._storage: Dict[Tuple[str, str], Any] = {}
 
     def query_client(self, principal: Principal, *, project: str,
@@ -189,6 +195,16 @@ class _ClientCache:
                 self._read[principal.name] = client
             return client
 
+    def write_client(self, principal: Principal) -> Any:
+        with self._lock:
+            client = self._write.get(principal.name)
+            if client is None:
+                credentials = _credentials_for(principal)
+                _require_credentials(credentials)
+                client = _write_client(credentials)
+                self._write[principal.name] = client
+            return client
+
     def storage_client(self, principal: Principal, *, project: str) -> Any:
         key = (principal.name, project)
         with self._lock:
@@ -207,10 +223,11 @@ class _ClientCache:
                         key for key in cache if name is None or key[0] == name
                 ]:
                     del cache[key]
-            for key in [
-                    key for key in self._read if name is None or key == name
-            ]:
-                del self._read[key]
+            for cache in (self._read, self._write):
+                for key in [
+                        key for key in cache if name is None or key == name
+                ]:
+                    del cache[key]
 
 
 _clients = _ClientCache()

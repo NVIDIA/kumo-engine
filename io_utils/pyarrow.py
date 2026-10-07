@@ -97,7 +97,7 @@ def _resolve_s3_filesystem(
     """
     # Lazy import: io_utils.pyarrow loads early; avoid pulling the boto3 stack
     # into modules that never touch S3.
-    import kumo_s3  # pants: no-infer-dep
+    import kumo_s3
 
     from io_utils.fsutil.s3_connection import active_s3_connection
     from io_utils.fsutil.s3_filesystem import threadsafe_boto

@@ -12,14 +12,14 @@ from kumo.engine.graph import Graph
 
 
 def _fake_table(dest_writes: bool = True, credentials=None):
-    def prepare_ingest(connector, table_name, dest_dir, *, dtypes):
+    def prepare_ingest(connector, table_name, dest_dir, *, dtypes, sql=None):
         if dest_writes:
             Path(dest_dir, 'part.parquet').write_bytes(b'data')
         return SimpleNamespace(credentials=credentials, version='v1',
                                source={'path': dest_dir})
 
     return SimpleNamespace(
-        definition=SimpleNamespace(cols=[]),
+        definition=SimpleNamespace(cols=[], source_table=None),
         connector=SimpleNamespace(source_backend=SimpleNamespace(
             prepare_ingest=prepare_ingest)),
         table_name='t',

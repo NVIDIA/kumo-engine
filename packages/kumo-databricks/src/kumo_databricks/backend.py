@@ -20,7 +20,11 @@ from __future__ import annotations
 from typing import List, Mapping, Optional
 
 from databricks.sql.client import Connection
-from kumo_core.custom_sql import sample_timeout, subquery_safe_sql
+from kumo_core.custom_sql import (
+    gate_custom_sql,
+    sample_timeout,
+    subquery_safe_sql,
+)
 from kumo_core.sources.backend import (
     ingest_result,
     sampled_table,
@@ -155,9 +159,9 @@ class DatabricksSourceBackend(_DatabricksSessions):
     ) -> SourceTableDataResponse:
         del project_id
         bare = self._bare(connector, table_name)
+        query = self._embeddable(connector, sql)
         with self._connected(connector) as connection:
-            columns = self._columns(connector, connection, bare,
-                                    self._embeddable(sql))
+            columns = self._columns(connector, connection, bare, query)
         return SourceTableDataResponse(table_name=table_name, cols=columns)
 
     def get_sample(
@@ -172,7 +176,7 @@ class DatabricksSourceBackend(_DatabricksSessions):
         del project_id
 
         bare = self._bare(connector, table_name)
-        query = self._embeddable(sql)
+        query = self._embeddable(connector, sql)
         source = (f'({query})' if query is not None else self._qualified(
             connector, bare))
         with self._connected(connector) as connection:
@@ -239,15 +243,15 @@ class DatabricksSourceBackend(_DatabricksSessions):
         # tables sharing a `dest_dir` would leave the second holding only its
         # own files.
         destination = staging_dir(dest_dir, bare)
-        query = self._embeddable(sql)
+        query = self._embeddable(connector, sql)
         with self._connected(connector) as connection:
             columns = self._declared(connector, connection, bare, dtypes, query)
             staged = read_table(self._reader(connector, connection), bare,
                                 str(destination), columns=columns,
                                 mode=self.mode, sql=query, version=data_version)
-        if not staged.paths:
+        if not staged.num_rows:
             raise PermanentSourceError(
-                f'Reading {bare} produced no files. An empty source '
+                f'Reading {bare} returned no rows. An empty source '
                 f'table cannot be ingested; DiskGraph needs at least one row '
                 f'to infer an encoding.')
 
@@ -282,7 +286,8 @@ class DatabricksSourceBackend(_DatabricksSessions):
 
     # Internals ############################################################
 
-    def _embeddable(self, sql: Optional[str]) -> Optional[str]:
+    def _embeddable(self, connector: SourceConnector,
+                    sql: Optional[str]) -> Optional[str]:
         r"""The only form of a query this reader ever sends: the caller's text
         with its trailing terminator and comment removed, so it stands in
         subquery position.
@@ -290,6 +295,8 @@ class DatabricksSourceBackend(_DatabricksSessions):
         if sql is None:
             return None
         from kumo_core.types import ConnectorType
+        gate_custom_sql(sql, ConnectorType.DATABRICKS,
+                        _target_config(connector))
         return subquery_safe_sql(sql, ConnectorType.DATABRICKS)
 
     @staticmethod

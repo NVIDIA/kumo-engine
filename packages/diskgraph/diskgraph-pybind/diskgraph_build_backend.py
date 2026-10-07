@@ -197,7 +197,18 @@ def _cargo_env() -> Dict[str, str]:
     rustflags = _default_rustflags()
     if rustflags:
         env.setdefault("RUSTFLAGS", rustflags)
+    _pin_bundled_aws_lc(env)
     return env
+
+
+def _pin_bundled_aws_lc(env: Dict[str, str]) -> None:
+    # A detected system AWS-LC would replace the bundled source, making the
+    # wheel depend on the build host (and on its libcrypto.so if no .a exists).
+    # Setting AWS_LC_SYS_SYSTEM_DIR while this default leaves
+    # AWS_LC_SYS_USE_SYSTEM=0 is a hard build error, so using a system AWS-LC
+    # deliberately also needs AWS_LC_SYS_USE_SYSTEM=1. The target-specific
+    # AWS_LC_SYS_USE_SYSTEM_<target> takes precedence over the plain variable.
+    env.setdefault("AWS_LC_SYS_USE_SYSTEM", "0")
 
 
 def _run(cmd: List[str], *, env: Dict[str, str]) -> None:
@@ -250,6 +261,7 @@ def _maturin_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     rustflags = _default_rustflags()
     if rustflags:
         env.setdefault("RUSTFLAGS", rustflags)
+    _pin_bundled_aws_lc(env)
     return env
 
 

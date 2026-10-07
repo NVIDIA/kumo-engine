@@ -4,6 +4,7 @@
 
 import itertools
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +25,7 @@ from kumo_core.training.table import (
     generate_train_table,
     split_config_from_repr,
 )
+from kumo_core.training.validation import GenerationValidationError
 from kumo_core.types import TaskType
 from kumoapi.pquery import QueryType
 
@@ -52,6 +54,7 @@ class FakeRuntime:
 
     def execute_tt_gen(self, plan, index_path, tt_id):
         self.calls.append(("execute", json.loads(plan), index_path, tt_id))
+        write_valid_class_stats(Path(self.staging_dir))
         return {
             "staging_dir": self.staging_dir,
             "tt_parquet_path": f"{self.staging_dir}/tt.parquet",
@@ -93,21 +96,89 @@ def static_link_query():
 
 def write_target_stats(staging, entry):
     stats_path = staging / 'train_table_col_stats.json'
-    stats_path.write_text(json.dumps({
-        'version': 1,
-        'kind': 'tt_train_table_col_stats',
-        'stats_format': 'kumo_col_stats_v1',
-        'stats': {
-            'TARGET1__kumo.multicategorical__MULTI_CATEGORY_COUNTS__False':
-            entry
-        },
-    }))
+    stats_path.write_text(
+        json.dumps({
+            'version': 1,
+            'kind': 'tt_train_table_col_stats',
+            'stats_format': 'kumo_col_stats_v1',
+            'stats': {
+                'TARGET1__kumo.multicategorical__MULTI_CATEGORY_COUNTS__False':
+                entry
+            },
+        }))
 
 
-def test_generate_node_table_calls_real_compiler_and_executor(tmp_path) -> None:
+def write_valid_class_stats(staging, classes=None):
+    staging.mkdir(parents=True, exist_ok=True)
+    stats_path = staging / 'train_table_col_stats.json'
+    if stats_path.exists():
+        return
+    stats_path.write_text(
+        json.dumps({
+            'version': 1,
+            'kind': 'tt_train_table_col_stats',
+            'stats_format': 'kumo_col_stats_v1',
+            'stats': {
+                'TARGET1__kumo.categorical__CATEGORY_COUNTS__False': {
+                    'approx':
+                    False,
+                    'value': ([[False, 400], [True, 400]]
+                              if classes is None else classes),
+                },
+            },
+        }))
+
+
+@pytest.mark.parametrize(
+    'task_type,target_stype,classes,message',
+    [('binary_classification', 'categorical', [[False, 800]
+                                               ], 'Too few classes'),
+     ('multiclass_classification', 'categorical', [['only', 800]
+                                                   ], 'Too few classes'),
+     ('multiclass_classification', 'ID', [[10, 800]], 'Too few classes'),
+     ('binary_classification', 'boolean', [[False, 800]], 'Too few classes'),
+     ('multilabel_classification', 'multicategorical', [],
+      'No positive samples')],
+)
+def test_generated_degenerate_labels_are_rejected_before_publication(
+        tmp_path, task_type, target_stype, classes, message):
+    staging = tmp_path / 'index' / 'train_tables' / '.tt-1.staging'
+    staging.mkdir(parents=True)
+    stats_stype = ('categorical'
+                   if target_stype in {'ID', 'boolean'} else target_stype)
+    kind = ('MULTI_CATEGORY_COUNTS'
+            if target_stype == 'multicategorical' else 'CATEGORY_COUNTS')
+    (staging / 'train_table_col_stats.json').write_text(
+        json.dumps({
+            'version': 1,
+            'kind': 'tt_train_table_col_stats',
+            'stats_format': 'kumo_col_stats_v1',
+            'stats': {
+                f'TARGET1__kumo.{stats_stype}__{kind}__False': {
+                    'approx': False,
+                    'value': classes,
+                },
+            },
+        }))
+    with pytest.raises(GenerationValidationError, match=message):
+        generate_train_table(
+            request(tmp_path, task_type=task_type, target_stype=target_stype),
+            runtime=FakeRuntime(str(staging)))
+    assert not staging.exists()
+    assert not (staging.parent / 'tt-1').exists()
+
+
+@pytest.mark.parametrize('target_stype', ['categorical', 'ID', 'boolean'])
+def test_generate_node_table_calls_real_compiler_and_executor(
+        tmp_path, target_stype) -> None:
     runtime = FakeRuntime(str(tmp_path / "staging"))
 
-    result = generate_train_table(request(tmp_path), runtime=runtime)
+    if target_stype == 'ID':
+        write_valid_class_stats(Path(runtime.staging_dir),
+                                [[10, 400], [20, 400]])
+
+    result = generate_train_table(request(tmp_path, target_stype=target_stype),
+                                  runtime=runtime)
 
     assert result.train_table_path.endswith("staging/tt.parquet")
     assert result.manifest_path.endswith("staging/manifest.json")
@@ -305,8 +376,9 @@ def test_temporal_link_never_resolves_past_visits(tmp_path) -> None:
     ]
 
 
+@pytest.mark.parametrize('target_stype', ['categorical', 'ID', 'boolean'])
 def test_generate_custom_table_builds_standard_artifact_bundle(
-        tmp_path) -> None:
+        tmp_path, target_stype) -> None:
     parquet = tmp_path / "custom.parquet"
     parquet.mkdir()
     staging = tmp_path / "custom.parquet.artifacts"
@@ -318,10 +390,13 @@ def test_generate_custom_table_builds_standard_artifact_bundle(
         @staticmethod
         def build_train_table_artifacts_for_existing_table(**kwargs):
             calls.append(kwargs)
+            write_valid_class_stats(
+                staging,
+                [[10, 400], [20, 400]] if target_stype == 'ID' else None)
             return {"staging_dir": str(staging)}
 
     result = generate_custom_train_table(
-        request(tmp_path),
+        request(tmp_path, target_stype=target_stype),
         PreparedCustomTrainingTable(
             str(parquet),
             weight_column="WEIGHT",
@@ -337,7 +412,7 @@ def test_generate_custom_table_builds_standard_artifact_bundle(
         "entity_pk_column": "user_id",
     }
     assert calls[0]["train_table_col_stats_config"] == {
-        "target_stype": "categorical",
+        "target_stype": target_stype,
         "time_col": "TIMESTAMP",
         "weight_col": "WEIGHT",
     }
@@ -695,3 +770,31 @@ def test_train_table_time_branches(task_type, query_type, is_array,
         list_distinct_target_is_array=is_array,
         entity_table_has_time_col=entity_has_time,
     ) == expected
+
+
+@pytest.mark.parametrize('target_stype', ['categorical', 'ID', 'boolean'])
+def test_rejected_custom_labels_preserve_customer_parquet(
+        tmp_path, target_stype):
+    parquet = tmp_path / 'custom.parquet'
+    parquet.write_bytes(b'customer-owned-parquet')
+    staging = tmp_path / 'custom.parquet.artifacts'
+
+    class Runtime:
+        SplitSpec = FakeSplitSpec
+
+        @staticmethod
+        def build_train_table_artifacts_for_existing_table(**kwargs):
+            write_valid_class_stats(staging)
+            stats_path = staging / 'train_table_col_stats.json'
+            stats = json.loads(stats_path.read_text())
+            stats['stats']['TARGET1__kumo.categorical__CATEGORY_COUNTS__False'][
+                'value'] = [[False, 800]]
+            stats_path.write_text(json.dumps(stats))
+            return {'staging_dir': str(staging)}
+
+    with pytest.raises(GenerationValidationError, match='Too few classes'):
+        generate_custom_train_table(
+            request(tmp_path, target_stype=target_stype),
+            PreparedCustomTrainingTable(str(parquet)), runtime=Runtime)
+    assert parquet.read_bytes() == b'customer-owned-parquet'
+    assert (staging / 'train_table_col_stats.json').exists()

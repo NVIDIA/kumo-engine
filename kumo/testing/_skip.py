@@ -12,7 +12,7 @@ def skip_if(condition: bool, reason: str, func: Callable) -> Callable:
 
     Handles regular, async, and generator test functions.
     """
-    import pytest  # pants: no-infer-dep
+    import pytest
 
     if inspect.iscoroutinefunction(func):
 

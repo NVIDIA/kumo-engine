@@ -18,6 +18,7 @@ from kumoapi.plugin import ArtifactSink, SourceBackend
 from kumoapi.source_table import DatabricksSourceTable
 from typing_extensions import Self
 
+from kumo.engine.connector._extras import import_provider
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.identity import DatabricksIdentity
 
@@ -85,7 +86,8 @@ class DatabricksConnector(Connector):
     @cached_property
     def source_backend(self) -> SourceBackend:
         from kumo_core.sources.types import ReadMode
-        from kumo_databricks.backend import DatabricksSourceBackend
+        DatabricksSourceBackend = import_provider(
+            "kumo_databricks.backend", "databricks").DatabricksSourceBackend
         return DatabricksSourceBackend(
             identity=self.identity,
             staging_volume_path=self.staging_volume_path,
@@ -94,7 +96,8 @@ class DatabricksConnector(Connector):
 
     @cached_property
     def sink_backend(self) -> ArtifactSink:
-        from kumo_databricks.sink import DatabricksSinkBackend
+        DatabricksSinkBackend = import_provider(
+            "kumo_databricks.sink", "databricks").DatabricksSinkBackend
         return DatabricksSinkBackend(identity=self.identity)
 
     def source_table_for(self, table_name: str) -> DatabricksSourceTable:

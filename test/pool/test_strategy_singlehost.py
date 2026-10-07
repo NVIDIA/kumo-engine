@@ -4,7 +4,7 @@
 """Tests for ``pool.strategy_singlehost.SinglehostPlacementStrategy``."""
 import asyncio
 
-import pytest  # pants: no-infer-dep
+import pytest
 
 from pool.dataclasses import (
     PlacementRequest,

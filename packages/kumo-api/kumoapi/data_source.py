@@ -665,8 +665,7 @@ class DatabricksIdentityConfig:
             value)
 
     def _validate(self) -> None:
-        ambient = self.authentication is (
-            DatabricksAuthenticationKind.AMBIENT)
+        ambient = self.authentication is (DatabricksAuthenticationKind.AMBIENT)
         if ambient:
             if self.host is not None or self.client_id is not None:
                 raise ValueError(

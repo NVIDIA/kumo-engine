@@ -39,6 +39,7 @@ from kumo.engine.connector import (
     SnowflakeConnector,
     SnowflakeIdentity,
     SourceTable,
+    SQLSourceTable,
 )
 from kumo.engine.graph import Graph, GraphSnapshot
 from kumo.engine.pquery import PredictionTable, PredictiveQuery, TrainingTable
@@ -49,6 +50,7 @@ from kumo.engine.trainer import (
     PredictionResult,
     Trainer,
     TrainingResult,
+    TrainingTableOutputConfig,
 )
 
 __all__ = [
@@ -66,6 +68,7 @@ __all__ = [
     "BigQueryConnector",
     "DatabricksConnector",
     "SourceTable",
+    "SQLSourceTable",
     "Identity",
     "SnowflakeIdentity",
     "S3Identity",
@@ -83,4 +86,5 @@ __all__ = [
     "PredictionResult",
     "ModelOutputConfig",
     "PredictionOutputConfig",
+    "TrainingTableOutputConfig",
 ]

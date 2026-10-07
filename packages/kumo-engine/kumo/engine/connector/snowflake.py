@@ -21,6 +21,7 @@ from kumoapi.plugin import ArtifactSink, SourceBackend
 from kumoapi.source_table import SnowflakeSourceTable
 from typing_extensions import Self
 
+from kumo.engine.connector._extras import import_provider
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.identity import SnowflakeIdentity
 
@@ -49,7 +50,6 @@ class SnowflakeConnector(Connector):
             `kumo_snowflake`'s own ambient-session resolution.
         role: Optional Snowflake role to activate for this target.
     """
-
     def __init__(
         self,
         *,
@@ -85,7 +85,8 @@ class SnowflakeConnector(Connector):
         # `snowflake` extra, and this package has plain `kumo.engine.Connector`
         # subclasses for every provider whether or not that extra is
         # installed.
-        from kumo_snowflake.backend import SnowflakeSourceBackend
+        SnowflakeSourceBackend = import_provider(
+            "kumo_snowflake.backend", "snowflake").SnowflakeSourceBackend
         return SnowflakeSourceBackend(identity=self.identity)
 
     @cached_property
@@ -95,7 +96,8 @@ class SnowflakeConnector(Connector):
         writes/publishes through -- backs `Trainer.fit(..., export_config=...)`
         and `Trainer.load_from_connector(...)`.
         """
-        from kumo_snowflake.sink import SnowflakeSinkBackend
+        SnowflakeSinkBackend = import_provider("kumo_snowflake.sink",
+                                               "snowflake").SnowflakeSinkBackend
         return SnowflakeSinkBackend(identity=self.identity)
 
     def source_table_for(self, table_name: str) -> SnowflakeSourceTable:
@@ -146,7 +148,8 @@ class SnowflakeConnector(Connector):
         """
         # Snowflake's provider package owns its driver's configuration API;
         # this facade only turns the selected entry into Kumo objects.
-        from kumo_snowflake.config import connection_toml_entry
+        connection_toml_entry = import_provider(
+            "kumo_snowflake.config", "snowflake").connection_toml_entry
 
         entry = connection_toml_entry(connection_name)
         warehouse = warehouse or entry.get('warehouse')
@@ -167,8 +170,8 @@ class SnowflakeConnector(Connector):
         identity = _connections_toml_identity(entry)
         assert warehouse and database and schema_name
         return cls(warehouse=warehouse, database=database,
-                   schema_name=schema_name, identity=identity,
-                   role=role or entry.get('role'))
+                   schema_name=schema_name, identity=identity, role=role
+                   or entry.get('role'))
 
     @classmethod
     def from_spcs_env(
@@ -213,7 +216,9 @@ class SnowflakeConnector(Connector):
         # `snowflake` extra is optional, and reusing kumo_snowflake's own
         # env-var names keeps this in lockstep with the identity-creation
         # path it mirrors.
-        from kumo_snowflake.spcs import ACCOUNT_ENV, HOST_ENV, SPCS_TOKEN_PATH
+        spcs = import_provider("kumo_snowflake.spcs", "snowflake")
+        ACCOUNT_ENV, HOST_ENV = spcs.ACCOUNT_ENV, spcs.HOST_ENV
+        SPCS_TOKEN_PATH = spcs.SPCS_TOKEN_PATH
 
         if not os.path.exists(SPCS_TOKEN_PATH):
             raise ValueError(

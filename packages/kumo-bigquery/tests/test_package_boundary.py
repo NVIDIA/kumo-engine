@@ -24,4 +24,5 @@ def test_a_top_level_import_loads_neither_training_nor_the_plugin_half():
     assert_top_level_import_is_cheap(
         ROOT, "kumo_bigquery", "BigQuerySourceReader",
         unloaded=("google.cloud.bigquery_storage",
-                  "kumo_bigquery.session", "kumo_bigquery.backend"))
+                  "kumo_bigquery.session", "kumo_bigquery.backend",
+                  "kumo_bigquery.sink"))

@@ -16,7 +16,6 @@
 #
 # Used by: Dockerfile.kumo_base_cpu, Dockerfile.kumo_base_gpu
 #
-# Replaces legacy kumodeps + kumodeps_cpu (kept around until cutover).
 
 CUDA_VERSION="${CUDA_VERSION:-cpu}"
 TORCH_VERSION="${TORCH_VERSION:-2.12.0}"

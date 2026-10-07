@@ -435,6 +435,21 @@ def _validate_weight_col(
             f"column (got dtype={weight_column.dtype}).")
 
 
+def unsupported_entity_candidate_errors(plan: Any) -> list[Exception]:
+    return [
+        ValidationException(
+            title="Unsupported feature",
+            message=(f"'training_table_generation.{name}' is not supported. "
+                     "To restrict which entities are trained on or "
+                     "predicted for, add a WHERE filter on the entity to the "
+                     "predictive query, or supply an explicit prediction "
+                     "table with the entities you want. Remove "
+                     f"'{name}' from the plan."))
+        for name in ('entity_candidate', 'entity_candidate_aggregation')
+        if getattr(plan, name, None) is not None
+    ]
+
+
 class ModelPlanValidationError(ValueError):
     r"""Raised when a model plan fails structural validation.
 
@@ -821,6 +836,7 @@ class TrainingTableGenerationPlan(api.TrainingTableGenerationPlan, PlanMixin):
                              "supported on DiskGraph. Remove "
                              "'training_table_generation.weight_col' from the "
                              "model plan.")))
+        errors.extend(unsupported_entity_candidate_errors(self))
 
         if self.split != InferredType.VALUE:
             try:

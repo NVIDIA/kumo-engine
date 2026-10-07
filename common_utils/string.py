@@ -5,6 +5,8 @@
 import re
 from urllib.parse import urlsplit
 
+from kumo_core.stype_inference import contains_identifier  # noqa: F401
+from kumo_core.stype_inference import contains_number  # noqa: F401
 from kumoapi.adls import normalize_adls_source_uri
 from kumoapi.gcs import normalize_gcs_source_uri
 from kumoapi.s3 import normalize_s3_source_uri
@@ -23,68 +25,6 @@ def contains_date(name: str) -> bool:
     # Check whether we can detect dates via naming convention:
     return re.search(r'(^|_)(date|dt|datetime|updated)($|_)',
                      name.lower()) is not None
-
-
-def contains_number(name: str) -> bool:
-    # Check whether we can detect numbers/ordinals via naming convention:
-    name = name.lower()
-    for key in [
-            'num', 'number', 'count', 'total', 'sum', 'avg', 'price', 'score',
-            'ratio', 'value'
-    ]:
-        if f'_{key}_' in name or name.startswith(key) or name.endswith(key):
-            return True
-    return False
-
-
-# Column names suffixes that end in "id" but should not be given the ID stype.
-# From https://scrabble.merriam.com/words/end-with/id
-_IGNORED_ID_SUFFIXES = [
-    'bid',
-    'acid',
-    'grid',
-    'maid',
-    'paid',
-    'raid',
-    'void',
-    'avoid',
-    'braid',
-    'covid',
-    'fluid',
-    'rabid',
-    'solid',
-    'hybrid',
-    'inlaid',
-    'liquid',
-]
-
-_ID_PATTERN = [
-    'hash', 'no', 'cate', 'category', 'class', 'label', 'key', 'code'
-]
-
-_MORE_RELAX_ID_PATTERN = [
-    'key',
-    'code',
-]
-
-
-def contains_identifier(name: str) -> bool:
-    name = name.lower()
-    if '_id_' in name:
-        return True
-    for pattern in _ID_PATTERN:
-        if (name.endswith(f'_{pattern}') or name.startswith(f'{pattern}_')
-                or f'_{pattern}_' in name):
-            return True
-    for pattern in _MORE_RELAX_ID_PATTERN:
-        if (name.startswith(pattern) or name.endswith(pattern)):
-            return True
-    if not name.endswith('id'):
-        return False
-    for suffix in _IGNORED_ID_SUFFIXES:
-        if name.endswith(suffix):
-            return False
-    return True
 
 
 def validate_hex_fingerprint(hex_fp: str) -> None:
@@ -162,8 +102,8 @@ def validate_connector_relative_source_name(name: str) -> None:
     validate_non_empty(name)
     parsed = urlsplit(name)
     if (name.startswith('/') or '\\' in name or '?' in name or '#' in name
-            or re.search(r'%[0-9a-fA-F]{2}', name)
-            or parsed.scheme or parsed.netloc or parsed.query or parsed.fragment
+            or re.search(r'%[0-9a-fA-F]{2}', name) or parsed.scheme
+            or parsed.netloc or parsed.query or parsed.fragment
             or any(ord(char) < 32 or ord(char) == 127 for char in name)):
         raise ValueError(
             'Source table name must be relative to its connector root. '

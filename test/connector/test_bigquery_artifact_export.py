@@ -4,6 +4,7 @@
 """Offline BigQuery export-path regressions; no Temporal/REST server needed."""
 
 from pathlib import Path
+from test.connector.test_bigquery_connector import FakeGcsClient
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -15,7 +16,10 @@ from google.api_core.exceptions import Forbidden, NotFound
 from kumo_core.types import PredictionArtifactType
 
 from io_utils import fsutil
-from kumo.connector.bigquery_connector import BigQueryConnector
+from kumo.connector.bigquery_connector import (
+    BigQueryConnector,
+    BigQueryOutputSchemaError,
+)
 from kumo.connector.connector import ConnectorError
 from rest.backends.ml_backend.activities import parquet_io_activities
 from rest.backends.ml_backend.artifact_export import write_artifact_to_bigquery
@@ -229,8 +233,8 @@ def test_selected_local_bp_output_retains_existing_staging(
     provider.get_table.side_effect = NotFound('table does not exist')
     provider.load_table_from_uri.return_value.done.return_value = True
     connector._context = provider
-    gcs_client = Mock()
-    monkeypatch.setattr(connector, '_initialize_gcs_client', lambda: gcs_client)
+    gcs = FakeGcsClient()
+    monkeypatch.setattr(connector, '_initialize_gcs_client', lambda: gcs)
     monkeypatch.setattr(parquet_io_activities, 'get_connector_from_spec',
                         lambda _spec: connector)
     output = NamedOutputConfig(
@@ -251,13 +255,16 @@ def test_selected_local_bp_output_retains_existing_staging(
         input, artifact_stats={artifact_type: stats},
         resolved_connectors={artifact_type: [Mock()]})
 
-    source_uri = provider.load_table_from_uri.call_args.kwargs['source_uris']
-    assert source_uri.startswith('gs://staging-bucket/artifact-export/')
-    assert source_uri.endswith('/*.parquet')
-    blob = gcs_client.bucket.return_value.blob.return_value
-    blob.upload_from_filename.assert_called_once_with(
-        str(part), content_type='application/octet-stream')
-    blob.delete.assert_called_once_with()
+    request = provider.load_table_from_uri.call_args.kwargs
+    (name, ) = gcs.uploaded
+    assert name.startswith('artifact-export/')
+    assert name.endswith('/part-00000000.parquet')
+    assert gcs.uploaded[name] == 'application/octet-stream'
+    directory = name.rsplit('/', 1)[0]
+    assert request['source_uris'] == (
+        f'gs://staging-bucket/{directory}/part-*.parquet')
+    assert request['job_config'].write_disposition == 'WRITE_APPEND'
+    assert gcs.bodies == {}
     assert result[0].num_rows == 1
     assert not connector.is_connected
 
@@ -310,3 +317,23 @@ def test_overwrite_keeps_staging_cleanup_and_sanitizes_load_failures(
     assert request['job_config'].write_disposition == 'WRITE_TRUNCATE'
     assert request['job_config'].parquet_options.enable_list_inference
     provider.delete_table.assert_called_once()
+
+
+def test_append_schema_mismatch_reaches_the_export_error() -> None:
+    connector = BigQueryConnector('output', project_id='customer-project',
+                                  dataset_id='output_dataset')
+    connector._context = Mock(spec=bigquery.Client)
+    detail = ('Prediction output does not fit the existing BigQuery output '
+              'table: SCORE (FLOAT NULLABLE) is not a table column.')
+
+    with (
+            patch.object(connector, 'write_artifacts_to_table',
+                         side_effect=BigQueryOutputSchemaError(detail)),
+            pytest.raises(ArtifactExportError) as error,
+    ):
+        write_artifact_to_bigquery('gs://artifacts/predictions.parquet',
+                                   connector, WriteMode.APPEND, 'predictions',
+                                   known_size_bytes=1)
+
+    assert detail in str(error.value)
+    assert error.value.non_retryable

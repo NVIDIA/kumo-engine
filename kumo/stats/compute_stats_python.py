@@ -17,7 +17,11 @@ from kumo_core.embedding_models import (
     resolve_encoder,
 )
 from kumo_core.glove import GloveDisabledError
-from kumo_core.stype_inference import distinct_statistics
+from kumo_core.stype_inference import (
+    distinct_statistics,
+    multicategorical_separator,
+    multicategorical_token_counts,
+)
 from kumo_core.types import ColStatType, EdgeStatType
 from kumo_core.types.conversions import to_dtype
 from kumoapi.encoder import TextEmbedding
@@ -29,7 +33,6 @@ from kumo.stats.stats import (
     BASE_FKEY_STATS,
     MIN_CATEGORY_FREQUENCY_FRAC,
     NUM_BINS_HISTOGRAM,
-    NUM_ROWS_FOR_SEPARATOR_INFERENCE,
     HistogramValueType,
     Stats,
 )
@@ -37,7 +40,6 @@ from kumo.stats.utils import (
     HISTOGRAM_BIN_PRECISION,
     _safe_divide,
     calc_histogram_integer_bin_width_and_num_bins,
-    detect_multicat_sep,
     update_derived_fkey_stats,
 )
 from kumo.utils.embedding_models import embedding_model_store
@@ -267,19 +269,7 @@ def _category_counts(ser: pd.Series, **kwargs) -> List[Tuple[Any, Any]]:
 
 
 def _multi_categories_separator(ser: pd.Series, **kwargs) -> Optional[str]:
-    kumo_dtype = to_dtype(ser.dtype, ser=ser)
-
-    # TODO: Check if we need to handle `ser.iloc[0] == N/A` case.
-    if len(ser) == 0 or isinstance(ser.iloc[0], list) or isinstance(
-            ser.iloc[0], np.ndarray) or kumo_dtype.is_list():
-        return None
-    # If we detect brackets at either end of the string, no delimiter
-    if isinstance(ser.iloc[0], str):
-        if ser.dropna().apply(lambda x: x.strip().startswith('[') and x.strip().
-                              endswith(']')).all():
-            return None
-    return detect_multicat_sep('\n'.join(
-        ser.values[:NUM_ROWS_FOR_SEPARATOR_INFERENCE].astype(str)))
+    return multicategorical_separator(ser)
 
 
 # Since Python stats computation is only used for approximate stats, we
@@ -340,15 +330,8 @@ def _multi_category_counts(ser: pd.Series, **kwargs) -> List[Tuple[str, int]]:
                 counts_list = _category_counts(ser, **kwargs)
                 item_count = len(ser)
         else:
-            counts = defaultdict(int)
-            item_count = 0
-            for s in ser:
-                for category in s.split(sep):
-                    # Ignore empty strings
-                    if len(category) == 0 or pd.isna(category):
-                        continue
-                    counts[category] += 1
-                    item_count += 1
+            counts = multicategorical_token_counts(ser, sep)
+            item_count = sum(counts.values())
             counts_list = counts.items()
 
     # Apply MIN_CATEGORY_FREQUENCY_FRAC

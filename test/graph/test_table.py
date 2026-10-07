@@ -984,3 +984,22 @@ def test_compute_col_stats_connector_failure_still_raises_with_remaining_missing
     assert "Requested col stats missing from the DiskGraph-populated cache" \
         in msg
     assert "NA_FRACTION" in msg
+
+
+@pytest.mark.parametrize('name,dtype,expected', [
+    ('user_id', Dtype.int64, Stype.ID),
+    ('USER_ID', Dtype.string, Stype.ID),
+    ('user_id', Dtype.float64, Stype.numerical),
+    ('grid', Dtype.int64, Stype.numerical),
+    ('user_id', Dtype.bool, Stype.categorical),
+])
+def test_hosted_identifier_name_inference_matches_shared_rule(
+        name, dtype, expected):
+    from kumo_core.stype_inference import contains_identifier
+
+    from common_utils.string import contains_identifier as hosted_identifier
+    assert hosted_identifier is contains_identifier
+    table = Table(table_name='events', data_source='csv',
+                  cols=[Column(name, dtype=dtype)])
+    table.infer_stypes(require_stats=False)
+    assert table[name].stype == expected

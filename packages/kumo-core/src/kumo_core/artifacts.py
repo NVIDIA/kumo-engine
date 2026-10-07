@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Mapping, Protocol, runtime_checkable
 
 from .io.filesystem import local_path
-from .io.json import save_json
+from .io.json import load_json, save_json
 from .manifest import RunManifest, RunPaths
 
 
@@ -405,8 +406,14 @@ def resolve_vital_artifact_sources(
     source_dir.mkdir(parents=True, exist_ok=True)
     save_json(best_trainer.target_encoder,
               str(source_dir / "target-encoder.json"))
-    save_json(training_input.model_plan,
-              str(source_dir / "resolved-model-plan.json"))
+    from .automl.runtime import inherit_warm_start_model_plan
+    from .model_plan import ModelPlan
+
+    resolved_plan = copy.deepcopy(training_input.model_plan)
+    selected_plan = load_json(
+        str(Path(best_trainer.original_log_dir) / "model_plan.json"), ModelPlan)
+    inherit_warm_start_model_plan(resolved_plan, selected_plan)
+    save_json(resolved_plan, str(source_dir / "resolved-model-plan.json"))
     save_json(training_input.task.to_dict(), str(source_dir / "input.json"))
     save_json(dict(metrics), str(source_dir / "metrics.json"))
     save_json(
@@ -418,6 +425,9 @@ def resolve_vital_artifact_sources(
     )
     manifest = json.loads((bundle_dir / "manifest.json").read_text())
     graph_manifest = bundle_dir / manifest["graph_runtime_metadata_path"]
+    # Evaluation changes fit_mode; publish the mode hosted prediction and
+    # warm start select, rather than whichever mode was evaluated last.
+    best_trainer._set_fit_mode_to_use()
     return VitalArtifactSources(
         selected_checkpoint=local_path(best_trainer.best_ckpt),
         trainer_config=Path(best_trainer.original_log_dir) / "config.json",

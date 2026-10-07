@@ -2,7 +2,11 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from kumo.engine.trainer.output_config import ModelOutputConfig, PredictionOutputConfig
+from kumo.engine.trainer.output_config import (
+    ModelOutputConfig,
+    PredictionOutputConfig,
+    TrainingTableOutputConfig,
+)
 from kumo.engine.trainer.trainer import PredictionResult, Trainer, TrainingResult
 
 __all__ = [
@@ -11,4 +15,5 @@ __all__ = [
     "PredictionResult",
     "ModelOutputConfig",
     "PredictionOutputConfig",
+    "TrainingTableOutputConfig",
 ]

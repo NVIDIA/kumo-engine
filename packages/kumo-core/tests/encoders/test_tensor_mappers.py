@@ -553,7 +553,12 @@ def test_convert_to_tensor_frame_routes_to_vectorized(
     assert calls == ['vectorized', 'baseline'], calls
 
 
-def test_mapper_map_numpy_matches_series() -> None:
+@pytest.mark.parametrize('cats', [
+    ['A', 'B', 'C'],
+    pd.Index(['A', 'B', 'C']),
+    pd.Index(['A', 'B', 'C'], dtype='string'),
+])
+def test_mapper_map_numpy_matches_series(cats) -> None:
     """``Mapper.map`` numpy fast path must produce the same int64 codes as
     the pd.Series / CategoricalDtype path, including missing-value handling
     (unknown values → ``-1``).
@@ -562,7 +567,6 @@ def test_mapper_map_numpy_matches_series() -> None:
 
     from kumo_core.encoders.index_mapping import Mapper
 
-    cats = ['A', 'B', 'C']
     m = Mapper(cats)
 
     queries = np.array(['A', 'C', 'Z', 'B', 'A'])
@@ -571,3 +575,18 @@ def test_mapper_map_numpy_matches_series() -> None:
     assert torch.equal(out_np, out_pd)
     # Sanity: 'Z' is unknown and should be -1.
     assert out_np.tolist() == [0, 2, -1, 1, 0]
+
+
+@pytest.mark.parametrize(('index', 'expected'), [
+    (pd.Index([3, 1, 2]), [0, 1, -1]),
+    (pd.Index([3, 1, 2], dtype=object), [0, 1, -1]),
+    (pd.Index([3, 1, 2], dtype='Int64'), [0, 1, -1]),
+    (pd.CategoricalIndex([3, 1, 2], categories=[1, 2, 3]), [0, 1, -1]),
+    (pd.RangeIndex(1, 4), [2, 0, -1]),
+])
+def test_mapper_numpy_preserves_index_positions(index, expected) -> None:
+    import numpy as np
+
+    from kumo_core.encoders.index_mapping import Mapper
+
+    assert Mapper(index).map(np.array([3, 1, 4])).tolist() == expected

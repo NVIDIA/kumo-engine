@@ -27,7 +27,8 @@ def test_stage_source_table_streams_many_parts_to_one_parquet(tmp_path):
 
     class Backend:
         @staticmethod
-        def prepare_ingest(connector, table_name, destination):
+        def prepare_ingest(connector, table_name, destination, sql):
+            assert sql is None
             calls.append((connector, table_name, destination))
             return SimpleNamespace(
                 source={

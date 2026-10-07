@@ -31,8 +31,7 @@ logger = logging.getLogger(__name__)
 
 def _scratch_dir(data_version: str) -> str:
     try:
-        from statedb.config.diskgraph import \
-            get_diskgraph_local_ingest_root  # pants: no-infer-dep
+        from statedb.config.diskgraph import get_diskgraph_local_ingest_root
         root = osp.join(get_diskgraph_local_ingest_root(), 'source-reader')
         os.makedirs(root, exist_ok=True)
     except Exception:
@@ -51,9 +50,8 @@ def worker_ceiling(graph_table_count: int | None) -> int | None:
     but only as many reads as the worker has threads can ever run at once."""
     if graph_table_count is None:
         return None
-    from rest.constants import DATA_BACKEND_WORKER_NAME  # pants: no-infer-dep
-    from temporalio_commons.worker_main import \
-        GLOBAL_WORKER_OPTIONS  # pants: no-infer-dep
+    from rest.constants import DATA_BACKEND_WORKER_NAME
+    from temporalio_commons.worker_main import GLOBAL_WORKER_OPTIONS
     pool_width = GLOBAL_WORKER_OPTIONS[
         DATA_BACKEND_WORKER_NAME].max_worker_threads
     assert pool_width is not None

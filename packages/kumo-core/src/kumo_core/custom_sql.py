@@ -350,6 +350,17 @@ def validate_connector_sql_scope(
     return validate_referenced_table_scope(sql, connector_type, namespace)
 
 
+def gate_custom_sql(
+    sql: str,
+    connector_type: ConnectorType,
+    connector: object,
+) -> List[str]:
+    """Every static check a query passes before it reaches a warehouse."""
+    advisory_read_only_check(sql, connector_type)
+    validate_sql_output_contract(sql, connector_type)
+    return validate_connector_sql_scope(sql, connector_type, connector)
+
+
 def normalized_sql_identifier_leaf(name: str,
                                    connector_type: ConnectorType) -> str:
     """Dialect-normalize the table-name leaf of a qualified identifier.

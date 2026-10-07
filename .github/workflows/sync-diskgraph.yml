@@ -17,6 +17,11 @@ permissions:
   contents: write
   pull-requests: write
 
+# Runs never overlap; GitHub drops a pending run for a newer one, which supersedes it.
+concurrency:
+  group: sync-diskgraph
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -51,6 +56,16 @@ jobs:
           python tools/migrations/diskgraph/sync.py \
             --source-repo .diskgraph-upstream \
             --source-sha '${{ steps.source.outputs.sha }}'
+
+      # The inventory must list exactly the shipped Rust packages; review its
+      # diff in the PR. On failure the PR is still updated and its license
+      # notice check fails.
+      - name: Regenerate DiskGraph third-party notices
+        run: |
+          cargo fetch --locked --manifest-path packages/diskgraph/Cargo.toml &&
+            python scripts/refresh_diskgraph_notice_inventory.py &&
+            python scripts/gen_third_party.py --output THIRD-PARTY.txt ||
+            echo "::warning::DiskGraph notices were not regenerated; see this step's log."
 
       - name: Record upstream authors
         id: commit
@@ -87,12 +102,14 @@ jobs:
           add-paths: |
             packages/diskgraph
             tools/migrations/diskgraph
+            3rdparty/notices/inventory.json
+            THIRD-PARTY.txt
           commit-message: ${{ steps.commit.outputs.message }}
           title: Sync DiskGraph at ${{ steps.source.outputs.sha }}
           body: |
             Mirrors `kumo-ai/kumo-diskgraph@${{ steps.source.outputs.sha }}` into `packages/diskgraph`.
 
-            The synchronization is mechanical. Source path, mode, and blob identity are recorded in the provenance manifest and checked in CI.
+            The synchronization is mechanical. Source path, mode, and blob identity are recorded in the provenance manifest and checked in CI. DiskGraph's Rust components in the notice inventory and `THIRD-PARTY.txt` are regenerated; review new crate records in the inventory diff.
 
             Source comparison: https://github.com/kumo-ai/kumo-diskgraph/compare/${{ steps.source.outputs.previous }}...${{ steps.source.outputs.sha }}
 

@@ -13,3 +13,5 @@ python scripts/check_license_headers.py
 python scripts/check_python_license_metadata.py
 pytest -q --confcutdir=test/scripts test/scripts/test_check_license_headers.py test/scripts/test_python_license_metadata.py
 ```
+
+Python distributions must declare their SPDX license expression and embed all applicable license and notice files. Bundled third-party source or data can require a compound expression and an artifact-scoped notice; see the [GloVe package](../tools/glove-6b-50d/README.md) for its data notice and build instructions.

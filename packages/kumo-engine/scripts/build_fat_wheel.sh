@@ -559,19 +559,19 @@ bundled = {canonical(c['name']) for c in components}
 requirements = []
 seen = set(requirements)
 # No CPU/GPU branch for Faiss: kumo-engine's install_requires pulls
-# kumo-core's `gpu` extra unconditionally, on every target, because
+# kumo-core's `faiss-gpu` extra unconditionally, on every target, because
 # faiss-gpu works as a CPU-only superset too (see the rationale in
-# packages/kumo-engine/setup.py) -- so `gpu` is what every bundle target
-# needs promoted here, not just CUDA builds.
+# packages/kumo-engine/setup.py) -- so `faiss-gpu` is what every bundle
+# target needs promoted here, not just CUDA builds.
 #
-# `gpu` is promoted because kumo-engine's own Requires-Dist is
-# `kumo-core[gpu]>=...` (see packages/kumo-engine/setup.py): kumo-core is
-# bundled, so that reference -- extras included -- is dropped by the `key in
-# bundled` check below, and kumo-core's own `.dist-info` is dropped too. The
-# only way its `faiss-gpu==1.14.3; extra == "gpu"` requirement survives into
-# the merged bundle is by promoting the `gpu` marker here, same as the
-# provider extras.
-provider_extras = {'sdk', 'gpu'} | {
+# `faiss-gpu` is promoted because kumo-engine's own Requires-Dist is
+# `kumo-core[faiss-gpu]>=...` (see packages/kumo-engine/setup.py): kumo-core
+# is bundled, so that reference -- extras included -- is dropped by the
+# `key in bundled` check below, and kumo-core's own `.dist-info` is dropped
+# too. The only way its `faiss-gpu==1.14.3; extra == "faiss-gpu"`
+# requirement survives into the merged bundle is by promoting the
+# `faiss-gpu` marker here, same as the provider extras.
+provider_extras = {'sdk', 'faiss-gpu'} | {
     key.removeprefix('kumo-') for key in bundled
 }
 for component in components:

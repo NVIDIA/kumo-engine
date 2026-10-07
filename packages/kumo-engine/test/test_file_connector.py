@@ -16,12 +16,21 @@ from kumo_core.sources import layout
 from kumo_core.sources.errors import PermanentSourceError, SourceNotFoundError
 from kumoapi.graph import Edge
 from kumoapi.jobs import WriteMode
+from kumoapi.model_plan import ModelPlan
 from kumoapi.source_table import LocalFileSourceTable
 from kumoapi.table import TableDefinition as HostedTableDefinition
 from kumoapi.typing import Dtype
 from pydantic import TypeAdapter, ValidationError
 
-from kumo.engine import FileConnector, Graph, Table, configure
+from kumo.engine import (
+    FileConnector,
+    Graph,
+    ModelOutputConfig,
+    PredictiveQuery,
+    Table,
+    Trainer,
+    configure,
+)
 
 
 @pytest.fixture
@@ -255,8 +264,12 @@ def test_sink_escape_and_bundle_copy(local, tmp_path, destination):
         with pytest.raises(ValueError, match='overlap'):
             output.sink_backend.publish_model(output, str(bundle),
                                               path=destination)
-    with pytest.raises(NotImplementedError):
-        output.sink_backend.fetch_model(output, str(bundle), path='models')
+    with pytest.raises(ValueError, match='overlap'):
+        output.sink_backend.fetch_model(output, str(bundle / 'x'),
+                                        path='bundle')
+    with pytest.raises(ValueError, match='Nothing is published'):
+        output.sink_backend.fetch_model(output, str(tmp_path / 'x'),
+                                        path='missing')
 
 
 def test_dot_names_metadata_stamp_and_permissions(local, tmp_path):
@@ -531,3 +544,34 @@ def test_output_preflight_overwrites_existing_file_in_readonly_directory(
         assert (root / 'locked' / 'out.parquet').read_bytes() != b'old'
     finally:
         (root / 'locked').chmod(0o700)
+
+
+def test_published_model_reloads_through_connector(tmp_path):
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    (tmp_path / 'data').mkdir()
+    pd.DataFrame({
+        'ID': range(200),
+        'Y': [float(i % 7) if i < 180 else None for i in range(200)],
+    }).to_parquet(tmp_path / 'data' / 'ents.parquet')
+    ents = Table.from_source_table(
+        FileConnector(root_dir=str(tmp_path / 'data'))['ents.parquet'],
+        primary_key='ID').infer_metadata()
+    graph = Graph(tables={'ents': ents}, edges=[])
+    snapshot = graph.snapshot()
+    query = PredictiveQuery(graph=graph,
+                            query='PREDICT ents.Y FOR EACH ents.ID')
+    plan = ModelPlan()
+    plan.training_job.disable_explain = True
+    plan.optimization.max_epochs = 1
+    plan.optimization.max_steps_per_epoch = 2
+    models = FileConnector(root_dir=str(tmp_path / 'models'))
+    result = Trainer(model_plan=plan).fit(
+        query.generate_training_table(snapshot), snapshot=snapshot,
+        export_config=ModelOutputConfig(models, path='churn/v1'))
+
+    loaded = Trainer.load_from_connector(models, path='churn/v1')
+
+    assert loaded._training_result.metrics == result.metrics
+    predictions = loaded.predict(query.generate_prediction_table(snapshot),
+                                 snapshot=snapshot)
+    assert predictions.num_rows == 20

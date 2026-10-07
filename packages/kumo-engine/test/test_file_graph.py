@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 from pathlib import Path
 
 import pyarrow as pa
@@ -60,7 +61,7 @@ def test_source_table_inference_and_graph_acquisition(extension, tmp_path,
     columns = {column.name: column for column in table.definition.cols}
     assert columns['id'].stype == Stype.ID
     assert columns['value'].dtype == Dtype.int64
-    assert columns['value'].stype == Stype.categorical
+    assert columns['value'].stype == Stype.numerical
     ingested = []
 
     def ingest(graph_config, spec):
@@ -135,3 +136,181 @@ def test_graph_aliases_preserve_object_source_acquisition(
     assert graph.id == Graph(dict(reversed(list(tables.items()))),
                              graph.edges).id
     assert graph.id != Graph({'other': tables['markets']}).id
+
+
+@pytest.mark.parametrize('override', [False, True])
+def test_identifier_inference_survives_real_snapshot_ingestion(
+        tmp_path, monkeypatch, override):
+    from itertools import combinations
+
+    from kumo.engine import FileConnector, configure
+
+    monkeypatch.setattr('kumo.engine._scratch._root', tmp_path / 'scratch')
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    source_dir = tmp_path / 'source'
+    source_dir.mkdir()
+    pq.write_table(
+        pa.table({
+            'row_id':
+            range(100),
+            'user_id':
+            range(1000, 1100),
+            'customer_id': [f'customer-{i}' for i in range(100)],
+            'metric_id': [float(i) for i in range(100)],
+            'age':
+            range(100),
+            'tags': ['|'.join(pair) for pair in combinations('abcde', 2)] * 10,
+        }), source_dir / 'events.parquet')
+    table = Table.from_source_table(
+        FileConnector(root_dir=str(source_dir))['events.parquet'],
+        primary_key='row_id')
+    expected = Stype.numerical if override else Stype.ID
+    if override:
+        table = table.with_column('user_id', stype=Stype.numerical)
+    columns = {column.name: column for column in table.definition.cols}
+    assert columns['user_id'].stype == expected
+    assert columns['customer_id'].stype == Stype.ID
+    assert columns['metric_id'].stype == Stype.numerical
+    assert columns['age'].stype == Stype.numerical
+    assert columns['tags'].stype == Stype.multicategorical
+    assert columns['tags'].multicategorical_delimiter == '|'
+
+    snapshot = Graph({'events': table}).snapshot()
+    config = snapshot.graph_config['tables'][0]
+    assert config['pkey']['name'] == 'row_id'
+    assert config['fkeys'] == []
+    ingested_columns = {column['name']: column for column in config['cols']}
+    assert ingested_columns['user_id']['stype'] == expected
+    assert ingested_columns['customer_id']['stype'] == Stype.ID
+    assert snapshot.index_path.is_dir()
+    assert (snapshot.index_path / 'ingest_stats.json').is_file()
+    assert (snapshot.index_path / 'col_stats.json').is_file()
+    native_config = json.loads(
+        (snapshot.index_path / 'diskgraph_config.json').read_text())
+    native_columns = {
+        column['name']: column
+        for column in native_config['tables'][0]['columns']
+    }
+    assert native_columns['user_id']['semantic_type'] == ('numerical'
+                                                          if override else 'id')
+    assert native_columns['customer_id']['semantic_type'] == 'id'
+    assert native_columns['tags']['semantic_type'] == 'multicategorical'
+    assert native_columns['tags']['multicategorical_delimiter'] == '|'
+    stats = json.loads(
+        (snapshot.index_path / 'ingest_stats.json').read_text())['stats']
+    assert stats['total_nodes'] == 100
+    assert stats['source_rows_by_table'] == {'events': 100}
+    assert stats['key_parse_failures'] == 0
+    assert stats['key_lookup_failures'] == 0
+    assert stats['key_membership_failures'] == 0
+
+
+def test_numerical_names_survive_real_snapshot_ingestion(tmp_path):
+    from kumo.engine import FileConnector, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({
+            'row_id': range(100),
+            'num_items': [0, 1] * 50,
+            'price': [1.0, 2.0] * 50,
+            'score': [1, 2] * 50,
+            'num_users_id': range(100),
+            'measurement': [0, 1] * 50,
+        }), root / 'events.parquet')
+    table = Table.from_source_table(
+        FileConnector(root_dir=str(root))['events.parquet'],
+        primary_key='row_id')
+    columns = {col.name: col for col in table.definition.cols}
+    for name in ('num_items', 'price', 'score'):
+        assert columns[name].stype == Stype.numerical
+    assert columns['num_users_id'].stype == Stype.ID
+    assert columns['measurement'].stype == Stype.categorical
+    table = table.with_column('score', stype=Stype.categorical)
+    snapshot = Graph({'events': table}).snapshot()
+    native = json.loads(
+        (snapshot.index_path / 'diskgraph_config.json').read_text())
+    native_columns = {
+        col['name']: col['semantic_type']
+        for col in native['tables'][0]['columns']
+    }
+    assert native_columns['num_items'] == 'numerical'
+    assert native_columns['price'] == 'numerical'
+    assert native_columns['score'] == 'categorical'
+    assert native_columns['num_users_id'] == 'id'
+    stats = json.loads((snapshot.index_path / 'ingest_stats.json').read_text())
+    assert stats['stats']['total_nodes'] == 100
+
+
+def test_declared_foreign_key_type_survives_real_snapshot(
+        tmp_path, monkeypatch):
+    from kumoapi.graph import Edge
+
+    from kumo.engine import FileConnector
+
+    monkeypatch.setattr('kumo.engine._scratch._root', tmp_path / 'scratch')
+    source = tmp_path / 'source'
+    source.mkdir()
+    pq.write_table(pa.table({'pk': range(100)}), source / 'users.parquet')
+    pq.write_table(pa.table({
+        'pk': range(100),
+        'customer': range(100)
+    }), source / 'orders.parquet')
+    connector = FileConnector(root_dir=str(source))
+    users = Table.from_source_table(connector['users'], primary_key='pk')
+    orders = Table.from_source_table(connector['orders'], primary_key='pk')
+    assert next(col for col in orders.definition.cols
+                if col.name == 'customer').stype == Stype.numerical
+    snapshot = Graph({
+        'users': users,
+        'orders': orders
+    }, [Edge('orders', 'customer', 'users')]).snapshot()
+    projected = next(table for table in snapshot.graph_config['tables']
+                     if table['table_name'] == 'orders')
+    assert projected['fkeys'][0]['stype'] == 'ID'
+    native = json.loads(
+        (snapshot.index_path / 'diskgraph_config.json').read_text())
+    table = next(table for table in native['tables']
+                 if table['name'] == 'orders')
+    assert next(col for col in table['columns']
+                if col['name'] == 'customer')['semantic_type'] == 'id'
+    stats = json.loads(
+        (snapshot.index_path / 'ingest_stats.json').read_text())['stats']
+    assert stats['total_nodes'] == 200
+    # DiskGraph counts the forward relation and its reverse.
+    assert stats['total_edges'] == 200
+    assert stats['key_lookup_failures'] == 0
+
+
+def test_omitted_self_relation_preserves_native_type_and_query_task(tmp_path):
+    from kumoapi.graph import Edge
+
+    from kumo.engine import FileConnector, configure
+    from kumo.engine.pquery import PredictiveQuery
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(pa.table({
+        'pk': range(100),
+        'customer': range(100),
+    }), root / 'orders.parquet')
+    orders = Table.from_source_table(
+        FileConnector(root_dir=str(root))['orders'], primary_key='pk')
+    orders = orders.with_column('customer', stype=Stype.numerical)
+    graph = Graph({'orders': orders}, [Edge('orders', 'customer', 'orders')])
+    with pytest.warns(UserWarning, match='Self-relation .* omitted'):
+        graph.validate()
+    query = PredictiveQuery(graph, 'PREDICT orders.customer FOR EACH orders.pk')
+    assert query.get_task_type().value == 'regression'
+    snapshot = graph.snapshot()
+    assert snapshot.graph_config['tables'][0]['fkeys'] == []
+    native = json.loads(
+        (snapshot.index_path / 'diskgraph_config.json').read_text())
+    columns = {col['name']: col for col in native['tables'][0]['columns']}
+    assert columns['customer']['semantic_type'] == 'numerical'
+    stats = json.loads((snapshot.index_path / 'ingest_stats.json').read_text())
+    assert stats['stats']['total_nodes'] == 100
+    assert stats['stats']['total_edges'] == 0

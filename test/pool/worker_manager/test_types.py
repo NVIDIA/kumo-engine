@@ -1,12 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-
 """Unit tests for :mod:`pool.worker_manager.types` — dataclasses +
 exception taxonomy. Pure-data tests; no mocking, no I/O.
 """
-# Stub injection for laptop runs (no-op under pants —
-# KUMO_WORKER_MANAGER_TEST_STUBS is opt-in). Must run before
+# Stub injection for laptop runs (opt-in via
+# KUMO_WORKER_MANAGER_TEST_STUBS=1). Must run before
 # ``import pool.*`` since pool.worker_manager.k8s imports io_utils
 # transitively.
 import os as _os  # noqa: E402,I100
@@ -17,6 +16,8 @@ if _os.environ.get("KUMO_WORKER_MANAGER_TEST_STUBS") == "1":
 
 import pytest  # noqa: E402
 
+# yapf disagrees with isort on wrapping this import; isort wins here.
+# yapf: disable
 from pool.worker_manager.types import (  # noqa: E402
     ActivityPodInfo,
     ActivityPodNotFoundError,
@@ -37,6 +38,8 @@ from pool.worker_manager.types import (  # noqa: E402
     QuotaExceededError,
     ResourceSpec,
 )
+
+# yapf: enable
 
 # ---------------------------------------------------------------------------
 # Data classes

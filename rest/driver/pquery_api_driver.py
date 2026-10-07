@@ -3902,9 +3902,9 @@ class PQueryApiDriver:
         type is the same as the current training job's task type.
         3. the warm start job's predictive query task type is not forecasting.
         """
-        if current_task_type == TaskType.FORECASTING:
-            raise ValueError(
-                "Warm start is not supported for forecasting tasks")
+        from kumo_core.automl.runtime import validate_warm_start_task_type
+
+        validate_warm_start_task_type(current_task_type)
 
         warm_start_job_id_obj = TrainingJobID(warm_start_job_id)
         warm_start_job = await self.get_training_job(
@@ -3926,10 +3926,7 @@ class PQueryApiDriver:
         warm_start_task_type, _ = await self.get_pquery_metadata(
             warm_start_pq_id, ProjectID(warm_start_job.project_id))
 
-        if warm_start_task_type != current_task_type:
-            raise ValueError(
-                f"Warm start task type {warm_start_task_type} "
-                f"is different from the current task type {current_task_type}")
+        validate_warm_start_task_type(current_task_type, warm_start_task_type)
 
     async def _get_num_entities_from_job_dir(self, home_dir: str):
         batch_pred_table_stats_path = HomeDirManager(home_dir).pred_table_stats

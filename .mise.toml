@@ -18,7 +18,9 @@ minikube = "v1.38.1"
 stern = "1.33.1"
 gh = "2.89.0"
 jq = "1.8.1"
-uv = "0.11"
+# Pinned to match astral-sh/setup-uv's installed version in CI (no `version:`
+# input is set there, so it installs its own current default).
+uv = "0.12.23"
 gitleaks = "8.30.1"
 
 [env]

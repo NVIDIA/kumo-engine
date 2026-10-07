@@ -47,6 +47,9 @@ gcs = "kumo_gcs.sink:GCSSinkBackend"
 [project.entry-points."kumoai_studio.identities"]
 gcs = "kumo_gcs.backend"
 
+[tool.uv.sources]
+kumo-core = { workspace = true }
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 

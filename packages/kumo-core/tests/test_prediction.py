@@ -29,6 +29,7 @@ from kumo_core.train.autoregression import (
 )
 from kumo_core.types import TaskType
 from kumoapi.typing import TimeUnit
+from pandas import Timestamp
 
 
 @pytest.mark.parametrize(
@@ -300,6 +301,8 @@ def forecast_request(tmp_path):
         original.query,
         query=SimpleNamespace(
             entity_column="users.id",
+            get_all_target_aggregations=lambda:
+            [SimpleNamespace(time_col='orders.ts')],
             get_combined_date_offset_range=lambda: SimpleNamespace(
                 start=0, end=1, unit=TimeUnit.DAYS),
         ),
@@ -347,6 +350,9 @@ def forecast_request(tmp_path):
 def test_forecast_prediction_compiles_only_historical_features(
         monkeypatch, tmp_path):
     runtime = Runtime(tmp_path)
+    monkeypatch.setattr(
+        prediction, '_temporal_target_time_range', lambda *args:
+        (Timestamp('2024-01-01'), Timestamp('2024-06-01'), None))
     monkeypatch.setattr(prediction, "apply_reference_resolution",
                         lambda plan, **kwargs: "resolved-plan")
     req = forecast_request(tmp_path)
@@ -572,3 +578,27 @@ def test_absent_metadata_selection_requests_nothing(task_type, extra_fields):
     assert options.ignore_time_col is (task_type != TaskType.FORECASTING)
     assert options.pred_time_col_name is None
     assert options.include_job_timestamp is False
+
+
+@pytest.mark.parametrize('year', [2000, 2024, 2030])
+def test_temporal_prediction_checks_anchor_before_compilation(
+        monkeypatch, tmp_path, year):
+    runtime = Runtime(tmp_path)
+    req = request(tmp_path)
+    temporal = replace(
+        req.query, query_type='temporal',
+        query=SimpleNamespace(get_all_target_aggregations=lambda:
+                              [SimpleNamespace(time_col='orders.ts')]))
+    req = replace(req, query=temporal,
+                  timestamps=(Timestamp(f'{year}-01-01').value, ))
+    monkeypatch.setattr(
+        prediction, '_temporal_target_time_range', lambda *args:
+        (Timestamp('2024-01-01'), Timestamp('2024-06-01'), None))
+    monkeypatch.setattr(prediction, 'apply_reference_resolution',
+                        lambda plan, **kwargs: 'resolved-plan')
+    if year == 2000:
+        with pytest.raises(ValueError, match='Invalid Prediction Anchor Time'):
+            generate_prediction_table(req, runtime=runtime)
+        assert runtime.compile_options is None
+    else:
+        assert generate_prediction_table(req, runtime=runtime).row_count == 7

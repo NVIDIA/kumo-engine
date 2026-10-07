@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kumo-bigquery"
 version = "0.1.0.dev1"
-description = "BigQuery source reader for Kumo graph ingestion"
+description = "BigQuery source reader and prediction sink for Kumo"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -39,12 +39,18 @@ test = [
 [project.entry-points."kumoai_studio.sources"]
 bigquery = "kumo_bigquery.backend:BigQuerySourceBackend"
 
+[project.entry-points."kumoai_studio.sinks"]
+bigquery = "kumo_bigquery.sink:BigQuerySinkBackend"
+
 # The module, not a name inside it: the lifecycle is `probe` and `close` --
-# the three clients this module builds are cached (unlike Databricks, which
+# the clients this module builds are cached (unlike Databricks, which
 # opens a connection per call and closes it after), so `close` is what drops
 # a cached client whose identity was rotated or deleted.
 [project.entry-points."kumoai_studio.identities"]
 bigquery = "kumo_bigquery.session"
+
+[tool.uv.sources]
+kumo-core = { workspace = true }
 
 [tool.setuptools]
 package-dir = {"" = "src"}

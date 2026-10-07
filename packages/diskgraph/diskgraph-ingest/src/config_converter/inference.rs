@@ -764,13 +764,12 @@ pub const MULTICAT_DELIMITER_CANDIDATES: &[&str] = &[",", "|", ";", "\t"];
 /// punctuation is treated as noise and the column stays single-token-per-row.
 const MULTICAT_DETECT_MIN_FRACTION: f64 = 0.01;
 /// Suspicion threshold for explicitly-declared delimiters. Explicit configs
-/// are accepted if the delimiter appears at least once, but hit rates below
-/// this threshold get a warning.
+/// are authoritative even with zero observed hits; rates below this threshold
+/// get a warning without changing the declared delimiter.
 const MULTICAT_EXPLICIT_SUSPICIOUS_FRACTION: f64 = 0.20;
 /// Max number of non-null sample rows used for automatic detection.
 const MULTICAT_MAX_SAMPLES: usize = 1_000;
-/// Explicit declarations need a larger bounded sample so sparse valid values
-/// are not rejected by the stricter zero-hit mismatch check.
+/// Explicit declarations use a larger bounded sample for occurrence diagnostics.
 const MULTICAT_EXPLICIT_MAX_SAMPLES: usize = 10_000;
 /// Max number of files to inspect while looking for multicat delimiter samples.
 const MULTICAT_MAX_FILES: usize = 15;
@@ -883,19 +882,6 @@ impl ExplicitMulticatDelimiterValidator {
                 );
                 continue;
             }
-            if candidate.hits == 0 {
-                return Err(ConvertError::MulticategoricalDelimiterMismatch {
-                    table: self.table.clone(),
-                    column: candidate.name,
-                    declared: candidate.declared,
-                    hits: 0,
-                    total: candidate.total,
-                    required: 1,
-                    sample: candidate
-                        .miss_sample
-                        .unwrap_or_else(|| "<omitted>".to_string()),
-                });
-            }
             let suspicious_floor =
                 (MULTICAT_EXPLICIT_SUSPICIOUS_FRACTION * candidate.total as f64).ceil() as usize;
             if candidate.hits < suspicious_floor {
@@ -905,7 +891,7 @@ impl ExplicitMulticatDelimiterValidator {
                     declared = %candidate.declared,
                     hits = candidate.hits,
                     total = candidate.total,
-                    "explicit multicategorical_delimiter appears in fewer rows than expected",
+                    "explicit multicategorical_delimiter appears in fewer rows than expected; using declared delimiter",
                 );
             }
         }
@@ -1061,16 +1047,10 @@ pub fn detect_multicategorical_delimiters(
     Ok(())
 }
 
-/// Validate that an explicitly-declared `multicategorical_delimiter` actually
-/// matches the source data. Today an unmatched delimiter silently produces
-/// one-token-per-row tokenization at every read site; post-#28478 the same
-/// mistake bakes into the rowpack on disk because ingest pre-splits, so a
-/// wrong choice is irreversible without re-ingest. Surface it loudly at
-/// convert time with column + sample-row context instead.
-///
-/// Sampling and threshold mirror `detect_multicategorical_delimiters` so
-/// auto-detect and explicit-declare paths agree on what "delimiter present
-/// in the data" means.
+/// Warn when an explicitly-declared delimiter rarely occurs in the bounded
+/// source sample. The caller's declaration remains authoritative, including
+/// zero-hit samples: single-token rows are valid multicategorical values.
+/// Source-read failures still propagate as errors.
 pub fn validate_explicit_multicat_delimiters(
     config: &GraphConfig,
     input_transfer: &Option<CloudTransfer>,

@@ -3,10 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import inspect
-from typing import Annotated, Any, Dict, Iterable, List, Optional
+from typing import Annotated, Any, Dict, List
 
 import pandas as pd
-from diskgraph import detect_multicat_delimiter
+from kumo_core import stype_inference
 from kumo_core.types import ColStatType, EdgeStatType
 from kumo_core.types.schema import BaseColumnConfig
 from pydantic import PlainSerializer, PlainValidator, WithJsonSchema
@@ -136,29 +136,11 @@ def update_derived_fkey_stats(
             )
 
 
-# Only bounds how many rows are sampled; the decision itself is DiskGraph's.
-MULTICAT_MAX_SAMPLES = 1_000
-
-
-def _multicat_sample_rows(values: Iterable[Any]) -> List[str]:
-    return [value for value in values
-            if isinstance(value, str)][:MULTICAT_MAX_SAMPLES]
-
-
-def detect_multicat_sep_values(values: Iterable[Any]) -> Optional[str]:
-    """Detect a downstream-supported multicategorical row delimiter."""
-    return detect_multicat_delimiter(_multicat_sample_rows(values))
-
-
-def detect_multicat_sep(text: str) -> Optional[str]:
-    r"""Detects the most frequently occuring delimiter in a hard-coded allow
-    list.  This is primarily used for multicategorical encoder.  If not
-    delimiter is found, returns None.
-
-    Args:
-        text (str): Text to detect separator from.
-    """
-    return detect_multicat_sep_values(text.split('\n'))
+# Preserve the hosted helper imports while sharing their implementation.
+MULTICAT_MAX_SAMPLES = stype_inference.MULTICAT_MAX_SAMPLES
+_multicat_sample_rows = stype_inference._multicat_sample_rows
+detect_multicat_sep_values = stype_inference.detect_multicat_sep_values
+detect_multicat_sep = stype_inference.detect_multicat_sep
 
 
 def convert_str_to_timestamp(obj: Any, vars_to_convert: List[str]) -> Any:

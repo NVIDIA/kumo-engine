@@ -2,7 +2,7 @@
 
 Run commands from the relevant checkout. Tool declarations are in
 [.mise.toml](../../.mise.toml); Python package inputs are in
-[setup.py](../../setup.py), [3rdparty/BUILD](../../3rdparty/BUILD), and package-local
+[setup.py](../../setup.py) and package-local
 `pyproject.toml` files.
 
 ## Setup prerequisites and side effects

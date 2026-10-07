@@ -38,6 +38,7 @@ from kumo.config.graph import BaseColumnConfig
 from kumo.connector.bigquery_connector import (
     ENV_GOOGLE_CREDENTIALS_JSON,
     BigQueryConnector,
+    BigQueryOutputSchemaError,
 )
 from kumo.connector.connector import (
     Connector,
@@ -88,6 +89,54 @@ def test_bigquery_connector_config():
     }
     assert bq_connector == Connector.from_config(bq_connector.config())
     assert len(bq_connector.list_tables()) == 8
+
+
+class FakeGcsClient:
+    """An in-memory bucket; ``upload_raises`` maps an object-name suffix to
+    the error its upload fails with."""
+
+    def __init__(self, upload_raises=None):
+        self.bodies: dict[str, bytes] = {}
+        self.uploaded: dict[str, str] = {}
+        self.upload_raises = upload_raises or {}
+
+    def bucket(self, name):
+        return SimpleNamespace(
+            name=name,
+            blob=lambda blob_name: _FakeGcsBlob(self, blob_name),
+        )
+
+    def list_blobs(self, bucket, prefix=None):
+        return [
+            SimpleNamespace(name=name)
+            for name in sorted(self.bodies)
+            if name.startswith(prefix or '')
+        ]
+
+    def batch(self):
+        return nullcontext()
+
+
+class _FakeGcsBlob:
+
+    def __init__(self, owner, name):
+        self.owner = owner
+        self.name = name
+
+    def upload_from_filename(self, path, content_type=None):
+        for suffix, error in self.owner.upload_raises.items():
+            if self.name.endswith(suffix):
+                raise error
+        with open(path, 'rb') as file:
+            self.owner.bodies[self.name] = file.read()
+        self.owner.uploaded[self.name] = content_type
+
+    def delete(self):
+        self.owner.bodies.pop(self.name, None)
+
+
+def _uploaded_table(gcs: FakeGcsClient, name: str) -> pa.Table:
+    return pq.read_table(pa.BufferReader(gcs.bodies[name]))
 
 
 def _mocked_bigquery_output_connector() -> BigQueryConnector:
@@ -175,15 +224,13 @@ def test_bigquery_output_write_probe_is_unique_expiring_and_cleaned_up():
     assert probe.project == 'customer-project'
     assert probe.expires is not None
     connector.context.delete_table.assert_called_once_with(
-        f'{probe.project}.{probe.dataset_id}.{probe.table_id}',
-        not_found_ok=True,
-    )
+        probe, not_found_ok=True)
     connector.context.test_iam_permissions.assert_not_called()
 
 
-def test_bigquery_existing_output_requires_mode_permissions_and_cleans_up():
+def test_bigquery_existing_output_requires_mode_permissions():
     connector = _mocked_bigquery_output_connector()
-    connector.context.get_table.return_value = Mock()
+    connector.context.get_table.return_value = Mock(table_type='TABLE')
     connector.context.test_iam_permissions.return_value = {
         'permissions': ['bigquery.tables.get']
     }
@@ -195,7 +242,7 @@ def test_bigquery_existing_output_requires_mode_permissions_and_cleans_up():
             mode=InternalWriteMode.OVERWRITE,
         )
 
-    connector.context.delete_table.assert_called_once()
+    connector.context.create_table.assert_not_called()
     requested = set(connector.context.test_iam_permissions.call_args.args[1])
     assert requested == {
         'bigquery.tables.get',
@@ -204,9 +251,31 @@ def test_bigquery_existing_output_requires_mode_permissions_and_cleans_up():
     }
 
 
+def test_bigquery_existing_output_with_permissions_still_probes_create():
+    connector = _mocked_bigquery_output_connector()
+    connector.context.get_table.return_value = Mock(table_type='TABLE')
+    connector.context.test_iam_permissions.return_value = {
+        'permissions': [
+            'bigquery.tables.get',
+            'bigquery.tables.updateData',
+        ]
+    }
+
+    connector.check_table_write_permissions(
+        table_name='predictions',
+        table_schema='authorized_dataset',
+        mode=InternalWriteMode.APPEND,
+    )
+
+    probe = connector.context.create_table.call_args.args[0]
+    connector.context.delete_table.assert_called_once_with(
+        probe, not_found_ok=True)
+
+
 def test_bigquery_output_probe_denial_is_sanitized(caplog):
     connector = _mocked_bigquery_output_connector()
     secret = 'provider-payload-with-access-token'
+    connector.context.get_table.side_effect = NotFound('missing')
     connector.context.create_table.side_effect = Forbidden(secret)
 
     with pytest.raises(ConnectorError) as exc_info:
@@ -347,71 +416,127 @@ def test_bigquery_local_artifact_stages_with_brokered_gcs_client(
     monkeypatch.setenv('GCP_STORAGE_TRANSFER_BUCKET', 'internal-transfer')
     artifact_path = local_artifact_dataset(tmp_path, shards=2,
                                            embeddings=embeddings)
-
     connector = _mocked_bigquery_output_connector()
-    gcs_client = Mock()
-    bucket = gcs_client.bucket.return_value
-    blobs: dict[str, Mock] = {}
+    connector.context.get_table.side_effect = NotFound('missing')
+    gcs = FakeGcsClient()
+    loaded = {}
 
-    def blob_for_name(name):
-        return blobs.setdefault(name, Mock())
+    def load(source_uris, destination, job_config):
+        directory = source_uris.removeprefix('gs://internal-transfer/')
+        directory = directory.removesuffix('part-*.parquet')
+        names = [blob.name for blob in gcs.list_blobs('b', prefix=directory)]
+        loaded.update(
+            uris=source_uris, config=job_config, destination=destination,
+            names=names,
+            rows=sum(_uploaded_table(gcs, name).num_rows for name in names))
+        return Mock()
 
-    bucket.blob.side_effect = blob_for_name
-    with (
-            patch.object(connector, '_initialize_gcs_client',
-                         return_value=gcs_client),
-            patch.object(connector, '_write_artifacts_from_gcs') as gcs_load,
-    ):
+    connector.context.load_table_from_uri.side_effect = load
+    with patch.object(connector, '_initialize_gcs_client', return_value=gcs):
         connector.write_artifacts_to_table('predictions', str(artifact_path),
                                            replace=True)
 
-    gcs_client.bucket.assert_called_with('internal-transfer')
-    assert len(blobs) == 2
-    prefix = assert_indexed_parquet_parts(list(blobs))
+    prefix = assert_indexed_parquet_parts(list(gcs.uploaded))
     assert prefix.startswith('artifact-export/')
-    gcs_load.assert_called_once_with('predictions',
-                                     f'gs://internal-transfer/{prefix}/',
-                                     replace=True)
-    for blob in blobs.values():
-        blob.upload_from_filename.assert_called_once()
-        blob.delete.assert_called_once_with()
+    assert set(gcs.uploaded.values()) == {'application/octet-stream'}
+    assert loaded['uris'] == f'gs://internal-transfer/{prefix}/part-*.parquet'
+    assert loaded['names'] == sorted(gcs.uploaded)
+    assert loaded['rows'] == 2
+    assert loaded['destination'] == (
+        'customer-project.authorized_dataset.predictions')
+    config = loaded['config']
+    assert config.write_disposition == 'WRITE_TRUNCATE'
+    assert config.parquet_options.enable_list_inference
+    assert not config.autodetect
+    assert [(f.name, f.mode) for f in config.schema] == [
+        ('ENTITY_ID', 'NULLABLE'),
+        ('EMBEDDING' if embeddings else 'SCORE',
+         'REPEATED' if embeddings else 'NULLABLE'),
+    ]
+    assert gcs.bodies == {}
+
+
+def test_bigquery_local_artifact_append_conforms_to_existing_table(
+        monkeypatch, tmp_path):
+    monkeypatch.setenv('GCP_STORAGE_TRANSFER_BUCKET', 'internal-transfer')
+    artifact_path = local_artifact_dataset(tmp_path)
+    connector = _mocked_bigquery_output_connector()
+    existing = Mock(table_type='TABLE', schema=[
+        bigquery.SchemaField('ENTITY_ID', 'INT64'),
+        bigquery.SchemaField('SCORE', 'FLOAT64'),
+    ])
+    connector.context.get_table.return_value = existing
+
+    with patch.object(connector, '_initialize_gcs_client',
+                      return_value=FakeGcsClient()):
+        connector.write_artifacts_to_table('predictions', str(artifact_path))
+
+    config = connector.context.load_table_from_uri.call_args.kwargs[
+        'job_config']
+    assert config.schema == existing.schema
+    assert config.write_disposition == 'WRITE_APPEND'
+
+
+def test_bigquery_local_artifact_append_rejects_incompatible_table(
+        monkeypatch, tmp_path, caplog):
+    monkeypatch.setenv('GCP_STORAGE_TRANSFER_BUCKET', 'internal-transfer')
+    artifact_path = local_artifact_dataset(tmp_path)
+    connector = _mocked_bigquery_output_connector()
+    connector.context.get_table.return_value = Mock(
+        table_type='TABLE',
+        schema=[bigquery.SchemaField('ENTITY_ID', 'STRING')])
+    gcs = FakeGcsClient()
+
+    with (
+            patch.object(connector, '_initialize_gcs_client',
+                         return_value=gcs),
+            pytest.raises(BigQueryOutputSchemaError) as error,
+    ):
+        connector.write_artifacts_to_table('predictions', str(artifact_path))
+
+    detail = ('ENTITY_ID is INTEGER NULLABLE but the table column is STRING '
+              'NULLABLE; SCORE (FLOAT NULLABLE) is not a table column')
+    assert detail in error.value.message
+    assert detail in caplog.text
+
+    connector.context.load_table_from_uri.assert_not_called()
+    assert gcs.uploaded == {}
+    assert gcs.bodies == {}
 
 
 @pytest.mark.parametrize('scenario', ['partial_upload', 'load_failure'])
 def test_bigquery_local_artifact_failure_cleanup_contract(
         monkeypatch, tmp_path, caplog, scenario):
     monkeypatch.setenv('GCP_STORAGE_TRANSFER_BUCKET', 'internal-transfer')
-    artifact_path = local_artifact_dataset(
-        tmp_path, shards=2 if scenario == 'partial_upload' else 1)
+    artifact_path = local_artifact_dataset(tmp_path, shards=2)
     connector = _mocked_bigquery_output_connector()
-    gcs_client = Mock()
-    first_blob = Mock()
-    second_blob = Mock()
+    connector.context.get_table.side_effect = NotFound('missing')
+    gcs = FakeGcsClient()
     if scenario == 'partial_upload':
-        second_blob.upload_from_filename.side_effect = RuntimeError(
+        gcs.upload_raises['part-00000001.parquet'] = RuntimeError(
             'provider detail')
-    gcs_client.bucket.return_value.blob.side_effect = [first_blob, second_blob]
-    load_error = (None if scenario == 'partial_upload' else
-                  ConnectorError('load failed'))
+    else:
+        connector.context.load_table_from_uri.return_value.result.\
+            side_effect = BadRequest('provider detail')
 
     with (
             patch.object(connector, '_initialize_gcs_client',
-                         return_value=gcs_client),
-            patch.object(connector, '_write_artifacts_from_gcs',
-                         side_effect=load_error) as gcs_load,
+                         return_value=gcs),
             pytest.raises(ConnectorError) as exc_info,
     ):
         connector.write_artifacts_to_table('predictions', str(artifact_path))
 
-    first_blob.delete.assert_called_once_with()
+    assert 'Failed to load local artifacts' in str(exc_info.value)
+    assert 'provider detail' not in caplog.text
+    assert 'provider detail' not in str(exc_info.value)
+    assert gcs.bodies == {}
     if scenario == 'partial_upload':
-        second_blob.delete.assert_called_once_with()
-        gcs_load.assert_not_called()
-        assert 'Failed to stage local artifacts' in str(exc_info.value)
-        assert 'provider detail' not in caplog.text
+        assert list(gcs.uploaded) == [
+            n for n in gcs.uploaded if n.endswith('part-00000000.parquet')
+        ]
+        connector.context.load_table_from_uri.assert_not_called()
     else:
-        gcs_load.assert_called_once()
-        assert 'load failed' in str(exc_info.value)
+        assert len(gcs.uploaded) == 2
 
 
 def test_bigquery_local_artifact_requires_configured_transfer_bucket(

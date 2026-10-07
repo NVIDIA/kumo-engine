@@ -11,6 +11,7 @@ import subprocess
 import sys
 
 MARKER = '<!-- kumo-pr-change-map -->'
+NOTICE_PATHS = {'3rdparty/notices/inventory.json', 'THIRD-PARTY.txt'}
 
 
 def gh(*args: str, payload: dict | None = None) -> object:
@@ -39,6 +40,8 @@ def main() -> None:
         if path.startswith('packages/diskgraph/'):
             relative = path.removeprefix('packages/diskgraph/')
             group = relative.split('/', 1)[0] if '/' in relative else 'root'
+        elif path in NOTICE_PATHS:
+            group = 'notices'
         else:
             group = 'provenance'
         groups.setdefault(group, []).append(path)
@@ -55,11 +58,16 @@ def main() -> None:
         if group == 'provenance':
             what = 'Update the mirrored source revision and file manifest.'
             why = 'Keep synchronization identity independently verifiable.'
+        elif group == 'notices':
+            what = 'Regenerate DiskGraph Rust notice records and THIRD-PARTY.txt.'
+            why = 'The license check requires exactly the shipped crates.'
         else:
             what = f'Synchronize upstream DiskGraph {group} files.'
             why = 'Keep the in-tree build source identical to its authority.'
-        scope = ('Revision and manifest data' if group == 'provenance' else
-                 f'Upstream {group} files; mechanical import')
+        scope = {
+            'provenance': 'Revision and manifest data',
+            'notices': 'Generated notice data',
+        }.get(group, f'Upstream {group} files; mechanical import')
         lines.append(f'| {rendered} | {scope} | {what} | {why} |')
     lines.extend([
         '',
@@ -67,7 +75,7 @@ def main() -> None:
         '',
         'Focused verification: every mirrored path, mode, and Git blob matches the recorded upstream revision.',
         '',
-        'Stopping condition: the mirror and provenance manifest are exact and no Kumo integration file changes.',
+        'Stopping condition: the mirror and provenance manifest are exact, notice outputs are regenerated, and no other Kumo integration file changes.',
     ])
     body = '\n'.join(lines) + '\n'
 

@@ -10,10 +10,13 @@ separation, because it is engine policy rather than client convenience:
 :data:`MAX_CATEGORIES` states what the categorical encoder can represent, so it
 has to move whenever that encoder does.
 
-Two rules live here. :func:`infer_stype_from_dtype` covers the families a data
-type settles on its own, and :func:`infer_stype_from_stats` covers the rest from
-statistics. Both are pure -- no I/O, no torch, no filesystem -- so any caller
-can import this module cheaply.
+The shared rules use identifier names, data types, and statistics.
+:func:`infer_identifier_stype` applies the hosted identifier-name policy;
+:func:`infer_stype_from_dtype` covers decisive data types, and
+:func:`infer_stype_from_stats` covers the remaining cases. All are pure -- no
+I/O, no torch, no filesystem -- so callers can import this module cheaply.
+Sample helpers also share hosted delimiter detection and token counting;
+their pandas and DiskGraph imports are lazy.
 
 The rules read :class:`~kumoapi.typing.Stype`'s own ``supports_dtype`` rather
 than restating which data types each family accepts, so the two stay in step:
@@ -22,7 +25,8 @@ tightening the vocabulary in :mod:`kumoapi.typing` tightens inference with it.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from collections import Counter
+from typing import Any, Iterable, Optional
 
 from kumoapi.typing import Dtype, Stype
 
@@ -48,6 +52,93 @@ def _as_dtype(dtype: Any) -> Dtype:
     schema payload -- and both should reach the same rule.
     """
     return dtype if isinstance(dtype, Dtype) else Dtype(dtype)
+
+
+# Column names suffixes that end in "id" but should not be given the ID stype.
+# From https://scrabble.merriam.com/words/end-with/id
+_IGNORED_ID_SUFFIXES = [
+    'bid',
+    'acid',
+    'grid',
+    'maid',
+    'paid',
+    'raid',
+    'void',
+    'avoid',
+    'braid',
+    'covid',
+    'fluid',
+    'rabid',
+    'solid',
+    'hybrid',
+    'inlaid',
+    'liquid',
+]
+
+_ID_PATTERN = [
+    'hash', 'no', 'cate', 'category', 'class', 'label', 'key', 'code'
+]
+
+_MORE_RELAX_ID_PATTERN = [
+    'key',
+    'code',
+]
+
+
+def contains_identifier(name: str) -> bool:
+    """Recognize hosted identifier-name patterns and exclude known words."""
+    name = name.lower()
+    if '_id_' in name:
+        return True
+    for pattern in _ID_PATTERN:
+        if (name.endswith(f'_{pattern}') or name.startswith(f'{pattern}_')
+                or f'_{pattern}_' in name):
+            return True
+    for pattern in _MORE_RELAX_ID_PATTERN:
+        if (name.startswith(pattern) or name.endswith(pattern)):
+            return True
+    if not name.endswith('id'):
+        return False
+    for suffix in _IGNORED_ID_SUFFIXES:
+        if name.endswith(suffix):
+            return False
+    return True
+
+
+def infer_identifier_stype(name: str, dtype: Any) -> Optional[Stype]:
+    """Apply hosted ID-name inference to compatible, non-floating dtypes."""
+    if dtype is None:
+        return None
+    dtype = _as_dtype(dtype)
+    if (Stype.ID.supports_dtype(dtype) and not dtype.is_float()
+            and contains_identifier(name)):
+        return Stype.ID
+    return None
+
+
+def contains_number(name: str) -> bool:
+    """Recognize names that describe numeric measurements or counts."""
+    name = name.lower()
+    for key in [
+            'num', 'number', 'count', 'total', 'sum', 'avg', 'price', 'score',
+            'ratio', 'value'
+    ]:
+        if f'_{key}_' in name or name.startswith(key) or name.endswith(key):
+            return True
+    return False
+
+
+def infer_stype_from_name(name: str, dtype: Any) -> Optional[Stype]:
+    """Apply identifier then numerical-name rules to compatible data types."""
+    if dtype is None:
+        return None
+    dtype = _as_dtype(dtype)
+    identifier = infer_identifier_stype(name, dtype)
+    if identifier is not None:
+        return identifier
+    if Stype.numerical.supports_dtype(dtype) and contains_number(name):
+        return Stype.numerical
+    return None
 
 
 def infer_stype_from_dtype(dtype: Any) -> Optional[Stype]:
@@ -184,3 +275,51 @@ def infer_stype_from_stats(
         return Stype.text
 
     return None
+
+
+# Hosted approximate statistics use 10,000 rows, with delimiter detection
+# bounded to the first 1,000 string rows. DiskGraph owns the detection rule.
+MULTICAT_MAX_SAMPLES = 1_000
+NUM_ROWS_FOR_SEPARATOR_INFERENCE = 10_000
+
+
+def _multicat_sample_rows(values: Iterable[Any]) -> list[str]:
+    return [value for value in values
+            if isinstance(value, str)][:MULTICAT_MAX_SAMPLES]
+
+
+def detect_multicat_sep_values(values: Iterable[Any]) -> Optional[str]:
+    """Detect a downstream-supported delimiter with hosted sample bounds."""
+    from diskgraph import detect_multicat_delimiter
+
+    return detect_multicat_delimiter(_multicat_sample_rows(values))
+
+
+def detect_multicat_sep(text: str) -> Optional[str]:
+    return detect_multicat_sep_values(text.split('\n'))
+
+
+def multicategorical_separator(ser: Any) -> Optional[str]:
+    """Hosted scalar-string delimiter inference; arrays and JSON are excluded."""
+    import numpy as np
+    from kumo_core.types.conversions import to_dtype
+
+    kumo_dtype = to_dtype(ser.dtype, ser=ser)
+    if len(ser) == 0 or isinstance(ser.iloc[0], (list, np.ndarray)) \
+            or kumo_dtype.is_list():
+        return None
+    if isinstance(ser.iloc[0], str):
+        if ser.dropna().apply(lambda x: x.strip().startswith('[') and x.strip().
+                              endswith(']')).all():
+            return None
+    return detect_multicat_sep('\n'.join(
+        ser.values[:NUM_ROWS_FOR_SEPARATOR_INFERENCE].astype(str)))
+
+
+def multicategorical_token_counts(values: Iterable[str],
+                                  separator: str) -> dict[str, int]:
+    """Hosted split-token counts, preserving whitespace and ignoring empties."""
+    counts: Counter[str] = Counter()
+    for value in values:
+        counts.update(token for token in value.split(separator) if token)
+    return dict(counts)

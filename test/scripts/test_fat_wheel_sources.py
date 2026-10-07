@@ -71,8 +71,7 @@ wheel_dir = Path(args[args.index('-w') + 1])
     result = subprocess.run(
         ['bash', str(SCRIPT), '--no-zig', *args],
         env=dict(os.environ, KUMO_REPO=str(repo), PYTHON=str(python),
-                 PYTHON_TAG='', EXTRA_COMPONENTS='',
-                 BUILD_CALLS=str(calls),
+                 PYTHON_TAG='', EXTRA_COMPONENTS='', BUILD_CALLS=str(calls),
                  THIRD_PARTY_NOTICE=str(repo / 'THIRD-PARTY.txt'),
                  TMPDIR=str(tmp_path), PATH=f'{tmp_path}:{os.environ["PATH"]}'),
         capture_output=True,
@@ -111,10 +110,10 @@ def test_selected_components_requirements_reach_wheel_metadata(
     dependencies = {
         'kumo-core': [
             'requests>=2.31', 'torch>=2.7.0,<3',
-            'faiss-gpu==1.14.3; extra == "gpu"'
+            'faiss-gpu==1.14.3; extra == "faiss-gpu"'
         ],
         'kumo-engine': [
-            'kumo-core[gpu]', 'kumo-databricks; extra == "databricks"',
+            'kumo-core[faiss-gpu]', 'kumo-databricks; extra == "databricks"',
             'kumo-s3; extra == "s3"', 'kumo-snowflake; extra == "snowflake"'
         ],
         'kumo-databricks': ['databricks-sdk'],

@@ -117,7 +117,7 @@ jobs:
 
           python scripts/set_version.py "$version_prerelease"
           git diff --color=always
-          git add kumoai_studio/_version.py
+          git add -u  # VERSION, kumoai_studio/_version.py and the other stamped files
           git commit -m "Update version from $version_source to $version_prerelease (https://github.com/kumo-ai/kumo/actions/runs/${{ github.run_id }})"
 
           git tag "kumo-sdk-v$version_prerelease"
@@ -128,7 +128,7 @@ jobs:
           version_dev_new=$(npx semver -i minor "$version_final").dev0
           python scripts/set_version.py "$version_dev_new"
           git diff --color=always
-          git add kumoai_studio/_version.py
+          git add -u  # VERSION, kumoai_studio/_version.py and the other stamped files
           git commit -m "Update version from $version_prerelease to $version_dev_new (https://github.com/kumo-ai/kumo/actions/runs/${{ github.run_id }})"
 
           printf 'UPDATED_REFS=%s %s %s\n' "$PHYSICAL_REF" "$release_branch" \
@@ -146,7 +146,7 @@ jobs:
 
           python scripts/set_version.py "$version_prerelease_new"
           git diff --color=always
-          git add kumoai_studio/_version.py
+          git add -u  # VERSION, kumoai_studio/_version.py and the other stamped files
           git commit -m "Update version from $version_prerelease to $version_prerelease_new (https://github.com/kumo-ai/kumo/actions/runs/${{ github.run_id }})"
 
           git tag "kumo-sdk-v$version_prerelease_new"
@@ -161,7 +161,7 @@ jobs:
 
           python scripts/set_version.py "$version_final"
           git diff --color=always
-          git add kumoai_studio/_version.py
+          git add -u  # VERSION, kumoai_studio/_version.py and the other stamped files
           git commit -m "Update version from $version_prerelease to $version_final (https://github.com/kumo-ai/kumo/actions/runs/${{ github.run_id }})"
 
           git tag "kumo-sdk-v$version_final"
@@ -178,10 +178,10 @@ jobs:
           version_final=$(npx semver --coerce $version_final)  # X.Y.Z -> X.Y.Z (just in case)
           version_final_new=$(npx semver -i patch $version_final)  # X.Y.Z -> X.Y.{Z+1}
 
-          # Update the version in kumoai_studio/_version.py:
+          # Update the shared version (VERSION and every file stamped from it):
           python scripts/set_version.py "$version_final_new"
           git diff --color=always
-          git add kumoai_studio/_version.py
+          git add -u  # VERSION, kumoai_studio/_version.py and the other stamped files
           git commit -m "Update version from $version_final to $version_final_new (https://github.com/kumo-ai/kumo/actions/runs/${{ github.run_id }})"
 
           # Create a release tag:

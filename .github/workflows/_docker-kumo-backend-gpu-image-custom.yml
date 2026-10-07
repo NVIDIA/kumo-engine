@@ -127,8 +127,6 @@ jobs:
         shell: bash
         run: |
           ./scripts/diskgraph stage-source --out docker/diskgraph-source
-        env:
-          GITHUB_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
 
       - name: Download checksum-pinned CUDA 13 Faiss wheel
         if: ${{ inputs.target_platform == 'linux/amd64' }}
@@ -170,7 +168,6 @@ jobs:
       - name: Prepare build secrets
         run: |
           mkdir -p "$RUNNER_TEMP/build-secrets"
-          printf '%s' "${{ secrets.KUMO_GITHUB_BOT_TOKEN }}" > "$RUNNER_TEMP/build-secrets/github_token"
           printf '%s' "${{ env.AWS_ACCESS_KEY_ID }}" > "$RUNNER_TEMP/build-secrets/aws_access_key_id"
           printf '%s' "${{ env.AWS_SECRET_ACCESS_KEY }}" > "$RUNNER_TEMP/build-secrets/aws_secret_access_key"
           printf '%s' "${{ env.AWS_SESSION_TOKEN }}" > "$RUNNER_TEMP/build-secrets/aws_session_token"
@@ -190,7 +187,6 @@ jobs:
             CUDA_ARCH_LIST=${{ inputs.cuda_arch_list }}
           extra-args: |
             --platform=${{ inputs.target_platform }}
-            --secret id=github_token,src=${{ runner.temp }}/build-secrets/github_token
             --secret id=aws_access_key_id,src=${{ runner.temp }}/build-secrets/aws_access_key_id
             --secret id=aws_secret_access_key,src=${{ runner.temp }}/build-secrets/aws_secret_access_key
             --secret id=aws_session_token,src=${{ runner.temp }}/build-secrets/aws_session_token

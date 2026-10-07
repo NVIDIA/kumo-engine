@@ -9,7 +9,6 @@ on: # yamllint disable-line rule:truthy
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
-      - '3rdparty/BUILD'
       - 'rest/app.py'
       - 'rest/config/**'
       - 'rest/main.py'
@@ -67,13 +66,13 @@ jobs:
         with:
           python-version: "3.14"
           activate-environment: true
+          enable-cache: false
 
       - name: Check for backend/API changes
         id: backend-changes
         uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
         with:
           files: |
-            3rdparty/BUILD
             rest/app.py
             rest/config/**
             rest/main.py

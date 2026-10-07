@@ -12,7 +12,7 @@ license="Apache-2.0 AND BSD-3-Clause"
 license-files=["LICENSE", "THIRD-PARTY.txt"]
 description="AI on the Modern Data Stack"
 readme="README.md"
-requires-python=">=3.11"
+requires-python=">=3.10"
 keywords=[
     "deep-learning",
     "graph-neural-networks",
@@ -21,6 +21,7 @@ keywords=[
 classifiers=[
     "Development Status :: 5 - Production/Stable",
     "Programming Language :: Python",
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -54,6 +55,9 @@ snowflake=[
 [project.urls]
 homepage="https://kumo.ai"
 documentation="https://kumo.ai/docs"
+
+[tool.uv.sources]
+kumo-api = { workspace = true }
 
 [build-system]
 requires = ["setuptools>=77", "setuptools_scm"]

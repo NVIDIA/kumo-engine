@@ -32,6 +32,9 @@ docs = [
 [tool.setuptools.packages.find]
 include = ["kumopql*"]
 
+[tool.uv.sources]
+kumo-api = { workspace = true }
+
 [tool.yapf]
 based_on_style="pep8"
 split_before_named_assigns=false

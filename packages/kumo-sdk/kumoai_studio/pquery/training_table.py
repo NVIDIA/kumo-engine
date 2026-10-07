@@ -201,9 +201,11 @@ class TrainingTable:
         *,
         request_id: Optional[str] = None,
     ) -> Union[ArtifactExportJob, ArtifactExportResult]:
-        r"""Export the training table to the connector.
-        specified in the output config. Use the exported table to
-        add a weight column then name it with `from_source_table`.
+        r"""Export the training table to the connector specified in the
+        output config. A generated table is exported with a ``SPLIT`` column (``0``
+        train, ``1`` validation, ``2`` test). Add a weight column to the
+        exported table, then load it with `from_source_table` and
+        ``split_col="SPLIT"``.
 
         Args:
             output_config: The output configuration to write the training

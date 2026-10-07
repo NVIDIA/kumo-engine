@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import contextlib
+import json
 import os
 import os.path as osp
 from concurrent.futures import ThreadPoolExecutor
@@ -11,6 +12,7 @@ from typing import Any, Iterator, List, Optional, Tuple
 import pyarrow as pa
 import pyarrow.parquet as pq
 from kumo_core.training import custom_table
+from kumo_core.training import export as training_table_export
 from kumo_core.types import TaskType
 from kumoapi.pquery import QueryType
 from pyarrow.fs import FileSystem
@@ -458,6 +460,39 @@ def _materialized_parquet_files(path: str) -> Iterator[List[str]]:
         "local, S3, GCS, ADLS, and UCV paths.")
 
 
+def exported_reference(
+    path: str,
+    split_col: Optional[str],
+    column_names: List[str],
+) -> Optional[Tuple[List[str], pa.Schema]]:
+    """Exported stage rows, when the supplied table carries its split."""
+    split = (split_col or '').strip()
+    if not split or split not in column_names:
+        return None
+    return _generated_export(path)
+
+
+def exported_reference_rows(path: str, split_col: Optional[str],
+                            column_names: List[str]) -> Optional[int]:
+    exported = exported_reference(path, split_col, column_names)
+    return None if exported is None else _count_parquet_rows(exported[0])
+
+
+def _generated_export(path: str) -> Optional[Tuple[List[str], pa.Schema]]:
+    """Seed parts and exported columns of a generated bundle's table."""
+    bundle = osp.dirname(path.rstrip('/'))
+    spec = osp.join(bundle, training_table_export.INGEST_SPEC)
+    if fsutil.is_ucv(path) or not fsutil.exists(spec):
+        return None
+    stages = training_table_export.stage_parts(
+        json.loads(fsutil.read_text(spec)))
+    files = [osp.join(bundle, part) for parts in stages.values()
+             for part in parts]
+    schema = training_table_export.export_schema(_read_parquet_schema(files))
+    return files, schema.remove(
+        schema.get_field_index(training_table_export.SPLIT_COLUMN))
+
+
 def _filesystem_and_path(path: str) -> Tuple[Optional[FileSystem], str]:
     """Return a ``(pyarrow.fs.FileSystem, bare_path)`` pair for ``path``,
     or ``(None, path)`` for plain local paths.
@@ -569,10 +604,15 @@ def missing_source_column_errors(
     with restricted_diagnostic_boundary(
             safe_message='Custom training table schema read failed',
             exception_types=OSError):
-        with _materialized_parquet_files(generated_table_path) as files:
-            if not files:
-                raise ValueError('The generated training table is empty.')
-            generated_schema = _read_parquet_schema(files)
+        exported = exported_reference(generated_table_path, split_col_name,
+                                      source_column_names)
+        if exported is not None:
+            generated_schema = exported[1]
+        else:
+            with _materialized_parquet_files(generated_table_path) as files:
+                if not files:
+                    raise ValueError('The generated training table is empty.')
+                generated_schema = _read_parquet_schema(files)
 
     return custom_table.missing_column_errors(
         source_column_names,
@@ -687,8 +727,14 @@ def _validate_supplied_train_table(
             response.errors.extend(divergent)
             return response
 
-        generated_schema = (None if gen_files is None else
-                            _read_parquet_schema(gen_files))
+        exported = (None if generated_table_path is None else
+                    exported_reference(generated_table_path, split_col_name,
+                                       schema.names))
+        if exported is not None:
+            gen_files, generated_schema = exported
+        else:
+            generated_schema = (None if gen_files is None else
+                                _read_parquet_schema(gen_files))
         rules = custom_table.SuppliedTableRules(
             task_type=task_type,
             weight_col=weight_col_name,

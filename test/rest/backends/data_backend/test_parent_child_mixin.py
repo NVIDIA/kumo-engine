@@ -91,7 +91,10 @@ class DummyParentWorkflow(TableParentWorkflowMixin):
                 cols=[],
                 source_table=S3SourceTable(
                     connector_id=f'connector_{"0" * 32}',
-                    source={'mode': 'relative', 'path': f'child_table_{i}'},
+                    source={
+                        'mode': 'relative',
+                        'path': f'child_table_{i}'
+                    },
                     file_type=FileType.PARQUET,
                 ),
                 pkey=None,
@@ -157,7 +160,10 @@ class DummyFailingParentWorkflow(TableParentWorkflowMixin):
             cols=[],
             source_table=S3SourceTable(
                 connector_id=f'connector_{"0" * 32}',
-                source={'mode': 'relative', 'path': 'child_table_0'},
+                source={
+                    'mode': 'relative',
+                    'path': 'child_table_0'
+                },
                 file_type=FileType.PARQUET,
             ),
             pkey=None,
@@ -302,8 +308,30 @@ async def test_cancellation_multi_parents():
         assert result == 'Done!'
 
 
+def _delay_child_signal_until_child_closes(monkeypatch) -> None:
+    # Forces the race where the parent's signal lands after its child closed.
+    start_child_workflow = workflow.start_child_workflow
+
+    async def _start_child_workflow(*args, **kwargs):
+        handle = await start_child_workflow(*args, **kwargs)
+        signal = handle.signal
+
+        async def _late_signal(*signal_args, **signal_kwargs):
+            await workflow.wait_condition(handle.done)
+            return await signal(*signal_args, **signal_kwargs)
+
+        handle.signal = _late_signal  # type: ignore[method-assign]
+        return handle
+
+    monkeypatch.setattr(workflow, 'start_child_workflow', _start_child_workflow)
+
+
+@pytest.mark.parametrize('child_closes_before_signal', [False, True])
 @pytest.mark.asyncio
-async def test_wait_completion_raises_public_exception():
+async def test_wait_completion_raises_public_exception(
+        monkeypatch, child_closes_before_signal):
+    if child_closes_before_signal:
+        _delay_child_signal_until_child_closes(monkeypatch)
     test_worker_task_queue = 'test-worker-task-queue'
     worker_options = WorkerOptions(task_queue=test_worker_task_queue)
     deploy_config = DeployEnvConfig.for_test()

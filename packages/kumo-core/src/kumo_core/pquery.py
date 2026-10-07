@@ -72,6 +72,7 @@ from .training.timestamps import (
     default_target_time_range,
     generate_legacy_timestamps,
 )
+from .training.validation import validate_train_offsets
 from .types import TaskType
 
 
@@ -983,15 +984,24 @@ def _temporal_timestamps(
     split_family: str,
     explicit: tuple[int, ...],
 ) -> tuple[tuple[int, ...], bool]:
-    if explicit:
-        return tuple(_timestamp_ns(value) for value in explicit), False
-    minimum, maximum, filter_buffer = _temporal_target_time_range(
-        query, index_path)
     offset = query.query.get_combined_date_offset_range()
 
     def date_offset(value: int) -> DateOffset:
         # Preserve calendar units just as the hosted generator does.
         return DateOffsetRange._to_dateOffset(offset.unit, value)
+
+    train_start = inferred_or_missing_type_to_none(options.train_start_offset)
+    train_end = inferred_or_missing_type_to_none(options.train_end_offset)
+    error = validate_train_offsets(
+        None if train_start is None else date_offset(int(train_start)),
+        None if train_end is None else date_offset(int(train_end)),
+    )
+    if error is not None:
+        raise PredictiveQueryPlanError(f"{error.title}. {error.message}")
+    if explicit:
+        return tuple(_timestamp_ns(value) for value in explicit), False
+    minimum, maximum, filter_buffer = _temporal_target_time_range(
+        query, index_path)
 
     def relative(value: Any) -> DateOffset | Timestamp | None:
         if value is None or value == "-INF":
@@ -1000,8 +1010,6 @@ def _temporal_timestamps(
             return date_offset(int(value))
         return Timestamp(Timestamp(value).value)
 
-    train_start = inferred_or_missing_type_to_none(options.train_start_offset)
-    train_end = inferred_or_missing_type_to_none(options.train_end_offset)
     step_count = int(
         inferred_or_missing_type_to_none(options.timeframe_step)
         or (int(offset.end) - int(offset.start or 0)))

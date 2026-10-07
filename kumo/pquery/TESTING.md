@@ -4,38 +4,38 @@ Testing guide for the `kumo/pquery` module.
 
 ## Framework
 
-Tests use **pytest** via **pants** and live in `test/pquery/` (not under `kumo/pquery/`). DiskGraph table-generation adapter tests live in `test/data/generic/`.
+Tests use **pytest** and live in `test/pquery/` (not under `kumo/pquery/`). DiskGraph table-generation adapter tests live in `test/data/generic/`.
 
 ## Running Tests
 
 ### All pquery tests
 
 ```bash
-pants test test/pquery::
+.venv/bin/pytest test/pquery
 ```
 
 ### DiskGraph table-generation tests
 
 ```bash
-pants test test/data/generic::
+.venv/bin/pytest test/data/generic
 ```
 
 ### Single test file
 
 ```bash
-pants test test/pquery/test_weight_spec.py
+.venv/bin/pytest test/pquery/test_weight_spec.py
 ```
 
 ### Single test by name
 
 ```bash
-pants test test/pquery/test_weight_spec.py -- -k 'test_parse_weight_spec_column'
+.venv/bin/pytest test/pquery/test_weight_spec.py -k 'test_parse_weight_spec_column'
 ```
 
 ### With verbose output
 
 ```bash
-pants test test/pquery:: -- --capture=no --color=yes -vv
+.venv/bin/pytest test/pquery --capture=no --color=yes -vv
 ```
 
 ## Test Structure
@@ -67,8 +67,8 @@ For new table-generation behavior, prefer DiskGraph-backed tests in `test/data/g
 ## Linting and Type Checking
 
 ```bash
-pants lint kumo/pquery::    # autoflake, flake8, isort
-pants check kumo/pquery::   # Pyright
+.venv/bin/flake8 kumo/pquery && .venv/bin/isort --check kumo/pquery
+.venv/bin/pyright -p pyrightconfig.json
 ```
 
 ## When to Write Tests
@@ -92,7 +92,7 @@ pants check kumo/pquery::   # Pyright
 
 | Check | Command | Required |
 |-------|---------|----------|
-| All pquery tests pass | `pants test test/pquery::` | Yes |
-| DiskGraph table-generation tests pass | `pants test test/data/generic::` | When table-generation behavior changes |
-| Lint passes | `pants lint kumo/pquery::` | Yes |
-| Type check passes | `pants check kumo/pquery::` | Yes |
+| All pquery tests pass | `.venv/bin/pytest test/pquery` | Yes |
+| DiskGraph table-generation tests pass | `.venv/bin/pytest test/data/generic` | When table-generation behavior changes |
+| Lint passes | `flake8` + `isort --check` | Yes |
+| Type check passes | `pyright -p pyrightconfig.json` | Yes |

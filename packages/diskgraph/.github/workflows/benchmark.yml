@@ -25,6 +25,9 @@ concurrency:
   group: ec2-benchmark
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 env:
   WARN_THRESHOLD: 12
   FAIL_THRESHOLD: 20
@@ -37,6 +40,12 @@ jobs:
   benchmark:
     runs-on: [self-hosted, Linux, ARM64]
     timeout-minutes: 180
+    # pull-requests: write lets the PR-comment step list open PRs and post
+    # the summary via the issues comments API. S3 access uses the runner's
+    # own AWS credentials, not OIDC.
+    permissions:
+      contents: read
+      pull-requests: write
 
     steps:
       - uses: actions/checkout@v4

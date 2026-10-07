@@ -27,6 +27,8 @@ Two ways to get a `Table` with `definition` populated:
   See `kumo.engine._infer`'s module docstring for why that resolution can't be
   deferred to a later call the way the cloud SDK's own `Table.
   from_source_table`/`infer_metadata()` split does it.
+* `from_sql(connector, sql, ...)` -- the same, over a Custom SQL query
+  (`connector.sql(sql)`).
 
 Local filesystem sources use the local schema subclass defined in
 `kumo.engine._local_schema`; shared hosted request schemas remain unchanged.
@@ -41,6 +43,8 @@ else untouched.
 from dataclasses import dataclass, replace
 from typing import List, Optional, Union
 
+from kumo_core.stype_inference import multicategorical_separator
+from kumoapi.source_table import CustomSQLSourceTable
 from kumoapi.table import Column
 from kumoapi.table import TableDefinition as HostedTableDefinition
 from kumoapi.table import TimestampUnit
@@ -121,6 +125,7 @@ class Table:
             primary_key=primary_key,
             time_column=time_column,
             end_time_column=end_time_column,
+            sql=source_table.sql,
         )
         definition = TableDefinition(
             cols=columns,
@@ -131,6 +136,30 @@ class Table:
         )
         return cls(connector=source_table.connector,
                    table_name=source_table.table_name, definition=definition)
+
+    @classmethod
+    def from_sql(
+        cls,
+        connector: Connector,
+        sql: str,
+        column_names: Optional[List[str]] = None,
+        *,
+        primary_key: Optional[str] = None,
+        time_column: Optional[str] = None,
+        end_time_column: Optional[str] = None,
+    ) -> Self:
+        r"""Builds a `Table` from a read-only `SELECT` run in `connector`'s
+        warehouse -- `from_source_table(connector.sql(sql), ...)`. Mirrors
+        the cloud SDK's `Table.from_sql`. Inference samples the query's
+        result, so the query runs once here and again at `Graph.snapshot()`.
+        """
+        return cls.from_source_table(
+            connector.sql(sql),
+            column_names,
+            primary_key=primary_key,
+            time_column=time_column,
+            end_time_column=end_time_column,
+        )
 
     def infer_metadata(self) -> Self:
         r"""Re-resolves this table's schema from the current source data,
@@ -154,13 +183,18 @@ class Table:
             primary_key = None
             time_column = None
             end_time_column = None
-        return self.from_source_table(
+        source = (self.definition.source_table
+                  if self.definition is not None else None)
+        table = self.from_source_table(
+            self.connector.sql(source.sql) if isinstance(
+                source, CustomSQLSourceTable) else
             self.connector[self.table_name],
             column_names,
             primary_key=primary_key,
             time_column=time_column,
             end_time_column=end_time_column,
         )
+        return replace(table, table_name=self.table_name)
 
     def with_column(
         self,
@@ -181,7 +215,9 @@ class Table:
         re-running inference.
 
         Only fields actually passed override the existing column; `None`
-        (the default for every argument) means "leave as is".
+        (the default for every argument) means "leave as is". Declaring a
+        scalar-string multicategorical column without a delimiter samples
+        the source to infer one using the hosted policy.
 
         Raises:
             ValueError: if `self.definition` isn't resolved yet, or names no
@@ -195,15 +231,32 @@ class Table:
         columns: List[Column] = list(self.definition.cols)
         for i, column in enumerate(columns):
             if column.name == name:
+                resolved_stype = stype if stype is not None else column.stype
+                resolved_dtype = dtype if dtype is not None else column.dtype
+                delimiter = (multicategorical_delimiter
+                             if multicategorical_delimiter is not None else
+                             column.multicategorical_delimiter)
+                if (multicategorical_delimiter is None
+                        and (resolved_stype != Stype.multicategorical
+                             or resolved_dtype != Dtype.string)):
+                    delimiter = None
+                if (resolved_stype == Stype.multicategorical
+                        and resolved_dtype == Dtype.string
+                        and delimiter is None):
+                    from kumo.engine._infer import _sample
+
+                    _, _, frame, _ = _sample(self.connector.source_backend,
+                                             self.connector, self.table_name)
+                    if frame is not None and name in frame:
+                        delimiter = multicategorical_separator(
+                            frame[name].dropna().astype('string'))
                 columns[i] = replace(
                     column,
-                    stype=stype if stype is not None else column.stype,
-                    dtype=dtype if dtype is not None else column.dtype,
+                    stype=resolved_stype,
+                    dtype=resolved_dtype,
                     timestamp_format=(timestamp_format if timestamp_format
                                       is not None else column.timestamp_format),
-                    multicategorical_delimiter=(
-                        multicategorical_delimiter if multicategorical_delimiter
-                        is not None else column.multicategorical_delimiter),
+                    multicategorical_delimiter=delimiter,
                 )
                 break
         else:

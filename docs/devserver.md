@@ -155,7 +155,7 @@ range, so no source change is required.
 The devserver validates dependencies before launch and will refuse to start if any are
 missing. Checks include:
 
-- **System**: tmux, `temporalio` at the version specified in `3rdparty/BUILD`, kumo package; Docker when a Docker-backed panel is enabled
+- **System**: tmux, `temporalio` at the version specified in `setup.py`, kumo package; Docker when a Docker-backed panel is enabled
 - **Ports**: All allocated ports are available (checked via `lsof`)
 - **Cloud credentials**: S3/GCS access, Temporal Cloud connectivity
 - **K8s context** (k8s-backed variants): EKS config and stern for log viewing

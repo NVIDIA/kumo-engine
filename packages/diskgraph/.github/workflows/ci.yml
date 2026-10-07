@@ -9,6 +9,11 @@ on:
     branches: [main]
   pull_request:
 
+# Every job only checks out the repo. Caches go through the Actions cache
+# service, and private git deps use KUMO_GITHUB_BOT_TOKEN, not GITHUB_TOKEN.
+permissions:
+  contents: read
+
 jobs:
   licenses:
     runs-on: ubuntu-22.04-large
@@ -70,6 +75,19 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy feature-gated TUI binaries
+        # `--all-targets` above does NOT cover these two. Cargo silently skips
+        # any target whose `required-features` are unmet, and `sampler_tui` and
+        # `ingest_tui` require the off-by-default `sampler-tui` and
+        # `ingest-tui` features. Those features are also the only path to
+        # ratatui and its advisory-carrying `lru`, which keeps both out of the
+        # default build and every shipped artifact. Without this step CI would
+        # not lint the TUI code; the `test` job builds it, but only clippy
+        # catches lint regressions as dependencies change.
+        # Add a line here for each binary that declares `required-features`.
+        run: |
+          cargo clippy -p diskgraph-engine --features sampler-tui --bin sampler_tui -- -D warnings
+          cargo clippy -p diskgraph-ingest --features ingest-tui --bin ingest_tui -- -D warnings
 
   test:
     runs-on: ubuntu-22.04-large
@@ -110,6 +128,17 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Build and Test
         run: cargo test --workspace
+      - name: Build feature-gated TUI binaries
+        # `cargo test --workspace` above builds every binary target it can see,
+        # but cargo silently skips targets with unmet `required-features`, so
+        # both TUI binaries are invisible to it. This runs here rather than in
+        # the `clippy` job because clippy stops at metadata: only a real build
+        # exercises codegen and the link step, and this job is the one with lld
+        # and a warm rustc target dir. As in the clippy job, add a line here for
+        # each binary that declares `required-features`.
+        run: |
+          cargo build -p diskgraph-engine --features sampler-tui --bin sampler_tui
+          cargo build -p diskgraph-ingest --features ingest-tui --bin ingest_tui
 
   python-test:
     runs-on: ubuntu-22.04-large

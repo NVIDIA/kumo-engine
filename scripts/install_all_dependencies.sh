@@ -136,11 +136,6 @@ main() {
 
   echo
   echo "=============================="
-  echo "Installing pants"
-  "${SCRIPT_DIR}/install_pants.sh"
-
-  echo
-  echo "=============================="
   echo "Installing dev tools via mise"
   mise trust
   mise install

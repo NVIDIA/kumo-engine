@@ -129,8 +129,9 @@ async def validate_custom_train_table_activity(
         # and answering with it would be a second contract. Refusing a
         # misnamed table here is worth the one read because it saves paying
         # for the export first.
+        column_names = [column.name for column in table_metadata.cols]
         missing = custom_train_table.missing_source_column_errors(
-            [column.name for column in table_metadata.cols],
+            column_names,
             orig_train_table_path,
             weight_col,
             split_col,
@@ -144,9 +145,15 @@ async def validate_custom_train_table_activity(
                 log.warning(
                     'Skipping custom training table row-count validation')
             else:
+                from async_utils.sync import sync_to_async
+                reference_rows = await sync_to_async(
+                    custom_train_table.exported_reference_rows,
+                    executor=None,
+                )(orig_train_table_path, split_col, column_names)
                 response.merge(await validate_weight_table_num_rows(
                     connector,
                     source_table,
                     train_table_path=orig_train_table_path,
+                    train_table_num_rows=reference_rows,
                 ))
         return response

@@ -306,8 +306,14 @@ class TemporalClient:
         # Capability binding opens a loop-local SQLite StateDB.  Keep its
         # lifecycle aligned with this loop's Temporal client so aiosqlite
         # pools are never shared across loops or left behind at shutdown.
-        from rest.backends.data_backend.connector_authorization_client import \
-            close_cached_authorization_state_for_current_loop  # pants: no-infer-dep
+        # yapf disagrees with isort on wrapping a single-name parenthesized
+        # import; isort wins here.
+        # yapf: disable
+        from rest.backends.data_backend.connector_authorization_client import (
+            close_cached_authorization_state_for_current_loop,
+        )
+
+        # yapf: enable
         await close_cached_authorization_state_for_current_loop()
         await self._client_manager.close()
 
@@ -648,12 +654,11 @@ class ClientOutboundInterceptor(OutboundInterceptor):
         # Import locally to preserve the temporalio_commons -> rest layering at
         # module import time. Binding runs in the trusted client process before
         # any capability-bearing payload is accepted by Temporal.
-        from rest.backends.data_backend.connector_authorization_client import \
-            bind_connector_authorizations_for_start  # pants: no-infer-dep
-        from rest.backends.data_backend.connector_authorization_client import \
-            close_connector_authorization_state  # pants: no-infer-dep
-        from rest.backends.data_backend.connector_authorization_client import \
-            revoke_bound_connector_authorizations  # pants: no-infer-dep
+        from rest.backends.data_backend.connector_authorization_client import (
+            bind_connector_authorizations_for_start,
+            close_connector_authorization_state,
+            revoke_bound_connector_authorizations,
+        )
         state_db, _services, _newly_bound = (
             await bind_connector_authorizations_for_start(input, self._config))
         try:
@@ -678,8 +683,14 @@ class ClientOutboundInterceptor(OutboundInterceptor):
         if input.rpc_timeout is None:
             input.rpc_timeout = _TEMPORAL_RPC_TIMEOUT
         await self.next.cancel_workflow(input)
-        from rest.backends.data_backend.connector_authorization_client import \
-            revoke_connector_authorizations_for_workflow  # pants: no-infer-dep
+        # yapf disagrees with isort on wrapping a single-name parenthesized
+        # import; isort wins here.
+        # yapf: disable
+        from rest.backends.data_backend.connector_authorization_client import (
+            revoke_connector_authorizations_for_workflow,
+        )
+
+        # yapf: enable
         await revoke_connector_authorizations_for_workflow(
             self._config, input.id)
 
@@ -709,8 +720,14 @@ class ClientOutboundInterceptor(OutboundInterceptor):
         if input.rpc_timeout is None:
             input.rpc_timeout = _TEMPORAL_RPC_TIMEOUT
         await self.next.terminate_workflow(input)
-        from rest.backends.data_backend.connector_authorization_client import \
-            revoke_connector_authorizations_for_workflow  # pants: no-infer-dep
+        # yapf disagrees with isort on wrapping a single-name parenthesized
+        # import; isort wins here.
+        # yapf: disable
+        from rest.backends.data_backend.connector_authorization_client import (
+            revoke_connector_authorizations_for_workflow,
+        )
+
+        # yapf: enable
         await revoke_connector_authorizations_for_workflow(
             self._config, input.id)
 

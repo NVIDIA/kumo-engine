@@ -23,6 +23,7 @@ from kumoapi.data_source import (
 )
 from kumoapi.source_table import GCSSourceTable
 
+from kumo.engine.connector._extras import import_provider
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.identity import GCSIdentity
 
@@ -92,12 +93,13 @@ class GCSConnector(Connector):
 
     @cached_property
     def source_backend(self):
-        from kumo_gcs.backend import GCSSourceBackend
+        GCSSourceBackend = import_provider("kumo_gcs.backend",
+                                           "gcs").GCSSourceBackend
         return GCSSourceBackend(identity=self.identity)
 
     @cached_property
     def sink_backend(self):
-        from kumo_gcs.sink import GCSSinkBackend
+        GCSSinkBackend = import_provider("kumo_gcs.sink", "gcs").GCSSinkBackend
         return GCSSinkBackend(identity=self.identity)
 
     def source_table_for(self, table_name: str) -> GCSSourceTable:

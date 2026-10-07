@@ -92,10 +92,9 @@ class Connector(ABC):
         (`kumo.engine.trainer.output_config.ModelOutputConfig`, `Trainer.fit(
         export_config=...)`/`Trainer.load_from_connector(...)`).
 
-        A connector with no sink plugin at all (`BigQueryConnector`: `kumo_bigquery`
-        is read-only) overrides this to raise rather than omitting it, so the
-        failure names what is missing instead of surfacing as a plain
-        `AttributeError` from `connector.sink_backend.write_table(...)`.
+        A connector with no sink plugin overrides this to raise rather than
+        omitting it, so the failure names what is missing instead of surfacing
+        as a plain `AttributeError` from `connector.sink_backend.write_table(...)`.
         """
         raise NotImplementedError
 
@@ -136,6 +135,15 @@ class Connector(ABC):
 
     def __getitem__(self, table_name: str):
         return self.table(table_name)
+
+    def sql(self, query: str):
+        r"""A `SQLSourceTable` whose rows come from the read-only `SELECT`
+        `query`, run in this connector's warehouse. Mirrors the cloud SDK's
+        `Connector.sql`. Only Snowflake, Databricks and BigQuery run SQL.
+        """
+        from kumo.engine.connector.source_table import SQLSourceTable
+
+        return SQLSourceTable(query, self)
 
     def table_names(self) -> List[str]:
         r"""Source table names available through this connector. Mirrors

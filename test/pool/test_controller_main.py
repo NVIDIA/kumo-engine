@@ -6,7 +6,7 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest  # pants: no-infer-dep
+import pytest
 
 import pool.controller_main as controller_main
 

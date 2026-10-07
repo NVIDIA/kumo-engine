@@ -13,6 +13,7 @@ from typing import Optional
 from kumoapi.data_source import BigQueryConnectorResourceConfig, DataSourceType
 from kumoapi.source_table import BigQuerySourceTable
 
+from kumo.engine.connector._extras import import_provider
 from kumo.engine.connector.base import Connector
 from kumo.engine.connector.identity import BigQueryIdentity
 
@@ -20,9 +21,9 @@ from kumo.engine.connector.identity import BigQueryIdentity
 class BigQueryConnector(Connector):
     r"""Connect directly to a Google BigQuery dataset.
 
-    Read-only: reads through `kumo_bigquery.BigQuerySourceBackend` (there is
-    no BigQuery sink plugin) -- install the `bigquery` extra of this package
-    to use it.
+    Reads through `kumo_bigquery.BigQuerySourceBackend` and writes
+    predictions through `kumo_bigquery.BigQuerySinkBackend` -- install the
+    `bigquery` extra of this package to use it.
 
     Args:
         project_id: Google Cloud project containing the dataset.
@@ -34,11 +35,12 @@ class BigQueryConnector(Connector):
         billing_project_id: Optional Google Cloud project to bill for
             queries.
         staging_uri: Optional `gs://` prefix used to export Parquet before it
-            is downloaded locally. Without one, tables are streamed through
-            the BigQuery Storage Read API.
-        require_staged: Require staged export/download instead of falling
-            back to streaming when staging is unavailable. Requires
-            `staging_uri`.
+            is downloaded locally, and to upload prediction output before it
+            is loaded. Without one, tables are streamed through the Storage
+            Read API and output through the Storage Write API.
+        require_staged: Require staging for reads and prediction output
+            instead of falling back to streaming when staging is
+            unavailable. Requires `staging_uri`.
     """
     def __init__(
         self,
@@ -77,7 +79,8 @@ class BigQueryConnector(Connector):
 
     @cached_property
     def source_backend(self):
-        from kumo_bigquery.backend import BigQuerySourceBackend
+        BigQuerySourceBackend = import_provider(
+            "kumo_bigquery.backend", "bigquery").BigQuerySourceBackend
         from kumo_core.sources.types import ReadMode
         return BigQuerySourceBackend(
             identity=self.identity,
@@ -85,12 +88,16 @@ class BigQueryConnector(Connector):
             mode=ReadMode.STAGED if self.require_staged else None,
         )
 
-    @property
+    @cached_property
     def sink_backend(self):
-        raise NotImplementedError(
-            "BigQueryConnector is read-only: there is no BigQuery sink "
-            "plugin, so it cannot be used as an output_connector/"
-            "export_config connector, or as Trainer.load_from_connector(...).")
+        BigQuerySinkBackend = import_provider("kumo_bigquery.sink",
+                                              "bigquery").BigQuerySinkBackend
+        from kumo_core.sources.types import ReadMode
+        return BigQuerySinkBackend(
+            identity=self.identity,
+            staging_uri=self.staging_uri,
+            mode=ReadMode.STAGED if self.require_staged else None,
+        )
 
     def source_table_for(self, table_name: str) -> BigQuerySourceTable:
         return BigQuerySourceTable(

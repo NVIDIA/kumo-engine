@@ -34,10 +34,12 @@ class Mapper:
     """
     def __init__(self, data: Any) -> None:
         self._map = pd.CategoricalDtype(categories=data, ordered=True)
-        # Pre-built ``pd.Index`` for the numpy fast path: ``Index.get_indexer``
-        # is O(N) hash lookup over the query array and does not need a
-        # ``pd.Series`` / ``CategoricalDtype.astype`` round-trip per call.
         self._index = pd.Index(data)
+        categories = self._map.categories
+        if (categories is data and type(self._index) is type(categories)
+                and self._index.dtype == categories.dtype):
+            # Reuse the lookup cache populated by category validation.
+            self._index = categories
         self._length = len(data)
 
     def map(self, data: Any, strict: bool = False) -> Tensor:

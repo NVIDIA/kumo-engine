@@ -265,7 +265,7 @@ Compare node counts against raw parquet row counts. If they differ, check for:
 
 **Edge table misdetection** (#108): The config converter's `should_be_edge_table()` heuristic can misclassify node tables as edge tables based on column types (e.g., HnM transactions where `sales_channel_id` as int64/ID passes the numeric weight check). Symptoms: missing col stats for the misclassified table. Fixed by disabling auto-detection.
 
-**String-encoded float arrays** (#113): Production datasets (e.g., Faire EMBEDDING column) store embeddings as JSON strings `"[-0.19, 0.27, ...]"` instead of native float arrays. DG needs to parse these during ingest. Uses `fast-float` crate for ~5x faster parsing.
+**String-encoded float arrays** (#113): Production datasets (e.g., Faire EMBEDDING column) store embeddings as JSON strings `"[-0.19, 0.27, ...]"` instead of native float arrays. DG needs to parse these during ingest. Uses `fast-float2` crate for ~5x faster parsing.
 
 **Timestamp format detection** (#75, #104): The converter downloads parquet files to detect timestamp formats. Without limits, it downloads every file for unhandled Arrow temporal types. Cap at 15 files per table. Handle native Arrow temporal types. Detect integer-encoded dates (YYYYMMDD, YYYYMMDDHHMMSS).
 

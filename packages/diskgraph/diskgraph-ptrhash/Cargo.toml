@@ -22,7 +22,11 @@ itertools = "0.14.0"
 fastrand = "2.0.1"
 mem_dbg = "0.3.0"
 gxhash = "3.5.0"
-xxhash-rust = { version = "0.8", features = ["xxh3"] }
+# The 0.8.16 floor is load-bearing: earlier releases carry GHSA-6g2r-675j-hx59
+# (out-of-bounds read in `xxh3_*_with_secret` with a secret shorter than 136
+# bytes), fixed in 0.8.16. Do not relax this to a bare "0.8" – that would let
+# 0.8.15 and older back in and silently re-admit the advisory.
+xxhash-rust = { version = "0.8.16", features = ["xxh3"] }
 cacheline-ef = "1.1.0"
 tracing = { workspace = true }
 

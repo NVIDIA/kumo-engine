@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-
 """Unit tests for :mod:`pool.worker_manager.k8s` — K8sPoolWorkerManager
 and its module-level helpers.
 
@@ -10,7 +9,7 @@ BatchV1Api clients. No cluster, no kubeconfig, no real Kubernetes —
 runs in <1 s and validates the spec we hand to the K8s API plus the
 control-flow around it.
 """
-# Stub injection for laptop runs (no-op under pants — opt-in via
+# Stub injection for laptop runs (opt-in via
 # KUMO_WORKER_MANAGER_TEST_STUBS=1). Must run before ``import pool.*``.
 import os as _os  # noqa: E402,I100
 import sys as _sys  # noqa: E402
@@ -476,9 +475,8 @@ def test_provision_pool_worker_creates_pvc_then_deployment():
     assert pvc_body.spec.access_modes == ["ReadWriteOnce"]
     assert pvc_body.spec.storage_class_name == "topolvm-ssd"
     assert pvc_body.metadata.labels[LABEL_POOL_WORKER_UID] == "uid"
-    daemon_spec = (
-        apps.create_namespaced_deployment.call_args.kwargs["body"].spec.template.spec
-    )
+    daemon_spec = (apps.create_namespaced_deployment.call_args.kwargs["body"].
+                   spec.template.spec)
     assert daemon_spec.security_context.fs_group == 999
     assert daemon_spec.security_context.fs_group_change_policy == "OnRootMismatch"
     assert daemon_spec.security_context.seccomp_profile.type == "RuntimeDefault"
@@ -961,8 +959,7 @@ def _current_registered_cache_worker(mgr: K8sPoolWorkerManager):
             access_modes=["ReadWriteOnce"],
             storage_class_name="topolvm-ssd",
             volume_name="pv-uid",
-            resources=V1ResourceRequirements(
-                requests={"storage": "800Gi"}),
+            resources=V1ResourceRequirements(requests={"storage": "800Gi"}),
         ),
         status=V1PersistentVolumeClaimStatus(phase="Bound"),
     )
@@ -1212,9 +1209,8 @@ def test_provision_activity_pod_translates_env_dict_and_stamps_labels():
 
     # Azure Disk PV affinity is zonal, so the activity also pins to this
     # worker's daemon host to avoid a cross-node RWO Multi-Attach.
-    affinity_term = (
-        template_spec.affinity.pod_affinity
-        .required_during_scheduling_ignored_during_execution[0])
+    affinity_term = (template_spec.affinity.pod_affinity.
+                     required_during_scheduling_ignored_during_execution[0])
     assert affinity_term.topology_key == "kubernetes.io/hostname"
     assert affinity_term.label_selector.match_labels == {
         LABEL_APP: LABEL_APP_VALUE_DAEMON,
@@ -1305,8 +1301,8 @@ def test_provision_eph_activity_pod_uses_emptydir_and_eph_storage():
     assert vol.empty_dir.size_limit is None
     # No pool-worker-uid label on eph activity Jobs.
     assert LABEL_POOL_WORKER_UID not in job_body.metadata.labels
-    assert (job_body.spec.template.metadata.labels[
-        "azure.workload.identity/use"] == "true")
+    assert (job_body.spec.template.metadata.
+            labels["azure.workload.identity/use"] == "true")
 
 
 # ---------------------------------------------------------------------------
@@ -1333,17 +1329,19 @@ def test_delete_activity_pods_deletes_jobs_and_matching_orphans():
     assert LABEL_APP_VALUE_ACTIVITY in selector
     assert LABEL_APP_VALUE_ACTIVITY_EPH in selector
     assert f"{LABEL_TENANT}={TENANT}" in selector
-    core.list_namespaced_pod.assert_called_once_with(
-        namespace=NAMESPACE, label_selector=selector)
-    core.delete_namespaced_pod.assert_called_once_with(
-        name='orphan-activity', namespace=NAMESPACE)
+    core.list_namespaced_pod.assert_called_once_with(namespace=NAMESPACE,
+                                                     label_selector=selector)
+    core.delete_namespaced_pod.assert_called_once_with(name='orphan-activity',
+                                                       namespace=NAMESPACE)
 
 
 def test_delete_activity_pods_filters_and_waits_for_deletion(monkeypatch):
     monkeypatch.setattr('pool.worker_manager.k8s._POLL_INTERVAL_SECS', 0)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
-    batch.list_namespaced_job.side_effect = [MagicMock(items=[MagicMock()]),
-                                             MagicMock(items=[])]
+    batch.list_namespaced_job.side_effect = [
+        MagicMock(items=[MagicMock()]),
+        MagicMock(items=[])
+    ]
     core = MagicMock(spec=k8s_client.CoreV1Api)
     core.list_namespaced_pod.side_effect = [
         V1PodList(items=[_make_pod('orphan-activity')]),
@@ -1371,9 +1369,9 @@ def test_delete_activity_pods_filters_and_waits_for_deletion(monkeypatch):
     assert kwargs['grace_period_seconds'] == 0
     assert batch.list_namespaced_job.call_count == 2
     assert core.list_namespaced_pod.call_count == 3
-    core.delete_namespaced_pod.assert_called_once_with(
-        name='orphan-activity', namespace=NAMESPACE,
-        grace_period_seconds=0)
+    core.delete_namespaced_pod.assert_called_once_with(name='orphan-activity',
+                                                       namespace=NAMESPACE,
+                                                       grace_period_seconds=0)
 
 
 def test_list_activity_pods_filter_by_uid():
@@ -1813,9 +1811,8 @@ def test_wait_for_daemon_pod_gone_raises_on_timeout_by_default():
     # First list call (in _get_pool_worker_info) returns the daemon
     # so we know its node_name. Subsequent calls (the wait poll)
     # always return the pod alive — never reaped.
-    core.list_namespaced_pod.side_effect = lambda **kwargs: V1PodList(
-        items=[] if "diskgraph-activity-pod" in kwargs["label_selector"] else
-        [daemon_pod])
+    core.list_namespaced_pod.side_effect = lambda **kwargs: V1PodList(items=[
+    ] if "diskgraph-activity-pod" in kwargs["label_selector"] else [daemon_pod])
 
     mgr = _make_manager(core=core, apps=apps)
     with pytest.raises(PoolWorkerCleanupFailedError):
@@ -2020,8 +2017,8 @@ def test_wait_for_activity_job_waits_for_job_retry_after_failed_pod(
         V1PodList(items=[failed, running]),
     ]
     batch = MagicMock(spec=k8s_client.BatchV1Api)
-    batch.read_namespaced_job_status.return_value = MagicMock(
-        status=MagicMock(conditions=[]))
+    batch.read_namespaced_job_status.return_value = MagicMock(status=MagicMock(
+        conditions=[]))
     mgr = _make_manager(core=core, batch=batch)
 
     info = asyncio.run(
@@ -2064,9 +2061,8 @@ def test_wait_for_activity_job_fails_fast_for_terminal_job_without_pods(
     core = MagicMock(spec=k8s_client.CoreV1Api)
     core.list_namespaced_pod.return_value = V1PodList(items=[])
     batch = MagicMock(spec=k8s_client.BatchV1Api)
-    batch.read_namespaced_job_status.return_value = MagicMock(
-        status=MagicMock(
-            conditions=[MagicMock(type=condition_type, status='True')]))
+    batch.read_namespaced_job_status.return_value = MagicMock(status=MagicMock(
+        conditions=[MagicMock(type=condition_type, status='True')]))
     mgr = _make_manager(core=core, batch=batch)
 
     with pytest.raises(error_type, match=message):
@@ -2096,9 +2092,8 @@ def test_provision_activity_pod_does_not_rollback_on_wait_failure():
         V1PodList(items=[_make_pod("act-1", phase="Failed")]),
     ]
     batch.create_namespaced_job.return_value = MagicMock()
-    batch.read_namespaced_job_status.return_value = MagicMock(
-        status=MagicMock(
-            conditions=[MagicMock(type='Failed', status='True')]))
+    batch.read_namespaced_job_status.return_value = MagicMock(status=MagicMock(
+        conditions=[MagicMock(type='Failed', status='True')]))
 
     mgr = _make_manager(core=core, apps=apps, batch=batch)
     asyncio.run(
@@ -2215,8 +2210,7 @@ def test_existing_only_activity_rechecks_resources_after_worker_reclaim(
     apps.read_namespaced_deployment.return_value = deployment
     core.list_namespaced_pod.return_value = _registered_daemon_for(
         "existing-uid")
-    manager = _make_manager(
-        core=core, apps=apps, batch=batch, policy=policy)
+    manager = _make_manager(core=core, apps=apps, batch=batch, policy=policy)
 
     asyncio.run(
         manager.provision_pool_worker(
@@ -2739,9 +2733,8 @@ def test_delete_pool_worker_passes_force_on_timeout_through():
     # force_on_timeout=True it should log + return so the rest of
     # delete_pool_worker (PVC delete, Deployment delete, PDB delete)
     # can run.
-    core.list_namespaced_pod.side_effect = lambda **kwargs: V1PodList(
-        items=[] if "diskgraph-activity-pod" in kwargs["label_selector"] else
-        [daemon_pod])
+    core.list_namespaced_pod.side_effect = lambda **kwargs: V1PodList(items=[
+    ] if "diskgraph-activity-pod" in kwargs["label_selector"] else [daemon_pod])
     core.read_namespaced_persistent_volume_claim.side_effect = _api_exc(
         404,
         "not found",
@@ -3819,8 +3812,7 @@ def _assert_gcp_credentials_wiring(spec: V1PodSpec) -> None:
 
 def test_daemon_pod_mounts_selected_gcp_credentials_key():
     apps = MagicMock(spec=k8s_client.AppsV1Api)
-    spec = _built_daemon_pod_spec(
-        _make_gcp_wired_manager(apps=apps), apps)
+    spec = _built_daemon_pod_spec(_make_gcp_wired_manager(apps=apps), apps)
 
     _assert_gcp_credentials_wiring(spec)
 
@@ -3860,7 +3852,8 @@ def test_activity_jobs_mount_selected_gcp_credentials_key(pool_type):
             2,
         )
 
-    spec = batch.create_namespaced_job.call_args.kwargs["body"].spec.template.spec
+    spec = batch.create_namespaced_job.call_args.kwargs[
+        "body"].spec.template.spec
     _assert_gcp_credentials_wiring(spec)
 
 
@@ -3906,10 +3899,14 @@ def test_daemon_pod_mounts_statedb_secret_when_password_auth():
         policy_v1_api=MagicMock(spec=k8s_client.PolicyV1Api),
     )
     spec = _built_daemon_pod_spec(mgr, apps)
-    vol_secrets = {v.name: v.secret.secret_name for v in spec.volumes if v.secret}
+    vol_secrets = {
+        v.name: v.secret.secret_name
+        for v in spec.volumes if v.secret
+    }
     assert vol_secrets.get("kumo-secrets") == "kumo-statedb"
     mount_paths = {
-        m.name: m.mount_path for m in spec.containers[0].volume_mounts
+        m.name: m.mount_path
+        for m in spec.containers[0].volume_mounts
     }
     assert mount_paths.get("kumo-secrets") == "/var/run/secrets/kumo"
 
@@ -3982,10 +3979,14 @@ def test_daemon_pod_mounts_statedb_ca_beside_the_connection_secret():
         policy_v1_api=MagicMock(spec=k8s_client.PolicyV1Api),
     )
     spec = _built_daemon_pod_spec(mgr, apps)
-    vol_secrets = {v.name: v.secret.secret_name for v in spec.volumes if v.secret}
+    vol_secrets = {
+        v.name: v.secret.secret_name
+        for v in spec.volumes if v.secret
+    }
     assert vol_secrets.get("kumo-statedb-ca") == "cloudsql-ca"
     mount_paths = {
-        m.name: m.mount_path for m in spec.containers[0].volume_mounts
+        m.name: m.mount_path
+        for m in spec.containers[0].volume_mounts
     }
     assert mount_paths.get("kumo-statedb-ca") == "/var/run/secrets/kumo/ca"
     # The connection Secret still owns the parent directory.
@@ -3993,4 +3994,5 @@ def test_daemon_pod_mounts_statedb_ca_beside_the_connection_secret():
     # The source key is remapped to a fixed filename, so tls.sslrootcert is the
     # same constant whatever the operator's Secret happens to call it.
     ca_vol = next(v for v in spec.volumes if v.name == "kumo-statedb-ca")
-    assert [(i.key, i.path) for i in ca_vol.secret.items] == [("ca.crt", "ca.pem")]
+    assert [(i.key, i.path)
+            for i in ca_vol.secret.items] == [("ca.crt", "ca.pem")]

@@ -303,8 +303,6 @@ jobs:
     uses: ./.github/workflows/_docker-ui-image-custom.yml
     with:
       kumo_repo_ref: ${{ inputs.kumo_repo_ref }}
-      snowflake_image: false
-      databricks_image: false
       image_tag_suffix: _tmp
     secrets: inherit
 

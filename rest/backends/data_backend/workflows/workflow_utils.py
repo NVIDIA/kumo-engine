@@ -163,7 +163,15 @@ async def start_child_data_wf(
                 task_queue=task_queue,
             )
             if signal_name:
-                await child_wf_task.signal(signal_name, args=signal_args)
+                try:
+                    await child_wf_task.signal(signal_name, args=signal_args)
+                except ApplicationError as err:
+                    # The child can close before the signal lands; its
+                    # outcome still arrives through child_wf_task.
+                    if err.type != 'ExternalWorkflowExecutionNotFound':
+                        raise
+                    log.info('Child %s closed before signal %s', wf_id,
+                             signal_name)
             log.info('Parent %s successfully spawned child %s',
                      workflow.info().workflow_id, wf_id)
             return child_wf_task
@@ -204,5 +212,6 @@ def _child_refresh_canceled(ex: BaseException):
         while cause:
             if is_cancelled_exception(cause):
                 return True
-            cause = getattr(cause, 'cause', None) or getattr(cause, '__cause__', None)
+            cause = getattr(cause, 'cause', None) or getattr(
+                cause, '__cause__', None)
     return False

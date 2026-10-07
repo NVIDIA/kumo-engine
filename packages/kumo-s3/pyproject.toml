@@ -45,6 +45,9 @@ s3 = "kumo_s3.sink:S3SinkBackend"
 [project.entry-points."kumoai_studio.identities"]
 s3 = "kumo_s3.backend"
 
+[tool.uv.sources]
+kumo-core = { workspace = true }
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 

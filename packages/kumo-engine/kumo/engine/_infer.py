@@ -9,9 +9,9 @@ infer_metadata`/`_stype_for_column`/`_sample`/`_statistics`/
 `_column_statistics` in the cloud SDK. Sample decoding and statistics now
 have one implementation in `kumo_core`; this adapter calls
 `connector.source_backend` directly (no `Backend`/connector-id-lookup
-indirection -- `Table.connector` already *is* the live connector) and is
-simplified to this package's current scope: no Custom SQL table support (so
-no `sql=` threading/gating).
+indirection -- `Table.connector` already *is* the live connector) and threads a
+Custom SQL table's query to the reader as `sql=` (the reader applies the
+sample gating).
 
 Two entry points, split the same way the cloud SDK splits `SourceTable.
 column_dict` (source dtype + a pure dtype->stype rule)
@@ -39,8 +39,9 @@ cheap pass left ambiguous):
   call.
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
+from kumo_core.stype_inference import infer_stype_from_name
 from kumoapi.plugin import SourceBackend
 from kumoapi.source_table import SourceColumn
 from kumoapi.table import Column
@@ -64,33 +65,41 @@ def _stype_from_dtype(dtype: Dtype) -> Optional[Stype]:
     return infer_stype_from_dtype(dtype)
 
 
-def _stype_from_stats(dtype: Dtype, num_unique: int,
-                      unique_fraction: float) -> Optional[Stype]:
+def _stype_from_stats(dtype: Dtype, num_unique: int, unique_fraction: float,
+                      num_unique_multi: Optional[int] = None,
+                      multicategorical_proven: bool = False) -> Optional[Stype]:
     r"""Returns the stype a column's statistics imply. Ported from
     `kumoai/backend/local/table.py`'s `_stype_from_stats`.
     """
     from kumo_core.stype_inference import infer_stype_from_stats
 
-    return infer_stype_from_stats(dtype, num_unique, unique_fraction)
+    return infer_stype_from_stats(dtype, num_unique, unique_fraction,
+                                  num_unique_multi, multicategorical_proven)
 
 
 def _stype_for_column(
     dtype: Optional[Dtype],
     stats: Optional[Tuple[int, float]],
+    num_unique_multi: Optional[int] = None,
+    multicategorical_proven: bool = False,
+    *,
+    name: str = "",
 ) -> Optional[Stype]:
     r"""Returns the stype implied by one column's dtype, falling back to its
-    sampled statistics. No name-based (pkey/time-column) special-casing --
-    that happens in `resolve_table_columns`. Ported from `kumoai/backend/
-    local/table.py`'s `_stype_for_column`.
+    sampled statistics. Identifier and numerical names use the shared rules;
+    explicit primary-key/time-column roles are applied in
+    `resolve_table_columns`.
+    Ported from `kumoai/backend/local/table.py`'s `_stype_for_column`.
     """
     if dtype is None:
         return None
-    implied = _stype_from_dtype(dtype)
+    implied = _stype_from_dtype(dtype) or infer_stype_from_name(name, dtype)
     if implied is not None:
         return implied
     if stats is None:
         return None
-    return _stype_from_stats(dtype, *stats)
+    return _stype_from_stats(dtype, *stats, num_unique_multi,
+                             multicategorical_proven)
 
 
 def _column_statistics(frame) -> Dict[str, Tuple[int, float]]:
@@ -109,32 +118,33 @@ def _sample(
     source_backend: SourceBackend,
     connector: Connector,
     table_name: str,
-) -> Tuple[Dict[str, Dtype], Dict[str, Tuple[int, float]], bool]:
-    r"""Reads a sample and returns per-column dtypes and statistics, plus
+    sql: Optional[str] = None,
+) -> Tuple[Dict[str, Dtype], Dict[str, Tuple[int, float]], Any, bool]:
+    r"""Reads a sample and returns per-column dtypes, statistics, the frame, and
     whether the source itself came back with zero rows. Any failure to
     reach the source returns empty mappings rather than raising --
     statistics are an enhancement: a column whose stype follows from its
     dtype must still resolve with no read at all, and only a column that
     genuinely needed the data should fail (the caller's own error then names
     it). Ported from `kumoai/backend/local/table.py`'s `_sample`/
-    `_statistics`, simplified: no Custom SQL table support here yet, so no
-    `sql=`/gating.
+    `_statistics`.
     """
     try:
         response = source_backend.get_sample(connector, table_name,
-                                             _SAMPLE_ROWS)
+                                             _SAMPLE_ROWS, sql=sql)
     except Exception:
-        return {}, {}, False
+        return {}, {}, None, False
     dtypes = {col.name: col.dtype for col in response.cols}
     frame = _sample_frame(response.sample_rows)
     is_empty = frame is not None and len(frame) == 0
     return dtypes, ({} if frame is None else _column_statistics(frame)), \
-        is_empty
+        frame, is_empty
 
 
 def infer_source_columns(
     connector: Connector,
     table_name: str,
+    sql: Optional[str] = None,
 ) -> Dict[str, SourceColumn]:
     r"""Schema read for `table_name` via `SourceBackend.get_columns`.
     See the module docstring for source-dependent I/O. Infers stype
@@ -148,7 +158,8 @@ def infer_source_columns(
     Raises:
         ValueError: if the source reports no columns.
     """
-    response = connector.source_backend.get_columns(connector, table_name)
+    response = connector.source_backend.get_columns(connector, table_name,
+                                                    sql=sql)
     if not response.cols:
         raise ValueError(f"Table {table_name!r} has no columns.")
     return {
@@ -173,6 +184,7 @@ def resolve_table_columns(
     primary_key: Optional[str],
     time_column: Optional[str],
     end_time_column: Optional[str],
+    sql: Optional[str] = None,
 ) -> List[Column]:
     r"""Finishes what `infer_source_columns`'s cheap pass left open: applies
     the primary-key/time-column stype override, then -- only if something is
@@ -194,6 +206,7 @@ def resolve_table_columns(
         time_column: names the time column, similarly reasserted as
             `Stype.timestamp`.
         end_time_column: names the end-time column, same as `time_column`.
+        sql: a Custom SQL table's query, sampled instead of `table_name`.
 
     Raises:
         ValueError: if `column_names` matches nothing, or a selected
@@ -216,19 +229,41 @@ def resolve_table_columns(
     resolved: Dict[str, Tuple[Optional[Dtype], Optional[Stype]]] = {
         col.name:
         (col.dtype, Stype.ID if col.name == primary_key else
-         Stype.timestamp if col.name in (time_column,
-                                         end_time_column) else col.stype)
+         Stype.timestamp if col.name in (time_column, end_time_column) else
+         col.stype or _stype_for_column(col.dtype, None, name=col.name))
         for col in selected
     }
-    if any(stype is None for _, stype in resolved.values()):
+    delimiters = {col.name: col.multicategorical_delimiter for col in selected}
+    if any(stype is None or (stype == Stype.multicategorical and dtype ==
+                             Dtype.string and delimiters[name] is None)
+           for name, (dtype, stype) in resolved.items()):
         source_backend = connector.source_backend
-        dtypes, statistics, is_empty = _sample(source_backend, connector,
-                                               table_name)
+        dtypes, statistics, frame, is_empty = _sample(source_backend, connector,
+                                                      table_name, sql)
         for col in selected:
             dtype, stype = resolved[col.name]
             dtype = dtype or dtypes.get(col.name)
+            num_unique_multi = None
+            delimiter = delimiters[col.name]
+            if (dtype == Dtype.string and frame is not None
+                    and col.name in frame
+                    and stype in (None, Stype.multicategorical)):
+                from kumo_core.stype_inference import (
+                    multicategorical_separator,
+                    multicategorical_token_counts,
+                )
+
+                values = frame[col.name].dropna().astype('string')
+                delimiter = delimiter or multicategorical_separator(values)
+                if delimiter is not None:
+                    num_unique_multi = len(
+                        multicategorical_token_counts(values, delimiter))
             if stype is None:
-                stype = _stype_for_column(dtype, statistics.get(col.name))
+                stype = _stype_for_column(dtype, statistics.get(col.name),
+                                          num_unique_multi, delimiter
+                                          is not None, name=col.name)
+            if stype == Stype.multicategorical and dtype == Dtype.string:
+                delimiters[col.name] = delimiter
             resolved[col.name] = (dtype, stype)
         if is_empty and any(stype is None for _, stype in resolved.values()):
             from kumo_core.sources.errors import PermanentSourceError
@@ -254,6 +289,6 @@ def resolve_table_columns(
                 name=col.name,
                 stype=stype,
                 dtype=dtype,
-                multicategorical_delimiter=col.multicategorical_delimiter,
+                multicategorical_delimiter=delimiters[col.name],
             ))
     return result

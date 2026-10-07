@@ -1,11 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-
 """Tests for ``pool.persistence.PoolStatePersistence``."""
 import asyncio
 
-import pytest  # pants: no-infer-dep
+import pytest
 
 from io_utils.json import save_json
 from pool.dataclasses import (
@@ -27,8 +26,8 @@ def _make_state() -> PoolState:
         placement_state=K8sPlacementState(),
         snapshots={
             'snap-1':
-            SnapshotPlacement(worker='worker-a',
-                              state=SnapshotState.READY, size_bytes=123),
+            SnapshotPlacement(worker='worker-a', state=SnapshotState.READY,
+                              size_bytes=123),
         },
         dataplane_backups={
             'snap-1':

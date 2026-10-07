@@ -29,17 +29,12 @@ GH_RUN_DETAILS_VERSION = Version("2.87.0")
 
 
 class Application(Enum):
-    KUMO = "kumo"
-    # kumo3 backend image consolidation — sibling to KUMO during the
-    # kumo2 → kumo3 transition. Different image lineup (one cpu backend
-    # + one gpu backend instead of rest/temporalworker/worker/diskgraph_pool)
-    # but same release cadence as KUMO.
     KUMO3 = "kumo3"
     ALL = "all"
 
     def expand(self) -> list['Application']:
         if self == Application.ALL:
-            return [Application.KUMO, Application.KUMO3]
+            return [Application.KUMO3]
         return [self]
 
     def __str__(self):
@@ -63,19 +58,20 @@ def application_from_ref(kumo_branch: str) -> Optional[Application]:
     """
     Which product line a ref belongs to, or None when the ref does not say.
 
-    v3.0+ is kumo3 (kumo-backend-cpu, kumo-backend-gpu, kumo-ui); v1.x/v2.x is
-    kumo2 (worker, rest, temporal-worker, kumo-ui). Building a release tag with
-    the wrong lineup fails silently -- every workflow succeeds, it just
-    publishes the wrong images -- so the tag being built is the most reliable
-    place to read the answer from.
+    v3.0+ is kumo3 (kumo-backend-cpu, kumo-backend-gpu, kumo-ui). v1.x/v2.x
+    images are no longer built from master.
 
     :param kumo_branch: the ref whose contents are being built.
     :return: the application the ref implies, or None to leave it to the caller.
+    :raises ValueError: for a v1.x/v2.x release ref.
     """
     match = _RELEASE_REF_RE.match(kumo_branch)
     if match is None:
         return None
-    return Application.KUMO3 if int(match.group(1)) >= 3 else Application.KUMO
+    if int(match.group(1)) < 3:
+        raise ValueError(f"{kumo_branch} is a v1.x/v2.x release; only Kumo 3 "
+                         f"images can be built from master")
+    return Application.KUMO3
 
 
 def resolve_application(app: Optional[Application],
@@ -100,7 +96,6 @@ def resolve_application(app: Optional[Application],
 
 class Platform(Enum):
     SAAS = "saas"
-    DATABRICKS = "databricks"
     ALL = "all"
 
     def expand(self, app: Application) -> list['Platform']:
@@ -109,10 +104,6 @@ class Platform(Enum):
         :return: List of platforms to build images for.
         """
         _all_platforms: dict[Application, list[Platform]] = {
-            Application.KUMO: [
-                Platform.SAAS,
-                Platform.DATABRICKS,
-            ],
             Application.KUMO3: [
                 Platform.SAAS,
             ],
@@ -130,9 +121,6 @@ class Platform(Enum):
 
 
 class WorkflowFile(Enum):
-    WORKER = "_docker-worker-image-custom.yml"
-    REST = "_docker-rest-image-custom.yml"
-    TEMPORAL_WORKER = "_docker-temporal-worker-image-custom.yml"
     UI = "_docker-ui-image-custom.yml"
     # kumo3 backend-image consolidation: one orchestrator builds cpu+gpu+ui as
     # a set and publishes them together, so a deployable ref always has all
@@ -182,20 +170,6 @@ def gh_whoami() -> str:
 
 # List of yml workflow files used to build images for each platform
 images: dict[Application, dict[Platform, list[WorkflowFile]]] = {
-    Application.KUMO: {
-        Platform.SAAS: [
-            WorkflowFile.WORKER,
-            WorkflowFile.REST,
-            WorkflowFile.TEMPORAL_WORKER,
-            WorkflowFile.UI,
-        ],
-        Platform.DATABRICKS: [
-            WorkflowFile.WORKER,
-            WorkflowFile.REST,
-            WorkflowFile.TEMPORAL_WORKER,
-            WorkflowFile.UI,
-        ]
-    },
     # kumo3 backend image consolidation: one cpu backend + one gpu backend +
     # UI, built as a coupled set by a single orchestrator workflow. Frequent
     # rebuilds (every kumo source change).
@@ -223,21 +197,6 @@ def gather_flags(app: Application, platform: Platform,
         """Update flags if all conditions are met"""
         if app in apps and platform in platforms and workflow in workflows:
             flags.update(values)
-
-    # all databricks workflows need databricks flags
-    _gather_from_cross_product(
-        apps=[Application.KUMO],
-        platforms=[Platform.DATABRICKS],
-        workflows=[
-            WorkflowFile.WORKER,
-            WorkflowFile.REST,
-            WorkflowFile.TEMPORAL_WORKER,
-            WorkflowFile.UI,
-        ],
-        values={
-            "databricks_image": "true",
-        },
-    )
 
     _gather_from_cross_product(
         apps=[Application.KUMO3],
@@ -475,9 +434,6 @@ def validate_branch_or_tag(branch_or_tag):
 # set from a single dispatch.
 #
 _ECR_IMAGE_NAMES: dict[WorkflowFile, list[str]] = {
-    WorkflowFile.WORKER: ["kumo/kumo"],
-    WorkflowFile.REST: ["kumo/kumo-rest"],
-    WorkflowFile.TEMPORAL_WORKER: ["kumo/kumo-temporalworker"],
     WorkflowFile.UI: ["kumo/kumo-ui"],
     WorkflowFile.KUMO3_IMAGES: [
         "kumo/kumo-backend-cpu",
@@ -486,35 +442,21 @@ _ECR_IMAGE_NAMES: dict[WorkflowFile, list[str]] = {
     ],
 }
 
-# Workflows that do not produce a _databricks-suffixed image in ECR.
-_NO_DATABRICKS_SUFFIX: frozenset[WorkflowFile] = frozenset()
-
 
 def get_ecr_images_for_sync(
     workflow: WorkflowFile,
     tag: str,
-    is_databricks: bool,
 ) -> list[tuple[str, str]]:
     """
     Return the ECR (image_name, tag) pairs produced by a given workflow.
     image_name is the ECR path without registry (e.g. "kumo/kumo-ui").
 
-    Returns an empty list for workflows that don't land in ECR
-    (Snowflake-only and PROXY).
+    Returns an empty list for workflows that don't land in ECR.
     """
     if workflow not in _ECR_IMAGE_NAMES:
         return []
 
-    ecr_tag = f"{tag}_databricks" if is_databricks and workflow not in _NO_DATABRICKS_SUFFIX else tag
-    results = [(name, ecr_tag) for name in _ECR_IMAGE_NAMES[workflow]]
-
-    # Worker also produces a trainer6 variant alongside the main image.
-    if workflow == WorkflowFile.WORKER:
-        results.extend(
-            (name, f"{ecr_tag}_trainer6")
-            for name in _ECR_IMAGE_NAMES[workflow])
-
-    return results
+    return [(name, tag) for name in _ECR_IMAGE_NAMES[workflow]]
 
 
 CLOUD_REGISTRIES: dict[str, CloudRegistry] = {
@@ -541,18 +483,15 @@ if __name__ == "__main__":
         "--workflow_branch", required=False, default=None,
         help=("the branch or tag of Kumo that will "
               "be used to fetch the scripts which "
-              "generate individual container images. If omitted, it is "
-              "derived from kumo_branch: a release tag like v2.21.29 selects "
-              "the v2.21 maintenance branch (whose image workflows still "
-              "build the pyspark venv); anything else uses master."))
+              "generate individual container images. Defaults to master."))
     parser.add_argument(
         "--app", type=Application, choices=list(Application), required=False,
         default=None,
         help="the application for which images will be built and pushed. If "
-        "omitted, it is derived from kumo_branch: a release ref on the v3.0+ "
-        "line selects kumo3 (cpu/gpu backend image consolidation) and a v1.x "
-        "or v2.x one selects kumo (the legacy 4-image lineup). Anything that "
-        f"is not a release ref defaults to {DEFAULT_APPLICATION}.")
+        "omitted, it is derived from kumo_branch: a v3.0+ release ref selects "
+        "kumo3 (cpu/gpu backend image consolidation) and a v1.x or v2.x one "
+        f"is rejected. Anything that is not a release ref defaults to "
+        f"{DEFAULT_APPLICATION}.")
     parser.add_argument(
         "--target", type=Platform, choices=list(Platform), required=False,
         default=Platform.SAAS,
@@ -562,7 +501,7 @@ if __name__ == "__main__":
         default=None, help=(
             "If specified, sync all built ECR images to the given cloud "
             "registry after building. Implies full attach: builds and "
-            "sync workflows are both awaited. Snowflake images are excluded."))
+            "sync workflows are both awaited."))
     parser.add_argument(
         "--publish_to_acr", action="store_true",
         help=("Also publish the complete Kumo 3 SaaS image set to the "
@@ -573,32 +512,12 @@ if __name__ == "__main__":
               "builds to complete before exiting."))
     args = parser.parse_args()
 
-    # Derive the application from the code ref when not set explicitly. kumo2
-    # and kumo3 build different image lineups, and getting that wrong is silent
-    # -- every workflow succeeds, it just publishes images nobody asked for. The
-    # release tag already records which line it is, so read it from there rather
-    # than making every caller remember to pass --app.
+    # Derive the application from the code ref when not set explicitly, and
+    # reject v1.x/v2.x release refs.
     args.app = resolve_application(args.app, args.kumo_branch)
 
-    # Derive the workflow branch from the code ref when not set explicitly.
-    # master is the Kumo 3.0 line where Spark -- and the pyspark-venv build
-    # step in the temporal-worker image workflow -- was removed (#28324).
-    # Building a v2.x hotfix with the master workflows silently skips the venv,
-    # so EMR jobs later fail looking for kumo_pyspark_env-<tag>.tar.gz (#29087).
-    # Only the v2.x line still uses Spark, so a v2.MINOR.PATCH release tag is
-    # routed to its v2.MINOR maintenance branch (whose workflows build the
-    # venv); 3.0+ tags and SHAs/branches keep master. Pass --workflow_branch
-    # explicitly to override.
     if args.workflow_branch is None:
-        release_match = re.match(r"^(v2\.\d+)\.\d+", args.kumo_branch)
-        if release_match:
-            args.workflow_branch = release_match.group(1)
-            print(f"Derived --workflow_branch={args.workflow_branch} from "
-                  f"v2.x release tag {args.kumo_branch} (master is Spark-less "
-                  f"Kumo 3.0 and would skip the pyspark-venv build). Pass "
-                  f"--workflow_branch explicitly to override.")
-        else:
-            args.workflow_branch = "master"
+        args.workflow_branch = "master"
 
     if args.publish_to_acr:
         release_app = application_from_ref(args.kumo_branch)
@@ -635,11 +554,8 @@ if __name__ == "__main__":
 
         image_pairs = []
         for spec in workflow_specs:
-            flags_dict = dict(spec.flags)
-            is_databricks = flags_dict.get("databricks_image") == "true"
             image_pairs.extend(
-                get_ecr_images_for_sync(spec.workflow, spec.kumo_branch,
-                                        is_databricks))
+                get_ecr_images_for_sync(spec.workflow, spec.kumo_branch))
 
         mirror_cmd = [
             sys.executable,

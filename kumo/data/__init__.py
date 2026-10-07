@@ -6,11 +6,14 @@ import os
 import os.path as osp
 from typing import Optional
 
+# Shared class limit; keep the existing kumo.data import path available.
+from kumo_core.training.validation import MAX_NUM_CLASSES  # noqa: F401
+from kumo_core.types.conversions import DataFrame
+
 from io_utils import logging
 from kumo.data.backend_cache import BackendCacheManager
 from kumo.data.backend_utils import normalize_persist_dir
 from kumo.data.common import DATA_BACKEND_THREAD_POOL, MaterializationStage
-from kumo_core.types.conversions import DataFrame
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +43,6 @@ REMATERIALIZE_ALL_EDGES = _env_bool('REMATERIALIZE_ALL_EDGES')
 
 # Split cols for stats calculation.
 MAX_COLS_STAT_BATCH_COLS = _env_int('MAX_COLS_STAT_BATCH_COLS', 25)
-
-# The number of classes we support for a multi-class classification task or a
-# multi-label task.
-MAX_NUM_CLASSES = _env_int('MAX_NUM_CLASSES', 6000)
 
 ADD_DF_TRACING = _env_bool('ADD_DF_TRACING')
 

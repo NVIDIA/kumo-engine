@@ -143,7 +143,8 @@ class BigQuerySourceBackend(_BigQuerySessions):
         del project_id
         return SourceTableDataResponse(
             table_name=table_name,
-            cols=self._columns(connector, table_name, self._embeddable(sql)),
+            cols=self._columns(connector, table_name,
+                               self._embeddable(connector, sql)),
         )
 
     def get_sample(
@@ -167,7 +168,7 @@ class BigQuerySourceBackend(_BigQuerySessions):
             sample_over_budget,
             sample_timeout,
         )
-        query = self._embeddable(sql)
+        query = self._embeddable(connector, sql)
         if query is None:
             return self._table_sample(connector, table_name, sample_rows)
         plan = self._plan(connector, query)
@@ -253,14 +254,14 @@ class BigQuerySourceBackend(_BigQuerySessions):
         # tables sharing a `dest_dir` would leave the second holding only its
         # own files.
         destination = staging_dir(dest_dir, table_name)
-        query = self._embeddable(sql)
+        query = self._embeddable(connector, sql)
         staged = read_table(
             self._reader(connector), table_name, str(destination),
             columns=self._declared(connector, table_name, dtypes, query),
             mode=self.mode, sql=query, version=data_version)
-        if not staged.paths:
+        if not staged.num_rows:
             raise PermanentSourceError(
-                f'Reading {table_name} produced no files. An empty source '
+                f'Reading {table_name} returned no rows. An empty source '
                 f'table cannot be ingested; DiskGraph needs at least one row '
                 f'to infer an encoding.')
 
@@ -314,15 +315,18 @@ class BigQuerySourceBackend(_BigQuerySessions):
                 f'Invalid table {table_name}: it does not exist in '
                 f'{config.project_id}.{config.dataset_id}.') from error
 
-    def _embeddable(self, sql: Optional[str]) -> Optional[str]:
+    def _embeddable(self, connector: SourceConnector,
+                    sql: Optional[str]) -> Optional[str]:
         r"""The only form of a query this reader ever sends: the caller's text
         with its trailing terminator and comment removed, so it stands in
         subquery position.
         """
         if sql is None:
             return None
-        from kumo_core.custom_sql import subquery_safe_sql
+        from kumo_core.custom_sql import gate_custom_sql, subquery_safe_sql
         from kumo_core.types import ConnectorType
+        gate_custom_sql(sql, ConnectorType.BIGQUERY,
+                        _target_config(connector))
         return subquery_safe_sql(sql, ConnectorType.BIGQUERY)
 
     def _plan(self, connector: SourceConnector, sql: str) -> QueryPlan:

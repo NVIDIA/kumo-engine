@@ -11,7 +11,7 @@ from dataclasses import field
 from datetime import datetime, timezone
 from typing import Dict, Literal
 
-import pytest  # pants: no-infer-dep
+import pytest
 
 from io_utils.dataclasses import kumo_dataclass
 from io_utils.json import from_json, load_json, save_json, to_json

@@ -43,6 +43,8 @@ mod scratch;
 mod sort_buckets;
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_on_disk_hashes;
 
 use bitvec::{bitvec, vec::BitVec};
 use bucket_fn::BucketFn;

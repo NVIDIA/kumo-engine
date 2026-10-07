@@ -2,34 +2,10 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import os
 import re
 from pathlib import Path
-from typing import Dict
 
 from setuptools import find_namespace_packages, find_packages, setup
-
-# Regex to parse a version constant definition in a BUILD file, such as:
-#      TORCH_GEOMETRIC_VERSION = "v2.0.0"
-# - variable name must be all UPPERCASE
-# - RHS must be a quoted literal (single/double quotes)
-# - optional trailing comment
-VERSION_CONST_RE = re.compile(
-    r'^\s*([A-Z][A-Z0-9_]*)\s*=\s*([\'"])([^\'"]+)\2\s*(?:#.*)?$',
-    re.MULTILINE,
-)
-
-BUILD_FILE = Path(__file__).parent / "3rdparty" / "BUILD"
-
-
-def parse_version_constants(
-        build_file_path: Path = BUILD_FILE) -> Dict[str, str]:
-    """
-    Parse lines like NAME = "value" (or NAME = 'value') from build_file_path.
-    Only matches UPPERCASE variable names.
-    """
-    text = build_file_path.read_text(encoding="utf8")
-    return {m.group(1): m.group(3) for m in VERSION_CONST_RE.finditer(text)}
 
 
 def parse_project_version(project_file_path: Path) -> str:
@@ -45,23 +21,17 @@ def parse_project_version(project_file_path: Path) -> str:
     return match.group(1)
 
 
-cuda = "cpu"
-# If CUDA is not explicitly set, we assume cpu only.
-if 'CUDA' in os.environ and os.environ['CUDA'] != "cpu":
-    cuda = "gpu"
-
-# We're moving version constants of some major dependencies to "3rdparty/BUILD"
-# as single-source-of-truth, and parse them from the "3rdparty/BUILD" file.
-build_versions = parse_version_constants()
-
 # NOTE that for major dependencies, we will check the latest update every year
 # in May and November to ensure that our dependencies are up to date.
 # Please include performance and efficiency critical packages here.
 major_dependencies = [
-    f"torch=={build_versions['TORCH_VERSION']}",
-    "torch-geometric>=2.8.0",
-    f"numpy=={build_versions['NUMPY_VERSION']}",
-    f"pandas=={build_versions['PANDAS_VERSION']}",
+    # Keep in sync with docker/kumodeps_base.
+    "torch==2.12.0",
+    # numpy 2.2.x / pandas 2.2.x ship no cp314 wheel (first cp314 wheels:
+    # numpy 2.3.2, pandas 2.3.3); older pins force a fragile from-sdist build
+    # on 3.14. Both stay within kumo-core's numpy>=2.1,<3 / pandas>=2.2,<3.
+    "numpy==2.3.3",
+    "pandas==2.3.3",
     # Used directly by kumo.utils.dataclass and REST integration tests.
     "httpx<0.28",
     "backoff==2.2.1",
@@ -70,7 +40,7 @@ major_dependencies = [
 observability_requires = [
     # opentelemetry <1.35 (proto) capped protobuf<5, conflicting with the cp314
     # protobuf>=6.33 floor; the 1.43.0 / 0.64b0 line relaxed that cap. Kept in
-    # sync with the opentelemetry requirement in 3rdparty/BUILD.
+    # sync with the opentelemetry requirement here.
     "opentelemetry-api==1.43.0",
     "opentelemetry-sdk==1.43.0",
     "opentelemetry-exporter-otlp==1.43.0",
@@ -84,16 +54,18 @@ kumo_api_ver = parse_project_version(
     Path(__file__).parent / "packages" / "kumo-api" / "pyproject.toml")
 kumo_api_dep = f"kumo-api=={kumo_api_ver}"
 
-if cuda == "cpu":
-    faiss_dependency = "faiss-cpu==1.14.2"
-else:
-    faiss_dependency = "faiss-gpu==1.14.3"
-
 install_requires = major_dependencies + observability_requires + [
     # Internal component distributions imported by the platform package.
     # scripts/update_packages.sh installs their colocated sources before the
     # root resolve; keep ordinary requirements here so built metadata records
     # the real runtime ownership even though they are not public PyPI releases.
+    # The faiss-cpu/faiss-gpu choice is NOT made here: a build-time env var
+    # would get frozen into uv.lock at whatever value was active when `uv
+    # lock` last ran, so a later `uv sync --locked --extra cu130` would
+    # silently keep installing faiss-cpu. It's wired through the "cpu"/
+    # "cu130" extras below instead, exactly like torch's build selection,
+    # so it's a real per-sync `--extra` choice uv.lock can represent for
+    # both profiles at once.
     "kumo-core==0.1.0.dev1",
     "kumo-bigquery==0.1.0.dev1",
     "kumo-databricks==0.1.0.dev1",
@@ -124,9 +96,11 @@ install_requires = major_dependencies + observability_requires + [
     "scikit-learn>=1.7.2",
     "smart-open==5.2.1",
     # pyarrow version must be kept in sync with snowflake-connector-python.
-    # PYARROW_VERSION is a full specifier (e.g. ">=18"), so interpolate it
-    # without an extra "==".
-    f"pyarrow{build_versions['PYARROW_VERSION']}",
+    # pyarrow <18 has no cp314 wheel and still ships the legacy ParquetDataset
+    # API; >=18 is the cp314-capable floor. PyArrow 25 is not yet compatible
+    # with the DiskGraph extension's parquet statistics path (it raises
+    # ImportError while computing BP column stats).
+    "pyarrow>=18,<25",
     "kubernetes==24.2.0",
     # filelock >=3.20.3 fixes CVE-2025-68146 / CVE-2026-22701. (3.29.5+ are
     # newer than the uv exclude-newer quarantine window at time of writing.)
@@ -138,7 +112,7 @@ install_requires = major_dependencies + observability_requires + [
     # identically to 38.0.4. test/connector/test_legacy_private_key.py guards
     # this. It is a base dependency because io_utils/encryption.py and
     # connector code import it outside the REST-only surface.
-    f"cryptography=={build_versions['CRYPTOGRAPHY_VERSION']}",
+    "cryptography==50.0.0",
     "inflect==7.5.0",
     "fsspec>=2025.3.0,<=2025.5.1",
     "optuna==4.3.0",
@@ -146,11 +120,11 @@ install_requires = major_dependencies + observability_requires + [
     "asgiref==3.5.2",
     "blockbuster>=1.5,<1.6",
     "urllib3>=1.26.18,<3",
-    "requests==2.32.5",
+    "requests==2.33.1",
     "tenacity>=8,<10",
     # google-api-python-client permits much older httplib2 releases; pin the
     # patched version so the backend image cannot resolve back to 0.20.4.
-    f"httplib2=={build_versions['HTTPLIB2_VERSION']}",
+    "httplib2==0.32.0",
     "orjson>=3.10",
     "ec2-metadata==2.10.0",
     "deprecated==1.3.1",
@@ -191,13 +165,23 @@ install_requires = major_dependencies + observability_requires + [
     # pkg_resources.
     "setuptools>=80.10.2,<82",
     "snowflake-connector-python>=4.3",
-    "snowflake-snowpark-python>=1.24",
+    # Floor >=1.49: first release admitting Python 3.14 (1.11.0/1.24 cap at
+    # <3.12, so on 3.14 the resolver must pick >=1.49). Keep in sync with
+    # scripts/update_packages.sh.
+    "snowflake-snowpark-python>=1.49",
     "databricks-sql-connector==4.5.0",
     "databricks-sdk==0.73.0",
     "thrift==0.24.0",
     "certifi==2025.1.31",  # sf support case 01012966
     "python-logging-loki==0.3.1",
-    f"temporalio{build_versions['TEMPORALIO_VERSION']}",
+    # temporalio 1.17.0 capped protobuf<6, conflicting with the cp314
+    # protobuf>=6.33 floor (kumo-api requires protobuf>=5.27 on 3.14).
+    # 1.18.0+ relaxed the cap to protobuf<7; abi3 wheels install on cp314.
+    # 1.30.0 raises the floor further: its Rust bridge bundles quinn-proto
+    # 0.11.15 (RUSTSEC-2026-0185) and opentelemetry_sdk 0.32.1
+    # (GHSA-w9wp-h8wv-79jx). 1.31.0 fixes a cancel racing a completed sync
+    # activity killing an idle pool thread (sdk-python#1648).
+    "temporalio>=1.31,<2",
     "zstd>=1.5.6",
     "aiocache==0.12.3",
     # aiobotocore 3.7.0 supports the botocore 1.42.x line pulled in by the boto3
@@ -206,7 +190,6 @@ install_requires = major_dependencies + observability_requires + [
     "aiobotocore==3.7.0",
     "types-aiobotocore[s3]==3.7.0",
     kumo_api_dep,
-    faiss_dependency,
     "kumo-pql>=0.1.0,<0.2",
 ]
 
@@ -223,18 +206,18 @@ drawing_requires = [
 rest_requires = [
     # fastapi >=0.137 allows starlette >=1.3.1, which fixes
     # CVE-2026-48818 / CVE-2026-54283 (high) and the starlette 1.x medium
-    # CVE set. Versions single-sourced from 3rdparty/BUILD.
-    f"fastapi=={build_versions['FASTAPI_VERSION']}",
-    f"starlette=={build_versions['STARLETTE_VERSION']}",
+    # CVE set.
+    "fastapi==0.138.0",
+    "starlette==1.3.1",
     "uvicorn==0.38.0",
     "watchdog[watchmedo]",
     # Paired with the base cryptography pin above; both versions are
-    # single-sourced from 3rdparty/BUILD.
-    f"pyOpenSSL=={build_versions['PYOPENSSL_VERSION']}",
+    # single-sourced here.
+    "pyOpenSSL==26.4.0",
     "readerwriterlock==1.0.9",
     "greenlet>=3.1",
     # 0.64b0 pairs with the opentelemetry-api/sdk 1.43.0 core above; kept in
-    # sync with the opentelemetry/fastapi requirements in 3rdparty/BUILD.
+    # sync with the opentelemetry/fastapi requirements here.
     # >=0.62b0 is REQUIRED with starlette 1.x / fastapi >=0.137: older
     # instrumentation iterates app.routes and crashes on _IncludedRouter
     # entries (500s every /v0/auth/* request); fixed upstream by
@@ -243,20 +226,20 @@ rest_requires = [
     "opentelemetry-instrumentation-fastapi==0.64b0",
     "opentelemetry-distro[otlp]==0.64b0",
     "fifolock==0.0.20",
-    # 6.0.0 crashes on starlette 1.x's _IncludedRouter route entries.
-    # Single-sourced from 3rdparty/BUILD.
-    f"prometheus-fastapi-instrumentator=="
-    f"{build_versions['PROM_FASTAPI_INSTRUMENTATOR_VERSION']}",
+    # 6.0.0 reads route.path unguarded while resolving handler names and
+    # crashes on starlette 1.x's _IncludedRouter entries; 8.x supports
+    # starlette>=1,<2.
+    "prometheus-fastapi-instrumentator==8.0.2",
     "humanize==4.6.0",
     "markdown==3.10",
     "python-dateutil>=2.9,<3",
-    # To prevent test failures
-    "anyio==3.7.1",
+    # 4.14.2 fixes GHSA-82r6-8w77-94w6 and GHSA-5p39-cfhj-2xmp.
+    "anyio==4.14.2",
     "pyright==1.1.283",
     # PyJWT replaces python-jose: jose hard-depends on ecdsa
     # (CVE-2024-23342, Minerva timing attack — no fixed release exists) and
-    # caps pyasn1 <0.5 (CVE-2026-30922). Single-sourced from 3rdparty/BUILD.
-    f"pyjwt[crypto]=={build_versions['PYJWT_VERSION']}",
+    # caps pyasn1 <0.5 (CVE-2026-30922).
+    "pyjwt[crypto]==2.15.1",
 ]
 
 # TODO(frg100): Store stats in S3 so we don't have to calculate them with
@@ -269,11 +252,14 @@ tools_requires = [
 # sql-metadata 2.x caps sqlparse below 0.6. Version 3.x uses sqlglot instead,
 # allowing the patched sqlparse 0.6.0 release while preserving Parser.columns.
 data_platform_requires = [
-    f"sql_metadata=={build_versions['SQL_METADATA_VERSION']}",
-    f"sqlparse=={build_versions['SQLPARSE_VERSION']}",
+    "sql_metadata==3.0.1",
+    "sqlparse==0.6.0",
     # Custom SQL Tables parse/normalize user SQL via sqlglot
-    # (kumo/data/custom_sql.py); keep in sync with the 3rdparty/BUILD pin.
-    f"sqlglot{build_versions['SQLGLOT_VERSION']}",
+    # (kumo/data/custom_sql.py). One minor, not a range: sqlglot normalizes
+    # Custom SQL text into a digest that lands in `graph_id`. Must stay
+    # byte-identical to the sqlglot pin in `packages/kumo-core/pyproject.toml`;
+    # enforced by `packages/kumo-core/tests/test_custom_sql_golden.py`.
+    "sqlglot==30.17.*",
 ]
 
 full_requires = [
@@ -307,6 +293,14 @@ dev_requires = test_requires + [
     "pick",
     "packaging>=23",
     "kubernetes-stubs",
+    # Editor/lint tooling; versions match CI and .pre-commit-config.yaml.
+    "flake8==7.1.2",
+    "isort==5.12.0",
+    "pyright==1.1.283",
+    "yapf==0.40.2",
+    "autoflake==2.3.1",
+    "autopep8",
+    "pip",
 ]
 
 setup(
@@ -319,7 +313,7 @@ setup(
         "cloud-data-warehouse",
     ],
     # Keep in sync with pyproject.toml [project].requires-python.
-    python_requires=">=3.10",
+    python_requires=">=3.11",
     install_requires=install_requires,
     tests_require=test_requires,
     extras_require={
@@ -330,6 +324,24 @@ setup(
         "test": test_requires,
         "dev": dev_requires,
         "data_platform": data_platform_requires,
+        # Torch build selectors for `uv sync --extra <name>`; see
+        # pyproject.toml's [tool.uv.sources] torch index mapping. Also
+        # selects kumo-core's matching faiss build -- see the comment on
+        # install_requires above for why this lives here and not in a
+        # CUDA-env-var branch.
+        "cpu": ["torch", "kumo-core[faiss-cpu]==0.1.0.dev1"],
+        "cu130": ["torch", "kumo-core[faiss-gpu]==0.1.0.dev1"],
+    },
+    # The platform's version providers for `kumo_core.version.get_kumo_version`:
+    # the image version in ~/kumo_version.txt, then the release version from
+    # the root VERSION file. Providers run in entry-point name order, so
+    # `container-file` wins over kumo-engine's provider, which wins over
+    # `release-version`.
+    entry_points={
+        "kumo_core.version_providers": [
+            "container-file = common_utils.version_file:container_version",
+            "release-version = common_utils.version_file:release_version",
+        ],
     },
     scripts=[
         "bin/kumo-auto",

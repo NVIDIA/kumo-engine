@@ -16,6 +16,7 @@ Keep one maintained explanation per topic and link to it from agent guidance.
 | UI conventions and shared components | [UI development](development/ui.md) |
 | Query and training review | [ML development](development/ml.md) |
 | Review and PR requirements | [Review guide](development/review.md) |
+| Publish the `kumo-engine` wheel | [Releasing kumo-engine](development/releasing-kumo-engine.md) |
 | Use a coding agent | [Agent setup](development/agents.md) |
 | Deploy the application or inspect infrastructure examples | [Helm boundary and index](../helm/README.md) |
 | Cloud storage integration | [Storage contract](cloud-storage/README.md) |

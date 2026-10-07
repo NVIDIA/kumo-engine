@@ -11,16 +11,11 @@ DOCKER_BUILD_PLATFORM ?= linux/$(DOCKER_HOST_ARCH)
 CUDA_ARCH_LIST ?= $(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | sort -u | paste -sd';' -)
 DOCKER_BUILD_ULIMIT ?= nofile=65536:65536
 
-# Deliberately unexpanded: a make-time value lands in the recipe text and leaks via /proc/<pid>/cmdline.
-# Emptiness must therefore be tested in the shell; at make level this is always non-empty literal text.
-GH_TOKEN_CMD = $${GITHUB_TOKEN:-$$(gh auth token 2>/dev/null)}
-
 help:## prints help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
 
 build:## Builds kumo containers from local source and tags with local
 	docker build -t quay.io/kumo/kumo-ui:local -f docker/Dockerfile.ui .
-	docker build -t quay.io/kumo/kumo-rest:local -f docker/Dockerfile.rest .
 
 build-backend-local:
 	@echo "==> Generating kumo_version.txt"
@@ -29,12 +24,11 @@ build-backend-local:
 	@set -e; \
 	if [ "$(KUMO_BACKEND_VARIANT)" = "cpu" ]; then \
 	    echo "==> Building kumo-backend-cpu:$(KUMO_IMAGE_TAG) from source with staged DiskGraph"; \
-	    GITHUB_TOKEN="$(GH_TOKEN_CMD)" docker build \
+	    docker build \
 	      --platform $(DOCKER_BUILD_PLATFORM) \
 	      --ulimit $(DOCKER_BUILD_ULIMIT) \
 	      --build-arg BAKE_GLOVE_LEVEL=none \
 	      --build-arg KUMO_VERSION=0.0.0+local \
-	      --secret id=github_token,env=GITHUB_TOKEN \
 	      -t kumo/kumo-backend-cpu:$(KUMO_IMAGE_TAG) \
 	      -f docker/Dockerfile.kumo_backend_cpu .; \
 	elif [ "$(KUMO_BACKEND_VARIANT)" = "gpu" ]; then \
@@ -45,13 +39,12 @@ build-backend-local:
 	        ./scripts/build_faiss_gpu_amd64_wheel.sh; \
 	    fi; \
 	    echo "==> Building kumo-backend-gpu:$(KUMO_IMAGE_TAG) from source with staged DiskGraph"; \
-	    GITHUB_TOKEN="$(GH_TOKEN_CMD)" docker build \
+	    docker build \
 	      --platform $(DOCKER_BUILD_PLATFORM) \
 	      --ulimit $(DOCKER_BUILD_ULIMIT) \
 	      --build-arg BAKE_GLOVE_LEVEL=none \
 	      --build-arg KUMO_VERSION=0.0.0+local \
 	      --build-arg CUDA_ARCH_LIST="$(CUDA_ARCH_LIST)" \
-	      --secret id=github_token,env=GITHUB_TOKEN \
 	      -t kumo/kumo-backend-gpu:$(KUMO_IMAGE_TAG) \
 	      -f docker/Dockerfile.kumo_backend_gpu .; \
 	else \

@@ -431,12 +431,12 @@ Please install tmux by running one of the following commands:
             command=(f"{python} -c "
                      "\"import importlib.metadata as m; "
                      "print('Version:', m.version('temporalio'))\""),
-            # temporalio is pinned as a range (>=1.18,<2) in 3rdparty/BUILD;
+            # temporalio is pinned as a range (>=1.18,<2) in setup.py;
             # match the major so this gate doesn't rot on every minor bump.
             stdout_search_pattern=r"Version: 1\.",
             instructions="""
 Please make sure temporalio is installed at a supported version (the pin lives
-in setup.py / 3rdparty/BUILD). If not, (re)install it by running:
+in setup.py). If not, (re)install it by running:
 
     python -m pip uninstall -y temporalio ray && make update-packages
 

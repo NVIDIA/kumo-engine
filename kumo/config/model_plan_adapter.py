@@ -33,8 +33,6 @@ def to_predictive_query_kwargs(
         lag_timesteps=inferred_or_missing_type_to_none(section.lag_timesteps),
         year_over_year=inferred_or_missing_type_to_false(
             section.year_over_year),
-        entity_candidate=section.entity_candidate,
-        entity_candidate_aggregation=section.entity_candidate_aggregation,
         weight_col=section.weight_col,
         split=split_config,
     )

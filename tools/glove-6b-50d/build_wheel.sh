@@ -44,31 +44,21 @@ if [ -z "${PYTHON:-}" ]; then
   fi
 fi
 
+"$PYTHON" "$REPO/scripts/gen_third_party.py" \
+  --artifact glove-6b-50d-bundled-data --check "$HERE/THIRD-PARTY.txt"
+
 cp -r "$HERE" "$work/pkg"
 data="$work/pkg/src/kumo_glove_6b_50d/data"
 mkdir -p "$data"
-PYTHONPATH="$REPO/packages/kumo-core/src" "$PYTHON" - "$zip" "$work/cache" "$data" "$VOCAB_SHA256" \
-  "$REPO/THIRD-PARTY.txt" "$work/pkg/THIRD-PARTY.txt" <<'PY'
+PYTHONPATH="$REPO/packages/kumo-core/src" "$PYTHON" - "$zip" "$work/cache" "$data" "$VOCAB_SHA256" <<'PY'
 import hashlib
-import re
 import shutil
 import sys
 from pathlib import Path
 
 from kumo_core.embedding_models import GloVeVectors
 
-zip_path, cache, data, vocab_sha256, notices, notice = sys.argv[1:]
-# The repo's notices header, then GloVe's entry alone.
-text = Path(notices).read_text()
-rule = "-" * 78
-head = re.match(
-    r".*?^THIRD-PARTY COMPONENTS\n=+\n",
-    text,
-    re.M | re.S,
-)
-entry = re.search(rf"^{rule}\nGloVe pretrained word vectors\n.*?(?=^{rule}\n[^\n]+\n{rule}\n|\Z)", text, re.M | re.S)
-assert head and entry, "no GloVe entry in THIRD-PARTY.txt"
-Path(notice).write_text(f"{head.group(0)}\n{entry.group(0)}")
+zip_path, cache, data, vocab_sha256 = sys.argv[1:]
 
 model = GloVeVectors(zip_path, dim=50, cache_dir=cache)
 model.vectors()
@@ -79,5 +69,7 @@ for name in ("glove_6B_index.parquet", "glove_6B_50d_emb.npy"):
 PY
 (cd "$data" && echo "$VECTORS_SHA256  glove_6B_50d_emb.npy" | sha256sum --check --strict -)
 
-"$PYTHON" -m pip wheel --no-deps --no-build-isolation -q -w "$OUT" "$work/pkg"
-(cd "$OUT" && for wheel in kumo_glove_6b_50d-*.whl; do sha256sum "$wheel" > "$wheel.sha256"; done)
+"$PYTHON" -m pip wheel --no-deps --no-build-isolation -q -w "$work/dist" "$work/pkg"
+"$PYTHON" "$REPO/scripts/check_python_license_metadata.py" --wheel-dir "$work/dist"
+(cd "$work/dist" && for wheel in kumo_glove_6b_50d-*.whl; do sha256sum "$wheel" > "$wheel.sha256"; done)
+cp "$work/dist/"* "$OUT/"

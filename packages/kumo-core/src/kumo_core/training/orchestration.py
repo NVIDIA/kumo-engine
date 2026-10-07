@@ -13,12 +13,11 @@ from typing import Any, Callable, Mapping, Protocol
 
 import kumo_core.resolved_task as resolved_task
 from kumo_core.automl.auto_trainer import AutoTrainer
-from kumo_core.automl.runtime import AutoTrainingRuntime
+from kumo_core.automl.runtime import AutoTrainingRuntime, resolve_warm_start
 from kumo_core.instrumentation import TrainingInstrumentation
-from kumo_core.io.json import load_json, save_json
+from kumo_core.io.json import save_json
 from kumo_core.job_config import BestTrainerConfig
 from kumo_core.model_plan import ModelPlan
-from kumo_core.train.trainer import Trainer
 from kumo_core.training.config import FitMode
 from kumoapi.train import TrainingStage
 
@@ -49,13 +48,15 @@ class ResolvedTrainingInput:
     home_dir: str
     task_dataset_bundle_dir: str
     warm_start_trainer_dir: str | None = None
+    warm_start_artifacts: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.task, resolved_task.ResolvedNumericalTask):
             raise TypeError(
                 "resolved training input task must be ResolvedNumericalTask")
         if not isinstance(self.model_plan, ModelPlan):
-            raise TypeError("resolved training input model_plan must be ModelPlan")
+            raise TypeError(
+                "resolved training input model_plan must be ModelPlan")
         if not self.home_dir:
             raise ValueError("resolved training input requires home_dir")
         if not self.task_dataset_bundle_dir:
@@ -271,24 +272,14 @@ def _create_auto_trainer(
 ) -> AutoTrainer:
     """Construct the core AutoTrainer from already-resolved numerical input."""
     model_plan = training_input.model_plan
-    checkpoint_path = None
-    warm_start_dir = (options.warm_start_trainer_dir
-                      or training_input.warm_start_trainer_dir)
-    if warm_start_dir:
-        warm_start_trainer = Trainer.load(
-            training_input.task.to_task_config(),
-            warm_start_dir,
-            version=None,
-            infer_config_path=False,
-            **bindings.runtime.trainer_runtime_kwargs(),
-        )
-        warm_start_trainer._set_fit_mode_to_use()
-        checkpoint_path = warm_start_trainer.best_ckpt
-        warm_plan = load_json(posixpath.join(warm_start_dir, "model_plan.json"),
-                              ModelPlan)
-        model_plan.column_processing = warm_plan.column_processing
-        model_plan.model_architecture = warm_plan.model_architecture
-        model_plan.neighbor_sampling = warm_plan.neighbor_sampling
+    checkpoint_path, checkpoint_encoder_dir = resolve_warm_start(
+        model_plan,
+        training_input.task,
+        bindings.runtime,
+        trainer_dir=(options.warm_start_trainer_dir
+                     or training_input.warm_start_trainer_dir),
+        artifacts=training_input.warm_start_artifacts,
+    )
 
     return AutoTrainer(
         space=model_plan,
@@ -297,6 +288,7 @@ def _create_auto_trainer(
         instrumentation=bindings.instrumentation,
         random_state_seed=options.random_state_seed,
         checkpoint_path=checkpoint_path,
+        checkpoint_encoder_dir=checkpoint_encoder_dir,
         home_dir=training_input.home_dir,
         overwrite_train_table_edge=options.overwrite_train_table_edge,
         diskgraph_task_dataset_bundle_dir=(
@@ -338,9 +330,10 @@ def run_callable_training(
             debug=options.debug,
         )
 
-    warm_start_dir = (options.warm_start_trainer_dir
-                      or training_input.warm_start_trainer_dir)
-    if warm_start_dir:
+    is_warm_start = bool(options.warm_start_trainer_dir
+                         or training_input.warm_start_trainer_dir
+                         or training_input.warm_start_artifacts)
+    if is_warm_start:
         best_trainer.checkpoint_path = auto_trainer.checkpoint_path
 
     if (bool(auto_trainer.refit_trainval)
@@ -353,7 +346,7 @@ def run_callable_training(
         with bindings.instrumentation.timing("kumo_auto.refit_full"):
             best_trainer.refit(fit_mode=FitMode.refit_full)
 
-    if warm_start_dir:
+    if is_warm_start:
         best_trainer.checkpoint_path = None
 
     best_trainer_config_path = posixpath.join(str(auto_trainer.log_dir),

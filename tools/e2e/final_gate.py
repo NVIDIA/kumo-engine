@@ -39,7 +39,8 @@ def _env_value(name: str, default: str) -> str:
 
 
 def _env_truthy(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+    return os.environ.get(name,
+                          "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _pytest_xdist_available() -> bool:
@@ -63,22 +64,17 @@ def _black_box_command() -> list[str]:
 
 def _black_box_note() -> str:
     if "KUMO_FINAL_GATE_BLACK_BOX_WORKERS" in os.environ:
-        worker_note = (
-            "the pytest worker count is explicitly controlled by "
-            "KUMO_FINAL_GATE_BLACK_BOX_WORKERS."
-        )
+        worker_note = ("the pytest worker count is explicitly controlled by "
+                       "KUMO_FINAL_GATE_BLACK_BOX_WORKERS.")
     elif _pytest_xdist_available():
         worker_note = "pytest-xdist is installed, so this defaults to -n auto."
     else:
         worker_note = (
             "pytest-xdist is not installed, so this defaults to serial pytest; "
             "set KUMO_FINAL_GATE_BLACK_BOX_WORKERS after installing xdist to "
-            "force parallel execution."
-        )
-    return (
-        "First gate. Requires an already running suitable test stack; "
-        f"{worker_note}"
-    )
+            "force parallel execution.")
+    return ("First gate. Requires an already running suitable test stack; "
+            f"{worker_note}")
 
 
 def _dataset_version(storage_mode: str) -> str:
@@ -135,16 +131,16 @@ def _sdk_step(storage_mode: Literal["sqlite", "postgres"]) -> GateStep:
         name=f"{storage_mode} SDK API-key train and prediction e2e",
         command=command,
         env={
-            "KUMO_POSTGRES_MODE": _env_value(
+            "KUMO_POSTGRES_MODE":
+            _env_value(
                 f"KUMO_FINAL_GATE_{upper}_POSTGRES_MODE",
                 postgres_mode,
             ),
-            "STACK": stack,
+            "STACK":
+            stack,
         },
-        note=(
-            "Uses the SDK-worker-owned churn harness; run only when that "
-            "worker has not already supplied an equivalent completed log."
-        ),
+        note=("Uses the SDK-worker-owned churn harness; run only when that "
+              "worker has not already supplied an equivalent completed log."),
         completed_gate=True,
     )
 
@@ -179,32 +175,25 @@ def gate_steps() -> list[GateStep]:
                 "tools/tests/test_db_metadata_cutover.py",
             ],
             env={},
-            note=(
-                "Represents the migrated Phase 1/StateDB unit coverage. "
-                "Postgres-backed StateDB tests use STATEDB_POSTGRES_DSN or "
-                "start a temporary postgres:16-alpine container."
-            ),
+            note=("Represents the migrated Phase 1/StateDB unit coverage. "
+                  "Postgres-backed StateDB tests use STATEDB_POSTGRES_DSN or "
+                  "start a temporary postgres:16-alpine container."),
             completed_gate=True,
         ),
         GateStep(
             phase="unit-static",
             name="migrated StateDB static checks",
             command=[
-                "pants",
-                "lint",
-                "statedb::",
-                "rest/public::",
-                "tools::",
-                "test/statedb::",
-                "test/rest/public::",
-                "test/tools::",
+                "bash",
+                "-c",
+                "paths='statedb rest/public tools test/statedb "
+                "test/rest/public test/tools'; "
+                "flake8 $paths && isort --check $paths",
             ],
             env={},
-            note=(
-                "Static check lane for the migrated API/StateDB surface. "
-                "Narrow further only when a worker owns a smaller impacted "
-                "set and records it in handoff."
-            ),
+            note=("Static check lane for the migrated API/StateDB surface. "
+                  "Narrow further only when a worker owns a smaller impacted "
+                  "set and records it in handoff."),
             completed_gate=True,
         ),
         GateStep(
@@ -217,10 +206,8 @@ def gate_steps() -> list[GateStep]:
                 "--skip-build",
             ],
             env={},
-            note=(
-                "Last gate by policy. Drop --reuse-stack/--skip-build when "
-                "the final runner owns stack startup from scratch."
-            ),
+            note=("Last gate by policy. Drop --reuse-stack/--skip-build when "
+                  "the final runner owns stack startup from scratch."),
             completed_gate=True,
         ),
     ]
@@ -234,9 +221,8 @@ def _selected_steps(phases: set[Phase] | None) -> list[GateStep]:
 
 
 def _shell_join(step: GateStep) -> str:
-    env_prefix = " ".join(
-        f"{key}={shlex.quote(value)}" for key, value in sorted(step.env.items())
-    )
+    env_prefix = " ".join(f"{key}={shlex.quote(value)}"
+                          for key, value in sorted(step.env.items()))
     command = " ".join(shlex.quote(part) for part in step.command)
     if env_prefix:
         return f"{env_prefix} {command}"
@@ -252,13 +238,13 @@ def _print_text(steps: list[GateStep]) -> None:
 
 def _run_steps(steps: list[GateStep]) -> int:
     for index, step in enumerate(steps, start=1):
-        if any(part.startswith("<") and part.endswith(">")
-               for part in step.command):
+        if any(
+                part.startswith("<") and part.endswith(">")
+                for part in step.command):
             raise RuntimeError(
                 f"{step.name} still has placeholder arguments. Print the "
                 "manifest and set the KUMO_FINAL_GATE_* environment overrides "
-                "before executing this phase."
-            )
+                "before executing this phase.")
         print(f"==> [{index}/{len(steps)}] {step.name}", flush=True)
         env = os.environ.copy()
         env.update(step.env)
@@ -267,12 +253,9 @@ def _run_steps(steps: list[GateStep]) -> int:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Print or run the StateDB final-gate order. The default is a "
-            "dry-run manifest so long e2e work is not duplicated accidentally."
-        )
-    )
+    parser = argparse.ArgumentParser(description=(
+        "Print or run the StateDB final-gate order. The default is a "
+        "dry-run manifest so long e2e work is not duplicated accidentally."))
     parser.add_argument(
         "--phase",
         action="append",

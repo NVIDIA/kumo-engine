@@ -116,7 +116,7 @@ jobs:
               "$@"
           }
           hash_input=""
-          for f in setup.py pyproject.toml 3rdparty/BUILD scripts/update_packages.sh; do
+          for f in setup.py pyproject.toml uv.lock scripts/update_packages.sh; do
             [[ -f "$f" ]] && hash_input+="$(sha256sum "$f")"
           done
           venv_hash=$(echo "$hash_input" | sha256sum | awk '{print $1}')

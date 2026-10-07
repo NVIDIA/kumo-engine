@@ -68,6 +68,10 @@ def _project_portable_graph(
                     f"Edge {edge.src_table!r}.{edge.fkey!r} -> "
                     f"{edge.dst_table!r} is invalid: destination table "
                     f"{edge.dst_table!r} requires a primary key.")
+            # Only retained relations assign an identifier role. These are
+            # fresh dictionaries, so the source table stays unchanged.
+            columns[edge.fkey]["stype"] = "ID"
+            columns[edge.fkey].pop("multicategorical_delimiter", None)
             foreign_keys.append({
                 **columns[edge.fkey],
                 "dst_table": edge.dst_table,

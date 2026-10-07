@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 from kumo_core.task_dataset import (
@@ -128,7 +129,6 @@ def test_top_level_shape(bundle_dir: str) -> None:
         'task',
         'table',
         'graph',
-        'features',
         'stages',
     }
     assert required <= set(m.keys()), f'missing: {required - set(m.keys())}'
@@ -216,16 +216,16 @@ def test_stages_dict_per_stage(bundle_dir: str) -> None:
     assert m['stages']['test']['index_path'] == '/idx/train_tables/tt_abc'
 
 
-def test_features_block_mirrors_sidecar_envelope(bundle_dir: str) -> None:
-    path = _write(bundle_dir)
-    with open(path) as f:
-        m = json.load(f)
+def test_runtime_manifest_omits_encoder_statistics(bundle_dir: str) -> None:
+    before = Path(_write(bundle_dir)).read_bytes()
+    schema = _make_spec().feature_schema
+    schema['node_types']['USERS']['column_specs'][0]['stats'][
+        'CATEGORY_COUNTS'] = [[str(i), i] for i in range(10_000)]
+    path = _write(bundle_dir, spec_overrides={'feature_schema': schema})
+    after = Path(path).read_bytes()
 
-    feats = m['features']
-    assert feats['raw_feature_format'] == 'arrow_columnar_v1'
-    assert feats['provenance_mode'] == 'node_id_time_keyed_v1'
-    assert feats['node_types']['USERS']['feature_columns'] == ['AGE']
-    assert feats['node_types']['USERS']['mapper_key'] == 'USERS'
+    assert before == after
+    assert 'features' not in json.loads(after)
 
 
 # ---------------------------------------------------------------------------
