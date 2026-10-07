@@ -7831,56 +7831,25 @@ impl IngestContext {
                     stats.warn_parse_failures(&col_names, &table.name);
                 }
             }
-            let mut root_map = serde_json::Map::new();
-            // All col-stats writes go through `self.target.write_bytes` so the
-            // dataplane mirror picks them up (each call records a manifest
-            // entry and submits the upload). The rel paths are forward-slash
-            // composed under ``kumo_col_stats/col_stats_{full,min}/`` to
-            // match the layout consumers expect.
-            let kumo_stats_full_rel = format!(
-                "{}/{}",
-                col_stats_export::COL_STATS_DIR,
-                col_stats_export::COL_STATS_FULL,
-            );
-            let kumo_stats_min_rel = format!(
-                "{}/{}",
-                col_stats_export::COL_STATS_DIR,
-                col_stats_export::COL_STATS_MIN,
-            );
+            let mut outputs = Vec::new();
             for table in &tables {
-                if let Some(mut stats) = table_col_stats.remove(&table.name) {
-                    let col_names: Vec<String> =
-                        table.columns.iter().map(|c| c.name.clone()).collect();
-                    let ingested_types: Vec<_> = table
-                        .columns
-                        .iter()
-                        .map(|c| c.ingested_dtype.clone())
-                        .collect();
-                    let tc = table_cat_counts.get(&table.name).map(|a| a.as_ref());
-                    let tss = self.text_sample_stats.get(&table.name);
-                    root_map.insert(
-                        table.name.clone(),
-                        stats.to_json(&col_names, &ingested_types, tc, tss),
-                    );
-                    // Write per-table kumo-format stats (replaces Python bridge)
-                    if let Some(dv) = &table.data_version {
-                        let kumo_map = stats.to_kumo_json(&col_names, &ingested_types, tc, tss, dv);
-                        let kumo_json = serde_json::to_vec(&kumo_map)?;
-                        self.target.write_bytes(
-                            &format!("{}/{}.json", kumo_stats_full_rel, table.name),
-                            kumo_json,
-                        )?;
-                        let min_map = crate::col_stats::minify_kumo_stats(&kumo_map, 20);
-                        let min_json = serde_json::to_vec(&min_map)?;
-                        self.target.write_bytes(
-                            &format!("{}/{}.json", kumo_stats_min_rel, table.name),
-                            min_json,
-                        )?;
-                    }
+                if let Some(stats) = table_col_stats.remove(&table.name) {
+                    outputs.push(crate::col_stats::ColStatsTable {
+                        name: table.name.clone(),
+                        stats,
+                        column_names: table.columns.iter().map(|c| c.name.clone()).collect(),
+                        ingested_types: table
+                            .columns
+                            .iter()
+                            .map(|c| c.ingested_dtype.clone())
+                            .collect(),
+                        table_cat: table_cat_counts.remove(&table.name),
+                        text_sample_stats: self.text_sample_stats.get(&table.name),
+                        data_version: table.data_version.clone(),
+                    });
                 }
             }
-            let json_bytes = serde_json::to_vec_pretty(&serde_json::Value::Object(root_map))?;
-            self.target.write_bytes("col_stats.json", json_bytes)?;
+            crate::col_stats::write_col_stats(&self.target, outputs)?;
             eprintln!(
                 "wrote col_stats.json (and kumo_col_stats/) under {}",
                 root.display()

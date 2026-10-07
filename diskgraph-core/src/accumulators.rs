@@ -468,6 +468,124 @@ mod tests {
         assert!(capped_grad.is_aborted());
     }
 
+    fn sorted_pairs(pairs: &[(&str, u64)]) -> Vec<(String, u64)> {
+        pairs.iter().map(|&(v, c)| (v.to_owned(), c)).collect()
+    }
+
+    #[test]
+    fn into_sorted_counts_orders_ties_by_value() {
+        let counts = SharedColumnCounts::new_hashed();
+        for (hash, value, n) in [
+            (1, "b", 2),
+            (2, "a", 2),
+            (3, "c", 5),
+            (4, "d", 1),
+            (5, "aa", 2),
+        ] {
+            for _ in 0..n {
+                counts.observe_hashed(hash, value);
+            }
+        }
+        let published = counts.into_sorted_counts();
+        assert_eq!(
+            published.counts.unwrap(),
+            sorted_pairs(&[("c", 5), ("a", 2), ("aa", 2), ("b", 2), ("d", 1)])
+        );
+        assert!(!published.capped);
+    }
+
+    #[test]
+    fn into_sorted_counts_includes_collided_values_and_integers() {
+        let counts = SharedColumnCounts::new_hashed();
+        for (value, n) in [("first", 3), ("second", 3), ("third", 1)] {
+            for _ in 0..n {
+                counts.observe_hashed(7, value);
+            }
+        }
+        counts.observe_hashed_i64(8, -42);
+        assert_eq!(counts.collided_count(), 2);
+        assert_eq!(
+            counts.into_sorted_counts().counts.unwrap(),
+            sorted_pairs(&[("first", 3), ("second", 3), ("-42", 1), ("third", 1)])
+        );
+    }
+
+    #[test]
+    fn into_sorted_counts_trims_admission_overshoot_to_the_cap() {
+        let counts = SharedColumnCounts::new_hashed_capped_with_max_categories(2);
+        let CountStorage::Hashed { counts: map, .. } = &counts.storage else {
+            unreachable!()
+        };
+        // Concurrent admissions can retain more than the cap.
+        for (hash, value, count) in [(1, "x", 4), (2, "b", 9), (3, "a", 4), (4, "y", 1)] {
+            map.insert(
+                hash,
+                HashedCategoryCount {
+                    value: CategoryIdentity::String(value.to_owned()),
+                    count,
+                },
+            );
+        }
+        let published = counts.into_sorted_counts();
+        assert_eq!(
+            published.counts.unwrap(),
+            sorted_pairs(&[("b", 9), ("a", 4)])
+        );
+        assert!(published.capped);
+    }
+
+    #[test]
+    fn into_sorted_counts_reports_admission_cap_and_abort() {
+        let capped = SharedColumnCounts::new_hashed_capped_with_max_categories(1);
+        capped.observe_hashed(1, "kept");
+        capped.observe_hashed(2, "rejected");
+        let published = capped.into_sorted_counts();
+        assert_eq!(published.counts.unwrap(), sorted_pairs(&[("kept", 1)]));
+        assert!(published.capped);
+
+        let exhaustive = SharedColumnCounts::new_hashed_with_max_categories(1);
+        exhaustive.observe_hashed(1, "one");
+        exhaustive.observe_hashed(2, "two");
+        assert!(exhaustive.is_aborted());
+        assert!(exhaustive.into_sorted_counts().counts.is_none());
+    }
+
+    #[test]
+    fn into_sorted_counts_matches_the_copying_read() {
+        let build = || {
+            let counts = SharedColumnCounts::new_hashed_capped_with_max_categories(50);
+            for i in 0..400u64 {
+                let k = (i * 7919) % 97 % (1 + i % 61);
+                counts.observe_hashed(k, &format!("v{k}"));
+            }
+            counts
+        };
+        let mut expected: Vec<(String, u64)> =
+            build().drain_to_map().unwrap().into_iter().collect();
+        expected.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        assert_eq!(build().into_sorted_counts().counts.unwrap(), expected);
+
+        let graduation = SharedColumnCounts::new_graduation();
+        let mut local = LocalColumnCounts::with_capacity(4);
+        for i in 0..20_000u64 {
+            local
+                .counts
+                .entry(i % 3)
+                .and_modify(|c| *c += 1)
+                .or_insert(1);
+            local
+                .strings
+                .entry(i % 3)
+                .or_insert_with(|| format!("g{}", i % 3));
+        }
+        graduation.merge_local_batch_graduation(&mut local);
+        let mut expected: Vec<(String, u64)> =
+            graduation.drain_to_map().unwrap().into_iter().collect();
+        expected.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        assert!(!expected.is_empty());
+        assert_eq!(graduation.into_sorted_counts().counts.unwrap(), expected);
+    }
+
     #[test]
     fn retained_counts_include_local_deltas_before_and_after_cap() {
         let counts = SharedColumnCounts::new_hashed_capped_with_max_categories(2);
@@ -1121,6 +1239,13 @@ pub fn compute_min_occ(unique_count: u64) -> u64 {
     isqrt(unique_count.max(10_000)).max(2)
 }
 
+/// Output of [`SharedColumnCounts::into_sorted_counts`].
+pub struct PublishedCategoryCounts {
+    /// `None` when counting aborted.
+    pub counts: Option<Vec<(String, u64)>>,
+    pub capped: bool,
+}
+
 /// Shared per-column category count state. One instance per eligible column,
 /// shared across all encode threads via `Arc`.
 pub struct SharedColumnCounts {
@@ -1644,7 +1769,8 @@ impl SharedColumnCounts {
         }
     }
 
-    /// Drain into a HashMap<String, u64> for JSON output. Returns None if aborted.
+    /// Non-consuming copy of the counts, unsorted; `None` if aborted. Column
+    /// statistics publish with [`Self::into_sorted_counts`] instead.
     pub fn drain_to_map(&self) -> Option<HashMap<String, u64>> {
         if self.aborted.load(Ordering::Relaxed) {
             return None;
@@ -1670,38 +1796,93 @@ impl SharedColumnCounts {
                 }
                 Some(entries.into_iter().collect())
             }
-            CountStorage::Graduation {
-                graduated,
-                pending,
-                strings,
-                cached_min_occ,
-                ..
-            } => {
-                // Flush remaining inbox into graduated set before draining.
-                self.finish_graduation();
-                let min_occ = cached_min_occ.load(Ordering::Relaxed);
-                let grad_set = graduated.load();
-                let mut result = HashMap::with_capacity(grad_set.len() + pending.len() / 2);
-                // 1. Graduated categories — known to exceed min_occ during encode.
-                for &hash in grad_set.iter() {
-                    if let Some(string_entry) = strings.get(&hash) {
-                        result.insert(string_entry.value().clone(), min_occ);
-                    }
-                }
-                // 2. Final sweep of pending — include categories whose accumulated
-                //    count meets min_occ. This catches categories that were never
-                //    checked at the right moment during encode.
-                for entry in pending.iter() {
-                    let count = *entry.value();
-                    if count >= min_occ {
-                        let hash = *entry.key();
-                        if let Some(string_entry) = strings.get(&hash) {
-                            result.insert(string_entry.value().clone(), count);
-                        }
-                    }
-                }
-                Some(result)
+            CountStorage::Graduation { .. } => Some(self.graduated_counts()),
+        }
+    }
+
+    /// Graduation output: graduated categories plus pending ones at `min_occ`.
+    fn graduated_counts(&self) -> HashMap<String, u64> {
+        let CountStorage::Graduation {
+            graduated,
+            pending,
+            strings,
+            cached_min_occ,
+            ..
+        } = &self.storage
+        else {
+            return HashMap::new();
+        };
+        // Flush remaining inbox into graduated set before draining.
+        self.finish_graduation();
+        let min_occ = cached_min_occ.load(Ordering::Relaxed);
+        let grad_set = graduated.load();
+        let mut result = HashMap::with_capacity(grad_set.len() + pending.len() / 2);
+        // 1. Graduated categories — known to exceed min_occ during encode.
+        for &hash in grad_set.iter() {
+            if let Some(string_entry) = strings.get(&hash) {
+                result.insert(string_entry.value().clone(), min_occ);
             }
+        }
+        // 2. Final sweep of pending — include categories whose accumulated
+        //    count meets min_occ. This catches categories that were never
+        //    checked at the right moment during encode.
+        for entry in pending.iter() {
+            let count = *entry.value();
+            if count >= min_occ {
+                let hash = *entry.key();
+                if let Some(string_entry) = strings.get(&hash) {
+                    result.insert(string_entry.value().clone(), count);
+                }
+            }
+        }
+        result
+    }
+
+    /// Consumes the counts for publication: values sorted by count desc,
+    /// then value asc, trimmed to the cap. Like [`Self::drain_to_map`] but
+    /// moves the values instead of copying them.
+    pub fn into_sorted_counts(self) -> PublishedCategoryCounts {
+        let mut capped = self.capped.load(Ordering::Relaxed);
+        if self.aborted.load(Ordering::Relaxed) {
+            return PublishedCategoryCounts {
+                counts: None,
+                capped,
+            };
+        }
+        let publish = |stored: HashedCategoryCount| {
+            let value = match stored.value {
+                CategoryIdentity::String(value) => value,
+                CategoryIdentity::I64(value) => value.to_string(),
+            };
+            (value, stored.count)
+        };
+        let graduated = matches!(self.storage, CountStorage::Graduation { .. })
+            .then(|| self.graduated_counts());
+        // Graduation output is not trimmed.
+        let cap = self.max_categories.filter(|_| graduated.is_none());
+        let mut entries: Vec<(String, u64)> = match (self.storage, graduated) {
+            (CountStorage::Hashed { counts, collided }, _) => {
+                let collided = collided.into_inner();
+                let mut entries = Vec::with_capacity(counts.len() + collided.len());
+                entries.extend(counts.into_iter().map(|(_, stored)| publish(stored)));
+                entries.extend(collided.into_iter().map(publish));
+                entries
+            }
+            (CountStorage::Graduation { .. }, graduated) => {
+                graduated.unwrap_or_default().into_iter().collect()
+            }
+        };
+        entries.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        if let Some(max_categories) = cap {
+            if entries.len() > max_categories as usize {
+                capped = true;
+                entries.truncate(max_categories as usize);
+                entries.shrink_to_fit();
+            }
+        }
+        PublishedCategoryCounts {
+            counts: Some(entries),
+            capped,
         }
     }
 

@@ -84,6 +84,8 @@ serial_test = "3"
 
 [features]
 default = []
+# Pre-streaming col-stats serializers, kept as a reference for tests.
+test-util = []
 ingest-tui = ["dep:dirs", "dep:ratatui", "dep:crossterm"]
 mem-profile = ["jemallocator", "jemalloc-ctl", "jemallocator/profiling"]
 unsafe-vars = []
