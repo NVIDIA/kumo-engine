@@ -106,7 +106,7 @@ jobs:
 
       - name: Build Image
         id: build-image
-        uses: redhat-actions/buildah-build@7a95fa7ee0f02d552a32753e7414641a04307056 # v2
+        uses: redhat-actions/buildah-build@719e3c40d8af9790c23eca13f7daa339f2867034 # v2
         with:
           image: jenkins-agent
           tags: ${{ steps.vars.outputs.release_tags }} ${{ steps.vars.outputs.kumo_sha }}
