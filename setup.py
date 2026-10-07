@@ -114,7 +114,9 @@ install_requires = major_dependencies + observability_requires + [
     # connector code import it outside the REST-only surface.
     "cryptography==50.0.0",
     "inflect==7.5.0",
-    "fsspec>=2025.3.0,<=2025.5.1",
+    # 2026.6.0 sandboxes ReferenceFileSystem Jinja templates and no longer
+    # unpickles cache metadata (GHSA-27vj-qcqg-25rc).
+    "fsspec==2026.6.0",
     "optuna==4.3.0",
     "watchtower==3.0.1",
     "asgiref==3.5.2",
@@ -151,13 +153,14 @@ install_requires = major_dependencies + observability_requires + [
     "google-cloud-bigquery==3.36.0",
     "google-cloud-bigquery-storage>=2.39.0",
     "google-cloud-storage-transfer==1.17.0",
-    "google-cloud-storage==3.1.0",
+    # gcsfs 2026.6.0 (below) requires google-cloud-storage>=3.11.0.
+    "google-cloud-storage==3.11.0",
     "google-api-core>=2,<3",
     "google-auth>=2.14.1,<3",
     # Required for GCP Secret Manager (IS_GCP_DEPLOY)
     "google-cloud-secret-manager==2.26.0",
     # Required for GCS filesystem in PySpark
-    "gcsfs==2025.5.1",  # Pins fsspec==2025.5.1
+    "gcsfs==2026.6.0",
     # Required for reading data from BigQuery to a Pandas dataframe
     "db-dtypes==1.1.1",
     # Some runtime deps still import pkg_resources (for example Snowpark).

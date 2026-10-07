@@ -44,9 +44,20 @@ async def _migrate_postgres_15_to_16(connection: asyncpg.Connection, ) -> None:
     await connection.execute("DROP TABLE IF EXISTS online_serving_jobs")
 
 
+async def _migrate_postgres_16_to_17(connection: asyncpg.Connection, ) -> None:
+    """Release tombstoned identity principals, names and slugs for reuse."""
+    identities = next(table for table in STATE_DB_TABLES
+                      if table.name == "identities")
+    for index in identities.indexes:
+        if index.unique:
+            await connection.execute(f"DROP INDEX IF EXISTS {index.name}")
+            await connection.execute(index.ddl("identities", "postgres"))
+
+
 POSTGRES_SCHEMA_MIGRATIONS: dict[int, PostgresSchemaMigration] = {
     12: _migrate_postgres_12_to_13,
     13: _migrate_postgres_13_to_14,
     14: _migrate_postgres_14_to_15,
     15: _migrate_postgres_15_to_16,
+    16: _migrate_postgres_16_to_17,
 }

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
@@ -12,6 +13,10 @@ from typing import Any
 
 import fsspec
 from fsspec.implementations.local import LocalFileSystem
+
+# gcsfs >=2026.3 otherwise maps gs:// to ExtendedGcsFileSystem, whose per-bucket
+# gRPC layout lookup stalls when it fails. Kumo uses no zonal/HNS buckets.
+os.environ.setdefault("GCSFS_EXPERIMENTAL_ZB_HNS_SUPPORT", "false")
 
 _fsspec_fallback: Callable[[str], str] | None = None
 

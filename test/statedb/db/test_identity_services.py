@@ -3099,6 +3099,43 @@ async def test_tombstoned_connector_retains_safe_history_and_allows_identity_del
 
 
 @pytest.mark.asyncio
+async def test_deleted_identity_can_be_recreated(db: StateDB) -> None:
+    identities, _ = _services(db)
+    group_id = await _create_group(db, 'Identity group')
+    args = _identity_args('Recreated identity', 'original-secret')
+    args.group_ids = [str(group_id)]
+    first = await identities.create(args, ADMIN)
+    await identities.delete(first.id, ADMIN)
+    assert await identities.list_admin(ADMIN) == []
+    with pytest.raises(IdentityDoesNotExistError):
+        await identities.get_admin(first.id, ADMIN)
+
+    args.credentials = api.DatabricksOAuthCredentials(
+        client_secret=SecretStr('replacement-secret'))
+    second = await identities.create(args, ADMIN)
+    assert second.id != first.id
+    assert second.slug == first.slug
+    assert second.config == first.config
+    assert [row.id for row in await identities.list_admin(ADMIN)] == [second.id]
+    with pytest.raises(IdentityConflictError):
+        await identities.create(args, ADMIN)
+    with pytest.raises(IdentityDoesNotExistError):
+        await identities.get_admin(first.id, ADMIN)
+    async with db.read_tx() as tx:
+        old = await identities._identities.get(tx, str(first.id))
+        new = await identities._identities.get(tx, str(second.id))
+        assert old.payload.tombstoned_at is not None
+        assert old.payload.encrypted_credentials is None
+        assert new.payload.tombstoned_at is None
+        assert new.payload.encrypted_credentials is not None
+        assert await identities._bindings.list_by_field(
+            tx, 'identity_id', str(first.id)) == []
+        bindings = await identities._bindings.list_by_field(
+            tx, 'identity_id', str(second.id))
+        assert [row.payload.group_id for row in bindings] == [group_id]
+
+
+@pytest.mark.asyncio
 async def test_tombstoned_connector_name_can_be_recreated(db: StateDB) -> None:
     group_id = await _create_group(db, 'team')
     project_id = await _create_project(db, group_id, 'project')

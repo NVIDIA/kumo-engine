@@ -94,6 +94,12 @@ find-links = [
   "3rdparty/kumo-wheels/",
 ]
 
+# snowflake-ml-python caps fsspec<2026; fsspec 2026.6.0 fixes
+# GHSA-27vj-qcqg-25rc. Remove once snowflake-ml-python lifts the cap.
+# This overrides every fsspec requirement (incl. the setup.py and gcsfs
+# pins), so bump it together with them.
+override-dependencies = ["fsspec[http]==2026.6.0"]
+
 # snowflake-connector-python 4.7.1+ (GHSA-5cc2-282f-jjq2 fix) caps pyarrow<24
 # on all Python 3.14 for a crash that only affects free-threaded 3.14t
 # (snowflakedb/snowflake-connector-python#2934). Kumo runs GIL 3.14 and

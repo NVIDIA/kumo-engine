@@ -6919,51 +6919,50 @@ fn build_sort_key_batchers_for_edge_table(
 }
 
 const BASE_ENCODE_MEMORY_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
-const MAX_RESIDENT_PARQUET_ENCODE_MEMORY_BUDGET_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
 fn encode_memory_budget_bytes(has_resident_parquet: bool, total_memory: Option<u64>) -> u64 {
-    let mut budget = BASE_ENCODE_MEMORY_BUDGET_BYTES;
-    if has_resident_parquet {
-        // Resident Parquet decodes row groups in the shared Encode pool. Give
-        // each CPU enough bounded decoder/output memory while CloudTransfer
-        // independently caps complete compressed objects at one quarter of RAM.
-        budget = budget.max(
-            total_memory
-                .map(|bytes| bytes / 16)
-                .unwrap_or(BASE_ENCODE_MEMORY_BUDGET_BYTES)
-                .clamp(
-                    BASE_ENCODE_MEMORY_BUDGET_BYTES,
-                    MAX_RESIDENT_PARQUET_ENCODE_MEMORY_BUDGET_BYTES,
-                ),
-        );
+    if !has_resident_parquet {
+        return BASE_ENCODE_MEMORY_BUDGET_BYTES;
     }
-    budget
+    // Input and working permits are each capped at this, so the worst case is ~2x;
+    // /3 leaves headroom for unbudgeted memory (category counts, buffers, writeback).
+    total_memory.map_or(BASE_ENCODE_MEMORY_BUDGET_BYTES, |bytes| {
+        (bytes / 3).max(BASE_ENCODE_MEMORY_BUDGET_BYTES)
+    })
 }
 
 #[cfg(test)]
 mod encode_memory_budget_tests {
-    use super::{
-        encode_memory_budget_bytes, BASE_ENCODE_MEMORY_BUDGET_BYTES,
-        MAX_RESIDENT_PARQUET_ENCODE_MEMORY_BUDGET_BYTES,
-    };
+    use super::{encode_memory_budget_bytes, BASE_ENCODE_MEMORY_BUDGET_BYTES};
+
+    const GIB: u64 = 1024 * 1024 * 1024;
 
     #[test]
     fn budget_does_not_scale_without_resident_parquet() {
         assert_eq!(
-            encode_memory_budget_bytes(false, Some(1024 * 1024 * 1024 * 1024)),
+            encode_memory_budget_bytes(false, Some(1024 * GIB)),
             BASE_ENCODE_MEMORY_BUDGET_BYTES
         );
     }
 
     #[test]
-    fn resident_parquet_budget_scales_for_parallel_row_group_decode() {
+    fn resident_parquet_budget_is_a_third_of_memory() {
+        assert_eq!(encode_memory_budget_bytes(true, Some(48 * GIB)), 16 * GIB);
         assert_eq!(
-            encode_memory_budget_bytes(true, Some(64 * 1024 * 1024 * 1024)),
-            4 * 1024 * 1024 * 1024
+            encode_memory_budget_bytes(true, Some(512 * GIB)),
+            183_251_937_962
+        );
+    }
+
+    #[test]
+    fn resident_parquet_budget_keeps_floor() {
+        assert_eq!(
+            encode_memory_budget_bytes(true, Some(2 * GIB)),
+            BASE_ENCODE_MEMORY_BUDGET_BYTES
         );
         assert_eq!(
-            encode_memory_budget_bytes(true, Some(512 * 1024 * 1024 * 1024)),
-            MAX_RESIDENT_PARQUET_ENCODE_MEMORY_BUDGET_BYTES
+            encode_memory_budget_bytes(true, None),
+            BASE_ENCODE_MEMORY_BUDGET_BYTES
         );
     }
 }

@@ -13,7 +13,7 @@ from typing import Literal
 BackendName = Literal["postgres", "sqlite"]
 
 SCHEMA_ROW_ID = "current"
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -245,11 +245,31 @@ STATE_DB_TABLES: tuple[TableSpec, ...] = (
     TableSpec(
         "identities",
         "external principals and encrypted identity credentials",
-        (_index("identities_identity_key_unique_idx", "identity_key",
-                unique=True),
-         _index("identities_slug_unique_idx", "slug", unique=True),
-         _index("identities_display_name_unique_idx", "normalized_display_name",
-                unique=True),
+        (IndexSpec(
+             name="identities_identity_key_unique_idx",
+             postgres_expression="(payload->>'identity_key')",
+             sqlite_expression="json_extract(payload, '$.identity_key')",
+             unique=True,
+             postgres_where="payload->>'tombstoned_at' IS NULL",
+             sqlite_where="json_extract(payload, '$.tombstoned_at') IS NULL",
+         ),
+         IndexSpec(
+             name="identities_slug_unique_idx",
+             postgres_expression="(payload->>'slug')",
+             sqlite_expression="json_extract(payload, '$.slug')",
+             unique=True,
+             postgres_where="payload->>'tombstoned_at' IS NULL",
+             sqlite_where="json_extract(payload, '$.tombstoned_at') IS NULL",
+         ),
+         IndexSpec(
+             name="identities_display_name_unique_idx",
+             postgres_expression="(payload->>'normalized_display_name')",
+             sqlite_expression=(
+                 "json_extract(payload, '$.normalized_display_name')"),
+             unique=True,
+             postgres_where="payload->>'tombstoned_at' IS NULL",
+             sqlite_where="json_extract(payload, '$.tombstoned_at') IS NULL",
+         ),
          _path_index("identities_config_type_idx", ("config", "type"))),
     ),
     TableSpec(

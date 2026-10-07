@@ -596,18 +596,27 @@ class IdentityService:
                 if missing:
                     raise ValueError(f'Unknown or inactive groups: {missing}')
                 if await self._identities.exists_by_fields(
-                        tx, {'identity_key': entry.identity_key}):
+                        tx, {
+                            'identity_key': entry.identity_key,
+                            'tombstoned_at': None,
+                        }):
                     raise IdentityConflictError(
                         'An identity already exists for this external principal'
                     )
                 if await self._identities.exists_by_fields(
-                        tx, {'normalized_display_name': normalized_name}):
+                        tx, {
+                            'normalized_display_name': normalized_name,
+                            'tombstoned_at': None,
+                        }):
                     raise IdentityConflictError(
                         'An identity with this display name already exists')
                 if (await self._identities.exists_by_fields(
-                        tx, {'normalized_display_name': slug})
+                        tx, {
+                            'normalized_display_name': slug,
+                            'tombstoned_at': None,
+                        })
                         or await self._identities.exists_by_fields(
-                            tx, {'slug': normalized_name})):
+                            tx, {'slug': normalized_name, 'tombstoned_at': None})):
                     raise IdentityConflictError(
                         'Identity display name conflicts with an existing slug')
                 await self._identities.upsert(tx, str(entry.id), entry)
@@ -621,7 +630,8 @@ class IdentityService:
                     await self._bindings.upsert(tx, str(binding.id), binding)
         except _UNIQUE_VIOLATION_ERRORS as error:
             async with self._state_db.read_tx() as tx:
-                if await self._identities.exists_by_fields(tx, {'slug': slug}):
+                if await self._identities.exists_by_fields(
+                        tx, {'slug': slug, 'tombstoned_at': None}):
                     raise ResourceSlugConflictError(
                         f"Identity slug '{slug}' is already in use.") from error
             raise IdentityConflictError(
@@ -668,12 +678,15 @@ class IdentityService:
                     if not normalized_name:
                         raise ValueError('display_name cannot be empty')
                     if await self._identities.exists_by_fields(
-                            tx, {'normalized_display_name': normalized_name},
+                            tx, {
+                                'normalized_display_name': normalized_name,
+                                'tombstoned_at': None,
+                            },
                             exclude_id=str(identity_id)):
                         raise IdentityConflictError(
                             'An identity with this display name already exists')
                     if await self._identities.exists_by_fields(
-                            tx, {'slug': normalized_name},
+                            tx, {'slug': normalized_name, 'tombstoned_at': None},
                             exclude_id=str(identity_id)):
                         raise IdentityConflictError(
                             'Identity display name conflicts with an existing '
@@ -770,7 +783,10 @@ class IdentityService:
                         or identity.config != current.config):
                     raise ValueError('Identity principal changed')
                 if await self._identities.exists_by_fields(
-                        tx, {'identity_key': rotated_identity_key},
+                        tx, {
+                            'identity_key': rotated_identity_key,
+                            'tombstoned_at': None,
+                        },
                         exclude_id=str(identity_id)):
                     raise IdentityConflictError(
                         'An identity already exists for this external principal'

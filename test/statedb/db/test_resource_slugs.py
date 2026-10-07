@@ -117,7 +117,7 @@ async def test_explicit_derived_and_bootstrap_slugs(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_slugs_are_immutable_and_reserved_for_resource_lifetime(
+async def test_slugs_are_immutable_and_deleted_identity_slug_is_reusable(
         tmp_path) -> None:
     db = await StateDB.open_sqlite(str(tmp_path / 'state.db'))
     groups = GroupService(db)
@@ -172,16 +172,28 @@ async def test_slugs_are_immutable_and_reserved_for_resource_lifetime(
             ADMIN,
         )
         assert renamed_identity.slug == 'stable-identity'
+        replacement_args = _identity_args('Replacement Identity', 'replacement',
+                                          slug='stable-identity')
+        with pytest.raises(ResourceSlugConflictError,
+                           match="Identity slug 'stable-identity'"):
+            await identities.create(replacement_args, ADMIN)
         await identities.delete(identity.id, ADMIN)
         with pytest.raises(IdentityDoesNotExistError):
             await identities.get_admin(identity.id, ADMIN)
+        replacement = await identities.create(replacement_args, ADMIN)
+        assert replacement.id != identity.id
+        assert replacement.slug == 'stable-identity'
+        active_identities = await identities.list_admin(ADMIN)
+        assert [row.id for row in active_identities] == [replacement.id]
         with pytest.raises(ResourceSlugConflictError,
                            match="Identity slug 'stable-identity'"):
             await identities.create(
-                _identity_args('Replacement Identity', 'replacement',
+                _identity_args('Duplicate Identity', 'duplicate',
                                slug='stable-identity'),
                 ADMIN,
             )
+        with pytest.raises(IdentityDoesNotExistError):
+            await identities.get_admin(identity.id, ADMIN)
         async with db.read_tx() as tx:
             tombstone = await identities._identities.get(tx, identity.id)
         assert tombstone is not None

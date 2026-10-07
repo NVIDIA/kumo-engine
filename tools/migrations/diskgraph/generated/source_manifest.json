@@ -1,7 +1,7 @@
 {
   "source_repository": "kumo-ai/kumo-diskgraph",
-  "source_sha": "9fce50d5009432ca725b461c0ff0b8e688cc3ed3",
-  "source_reachable_commit_count": 1093,
+  "source_sha": "4a0b8dadb7b190cc17c805a9afc353a1a43de557",
+  "source_reachable_commit_count": 1094,
   "import_prefix": "packages/diskgraph",
   "file_count": 385,
   "entries": [
@@ -1326,7 +1326,7 @@
       "destination_path": "packages/diskgraph/diskgraph-ingest/src/lib.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "0111503880ec7a9e5463ceae76b5c331b4af75ee"
+      "blob": "0ef4ff69be86c14544d1ba1ebfb98d5152b87f78"
     },
     {
       "source_path": "diskgraph-ingest/src/mapping.rs",

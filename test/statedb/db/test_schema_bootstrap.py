@@ -9,6 +9,7 @@ import queue
 import sqlite3
 import threading
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -251,7 +252,7 @@ def test_project_group_and_identity_names_and_slugs_have_global_unique_indexes(
         for table in (projects, groups, identities)
     }
 
-    assert SCHEMA_VERSION == 16
+    assert SCHEMA_VERSION == 17
     assert project_name_index.unique is True
     assert project_name_index.postgres_expression == (
         "(payload->>'normalized_display_name')")
@@ -265,6 +266,17 @@ def test_project_group_and_identity_names_and_slugs_have_global_unique_indexes(
         assert slug_index.postgres_expression == "(payload->>'slug')"
         assert slug_index.sqlite_expression == (
             "json_extract(payload, '$.slug')")
+
+
+def test_identity_unique_indexes_only_cover_live_identities() -> None:
+    identities = next(table for table in STATE_DB_TABLES
+                      if table.name == "identities")
+    unique_indexes = [index for index in identities.indexes if index.unique]
+    assert len(unique_indexes) == 3
+    for index in unique_indexes:
+        assert index.postgres_where == "payload->>'tombstoned_at' IS NULL"
+        assert index.sqlite_where == (
+            "json_extract(payload, '$.tombstoned_at') IS NULL")
 
 
 def test_connector_indexes_only_cover_live_name_and_identity_lookups() -> None:
@@ -1090,6 +1102,10 @@ def _oldest_supported_postgres_tables() -> tuple[TableSpec, ...]:
     )
 
     def at_oldest_version(table: TableSpec) -> TableSpec:
+        if table.name == "identities":
+            return replace(table, indexes=tuple(
+                replace(index, postgres_where=None, sqlite_where=None)
+                for index in table.indexes))
         if table.name == "api_keys":
             return TableSpec(table.name, table.purpose, legacy_api_key_indexes)
         return table
@@ -1100,6 +1116,44 @@ def _oldest_supported_postgres_tables() -> tuple[TableSpec, ...]:
         TableSpec("baseline_jobs", "retired baseline job metadata"),
         TableSpec("online_serving_jobs", "retired online-serving job metadata"),
     )
+
+
+@pytest.mark.asyncio
+async def test_postgres_identity_recreation_after_schema_migration(
+    postgres_dsn: str,
+    postgres_connection,
+) -> None:
+    old_tables = tuple(
+        replace(table, indexes=tuple(
+            replace(index, postgres_where=None, sqlite_where=None)
+            for index in table.indexes))
+        if table.name == "identities" else table
+        for table in STATE_DB_TABLES)
+    payload = {
+        "identity_key": "databricks:workspace:client",
+        "slug": "identity",
+        "normalized_display_name": "identity",
+        "tombstoned_at": "2026-01-01T00:00:00Z",
+    }
+    insert = ("INSERT INTO identities (id, payload, created_at, updated_at) "
+              "VALUES ($1, $2::jsonb, now(), now())")
+    await _reset_postgres_schema(postgres_connection)
+    try:
+        await bootstrap_postgres(
+            postgres_dsn, tables=old_tables, schema_version=16)
+        await postgres_connection.execute(insert, "deleted", json.dumps(payload))
+        result = await bootstrap_postgres(
+            postgres_dsn, migrations=POSTGRES_SCHEMA_MIGRATIONS)
+        assert result.applied_migrations == (16, )
+        payload["tombstoned_at"] = None
+        await postgres_connection.execute(insert, "new", json.dumps(payload))
+        with pytest.raises(asyncpg.UniqueViolationError):
+            await postgres_connection.execute(
+                insert, "duplicate", json.dumps(payload))
+        assert await postgres_connection.fetchval(
+            "SELECT count(*) FROM identities") == 2
+    finally:
+        await _reset_postgres_schema(postgres_connection)
 
 
 @pytest.mark.asyncio

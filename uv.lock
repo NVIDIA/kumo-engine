@@ -44,6 +44,7 @@ members = [
     "kumo-snowflake",
     "kumoai-studio",
 ]
+overrides = [{ name = "fsspec", extras = ["http"], specifier = "==2026.6.0" }]
 
 [[manifest.dependency-metadata]]
 name = "snowflake-connector-python"
@@ -1758,11 +1759,11 @@ wheels = [
 
 [[package]]
 name = "fsspec"
-version = "2025.5.1"
+version = "2026.6.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/00/f7/27f15d41f0ed38e8fcc488584b57e902b331da7f7c6dcda53721b15838fc/fsspec-2025.5.1.tar.gz", hash = "sha256:2e55e47a540b91843b755e83ded97c6e897fa0942b11490113f09e9c443c2475", size = 303033, upload-time = "2025-05-24T12:03:23.792Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/10/a1/ae4e3e5003468d6391d2c77b6fa1cd73bd5d13511d81c642d7b28ac90ed4/fsspec-2026.6.0.tar.gz", hash = "sha256:f5bac145310fe30e16e1471bd6840b2d990d609e872251d7e674241822abf01a", size = 313646, upload-time = "2026-06-16T01:57:28.105Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bb/61/78c7b3851add1481b048b5fdc29067397a1784e2910592bc81bb3f608635/fsspec-2025.5.1-py3-none-any.whl", hash = "sha256:24d3a2e663d5fc735ab256263c4075f374a174c3410c0b25e5bd1970bceaa462", size = 199052, upload-time = "2025-05-24T12:03:21.66Z" },
+    { url = "https://files.pythonhosted.org/packages/e5/22/4222d7ddf3da30f363edaa98e329c2bce6c65497c9cb2810931c8b2c0fbc/fsspec-2026.6.0-py3-none-any.whl", hash = "sha256:02e0b71817df9b2169dc30a16832045764def1191b43dcff5bb85bdee212d2a1", size = 203949, upload-time = "2026-06-16T01:57:26.358Z" },
 ]
 
 [package.optional-dependencies]
@@ -1772,20 +1773,21 @@ http = [
 
 [[package]]
 name = "gcsfs"
-version = "2025.5.1"
+version = "2026.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
     { name = "decorator" },
-    { name = "fsspec" },
+    { name = "fsspec", extra = ["http"] },
     { name = "google-auth" },
     { name = "google-auth-oauthlib" },
     { name = "google-cloud-storage" },
+    { name = "google-cloud-storage-control" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d8/4a/47ad326cc74ccfd97e125c0087a36d516ed74c61f53e458067737378d0f2/gcsfs-2025.5.1.tar.gz", hash = "sha256:ba945530cf4857cd9d599ccb3ae729c65c39088880b11c4df1fecac30df5f3e3", size = 82173, upload-time = "2025-05-24T12:12:58.519Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/cd/ad/36777b2030b96d32f5c557606ac11bf5d0e152620fc15055bd1e30194037/gcsfs-2026.6.0.tar.gz", hash = "sha256:bfb1f912b3f51006b00bcd5fcef915214cb51f8b892a3974178430a55990ba3f", size = 1007987, upload-time = "2026-06-18T03:16:08.99Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ff/eb/9182e875592c48d282c5eab602000f0618817b9011b2b2925165e4b4b7f3/gcsfs-2025.5.1-py2.py3-none-any.whl", hash = "sha256:48712471ff71ac83d3e2152ba4dc232874698466e344d5e700feba06b0a0de7b", size = 36581, upload-time = "2025-05-24T12:12:57.011Z" },
+    { url = "https://files.pythonhosted.org/packages/69/43/a0096d96d3271640bbda056b9d22249be141a54509859b99002ee6149a01/gcsfs-2026.6.0-py3-none-any.whl", hash = "sha256:4a81fe40fbdef450aeaacb534b42c04059f8f3b080e3e169137247a5bb023464", size = 89629, upload-time = "2026-06-18T03:16:07.407Z" },
 ]
 
 [[package]]
@@ -1907,7 +1909,7 @@ wheels = [
 
 [[package]]
 name = "google-cloud-storage"
-version = "3.1.0"
+version = "3.11.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "google-api-core" },
@@ -1917,9 +1919,26 @@ dependencies = [
     { name = "google-resumable-media" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f3/08/52143124415a889bbab60a8ecede1e31ea0e8d992ca078317886f26dc3be/google_cloud_storage-3.1.0.tar.gz", hash = "sha256:944273179897c7c8a07ee15f2e6466a02da0c7c4b9ecceac2a26017cb2972049", size = 7666527, upload-time = "2025-02-28T00:20:02.383Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/22/09/8953e2993e604c8882fd441b5b2de624a2dfe7e6144c6166d7b477509596/google_cloud_storage-3.11.0.tar.gz", hash = "sha256:498bf37c999028f69a245f586b5e50d89f59df1fafc0e3a93783ac56be2a456b", size = 17335639, upload-time = "2026-06-03T16:14:04.649Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/13/b8/c99c965659f45efa73080477c49ffddf7b9aecb00806be8422560bb5b824/google_cloud_storage-3.1.0-py2.py3-none-any.whl", hash = "sha256:eaf36966b68660a9633f03b067e4a10ce09f1377cae3ff9f2c699f69a81c66c6", size = 174861, upload-time = "2025-02-28T00:19:59.459Z" },
+    { url = "https://files.pythonhosted.org/packages/09/7e/ee0dd1a67ac75d29d0c438969d85d4fadbc4bcab47b0a8ccfa7eb22f643c/google_cloud_storage-3.11.0-py3-none-any.whl", hash = "sha256:cfcc33aa6b899ec9dd1771286f8e79fbed5c35c1c174718071b079aa827f37c2", size = 339654, upload-time = "2026-06-03T16:12:46.052Z" },
+]
+
+[[package]]
+name = "google-cloud-storage-control"
+version = "1.15.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "google-api-core", extra = ["grpc"] },
+    { name = "google-auth" },
+    { name = "grpc-google-iam-v1" },
+    { name = "grpcio" },
+    { name = "proto-plus" },
+    { name = "protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b0/b1/95f5bd878537dffa80c96d67d4a87b4bd273630e1e52f84a40602206448c/google_cloud_storage_control-1.15.0.tar.gz", hash = "sha256:e3d50276f0aed0c33ebcf3c6221e933889e042df70a56886ddffe59c66889183", size = 160209, upload-time = "2026-09-03T22:31:17.533Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2d/1b/772fea19bed56552249ca9e30d48d2285c75b414e78ecc595987ba7d182c/google_cloud_storage_control-1.15.0-py3-none-any.whl", hash = "sha256:46c8c801ff0425a1bd59bc28899a8242e15f6bbb06a4f2304cbd169c7d26cb29", size = 115195, upload-time = "2026-09-03T22:30:39.182Z" },
 ]
 
 [[package]]
@@ -2551,7 +2570,7 @@ dependencies = [
     { name = "diskgraph" },
     { name = "ec2-metadata" },
     { name = "filelock" },
-    { name = "fsspec" },
+    { name = "fsspec", extra = ["http"] },
     { name = "gcsfs" },
     { name = "google-api-core" },
     { name = "google-auth" },
@@ -2782,14 +2801,14 @@ requires-dist = [
     { name = "fifolock", marker = "extra == 'rest'", specifier = "==0.0.20" },
     { name = "filelock", specifier = "==3.29.4" },
     { name = "flake8", marker = "extra == 'dev'", specifier = "==7.1.2" },
-    { name = "fsspec", specifier = ">=2025.3.0,<=2025.5.1" },
-    { name = "gcsfs", specifier = "==2025.5.1" },
+    { name = "fsspec", specifier = "==2026.6.0" },
+    { name = "gcsfs", specifier = "==2026.6.0" },
     { name = "google-api-core", specifier = ">=2,<3" },
     { name = "google-auth", specifier = ">=2.14.1,<3" },
     { name = "google-cloud-bigquery", specifier = "==3.36.0" },
     { name = "google-cloud-bigquery-storage", specifier = ">=2.39.0" },
     { name = "google-cloud-secret-manager", specifier = "==2.26.0" },
-    { name = "google-cloud-storage", specifier = "==3.1.0" },
+    { name = "google-cloud-storage", specifier = "==3.11.0" },
     { name = "google-cloud-storage-transfer", specifier = "==1.17.0" },
     { name = "graphviz", marker = "extra == 'drawing'", specifier = "==0.20.1" },
     { name = "graphviz", marker = "extra == 'full'", specifier = "==0.20.1" },
@@ -3020,7 +3039,7 @@ source = { editable = "packages/kumo-core" }
 dependencies = [
     { name = "diskgraph" },
     { name = "filelock" },
-    { name = "fsspec" },
+    { name = "fsspec", extra = ["http"] },
     { name = "kumo-api" },
     { name = "kumo-pql" },
     { name = "matplotlib" },
@@ -3217,7 +3236,7 @@ name = "kumo-gcs"
 version = "0.1.0.dev1"
 source = { editable = "packages/kumo-gcs" }
 dependencies = [
-    { name = "fsspec" },
+    { name = "fsspec", extra = ["http"] },
     { name = "google-api-core" },
     { name = "google-auth", extra = ["requests"] },
     { name = "google-cloud-storage" },
@@ -3366,7 +3385,7 @@ name = "kumoai-studio"
 source = { editable = "packages/kumo-sdk" }
 dependencies = [
     { name = "aiohttp" },
-    { name = "fsspec" },
+    { name = "fsspec", extra = ["http"] },
     { name = "kumo-api" },
     { name = "pandas" },
     { name = "plotly" },
@@ -5728,7 +5747,7 @@ version = "0.4.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "botocore" },
-    { name = "fsspec" },
+    { name = "fsspec", extra = ["http"] },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d9/9a/504cb277632c4d325beabbd03bb43778f0decb9be22d9e0e6c62f44540c7/s3fs-0.4.2.tar.gz", hash = "sha256:2ca5de8dc18ad7ad350c0bd01aef0406aa5d0fff78a561f0f710f9d9858abdd0", size = 57527, upload-time = "2020-03-31T15:24:26.388Z" }
 wheels = [
@@ -6604,7 +6623,7 @@ resolution-markers = [
 ]
 dependencies = [
     { name = "filelock", marker = "(sys_platform == 'darwin' and extra == 'extra-4-kumo-cpu') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130')" },
-    { name = "fsspec", marker = "(sys_platform == 'darwin' and extra == 'extra-4-kumo-cpu') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130')" },
+    { name = "fsspec", extra = ["http"], marker = "(sys_platform == 'darwin' and extra == 'extra-4-kumo-cpu') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130')" },
     { name = "jinja2", marker = "(sys_platform == 'darwin' and extra == 'extra-4-kumo-cpu') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130')" },
     { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-4-kumo-cpu') or (python_full_version >= '3.12' and extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (sys_platform != 'darwin' and extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130')" },
     { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-4-kumo-cpu') or (python_full_version < '3.12' and extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (sys_platform != 'darwin' and extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130')" },
@@ -6635,7 +6654,7 @@ dependencies = [
     { name = "cuda-bindings", marker = "(sys_platform == 'linux' and extra != 'extra-4-kumo-cpu' and extra != 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130')" },
     { name = "cuda-toolkit", extra = ["cudart", "cufft", "cufile", "cupti", "curand", "cusolver", "cusparse", "nvjitlink", "nvrtc", "nvtx"], marker = "(sys_platform == 'linux' and extra != 'extra-4-kumo-cpu' and extra != 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130')" },
     { name = "filelock", marker = "(extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (extra != 'extra-4-kumo-cpu' and extra != 'extra-4-kumo-cu130')" },
-    { name = "fsspec", marker = "(extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (extra != 'extra-4-kumo-cpu' and extra != 'extra-4-kumo-cu130')" },
+    { name = "fsspec", extra = ["http"], marker = "(extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (extra != 'extra-4-kumo-cpu' and extra != 'extra-4-kumo-cu130')" },
     { name = "jinja2", marker = "(extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (extra != 'extra-4-kumo-cpu' and extra != 'extra-4-kumo-cu130')" },
     { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra != 'extra-4-kumo-cpu' and extra != 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130')" },
     { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra != 'extra-4-kumo-cpu' and extra != 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130')" },
@@ -6688,7 +6707,7 @@ resolution-markers = [
 ]
 dependencies = [
     { name = "filelock", marker = "(sys_platform != 'darwin' and extra == 'extra-4-kumo-cpu') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130')" },
-    { name = "fsspec", marker = "(sys_platform != 'darwin' and extra == 'extra-4-kumo-cpu') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130')" },
+    { name = "fsspec", extra = ["http"], marker = "(sys_platform != 'darwin' and extra == 'extra-4-kumo-cpu') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130')" },
     { name = "jinja2", marker = "(sys_platform != 'darwin' and extra == 'extra-4-kumo-cpu') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130')" },
     { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and sys_platform != 'darwin' and extra == 'extra-4-kumo-cpu') or (python_full_version >= '3.12' and extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (sys_platform == 'darwin' and extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130')" },
     { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-4-kumo-cpu') or (python_full_version < '3.12' and extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130') or (sys_platform == 'darwin' and extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130')" },
@@ -6740,7 +6759,7 @@ dependencies = [
     { name = "cuda-bindings", marker = "(sys_platform == 'linux' and extra == 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130')" },
     { name = "cuda-toolkit", extra = ["cudart", "cufft", "cufile", "cupti", "curand", "cusolver", "cusparse", "nvjitlink", "nvrtc", "nvtx"], marker = "(sys_platform == 'linux' and extra == 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130')" },
     { name = "filelock", marker = "extra == 'extra-4-kumo-cu130'" },
-    { name = "fsspec", marker = "extra == 'extra-4-kumo-cu130'" },
+    { name = "fsspec", extra = ["http"], marker = "extra == 'extra-4-kumo-cu130'" },
     { name = "jinja2", marker = "extra == 'extra-4-kumo-cu130'" },
     { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130')" },
     { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'extra-4-kumo-cu130') or (extra == 'extra-4-kumo-cpu' and extra == 'extra-4-kumo-cu130')" },
@@ -6781,7 +6800,7 @@ version = "2.9.0"
 source = { registry = "3rdparty/kumo-wheels" }
 dependencies = [
     { name = "aiohttp" },
-    { name = "fsspec" },
+    { name = "fsspec", extra = ["http"] },
     { name = "jinja2" },
     { name = "numpy" },
     { name = "psutil" },
