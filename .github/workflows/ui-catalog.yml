@@ -8,7 +8,7 @@ name: UI catalog
   pull_request:
     paths: ['packages/kumo-ui-catalog/**', '.github/workflows/ui-catalog.yml']
   push:
-    branches: [master]
+    branches: [main]
     paths: ['packages/kumo-ui-catalog/**', '.github/workflows/ui-catalog.yml']
 
 permissions:

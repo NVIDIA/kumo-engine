@@ -7,7 +7,7 @@ name: Testing and Coverage
 on:  # yamllint disable-line rule:truthy
   push:
     branches:
-      - master
+      - main
     paths-ignore: ["ui/**", "tools/**"]
   pull_request:
   merge_group:
@@ -60,7 +60,7 @@ env:
   # --store-durations to the pytest invocation, and enables the per-shard
   # durations artifact upload + durations-aggregate job.
   STORE_DURATIONS: ${{ inputs.store_durations == true }}
-  # True for push-to-master runs and for manual dispatch/call with full_test=true
+  # True for push-to-main runs and for manual dispatch/call with full_test=true
   # (unless store_durations is also set, which forces minimal mode).
   RUN_FULL_TEST: ${{ github.event_name == 'push' || (inputs.full_test == true && inputs.store_durations != true) }}
   # True when pytest must run even if only_changed says no pytest-affecting
@@ -158,7 +158,7 @@ jobs:
         ]
 
     outputs:
-      # Push built coverage report to gh-pages only when pytest is triggered on master.
+      # Push built coverage report to gh-pages only when pytest is triggered on main.
       push-gh-pages: ${{ steps.non-pytest-changes.outputs.only_changed != 'true' }}
 
     steps:
@@ -177,7 +177,7 @@ jobs:
       # This enables us to skip the minimal python tests.
       # Note, it's not possible use the standard `on.pull_request` method to
       # do this, as we need to mark the overall workflow as success to satisfy
-      # the master branch protection rule, and this does not happen if we skip
+      # the main branch protection rule, and this does not happen if we skip
       # the entire workflow
       #
       # uv.lock is deliberately NOT in this list: `uv lock --check` (the
@@ -354,7 +354,7 @@ jobs:
       GITHUB_REPOSITORY: ${{ github.repository }}
       GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
       GITHUB_RUN_ID: ${{ github.run_id }}
-    runs-on: ubuntu-22.04-large
+    runs-on: ubuntu-22.04
     timeout-minutes: 60
     defaults:
       run:
@@ -390,7 +390,7 @@ jobs:
     env:
       CARGO_BUILD_JOBS: '2'
       RUSTFLAGS: '-C target-feature=+aes,+sse2 -C link-arg=-fuse-ld=lld -C debuginfo=line-tables-only'
-    runs-on: ubuntu-22.04-large
+    runs-on: ubuntu-22.04
     timeout-minutes: 60
     defaults:
       run:
@@ -433,7 +433,7 @@ jobs:
       GITHUB_REPOSITORY: ${{ github.repository }}
       GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
       GITHUB_RUN_ID: ${{ github.run_id }}
-    runs-on: ubuntu-22.04-large
+    runs-on: ubuntu-22.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -711,9 +711,9 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write  # peaceiris/actions-gh-pages pushes to gh-pages
-    # Set the same group across commits in master to avoid pushing to gh-pages
+    # Set the same group across commits in main to avoid pushing to gh-pages
     # branch at the same time. This job gets triggered on PRs and push to
-    # master, but it takes one minute to complete, so we hopefully don't need
+    # main, but it takes one minute to complete, so we hopefully don't need
     # to cancel in-progress jobs.
     concurrency:
       group: coverage-gh-pages
@@ -760,7 +760,7 @@ jobs:
         # require RUN_FULL_TEST so minimal-mode runs (e.g. store_durations
         # refresh, or dispatch with full_test=false) don't overwrite the
         # published report with a partial-coverage snapshot.
-        if: ${{ github.ref == 'refs/heads/master' && env.RUN_FULL_TEST == 'true' && steps.coverage.outcome == 'success' && needs.pytest.outputs.push-gh-pages == 'true' }}
+        if: ${{ github.ref == 'refs/heads/main' && env.RUN_FULL_TEST == 'true' && steps.coverage.outcome == 'success' && needs.pytest.outputs.push-gh-pages == 'true' }}
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./htmlcov

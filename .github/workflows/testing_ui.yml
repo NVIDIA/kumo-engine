@@ -7,7 +7,7 @@ name: UI Testing and Coverage
 on: # yamllint disable-line rule:truthy
   push:
     branches:
-      - master
+      - main
     paths:
       - "ui/**"
       - "packages/kumo-ui-catalog/**"
@@ -40,7 +40,7 @@ jobs:
     permissions:
       contents: read
       packages: read
-    runs-on: ubuntu-22.04-large
+    runs-on: ubuntu-22.04
     continue-on-error: true
     outputs:
       ui_changed: ${{ steps.ui-changes.outputs.any_changed }}
@@ -99,10 +99,10 @@ jobs:
 
       - name: Run UI tests with coverage
         if: steps.ui-changes.outputs.any_changed == 'true' || github.event_name == 'schedule'
-        timeout-minutes: 15
+        timeout-minutes: 30
         run: |
           cd ui
-          npx vitest run --coverage
+          npx vitest run --coverage --maxWorkers=2
 
       - name: Set destination path
         id: vars
@@ -118,7 +118,7 @@ jobs:
 
       - name: Upload coverage for trusted publication
         id: coverage-upload
-        if: ${{ always() && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (steps.ui-changes.outputs.any_changed == 'true' || github.event_name == 'schedule') }}
+        if: ${{ always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (steps.ui-changes.outputs.any_changed == 'true' || github.event_name == 'schedule') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ui-coverage
@@ -196,7 +196,7 @@ jobs:
 
   publish-coverage:
     needs: vitest
-    if: ${{ always() && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.vitest.outputs.coverage_artifact != '' }}
+    if: ${{ always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.vitest.outputs.coverage_artifact != '' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write

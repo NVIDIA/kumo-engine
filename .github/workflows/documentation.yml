@@ -20,7 +20,7 @@ name: Documentation
       - "packages/kumo-ui-catalog/package.json"
       - ".github/workflows/documentation.yml"
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - "docs/**"
       - "helm/**"

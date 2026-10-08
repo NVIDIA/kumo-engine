@@ -7,7 +7,7 @@ name: Kumo SDK - Integration
 on: # yamllint disable-line rule:truthy
   push:
     branches:
-      - master
+      - main
     paths:
       - 'packages/kumo-api/**'
       - 'packages/kumo-sdk/**'

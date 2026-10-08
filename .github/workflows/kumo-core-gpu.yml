@@ -4,63 +4,78 @@
 
 name: Kumo Core GPU
 
+# NVIDIA's GPU runners don't run pull_request jobs. copy-pr-bot copies each
+# trusted pull request to a pull-request/<number> branch, and pushes to those
+# branches run this workflow.
 on:  # yamllint disable-line rule:truthy
-  pull_request:
-    types: [labeled, synchronize, reopened]
+  push:
+    branches:
+      - "pull-request/[0-9]+"
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 permissions:
   contents: read
 
 jobs:
+  changes:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      gpu: ${{ steps.match.outputs.gpu }}
+    steps:
+      - name: Check whether the pull request changes code
+        id: match
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Skip only if every file in the pull request is docs, UI, Helm or tooling.
+          files="$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/${GITHUB_REF_NAME#pull-request/}/files" --jq '.[].filename')"
+          if grep -q -v -E '^(ui/|docs/|helm/|tools/|benchmark/)|\.md$' <<< "$files"; then
+            echo gpu=true >> "$GITHUB_OUTPUT"
+          else
+            echo gpu=false >> "$GITHUB_OUTPUT"
+          fi
+
   # Built on a CPU runner so the GPU job doesn't spend its time compiling.
-  # This condition gates both jobs. The repository labeler owns the
-  # path-to-component mapping. Avoid a second, inevitably divergent list here,
-  # and never run fork code on the trusted CUDA runner.
+  # This condition gates both jobs.
   diskgraph-wheel:
+    needs: changes
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.pull_request.head.repo.full_name == github.repository &&
-      contains(github.event.pull_request.labels.*.name, 'ml-algorithms'))
+      !cancelled() &&
+      (github.event_name == 'workflow_dispatch' || needs.changes.outputs.gpu == 'true')
     permissions:
       contents: read
     uses: ./.github/workflows/_diskgraph-wheel.yml
 
   gpu:
     name: kumo-core-gpu
-    # Runs only when diskgraph-wheel does.
+    # Runs only when diskgraph-wheel succeeds. Checked explicitly because on
+    # manual runs the skipped changes job would otherwise skip this job too.
     needs: [diskgraph-wheel]
+    if: ${{ !cancelled() && needs.diskgraph-wheel.result == 'success' }}
     env:
       FAISS_GPU_AMD64_RELEASE_TAG: faiss-gpu-amd64-1.14.3-cu130sm120-cp314-v1
       FAISS_GPU_AMD64_RELEASE_ASSET: faiss_gpu-1.14.3+cu130sm120-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
       FAISS_GPU_AMD64_RELEASE_SHA256: ed9162596b6b1e9eeffc11675cd57eef622d891c27e8c02e2315930fee0f67aa
-    environment:
-      name: gha-kumo-workflow-tests
-      # This job uses environment-scoped OIDC; it does not deploy an application.
-      deployment: false
-    runs-on: [self-hosted, cuda]
+    runs-on: linux-amd64-gpu-t4-latest-1
     timeout-minutes: 60
     permissions:
       contents: read
-      id-token: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
-        with:
-          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
-          aws-region: us-west-2
-
       - name: Set up Kumo with CUDA dependencies
         uses: ./.github/actions/setup
         with:
-          github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
           cuda-version: cu130
           diskgraph-wheel-artifact: diskgraph-wheel
 

@@ -8,7 +8,7 @@ name: Kumo API - Testing
 on:  # yamllint disable-line rule:truthy
   push:
     branches:
-      - master
+      - main
     paths:
       - 'packages/kumo-api/**'
       - '.github/workflows/kumo-api-*'

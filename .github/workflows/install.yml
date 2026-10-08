@@ -7,7 +7,7 @@ name: Kumo Installation
 on:  # yamllint disable-line rule:truthy
   push:
     branches:
-      - master
+      - main
     paths-ignore: ["ui/**"]
   pull_request:
   merge_group:

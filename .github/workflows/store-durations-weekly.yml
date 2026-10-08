@@ -19,10 +19,10 @@ permissions:
 
 jobs:
   run-tests:
-    # Guard: only run against master. Durations recorded on a feature branch
+    # Guard: only run against main. Durations recorded on a feature branch
     # would bias the committed file toward that branch's test set. If
-    # dispatched from a non-master ref, this job (and open-pr) is skipped.
-    if: github.ref_name == 'master'
+    # dispatched from a non-main ref, this job (and open-pr) is skipped.
+    if: github.ref_name == 'main'
     permissions:
       # Reusable-workflow validation checks nested job permissions up front.
       # testing.yml defines a coverage job with `contents: write`, even though
@@ -37,7 +37,7 @@ jobs:
   open-pr:
     runs-on: ubuntu-24.04
     needs: [run-tests]
-    if: github.ref_name == 'master'
+    if: github.ref_name == 'main'
     permissions:
       contents: write
       pull-requests: write
@@ -75,7 +75,7 @@ jobs:
             echo "PR already open on $BRANCH; force-push updated it."
           else
             gh pr create \
-              --base master \
+              --base main \
               --head "$BRANCH" \
               --title "Refresh pytest-split durations" \
               --body "Automated weekly refresh of \`.test_durations\` from the latest testing.yml run in store-durations mode. Safe to merge without CI — this is a data file that only affects pytest-split shard balancing."

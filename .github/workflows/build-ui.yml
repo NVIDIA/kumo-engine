@@ -7,7 +7,7 @@ name: Kumo UI Build Test
 on:  # yamllint disable-line rule:truthy
   push:
     branches:
-      - master
+      - main
   pull_request:
 
 permissions:

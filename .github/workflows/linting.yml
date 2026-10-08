@@ -7,7 +7,7 @@ name: Linting
 on: # yamllint disable-line rule:truthy
   push:
     branches:
-      - master
+      - main
   pull_request:
   merge_group:
 
@@ -324,7 +324,7 @@ jobs:
       # This enables us to skip the pyright check for ui only changes.
       # Note, it's not possible use the standard `on.pull_request` method to
       # do this, as we need to mark the overall workflow as success to satisfy
-      # the master branch protection rule, and this does not happen if we skip
+      # the main branch protection rule, and this does not happen if we skip
       # the entire workflow
       - name: Check for only ui file changes
         id: ui-changes
@@ -402,7 +402,7 @@ jobs:
       # This enables us to skip the uilint workflow.
       # Note, it's not possible use the standard `on.pull_request` method to
       # do this, as we need to mark the overall workflow as success to satisfy
-      # the master branch protection rule, and this does not happen if we skip
+      # the main branch protection rule, and this does not happen if we skip
       # the entire workflow
       - name: Check for only ui related file changes
         id: ui-changes
@@ -436,7 +436,7 @@ jobs:
           cd ui
           npm run format-check
 
-  # Keep this job name stable: master branch protection requires the
+  # Keep this job name stable: main branch protection requires the
   # setup_dependencies status context.
   setup_dependencies:
     permissions:

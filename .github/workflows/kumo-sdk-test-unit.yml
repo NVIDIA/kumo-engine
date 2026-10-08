@@ -7,7 +7,7 @@ name: Kumo SDK - Unit and wheel validation
 on:  # yamllint disable-line rule:truthy
   push:
     branches:
-      - master
+      - main
     paths:
       - 'packages/kumo-api/**'
       - 'packages/kumo-sdk/**'
@@ -51,7 +51,7 @@ jobs:
         id: generate-matrix
         run: |
           # Trigger full matrix on main and PRs with the ci-full label.
-          if [[ ${{ contains(github.event.pull_request.labels.*.name, 'ci-full') }} == true || ${{ github.ref_name }} == master ]]; then
+          if [[ ${{ contains(github.event.pull_request.labels.*.name, 'ci-full') }} == true || ${{ github.ref_name }} == main ]]; then
             echo 'matrix={"os": ["ubuntu-22.04", "macos-14", "windows-2022"], "python-version": ["3.11", "3.12", "3.13", "3.14"]}' >> $GITHUB_OUTPUT
           else
             echo 'matrix={"os": ["ubuntu-22.04", "macos-14", "windows-2022"], "python-version": ["3.11"]}' >> $GITHUB_OUTPUT
