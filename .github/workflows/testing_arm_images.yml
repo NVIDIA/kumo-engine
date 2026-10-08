@@ -4,27 +4,15 @@
 
 name: Test backend images
 
+# Runs on copy-pr-bot's pull-request/<number> branches; NVIDIA runners don't run pull_request jobs.
 on:  # yamllint disable-line rule:truthy
-  pull_request:
-    paths:
-      - '.github/workflows/_docker-kumo-backend-*-image-custom.yml'
-      - '.github/workflows/testing_arm_images.yml'
-      - 'uv.lock'
-      - '3rdparty/kumo-wheels/**'
-      - 'docker/Dockerfile.kumo_backend_cpu'
-      - 'docker/Dockerfile.kumo_backend_gpu'
-      - 'docker/kumodeps_base'
-      - 'docker/build_diskgraph_wheel'
-      - 'scripts/diskgraph'
-      - 'scripts/build_faiss_gpu_amd64_wheel.sh'
-      - 'scripts/build_faiss_gpu_arm64_wheel.sh'
-      - 'scripts/gen_third_party.py'
-      - 'scripts/update_packages.sh'
-      - 'docker/Makefile'
-      - 'setup.py'
+  push:
+    branches:
+      - "pull-request/[0-9]+"
+  workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -34,23 +22,52 @@ permissions:
   pull-requests: write
 
 jobs:
+  changes:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      images: ${{ steps.match.outputs.images }}
+    steps:
+      - name: Check whether the pull request changes image inputs
+        id: match
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          files="$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/${GITHUB_REF_NAME#pull-request/}/files" --jq '.[].filename')"
+          if grep -q -E \
+            -e '^\.github/workflows/(_docker-kumo-backend-(cpu|gpu)-image-custom|testing_arm_images)\.yml$' \
+            -e '^(uv\.lock|setup\.py)$' \
+            -e '^3rdparty/kumo-wheels/' \
+            -e '^docker/(Dockerfile\.kumo_backend_(cpu|gpu)|kumodeps_base|build_diskgraph_wheel|Makefile)$' \
+            -e '^scripts/(diskgraph|build_faiss_gpu_(amd64|arm64)_wheel\.sh|gen_third_party\.py|update_packages\.sh)$' \
+            <<< "$files"; then
+            echo images=true >> "$GITHUB_OUTPUT"
+          else
+            echo images=false >> "$GITHUB_OUTPUT"
+          fi
+
   gpu:
-    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.images == 'true') }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: arm
+          - runner: linux-arm64-cpu8
             target_platform: linux/arm64
             cuda_arch_list: '12.1'
             image_tag_suffix: '-arm64-ci'
-          - runner: ubuntu-22.04-large
+          - runner: linux-amd64-cpu8
             target_platform: linux/amd64
             cuda_arch_list: ''
             image_tag_suffix: '-amd64-ci'
     uses: ./.github/workflows/_docker-kumo-backend-gpu-image-custom.yml
     with:
-      kumo_repo_ref: ${{ github.event.pull_request.head.sha }}
+      kumo_repo_ref: ${{ github.sha }}
       bake_glove_level: none
       runner_label: ${{ matrix.runner }}
       target_platform: ${{ matrix.target_platform }}
@@ -63,20 +80,21 @@ jobs:
     secrets: inherit
 
   cpu:
-    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.images == 'true') }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: arm
+          - runner: linux-arm64-cpu8
             target_platform: linux/arm64
             image_tag_suffix: '-arm64-ci'
-          - runner: ubuntu-22.04-large
+          - runner: linux-amd64-cpu8
             target_platform: linux/amd64
             image_tag_suffix: '-amd64-ci'
     uses: ./.github/workflows/_docker-kumo-backend-cpu-image-custom.yml
     with:
-      kumo_repo_ref: ${{ github.event.pull_request.head.sha }}
+      kumo_repo_ref: ${{ github.sha }}
       bake_glove_level: none
       runner_label: ${{ matrix.runner }}
       target_platform: ${{ matrix.target_platform }}
