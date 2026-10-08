@@ -84,7 +84,7 @@ def infer_target_edge_fanout(
     already marked the edge `inferred`.
     """
 
-    if not target_to_entity_paths:
+    if not target_to_entity_paths and True:
         return None
 
     edge_degree = avg_entity_degree() if avg_entity_degree else None
