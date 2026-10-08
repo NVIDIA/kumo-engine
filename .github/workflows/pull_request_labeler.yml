@@ -6,7 +6,7 @@ name: "Pull Request and Issue Labeler"
 on:  # yamllint disable-line rule:truthy
   pull_request:
     branches:
-      - master
+      - main
     types:
       - opened
       - edited

@@ -7,7 +7,7 @@ name: Kumo SDK - Lint and type check
 on:  # yamllint disable-line rule:truthy
   push:
     branches:
-      - master
+      - main
     paths:
       - 'packages/kumo-api/**'
       - 'packages/kumo-sdk/**'

@@ -7,7 +7,7 @@ name: Snowflake Testing and Coverage
 on:  # yamllint disable-line rule:truthy
   push:
     branches:
-      - master
+      - main
     paths-ignore: ["ui/**", "tools/**"]
   pull_request:
   merge_group:

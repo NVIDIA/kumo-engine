@@ -7,7 +7,7 @@ name: UI Migration Baseline Ratchet
 on: # yamllint disable-line rule:truthy
   push:
     branches:
-      - master
+      - main
     paths: ["ui/**"]
   pull_request:
     paths: ["ui/**"]

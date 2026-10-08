@@ -7,7 +7,7 @@ name: Workflow security policy
 "on":
   pull_request:
   push:
-    branches: [master]
+    branches: [main]
 
 permissions:
   contents: read

@@ -6,7 +6,7 @@ name: Third-party license notice
 
 on:  # yamllint disable-line rule:truthy
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
   merge_group:
 

@@ -6,18 +6,15 @@ name: Build CUDA 13 faiss-gpu Wheel (AMD64)
 
 on:  # yamllint disable-line rule:truthy
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - tools/faiss-gpu-amd64/**
       - .github/workflows/build-faiss-gpu-amd64-wheel.yml
-  pull_request:
-    paths:
-      - tools/faiss-gpu-amd64/**
-      - .github/workflows/build-faiss-gpu-amd64-wheel.yml
+  # No pull_request trigger (NVIDIA runners skip those); dispatch on the branch to test changes.
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish immutable assets from master after validation
+        description: Publish immutable assets from main after validation
         required: false
         default: false
         type: boolean
@@ -34,22 +31,11 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04-large
+    runs-on: linux-amd64-cpu16
     timeout-minutes: 180
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
-
-      - name: Free up disk space
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be  # v1.3.1
-        with:
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-          tool-cache: true
 
       - name: Build wheel inside CUDA container
         run: |
@@ -101,7 +87,7 @@ jobs:
 
   publish:
     needs: build
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/master' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-22.04
     permissions:
       contents: write

@@ -44,7 +44,7 @@ jobs:
     if: >-
       ${{ github.event_name == 'workflow_dispatch'
       || startsWith(github.event.release.tag_name, 'kumo-engine-v') }}
-    runs-on: ubuntu-22.04-large
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout repository

@@ -7,7 +7,7 @@ name: OSS Readiness
 on:  # yamllint disable-line rule:truthy
   push:
     branches:
-      - master
+      - main
   pull_request:
 
 permissions:
@@ -48,7 +48,7 @@ jobs:
             test/scripts/test_check_oss_readiness.py \
             test/scripts/test_check_secrets.py
 
-      # Pull requests check only the files they change. Pushes to master check
+      # Pull requests check only the files they change. Pushes to main check
       # the whole tree, so a recorded public-reference count that is no longer
       # reached, or a finding in an unchanged file, is still reported.
       - name: Check public references and all configured Python code

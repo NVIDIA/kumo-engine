@@ -490,4 +490,4 @@ jobs:
             This PR was automatically generated because changes were detected in:
             `ui/src/gen/spec/`
           branch: ${{ env.branch_name }}
-          base: master
+          base: main

@@ -7,7 +7,7 @@ name: Public connector tests
 on:  # yamllint disable-line rule:truthy
   pull_request:
   push:
-    branches: [master]
+    branches: [main]
   merge_group:
   workflow_dispatch:
 

@@ -7,7 +7,7 @@ name: Playwright Tests
 on: # yamllint disable-line rule:truthy
   push:
     branches:
-      - master
+      - main
     paths:
       - ".github/workflows/playwright_ui.yml"
       - "Makefile"
@@ -33,7 +33,6 @@ on: # yamllint disable-line rule:truthy
 
 permissions:
   contents: write
-  id-token: write
   pages: write
   pull-requests: write
   packages: read
@@ -63,10 +62,9 @@ env:
   CUDA: cpu
 
 jobs:
-  # AWS-backed validation only runs from trusted refs; PR and merge-group events
-  # skip. This condition gates both jobs.
+  # Runs only on pushes to main and manual runs; this condition gates both jobs.
   diskgraph-wheel:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     permissions:
       contents: read
     uses: ./.github/workflows/_diskgraph-wheel.yml
@@ -74,14 +72,9 @@ jobs:
   playwright:
     # Runs only when diskgraph-wheel does.
     needs: [diskgraph-wheel]
-    environment:
-      name: gha-kumo-playwright-ui-read
-    # Larger runner (more RAM + CPU) than ubuntu-latest's 2-CPU/7 GB: the seed
-    # process re-imports the full torch/PyG/kumo stack while all 6 backend
-    # processes are already resident, and on 7 GB that dlopen thrashes into
-    # swap and never finishes. The extra headroom also speeds the backend
-    # pip-install and the npm/vite build. Same runner 11 other workflows use.
-    runs-on: ubuntu-22.04-large
+    # Needs more than a standard runner's 7 GB: the seed process re-imports
+    # torch/PyG/kumo while 6 backend processes run.
+    runs-on: linux-amd64-cpu8
     timeout-minutes: 35
     steps:
       - name: Checkout repository
@@ -118,16 +111,8 @@ jobs:
       # jobs use on ubuntu-latest: setup-uv + prebuilt abi3 diskgraph wheel
       # (scripts/diskgraph install) + Torch and the vendored pure-Python PyG wheel.
       # It checks out this repository into the workspace root and activates the
-      # uv-managed venv for subsequent steps. AWS creds are only needed here
-      # (prebuilt-wheel pull), not at runtime.
+      # uv-managed venv for subsequent steps.
       # ---------------------------------------------------------------------
-      - name: Configure AWS credentials
-        if: steps.ui-changes.outputs.any_changed == 'true'
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
-        with:
-          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-playwright-ui-read
-          aws-region: us-west-2
-
       - name: Set up backend (diskgraph wheel + torch/PyG)
         if: steps.ui-changes.outputs.any_changed == 'true'
         timeout-minutes: 20
