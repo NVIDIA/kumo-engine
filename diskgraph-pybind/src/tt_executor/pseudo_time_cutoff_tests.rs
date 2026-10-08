@@ -14,7 +14,7 @@ fn omitted_cutoffs_follow_manifest_stages_for_generated_and_custom_tables() {
         dir.path(),
         &index,
         "custom",
-        &[(1, vec![10], 0), (2, vec![11], 1), (3, vec![12], 2)],
+        &[(1, vec![0], 0), (2, vec![1], 1), (3, vec![2], 2)],
         manual_split(),
     );
     for tt_id in ["generated", "custom"] {

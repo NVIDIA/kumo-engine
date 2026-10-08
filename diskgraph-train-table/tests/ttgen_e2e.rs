@@ -802,6 +802,9 @@ fn e2e_custom_tt_passthrough_full_pipeline() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: DGTimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
     let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
 
@@ -1310,9 +1313,20 @@ fn e2e_custom_tt_manual_split_column_full_pipeline() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: DGTimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::SkipRowOnError,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
     let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
-    assert_eq!(output.rows_written, 6);
+    // The 255-valued row is no split value the plan names: refused under
+    // `Abort`, dropped and counted under `SkipRowOnError` (this run).
+    assert_eq!(output.rows_written, 5);
+    let failures = output.row_failures.as_ref().unwrap();
+    assert_eq!(failures.skipped_rows, 1);
+    assert_eq!(
+        failures.by_condition[0].condition,
+        diskgraph_train_table::custom_tt_row_errors::RowFailureKind::InvalidSplit
+    );
 
     // split_col routing: [0,1,2,0,1,255] → train=2, val=2, test=1, unused=1.
     assert_stage_infos_consistent(&output, out_dir.path());
@@ -1322,8 +1336,7 @@ fn e2e_custom_tt_manual_split_column_full_pipeline() {
     let tier_sum = stage_row_count(&output, "train")
         + stage_row_count(&output, "val")
         + stage_row_count(&output, "test");
-    // The 255-valued row matched no value set → dropped from all stages.
-    assert_eq!(output.rows_written - tier_sum, 1);
+    assert_eq!(output.rows_written - tier_sum, 0);
 
     // split_col must be DROPPED from every seed part (never a feature).
     let infos = output.stage_gen_infos.as_ref().unwrap();
@@ -1408,11 +1421,22 @@ fn e2e_custom_tt_manual_split_column_multi_part_full_pipeline() {
     let custom = CustomTtSource {
         parquet_path: src_dir.clone(),
         input_timestamp_unit: DGTimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::SkipRowOnError,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
     let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
 
     // Row count == sum across both parts (4 + 2 = 6).
-    assert_eq!(output.rows_written, 6);
+    // The 255-valued row is no split value the plan names: refused under
+    // `Abort`, dropped and counted under `SkipRowOnError` (this run).
+    assert_eq!(output.rows_written, 5);
+    let failures = output.row_failures.as_ref().unwrap();
+    assert_eq!(failures.skipped_rows, 1);
+    assert_eq!(
+        failures.by_condition[0].condition,
+        diskgraph_train_table::custom_tt_row_errors::RowFailureKind::InvalidSplit
+    );
 
     // Cross-part split routing: combined split_col [0,1,2,0] + [1,255] →
     // train=2, val=2 (1 from each part), test=1, unused=1.
@@ -1423,8 +1447,7 @@ fn e2e_custom_tt_manual_split_column_multi_part_full_pipeline() {
     let tier_sum = stage_row_count(&output, "train")
         + stage_row_count(&output, "val")
         + stage_row_count(&output, "test");
-    // The 255-valued row matched no value set → dropped from all stages.
-    assert_eq!(output.rows_written - tier_sum, 1);
+    assert_eq!(output.rows_written - tier_sum, 0);
 
     // split_col must be DROPPED from every seed part across all stages.
     let infos = output.stage_gen_infos.as_ref().unwrap();
@@ -1535,6 +1558,9 @@ fn e2e_multi_entity_multi_target_pipeline() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: DGTimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
     let customizer = |resolved: &mut ResolvedPlan<Seconds>| {
         // Add ENTITY2 slot.

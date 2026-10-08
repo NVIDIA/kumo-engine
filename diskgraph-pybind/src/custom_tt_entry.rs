@@ -45,11 +45,14 @@ use std::path::{Path, PathBuf};
 
 use diskgraph_core::time::{Seconds, TimeUnit};
 use diskgraph_core::tt_builder::{
-    DiskGraphTTPlan, EntitySpec, FactPseudoTimeSpec, PredictionType, RefResolveKind, RefResolveSpec,
-    SplitSpec as PlanSplitSpec,
+    DiskGraphTTPlan, EntitySpec, FactPseudoTimeSpec, PredictionType, RefResolveKind,
+    RefResolveSpec, SplitSpec as PlanSplitSpec,
 };
-use diskgraph_train_table::ttgen_executor::CustomTtSource;
+use diskgraph_train_table::custom_tt_row_errors::{
+    IngestOnError, RowFailuresReport, TimestampReference,
+};
 use diskgraph_train_table::route::EXCLUDE_TARGET_KEYS_COL;
+use diskgraph_train_table::ttgen_executor::CustomTtSource;
 use diskgraph_train_table::ttgen_output::{PRIMARY_ENTITY_COL, PRIMARY_TARGET_COL};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -127,6 +130,9 @@ fn path_with_suffix(base: &Path, suffix: &str) -> PathBuf {
     lp_rhs_is_temporal = false,
     allow_new_target_entities = false,
     fact_pseudo_time_json = None,
+    ingest_on_error = "skip_row_on_error",
+    allow_negative_weight = false,
+    timestamp_reference_json = None,
 ))]
 pub fn build_train_table_artifacts_for_existing_table(
     py: Python<'_>,
@@ -144,6 +150,9 @@ pub fn build_train_table_artifacts_for_existing_table(
     lp_rhs_is_temporal: bool,
     allow_new_target_entities: bool,
     fact_pseudo_time_json: Option<&str>,
+    ingest_on_error: &str,
+    allow_negative_weight: bool,
+    timestamp_reference_json: Option<&str>,
 ) -> PyResult<Py<PyAny>> {
     let fact_pseudo_time = fact_pseudo_time_json
         .map(serde_json::from_str)
@@ -167,6 +176,9 @@ pub fn build_train_table_artifacts_for_existing_table(
         lp_rhs_is_temporal,
         allow_new_target_entities,
         fact_pseudo_time,
+        ingest_on_error,
+        allow_negative_weight,
+        timestamp_reference_json,
         /* is_prediction */ false,
     )
 }
@@ -198,6 +210,7 @@ pub fn build_train_table_artifacts_for_existing_table(
     weight_col = None,
     target_entity_table = None,
     task_type = None,
+    ingest_on_error = "skip_row_on_error",
 ))]
 pub fn build_prediction_table_artifacts_for_existing_table(
     py: Python<'_>,
@@ -211,6 +224,7 @@ pub fn build_prediction_table_artifacts_for_existing_table(
     weight_col: Option<&str>,
     target_entity_table: Option<&str>,
     task_type: Option<&str>,
+    ingest_on_error: &str,
 ) -> PyResult<Py<PyAny>> {
     build_bundle_for_existing_table(
         py,
@@ -233,6 +247,9 @@ pub fn build_prediction_table_artifacts_for_existing_table(
         /* allow_new_target_entities */
         false,
         /* fact_pseudo_time */ None,
+        ingest_on_error,
+        /* allow_negative_weight */ false,
+        /* timestamp_reference_json */ None,
         /* is_prediction */ true,
     )
 }
@@ -317,7 +334,41 @@ fn build_lp_resolution(
 
 /// Gen appends `exclude_target_keys` only on the fused per-link pass-B path.
 fn emits_per_link_excludes(split_kind: Option<&str>) -> bool {
-    matches!(split_kind, Some("RandomLinkSplit") | Some("CustomLinkSplit"))
+    matches!(
+        split_kind,
+        Some("RandomLinkSplit") | Some("CustomLinkSplit")
+    )
+}
+
+/// `row_failures` for the result dict: `{on_error, rows_read, skipped_rows,
+/// by_condition: [{condition, column, count, samples}]}`.
+fn row_failures_to_py<'py>(
+    py: Python<'py>,
+    report: Option<&RowFailuresReport>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new(py);
+    let Some(report) = report else {
+        return Ok(out);
+    };
+    out.set_item("on_error", &report.on_error)?;
+    out.set_item("rows_read", report.rows_read)?;
+    out.set_item("skipped_rows", report.skipped_rows)?;
+    let conditions = pyo3::types::PyList::empty(py);
+    for entry in &report.by_condition {
+        let item = PyDict::new(py);
+        // `RowFailureKind` serializes as its snake_case name.
+        let condition = serde_json::to_value(entry.condition)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        item.set_item("condition", condition)?;
+        item.set_item("column", &entry.column)?;
+        item.set_item("count", entry.count)?;
+        item.set_item("samples", &entry.samples)?;
+        conditions.append(item)?;
+    }
+    out.set_item("by_condition", conditions)?;
+    Ok(out)
 }
 
 /// Shared gen-only bundle builder for both the TRAIN and PREDICT custom-TT
@@ -340,9 +391,25 @@ fn build_bundle_for_existing_table(
     lp_rhs_is_temporal: bool,
     allow_new_target_entities: bool,
     fact_pseudo_time: Option<FactPseudoTimeSpec>,
+    ingest_on_error: &str,
+    allow_negative_weight: bool,
+    timestamp_reference_json: Option<&str>,
     is_prediction: bool,
 ) -> PyResult<Py<PyAny>> {
     validate_tt_id(tt_id)?;
+    let timestamp_reference: Option<TimestampReference> = timestamp_reference_json
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|e| {
+            crate::DiskgraphConfigError::new_err(format!("invalid timestamp_reference_json: {e}"))
+        })?;
+    let on_error = IngestOnError::from_name(ingest_on_error).ok_or_else(|| {
+        crate::DiskgraphConfigError::new_err(format!(
+            "ingest_on_error={ingest_on_error:?} is not valid (expected \"{}\" or \"{}\")",
+            IngestOnError::ABORT,
+            IngestOnError::SKIP_ROW_ON_ERROR
+        ))
+    })?;
     // The bridge MUST declare the unit for any Int64 TIMESTAMP column in
     // the customer parquet — DG's typed Arrow path self-describes, but
     // the kumo flow currently writes int64 ns (Spark `LongType`). No
@@ -433,15 +500,23 @@ fn build_bundle_for_existing_table(
     let artifacts_dir_path = path_with_suffix(&artifact_base, ".artifacts")
         .to_string_lossy()
         .into_owned();
-    std::fs::create_dir_all(&artifacts_dir_path).map_err(|e| {
-        crate::DiskgraphSystemError::new_err(format!(
-            "failed to create artifacts dir {artifacts_dir_path}: {e}"
-        ))
-    })?;
+    // Only clean up a failed attempt when this invocation created its directory.
+    let owns_artifacts_dir = match std::fs::create_dir(&artifacts_dir_path) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(error) => {
+            return Err(crate::DiskgraphSystemError::new_err(format!(
+                "failed to create artifacts dir {artifacts_dir_path}: {error}"
+            )));
+        }
+    };
 
     let custom_source = CustomTtSource {
         parquet_path: parquet_path.to_path_buf(),
         input_timestamp_unit: parsed_unit,
+        on_error,
+        allow_negative_weight,
+        timestamp_reference,
     };
 
     let idx = index_path.to_owned();
@@ -457,23 +532,35 @@ fn build_bundle_for_existing_table(
     // the bundle so re-ingest can carry it. No ingest, no extension publish,
     // no bundle delete — the separate `execute_tt_ingest` job consumes this
     // durable bundle later.
-    let (tt_parquet_path, ingest_spec_path, pass_output_rows, split_counts_vec): (
+    let (tt_parquet_path, ingest_spec_path, pass_output_rows, split_counts_vec, row_failures): (
         String,
         String,
         u64,
         Vec<(String, u64)>,
+        Option<RowFailuresReport>,
     ) = py
         .detach(|| -> diskgraph_train_table::errors::TTGenResult<_> {
             let index_root = Path::new(&idx);
             let out_dir_path = Path::new(&out_dir);
 
-            let (pass_output, spec_path) = run_gen_bundle(
+            let generated = run_gen_bundle(
                 &plan,
                 index_root,
                 out_dir_path,
                 &tt_id_owned,
                 Some(custom_source),
-            )?;
+            );
+            let (pass_output, spec_path) = match generated {
+                Ok(output) => output,
+                Err(error) => {
+                    if owns_artifacts_dir {
+                        if let Err(cleanup_error) = std::fs::remove_dir_all(out_dir_path) {
+                            tracing::warn!(%cleanup_error, "failed to remove custom-TT staging after generation failed");
+                        }
+                    }
+                    return Err(error);
+                }
+            };
 
             // split_counts source: gen's per-stage seed infos (split path).
             let split_counts_vec: Vec<(String, u64)> = pass_output
@@ -486,6 +573,7 @@ fn build_bundle_for_existing_table(
                 spec_path.to_string_lossy().into_owned(),
                 pass_output.rows_written,
                 split_counts_vec,
+                pass_output.row_failures,
             ))
         })
         .map_err(crate::map_ttgen_err)?;
@@ -530,6 +618,10 @@ fn build_bundle_for_existing_table(
     };
     split_meta.set_item("reason", reason)?;
     result.set_item("split_meta", split_meta)?;
+    result.set_item(
+        "row_failures",
+        row_failures_to_py(py, row_failures.as_ref())?,
+    )?;
 
     Ok(result.into())
 }
@@ -537,8 +629,8 @@ fn build_bundle_for_existing_table(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_fkey_mapping, build_lp_resolution, custom_tt_artifact_base,
-        emits_per_link_excludes, path_with_suffix,
+        build_fkey_mapping, build_lp_resolution, custom_tt_artifact_base, emits_per_link_excludes,
+        path_with_suffix,
     };
     use diskgraph_core::tt_builder::RefResolveKind;
     use diskgraph_train_table::route::EXCLUDE_TARGET_KEYS_COL;
@@ -625,8 +717,16 @@ mod tests {
         // must match `per_link_output_schema` exactly.
         assert!(emits_per_link_excludes(Some("RandomLinkSplit")));
         assert!(emits_per_link_excludes(Some("CustomLinkSplit")));
-        for kind in [None, Some("RandomSplit"), Some("TimeRangeSplit"), Some("ManualSplit")] {
-            assert!(!emits_per_link_excludes(kind), "{kind:?} does not emit the column");
+        for kind in [
+            None,
+            Some("RandomSplit"),
+            Some("TimeRangeSplit"),
+            Some("ManualSplit"),
+        ] {
+            assert!(
+                !emits_per_link_excludes(kind),
+                "{kind:?} does not emit the column"
+            );
         }
     }
 

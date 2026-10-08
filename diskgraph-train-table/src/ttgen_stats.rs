@@ -8,6 +8,8 @@ use arrow_array::{Array, ListArray};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 
+use crate::custom_tt_row_errors::SourceRowStats;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SequenceFeatureStats {
     pub count: u64,
@@ -195,6 +197,8 @@ pub(crate) struct ChunkStats<U: UnitSystem> {
     /// strings) for bool targets.
     pub(crate) target_is_bool_dtype: bool,
     pub(crate) sequence_feature_stats: HashMap<String, SequenceFeatureStats>,
+    /// Custom-TT row validation tally; untouched on the PQL path.
+    pub(crate) source_rows: SourceRowStats,
 }
 
 impl<U: UnitSystem> Default for ChunkStats<U> {
@@ -229,6 +233,7 @@ impl<U: UnitSystem> Default for ChunkStats<U> {
             timestamp_hll: None,
             target_is_bool_dtype: false,
             sequence_feature_stats: HashMap::new(),
+            source_rows: SourceRowStats::default(),
         }
     }
 }
@@ -268,6 +273,7 @@ pub(crate) struct StatsMerger<U: UnitSystem> {
     /// CATEGORY_COUNTS gets emitted as JSON booleans (matching GE/Spark).
     pub(crate) target_is_bool_dtype: bool,
     pub(crate) sequence_feature_stats: HashMap<String, SequenceFeatureStats>,
+    pub(crate) source_rows: SourceRowStats,
 }
 
 impl<U: UnitSystem> Default for StatsMerger<U> {
@@ -301,12 +307,19 @@ impl<U: UnitSystem> Default for StatsMerger<U> {
             timestamp_hll: None,
             target_is_bool_dtype: false,
             sequence_feature_stats: HashMap::new(),
+            source_rows: SourceRowStats::default(),
         }
     }
 }
 
 impl<U: UnitSystem> StatsMerger<U> {
+    /// The custom-TT row validation tally, leaving an empty one behind.
+    pub(crate) fn take_source_rows(&mut self) -> SourceRowStats {
+        std::mem::take(&mut self.source_rows)
+    }
+
     pub(crate) fn merge(&mut self, chunk: ChunkStats<U>) {
+        self.source_rows.merge(chunk.source_rows);
         self.num_train_rows += chunk.num_train_rows;
         self.num_links += chunk.num_links;
         self.timestamp_min = min_opt_abs(self.timestamp_min, chunk.timestamp_min);
@@ -1465,6 +1478,7 @@ impl<U: UnitSystem, D: SplitDecider<U>> RowProcessor<U, D> {
 /// `ChunkStats` accumulator (used by `<ChunkStats as RowObserver>::merge`).
 #[allow(dead_code)] // Unused outside the `RowObserver` impl + tests.
 fn merge_chunk_stats_into<U: UnitSystem>(dst: &mut ChunkStats<U>, src: ChunkStats<U>) {
+    dst.source_rows.merge(src.source_rows);
     dst.num_total_rows += src.num_total_rows;
     dst.num_train_rows += src.num_train_rows;
     dst.num_links += src.num_links;

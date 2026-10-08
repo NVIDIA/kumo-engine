@@ -2034,6 +2034,9 @@
                     false,
                     false,
                     None,
+                    "abort",
+                    false,
+                    None,
                 )
                 .unwrap();
                 let d = d.bind(py);
@@ -2234,6 +2237,9 @@
                 false,
                 false,
                 None,
+                "abort",
+                false,
+                None,
             )
             .expect("custom gen build should succeed");
         });
@@ -2307,6 +2313,9 @@
                 false,
                 false,
                 None,
+                "abort",
+                false,
+                None,
             )
             .expect("custom gen build (split) should succeed");
         });
@@ -2378,6 +2387,9 @@
                 Some("orders"), // target_entity_table ⇒ LP mode
                 None,           // task_type
                 false,
+                false,
+                None,
+                "abort",
                 false,
                 None,
             )
@@ -2463,6 +2475,9 @@
                 None,
                 None,
                 false,
+                false,
+                None,
+                "abort",
                 false,
                 None,
             )
@@ -2561,6 +2576,9 @@
                 false,
                 false,
                 None,
+                "abort",
+                false,
+                None,
             )
             .expect("gen build should succeed");
         });
@@ -2641,6 +2659,90 @@
     // stage + `tt_ingest_spec.json` with `is_prediction` and NO published
     // extension, (b) `execute_tt_ingest(..., predict_stage_name="predict")`
     // under a DISTINCT target id publishes `train_tables/<target>/`.
+    /// `ingest_on_error` is validated at the entry, and `skip_row_on_error`
+    /// surfaces what it dropped as `row_failures` in the result dict.
+    #[test]
+    fn test_custom_gen_ingest_on_error_option_and_row_failures_result() {
+        use arrow_array::{Float64Array, Int64Array, TimestampNanosecondArray};
+        use arrow_schema::{DataType, Field, Schema, TimeUnit as ArrowTimeUnit};
+        pyo3::Python::initialize();
+        let dir = tempfile::tempdir().unwrap();
+        let index = t_build_graph(dir.path());
+
+        // Four rows; row 1 has a null target.
+        let custom_pq = dir.path().join("custom_null_target.parquet");
+        let schema = StdArc2::new(Schema::new(vec![
+            Field::new(PRIMARY_ENTITY_COL, DataType::Int64, false),
+            Field::new(
+                TIMESTAMP_COL,
+                DataType::Timestamp(ArrowTimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new(PRIMARY_TARGET_COL, DataType::Float64, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                StdArc2::new(Int64Array::from(vec![0i64, 1, 2, 3])),
+                StdArc2::new(TimestampNanosecondArray::from(vec![1_000_000_000_000i64; 4])),
+                StdArc2::new(Float64Array::from(vec![Some(1.0), None, Some(1.0), Some(0.0)])),
+            ],
+        )
+        .unwrap();
+        t_write_parquet(&custom_pq, &batch);
+
+        let build = |py: pyo3::Python<'_>, tt_id: &str, on_error: &str| {
+            crate::custom_tt_entry::build_train_table_artifacts_for_existing_table(
+                py,
+                custom_pq.to_str().unwrap(),
+                index.to_str().unwrap(),
+                tt_id,
+                "users",
+                "user_id",
+                "numerical",
+                "nanoseconds",
+                None,
+                None,
+                None,
+                None,
+                false,
+                false,
+                None,
+                on_error,
+                false,
+                None,
+            )
+        };
+
+        pyo3::Python::attach(|py| {
+            let err = build(py, "bad_mode", "skip").unwrap_err();
+            assert!(err.is_instance_of::<crate::DiskgraphConfigError>(py), "{err}");
+
+            let err = build(py, "abort_mode", "abort").unwrap_err();
+            assert!(err.is_instance_of::<crate::DiskgraphDataError>(py), "{err}");
+            let message = err.to_string();
+            assert!(
+                message.contains("target is null") && message.contains("row 1"),
+                "{message}"
+            );
+
+            assert!(custom_pq.exists(), "the source must survive a failed ingest");
+            assert!(!dir.path().join("custom_null_target.artifacts").exists());
+            let out = build(py, "abort_mode", "skip_row_on_error").unwrap();
+            let out = out.bind(py);
+            let rows: u64 = out.get_item("row_count").unwrap().extract().unwrap();
+            assert_eq!(rows, 3);
+            let failures = out.get_item("row_failures").unwrap();
+            let skipped: u64 = failures.get_item("skipped_rows").unwrap().extract().unwrap();
+            let on_error: String = failures.get_item("on_error").unwrap().extract().unwrap();
+            assert_eq!((skipped, on_error.as_str()), (1, "skip_row_on_error"));
+            let entry = failures.get_item("by_condition").unwrap().get_item(0).unwrap();
+            let condition: String = entry.get_item("condition").unwrap().extract().unwrap();
+            let column: String = entry.get_item("column").unwrap().extract().unwrap();
+            assert_eq!((condition.as_str(), column.as_str()), ("null_target", "TARGET1"));
+        });
+    }
+
     #[test]
     fn test_custom_predict_bundle_reingests_under_distinct_target_id() {
         pyo3::Python::initialize();
@@ -2668,6 +2770,7 @@
                     None,
                     None,
                     None,
+                    "abort",
                 )
                 .expect("custom predict gen build should succeed");
         });

@@ -24,11 +24,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arrow_array::builder::*;
-use arrow_array::{Array, Float64Array, Int64Array, ListArray, RecordBatch, TimestampNanosecondArray};
+use arrow_array::{
+    Array, Float64Array, Int64Array, ListArray, RecordBatch, TimestampNanosecondArray,
+};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use diskgraph_core::time::{Abs, Dur, Seconds};
 use diskgraph_core::tt_builder::*;
-use diskgraph_train_table::ttgen_resolve::{AUTOREGRESSION_OUTPUT_ALIAS, YOY_OUTPUT_ALIAS};
 use diskgraph_ingest::coercion::CoercionMode;
 use diskgraph_ingest::config::IngestOptions;
 use diskgraph_ingest::graph_config::*;
@@ -37,6 +38,7 @@ use diskgraph_train_table::ttgen_executor::{
     execute_tt_pass_with_customizer, execute_tt_pass_with_source, CustomTtSource,
 };
 use diskgraph_train_table::ttgen_resolve::ResolvedPlan;
+use diskgraph_train_table::ttgen_resolve::{AUTOREGRESSION_OUTPUT_ALIAS, YOY_OUTPUT_ALIAS};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
@@ -164,9 +166,7 @@ fn synth_custom_tt_parquet(out_path: &Path, spec: &CustomTtFixtureSpec) {
         Arc::new(entity.finish()),
         Arc::new(TimestampNanosecondArray::from(
             (0..spec.n_rows)
-                .map(|i| {
-                    spec.anchor_ts_secs[i % spec.anchor_ts_secs.len()] * 1_000_000_000
-                })
+                .map(|i| spec.anchor_ts_secs[i % spec.anchor_ts_secs.len()] * 1_000_000_000)
                 .collect::<Vec<_>>(),
         )),
     ];
@@ -230,7 +230,10 @@ fn synth_custom_tt_parquet_with_split_col(
     let columns: Vec<Arc<dyn Array>> = vec![
         Arc::new(entity.finish()),
         Arc::new(TimestampNanosecondArray::from(
-            ts_secs.iter().map(|s| s * 1_000_000_000).collect::<Vec<_>>(),
+            ts_secs
+                .iter()
+                .map(|s| s * 1_000_000_000)
+                .collect::<Vec<_>>(),
         )),
         Arc::new(target.finish()),
         Arc::new(split.finish()),
@@ -282,11 +285,8 @@ fn build_users_only_graph(root: &Path, n_users: i64) -> PathBuf {
         user_id.append_value(i);
     }
     let users_schema = Schema::new(vec![Field::new("user_id", DataType::Int64, false)]);
-    let users_batch = RecordBatch::try_new(
-        Arc::new(users_schema),
-        vec![Arc::new(user_id.finish())],
-    )
-    .unwrap();
+    let users_batch =
+        RecordBatch::try_new(Arc::new(users_schema), vec![Arc::new(user_id.finish())]).unwrap();
     write_parquet(&data_dir.join("users.parquet"), &users_batch);
 
     let config = GraphConfig {
@@ -301,11 +301,7 @@ fn build_users_only_graph(root: &Path, n_users: i64) -> PathBuf {
             edge_table: None,
             rowpack: None,
             source: DataSource::Parquet {
-                paths: vec![data_dir
-                    .join("users.parquet")
-                    .to_str()
-                    .unwrap()
-                    .to_string()],
+                paths: vec![data_dir.join("users.parquet").to_str().unwrap().to_string()],
             },
             source_size: None,
             fkeys: vec![],
@@ -340,11 +336,8 @@ fn build_users_and_products_graph(root: &Path, n_users: i64, n_products: i64) ->
         user_id.append_value(i);
     }
     let users_schema = Schema::new(vec![Field::new("user_id", DataType::Int64, false)]);
-    let users_batch = RecordBatch::try_new(
-        Arc::new(users_schema),
-        vec![Arc::new(user_id.finish())],
-    )
-    .unwrap();
+    let users_batch =
+        RecordBatch::try_new(Arc::new(users_schema), vec![Arc::new(user_id.finish())]).unwrap();
     write_parquet(&data_dir.join("users.parquet"), &users_batch);
 
     let mut product_id = Int64Builder::new();
@@ -426,7 +419,10 @@ fn synth_custom_tt_lp_parquet(
     let columns: Vec<Arc<dyn Array>> = vec![
         Arc::new(entity.finish()),
         Arc::new(TimestampNanosecondArray::from(
-            ts_secs.iter().map(|s| s * 1_000_000_000).collect::<Vec<_>>(),
+            ts_secs
+                .iter()
+                .map(|s| s * 1_000_000_000)
+                .collect::<Vec<_>>(),
         )),
         Arc::new(target.finish()),
     ];
@@ -496,7 +492,10 @@ fn synth_custom_tt_lp_array_parquet_inner(
     let mut columns: Vec<Arc<dyn Array>> = vec![
         Arc::new(entity.finish()),
         Arc::new(TimestampNanosecondArray::from(
-            ts_secs.iter().map(|s| s * 1_000_000_000).collect::<Vec<_>>(),
+            ts_secs
+                .iter()
+                .map(|s| s * 1_000_000_000)
+                .collect::<Vec<_>>(),
         )),
         Arc::new(target.finish()),
         Arc::new(frequency.finish()),
@@ -526,8 +525,8 @@ fn read_parquet_batches(path: &Path) -> Vec<RecordBatch> {
         .into_iter()
         .flat_map(|part| {
             ParquetRecordBatchReaderBuilder::try_new(fs::File::open(part).unwrap())
-        .unwrap()
-        .build()
+                .unwrap()
+                .build()
                 .unwrap()
                 .map(|batch| batch.unwrap())
         })
@@ -770,10 +769,7 @@ fn read_tt_parquet_forecasting(tt_path: &Path) -> Vec<ForecastingTtRow> {
         };
         for i in 0..batch.num_rows() {
             let ar_list = ar.value(i);
-            let ar_f = ar_list
-                .as_any()
-                .downcast_ref::<Float64Array>()
-                .unwrap();
+            let ar_f = ar_list.as_any().downcast_ref::<Float64Array>().unwrap();
             let ar_vec: Vec<f64> = (0..ar_f.len()).map(|j| ar_f.value(j)).collect();
             let yoy_vec = yoy_opt.map(|y| {
                 let l = y.value(i);
@@ -873,9 +869,11 @@ fn test_custom_tt_target_only_node() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
-    let output =
-        execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
+    let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
     assert_eq!(output.rows_written, 20);
 
     let rows = read_tt_parquet_node(&output.tt_parquet_path);
@@ -883,7 +881,10 @@ fn test_custom_tt_target_only_node() {
     // Every row's TARGET should match det_target.
     for (e, ts, t) in &rows {
         let expected = det_target(*e, *ts);
-        assert!((t - expected).abs() < 1e-9, "row ({e},{ts}): {t} != {expected}");
+        assert!(
+            (t - expected).abs() < 1e-9,
+            "row ({e},{ts}): {t} != {expected}"
+        );
     }
 }
 
@@ -919,8 +920,7 @@ fn synth_static_custom_tt_parquet_with_ts(out_path: &Path, entity_pks: &[i64], t
 /// parquet. `entity_pks` is written verbatim (one row each).
 fn synth_static_custom_tt_parquet(out_path: &Path, entity_pks: &[i64], has_target: bool) {
     let mut fields = vec![Field::new("ENTITY1", DataType::Int64, false)];
-    let mut columns: Vec<Arc<dyn Array>> =
-        vec![Arc::new(Int64Array::from(entity_pks.to_vec()))];
+    let mut columns: Vec<Arc<dyn Array>> = vec![Arc::new(Int64Array::from(entity_pks.to_vec()))];
     if has_target {
         fields.push(Field::new("TARGET1", DataType::Float64, true));
         // Deterministic target keyed off the sentinel ts (0) so the assertion
@@ -949,9 +949,11 @@ fn test_custom_tt_static_train_synthesizes_sentinel_timestamp() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
-    let output =
-        execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
+    let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
     assert_eq!(output.rows_written, 5);
 
     let rows = read_tt_parquet_node(&output.tt_parquet_path);
@@ -983,9 +985,11 @@ fn test_custom_tt_static_predict_synthesizes_sentinel_timestamp() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
-    let output =
-        execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
+    let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
     assert_eq!(output.rows_written, 5);
 
     // Predict bundle: `[ENTITY1, TIMESTAMP]` only — NO TARGET column.
@@ -1019,9 +1023,11 @@ fn test_custom_tt_present_timestamp_uses_real_values() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
-    let output =
-        execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
+    let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
     assert_eq!(output.rows_written, 20);
 
     let rows = read_tt_parquet_node(&output.tt_parquet_path);
@@ -1057,9 +1063,11 @@ fn test_custom_tt_complete_forecasting_passthrough() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
-    let output =
-        execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
+    let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
     assert_eq!(output.rows_written, 12);
 
     let rows = read_tt_parquet_forecasting(&output.tt_parquet_path);
@@ -1082,7 +1090,10 @@ fn test_custom_tt_complete_forecasting_passthrough() {
     let outer = stats_payload.parsed_train_table_col_stats.as_ref().unwrap();
     let stats = outer.get("stats").unwrap().as_object().unwrap();
     let has_target_stats = stats.keys().any(|k| k.starts_with("TARGET1__"));
-    assert!(has_target_stats, "TARGET1 stats must be present in parsed_train_table_col_stats");
+    assert!(
+        has_target_stats,
+        "TARGET1 stats must be present in parsed_train_table_col_stats"
+    );
 }
 
 #[test]
@@ -1107,9 +1118,11 @@ fn test_custom_tt_forecasting_date_offset_split_routes_all_stages() {
     let custom = CustomTtSource {
         parquet_path: pq,
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
-    let output =
-        execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
+    let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
 
     assert_eq!(output.rows_written, 5);
     let infos = output
@@ -1147,9 +1160,11 @@ fn test_custom_tt_unknown_entity_pk_skipped() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
-    let output =
-        execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
+    let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
     // Only entity_pks {0,1,2,3,4} exist in the index → 5 rows kept; the other
     // 5 should be silently skipped.
     assert_eq!(output.rows_written, 5, "unknown PKs should be skipped");
@@ -1215,9 +1230,11 @@ fn test_custom_tt_manual_split_column_routes_and_drops() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
-    let output =
-        execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
+    let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
     assert_eq!(output.rows_written, 7);
 
     // Per-stage row counts from the split values: train=3, val=2, test=2.
@@ -1272,9 +1289,11 @@ fn test_custom_tt_manual_split_column_no_sidecar_needed() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
-    let output =
-        execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
+    let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
     assert_eq!(output.rows_written, 4);
     let infos = output.stage_gen_infos.as_ref().unwrap();
     let count = |key: &str| infos.iter().find(|s| s.key == key).unwrap().row_count;
@@ -1318,8 +1337,7 @@ fn test_dispatch_pq_source_via_with_source_api() {
         fact_pseudo_time: None,
     };
     let out_dir = tempfile::tempdir().unwrap();
-    let output =
-        execute_tt_pass_with_source(&plan, &index, out_dir.path(), None).unwrap();
+    let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), None).unwrap();
     // PassThrough yields one row per user.
     assert_eq!(output.rows_written, 5);
     // No split → no stage_gen_infos.
@@ -1379,9 +1397,11 @@ fn test_dispatch_summary_keys_preserved() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
-    let output =
-        execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
+    let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
     assert_eq!(output.rows_written, 5);
     // No split → no stage_gen_infos.
     assert!(output.stage_gen_infos.is_none());
@@ -1455,13 +1475,14 @@ fn test_custom_tt_manifest_records_source_mode() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
-    let output =
-        execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
+    let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
 
     assert!(output.manifest_path.exists());
-    let manifest =
-        diskgraph_train_table::manifest::read_manifest(&output.manifest_path).unwrap();
+    let manifest = diskgraph_train_table::manifest::read_manifest(&output.manifest_path).unwrap();
     assert_eq!(manifest.source_mode, "custom_tt");
     assert_eq!(manifest.split_mode, "none");
     assert!(manifest.split.is_none());
@@ -1504,7 +1525,10 @@ fn synth_multi_entity_parquet(
         Arc::new(e1.finish()),
         Arc::new(e2.finish()),
         Arc::new(TimestampNanosecondArray::from(
-            ts_secs.iter().map(|s| s * 1_000_000_000).collect::<Vec<_>>(),
+            ts_secs
+                .iter()
+                .map(|s| s * 1_000_000_000)
+                .collect::<Vec<_>>(),
         )),
     ];
     if has_target {
@@ -1548,7 +1572,10 @@ fn synth_multi_target_parquet(
     let columns: Vec<Arc<dyn Array>> = vec![
         Arc::new(e1.finish()),
         Arc::new(TimestampNanosecondArray::from(
-            ts_secs.iter().map(|s| s * 1_000_000_000).collect::<Vec<_>>(),
+            ts_secs
+                .iter()
+                .map(|s| s * 1_000_000_000)
+                .collect::<Vec<_>>(),
         )),
         Arc::new(t1.finish()),
         Arc::new(t2.finish()),
@@ -1569,14 +1596,26 @@ fn read_tt_parquet_multi_entity_node(tt_path: &Path) -> Vec<(i64, i64, i64, f64)
         let e2_idx = schema.index_of("ENTITY2").unwrap();
         let ts_idx = schema.index_of("TIMESTAMP").unwrap();
         let t1_idx = schema.index_of("TARGET1").unwrap();
-        let e1 = batch.column(e1_idx).as_any().downcast_ref::<Int64Array>().unwrap();
-        let e2 = batch.column(e2_idx).as_any().downcast_ref::<Int64Array>().unwrap();
+        let e1 = batch
+            .column(e1_idx)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let e2 = batch
+            .column(e2_idx)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
         let ts = batch
             .column(ts_idx)
             .as_any()
             .downcast_ref::<TimestampNanosecondArray>()
             .unwrap();
-        let t1 = batch.column(t1_idx).as_any().downcast_ref::<Float64Array>().unwrap();
+        let t1 = batch
+            .column(t1_idx)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
         for i in 0..batch.num_rows() {
             out.push((
                 e1.value(i),
@@ -1600,14 +1639,26 @@ fn read_tt_parquet_multi_target_node(tt_path: &Path) -> Vec<(i64, i64, f64, f64)
         let ts_idx = schema.index_of("TIMESTAMP").unwrap();
         let t1_idx = schema.index_of("TARGET1").unwrap();
         let t2_idx = schema.index_of("TARGET2").unwrap();
-        let e1 = batch.column(e1_idx).as_any().downcast_ref::<Int64Array>().unwrap();
+        let e1 = batch
+            .column(e1_idx)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
         let ts = batch
             .column(ts_idx)
             .as_any()
             .downcast_ref::<TimestampNanosecondArray>()
             .unwrap();
-        let t1 = batch.column(t1_idx).as_any().downcast_ref::<Float64Array>().unwrap();
-        let t2 = batch.column(t2_idx).as_any().downcast_ref::<Float64Array>().unwrap();
+        let t1 = batch
+            .column(t1_idx)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+        let t2 = batch
+            .column(t2_idx)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
         for i in 0..batch.num_rows() {
             out.push((
                 e1.value(i),
@@ -1641,6 +1692,9 @@ fn test_custom_tt_multi_entity_reads_all_entities() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
 
     // Inject a second entity slot via the customizer hook. The plan
@@ -1676,7 +1730,10 @@ fn test_custom_tt_multi_entity_reads_all_entities() {
         assert_eq!(e1, exp_e1, "ENTITY1 should match parquet input");
         assert_eq!(e2, exp_e2, "ENTITY2 should match parquet input");
         let expected = det_target(*exp_e1, ts_secs[0]) + (*exp_e2 as f64);
-        assert!((t - expected).abs() < 1e-9, "TARGET1 unexpected: {t} vs {expected}");
+        assert!(
+            (t - expected).abs() < 1e-9,
+            "TARGET1 unexpected: {t} vs {expected}"
+        );
     }
 }
 
@@ -1699,6 +1756,9 @@ fn test_custom_tt_multi_target_emits_all_targets() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
 
     // Inject a second target slot. Slot 0 already exists from the resolver
@@ -1729,8 +1789,14 @@ fn test_custom_tt_multi_target_emits_all_targets() {
     for (i, (e1, ts, t1, t2)) in rows.iter().enumerate() {
         assert_eq!(*e1, e1_pks[i]);
         assert_eq!(*ts, ts_secs[i]);
-        assert!((t1 - targets1[i]).abs() < 1e-9, "TARGET1 mismatch at row {i}");
-        assert!((t2 - targets2[i]).abs() < 1e-9, "TARGET2 mismatch at row {i}");
+        assert!(
+            (t1 - targets1[i]).abs() < 1e-9,
+            "TARGET1 mismatch at row {i}"
+        );
+        assert!(
+            (t2 - targets2[i]).abs() < 1e-9,
+            "TARGET2 mismatch at row {i}"
+        );
     }
 }
 
@@ -1755,6 +1821,9 @@ fn test_custom_tt_multi_entity_unknown_pk_in_one_skipped() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
 
     let customizer = |resolved: &mut ResolvedPlan<Seconds>| {
@@ -1776,7 +1845,10 @@ fn test_custom_tt_multi_entity_unknown_pk_in_one_skipped() {
     .unwrap();
     // Only ENTITY1 in {0..4} resolve; the other 5 rows are skipped. ENTITY2
     // is opaque and never affects the lookup decision.
-    assert_eq!(output.rows_written, 5, "rows with unknown ENTITY1 must be skipped");
+    assert_eq!(
+        output.rows_written, 5,
+        "rows with unknown ENTITY1 must be skipped"
+    );
 
     let rows = read_tt_parquet_multi_entity_node(&output.tt_parquet_path);
     assert_eq!(rows.len(), 5);
@@ -1814,6 +1886,9 @@ fn test_custom_tt_multi_entity_missing_column_errors() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
 
     let customizer = |resolved: &mut ResolvedPlan<Seconds>| {
@@ -1834,7 +1909,10 @@ fn test_custom_tt_multi_entity_missing_column_errors() {
     );
     assert!(result.is_err(), "missing ENTITY2 should error");
     let msg = format!("{:?}", result.unwrap_err());
-    assert!(msg.contains("ENTITY2"), "error should mention ENTITY2: {msg}");
+    assert!(
+        msg.contains("ENTITY2"),
+        "error should mention ENTITY2: {msg}"
+    );
 }
 
 // ─── Weight column tests ─────────────────────────────────────────────────────
@@ -1995,9 +2073,11 @@ fn test_weight_column_emitted_when_weight_col_set() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
-    let output =
-        execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
+    let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
     assert_eq!(output.rows_written, 12);
 
     // No weight.bin sidecar — weight rides as a column now.
@@ -2046,9 +2126,11 @@ fn test_weight_column_absent_when_weight_col_unset() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
-    let output =
-        execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
+    let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
     assert_eq!(output.rows_written, 8);
 
     assert!(
@@ -2091,9 +2173,11 @@ fn test_weight_column_skips_orphan_rows() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
-    let output =
-        execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
+    let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
     assert_eq!(output.rows_written, 5, "5 orphan rows must be skipped");
 
     let weights = read_weight_column(&output.tt_parquet_path);
@@ -2140,9 +2224,11 @@ fn test_weight_column_correct_under_interleaved_split() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
-    let output =
-        execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
+    let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
     assert_eq!(output.rows_written, n_rows as u64);
 
     let infos = output
@@ -2201,15 +2287,21 @@ fn test_custom_tt_lp_drops_orphan_target_rows() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
-    let output =
-        execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
+    let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
 
     // Only the 3 valid-target rows survive; the 2 orphan-target rows drop.
     assert_eq!(output.rows_written, 3, "orphan-target rows must be dropped");
     let rows = read_tt_parquet_lp_targets(&output.tt_parquet_path);
     let targets: Vec<i64> = rows.iter().map(|r| r.1).collect();
-    assert_eq!(targets, vec![0, 1, 2], "only valid product_ids should remain; got {targets:?}");
+    assert_eq!(
+        targets,
+        vec![0, 1, 2],
+        "only valid product_ids should remain; got {targets:?}"
+    );
 }
 
 #[test]
@@ -2230,9 +2322,11 @@ fn test_custom_tt_lp_keeps_all_targets_without_target_entity_table() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
-    let output =
-        execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
+    let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
 
     assert_eq!(output.rows_written, 5, "no filter → all rows kept");
     let rows = read_tt_parquet_lp_targets(&output.tt_parquet_path);
@@ -2271,11 +2365,16 @@ fn test_custom_tt_passthrough_skips_orphan_entity() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
-    let output =
-        execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
+    let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
     // Only entity_pks {0..4} resolve → 5 rows kept; orphans skipped.
-    assert_eq!(output.rows_written, 5, "PassThrough must skip orphan ENTITY rows");
+    assert_eq!(
+        output.rows_written, 5,
+        "PassThrough must skip orphan ENTITY rows"
+    );
 }
 
 // ─── Phase B: custom path ingests a samplable extension via the seam ─────────
@@ -2393,6 +2492,9 @@ fn test_custom_tt_lp_ingests_samplable_extension() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
     let pass = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
     assert_eq!(pass.rows_written, 6);
@@ -2423,13 +2525,12 @@ fn test_custom_tt_lp_ingests_samplable_extension() {
 
     // Open the published extension and assert LP resolution-mode writes the
     // resolved ids into rowpack columns, not seed FK edges.
-    let reader =
-        diskgraph_index::graph::GraphIndexReader::open_with_extension_subdir(
-            &index,
-            &format!("train_tables/{tt_id}"),
-            tt_id,
-        )
-        .unwrap();
+    let reader = diskgraph_index::graph::GraphIndexReader::open_with_extension_subdir(
+        &index,
+        &format!("train_tables/{tt_id}"),
+        tt_id,
+    )
+    .unwrap();
 
     let mut resolved_entities = Vec::new();
     let mut resolved_targets = Vec::new();
@@ -2500,6 +2601,9 @@ fn test_custom_tt_pred_passthrough_ingests_predict_stage() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
     let pass = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
     assert_eq!(pass.rows_written, 6);
@@ -2552,7 +2656,11 @@ fn test_custom_tt_pred_passthrough_ingests_predict_stage() {
                 .unwrap_or_else(|| panic!("entity_node_id missing/not u64 in {json}")),
         );
     }
-    assert_eq!(dst.len(), 6, "6 predict seeds, each ENTITY1 → entity_node_id");
+    assert_eq!(
+        dst.len(),
+        6,
+        "6 predict seeds, each ENTITY1 → entity_node_id"
+    );
     let n_users = reader.table("users").unwrap().node_count();
     assert!(
         dst.iter().all(|&d| d < n_users),
@@ -2592,6 +2700,9 @@ fn test_custom_tt_node_predict_emits_no_target_column() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
     let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
     assert_eq!(output.rows_written, 6);
@@ -2627,6 +2738,9 @@ fn test_custom_tt_node_train_still_emits_target_column() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
     let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
     assert_eq!(output.rows_written, 6);
@@ -2666,6 +2780,9 @@ fn test_custom_tt_lp_predict_emits_no_target_column() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
     let output = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
     assert_eq!(output.rows_written, 5);
@@ -2720,6 +2837,9 @@ fn test_lp_weight_column_is_per_element() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
     let pass = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
     assert_eq!(pass.rows_written, 3);
@@ -2748,11 +2868,14 @@ fn test_lp_weight_length_mismatch_is_rejected() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
     let err = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom))
         .expect_err("a weight list shorter than its target must not be accepted");
     assert!(
-        format!("{err}").contains("weight list has"),
+        format!("{err}").contains("weight list length differs"),
         "unexpected error: {err}"
     );
 }
@@ -2809,6 +2932,9 @@ fn test_lp_weights_follow_their_link_across_a_split() {
     let custom = CustomTtSource {
         parquet_path: pq.clone(),
         input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error: diskgraph_train_table::custom_tt_row_errors::IngestOnError::Abort,
+        allow_negative_weight: false,
+        timestamp_reference: None,
     };
     let pass = execute_tt_pass_with_source(&plan, &index, out_dir.path(), Some(custom)).unwrap();
     let infos = pass
@@ -2861,4 +2987,819 @@ fn read_target_list_column(path: &Path) -> Vec<Vec<i64>> {
         }
     }
     out
+}
+
+// ─── Row validation: `ingest_on_error` ───────────────────────────────────────
+//
+// Every row-level condition the reader checks, in both modes: `Abort` names
+// the condition, column and source row; `SkipRowOnError` drops the row and
+// counts it in `row_failures`.
+
+use diskgraph_train_table::custom_tt_row_errors::{IngestOnError, RowFailureKind};
+use diskgraph_train_table::errors::TTGenResult;
+use diskgraph_train_table::ttgen_executor::TTPassOutput;
+
+/// Five rows of a Node custom TT; `bad` rewrites row 2 into the case under test.
+struct NodeRows {
+    entity: Vec<Option<i64>>,
+    ts_secs: Vec<Option<i64>>,
+    target: Vec<Option<f64>>,
+    weight: Vec<Option<f64>>,
+    split: Vec<Option<i64>>,
+}
+
+impl NodeRows {
+    fn good() -> Self {
+        Self {
+            entity: (0..5).map(Some).collect(),
+            ts_secs: vec![Some(1_000_000); 5],
+            target: (0..5).map(|e| Some(e as f64)).collect(),
+            weight: vec![Some(1.0); 5],
+            split: vec![Some(0), Some(1), Some(2), Some(0), Some(1)],
+        }
+    }
+
+    fn write(&self, path: &Path, weight: bool, split: bool) {
+        let mut fields = vec![
+            Field::new("ENTITY1", DataType::Int64, true),
+            Field::new(
+                "TIMESTAMP",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new("TARGET1", DataType::Float64, true),
+        ];
+        let mut columns: Vec<Arc<dyn Array>> = vec![
+            Arc::new(Int64Array::from(self.entity.clone())),
+            Arc::new(TimestampNanosecondArray::from(
+                self.ts_secs
+                    .iter()
+                    .map(|t| t.map(|s| s * 1_000_000_000))
+                    .collect::<Vec<_>>(),
+            )),
+            Arc::new(Float64Array::from(self.target.clone())),
+        ];
+        if weight {
+            fields.push(Field::new("weight", DataType::Float64, true));
+            columns.push(Arc::new(Float64Array::from(self.weight.clone())));
+        }
+        if split {
+            fields.push(Field::new("split_col", DataType::Int64, true));
+            columns.push(Arc::new(Int64Array::from(self.split.clone())));
+        }
+        let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
+        write_parquet(path, &batch);
+    }
+}
+
+fn source(pq: &Path, on_error: IngestOnError) -> CustomTtSource {
+    CustomTtSource {
+        parquet_path: pq.to_path_buf(),
+        input_timestamp_unit: diskgraph_core::time::TimeUnit::Nanoseconds,
+        on_error,
+        allow_negative_weight: false,
+        timestamp_reference: None,
+    }
+}
+
+fn run_node_rows(
+    rows: &NodeRows,
+    weight: bool,
+    split: bool,
+    on_error: IngestOnError,
+) -> TTGenResult<TTPassOutput> {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_users_only_graph(dir.path(), 5);
+    let pq = dir.path().join("rows.parquet");
+    rows.write(&pq, weight, split);
+    let mut plan = make_custom_tt_target_only_node_plan();
+    if weight {
+        plan.weight_col = Some("weight".to_string());
+    }
+    if split {
+        plan.split = Some(manual_split_col_spec());
+    }
+    // Kept alive (and left behind in the OS temp dir) so callers can read the output.
+    let out_dir = tempfile::tempdir().unwrap().keep();
+    execute_tt_pass_with_source(&plan, &index, &out_dir, Some(source(&pq, on_error)))
+}
+
+/// One bad row (index 2) per case: (name, condition, column, weight?, split?, edit).
+#[allow(clippy::type_complexity)]
+fn node_cases() -> Vec<(
+    &'static str,
+    RowFailureKind,
+    &'static str,
+    bool,
+    bool,
+    fn(&mut NodeRows),
+)> {
+    vec![
+        (
+            "null entity",
+            RowFailureKind::NullEntity,
+            "ENTITY1",
+            false,
+            false,
+            |r| r.entity[2] = None,
+        ),
+        (
+            "null target",
+            RowFailureKind::NullTarget,
+            "TARGET1",
+            false,
+            false,
+            |r| r.target[2] = None,
+        ),
+        (
+            "null anchor",
+            RowFailureKind::NullTimestamp,
+            "TIMESTAMP",
+            false,
+            false,
+            |r| r.ts_secs[2] = None,
+        ),
+        (
+            "null weight",
+            RowFailureKind::NullWeight,
+            "weight",
+            true,
+            false,
+            |r| r.weight[2] = None,
+        ),
+        (
+            "nan weight",
+            RowFailureKind::NonFiniteWeight,
+            "weight",
+            true,
+            false,
+            |r| r.weight[2] = Some(f64::NAN),
+        ),
+        (
+            "inf weight",
+            RowFailureKind::NonFiniteWeight,
+            "weight",
+            true,
+            false,
+            |r| r.weight[2] = Some(f64::INFINITY),
+        ),
+        (
+            "negative weight",
+            RowFailureKind::NegativeWeight,
+            "weight",
+            true,
+            false,
+            |r| r.weight[2] = Some(-1.0),
+        ),
+        (
+            "null split",
+            RowFailureKind::NullSplit,
+            "split_col",
+            false,
+            true,
+            |r| r.split[2] = None,
+        ),
+        (
+            "unknown split value",
+            RowFailureKind::InvalidSplit,
+            "split_col",
+            false,
+            true,
+            |r| r.split[2] = Some(7),
+        ),
+    ]
+}
+
+fn kind_name(kind: RowFailureKind) -> String {
+    serde_json::to_value(kind)
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn test_row_validation_abort_names_condition_column_and_row() {
+    for (name, kind, column, weight, split, edit) in node_cases() {
+        let mut rows = NodeRows::good();
+        edit(&mut rows);
+        let err = run_node_rows(&rows, weight, split, IngestOnError::Abort)
+            .err()
+            .unwrap_or_else(|| panic!("{name}: abort must fail the run"))
+            .to_string();
+        assert!(err.contains(kind.describe()), "{name}: {err}");
+        assert!(err.contains(column), "{name}: {err}");
+        assert!(err.contains("row 2"), "{name}: {err}");
+    }
+}
+
+#[test]
+fn test_row_validation_skip_drops_and_counts_the_row() {
+    for (name, kind, column, weight, split, edit) in node_cases() {
+        let mut rows = NodeRows::good();
+        edit(&mut rows);
+        let output = run_node_rows(&rows, weight, split, IngestOnError::SkipRowOnError)
+            .unwrap_or_else(|e| panic!("{name}: skip must not fail: {e}"));
+        assert_eq!(output.rows_written, 4, "{name}");
+        let report = output.row_failures.expect("custom-TT reports row_failures");
+        assert_eq!(report.on_error, "skip_row_on_error", "{name}");
+        assert_eq!((report.rows_read, report.skipped_rows), (5, 1), "{name}");
+        assert_eq!(report.by_condition.len(), 1, "{name}");
+        let entry = &report.by_condition[0];
+        assert_eq!(entry.condition, kind, "{name}");
+        assert_eq!((entry.column.as_str(), entry.count), (column, 1), "{name}");
+        assert!(
+            entry.samples[0].contains("row 2"),
+            "{name}: {:?}",
+            entry.samples
+        );
+        assert_eq!(kind_name(kind), kind_name(entry.condition), "{name}");
+    }
+}
+
+#[test]
+fn test_row_validation_clean_source_reports_zero_skips_in_both_modes() {
+    for mode in [IngestOnError::Abort, IngestOnError::SkipRowOnError] {
+        let output = run_node_rows(&NodeRows::good(), true, true, mode).unwrap();
+        assert_eq!(output.rows_written, 5);
+        let report = output.row_failures.unwrap();
+        assert_eq!((report.rows_read, report.skipped_rows), (5, 0));
+        assert!(report.by_condition.is_empty());
+    }
+}
+
+#[test]
+fn test_row_validation_skipped_rows_keep_weights_aligned() {
+    let mut rows = NodeRows::good();
+    rows.weight = (0..5).map(|e| Some(e as f64 + 1.0)).collect();
+    rows.entity[1] = None;
+    let output = run_node_rows(&rows, true, false, IngestOnError::SkipRowOnError).unwrap();
+    assert_eq!(
+        read_weight_column(&output.tt_parquet_path),
+        vec![1.0, 3.0, 4.0, 5.0]
+    );
+}
+
+#[test]
+fn test_row_validation_manifest_records_row_failures() {
+    let mut rows = NodeRows::good();
+    rows.target[3] = None;
+    let output = run_node_rows(&rows, false, false, IngestOnError::SkipRowOnError).unwrap();
+    let manifest: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&output.manifest_path).unwrap()).unwrap();
+    let failures = &manifest["row_failures"];
+    assert_eq!(failures["on_error"], "skip_row_on_error");
+    assert_eq!(failures["skipped_rows"], 1);
+    assert_eq!(failures["by_condition"][0]["condition"], "null_target");
+    assert_eq!(failures["by_condition"][0]["column"], "TARGET1");
+}
+
+#[test]
+fn test_row_validation_counts_each_condition_but_skips_the_row_once() {
+    let mut rows = NodeRows::good();
+    rows.entity[1] = None; // also has a null target below
+    rows.target[1] = None;
+    let output = run_node_rows(&rows, false, false, IngestOnError::SkipRowOnError).unwrap();
+    let report = output.row_failures.unwrap();
+    assert_eq!(report.skipped_rows, 1);
+    assert_eq!(report.by_condition.len(), 2);
+    assert_eq!(report.by_condition[0].condition, RowFailureKind::NullEntity);
+    assert_eq!(report.by_condition[1].condition, RowFailureKind::NullTarget);
+}
+
+#[test]
+fn test_row_validation_unknown_entity_key_is_counted_and_skipped_in_both_modes() {
+    // Entity 9 is absent: skip it in both modes and include the reason in the report.
+    for mode in [IngestOnError::Abort, IngestOnError::SkipRowOnError] {
+        let mut rows = NodeRows::good();
+        rows.entity[2] = Some(9);
+        let output = run_node_rows(&rows, false, false, mode).unwrap();
+        assert_eq!(output.rows_written, 4);
+        let report = output.row_failures.unwrap();
+        assert_eq!(report.skipped_rows, 1);
+        assert_eq!(
+            report.by_condition[0].condition,
+            RowFailureKind::UnknownEntity
+        );
+    }
+}
+
+#[test]
+fn test_row_validation_source_that_keeps_no_rows_fails_in_both_modes() {
+    for mode in [IngestOnError::Abort, IngestOnError::SkipRowOnError] {
+        // Every row's entity is unknown to the graph.
+        let mut rows = NodeRows::good();
+        rows.entity = (10..15).map(Some).collect();
+        let err = run_node_rows(&rows, false, false, mode)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("kept no rows"), "{err}");
+    }
+    // Every row invalid, skipped one by one.
+    let mut rows = NodeRows::good();
+    rows.target = vec![None; 5];
+    let err = run_node_rows(&rows, false, false, IngestOnError::SkipRowOnError)
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(err.contains("5 read, 5 skipped"), "{err}");
+}
+
+#[test]
+fn test_row_validation_weight_with_no_positive_value_fails_in_both_modes() {
+    for mode in [IngestOnError::Abort, IngestOnError::SkipRowOnError] {
+        let mut rows = NodeRows::good();
+        rows.weight = vec![Some(0.0); 5];
+        let err = run_node_rows(&rows, true, false, mode)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("no positive value"), "{err}");
+    }
+}
+
+#[test]
+fn test_row_validation_split_values_come_from_the_plan() {
+    // The plan names its own split values; 7 is valid when the plan says so.
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_users_only_graph(dir.path(), 5);
+    let pq = dir.path().join("rows.parquet");
+    let mut rows = NodeRows::good();
+    rows.split[2] = Some(7);
+    rows.write(&pq, false, true);
+    let mut plan = make_custom_tt_target_only_node_plan();
+    let mut spec = manual_split_col_spec();
+    spec.manual_test_values = Some(vec!["2".to_string(), "7".to_string()]);
+    plan.split = Some(spec);
+    let out_dir = tempfile::tempdir().unwrap();
+    let output = execute_tt_pass_with_source(
+        &plan,
+        &index,
+        out_dir.path(),
+        Some(source(&pq, IngestOnError::Abort)),
+    )
+    .unwrap();
+    assert_eq!(output.rows_written, 5);
+}
+
+// ── Link prediction (list targets, per-element weights) ──────────────────────
+
+fn lp_plan(weight: bool) -> DiskGraphTTPlan<Seconds> {
+    let mut plan = make_custom_tt_lp_node_plan(None);
+    plan.prediction_type = PredictionType::Link {
+        include_frequency: true,
+    };
+    if weight {
+        plan.weight_col = Some("WEIGHT".to_string());
+    }
+    plan
+}
+
+/// Write an LP parquet whose TARGET1 (and optionally WEIGHT) cells may be null.
+fn write_lp_rows(
+    path: &Path,
+    targets: Vec<Option<Vec<Option<i64>>>>,
+    weights: Option<Vec<Option<Vec<f64>>>>,
+) {
+    let n = targets.len();
+    let mut target = ListBuilder::new(Int64Builder::new());
+    let mut frequency = ListBuilder::new(Int64Builder::new());
+    for cell in &targets {
+        match cell {
+            Some(items) => {
+                for item in items {
+                    target.values().append_option(*item);
+                    frequency.values().append_value(1);
+                }
+                target.append(true);
+                frequency.append(true);
+            }
+            None => {
+                target.append(false);
+                frequency.append(false);
+            }
+        }
+    }
+    let list_type = |t| DataType::List(Arc::new(Field::new("item", t, true)));
+    let mut fields = vec![
+        Field::new("ENTITY1", DataType::Int64, false),
+        Field::new(
+            "TIMESTAMP",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new("TARGET1", list_type(DataType::Int64), true),
+        Field::new(
+            "__kumo_internal_frequency_column__",
+            list_type(DataType::Int64),
+            true,
+        ),
+    ];
+    let mut columns: Vec<Arc<dyn Array>> = vec![
+        Arc::new(Int64Array::from((0..n as i64).collect::<Vec<_>>())),
+        Arc::new(TimestampNanosecondArray::from(vec![
+            1_000_000_000_000_i64;
+            n
+        ])),
+        Arc::new(target.finish()),
+        Arc::new(frequency.finish()),
+    ];
+    if let Some(weights) = weights {
+        let mut weight = ListBuilder::new(Float64Builder::new());
+        for cell in &weights {
+            match cell {
+                Some(items) => {
+                    items.iter().for_each(|w| weight.values().append_value(*w));
+                    weight.append(true);
+                }
+                None => weight.append(false),
+            }
+        }
+        fields.push(Field::new("WEIGHT", list_type(DataType::Float64), true));
+        columns.push(Arc::new(weight.finish()));
+    }
+    let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
+    write_parquet(path, &batch);
+}
+
+fn run_lp_rows(
+    targets: Vec<Option<Vec<Option<i64>>>>,
+    weights: Option<Vec<Option<Vec<f64>>>>,
+    allow_negative_weight: bool,
+    on_error: IngestOnError,
+) -> TTGenResult<TTPassOutput> {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_users_and_products_graph(dir.path(), 8, 8);
+    let pq = dir.path().join("lp.parquet");
+    let weighted = weights.is_some();
+    write_lp_rows(&pq, targets, weights);
+    let out_dir = tempfile::tempdir().unwrap();
+    let mut src = source(&pq, on_error);
+    src.allow_negative_weight = allow_negative_weight;
+    execute_tt_pass_with_source(&lp_plan(weighted), &index, out_dir.path(), Some(src))
+}
+
+fn lp_good() -> Vec<Option<Vec<Option<i64>>>> {
+    (0..4).map(|i| Some(vec![Some(i), Some(i + 1)])).collect()
+}
+
+fn lp_good_weights() -> Vec<Option<Vec<f64>>> {
+    (0..4).map(|_| Some(vec![1.0, 2.0])).collect()
+}
+
+#[test]
+fn test_row_validation_lp_conditions_in_both_modes() {
+    type Case = (
+        &'static str,
+        RowFailureKind,
+        &'static str,
+        Box<dyn Fn() -> (Vec<Option<Vec<Option<i64>>>>, Option<Vec<Option<Vec<f64>>>>)>,
+    );
+    let cases: Vec<Case> = vec![
+        (
+            "null list",
+            RowFailureKind::NullTarget,
+            "TARGET1",
+            Box::new(|| {
+                let mut t = lp_good();
+                t[2] = None;
+                (t, None)
+            }),
+        ),
+        (
+            "null element",
+            RowFailureKind::NullTargetItem,
+            "TARGET1",
+            Box::new(|| {
+                let mut t = lp_good();
+                t[2] = Some(vec![Some(1), None]);
+                (t, None)
+            }),
+        ),
+        (
+            "null weight list",
+            RowFailureKind::NullWeight,
+            "WEIGHT",
+            Box::new(|| {
+                let mut w = lp_good_weights();
+                w[2] = None;
+                (lp_good(), Some(w))
+            }),
+        ),
+        (
+            "weight length mismatch",
+            RowFailureKind::WeightLengthMismatch,
+            "WEIGHT",
+            Box::new(|| {
+                let mut w = lp_good_weights();
+                w[2] = Some(vec![1.0]);
+                (lp_good(), Some(w))
+            }),
+        ),
+        (
+            "negative weight element",
+            RowFailureKind::NegativeWeight,
+            "WEIGHT",
+            Box::new(|| {
+                let mut w = lp_good_weights();
+                w[2] = Some(vec![1.0, -2.0]);
+                (lp_good(), Some(w))
+            }),
+        ),
+        (
+            "infinite weight element",
+            RowFailureKind::NonFiniteWeight,
+            "WEIGHT",
+            Box::new(|| {
+                let mut w = lp_good_weights();
+                w[2] = Some(vec![f64::INFINITY, 2.0]);
+                (lp_good(), Some(w))
+            }),
+        ),
+    ];
+    for (name, kind, column, build) in cases {
+        let (targets, weights) = build();
+        let err = run_lp_rows(
+            targets.clone(),
+            weights.clone(),
+            false,
+            IngestOnError::Abort,
+        )
+        .err()
+        .unwrap_or_else(|| panic!("{name}: abort must fail"))
+        .to_string();
+        assert!(
+            err.contains(kind.describe()) && err.contains(column) && err.contains("row 2"),
+            "{name}: {err}"
+        );
+
+        let output = run_lp_rows(targets, weights, false, IngestOnError::SkipRowOnError)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(output.rows_written, 3, "{name}");
+        let report = output.row_failures.unwrap();
+        assert_eq!(
+            (report.skipped_rows, report.by_condition[0].condition),
+            (1, kind),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn test_row_validation_lp_negative_weight_is_allowed_when_the_task_allows_it() {
+    let mut weights = lp_good_weights();
+    weights[2] = Some(vec![1.0, -2.0]);
+    let output = run_lp_rows(lp_good(), Some(weights), true, IngestOnError::Abort).unwrap();
+    assert_eq!(output.rows_written, 4);
+}
+
+#[test]
+fn test_row_validation_lp_empty_target_list_is_counted_and_skipped_in_both_modes() {
+    for mode in [IngestOnError::Abort, IngestOnError::SkipRowOnError] {
+        let mut targets = lp_good();
+        targets[2] = Some(vec![]);
+        let output = run_lp_rows(targets, None, false, mode).unwrap();
+        assert_eq!(output.rows_written, 3);
+        let report = output.row_failures.unwrap();
+        assert_eq!(
+            report.by_condition[0].condition,
+            RowFailureKind::EmptyTargetList
+        );
+        assert_eq!(report.skipped_rows, 1);
+    }
+}
+
+#[test]
+fn test_row_validation_lp_every_list_empty_fails_in_both_modes() {
+    for mode in [IngestOnError::Abort, IngestOnError::SkipRowOnError] {
+        let targets = (0..4).map(|_| Some(vec![])).collect();
+        let err = run_lp_rows(targets, None, false, mode)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("kept no rows"), "{err}");
+    }
+}
+
+fn run_timestamp_reference_case(
+    timestamp: Arc<dyn Array>,
+    declared: diskgraph_core::time::TimeUnit,
+    reference: Option<diskgraph_train_table::custom_tt_row_errors::TimestampReference>,
+    mode: IngestOnError,
+) -> TTGenResult<TTPassOutput> {
+    let dir = tempfile::tempdir().unwrap();
+    let index = build_users_only_graph(dir.path(), 5);
+    let parts = dir.path().join("source");
+    fs::create_dir(&parts).unwrap();
+    let batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("ENTITY1", DataType::Int64, false),
+            Field::new("TIMESTAMP", timestamp.data_type().clone(), false),
+            Field::new("TARGET1", DataType::Float64, false),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![0, 1, 2, 3, 4])),
+            timestamp,
+            Arc::new(Float64Array::from(vec![1.0; 5])),
+        ],
+    )
+    .unwrap();
+    write_parquet(&parts.join("part-0.parquet"), &batch.slice(0, 2));
+    write_parquet(&parts.join("part-1.parquet"), &batch.slice(2, 3));
+    let mut source = source(&parts, mode);
+    source.input_timestamp_unit = declared;
+    source.timestamp_reference = reference;
+    let out = dir.path().join("out");
+    fs::create_dir(&out).unwrap();
+    execute_tt_pass_with_source(
+        &make_custom_tt_target_only_node_plan(),
+        &index,
+        &out,
+        Some(source),
+    )
+}
+
+#[test]
+fn test_timestamp_reference_rejects_wrong_integer_units_in_both_modes() {
+    use diskgraph_core::time::TimeUnit as Unit;
+    use diskgraph_train_table::custom_tt_row_errors::TimestampReference;
+    let nanos = 1_700_000_004_000_000_000i64;
+    for mode in [IngestOnError::Abort, IngestOnError::SkipRowOnError] {
+        for (divisor, name) in [
+            (1_000_000_000, "seconds"),
+            (1_000_000, "milliseconds"),
+            (1_000, "microseconds"),
+        ] {
+            let timestamps: Vec<i64> = (0..5)
+                .map(|i| (nanos - (4 - i) * 1_000_000_000) / divisor)
+                .collect();
+            let err = run_timestamp_reference_case(
+                Arc::new(Int64Array::from(timestamps)),
+                Unit::Nanoseconds,
+                Some(TimestampReference {
+                    rows: 5,
+                    max_ns: nanos,
+                }),
+                mode,
+            )
+            .err()
+            .unwrap()
+            .to_string();
+            assert!(
+                err.contains(&format!("looks like {name}, not nanoseconds")),
+                "{err}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_timestamp_reference_accepts_correct_units_and_self_describing_timestamps() {
+    use diskgraph_core::time::TimeUnit as Unit;
+    use diskgraph_train_table::custom_tt_row_errors::TimestampReference;
+    let nanos = 1_700_000_000_000_000_000i64;
+    for (divisor, unit) in [
+        (1, Unit::Nanoseconds),
+        (1_000, Unit::Microseconds),
+        (1_000_000, Unit::Milliseconds),
+        (1_000_000_000, Unit::Seconds),
+    ] {
+        let out = run_timestamp_reference_case(
+            Arc::new(Int64Array::from(vec![nanos / divisor; 5])),
+            unit,
+            Some(TimestampReference {
+                rows: 5,
+                max_ns: nanos,
+            }),
+            IngestOnError::Abort,
+        )
+        .unwrap();
+        assert_eq!(out.rows_written, 5);
+    }
+    let out = run_timestamp_reference_case(
+        Arc::new(TimestampNanosecondArray::from(vec![nanos; 5])),
+        Unit::Seconds,
+        Some(TimestampReference {
+            rows: 5,
+            max_ns: nanos,
+        }),
+        IngestOnError::Abort,
+    )
+    .unwrap();
+    assert_eq!(out.rows_written, 5);
+}
+
+#[test]
+fn test_timestamp_reference_does_not_guess_without_correspondence() {
+    use diskgraph_core::time::TimeUnit as Unit;
+    use diskgraph_train_table::custom_tt_row_errors::TimestampReference;
+    for reference in [
+        None,
+        Some(TimestampReference {
+            rows: 6,
+            max_ns: 1_700_000_000_000_000_000,
+        }),
+    ] {
+        let out = run_timestamp_reference_case(
+            Arc::new(Int64Array::from(vec![1_700_000_000; 5])),
+            Unit::Nanoseconds,
+            reference,
+            IngestOnError::Abort,
+        )
+        .unwrap();
+        assert_eq!(out.rows_written, 5);
+    }
+}
+
+#[test]
+fn test_unknown_entity_does_not_hide_invalid_content() {
+    let mut rows = NodeRows::good();
+    rows.entity[2] = Some(9);
+    rows.target[2] = None;
+    rows.weight[2] = None;
+    let error = run_node_rows(&rows, true, false, IngestOnError::Abort)
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("target is null"), "{error}");
+    assert!(error.contains("weight is null"), "{error}");
+    let output = run_node_rows(&rows, true, false, IngestOnError::SkipRowOnError).unwrap();
+    let report = output.row_failures.unwrap();
+    assert_eq!(report.skipped_rows, 1);
+    assert_eq!(report.by_condition.len(), 2);
+    assert!(report
+        .by_condition
+        .iter()
+        .all(|condition| condition.count == 1));
+}
+
+#[test]
+fn test_empty_target_does_not_hide_invalid_weight() {
+    let mut targets = lp_good();
+    targets[2] = Some(vec![]);
+    let mut weights = lp_good_weights();
+    weights[2] = None;
+    let error = run_lp_rows(
+        targets.clone(),
+        Some(weights.clone()),
+        false,
+        IngestOnError::Abort,
+    )
+    .err()
+    .unwrap()
+    .to_string();
+    assert!(error.contains("target list is empty"), "{error}");
+    assert!(error.contains("weight is null"), "{error}");
+    let output = run_lp_rows(targets, Some(weights), false, IngestOnError::SkipRowOnError).unwrap();
+    let report = output.row_failures.unwrap();
+    assert_eq!(report.skipped_rows, 1);
+    assert_eq!(report.by_condition.len(), 2);
+}
+
+#[test]
+fn test_default_skip_policy_keeps_even_a_small_valid_remainder() {
+    let mut rows = NodeRows::good();
+    rows.target[..4].fill(None);
+    let output = run_node_rows(&rows, false, false, IngestOnError::default()).unwrap();
+    assert_eq!(output.rows_written, 1);
+    assert_eq!(output.row_failures.unwrap().skipped_rows, 4);
+}
+
+#[test]
+fn test_filtered_empty_link_targets_are_counted_and_all_filtered_rows_fail() {
+    let run = |targets, mode| {
+        let dir = tempfile::tempdir().unwrap();
+        let index = build_users_and_products_graph(dir.path(), 8, 8);
+        let parquet = dir.path().join("links.parquet");
+        write_lp_rows(&parquet, targets, None);
+        fs::create_dir_all(dir.path().join("out")).unwrap();
+        let mut plan = make_custom_tt_lp_node_plan(Some("products"));
+        plan.prediction_type = PredictionType::Link {
+            include_frequency: false,
+        };
+        execute_tt_pass_with_source(
+            &plan,
+            &index,
+            &dir.path().join("out"),
+            Some(source(&parquet, mode)),
+        )
+    };
+    for mode in [IngestOnError::Abort, IngestOnError::SkipRowOnError] {
+        let mut targets = lp_good();
+        targets[2] = Some(vec![Some(999)]);
+        let output = run(targets, mode).unwrap();
+        assert_eq!(output.rows_written, 3);
+        let report = output.row_failures.unwrap();
+        assert_eq!(report.skipped_rows, 1);
+        assert_eq!(
+            report.by_condition[0].condition,
+            RowFailureKind::UnavailableTarget
+        );
+        let error = run(vec![Some(vec![Some(999)]); 4], mode)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("kept no rows"), "{error}");
+    }
 }

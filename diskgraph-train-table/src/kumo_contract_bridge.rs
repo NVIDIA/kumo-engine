@@ -248,6 +248,7 @@ mod tests {
             stage_seed_times: None,
             train_table_col_stats: None,
             train_table_edges: None,
+            row_failures: None,
             arange_sidecar: Some(SidecarRef {
                 path: "arange.bin".into(),
             }),
