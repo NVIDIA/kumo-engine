@@ -66,7 +66,7 @@ jobs:
 
       - name: Checkout kumo
         id: checkout_kumo
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
         with:
           ref: ${{ github.event.inputs.kumo_ref || 'master' }}
           path: kumo
@@ -75,7 +75,7 @@ jobs:
 
       - name: Checkout kumo-tests
         id: checkout_kumo_tests
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
         with:
           repository: kumo-ai/kumo-tests
           ref: ${{ github.event.inputs.kumo_tests_ref || 'master' }}
