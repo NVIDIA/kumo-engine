@@ -198,7 +198,7 @@ jobs:
       # Uses the same sticky header as the final result, so the result comment
       # overwrites this one when the review finishes (~a few minutes).
       - name: Post "review started" comment
-        uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3.0.2
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           header: ui-review
           number: ${{ env.PR_NUMBER }}
@@ -334,7 +334,7 @@ jobs:
 
       - name: Post sticky review comment
         if: always()
-        uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3.0.2
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           header: ui-review
           number: ${{ env.PR_NUMBER }}
