@@ -102,17 +102,19 @@ function validate(pr, files, comments) {
   return validateTable(pr, files, maps[0].body);
 }
 
-async function run({ github, context, core }) {
+async function run({ github, context, core, postStatus = true }) {
   const number = context.payload.pull_request?.number || context.payload.issue.number;
   const args = { ...context.repo, pull_number: number };
   const comments = () => github.paginate(github.rest.issues.listComments, {
     ...context.repo, issue_number: number, per_page: 100,
   });
   const { data: pr } = await github.rest.pulls.get(args);
-  const status = (state, description) => github.rest.repos.createCommitStatus({
-    ...context.repo, sha: pr.head.sha, context: 'PR change table', state, description,
-    target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
-  });
+  const status = (state, description) => postStatus
+    ? github.rest.repos.createCommitStatus({
+      ...context.repo, sha: pr.head.sha, context: 'PR change table', state, description,
+      target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`
+    })
+    : Promise.resolve();
   await status('pending', 'Checking the change-map comment and changed files');
   try {
     const files = await github.paginate(github.rest.pulls.listFiles, { ...args, per_page: 100 });

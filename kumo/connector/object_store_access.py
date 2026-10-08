@@ -55,8 +55,6 @@ def source_access(path: str) -> ObjectStoreAccess | None:
             default_region=(connection.region if connection else None)
             or material.get('region'),
             options=connection.pyarrow_options() if connection else None,
-            client_config=connection.boto_config if connection else None,
-            verify=connection.boto_verify if connection else None,
             allow_anonymous=scope is None and connection is None)
     if isinstance(uri, GCSURI):
         from kumo_gcs.source_access import source_access as gcs_access
@@ -100,4 +98,6 @@ def source_reader(path: str, *, file_format: str | None = None,
     return ObjectStoreSourceReader(filesystem, root=root.rstrip('/'),
                                    file_format=file_format,
                                    file_suffix=file_suffix,
-                                   fetch=access.fetch if access else None)
+                                   fetch=access.fetch if access else None,
+                                   object_identity=(access.object_identity
+                                                    if access else None))

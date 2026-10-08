@@ -28,7 +28,10 @@ from kumo_core.model_plan import (
     inferred_or_missing_type_to_false,
     inferred_or_missing_type_to_none,
 )
-from kumo_core.prediction_options import resolve_classification_threshold
+from kumo_core.prediction_options import (
+    resolve_classification_threshold,
+    resolve_num_classes_to_return,
+)
 from kumo_core.types import PredictionArtifactType, TaskType
 from kumo_core.types.schema import FPID
 from kumoapi import jobs as jobs_api
@@ -185,10 +188,6 @@ MAX_BP_JOBS_PER_WORKFLOW = EnvVar(
     description=(
         "Delete BP jobs if total number of BP jobs per workflow exceeds this"),
 )
-
-# We limit the number of links to predict, to prevent the link prediction job
-# from being too slow.
-MAX_LINKS_TO_PREDICT = 500
 
 # Maximum no.of supported parallel workers for a batch prediction job.
 MAX_NUM_PARALLEL_WORKERS_BP = 32
@@ -419,11 +418,12 @@ class BatchPredictionJobLogic:
 
         # Compute effective num_classes_to_return (handles top_k default and
         # only_embeddings override).
-        raw_num_classes = request.predict_options.num_classes_to_return
-        effective_num_classes_to_return: Optional[int] = (
-            raw_num_classes if raw_num_classes is not None else top_k)
-        if request.only_embeddings:
-            effective_num_classes_to_return = None
+        effective_num_classes_to_return = resolve_num_classes_to_return(
+            task_type,
+            request.predict_options.num_classes_to_return,
+            top_k=top_k,
+            has_predictions=not request.only_embeddings,
+        )
 
         gen_tt_job, train_table_options = await self._compute_bp_train_options(
             training_job, task_type, query_type, project_id=project_id)
@@ -2128,29 +2128,10 @@ def _validate_task_type_options_v2(task_type: TaskType,
     # NOTE: non-binary reset-to-None + warning is NOT here. That moves to the
     # effective_threshold computation in `create_batch_prediction_job_v2`.
 
-    num_classes = request.predict_options.num_classes_to_return
-    if not task_type.has_multiple_predictions:
-        if num_classes is not None:
-            raise ValueError("num_classes_to_return can only be specified "
-                             "for multilabel, multiclass, and link "
-                             "prediction queries. Please remove it "
-                             "and try again.")
-    elif task_type.is_link_pred:
-        has_predictions = any(
-            output.artifact_type == PredictionArtifactType.PREDICTIONS
-            for output in request.outputs)
-
-        if has_predictions:
-            top_k = num_classes
-            if top_k is None:
-                raise ValueError("Please specify the number of predictions "
-                                 "per entity when exporting predictions for "
-                                 "a link prediction query.")
-            if top_k > MAX_LINKS_TO_PREDICT:
-                raise ValueError(f"For data efficiency reasons, "
-                                 f"num_classes_to_return should be less than "
-                                 f"or equal to "
-                                 f"{MAX_LINKS_TO_PREDICT}. If you need "
-                                 f"more, you can export embeddings and perform "
-                                 f"maximum inner product search on the "
-                                 f"embedding space.")
+    resolve_num_classes_to_return(
+        task_type,
+        request.predict_options.num_classes_to_return,
+        has_predictions=any(output.artifact_type ==
+                            PredictionArtifactType.PREDICTIONS
+                            for output in request.outputs),
+    )

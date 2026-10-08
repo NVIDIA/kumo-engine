@@ -92,6 +92,7 @@ def assert_top_level_import_is_cheap(
             script,
             str(package_root / "src"),
             str(package_root.parent / "kumo-core" / "src"),
+            str(package_root.parent / "kumo-api"),
         ],
         check=False,
         capture_output=True,

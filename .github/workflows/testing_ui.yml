@@ -38,11 +38,14 @@ env:
 jobs:
   vitest:
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
       packages: read
     runs-on: ubuntu-22.04-large
     continue-on-error: true
+    outputs:
+      ui_changed: ${{ steps.ui-changes.outputs.any_changed }}
+      coverage_artifact: ${{ steps.coverage-upload.outputs.artifact-id }}
+      coverage_dir: ${{ steps.vars.outputs.dir }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -113,15 +116,14 @@ jobs:
             echo "dir=${{ github.ref_name }}/ui-coverage" >> $GITHUB_OUTPUT
           fi
 
-      - name: Deploy to GitHub Pages
-        if: always() && (steps.ui-changes.outputs.any_changed == 'true' || github.event_name == 'schedule')
-        timeout-minutes: 5
-        continue-on-error: true
-        uses: peaceiris/actions-gh-pages@329bcc8f12caed2cefe5a5b80781499a6f3b361b # v4
+      - name: Upload coverage for trusted publication
+        id: coverage-upload
+        if: ${{ always() && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (steps.ui-changes.outputs.any_changed == 'true' || github.event_name == 'schedule') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./ui/ui-coverage
-          destination_dir: ${{ steps.vars.outputs.dir }}
+          name: ui-coverage
+          path: ui/ui-coverage/
+          if-no-files-found: error
 
       - name: Write coverage to job summary
         if: always() && (steps.ui-changes.outputs.any_changed == 'true' || github.event_name == 'schedule')
@@ -192,17 +194,41 @@ jobs:
           print('</details>')
           PYEOF
 
-      - name: Create a comment on PR
-        if: always() && github.event_name == 'pull_request' && steps.ui-changes.outputs.any_changed == 'true'
-        run: |
-          echo "#### UI Test Jobs Completed on ${{ github.sha }}" >> pr_comment.md
-          echo "* ⚡ [Test run](https://github.com/kumo-ai/kumo/actions/runs/${{ github.run_id }})" >> pr_comment.md
-          echo "* 📊 [Coverage summary](https://github.com/kumo-ai/kumo/actions/runs/${{ github.run_id }})" >> pr_comment.md
+  publish-coverage:
+    needs: vitest
+    if: ${{ always() && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.vitest.outputs.coverage_artifact != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 5
+    continue-on-error: true
+    steps:
+      - name: Download coverage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ui-coverage
+          path: ui/ui-coverage
 
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@329bcc8f12caed2cefe5a5b80781499a6f3b361b # v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./ui/ui-coverage
+          destination_dir: ${{ needs.vitest.outputs.coverage_dir }}
+
+  comment-coverage:
+    needs: vitest
+    if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.vitest.outputs.ui_changed == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
       - name: Comment on PR
         uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3.0.2
-        if: always() && github.event_name == 'pull_request' && steps.ui-changes.outputs.any_changed == 'true'
         with:
           recreate: true
           header: ui-coverage
-          path: pr_comment.md
+          message: |
+            #### UI Test Jobs Completed on ${{ github.sha }}
+            * ⚡ [Test run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            * 📊 [Coverage summary](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})

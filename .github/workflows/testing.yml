@@ -73,63 +73,7 @@ jobs:
   diskgraph-wheel:
     permissions:
       contents: read
-    env:
-      GITHUB_TOKEN: ''
-      GITHUB_REF: ${{ github.ref }}
-      GITHUB_API_URL: ${{ github.api_url }}
-      GITHUB_REPOSITORY: ${{ github.repository }}
-      GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
-      GITHUB_RUN_ID: ${{ github.run_id }}
-    # Oldest runner image: the wheel must load on every consumer's glibc.
-    runs-on: ubuntu-22.04-large
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
-      - id: settings
-        run: |
-          ./scripts/diskgraph wheel-env | tee -a "$GITHUB_ENV" >> "$GITHUB_OUTPUT"
-          echo "key=$(./scripts/diskgraph wheel-key)" >> "$GITHUB_OUTPUT"
-      - id: cache
-        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
-        with:
-          path: /tmp/diskgraph-wheel
-          key: ${{ steps.settings.outputs.key }}
-      - if: steps.cache.outputs.cache-hit != 'true'
-        run: sudo apt-get update -qq && sudo apt-get install -y lld
-      - if: steps.cache.outputs.cache-hit != 'true'
-        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
-        with:
-          toolchain: ${{ steps.settings.outputs.RUST_TOOLCHAIN }}
-      - if: steps.cache.outputs.cache-hit != 'true'
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-        with:
-          python-version: '3.11'
-          activate-environment: true
-      - id: python
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: echo "version=$(python -c 'import platform; print(platform.python_version())')" >> "$GITHUB_OUTPUT"
-      - if: steps.cache.outputs.cache-hit != 'true'
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-        with:
-          workspaces: packages/diskgraph -> target
-          key: python-wheel-py${{ steps.python.outputs.version }}
-      - name: Build wheel
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: uv build --wheel --out-dir /tmp/diskgraph-wheel packages/diskgraph
-      - if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
-        with:
-          path: /tmp/diskgraph-wheel
-          key: ${{ steps.settings.outputs.key }}
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: diskgraph-wheel
-          path: /tmp/diskgraph-wheel/diskgraph-*.whl
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 7
+    uses: ./.github/workflows/_diskgraph-wheel.yml
 
   pytest:
     needs: [diskgraph-wheel]
@@ -263,6 +207,7 @@ jobs:
         with:
           github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
           diskgraph-wheel-artifact: diskgraph-wheel
+          install-graphviz: ${{ matrix.test_dir == 'test/graph/' }}
 
       - name: Log in to Azure with GitHub OIDC
         if: (env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true') && env.KUMO_RUN_ADLS_TESTS == '1'
@@ -418,7 +363,10 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - run: sudo apt-get update -qq && sudo apt-get install -y lld
+      - uses: ./.github/actions/apt-install
+        timeout-minutes: 12
+        with:
+          packages: lld
       - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
           # Pinned: a new stable clippy adds lints that fail unchanged code.
@@ -451,7 +399,10 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - run: sudo apt-get update -qq && sudo apt-get install -y lld
+      - uses: ./.github/actions/apt-install
+        timeout-minutes: 12
+        with:
+          packages: lld
       - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
         with:
           # Pinned: a new stable clippy adds lints that fail unchanged code.
@@ -584,10 +535,10 @@ jobs:
         # set: the import roots live in that package's
         # `[tool.pytest.ini_options] pythonpath`, and a PYTHONPATH override
         # would shadow the ini and break `kumo_core` / `sources` imports.
-        # The live-warehouse tiers skip themselves at module level whenever
-        # their credentials are absent (no creds file, no application-default
-        # credentials), which is always true on a runner; `-rs` prints those
-        # skip reasons so a silently-empty live tier stays visible.
+        # Snowflake, Databricks and BigQuery live modules require their
+        # KUMO_<PROVIDER>_LIVE flag to be exactly "1". Disabled collection
+        # skips before credential lookup; enabled misconfiguration fails.
+        # `-rs` prints the skip reasons so an empty live tier stays visible.
         run: |
           status=0
           for package in kumo-pql kumo-core kumo-snowflake kumo-bigquery \

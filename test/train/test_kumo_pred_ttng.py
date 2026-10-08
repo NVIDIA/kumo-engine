@@ -493,6 +493,7 @@ def test_ttng_link_pred_predict_receives_runtime_and_top_k():
             return object()
 
     trainer = Trainer()
+    manifest = object()
 
     DiskgraphNestedTrainer.predict(
         trainer,
@@ -501,6 +502,7 @@ def test_ttng_link_pred_predict_receives_runtime_and_top_k():
         runtime_num_workers=3,
         runtime_worker_id=2,
         top_k=7,
+        task_manifest=manifest,  # type: ignore[arg-type]
     )
 
     assert trainer._runtime_num_workers == 3
@@ -521,6 +523,7 @@ def test_ttng_link_pred_predict_receives_runtime_and_top_k():
         "total_partitions": 1,
         "output_partition_ids": None,
         "top_k": 7,
+        "task_manifest": manifest,
     }]
 
 

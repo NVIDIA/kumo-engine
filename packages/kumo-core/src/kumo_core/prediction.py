@@ -512,15 +512,22 @@ def _score_prediction_shard(
     *,
     worker_id: int,
     config: _PredictionWorkerConfig,
+    manifest: Any = None,
+    encoders: Any = None,
 ) -> Any:
-    r"""Load and score one prediction-table shard in its worker process."""
+    r"""Load and score one prediction-table shard in its worker process.
+
+    An in-process caller passes the ``manifest`` and ``encoders`` it already
+    loaded, so each is parsed and held once.
+    """
     from kumo_core.resolved_task import ResolvedNumericalTask
     from kumo_core.task_dataset import DiskgraphTaskManifest
     from kumo_core.train.diskgraph_nested_trainer import DiskgraphNestedTrainer
     from kumo_core.train.trainer import load_encoders
     from kumo_core.training.runtime import LocalDiskgraphTrainingRuntime
 
-    manifest = DiskgraphTaskManifest.load(config.manifest_path)
+    if manifest is None:
+        manifest = DiskgraphTaskManifest.load(config.manifest_path)
     task = ResolvedNumericalTask.from_manifest(
         manifest,
         name=config.run_id,
@@ -536,7 +543,8 @@ def _score_prediction_shard(
         task,
         config.model_dir,
         diskgraph_task_dataset_bundle_dir=config.bundle_dir,
-        encoders=load_encoders(config.model_dir),
+        encoders=(encoders if encoders is not None else load_encoders(
+            config.model_dir)),
         infer_config_path=False,
         diskgraph_runtime=LocalDiskgraphTrainingRuntime(),
         embedding_models=config.embedding_models,
@@ -569,6 +577,7 @@ def _score_prediction_shard(
         output_partition_ids=[worker_id],
         runtime_num_workers=config.worker_count,
         runtime_worker_id=worker_id,
+        task_manifest=manifest,
     )
     return _publish_scored_shard(
         collector, output_dir=config.output_dir, run_id=config.run_id,
@@ -595,11 +604,14 @@ def score_prediction(
     binary_threshold: float | None = None,
     forecast_options: Mapping[str, int] | None = None,
     embedding_models: EmbeddingModelStore | None = None,
+    encoders: Any = None,
 ) -> Any:
     """Score partitions and publish bounded metadata using the hosted protocol.
 
     Rows stay in producer Parquet files. Workers return only small immutable
     manifest references; selection publishes after every scorer succeeds.
+    ``encoders`` are the model's, if the caller already loaded them; only an
+    in-process scorer reuses them.
     """
     from .prediction_options import validate_prediction_workers
     validate_prediction_workers(num_workers)
@@ -667,8 +679,13 @@ def score_prediction(
         embedding_models=embedding_models,
     )
     if worker_count == 1:
-        references = [_score_prediction_shard(worker_id=0, config=config)]
+        references = [
+            _score_prediction_shard(worker_id=0, config=config,
+                                    manifest=manifest, encoders=encoders)
+        ]
     else:
+        # Spawned scorers load their own copies.
+        del manifest, encoders
         from .embedding_models import require_importable
         require_importable(embedding_models)
         references = _run_prediction_workers(worker_count,

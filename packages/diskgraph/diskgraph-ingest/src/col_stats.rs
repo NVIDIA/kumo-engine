@@ -10,6 +10,7 @@
 //! via a mutex.
 
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -791,8 +792,9 @@ impl FileColStats {
     }
 
     /// Serialize accumulated stats to a JSON object keyed by column name.
-    /// Category counts are included from the shared state (Approach 2&3) or
-    /// local accumulator (Approach 1).
+    /// Category counts are read (not consumed) from the shared state.
+    /// Reference for the `col_stats.json` that [`write_col_stats`] streams.
+    #[cfg(any(test, feature = "test-util"))]
     pub fn to_json(
         &mut self,
         column_names: &[String],
@@ -800,59 +802,55 @@ impl FileColStats {
         table_cat: Option<&TableCategoryCounts>,
         text_sample_stats: Option<&HashMap<String, TextSampleStats>>,
     ) -> JsonValue {
-        // Collect category counts first (borrows self.cat_local, self.cat_shared)
-        // to avoid overlapping borrows with self.cols.iter_mut().
-        let cat_counts: Vec<Option<HashMap<String, u64>>> = (0..self.cols.len())
-            .map(|col_idx| {
-                get_category_counts_for_col(
-                    self.cat_strategy,
-                    &self.cat_local,
-                    table_cat,
-                    col_idx,
-                    column_names.get(col_idx).map_or("", String::as_str),
-                )
-            })
-            .collect();
-        let cat_capped: Vec<Option<bool>> = (0..self.cols.len())
-            .map(|col_idx| {
-                (self.cat_strategy == CategoryCountStrategy::Hybrid)
-                    .then(|| {
-                        table_cat?
-                            .columns
-                            .get(col_idx)?
-                            .as_ref()
-                            .map(|shared| shared.is_capped())
-                    })
-                    .flatten()
-            })
-            .collect();
+        let cat_counts = self.copy_category_counts(table_cat, column_names);
+        let cat_capped = self.category_capped(table_cat);
+        let has_counts: Vec<bool> = cat_counts.iter().map(Option::is_some).collect();
+        let mut map = self.summary_json(column_names, &has_counts, &cat_capped, text_sample_stats);
+        for (col_idx, cc) in cat_counts.iter().enumerate() {
+            let (Some(cc), Some(name)) = (cc, column_names.get(col_idx)) else {
+                continue;
+            };
+            let Some(JsonValue::Object(obj)) = map.get_mut(name) else {
+                continue;
+            };
+            // Array of [key, count] pairs matching the format GraphEngine/Spark produces.
+            let is_int = ingested_types
+                .get(col_idx)
+                .is_some_and(|t| t.is_integer_like());
+            let mut sorted: Vec<_> = cc.iter().collect();
+            sorted.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+            let json_counts: Vec<JsonValue> = sorted
+                .into_iter()
+                .map(|(k, v)| {
+                    let key_val = if is_int {
+                        k.parse::<i64>()
+                            .map(|n| JsonValue::Number(n.into()))
+                            .unwrap_or_else(|_| JsonValue::String(k.clone()))
+                    } else {
+                        JsonValue::String(k.clone())
+                    };
+                    json!([key_val, v])
+                })
+                .collect();
+            obj.insert("category_counts".to_string(), JsonValue::Array(json_counts));
+        }
+        JsonValue::Object(map)
+    }
 
+    /// `to_json` with each `category_counts` left as `[]` for the caller to fill.
+    fn summary_json(
+        &mut self,
+        column_names: &[String],
+        has_counts: &[bool],
+        cat_capped: &[Option<bool>],
+        text_sample_stats: Option<&HashMap<String, TextSampleStats>>,
+    ) -> serde_json::Map<String, JsonValue> {
         let mut map = serde_json::Map::new();
         for (col_idx, (col, name)) in self.cols.iter_mut().zip(column_names.iter()).enumerate() {
             if let Some(mut val) = col.to_json() {
-                // Add category counts if available, as array of [key, count] pairs
-                // matching the format GraphEngine/Spark produces.
-                if let Some(ref cc) = cat_counts[col_idx] {
+                if has_counts[col_idx] {
                     if let JsonValue::Object(ref mut obj) = val {
-                        let is_int = ingested_types
-                            .get(col_idx)
-                            .is_some_and(|t| t.is_integer_like());
-                        let mut sorted: Vec<_> = cc.iter().collect();
-                        sorted.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
-                        let json_counts: Vec<JsonValue> = sorted
-                            .into_iter()
-                            .map(|(k, v)| {
-                                let key_val = if is_int {
-                                    k.parse::<i64>()
-                                        .map(|n| JsonValue::Number(n.into()))
-                                        .unwrap_or_else(|_| JsonValue::String(k.clone()))
-                                } else {
-                                    JsonValue::String(k.clone())
-                                };
-                                json!([key_val, v])
-                            })
-                            .collect();
-                        obj.insert("category_counts".to_string(), JsonValue::Array(json_counts));
+                        obj.insert("category_counts".to_string(), json!([]));
                         if let Some(capped) = cat_capped[col_idx] {
                             obj.insert("category_counts_capped".to_string(), json!(capped));
                         }
@@ -877,14 +875,124 @@ impl FileColStats {
                 map.insert(name.clone(), val);
             }
         }
-        JsonValue::Object(map)
+        map
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    fn copy_category_counts(
+        &self,
+        table_cat: Option<&TableCategoryCounts>,
+        column_names: &[String],
+    ) -> Vec<Option<HashMap<String, u64>>> {
+        (0..self.cols.len())
+            .map(|col_idx| {
+                get_category_counts_for_col(
+                    self.cat_strategy,
+                    table_cat,
+                    col_idx,
+                    column_names.get(col_idx).map_or("", String::as_str),
+                )
+            })
+            .collect()
+    }
+
+    /// Call after the counts were read: publication can set the capped flag.
+    #[cfg(any(test, feature = "test-util"))]
+    fn category_capped(&self, table_cat: Option<&TableCategoryCounts>) -> Vec<Option<bool>> {
+        (0..self.cols.len())
+            .map(|col_idx| {
+                (self.cat_strategy == CategoryCountStrategy::Hybrid)
+                    .then(|| {
+                        table_cat?
+                            .columns
+                            .get(col_idx)?
+                            .as_ref()
+                            .map(|shared| shared.is_capped())
+                    })
+                    .flatten()
+            })
+            .collect()
+    }
+
+    /// Consumes the table's category counts for publication, sorting
+    /// columns in parallel. Returns per column the sorted counts and, for
+    /// Hybrid, whether they were capped. Errors if anything else still holds
+    /// the counts, since they are moved out.
+    fn take_published_counts(
+        &mut self,
+        table_name: &str,
+        table_cat: Option<Arc<TableCategoryCounts>>,
+        column_names: &[String],
+    ) -> anyhow::Result<PublishedColumns> {
+        let n = self.cols.len();
+        let mut counts: Vec<Option<Vec<(String, u64)>>> = (0..n).map(|_| None).collect();
+        let mut capped: Vec<Option<bool>> = vec![None; n];
+        // Drop this observer's handle so the table's counts can be owned.
+        self.cat_shared = None;
+        let Some(table_cat) =
+            table_cat.filter(|_| self.cat_strategy != CategoryCountStrategy::None)
+        else {
+            return Ok((counts, capped));
+        };
+        let still_shared = || {
+            anyhow::anyhow!(
+                "category counts for table {table_name} are still shared at publication"
+            )
+        };
+        let table_cat = Arc::try_unwrap(table_cat).map_err(|_| still_shared())?;
+        let scale =
+            table_cat.row_subsample && self.cat_strategy != CategoryCountStrategy::Graduation;
+        let mut jobs = Vec::new();
+        for (col_idx, shared) in table_cat.columns.into_iter().enumerate().take(n) {
+            if let Some(shared) = shared {
+                let shared = Arc::try_unwrap(shared).map_err(|_| still_shared())?;
+                shared.warn_collisions_once(column_names.get(col_idx).map_or("", String::as_str));
+                jobs.push((col_idx, shared));
+            }
+        }
+        let workers = diskgraph_limits::effective_parallelism().min(jobs.len());
+        let jobs = std::sync::Mutex::new(jobs);
+        let done: Vec<_> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..workers)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut done = Vec::new();
+                        loop {
+                            let job = jobs.lock().unwrap_or_else(|e| e.into_inner()).pop();
+                            let Some((col_idx, shared)) = job else { break };
+                            let mut published = shared.into_sorted_counts();
+                            if scale {
+                                for (_, v) in published.counts.iter_mut().flatten() {
+                                    *v = (*v as f64 / ROW_SUBSAMPLE_PROB).round() as u64;
+                                }
+                            }
+                            done.push((col_idx, published));
+                        }
+                        done
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+                .collect()
+        });
+        for (col_idx, published) in done {
+            counts[col_idx] = published.counts;
+            capped[col_idx] =
+                (self.cat_strategy == CategoryCountStrategy::Hybrid).then_some(published.capped);
+        }
+        Ok((counts, capped))
     }
 }
 
+/// Per column: sorted category counts and, for Hybrid, whether they were capped.
+type PublishedColumns = (Vec<Option<Vec<(String, u64)>>>, Vec<Option<bool>>);
+
 /// Free function to get category counts for a column (avoids self borrow issues).
+#[cfg(any(test, feature = "test-util"))]
 fn get_category_counts_for_col(
     strategy: CategoryCountStrategy,
-    _cat_local: &[Option<LocalColumnCounts>],
     table_cat: Option<&TableCategoryCounts>,
     col_idx: usize,
     column_name: &str,
@@ -1489,6 +1597,7 @@ fn kumo_stype_key(col: &ColumnStatsCollector) -> &'static str {
 
 /// Build category count JSON array: [[key, count], ...].
 /// For integer-like columns, keys are emitted as JSON numbers.
+#[cfg(any(test, feature = "test-util"))]
 fn build_cat_count_json(
     col_idx: usize,
     cat_counts: &[Option<HashMap<String, u64>>],
@@ -1557,6 +1666,7 @@ fn build_cat_count_json(
 }
 
 /// Truncate CATEGORY_COUNTS values to `limit` entries for minified output.
+#[cfg(any(test, feature = "test-util"))]
 pub fn minify_kumo_stats(
     stats: &serde_json::Map<String, JsonValue>,
     limit: usize,
@@ -1586,8 +1696,9 @@ impl FileColStats {
     /// `"{col}__{kumo.stype}__{STAT}__{True|False}"` with values
     /// `{"value": .., "approx": bool, "data_version": str, "num_entries": int}`.
     ///
-    /// The output is written directly to per-table JSON files and copied
-    /// into the kumo table cache by the Python `diskgraph_col_stats_activity`.
+    /// Reads the counts without consuming them; a test reference for what
+    /// [`write_col_stats`] and [`FileColStats::into_kumo_stats`] produce.
+    #[cfg(any(test, feature = "test-util"))]
     pub fn to_kumo_json(
         &mut self,
         column_names: &[String],
@@ -1596,32 +1707,57 @@ impl FileColStats {
         text_sample_stats: Option<&HashMap<String, TextSampleStats>>,
         data_version: &str,
     ) -> serde_json::Map<String, JsonValue> {
-        // Pre-collect category counts (same pattern as to_json to avoid borrow issues).
-        let cat_counts: Vec<Option<HashMap<String, u64>>> = (0..self.cols.len())
-            .map(|col_idx| {
-                get_category_counts_for_col(
-                    self.cat_strategy,
-                    &self.cat_local,
-                    table_cat,
-                    col_idx,
-                    column_names.get(col_idx).map_or("", String::as_str),
-                )
-            })
+        let cat_counts = self.copy_category_counts(table_cat, column_names);
+        let cat_capped = self.category_capped(table_cat);
+        let cat_lens: Vec<Option<usize>> = cat_counts
+            .iter()
+            .map(|c| c.as_ref().map(HashMap::len))
             .collect();
-        let cat_capped: Vec<Option<bool>> = (0..self.cols.len())
-            .map(|col_idx| {
-                (self.cat_strategy == CategoryCountStrategy::Hybrid)
-                    .then(|| {
-                        table_cat?
-                            .columns
-                            .get(col_idx)?
-                            .as_ref()
-                            .map(|shared| shared.is_capped())
-                    })
-                    .flatten()
-            })
-            .collect();
+        let mut map = self.kumo_stats(
+            column_names,
+            &cat_lens,
+            &cat_capped,
+            text_sample_stats,
+            data_version,
+        );
+        for (col_idx, cc) in cat_counts.iter().enumerate() {
+            let Some(cc) = cc else { continue };
+            let col = &self.cols[col_idx];
+            let (stat, values) = match col {
+                ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. } => (
+                    "CATEGORY_COUNTS",
+                    build_cat_count_json(col_idx, &cat_counts, ingested_types),
+                ),
+                ColumnStatsCollector::Multicategorical { .. } => {
+                    // Count-desc then token-asc, byte-matching tt_executor.
+                    let mut sorted: Vec<(&String, &u64)> = cc.iter().collect();
+                    sorted.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+                    let values: Vec<JsonValue> = sorted
+                        .into_iter()
+                        .map(|(tok, cnt)| json!([tok, cnt]))
+                        .collect();
+                    ("MULTI_CATEGORY_COUNTS", json!(values))
+                }
+                _ => continue,
+            };
+            let key = kumo_key(&column_names[col_idx], kumo_stype_key(col), stat, false);
+            if let Some(JsonValue::Object(entry)) = map.get_mut(&key) {
+                entry.insert("value".to_string(), values);
+            }
+        }
+        map
+    }
 
+    /// `to_kumo_json` with every category-count `value` left as `[]`;
+    /// `cat_lens` are the published category counts per column.
+    fn kumo_stats(
+        &mut self,
+        column_names: &[String],
+        cat_lens: &[Option<usize>],
+        cat_capped: &[Option<bool>],
+        text_sample_stats: Option<&HashMap<String, TextSampleStats>>,
+        data_version: &str,
+    ) -> serde_json::Map<String, JsonValue> {
         // The category map enumerates every distinct value only under
         // non-subsampled Hybrid. Graduation drops sub-threshold categories and
         // subsampling only sees a fraction, so those paths cannot use the map's
@@ -1762,7 +1898,7 @@ impl FileColStats {
                         kumo_entry(json!(0.0), false, dv, total),
                     );
                     // Category counts
-                    let values = build_cat_count_json(col_idx, &cat_counts, ingested_types);
+                    let values = json!([]);
                     map.insert(
                         kumo_key(name, sk, "CATEGORY_COUNTS", false),
                         kumo_entry(values, false, dv, total),
@@ -1774,8 +1910,8 @@ impl FileColStats {
                     // subsampling sees only a fraction, and an aborted or
                     // absent map is None — all fall back to the HLL estimate.
                     let use_hll = !cat_map_is_exhaustive || capped;
-                    let num_unique = match &cat_counts[col_idx] {
-                        Some(cc) if !use_hll => cc.len() as u64,
+                    let num_unique = match cat_lens[col_idx] {
+                        Some(len) if !use_hll => len as u64,
                         _ => hll.estimate() as u64,
                     }
                     .min(total);
@@ -1817,7 +1953,7 @@ impl FileColStats {
                         kumo_key(name, sk, "INVALID_FRACTION", false),
                         kumo_entry(json!(0.0), false, dv, total),
                     );
-                    let values = build_cat_count_json(col_idx, &cat_counts, ingested_types);
+                    let values = json!([]);
                     map.insert(
                         kumo_key(name, sk, "CATEGORY_COUNTS", false),
                         kumo_entry(values, false, dv, total),
@@ -1829,8 +1965,8 @@ impl FileColStats {
                     // subsampling sees only a fraction, and an aborted or
                     // absent map is None — all fall back to the HLL estimate.
                     let use_hll = !cat_map_is_exhaustive || capped;
-                    let num_unique = match &cat_counts[col_idx] {
-                        Some(cc) if !use_hll => cc.len() as u64,
+                    let num_unique = match cat_lens[col_idx] {
+                        Some(len) if !use_hll => len as u64,
                         _ => hll.estimate() as u64,
                     }
                     .min(total);
@@ -1896,8 +2032,8 @@ impl FileColStats {
                     // Hybrid). Graduation drops sub-threshold categories,
                     // subsampling sees only a fraction, and an aborted or
                     // absent map is None — all fall back to the HLL estimate.
-                    let num_unique = match &cat_counts[col_idx] {
-                        Some(cc) if cat_map_is_exhaustive => cc.len() as u64,
+                    let num_unique = match cat_lens[col_idx] {
+                        Some(len) if cat_map_is_exhaustive => len as u64,
                         _ => hll.estimate() as u64,
                     }
                     .min(total);
@@ -2082,13 +2218,6 @@ impl FileColStats {
                     separator,
                     ..
                 } => {
-                    // Sort category counts count-desc then token-asc to
-                    // byte-match tt_executor's train-table output.
-                    let mut sorted_cats: Vec<(String, u64)> = cat_counts[col_idx]
-                        .as_ref()
-                        .map(|cc| cc.iter().map(|(k, v)| (k.clone(), *v)).collect())
-                        .unwrap_or_default();
-                    sorted_cats.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
                     map.insert(
                         kumo_key(name, sk, "NUM_PARSE_FAILURES", false),
                         kumo_entry(json!(*parse_fail_count), false, dv, *count + *null_count),
@@ -2101,7 +2230,7 @@ impl FileColStats {
                         *null_count,
                         hll,
                         separator.as_deref(),
-                        &sorted_cats,
+                        &[],
                     );
                     for (key, value) in pairs {
                         map.insert(key, value);
@@ -2757,6 +2886,494 @@ impl ColumnValueObserver for FileColStats {
             }
             ColumnStatsCollector::Skip => {}
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Streaming publication
+// ---------------------------------------------------------------------------
+
+/// One table's inputs to [`write_col_stats`].
+pub struct ColStatsTable<'a> {
+    pub name: String,
+    pub stats: FileColStats,
+    pub column_names: Vec<String>,
+    pub ingested_types: Vec<IngestedType>,
+    /// Consumed: nothing else may hold it.
+    pub table_cat: Option<Arc<TableCategoryCounts>>,
+    pub text_sample_stats: Option<&'a HashMap<String, TextSampleStats>>,
+    /// Kumo-format files are written only when set.
+    pub data_version: Option<String>,
+}
+
+/// Writes `col_stats.json` and, per table with a data version,
+/// `kumo_col_stats/col_stats_{full,min}/<table>.json`.
+///
+/// Output bytes equal pretty-serializing `FileColStats::to_json` and
+/// serializing [`FileColStats::to_kumo_json`] / [`minify_kumo_stats`],
+/// but each column's category map is consumed, and its sorted counts are
+/// rendered in parallel and streamed to the files instead of being copied
+/// into JSON values.
+pub fn write_col_stats(
+    target: &crate::io::OutputTarget,
+    tables: Vec<ColStatsTable<'_>>,
+) -> anyhow::Result<()> {
+    let mut by_name: HashMap<String, ColStatsTable<'_>> =
+        tables.into_iter().map(|t| (t.name.clone(), t)).collect();
+    // Same table order as a root `serde_json::Map`.
+    let order: serde_json::Map<String, JsonValue> = by_name
+        .keys()
+        .map(|name| (name.clone(), JsonValue::Null))
+        .collect();
+    write_stream(target, "col_stats.json", |out| {
+        write_object(out, &order, Some(0), |out, name, _, depth| {
+            let table = by_name.remove(name).expect("table listed in order");
+            publish_table(target, table, out, depth)
+        })
+    })
+}
+
+fn publish_table(
+    target: &crate::io::OutputTarget,
+    table: ColStatsTable<'_>,
+    summary_out: &mut dyn Write,
+    summary_depth: Option<usize>,
+) -> anyhow::Result<()> {
+    let ColStatsTable {
+        name,
+        mut stats,
+        column_names,
+        ingested_types,
+        table_cat,
+        text_sample_stats,
+        data_version,
+    } = table;
+    let (counts, capped) = stats.take_published_counts(&name, table_cat, &column_names)?;
+    let has_counts: Vec<bool> = counts.iter().map(Option::is_some).collect();
+    let summary = stats.summary_json(&column_names, &has_counts, &capped, text_sample_stats);
+    let kumo = match &data_version {
+        Some(dv) => stats.kumo_col_stats(
+            counts,
+            &capped,
+            &column_names,
+            &ingested_types,
+            text_sample_stats,
+            dv,
+        ),
+        None => KumoColStats {
+            stats: serde_json::Map::new(),
+            counts,
+            keys: Vec::new(),
+        },
+    };
+    let summary_arrays: HashMap<String, CatArray<'_>> = kumo
+        .counts
+        .iter()
+        .zip(&column_names)
+        .zip(&ingested_types)
+        .filter_map(|((counts, col_name), ingested_type)| {
+            let kind = if ingested_type.is_integer_like() {
+                CatKeyKind::Int
+            } else {
+                CatKeyKind::Str
+            };
+            Some((col_name.clone(), (counts.as_deref()?, kind)))
+        })
+        .collect();
+
+    std::thread::scope(|scope| {
+        let kumo_writer = data_version.is_some().then(|| {
+            let (name, kumo) = (&name, &kumo);
+            scope.spawn(move || -> anyhow::Result<()> {
+                use crate::col_stats_export::{COL_STATS_DIR, COL_STATS_FULL, COL_STATS_MIN};
+                for (subdir, limit) in [
+                    (COL_STATS_FULL, usize::MAX),
+                    (COL_STATS_MIN, MIN_CATEGORY_COUNTS),
+                ] {
+                    let rel = format!("{COL_STATS_DIR}/{subdir}/{name}.json");
+                    write_stream(target, &rel, |out| kumo.write(&kumo.stats, limit, out))?;
+                }
+                Ok(())
+            })
+        });
+        write_spliced(
+            summary_out,
+            &summary,
+            "category_counts",
+            &summary_arrays,
+            usize::MAX,
+            summary_depth,
+        )?;
+        if let Some(handle) = kumo_writer {
+            handle
+                .join()
+                .unwrap_or_else(|e| std::panic::resume_unwind(e))?;
+        }
+        Ok(())
+    })
+}
+
+/// Kumo-format stats for one table, holding its consumed category counts.
+pub struct KumoColStats {
+    /// Every category-count `value` is `[]` here; [`Self::write`] fills them in.
+    pub stats: serde_json::Map<String, JsonValue>,
+    counts: Vec<Option<Vec<(String, u64)>>>,
+    /// Stat key, column index and key type of each category-count array.
+    keys: Vec<(String, usize, CatKeyKind)>,
+}
+
+impl KumoColStats {
+    /// Serializes `stats` (this table's stats or a map derived from them)
+    /// with each category-count array filled in, at most `limit` entries each.
+    pub fn write(
+        &self,
+        stats: &serde_json::Map<String, JsonValue>,
+        limit: usize,
+        out: &mut dyn Write,
+    ) -> anyhow::Result<()> {
+        let arrays: HashMap<String, CatArray<'_>> = self
+            .keys
+            .iter()
+            .filter_map(|(key, col_idx, kind)| {
+                Some((key.clone(), (self.counts[*col_idx].as_deref()?, *kind)))
+            })
+            .collect();
+        write_spliced(out, stats, "value", &arrays, limit, None)
+    }
+
+    pub fn to_json_string(
+        &self,
+        stats: &serde_json::Map<String, JsonValue>,
+        limit: usize,
+    ) -> anyhow::Result<String> {
+        let mut out = Vec::new();
+        self.write(stats, limit, &mut out)?;
+        Ok(String::from_utf8(out)?)
+    }
+}
+
+impl Drop for KumoColStats {
+    fn drop(&mut self) {
+        // Freeing millions of strings is slow on one thread.
+        std::thread::scope(|scope| {
+            for column in std::mem::take(&mut self.counts).into_iter().flatten() {
+                if column.len() > 64 * 1024 {
+                    scope.spawn(move || drop(column));
+                }
+            }
+        });
+    }
+}
+
+impl FileColStats {
+    /// Kumo-format stats for one table, consuming its category counts.
+    /// Errors if anything else still holds `table_cat`.
+    pub fn into_kumo_stats(
+        mut self,
+        table_name: &str,
+        column_names: &[String],
+        ingested_types: &[IngestedType],
+        table_cat: Option<Arc<TableCategoryCounts>>,
+        text_sample_stats: Option<&HashMap<String, TextSampleStats>>,
+        data_version: &str,
+    ) -> anyhow::Result<KumoColStats> {
+        let (counts, capped) = self.take_published_counts(table_name, table_cat, column_names)?;
+        Ok(self.kumo_col_stats(
+            counts,
+            &capped,
+            column_names,
+            ingested_types,
+            text_sample_stats,
+            data_version,
+        ))
+    }
+
+    fn kumo_col_stats(
+        &mut self,
+        counts: Vec<Option<Vec<(String, u64)>>>,
+        capped: &[Option<bool>],
+        column_names: &[String],
+        ingested_types: &[IngestedType],
+        text_sample_stats: Option<&HashMap<String, TextSampleStats>>,
+        data_version: &str,
+    ) -> KumoColStats {
+        let lens: Vec<Option<usize>> = counts.iter().map(|c| c.as_ref().map(Vec::len)).collect();
+        let stats = self.kumo_stats(column_names, &lens, capped, text_sample_stats, data_version);
+        let keys = self
+            .cols
+            .iter()
+            .enumerate()
+            .filter(|(col_idx, _)| counts[*col_idx].is_some())
+            .filter_map(|(col_idx, col)| {
+                let (stat, kind) = match col {
+                    ColumnStatsCollector::Categorical { .. } | ColumnStatsCollector::Id { .. } => (
+                        "CATEGORY_COUNTS",
+                        kumo_cat_key_kind(ingested_types.get(col_idx)),
+                    ),
+                    ColumnStatsCollector::Multicategorical { .. } => {
+                        ("MULTI_CATEGORY_COUNTS", CatKeyKind::Str)
+                    }
+                    _ => return None,
+                };
+                let key = kumo_key(column_names.get(col_idx)?, kumo_stype_key(col), stat, false);
+                Some((key, col_idx, kind))
+            })
+            .collect();
+        KumoColStats {
+            stats,
+            counts,
+            keys,
+        }
+    }
+}
+
+/// `CATEGORY_COUNTS` entries kept in `col_stats_min`.
+pub const MIN_CATEGORY_COUNTS: usize = 20;
+
+fn write_stream(
+    target: &crate::io::OutputTarget,
+    rel: &str,
+    write: impl FnOnce(&mut dyn Write) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    let path = target.join(rel);
+    if matches!(target, crate::io::OutputTarget::Local { .. }) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let mut out = std::io::BufWriter::with_capacity(1 << 20, target.sink(&path)?);
+    write(&mut out)?;
+    out.into_inner().map_err(|e| e.into_error())?.finish()?;
+    Ok(())
+}
+
+// serde_json's layout: compact (`None`) or pretty with a two-space indent at
+// nesting depth `Some(d)`.
+
+fn write_indent(out: &mut dyn Write, depth: usize) -> std::io::Result<()> {
+    for _ in 0..depth {
+        out.write_all(b"  ")?;
+    }
+    Ok(())
+}
+
+fn write_object(
+    out: &mut dyn Write,
+    map: &serde_json::Map<String, JsonValue>,
+    depth: Option<usize>,
+    mut write_value: impl FnMut(&mut dyn Write, &str, &JsonValue, Option<usize>) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    out.write_all(b"{")?;
+    let inner = depth.map(|d| d + 1);
+    for (i, (key, value)) in map.iter().enumerate() {
+        if i > 0 {
+            out.write_all(b",")?;
+        }
+        if let Some(d) = inner {
+            out.write_all(b"\n")?;
+            write_indent(out, d)?;
+        }
+        serde_json::to_writer(&mut *out, key)?;
+        out.write_all(if depth.is_some() { b": " } else { b":" })?;
+        write_value(out, key, value, inner)?;
+    }
+    if let (false, Some(d)) = (map.is_empty(), depth) {
+        out.write_all(b"\n")?;
+        write_indent(out, d)?;
+    }
+    out.write_all(b"}")?;
+    Ok(())
+}
+
+fn write_value(out: &mut dyn Write, value: &JsonValue, depth: Option<usize>) -> anyhow::Result<()> {
+    match depth {
+        None => serde_json::to_writer(out, value)?,
+        Some(depth) => serde_json::to_writer_pretty(Indent { out, depth }, value)?,
+    }
+    Ok(())
+}
+
+/// Writes `map`, emitting `arrays[key]` in place of `map[key][field]`.
+fn write_spliced(
+    out: &mut dyn Write,
+    map: &serde_json::Map<String, JsonValue>,
+    field: &str,
+    arrays: &HashMap<String, CatArray<'_>>,
+    limit: usize,
+    depth: Option<usize>,
+) -> anyhow::Result<()> {
+    write_object(out, map, depth, |out, key, value, depth| {
+        match (arrays.get(key), value) {
+            (Some(&(counts, kind)), JsonValue::Object(obj)) => {
+                write_object(out, obj, depth, |out, key, value, depth| {
+                    if key == field {
+                        write_cat_array(out, &counts[..counts.len().min(limit)], kind, depth)
+                    } else {
+                        write_value(out, value, depth)
+                    }
+                })
+            }
+            _ => write_value(out, value, depth),
+        }
+    })
+}
+
+/// `[[key, count], ...]`, rendered in parallel slices.
+fn write_cat_array(
+    out: &mut dyn Write,
+    counts: &[(String, u64)],
+    kind: CatKeyKind,
+    depth: Option<usize>,
+) -> anyhow::Result<()> {
+    if counts.is_empty() {
+        out.write_all(b"[]")?;
+        return Ok(());
+    }
+    out.write_all(b"[")?;
+    let workers = diskgraph_limits::effective_parallelism();
+    let slice_len = counts.len().div_ceil(workers).max(16 * 1024);
+    let rendered: Vec<Vec<u8>> = if counts.len() <= slice_len {
+        vec![render_pairs(counts, kind, depth, false)]
+    } else {
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = counts
+                .chunks(slice_len)
+                .enumerate()
+                .map(|(i, slice)| scope.spawn(move || render_pairs(slice, kind, depth, i > 0)))
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+                .collect()
+        })
+    };
+    for bytes in rendered {
+        out.write_all(&bytes)?;
+    }
+    if let Some(d) = depth {
+        out.write_all(b"\n")?;
+        write_indent(out, d)?;
+    }
+    out.write_all(b"]")?;
+    Ok(())
+}
+
+fn render_pairs(
+    pairs: &[(String, u64)],
+    kind: CatKeyKind,
+    depth: Option<usize>,
+    leading_comma: bool,
+) -> Vec<u8> {
+    let pad = |buf: &mut Vec<u8>, levels: usize| {
+        if depth.is_some() {
+            buf.push(b'\n');
+            buf.extend(std::iter::repeat_n(b' ', 2 * levels));
+        }
+    };
+    let d = depth.unwrap_or(0);
+    let mut buf: Vec<u8> = Vec::with_capacity(pairs.len() * 48);
+    for (i, (key, count)) in pairs.iter().enumerate() {
+        if i > 0 || leading_comma {
+            buf.push(b',');
+        }
+        pad(&mut buf, d + 1);
+        buf.push(b'[');
+        pad(&mut buf, d + 2);
+        // Writes into a Vec cannot fail.
+        let _ = serde_json::to_writer(&mut buf, &CatKey(key, kind));
+        buf.push(b',');
+        pad(&mut buf, d + 2);
+        let _ = write!(buf, "{count}");
+        pad(&mut buf, d + 1);
+        buf.push(b']');
+    }
+    buf
+}
+
+/// Adds `depth` indent levels after every newline.
+struct Indent<'a> {
+    out: &'a mut dyn Write,
+    depth: usize,
+}
+
+impl Write for Indent<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        for line in buf.split_inclusive(|&b| b == b'\n') {
+            self.out.write_all(line)?;
+            if line.ends_with(b"\n") {
+                write_indent(self.out, self.depth)?;
+            }
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.out.flush()
+    }
+}
+
+/// Sorted `(value, count)` pairs and how to type their keys.
+type CatArray<'a> = (&'a [(String, u64)], CatKeyKind);
+
+/// JSON type of a published category key.
+#[derive(Clone, Copy)]
+enum CatKeyKind {
+    Str,
+    Int,
+    Bool,
+    Float,
+}
+
+fn kumo_cat_key_kind(ingested_type: Option<&IngestedType>) -> CatKeyKind {
+    match ingested_type {
+        Some(IngestedType::Bool) => CatKeyKind::Bool,
+        Some(t)
+            if t.is_integer_like()
+                || matches!(
+                    t,
+                    IngestedType::Int8Array
+                        | IngestedType::Int16Array
+                        | IngestedType::Int32Array
+                        | IngestedType::Int64Array
+                ) =>
+        {
+            CatKeyKind::Int
+        }
+        Some(
+            IngestedType::Float32
+            | IngestedType::Float64
+            | IngestedType::Float16Array
+            | IngestedType::Float32Array
+            | IngestedType::Float64Array,
+        ) => CatKeyKind::Float,
+        _ => CatKeyKind::Str,
+    }
+}
+
+struct CatKey<'a>(&'a str, CatKeyKind);
+
+impl serde::Serialize for CatKey<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let CatKey(key, kind) = *self;
+        match kind {
+            CatKeyKind::Int => {
+                if let Ok(n) = key.parse::<i64>() {
+                    return s.serialize_i64(n);
+                }
+            }
+            CatKeyKind::Bool => match key {
+                "1" | "true" => return s.serialize_bool(true),
+                "0" | "false" => return s.serialize_bool(false),
+                _ => {}
+            },
+            CatKeyKind::Float => {
+                if let Some(f) = key.parse::<f64>().ok().filter(|f| f.is_finite()) {
+                    return s.serialize_f64(f);
+                }
+            }
+            CatKeyKind::Str => {}
+        }
+        s.serialize_str(key)
     }
 }
 
@@ -5087,5 +5704,213 @@ mod tests {
                 std::sync::Arc::new(array) as arrow_array::ArrayRef
             ),
         }
+    }
+
+    const ODD_NAME: &str = "a\"quoted\nname";
+
+    type BuiltTable = (
+        String,
+        Vec<ColumnSpec>,
+        FileColStats,
+        Arc<TableCategoryCounts>,
+    );
+
+    /// Deterministic multi-table input covering every category-count shape.
+    fn build_publish_input(seed: u64) -> Vec<BuiltTable> {
+        let mut rng = seed;
+        let mut next = move |n: u64| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng % n
+        };
+        let cat = Some(SemanticType::Categorical);
+        let entries = [
+            (cat, IngestedType::String, None),
+            (Some(SemanticType::Id), IngestedType::Int64, None),
+            (
+                Some(SemanticType::Multicategorical),
+                IngestedType::String,
+                Some(","),
+            ),
+            (cat, IngestedType::Bool, None),
+            (cat, IngestedType::Float64, None),
+            (cat, IngestedType::String, None), // collisions
+            (cat, IngestedType::String, None), // never observed
+            (Some(SemanticType::Text), IngestedType::String, None),
+            (Some(SemanticType::Numerical), IngestedType::Float64, None),
+            (cat, IngestedType::String, None), // every value ties on count
+        ];
+        let tables = [
+            ("users", 64, Some("v1")),
+            ("orders", 1_000, Some("v2")),
+            ("aux", 64, None),
+        ];
+        tables
+            .into_iter()
+            .map(|(name, cap, _)| {
+                let mut cols = make_test_cols_with_types(&entries);
+                cols[0].name = ODD_NAME.to_string();
+                let stypes: Vec<_> = cols.iter().map(|c| c.semantic_type).collect();
+                let tc = Arc::new(TableCategoryCounts::new_with_max_categories(
+                    CategoryCountStrategy::Hybrid,
+                    &stypes,
+                    false,
+                    cap,
+                ));
+                let mut merged = FileColStats::new_with_categories(&cols, Arc::clone(&tc));
+                for _ in 0..3 {
+                    let mut file = FileColStats::new_with_categories(&cols, Arc::clone(&tc));
+                    for row in 0..400 {
+                        let k = next(150);
+                        file.observe_string(0, &format!("v{k}\u{e9}\t"));
+                        file.observe_i64(1, k as i64 - 75);
+                        file.observe_string(2, &format!("t{},t{}", next(90), next(90)));
+                        file.observe_string(3, ["true", "false", "1", "x"][next(4) as usize]);
+                        file.observe_string(4, &format!("{}.5", next(40)));
+                        file.observe_string(5, &format!("c{}", next(30)));
+                        file.observe_string(7, "some text");
+                        file.observe_f64(8, next(1000) as f64);
+                        file.observe_string(9, &format!("tie{}", row % 40));
+                        if next(10) == 0 {
+                            file.observe_null(0);
+                        }
+                    }
+                    file.flush_categories();
+                    merged.merge(&mut file);
+                }
+                let shared = tc.columns[5].as_ref().unwrap();
+                for (value, n) in [("collide-a", 3), ("collide-b", 5), ("collide-c", 5)] {
+                    for _ in 0..n {
+                        shared.observe_hashed(0x0C01_11DE, value);
+                    }
+                }
+                (name.to_string(), cols, merged, tc)
+            })
+            .collect()
+    }
+
+    fn local_target(dir: &tempfile::TempDir) -> crate::io::OutputTarget {
+        crate::io::OutputTarget::parse(dir.path().to_str().unwrap(), crate::io::Dest::Local)
+            .unwrap()
+    }
+
+    fn into_publish_tables<'a>(
+        input: Vec<BuiltTable>,
+        versions: [Option<&str>; 3],
+        text_stats: &'a HashMap<String, TextSampleStats>,
+    ) -> Vec<ColStatsTable<'a>> {
+        input
+            .into_iter()
+            .zip(versions)
+            .map(|((name, cols, stats, tc), dv)| ColStatsTable {
+                name,
+                stats,
+                column_names: cols.iter().map(|c| c.name.clone()).collect(),
+                ingested_types: cols.iter().map(|c| c.ingested_dtype.clone()).collect(),
+                table_cat: Some(tc),
+                text_sample_stats: Some(text_stats),
+                data_version: dv.map(str::to_string),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn write_col_stats_matches_serde_value_output() {
+        let versions = [Some("v1"), Some("v2"), None];
+        let text_stats: HashMap<String, TextSampleStats> = [(
+            "c7".to_string(),
+            TextSampleStats {
+                avg_tokens: 2.0,
+                max_tokens: 2,
+                non_char_fraction: 0.1,
+                string_truncation_scale: 1.0,
+                glove_overlap: 0.5,
+            },
+        )]
+        .into();
+
+        for seed in [1, 7, 42, 1234, 99_991] {
+            let mut expected_root = serde_json::Map::new();
+            let mut expected_files = Vec::new();
+            for ((name, cols, mut stats, tc), dv) in
+                build_publish_input(seed).into_iter().zip(versions)
+            {
+                let names: Vec<String> = cols.iter().map(|c| c.name.clone()).collect();
+                let types: Vec<_> = cols.iter().map(|c| c.ingested_dtype.clone()).collect();
+                expected_root.insert(
+                    name.clone(),
+                    stats.to_json(&names, &types, Some(&tc), Some(&text_stats)),
+                );
+                if let Some(dv) = dv {
+                    let full = stats.to_kumo_json(&names, &types, Some(&tc), Some(&text_stats), dv);
+                    let min = minify_kumo_stats(&full, MIN_CATEGORY_COUNTS);
+                    expected_files.push((format!("col_stats_full/{name}.json"), full));
+                    expected_files.push((format!("col_stats_min/{name}.json"), min));
+                }
+            }
+
+            let dir = tempfile::tempdir().unwrap();
+            let tables = into_publish_tables(build_publish_input(seed), versions, &text_stats);
+            write_col_stats(&local_target(&dir), tables).unwrap();
+
+            // Every published shape is present.
+            let users = &expected_root["users"];
+            assert_eq!(users[ODD_NAME]["category_counts_capped"], true);
+            assert_eq!(
+                users[ODD_NAME]["category_counts"].as_array().unwrap().len(),
+                64
+            );
+            assert_eq!(users["c6"]["category_counts"], json!([]));
+            let collided = users["c5"]["category_counts"].as_array().unwrap();
+            assert!(collided.iter().any(|p| p[0] == "collide-a"));
+            let ties = users["c9"]["category_counts"].as_array().unwrap();
+            assert_eq!(ties.len(), 40);
+            assert!(ties.iter().all(|p| p[1] == ties[0][1]));
+            let orders = &expected_root["orders"];
+            assert_eq!(orders[ODD_NAME]["category_counts_capped"], false);
+            assert!(orders["c1"]["category_counts"][0][0].is_i64());
+            assert_eq!(expected_files.len(), 4);
+
+            let read = |rel: &str| std::fs::read(dir.path().join(rel)).unwrap();
+            assert_eq!(
+                read("col_stats.json"),
+                serde_json::to_vec_pretty(&JsonValue::Object(expected_root)).unwrap(),
+                "seed {seed}"
+            );
+            for (rel, map) in expected_files {
+                assert_eq!(
+                    read(&format!("kumo_col_stats/{rel}")),
+                    serde_json::to_vec(&map).unwrap(),
+                    "seed {seed} {rel}"
+                );
+            }
+            assert!(!dir
+                .path()
+                .join("kumo_col_stats/col_stats_full/aux.json")
+                .exists());
+        }
+    }
+
+    #[test]
+    fn write_col_stats_fails_while_counts_are_shared() {
+        let text_stats = HashMap::new();
+        let input = build_publish_input(3);
+        let extra_holder = Arc::clone(&input[0].3);
+        let dir = tempfile::tempdir().unwrap();
+        let tables = into_publish_tables(input, [Some("v1"), Some("v2"), None], &text_stats);
+        let err = write_col_stats(&local_target(&dir), tables).unwrap_err();
+        assert!(err.to_string().contains("still shared"), "{err}");
+        drop(extra_holder);
+    }
+
+    #[test]
+    fn write_col_stats_with_no_tables_writes_empty_object() {
+        let dir = tempfile::tempdir().unwrap();
+        write_col_stats(&local_target(&dir), Vec::new()).unwrap();
+        assert_eq!(
+            std::fs::read(dir.path().join("col_stats.json")).unwrap(),
+            b"{}"
+        );
     }
 }

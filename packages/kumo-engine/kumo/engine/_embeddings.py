@@ -4,7 +4,6 @@
 
 import logging
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from kumo_core import embedding_models
@@ -45,12 +44,7 @@ def require_embedding_models(store: EmbeddingModelStore,
 
 
 def require_trained_embedding_models(store: EmbeddingModelStore,
-                                     encoders_path: Optional[str]) -> None:
+                                     encoders: Any) -> None:
     # A trained model is matched by the identity of its models, not names.
-    if encoders_path is None or not Path(encoders_path).is_file():
-        return
-    from kumo_core.encoders.config import EncodersConfig
-    from kumo_core.io.json import load_json
-
-    embedding_models.require_encoder_models(
-        load_json(encoders_path, EncodersConfig), store, trained=True)
+    if encoders is not None:
+        embedding_models.require_encoder_models(encoders, store, trained=True)

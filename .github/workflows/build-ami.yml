@@ -173,17 +173,19 @@ jobs:
           echo "force_deregister=${force_deregister}" >> $GITHUB_OUTPUT
 
       - name: Install dependencies
+        timeout-minutes: 15
         run: |
+          apt_get() { for i in 1 2 3; do sudo timeout -k 15 300 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120 "$@" && return 0; sleep 10; done; return 1; }
           if ! command -v aws > /dev/null; then
-            sudo apt-get update -q && sudo apt-get install -y awscli
+            apt_get update && apt_get install -y awscli
           fi
           if ! command -v gh > /dev/null; then
-            sudo apt-get update -q && sudo apt-get install -y curl
+            apt_get update && apt_get install -y curl
             curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
               | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
             echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
               | sudo tee /etc/apt/sources.list.d/github-cli.list
-            sudo apt-get update && sudo apt-get install -y gh
+            apt_get update && apt_get install -y gh
           fi
 
       - name: Ensure required ECR images
@@ -235,7 +237,9 @@ jobs:
 
       - name: Install Packer
         if: ${{ !inputs.validate_oidc_only }}
+        timeout-minutes: 15
         run: |
+          apt_get() { for i in 1 2 3; do sudo timeout -k 15 300 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120 "$@" && return 0; sleep 10; done; return 1; }
           curl -fsSL https://apt.releases.hashicorp.com/gpg \
             | gpg --dearmor --batch --yes \
             | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg > /dev/null
@@ -243,8 +247,8 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
             | sudo tee /etc/apt/sources.list.d/hashicorp.list
 
-          sudo apt-get update
-          sudo apt-get install -y packer
+          apt_get update
+          apt_get install -y packer
 
       - name: Build AMI with Packer
         if: ${{ !inputs.validate_oidc_only }}

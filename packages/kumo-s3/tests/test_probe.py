@@ -176,6 +176,6 @@ def test_a_ready_filesystem_is_taken_as_already_connected(session, monkeypatch):
     to STS, and the filesystem may not address AWS at all.
     """
     from pyarrow.fs import S3FileSystem
-    session(S3FileSystem(anonymous=True))
+    session(S3FileSystem(anonymous=True, region='us-east-1'))
 
     backend.probe(_principal(_access_key()))

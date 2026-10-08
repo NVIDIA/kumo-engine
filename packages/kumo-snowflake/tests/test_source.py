@@ -28,20 +28,23 @@ from snowflake.connector.errors import (
     ServiceUnavailableError,
 )
 
-DATABASE, SCHEMA, TABLE = "KUMO_TESTS", "HM_SAMPLED", "TRANSACTIONS"
-STAGE = '"KUMO_TESTS"."HM_SAMPLED"."KUMO_INGEST"'
-ROWS = 1586527
-ALTERED = datetime(2025, 2, 13, 12, 2, 38, tzinfo=timezone.utc)
-COLUMNS = {"CUSTOMER_ID": Dtype.string, "T_DAT": Dtype.time}
+# The warehouse metadata and transfer payloads are synthetic. The payloads
+# exercise byte accounting, not Parquet decoding.
+DATABASE, SCHEMA, TABLE = "SYNTHETIC_DB", "SYNTHETIC_SCHEMA", "EVENTS"
+STAGE = '"SYNTHETIC_DB"."SYNTHETIC_SCHEMA"."KUMO_INGEST"'
+ROWS = 7
+ALTERED = datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+COLUMNS = {"ENTITY_ID": Dtype.string, "EVENT_TIME": Dtype.time}
 PARTS = ("one.parquet", "two.parquet")
 SIZES = (12, 8)
 BODIES = {"https://one": b"PAR1" + b"a" * 8, "https://two": b"PAR1" + b"b" * 4}
-DECLARED = {"CUSTOMER_ID": "TEXT", "T_DAT": "TIMESTAMP_TZ"}
+DECLARED = {"ENTITY_ID": "TEXT", "EVENT_TIME": "TIMESTAMP_TZ"}
 UNLOAD = (
-    'COPY INTO \'@"KUMO_TESTS"."HM_SAMPLED"."KUMO_INGEST"/{prefix}\' '
-    'FROM (SELECT "CUSTOMER_ID", '
-    'CAST(CONVERT_TIMEZONE(\'UTC\', "T_DAT") AS TIMESTAMP_NTZ) AS "T_DAT" '
-    'FROM "KUMO_TESTS"."HM_SAMPLED"."TRANSACTIONS") '
+    'COPY INTO \'@"SYNTHETIC_DB"."SYNTHETIC_SCHEMA"."KUMO_INGEST"/{prefix}\' '
+    'FROM (SELECT "ENTITY_ID", '
+    'CAST(CONVERT_TIMEZONE(\'UTC\', "EVENT_TIME") AS TIMESTAMP_NTZ) '
+    'AS "EVENT_TIME" '
+    'FROM "SYNTHETIC_DB"."SYNTHETIC_SCHEMA"."EVENTS") '
     'FILE_FORMAT=(TYPE=PARQUET) MAX_FILE_SIZE=134217728 HEADER=TRUE '
     'OVERWRITE=TRUE')
 
@@ -127,7 +130,7 @@ def warehouse(declared=None, kind=None, stage=None, during=None):
         "TABLE_NAME in": [(TABLE, )],
         "TABLE_TYPE": [("BASE TABLE", )],
         "LAST_ALTERED": [(TABLE, ALTERED)],
-        "COPY INTO": [(ROWS, 90104519, 71000000)],
+        "COPY INTO": [(ROWS, 64, 32)],
     }
     return (kind or StageCursor)(responses, declared=declared or DECLARED,
                                  stage=stage, during=during)
@@ -144,11 +147,14 @@ class StubbornStage(StageCursor):
 
 
 @pytest.fixture(autouse=True)
-def http(monkeypatch):
+def http(monkeypatch, tmp_path):
     """A read mints its own session, so the stand-in is installed where the
     reader asks for one rather than handed to it."""
     sessions = FakeSessions(BODIES)
     monkeypatch.setattr(requests, "Session", sessions)
+    # The canned cursor models batched presigning outside SPCS.
+    monkeypatch.setattr("kumo_snowflake.staging.SPCS_TOKEN_PATH",
+                        str(tmp_path / "missing-spcs-token"))
     return sessions
 
 
@@ -176,11 +182,13 @@ def test_snowflake_is_read_through_a_stage_and_never_streamed():
 
 def test_reader_never_refolds_exact_catalog_names():
     reader = SnowflakeSourceReader(FakeConnection(warehouse()),
-                                   database="kumo_tests", schema="hm_sampled",
+                                   database="synthetic_db",
+                                   schema="synthetic_schema",
                                    stage_name="kumo_ingest")
     assert (reader.database, reader.schema,
-            reader.stage_name) == ("kumo_tests", "hm_sampled", "kumo_ingest")
-    assert reader._stage == '"kumo_tests"."hm_sampled"."kumo_ingest"'
+            reader.stage_name) == ("synthetic_db", "synthetic_schema",
+                                   "kumo_ingest")
+    assert reader._stage == '"synthetic_db"."synthetic_schema"."kumo_ingest"'
 
 
 def test_an_unquoted_table_falls_back_to_its_catalogued_uppercase_name(
@@ -219,13 +227,13 @@ def test_the_unload_pushes_the_projection_down_to_the_stage(tmp_path):
 
 
 def test_a_legacy_date_dtype_still_discovers_and_casts_physical_ltz(tmp_path):
-    cursor = warehouse(declared={**DECLARED, "T_DAT": "TIMESTAMP_LTZ"})
+    cursor = warehouse(declared={**DECLARED, "EVENT_TIME": "TIMESTAMP_LTZ"})
     reader = build(cursor)
-    reader.prepare(TABLE, str(tmp_path), columns={"T_DAT": Dtype.date},
+    reader.prepare(TABLE, str(tmp_path), columns={"EVENT_TIME": Dtype.date},
                    mode=ReadMode.STAGED)
     query, = cursor.matching("COPY INTO")
-    assert ('CAST(CONVERT_TIMEZONE(\'UTC\', "T_DAT") AS TIMESTAMP_NTZ) '
-            'AS "T_DAT"') in query
+    assert ('CAST(CONVERT_TIMEZONE(\'UTC\', "EVENT_TIME") AS TIMESTAMP_NTZ) '
+            'AS "EVENT_TIME"') in query
 
 
 def test_the_unload_names_a_prefix_of_its_own_under_the_tables_directory(
@@ -257,7 +265,7 @@ def test_the_count_the_unload_reported_is_carried_as_the_warehouses_own(
     table = staged(tmp_path)
     assert table.num_rows == ROWS
     assert table.rows_attested_by is Attestation.WAREHOUSE
-    assert table.scanned_bytes == 90104519
+    assert table.scanned_bytes == 64
 
 
 def test_a_table_of_no_rows_reports_zero_rather_than_a_missing_unload(

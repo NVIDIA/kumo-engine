@@ -13,7 +13,6 @@ from snowflake.connector.constants import FIELD_NAME_TO_ID
 import io_utils.snowflake.session
 from io_utils.snowflake.query import SnowflakeField, SnowflakeQuery
 from io_utils.snowflake.session import get_fsutil_session
-from kumo.testing import withSnowflakeCredentials
 from kumo.testing.snowflake import setup_full_snowflake_session
 
 
@@ -39,8 +38,7 @@ def test_validation_error_omits_provider_row_value(caplog):
 
 
 @pytest.fixture
-@withSnowflakeCredentials
-def patched_session(monkeypatch, tempdir):
+def patched_session(monkeypatch, tempdir, snowflake_credentials):
     session = setup_full_snowflake_session(tempdir)
     monkeypatch.setattr(io_utils.snowflake.session, '_fsutil_session', session)
     yield session

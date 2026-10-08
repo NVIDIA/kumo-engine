@@ -15,6 +15,38 @@ _THRESHOLDED_CLASSIFICATION_TASK_TYPES = {
     TaskType.BINARY_CLASSIFICATION,
     TaskType.MULTILABEL_CLASSIFICATION,
 }
+MAX_LINKS_TO_PREDICT = 500
+
+
+def resolve_num_classes_to_return(
+    task_type: TaskType,
+    num_classes_to_return: int | None,
+    *,
+    top_k: int | None = None,
+    has_predictions: bool = True,
+) -> int | None:
+    """Validate output counts and resolve prediction/embedding defaults."""
+    validate_num_classes_to_return(num_classes_to_return)
+    if not task_type.has_multiple_predictions:
+        if num_classes_to_return is not None:
+            raise ValueError("num_classes_to_return can only be specified "
+                             "for multilabel, multiclass, and link "
+                             "prediction queries. Please remove it "
+                             "and try again.")
+    elif task_type.is_link_pred and has_predictions:
+        if num_classes_to_return is None:
+            raise ValueError("Please specify the number of predictions "
+                             "per entity when exporting predictions for "
+                             "a link prediction query.")
+        if num_classes_to_return > MAX_LINKS_TO_PREDICT:
+            raise ValueError(
+                "For data efficiency reasons, num_classes_to_return should "
+                f"be less than or equal to {MAX_LINKS_TO_PREDICT}. If you "
+                "need more, you can export embeddings and perform maximum "
+                "inner product search on the embedding space.")
+    if not has_predictions:
+        return None
+    return num_classes_to_return if num_classes_to_return is not None else top_k
 
 
 class PredictionTimeOptions(NamedTuple):

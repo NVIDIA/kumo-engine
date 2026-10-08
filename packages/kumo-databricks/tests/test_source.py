@@ -30,7 +30,7 @@ from kumoapi.typing import Dtype
 
 CATALOG, SCHEMA, TABLE = "samples", "tpch", "customer"
 SOURCE = "`samples`.`tpch`.`customer`"
-VOLUME = "/Volumes/kumo_test_catalogue/amazon_10k/vol/out"
+VOLUME = "/Volumes/example_catalog/example_schema/vol/out"
 ROOT = f"{VOLUME}/{TABLE}"
 #: An attempt other than the one under test: an overlapping read, or one
 #: interrupted before it could clear up after itself.

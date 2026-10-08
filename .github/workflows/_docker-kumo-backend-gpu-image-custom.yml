@@ -65,7 +65,7 @@ permissions:
 
 env:
   ECR_IMAGE_REGISTRY: 926922431314.dkr.ecr.us-west-2.amazonaws.com
-  FAISS_GPU_AMD64_RELEASE_REPOSITORY: kumo-ai/kumo
+  FAISS_GPU_AMD64_RELEASE_REPOSITORY: ${{ github.repository }}
   FAISS_GPU_AMD64_RELEASE_TAG: faiss-gpu-amd64-1.14.3-cu130sm120-cp314-v1
   FAISS_GPU_AMD64_RELEASE_ASSET: faiss_gpu-1.14.3+cu130sm120-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
   FAISS_GPU_AMD64_RELEASE_SHA256: ed9162596b6b1e9eeffc11675cd57eef622d891c27e8c02e2315930fee0f67aa
@@ -93,9 +93,11 @@ jobs:
           fi
 
       - name: Install fuse-overlayfs
+        timeout-minutes: 15
         run: |
-          sudo apt -y update
-          sudo apt-get install fuse-overlayfs
+          apt_get() { for i in 1 2 3; do sudo timeout -k 15 300 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120 "$@" && return 0; sleep 10; done; return 1; }
+          apt_get update
+          apt_get install -y fuse-overlayfs
           mkdir -vp ~/.config/containers
           echo "[storage]"           > ~/.config/containers/storage.conf
           echo "driver=\"overlay\"" >> ~/.config/containers/storage.conf
@@ -132,7 +134,7 @@ jobs:
         if: ${{ inputs.target_platform == 'linux/amd64' }}
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN || github.token }}
         run: |
           if [[ ! "$FAISS_GPU_AMD64_RELEASE_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
             echo "FAISS_GPU_AMD64_RELEASE_SHA256 must be a lowercase SHA-256 digest" >&2

@@ -76,6 +76,30 @@ from temporalio_commons.auto_rpc_exception import RpcError
 _PROJECT_ID = ProjectID.generate()
 
 
+@pytest.mark.parametrize('task_type', [TaskType.STATIC_LINK_PREDICTION,
+                                       TaskType.TEMPORAL_LINK_PREDICTION])
+@pytest.mark.parametrize('count', [None, 500, 501])
+@pytest.mark.parametrize('has_predictions', [False, True])
+def test_link_prediction_count_validation(task_type, count, has_predictions):
+    request = SimpleNamespace(
+        predict_options=SimpleNamespace(binary_classification_threshold=None,
+                                        num_classes_to_return=count),
+        outputs=[SimpleNamespace(artifact_type=(
+            PredictionArtifactType.PREDICTIONS if has_predictions else
+            PredictionArtifactType.EMBEDDINGS))],
+    )
+    if has_predictions and count != 500:
+        message = ('specify the number of predictions' if count is None else
+                   'less than or equal to 500')
+        with pytest.raises(ValueError, match=message):
+            batch_prediction_job_logic._validate_task_type_options_v2(
+                task_type, request)
+    else:
+        batch_prediction_job_logic._validate_task_type_options_v2(
+            task_type, request)
+    assert request.predict_options.num_classes_to_return == count
+
+
 @pytest.mark.parametrize(
     'task_type',
     [TaskType.BINARY_CLASSIFICATION, TaskType.MULTILABEL_CLASSIFICATION],

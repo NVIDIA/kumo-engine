@@ -112,6 +112,17 @@ test('posts pending then success on the head SHA using paginated current metadat
   ]);
   assert.deepEqual(h.failures, []);
 });
+test('fork pull request validation reports through the job without posting a status', async () => {
+  const valid = harness();
+  await run({ ...valid.args, postStatus: false });
+  assert.deepEqual(valid.statuses, []);
+  assert.deepEqual(valid.failures, []);
+
+  const invalid = harness({ files: [] });
+  await run({ ...invalid.args, postStatus: false });
+  assert.deepEqual(invalid.statuses, []);
+  assert.equal(invalid.failures.length, 1);
+});
 test('missing inventory fails the commit status', async () => {
   const h = harness({ files: [] });
   await run(h.args);

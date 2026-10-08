@@ -67,7 +67,7 @@ jobs:
       - name: Clone Kumo repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          repository: kumo-ai/kumo
+          repository: ${{ github.repository }}
           token: ${{ secrets.GITHUB_TOKEN }}
           path: docker/kumo
           ref: ${{ inputs.kumo_repo_ref }}
@@ -76,14 +76,18 @@ jobs:
         uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be #  v1.3.1
 
       - name: Install fuse-overlayfs (upstream)
+        timeout-minutes: 15
         run: |
-          sudo apt -y update
-          sudo apt-get install -y fuse-overlayfs
+          apt_get() { for i in 1 2 3; do sudo timeout -k 15 300 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120 "$@" && return 0; sleep 10; done; return 1; }
+          apt_get update
+          apt_get install -y fuse-overlayfs
           # apt's 1.7.1 (2021) has rmdir/ENOTEMPTY races on heavy pip uninstalls; pin upstream v1.16.
-          sudo curl -fL \
+          curl -fL \
             "https://github.com/containers/fuse-overlayfs/releases/download/v1.16/fuse-overlayfs-x86_64" \
-            -o /usr/bin/fuse-overlayfs
-          sudo chmod +x /usr/bin/fuse-overlayfs
+            -o /tmp/fuse-overlayfs
+          echo "30c6b9e192600d6854e13397974c709d7cabd980b7d1a4d67defd8eb69677e91  /tmp/fuse-overlayfs" \
+            | sha256sum -c -
+          sudo install -m 0755 /tmp/fuse-overlayfs /usr/bin/fuse-overlayfs
           fuse-overlayfs --version
           mkdir -vp ~/.config/containers
           printf "[storage]\ndriver=\"overlay\"\n[storage.options]\nmount_program=\"/usr/bin/fuse-overlayfs\"\n" > ~/.config/containers/storage.conf

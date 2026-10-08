@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os.path as osp
+import re
 import time
 
 import pandas as pd
@@ -101,8 +102,10 @@ def test_get_data_version_s3_multiple_files():
     file_connector = ParquetConnector('parquet_connector', S3_PATH, 'parquet')
     version = file_connector.get_data_version('s3_table')
 
-    # Epoch timestamp corresponding to original creation time of the file in s3
-    assert version == '1663191047'
+    # Directories fingerprint every source part's metadata.
+    assert re.fullmatch(r'[0-9a-f]{64}', version)
+    assert file_connector.get_data_version(
+        's3_table', skip_cache=True, save_to_cache=False) == version
 
     # Create a table object with pre-assigned data version. Verify that the
     # connector retrieves the pre-assigned data version for this table.

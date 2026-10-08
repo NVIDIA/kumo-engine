@@ -25,9 +25,43 @@ microsecond UTC timestamps, since a multi-file load autodetects from a single
 file and nanosecond timestamps load as integers. Modes are offered
 staged-first after a probe, as for reads.
 
-From the monorepo root, run the unit tier with no credentials:
+From this package directory, in an environment with the package's test/runtime
+dependencies and the matching core/API source available, run the unit tier:
 
-    pytest packages/kumo-bigquery/tests -q
+    KUMO_BIGQUERY_LIVE=0 python -m pytest tests -q
 
-The live tier resolves application default credentials and skips with a stated
-reason when they are absent.
+From the repository root, run the public tests without cloud credentials:
+
+```sh
+python3 scripts/test_public.py --group bigquery
+```
+
+See the [public test guide](../../docs/development/public-tests.md) for setup.
+
+Both live modules skip before credential discovery unless
+`KUMO_BIGQUERY_LIVE=1`. Existing application default credentials (ADC) alone
+cannot activate it. The collection-boundary regression itself only needs pytest:
+
+    python -m pytest tests/test_live_opt_in.py -q
+
+To run the live tier against authorized resources, explicitly supply both the
+billing project and a staging GCS bucket or prefix; neither has a default:
+
+```sh
+KUMO_BIGQUERY_LIVE=1 \
+KUMO_BIGQUERY_PROJECT=your-test-project \
+KUMO_BIGQUERY_STAGING=gs://your-test-bucket/connector-tests \
+python -m pytest tests/live/test_live_conformance.py tests/live/test_live_sink.py -rs
+```
+
+Provision ADC before running this command. Once enabled, missing configuration
+or an ADC discovery error fails collection instead of skipping. The principal
+needs query and Storage Read API access to `bigquery-public-data.usa_names.usa_1910_2013`,
+permission to create/delete a temporary dataset and view in the billing
+project, and list/read/write/delete access to the staging prefix. Use compatible
+dataset/bucket locations. The suite creates billable jobs and temporary cloud
+resources; it does not provision the project, bucket or IAM permissions.
+
+The live table/view/query assertions and existing cleanup behavior are
+unchanged. Partial-setup and teardown cleanup gaps remain tracked in the
+[credentialed-suite inventory](../../docs/credentialed-test-inventory.md).

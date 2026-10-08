@@ -8,17 +8,6 @@ title = "Kumo secret scanning"
 useDefault = true
 
 [[allowlists]]
-description = "Jenkins credentials are resolved from GitHub Actions secrets at runtime."
-targetRules = ["curl-auth-user"]
-condition = "AND"
-regexTarget = "line"
-regexes = ['''secrets\.JENKINS_API_TOKEN''']
-paths = [
-  '''^\.github/workflows/trigger-jenkins-unified-postmerge\.yml$''',
-  '''^\.github/workflows/trigger-private-jenkins-on-comment\.yml$''',
-]
-
-[[allowlists]]
 description = "These password values are synthetic inputs for authentication tests."
 targetRules = ["generic-api-key"]
 condition = "AND"

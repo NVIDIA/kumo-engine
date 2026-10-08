@@ -18,6 +18,10 @@ on:  # yamllint disable-line rule:truthy
       - ".github/workflows/kumo-helm-ci.yml"
       - ".github/workflows/kumo-stack-release.yml"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 defaults:
   run:
     working-directory: helm/kumo-helm
@@ -39,8 +43,11 @@ jobs:
       - name: Install kubeconform
         run: |
           set -euo pipefail
-          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
-            | sudo tar -xz -C /usr/local/bin kubeconform
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            -o /tmp/kubeconform-linux-amd64.tar.gz
+          echo "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73  /tmp/kubeconform-linux-amd64.tar.gz" \
+            | sha256sum -c -
+          sudo tar -xzf /tmp/kubeconform-linux-amd64.tar.gz -C /usr/local/bin kubeconform
           kubeconform -v
 
       - name: Test conformance helpers
@@ -160,8 +167,11 @@ jobs:
       - name: Install kubeconform
         run: |
           set -euo pipefail
-          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
-            | sudo tar -xz -C /usr/local/bin kubeconform
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            -o /tmp/kubeconform-linux-amd64.tar.gz
+          echo "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73  /tmp/kubeconform-linux-amd64.tar.gz" \
+            | sha256sum -c -
+          sudo tar -xzf /tmp/kubeconform-linux-amd64.tar.gz -C /usr/local/bin kubeconform
           kubeconform -v
 
       - name: Stage pinned AWS RDS trust bundle

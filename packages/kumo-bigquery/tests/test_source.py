@@ -18,6 +18,7 @@ from fakes import (
 )
 from google.api_core import exceptions
 from kumo_bigquery import BigQuerySourceReader, streaming
+from kumo_core.sources import cpu
 from kumo_core.sources.errors import (
     PermanentSourceError,
     ReconnectRequiredError,
@@ -32,11 +33,11 @@ from kumoapi.typing import Dtype
 PROJECT, DATASET, TABLE = "bigquery-public-data", "usa_names", "usa_1910_2013"
 SOURCE = "`bigquery-public-data`.`usa_names`.`usa_1910_2013`"
 PATH = "projects/bigquery-public-data/datasets/usa_names/tables/usa_1910_2013"
-STAGING = "gs://bigquery-connector-testing/ingest"
+STAGING = "gs://test-staging-bucket/ingest"
 COLUMNS = {"state": Dtype.string, "number": Dtype.int64}
 ROWS = 3
 SCHEMA = pa.schema([("state", pa.string()), ("number", pa.int64())])
-EXPORT = ("EXPORT DATA OPTIONS(uri='gs://bigquery-connector-testing/ingest/"
+EXPORT = ("EXPORT DATA OPTIONS(uri='gs://test-staging-bucket/ingest/"
           "usa_1910_2013/part-*.parquet', format='PARQUET', overwrite=true) "
           "AS SELECT `state`, `number` FROM " + SOURCE)
 VIEW = {f"{PROJECT}.{DATASET}.{TABLE}": FakeTable(table_type="VIEW")}
@@ -365,6 +366,9 @@ def test_the_worker_ceiling_never_opens_more_readers_than_there_are_streams(
         tmp_path, monkeypatch, ceiling, extra_clients):
     """Eight is a ceiling; two streams is all the session planned, and one
     worker shares no connection so it builds none."""
+    # Keep the CPU budget above the stream count so this tests the stream cap
+    # even on a one-CPU host.
+    monkeypatch.setattr(cpu, "cpu_budget", lambda: 8)
     built = []
 
     def record(count, *, credentials):

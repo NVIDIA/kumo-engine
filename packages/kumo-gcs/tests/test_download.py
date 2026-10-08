@@ -203,3 +203,25 @@ def test_native_download_never_lowers_shared_io_pool(downloader, monkeypatch,
     monkeypatch.setattr(download.pafs, 'copy_files', lambda *a, **kw: None)
     client._download_native('bucket', 'object', '/unused')
     assert observed == changes
+
+
+def test_object_identity_does_not_reuse_a_pinned_blob(monkeypatch):
+    from types import SimpleNamespace
+
+    from google.auth.credentials import AnonymousCredentials
+
+    downloader = download.GCSDownloader(credentials=AnonymousCredentials())
+    created = []
+
+    def blob(bucket, key):
+        assert (bucket, key) == ('bucket', 'key')
+        generation = len(created) + 1
+        probe = SimpleNamespace(size=100, generation=None)
+        probe.reload = lambda: setattr(probe, 'generation', generation)
+        created.append(probe)
+        return probe
+
+    monkeypatch.setattr(downloader, '_blob', blob)
+    assert downloader.object_identity('bucket', 'key') == ('1', '100')
+    assert downloader.object_identity('bucket', 'key') == ('2', '100')
+    assert created[0] is not created[1]

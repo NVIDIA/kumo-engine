@@ -1,9 +1,9 @@
 {
   "source_repository": "kumo-ai/kumo-diskgraph",
-  "source_sha": "4a0b8dadb7b190cc17c805a9afc353a1a43de557",
-  "source_reachable_commit_count": 1094,
+  "source_sha": "16fbd46a25b6cded0be00c18ffdbbb74ebf4c29d",
+  "source_reachable_commit_count": 1096,
   "import_prefix": "packages/diskgraph",
-  "file_count": 385,
+  "file_count": 386,
   "entries": [
     {
       "source_path": ".cargo/config.toml",
@@ -31,14 +31,14 @@
       "destination_path": "packages/diskgraph/.github/workflows/build.yml",
       "mode": "100644",
       "type": "blob",
-      "blob": "bb105d22e8f44dbadb3c3fa10c6fefddea9cf5f2"
+      "blob": "49f8aabd08053a05436f5be2880b1eea91fcef8b"
     },
     {
       "source_path": ".github/workflows/ci.yml",
       "destination_path": "packages/diskgraph/.github/workflows/ci.yml",
       "mode": "100644",
       "type": "blob",
-      "blob": "2004304ab916589cec06203f37fbcdbff66d0732"
+      "blob": "c8944d8c73dd987ef777f1948ed180dd5335c5f7"
     },
     {
       "source_path": ".github/workflows/claude-pr-review.yml",
@@ -52,7 +52,7 @@
       "destination_path": "packages/diskgraph/.github/workflows/coverage.yml",
       "mode": "100644",
       "type": "blob",
-      "blob": "7b323bfb62361028fbd3d09d94301c6f67c424df"
+      "blob": "8c3be67325b275ae5c62592602807a50050f9783"
     },
     {
       "source_path": ".github/workflows/dispatch-kumo-sync.yml",
@@ -150,7 +150,7 @@
       "destination_path": "packages/diskgraph/diskgraph-core/src/accumulators.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "b3da7a05678126f3195bfb1f907e0868103fae2c"
+      "blob": "409099474a133d767ab66c3632759f9fe27bfc08"
     },
     {
       "source_path": "diskgraph-core/src/dataset.rs",
@@ -1004,7 +1004,7 @@
       "destination_path": "packages/diskgraph/diskgraph-ingest/Cargo.toml",
       "mode": "100644",
       "type": "blob",
-      "blob": "b533a125ffd21563f96c9e2ac7eb9fdee76e0ac7"
+      "blob": "29f67defe2a8534fe967847dfac44a94a2327e90"
     },
     {
       "source_path": "diskgraph-ingest/README.md",
@@ -1179,7 +1179,7 @@
       "destination_path": "packages/diskgraph/diskgraph-ingest/src/col_stats.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "7481381911a11c46d430327b064e787d2b276ed6"
+      "blob": "b8bbd94b986a719a4cca6d0634fa2441223ff23f"
     },
     {
       "source_path": "diskgraph-ingest/src/col_stats_export.rs",
@@ -1326,7 +1326,7 @@
       "destination_path": "packages/diskgraph/diskgraph-ingest/src/lib.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "0ef4ff69be86c14544d1ba1ebfb98d5152b87f78"
+      "blob": "1763693e0e7106d5928eb45ae61825f6a7a014bb"
     },
     {
       "source_path": "diskgraph-ingest/src/mapping.rs",
@@ -1425,6 +1425,13 @@
       "mode": "100644",
       "type": "blob",
       "blob": "687e5a4eec7b1528a7a10e2b4f27cfbc1217c0d6"
+    },
+    {
+      "source_path": "diskgraph-ingest/tests/col_stats_publish_bench.rs",
+      "destination_path": "packages/diskgraph/diskgraph-ingest/tests/col_stats_publish_bench.rs",
+      "mode": "100644",
+      "type": "blob",
+      "blob": "4616e38c3228560a260360fa6a299899f7797b59"
     },
     {
       "source_path": "diskgraph-ingest/tests/dataplane_mirror_e2e.rs",
@@ -1711,7 +1718,7 @@
       "destination_path": "packages/diskgraph/diskgraph-pybind/Cargo.toml",
       "mode": "100644",
       "type": "blob",
-      "blob": "bfb677a91df9d882374cde40a9439c06b09d1567"
+      "blob": "9b321ad8848f860cd063f48585cbd13bebe8ac48"
     },
     {
       "source_path": "diskgraph-pybind/README.md",
@@ -1956,7 +1963,7 @@
       "destination_path": "packages/diskgraph/diskgraph-pybind/src/bp_col_stats.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "f74047264ec04474fc73894abc8ce33c12eb9d71"
+      "blob": "923e1798c214da2300316d7b1db191a0f0d88bea"
     },
     {
       "source_path": "diskgraph-pybind/src/col_stats_export.rs",

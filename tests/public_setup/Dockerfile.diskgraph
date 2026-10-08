@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+ARG RUST_TOOLCHAIN
+FROM rust:${RUST_TOOLCHAIN}-bookworm AS build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-venv lld && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/build
+ENV PATH=/opt/build/bin:$PATH UV_NO_CONFIG=1 CARGO_BUILD_JOBS=2
+RUN pip install --no-cache-dir uv==0.11.14
+WORKDIR /src
+COPY packages/diskgraph/ packages/diskgraph/
+ARG RUSTFLAGS
+ENV RUSTFLAGS=${RUSTFLAGS}
+RUN uv build --wheel --out-dir /wheels packages/diskgraph
+
+FROM scratch
+COPY --from=build /wheels/ /

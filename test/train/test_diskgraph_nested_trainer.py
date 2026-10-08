@@ -382,6 +382,7 @@ def _run_init(
     *,
     monkeypatch: pytest.MonkeyPatch,
     fake_manifest: _FakeManifest | None = None,
+    task_manifest: _FakeManifest | None = None,
 ) -> _FakeManifest:
     """Drive the unbound ``init`` against a stub instance.
 
@@ -442,7 +443,10 @@ def _run_init(
     )
 
     # Call the unbound init() against our stub.
-    DiskgraphNestedTrainer.init(stub)  # type: ignore[arg-type]
+    DiskgraphNestedTrainer.init(
+        stub,  # type: ignore[arg-type]
+        task_manifest=task_manifest,  # type: ignore[arg-type]
+    )
     return fake_manifest
 
 
@@ -693,6 +697,17 @@ def test_init_happy_path_builds_datamodule_and_calls_pl_helpers(
     rhs_index_map = stub.pl_model_kwargs["rhs_index_map"]
     assert isinstance(rhs_index_map, pd.DataFrame)
     assert len(rhs_index_map) == 0
+
+
+def test_init_uses_a_handed_over_manifest(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    stub = _StubTrainer(bundle_dir="/tmp/my_bundle")
+    handed = _FakeManifest()
+
+    loaded = _run_init(stub, monkeypatch=monkeypatch, task_manifest=handed)
+
+    dm_kwargs = stub.datamodule_kwargs  # type: ignore[attr-defined]
+    assert dm_kwargs["manifest"] is handed is not loaded
 
 
 def test_init_passes_eval_limits_and_runtime_options(
@@ -2232,7 +2247,7 @@ def test_predict_honors_output_options_and_progress(tmp_path) -> None:
         pl_trainer=_PLTrainer(),
         best_ckpt="/tmp/ckpt",
         target_encoder=_bc_target_encoder(),
-        init=lambda: init_prediction_modes.append(stub._prediction_mode),
+        init=lambda **_: init_prediction_modes.append(stub._prediction_mode),
         _preprocess_top_k=lambda top_k: top_k,
     )
     task = SimpleNamespace(train_table=SimpleNamespace(
@@ -2311,7 +2326,7 @@ def test_predict_non_lp_embeddings_only_omits_predictions(tmp_path,
         pl_trainer=_PLTrainer(),
         best_ckpt='/tmp/ckpt',
         target_encoder=_bc_target_encoder(),
-        init=lambda: init_calls.append(True),
+        init=lambda **_: init_calls.append(True),
         _preprocess_top_k=lambda _: pytest.fail(
             'embeddings-only must not preprocess prediction top_k'),
     )
@@ -2392,7 +2407,7 @@ def test_predict_non_lp_embeddings_only_chunks_without_prediction_artifact(
         pl_trainer=_PLTrainer(),
         best_ckpt='/tmp/ckpt',
         target_encoder=_reg_target_encoder(),
-        init=lambda: None,
+        init=lambda **_: None,
         _preprocess_top_k=lambda _: pytest.fail(
             'embeddings-only must not preprocess prediction top_k'),
     )
@@ -2420,7 +2435,7 @@ def test_predict_non_lp_embeddings_only_chunks_without_prediction_artifact(
 def test_predict_rejects_no_outputs_before_init(tmp_path) -> None:
     stub = SimpleNamespace(
         task=SimpleNamespace(task_type=TaskType.REGRESSION),
-        init=lambda: pytest.fail('no-output request must fail before init'),
+        init=lambda **_: pytest.fail('no-output request must fail before init'),
     )
 
     with pytest.raises(ValueError, match='must request'):
@@ -2483,7 +2498,7 @@ def test_forecasting_predict_writes_horizon_and_requested_metadata(
         pl_trainer=trainer,
         best_ckpt='/tmp/ckpt',
         target_encoder=_reg_target_encoder(),
-        init=lambda: None,
+        init=lambda **_: None,
         _preprocess_top_k=lambda top_k: top_k,
     )
     output_dir = tmp_path / ('-'.join(extra_fields) or 'no-metadata')
@@ -2615,7 +2630,7 @@ def test_predict_chunks_predictions_and_embeddings_without_returning_predictions
         pl_trainer=_PLTrainer(),
         best_ckpt="/tmp/ckpt",
         target_encoder=_bc_target_encoder(),
-        init=lambda: None,
+        init=lambda **_: None,
         _preprocess_top_k=lambda top_k: top_k,
     )
     task = SimpleNamespace(train_table=SimpleNamespace(
@@ -2703,7 +2718,7 @@ def test_predict_streams_multiple_batches_into_single_partition(
         pl_trainer=trainer,
         best_ckpt='/tmp/ckpt',
         target_encoder=_bc_target_encoder(),
-        init=lambda: None,
+        init=lambda **_: None,
         _preprocess_top_k=lambda top_k: top_k,
     )
     task = SimpleNamespace(train_table=SimpleNamespace(
@@ -2767,7 +2782,7 @@ def test_predict_multilabel_ranking_matches_legacy_long_format(
         pl_trainer=_PLTrainer(),
         best_ckpt="/tmp/ckpt",
         target_encoder=_mlr_target_encoder(),
-        init=lambda: None,
+        init=lambda **_: None,
         _preprocess_top_k=lambda top_k: top_k,
     )
     task = SimpleNamespace(train_table=SimpleNamespace(
@@ -2825,7 +2840,7 @@ def _lp_stub(pl_model: Any, *, rhs_pkeys: list[Any]) -> Any:
         pl_model=pl_model,
         pl_trainer=SimpleNamespace(callbacks=[]),
         best_ckpt="/tmp/ckpt",
-        init=lambda: None,
+        init=lambda **_: None,
         _rhs_primary_key_catalog=np.asarray(rhs_pkeys),
         _rhs_primary_key_node_ids=np.arange(len(rhs_pkeys), dtype=np.uint64),
     )
@@ -3061,14 +3076,20 @@ def test_predict_lp_embeddings_only_uses_exact_temporal_rhs_catalog(
     )
 
 
+@pytest.mark.parametrize('rhs_keys', [
+    ['item_a', 'item_b', 'item_c'],
+    [2**60 + 1, 2**60 + 2, 2**60 + 3],
+    [2**63 + 1, 2**63 + 2, 2**63 + 3],
+])
+@pytest.mark.parametrize('pad_last', [False, True])
 @pytest.mark.parametrize('return_embeddings', [False, True])
 @pytest.mark.parametrize(
     ('top_k', 'model_top_k', 'expected_top_k'),
     [(None, 7, 3), (2, None, 2), (5, None, 3)],
 )
 def test_predict_lp_prediction_outputs_preserve_top_k_behavior(
-        tmp_path, return_embeddings, top_k, model_top_k,
-        expected_top_k) -> None:
+        tmp_path, return_embeddings, top_k, model_top_k, expected_top_k,
+        rhs_keys, pad_last) -> None:
     import torch
 
     step_outputs = [{
@@ -3083,9 +3104,11 @@ def test_predict_lp_prediction_outputs_preserve_top_k_behavior(
         'lhs_embedding':
         torch.tensor([[1.0, 2.0]]),
     }]
+    if pad_last:
+        step_outputs[0]['target'][0, -1] = -1
     model = _TwoTowerStubModel(step_outputs)
     model.pred_top_k = model_top_k
-    stub = _lp_stub(model, rhs_pkeys=['item_a', 'item_b', 'item_c'])
+    stub = _lp_stub(model, rhs_pkeys=rhs_keys)
     stub.pl_trainer = _LPCallbackTrainer(step_outputs)
     task = SimpleNamespace(train_table=SimpleNamespace(
         foreign_key_columns=('USER_ID', 'ITEM_ID')))
@@ -3102,8 +3125,14 @@ def test_predict_lp_prediction_outputs_preserve_top_k_behavior(
     assert model.pred_top_k == expected_top_k
     assert (tmp_path / 'out' / 'predictions.parquet' /
             'part-00000-00000.parquet').exists()
-    assert len(pd.read_parquet(tmp_path / 'out' /
-                               'predictions.parquet')) == (expected_top_k)
+    predictions = pd.read_parquet(tmp_path / 'out' / 'predictions.parquet')
+    assert len(predictions) == expected_top_k
+    assert predictions['CLASS'].isna().sum() == int(pad_last)
+    real_count = expected_top_k - int(pad_last)
+    assert predictions['CLASS'].dropna().tolist() == rhs_keys[:real_count]
+    if isinstance(rhs_keys[0], int):
+        expected_dtype = 'UInt64' if rhs_keys[0] >= 2**63 else 'Int64'
+        assert str(predictions['CLASS'].dtype) == expected_dtype
     assert (tmp_path / 'out' /
             'embeddings.parquet').exists() is (return_embeddings)
 
@@ -3130,7 +3159,7 @@ def test_predict_lp_predictions_reject_nonpositive_top_k(
 def test_predict_lp_rejects_request_without_outputs(tmp_path) -> None:
     model = _TwoTowerStubModel([])
     stub = _lp_stub(model, rhs_pkeys=['item_a'])
-    stub.init = lambda: pytest.fail('no-output request must fail before init')
+    stub.init = lambda **_: pytest.fail('no-output request must fail before init')
     task = SimpleNamespace(train_table=SimpleNamespace(
         foreign_key_columns=('USER_ID', 'ITEM_ID')))
 
@@ -3661,7 +3690,7 @@ def test_predict_bc_timestamp_is_ns_not_overflowed(tmp_path) -> None:
         pl_trainer=_PLTrainer(),
         best_ckpt="/tmp/ckpt",
         target_encoder=_bc_target_encoder(),
-        init=lambda: None,
+        init=lambda **_: None,
         _preprocess_top_k=lambda top_k: top_k,
     )
     task = SimpleNamespace(train_table=SimpleNamespace(

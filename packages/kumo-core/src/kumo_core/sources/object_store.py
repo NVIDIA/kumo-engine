@@ -4,6 +4,10 @@
 
 from __future__ import annotations
 
+import contextvars
+import hashlib
+import json
+import logging
 import os
 import posixpath
 import re
@@ -30,7 +34,14 @@ from .arrow_parquet import (
     materialize_arrow_streams,
     unsupported_columns,
 )
-from .cpu import download_workers, memory_ceiling
+from .cpu import (
+    COPY_WORKER_BYTES,
+    copy_workers,
+    download_workers,
+    encode_workers,
+    memory_capacity,
+    memory_share,
+)
 from .csv_format import ARROW_NA_TOKENS, CsvOptions
 from .errors import (
     PermanentSourceError,
@@ -42,7 +53,7 @@ from .errors import (
     UnsupportedReadModeError,
 )
 from .identity import epoch_second
-from .object_store_access import ObjectFetch
+from .object_store_access import ObjectFetch, ObjectIdentity
 from .parallel import run_in_parallel
 from .prepare import ReadOutput, run_prepare
 from .protocol import require_mode, staged_first
@@ -57,6 +68,8 @@ from .transfer import (
 from .types import ReadMode, StagedTable
 
 STREAMED_ONLY = staged_first(False)
+
+logger = logging.getLogger(__name__)
 
 _PANDAS_INDEX_COLUMN = re.compile(r"__index_level_\d+__")
 
@@ -78,6 +91,24 @@ _PARQUET_BUFFER_BYTES = 1 << 20
 #: About what one re-encode stream holds, ~0.2GiB measured: a batch, the
 #: shard pending its write, the writer, and the read buffers.
 _STREAM_BYTES = 256 << 20
+_IO_THREADS = threading.Lock()
+#: The pool size before the first active read raised it, and what each
+#: active read asked for.
+_io_base: list[int] = []
+_io_wanted: list[int] = []
+
+
+def _source_version(path: str, entries: Sequence[Any]) -> str:
+    if len(entries) == 1 and entries[0].path.rstrip("/") == path.rstrip("/"):
+        latest = entries[0].mtime
+        return epoch_second(latest) if latest is not None else "-1"
+    # A maximum mtime misses changes to older files and added/deleted parts.
+    metadata = [
+        (entry.path, entry.size, getattr(entry, "mtime_ns", None),
+         entry.mtime.isoformat() if entry.mtime is not None else None)
+        for entry in sorted(entries, key=lambda entry: entry.path)
+    ]
+    return hashlib.sha256(json.dumps(metadata).encode()).hexdigest()
 
 
 class _CsvSource(NamedTuple):
@@ -98,6 +129,7 @@ class ObjectStoreSourceReader:
     file_format: Literal["csv", "parquet"] | None = None
     file_suffix: str | None = None
     fetch: ObjectFetch | None = None
+    object_identity: ObjectIdentity | None = None
 
     source_type: ConnectorType = ConnectorType.S3
 
@@ -117,22 +149,15 @@ class ObjectStoreSourceReader:
     def data_version(self, table: str, *, sql: str | None = None,
                      columns: Mapping[str, Dtype] | None = None) -> str:
         require_no_sql(sql)
-        from pyarrow.fs import FileSelector, FileType
+        from pyarrow.fs import FileType
 
         with _arrow_errors(table):
             info = layout.locate(
                 self.filesystem, self.root, table,
                 exact=self.file_format is not None or not table)
-            if info.type is FileType.File:
-                latest = info.mtime
-            else:
-                entries = self.filesystem.get_file_info(
-                    FileSelector(info.path, recursive=False))
-                latest = max((
-                    entry.mtime for entry in entries
-                    if entry.type is FileType.File and entry.mtime is not None),
-                             default=None)
-        return epoch_second(latest) if latest is not None else "-1"
+            entries = ([info] if info.type is FileType.File else
+                       self._objects(table, info.path, include_hidden=True))
+        return _source_version(info.path, entries)
 
     def resolve(self, table: str) -> tuple[str, str]:
         """An explicit format addresses an exact path; discovery infers both."""
@@ -287,12 +312,11 @@ class ObjectStoreSourceReader:
         path, kind = self.resolve(table)
         if not transform and kind == layout.CSV and expected_rows is not None:
             raise ValueError("Untransformed CSV reads cannot attest row counts")
-        # Sampled before the listing below. A version read afterwards can be
-        # newer than the objects staged under it, and a later run recomputing
-        # that same version reuses this output without the objects it missed.
-        stamped = version or self.data_version(table)
         found = self._objects(table, path, max_entries,
                               include_hidden=not transform)
+        # Stamp the same metadata listing the read consumes, before fetching
+        # any files; later additions must not be stamped onto this output.
+        stamped = version or _source_version(path, found)
         source_bytes = (sum(entry.size for entry in found) if all(
             entry.size is not None and entry.size >= 0
             for entry in found) else None)
@@ -317,8 +341,25 @@ class ObjectStoreSourceReader:
                                 count_copied_rows=expected_rows is not None)
             return replace(output, scanned_bytes=source_bytes)
 
+        def checked_read() -> ReadOutput:
+            # Capture provider identity before schema/footer discovery as well
+            # as data reads. Keep this per call, not on the shared reader.
+            with _arrow_errors(table):
+                identities = self._identities(found, worker_ceiling)
+            try:
+                output = read()
+            except Exception as error:
+                try:
+                    self._unchanged(table, found, dest, worker_ceiling,
+                                    identities, error)
+                finally:
+                    discard_destination(dest)
+                raise
+            self._unchanged(table, found, dest, worker_ceiling, identities)
+            return output
+
         return run_prepare(table, dest, mode, stamp=lambda: stamped,
-                           read=read, expected_rows=expected_rows)
+                           read=checked_read, expected_rows=expected_rows)
 
     def _read(
         self,
@@ -333,40 +374,28 @@ class ObjectStoreSourceReader:
         *,
         count_copied_rows: bool = False,
     ) -> ReadOutput:
-        if columns is None and kind == layout.PARQUET and not layout.nested(
-            [entry.path[len(path.rstrip('/')) + 1:] for entry in found]):
-            with _arrow_errors(table):
-                if self.fetch is not None:
-                    try:
-                        copied = self._download_objects(path, found, dest,
-                                                        worker_ceiling,
-                                                        parquet=True)
-                    except BaseException:
-                        discard_destination(dest)
-                        raise
-                else:
-                    copied = fetch_all([
-                        StagedFile(
-                            entry.path, entry.size if entry.size is not None
-                            and entry.size >= 0 else None) for entry in found
-                    ], dest, fetch=self._fetch, worker_ceiling=worker_ceiling)
-            return ReadOutput(
-                paths=copied,
-                num_rows=count_rows(copied) if count_copied_rows else None)
-        if self.fetch is not None:
-            with _arrow_errors(table, kind):
-                return self._read_downloaded(table, path, kind, found, dest,
-                                             columns, aliases, worker_ceiling,
-                                             count_copied_rows)
-        with _arrow_errors(table):
-            copied = self._copy_verbatim(
-                path, kind, found, dest, columns, aliases,
-                worker_ceiling) if columns is not None else None
-        if copied is not None:
-            return ReadOutput(paths=copied, num_rows=count_rows(copied))
+        """Parquet is read from the bucket once: copied whole where nothing
+        would change, otherwise only the selected columns are fetched and
+        re-encoded. CSV, which cannot be projected, is downloaded first."""
         if kind == layout.CSV:
+            if self.fetch is not None:
+                with _arrow_errors(table, kind):
+                    return self._read_downloaded(table, path, found, dest,
+                                                 columns, aliases,
+                                                 worker_ceiling)
             return self._read_csv(table, found, dest, columns, aliases,
                                   worker_ceiling)
+        with _arrow_errors(table):
+            if columns is None and not layout.nested(
+                [entry.path[len(path.rstrip('/')) + 1:] for entry in found]):
+                copied = self._copy(path, found, dest, worker_ceiling)
+                return ReadOutput(
+                    paths=copied,
+                    num_rows=count_rows(copied) if count_copied_rows else None)
+            if columns is not None and self._verbatim(
+                    path, found, columns, aliases, worker_ceiling):
+                copied = self._copy(path, found, dest, worker_ceiling)
+                return ReadOutput(paths=copied, num_rows=count_rows(copied))
         dataset = self._dataset(table, path, kind, found)
         if columns is not None:
             _refuse_unsupported(table, dataset.schema)
@@ -375,30 +404,89 @@ class ObjectStoreSourceReader:
                                    worker_ceiling)
         return ReadOutput(paths=written.paths, num_rows=written.rows)
 
+    def _identities(self, found: Sequence[Any],
+                    worker_ceiling: int | None) -> list[tuple[str, ...]] | None:
+        if self.object_identity is None:
+            return None
+        if not found:
+            return []
+        context = contextvars.copy_context()
+        return run_in_parallel(
+            [partial(context.copy().run, self.object_identity, entry.path)
+             for entry in found],
+            workers=min(download_workers(worker_ceiling), len(found)),
+            stop=threading.Event())
+
+    def _unchanged(self, table: str, found: Sequence[Any], dest: str,
+                   worker_ceiling: int | None,
+                   identities: list[tuple[str, ...]] | None,
+                   error: Exception | None = None) -> None:
+        """Reject changed objects before publishing staging. Native reads
+        retain projection and concurrency; provider tokens also catch rewrites
+        with identical size/mtime. This is not a transaction across objects."""
+        try:
+            with _arrow_errors(table):
+                if identities is not None:
+                    unchanged = identities == self._identities(
+                        found, worker_ceiling)
+                elif found:
+                    context = contextvars.copy_context()
+                    now = run_in_parallel(
+                        [partial(context.copy().run,
+                                 self.filesystem.get_file_info, entry.path)
+                         for entry in found],
+                        workers=min(download_workers(worker_ceiling),
+                                    len(found)), stop=threading.Event())
+                    unchanged = all(
+                        (before.size, before.mtime_ns)
+                        == (after.size, after.mtime_ns)
+                        for before, after in zip(found, now))
+                else:
+                    unchanged = True
+        except (SourceNotFoundError, FileNotFoundError):
+            unchanged = False
+        except Exception:
+            discard_destination(dest)
+            raise
+        if unchanged:
+            return
+        discard_destination(dest)
+        raise TransientSourceError(
+            f"{table} changed while it was read; retry the read.",
+            table=table) from error
+
     def _read_downloaded(
         self,
         table: str,
         path: str,
-        kind: str,
         found: Sequence[Any],
         dest: str,
         columns: Mapping[str, Dtype] | None,
         aliases: Mapping[str, str],
         worker_ceiling: int | None,
-        count_copied_rows: bool,
     ) -> ReadOutput:
         from pyarrow.fs import LocalFileSystem
 
-        if kind == layout.CSV:
-            self._csv_parts(table, found)
+        self._csv_parts(table, found)
         with TemporaryDirectory(prefix='kumo-raw-source-', dir=os.path.dirname(
                 os.path.abspath(dest))) as raw:
             paths = self._download_objects(path, found, raw, worker_ceiling)
             local = replace(self, filesystem=LocalFileSystem(), fetch=None)
-            return local._read(table, raw, kind,
-                               local.filesystem.get_file_info(paths), dest,
-                               columns, aliases, worker_ceiling,
-                               count_copied_rows=count_copied_rows)
+            return local._read_csv(table, local.filesystem.get_file_info(paths),
+                                   dest, columns, aliases, worker_ceiling)
+
+    def _copy(self, path: str, found: Sequence[Any], dest: str,
+              worker_ceiling: int | None) -> tuple[str, ...]:
+        if self.fetch is not None:
+            return self._download_objects(path, found, dest, worker_ceiling,
+                                          parquet=True)
+        with _copies(found, worker_ceiling) as workers:
+            return fetch_all([
+                StagedFile(
+                    entry.path, entry.size
+                    if entry.size is not None and entry.size >= 0 else None)
+                for entry in found
+            ], dest, fetch=self._fetch, workers=workers)
 
     def _download_objects(self, path: str, found: Sequence[Any], dest: str,
                           worker_ceiling: int | None, *,
@@ -422,9 +510,8 @@ class ObjectStoreSourceReader:
             return target
 
         try:
-            with ThreadPoolExecutor(
-                    max_workers=min(download_workers(worker_ceiling),
-                                    max(len(found), 1))) as pool:
+            with _copies(found, worker_ceiling) as workers, ThreadPoolExecutor(
+                    max_workers=workers) as pool:
                 futures = [pool.submit(download, entry) for entry in found]
                 try:
                     for future in as_completed(futures):
@@ -487,50 +574,53 @@ class ObjectStoreSourceReader:
             _fragment_batches(fragment, dataset.schema, projection, sources)
             for fragment in fragments
         ]
-        per_stream = _STREAM_BYTES + _prebuffered_bytes(
-            fragments, sources, worker_ceiling)
-        return materialize_arrow_streams(
-            streams, dest,
-            worker_ceiling=memory_ceiling(per_stream, worker_ceiling))
+        prebuffered, largest = _prebuffered_bytes(fragments, sources,
+                                                  worker_ceiling)
+        per_stream = _STREAM_BYTES + prebuffered
+        capacity = memory_capacity()
+        if capacity is not None and per_stream > capacity:
+            raise PermanentSourceError(
+                f"Re-encoding {largest} needs {per_stream >> 20} MiB, but "
+                f"only {capacity >> 20} MiB is free. Rewrite it with smaller "
+                f"row groups, or give the reader more memory.", table=table)
+        remote = any(_remote(fragment) for fragment in fragments)
+        with memory_share(
+                per_stream,
+                lambda ceiling: min(encode_workers(ceiling),
+                                    max(len(streams), 1)),
+                worker_ceiling) as workers, _io_threads(
+                    workers if remote else 0):
+            logger.info("Staging %s: %d parts, %d at a time, %d MiB each",
+                        table, len(streams), workers, per_stream >> 20)
+            return materialize_arrow_streams(streams, dest,
+                                             worker_ceiling=workers)
 
-    def _copy_verbatim(
+    def _verbatim(
         self,
         path: str,
-        kind: str,
         found: Sequence[Any],
-        dest: str,
         columns: Mapping[str, Dtype],
         aliases: Mapping[str, str],
         worker_ceiling: int | None,
-    ) -> tuple[str, ...] | None:
+    ) -> bool:
         """Copied only where the re-encode path would have cast nothing, so
         the choice between them is a performance one alone.
 
         Every object's footer is read, not just the first: a dataset takes its
         schema from one fragment, while the re-encode path scans them all.
         """
-        if (kind != layout.PARQUET or aliases or layout.hive_partitioned(
-                path, [entry.path for entry in found])):
-            return None
+        if aliases or layout.hive_partitioned(path,
+                                              [entry.path for entry in found]):
+            return False
         declared = list(columns)
         for schema in self._footers(found, worker_ceiling):
             _refuse_unsupported(path, schema)
             if list(schema.names) != declared:
-                return None
+                return False
             for name, dtype in columns.items():
                 if not _uncast(schema.field(name).type, dtype):
-                    return None
-        return fetch_all(
-            [
-                StagedFile(
-                    entry.path, entry.size
-                    if entry.size is not None and entry.size >= 0 else None)
-                for entry in found
-            ],
-            dest,
-            fetch=self._fetch,
-            worker_ceiling=worker_ceiling,
-        )
+                    return False
+        return True
 
     def _footers(self, found: Sequence[Any],
                  worker_ceiling: int | None) -> list[pa.Schema]:
@@ -698,6 +788,36 @@ def _parquet_batches(fragment: Any,
             yield pa.RecordBatch.from_pylist([], schema=schema)
 
 
+@contextmanager
+def _copies(found: Sequence[Any],
+            worker_ceiling: int | None) -> Iterator[int]:
+    """Arrow-backed downloaders copy on Arrow's IO pool."""
+    with memory_share(
+            COPY_WORKER_BYTES, lambda ceiling: min(
+                copy_workers(ceiling), max(len(found), 1)),
+            worker_ceiling) as workers, _io_threads(workers):
+        yield workers
+
+
+@contextmanager
+def _io_threads(workers: int) -> Iterator[None]:
+    """Arrow has one IO pool per process, with no per-call executor for
+    copies or pre-buffered reads. Raised while any read needs it; restored
+    once the last one ends, so a long-lived process does not keep it."""
+    with _IO_THREADS:
+        if not _io_wanted:
+            _io_base[:] = [pa.io_thread_count()]
+        _io_wanted.append(workers)
+        if pa.io_thread_count() < workers:
+            pa.set_io_thread_count(workers)
+    try:
+        yield
+    finally:
+        with _IO_THREADS:
+            _io_wanted.remove(workers)
+            pa.set_io_thread_count(max([*_io_base, *_io_wanted]))
+
+
 def _remote(fragment: Any) -> bool:
     from pyarrow.fs import LocalFileSystem
 
@@ -706,25 +826,24 @@ def _remote(fragment: Any) -> bool:
 
 
 def _prebuffered_bytes(fragments: Sequence[Any], columns: Sequence[str],
-                       worker_ceiling: int | None) -> int:
+                       worker_ceiling: int | None) -> tuple[int, str]:
     """The largest row group's selected chunks, which a remote part holds
-    pre-buffered while it is decoded."""
+    pre-buffered while it is decoded, and where it is."""
     remote = [fragment for fragment in fragments if _remote(fragment)]
     if not remote:
-        return 0
+        return 0, ""
     footers = run_in_parallel(
         [partial(getattr, fragment, "metadata") for fragment in remote],
         workers=min(download_workers(worker_ceiling), len(remote)),
         stop=threading.Event())
-    largest = 0
-    for footer in footers:
+    largest = (0, "")
+    for fragment, footer in zip(remote, footers):
         chunks = _chunks(footer, columns)
         for group in range(footer.num_row_groups):
             metadata = footer.row_group(group)
-            largest = max(
-                largest,
-                sum(metadata.column(index).total_compressed_size
-                    for index in chunks))
+            largest = max(largest, (sum(
+                metadata.column(index).total_compressed_size
+                for index in chunks), f"row group {group} of {fragment.path}"))
     return largest
 
 

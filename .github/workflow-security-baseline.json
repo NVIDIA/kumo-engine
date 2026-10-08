@@ -1,16 +1,1 @@
-[
-  {
-    "id": "b58649f4c08f89d5",
-    "kind": "top-level-write-on-untrusted-trigger",
-    "path": ".github/workflows/has-milestone-label.yml",
-    "line": 16,
-    "detail": "issues: write"
-  },
-  {
-    "id": "b40c786131262060",
-    "kind": "top-level-write-on-untrusted-trigger",
-    "path": ".github/workflows/pr-change-table.yml",
-    "line": 17,
-    "detail": "statuses: write"
-  }
-]
+[]

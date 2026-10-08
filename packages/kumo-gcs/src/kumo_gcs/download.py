@@ -207,6 +207,14 @@ class GCSDownloader:
             or self.requester_pays_project
             or getattr(self.credentials, 'quota_project_id', None))
 
+    def object_identity(self, bucket: str, key: str) -> tuple[str, ...]:
+        """Fetch current metadata, never the generation pinned by an old Blob."""
+        probe = self._blob(bucket, key)
+        probe.reload()
+        if probe.generation is None:
+            raise RuntimeError('GCS object metadata has no generation')
+        return (str(probe.generation), str(probe.size))
+
     def _current_generation(self, bucket: str, key: str):
         probe = self._blob(bucket, key)
         try:

@@ -20,15 +20,21 @@ inputs:
     required: false
     default: "22.04"
   github_token:
-    required: true
+    description: 'Token for the checkout. Defaults to the workflow token.'
+    required: false
+    default: ''
   ref:
-    description: 'The branch, tag or SHA to checkout. Defaults to the triggering SHA when called from kumo-ai/kumo.'
+    description: "The branch, tag or SHA to checkout. Defaults to the triggering SHA when used from this repository's own workflows."
     required: false
     default: ''
   diskgraph-wheel-artifact:
     description: 'Artifact holding a prebuilt diskgraph wheel. Unset: use a cached wheel, else build from source.'
     required: false
     default: ''
+  install-graphviz:
+    description: 'Install the graphviz `dot` binary (only test/graph/ renders graphs).'
+    required: false
+    default: 'false'
 
 
 runs:
@@ -38,24 +44,26 @@ runs:
     - name: Set working directory
       id: working-directory
       run: |
-        if [ ${{ github.repository }} == 'kumo-ai/kumo' ]; then
+        # This repository's own workflows run the action from their workspace
+        # checkout; other repositories run a copy downloaded outside it.
+        if [[ "$GITHUB_ACTION_PATH" == "$GITHUB_WORKSPACE"/* ]]; then
           echo working-directory='' >> $GITHUB_OUTPUT
         else
-          # If called from an external repository, clone it into `kumo` dir,
+          # If called from an external repository, clone it into `src/kumo`,
           # so that this step doesn't contaminate the checkout of the external
           # repository.
           echo working-directory='src/kumo' >> $GITHUB_OUTPUT
         fi
       shell: bash
 
-    - name: Checkout kumo-ai/kumo (called from ${{ github.repository }})
+    - name: Checkout Kumo (called from ${{ github.repository }})
       uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       with:
-        repository: kumo-ai/kumo
+        repository: ${{ steps.working-directory.outputs.working-directory == '' && github.repository || 'kumo-ai/kumo' }}
         path: ${{ steps.working-directory.outputs.working-directory }}
-        token: ${{ inputs.github_token }}
+        token: ${{ inputs.github_token || github.token }}
         persist-credentials: false
-        ref: ${{ inputs.ref || (github.repository == 'kumo-ai/kumo' && github.sha) || '' }}
+        ref: ${{ inputs.ref || (steps.working-directory.outputs.working-directory == '' && github.sha) || '' }}
 
     - name: Set up Python ${{ inputs.python-version }}
       uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
@@ -77,31 +85,16 @@ runs:
           uv.lock
 
     - name: Install graphviz
-      working-directory: ${{ steps.working-directory.outputs.working-directory }}
-      run: |
-        echo ::group::Clean up apt repos
-        # Remove apt repos that are known to break from time to time. None of
-        # them is a source for graphviz/libxml2-dev/libxslt1-dev below, so
-        # dropping them costs nothing but saves `apt-get update` from failing
-        # the whole job over an index it never needed.
-        # See https://github.com/actions/virtual-environments/issues/323
-        for apt_file in `grep -lr microsoft /etc/apt/sources.list.d/`; do sudo rm $apt_file; done
-        # The Chrome repo preinstalled on the runner image has intermittently
-        # served a stale/mismatched Packages.gz, which apt treats as fatal
-        # rather than falling back. Matched by URL rather than the list
-        # file's name, the same way the Microsoft repo is above, so a rename
-        # on a future runner image doesn't silently stop matching it.
-        for apt_file in `grep -lr dl.google.com/linux/chrome /etc/apt/sources.list.d/`; do sudo rm $apt_file; done
-        echo ::endgroup::
+      if: inputs.install-graphviz == 'true' && steps.working-directory.outputs.working-directory == ''
+      uses: ./.github/actions/apt-install
+      with:
+        packages: graphviz
 
-        echo ::group::Install graphviz
-        sudo apt-get -qq update
-        # libxml2-dev / libxslt1-dev: redshift-connector caps lxml<6.0.0, and
-        # lxml only ships cp314 wheels from 6.0.1 onward, so on Python 3.14 uv
-        # builds lxml 5.4.0 from its sdist, which needs these dev headers.
-        sudo apt-get install -y -qq --no-install-recommends graphviz libxml2-dev libxslt1-dev
-        echo ::endgroup::
-      shell: bash
+    - name: Install graphviz (called from ${{ github.repository }})
+      if: inputs.install-graphviz == 'true' && steps.working-directory.outputs.working-directory != ''
+      uses: ./src/kumo/.github/actions/apt-install
+      with:
+        packages: graphviz
 
     - name: Download diskgraph wheel
       if: inputs.diskgraph-wheel-artifact != ''
@@ -112,7 +105,7 @@ runs:
 
     - name: Compute diskgraph wheel cache key
       id: diskgraph-wheel-key
-      if: inputs.diskgraph-wheel-artifact == '' && github.repository == 'kumo-ai/kumo' && runner.environment == 'github-hosted'
+      if: inputs.diskgraph-wheel-artifact == '' && steps.working-directory.outputs.working-directory == '' && runner.environment == 'github-hosted'
       working-directory: ${{ steps.working-directory.outputs.working-directory }}
       run: echo "key=$(./scripts/diskgraph wheel-key)" >> "$GITHUB_OUTPUT"
       shell: bash

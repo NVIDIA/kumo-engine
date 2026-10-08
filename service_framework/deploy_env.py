@@ -17,7 +17,7 @@ import requests
 from ec2_metadata import ec2_metadata
 
 from async_utils.sync import blocking_func
-from service_framework.deploy_stage import DeployStage
+from service_framework.deploy_stage import DeployStage, deploy_stage
 from service_framework.env_var import EnvVar
 
 log = logging.getLogger(__name__)
@@ -57,6 +57,8 @@ IS_GCP_DEPLOY = EnvVar(
 
 @blocking_func()
 def get_instance_id() -> str:
+    if deploy_stage() in (DeployStage.TEST, DeployStage.DEV_LOCAL):
+        return socket.gethostname()
     try:
         return ec2_metadata.instance_id
     except Exception:  # pylint: disable=broad-except

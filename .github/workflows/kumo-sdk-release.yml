@@ -118,7 +118,7 @@ jobs:
           python scripts/set_version.py "$version_prerelease"
           git diff --color=always
           git add -u  # VERSION, kumoai_studio/_version.py and the other stamped files
-          git commit -m "Update version from $version_source to $version_prerelease (https://github.com/kumo-ai/kumo/actions/runs/${{ github.run_id }})"
+          git commit -m "Update version from $version_source to $version_prerelease (${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
 
           git tag "kumo-sdk-v$version_prerelease"
 
@@ -129,7 +129,7 @@ jobs:
           python scripts/set_version.py "$version_dev_new"
           git diff --color=always
           git add -u  # VERSION, kumoai_studio/_version.py and the other stamped files
-          git commit -m "Update version from $version_prerelease to $version_dev_new (https://github.com/kumo-ai/kumo/actions/runs/${{ github.run_id }})"
+          git commit -m "Update version from $version_prerelease to $version_dev_new (${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
 
           printf 'UPDATED_REFS=%s %s %s\n' "$PHYSICAL_REF" "$release_branch" \
             "kumo-sdk-v$version_prerelease" >> "$GITHUB_ENV"
@@ -147,7 +147,7 @@ jobs:
           python scripts/set_version.py "$version_prerelease_new"
           git diff --color=always
           git add -u  # VERSION, kumoai_studio/_version.py and the other stamped files
-          git commit -m "Update version from $version_prerelease to $version_prerelease_new (https://github.com/kumo-ai/kumo/actions/runs/${{ github.run_id }})"
+          git commit -m "Update version from $version_prerelease to $version_prerelease_new (${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
 
           git tag "kumo-sdk-v$version_prerelease_new"
           printf 'UPDATED_REFS=%s %s\n' "$PHYSICAL_REF" \
@@ -162,7 +162,7 @@ jobs:
           python scripts/set_version.py "$version_final"
           git diff --color=always
           git add -u  # VERSION, kumoai_studio/_version.py and the other stamped files
-          git commit -m "Update version from $version_prerelease to $version_final (https://github.com/kumo-ai/kumo/actions/runs/${{ github.run_id }})"
+          git commit -m "Update version from $version_prerelease to $version_final (${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
 
           git tag "kumo-sdk-v$version_final"
           printf 'UPDATED_REFS=%s %s\n' "$PHYSICAL_REF" "kumo-sdk-v$version_final" \
@@ -182,7 +182,7 @@ jobs:
           python scripts/set_version.py "$version_final_new"
           git diff --color=always
           git add -u  # VERSION, kumoai_studio/_version.py and the other stamped files
-          git commit -m "Update version from $version_final to $version_final_new (https://github.com/kumo-ai/kumo/actions/runs/${{ github.run_id }})"
+          git commit -m "Update version from $version_final to $version_final_new (${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
 
           # Create a release tag:
           git tag "kumo-sdk-v$version_final_new"

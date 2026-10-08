@@ -15,7 +15,6 @@ on: # yamllint disable-line rule:truthy
 
 permissions:
   contents: read
-  pull-requests: write
   packages: read
 
 concurrency:
@@ -25,6 +24,8 @@ concurrency:
 jobs:
   ratchet:
     runs-on: ubuntu-latest
+    outputs:
+      regressed: ${{ steps.ratchet.conclusion == 'failure' }}
     defaults:
       run:
         working-directory: ui
@@ -82,8 +83,14 @@ jobs:
         # number silently — the ratchet doesn't auto-tighten on improvements.
         run: npm run audit:check
 
+  comment-regression:
+    needs: ratchet
+    if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.ratchet.outputs.regressed == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
       - name: Comment on PR if baseline regressed
-        if: failure() && steps.ratchet.conclusion == 'failure' && github.event_name == 'pull_request'
         uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3.0.2
         with:
           recreate: true
@@ -91,7 +98,7 @@ jobs:
           message: |
             ## ❌ UI Migration Baseline Regressed
 
-            This PR increases at least one tracked migration-debt metric. See the [job log](https://github.com/kumo-ai/kumo/actions/runs/${{ github.run_id }}) for the regressed metrics and deltas.
+            This PR increases at least one tracked migration-debt metric. See the [job log](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for the regressed metrics and deltas.
 
             **Fix:** revert the change that introduced the regression, or migrate the affected code in this PR.
 

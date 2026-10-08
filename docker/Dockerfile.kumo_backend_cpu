@@ -78,7 +78,8 @@ RUN apt-get update -y \
         lld \
         pkg-config \
  && rm -rf /var/lib/apt/lists/*
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+RUN curl --proto '=https' --tlsv1.2 -sSf \
+  https://raw.githubusercontent.com/rust-lang/rustup/d95a37b6ab92cc1e455d1576039333c97ca3e2c5/rustup-init.sh \
  | sh -s -- -y --profile minimal --default-toolchain stable
 
 # Build the internal DiskGraph wheel from the staged in-tree source.

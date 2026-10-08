@@ -63,9 +63,17 @@ env:
   CUDA: cpu
 
 jobs:
-  playwright:
-    # AWS-backed validation only runs from trusted refs; PR and merge-group events skip.
+  # AWS-backed validation only runs from trusted refs; PR and merge-group events
+  # skip. This condition gates both jobs.
+  diskgraph-wheel:
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_diskgraph-wheel.yml
+
+  playwright:
+    # Runs only when diskgraph-wheel does.
+    needs: [diskgraph-wheel]
     environment:
       name: gha-kumo-playwright-ui-read
     # Larger runner (more RAM + CPU) than ubuntu-latest's 2-CPU/7 GB: the seed
@@ -109,7 +117,7 @@ jobs:
       # Backend env (no Docker). Same composite action the fast pytest/integ
       # jobs use on ubuntu-latest: setup-uv + prebuilt abi3 diskgraph wheel
       # (scripts/diskgraph install) + Torch and the vendored pure-Python PyG wheel.
-      # It checks out kumo-ai/kumo into the workspace root and activates the
+      # It checks out this repository into the workspace root and activates the
       # uv-managed venv for subsequent steps. AWS creds are only needed here
       # (prebuilt-wheel pull), not at runtime.
       # ---------------------------------------------------------------------
@@ -127,6 +135,7 @@ jobs:
         with:
           github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN || secrets.GITHUB_TOKEN }}
           cuda-version: cpu
+          diskgraph-wheel-artifact: diskgraph-wheel
 
       - name: Set up Node.js
         if: steps.ui-changes.outputs.any_changed == 'true'
@@ -176,6 +185,14 @@ jobs:
           bash scripts/setup-tsconfig.sh --reset
           npm run build
 
+      # The Temporal startup script below runs the server inside tmux.
+      - name: Install tmux
+        if: steps.ui-changes.outputs.any_changed == 'true'
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 12
+        with:
+          packages: tmux
+
       # ---------------------------------------------------------------------
       # Local Temporal dev server on :7233 — the address configs/local.json
       # pins (orchestration.server_address = localhost:7233). The script
@@ -199,15 +216,6 @@ jobs:
           TEMPORAL_SESSION_NAME: local_temporal
         run: |
           set -euo pipefail
-          # The Chrome repo preinstalled on the runner image has
-          # intermittently served a stale/mismatched Packages.gz, which apt
-          # treats as fatal for the whole `update` rather than skipping it.
-          # See .github/actions/setup/action.yml for the same cleanup.
-          for apt_file in `grep -lr dl.google.com/linux/chrome /etc/apt/sources.list.d/`; do sudo rm $apt_file; done
-          # The repo script launches Temporal inside a tmux session; install
-          # tmux so it can. The Temporal CLI itself is fetched by the script.
-          sudo apt-get -qq update
-          sudo apt-get install -y -qq --no-install-recommends tmux
           PYTHON_BIN="$(command -v python)" \
             TEMPORAL_PORT="${TEMPORAL_PORT}" \
             TEMPORAL_NAMESPACE="${TEMPORAL_NAMESPACE}" \
@@ -595,7 +603,7 @@ jobs:
         if: failure() && github.event_name == 'pull_request' && steps.ui-changes.outputs.any_changed == 'true' && steps.playwright.outcome == 'failure'
         run: |
           echo "#### Playwright Tests Failed on ${{ github.sha }}" >> pr_comment.md
-          echo "* [View failure summary](https://github.com/kumo-ai/kumo/actions/runs/${{ github.run_id }})" >> pr_comment.md
+          echo "* [View failure summary](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> pr_comment.md
 
       - name: Comment on PR
         uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3.0.2

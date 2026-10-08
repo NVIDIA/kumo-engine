@@ -10,15 +10,18 @@ from kumo_snowflake import SnowflakeSourceReader
 from kumoapi.typing import Dtype
 from test_source import BODIES, DATABASE, SCHEMA, TABLE, warehouse
 
-SQL = 'SELECT "CUSTOMER_ID", "T_DAT" FROM "TRANSACTIONS" WHERE "PRICE" > 0'
+SQL = 'SELECT "ENTITY_ID", "EVENT_TIME" FROM "EVENTS" WHERE "VALUE" > 0'
 NAME = "custom_sql_0123456789abcdef"
-COLUMNS = {"CUSTOMER_ID": Dtype.string, "T_DAT": Dtype.time}
+COLUMNS = {"ENTITY_ID": Dtype.string, "EVENT_TIME": Dtype.time}
 
 
 @pytest.fixture(autouse=True)
-def http(monkeypatch):
+def http(monkeypatch, tmp_path):
     sessions = FakeSessions(BODIES)
     monkeypatch.setattr(requests, "Session", sessions)
+    # The imported fake warehouse models batched presigning outside SPCS.
+    monkeypatch.setattr("kumo_snowflake.staging.SPCS_TOKEN_PATH",
+                        str(tmp_path / "missing-spcs-token"))
     return sessions
 
 

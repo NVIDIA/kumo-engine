@@ -66,13 +66,50 @@ events = Table.from_source_table(
 snapshot = Graph(tables=[events]).snapshot()
 ```
 
-## Testing
+From the repository root, run the public tests without cloud credentials:
 
-Run the unit tier without credentials:
-
-```text
-pytest packages/kumo-databricks/tests -q
+```sh
+python3 scripts/test_public.py --group databricks
 ```
 
-The live tier reads `KUMO_DATABRICKS_CREDS` and skips with a stated reason when
-that file is absent.
+See the [public test guide](../../docs/development/public-tests.md) for Docker
+prerequisites, Python-only setup, and results. The
+[test matrix](../../docs/connector-test-matrix.md#reader-groups) lists coverage
+and limits. These tests use generated data and fake clients, without a warehouse
+or staging volume.
+
+Run the complete non-live tier from `packages/kumo-databricks` in a prepared
+API/core environment with this package's runtime and `[test]` dependencies installed.
+Use the versions in [`pyproject.toml`](pyproject.toml), plus pandas and Arrow:
+
+```sh
+KUMO_DATABRICKS_LIVE=0 python -m pytest tests -q -rs
+```
+
+The live-activation tests can also run alone from the package directory.
+They need Python, pytest, and this checkout's `sources.live_opt_in` helper,
+without installed provider packages or credentials:
+
+```sh
+python -m pytest tests/test_live_opt_in.py -q
+```
+
+The live module skips before credential-file access and API/core/provider
+imports unless `KUMO_DATABRICKS_LIVE` is exactly `1`. An enabled run requires an
+explicit `KUMO_DATABRICKS_CREDS` path to a readable UTF-8 JSON object containing
+nonempty string fields `host`, `client_id`, `client_secret` and `warehouse_id`.
+There is no default credential path. Missing or invalid configuration fails
+collection; connection and authentication failures during execution propagate
+instead of skipping.
+
+An authorized live run from the package directory uses:
+
+```sh
+KUMO_DATABRICKS_LIVE=1 \
+KUMO_DATABRICKS_CREDS=/path/to/test-credentials.json \
+python -m pytest tests/live/test_live_conformance.py -q -rs
+```
+
+This command also needs the matching `sources.conformance` test helper.
+Prepare the warehouse, Delta history, staging resources, and permissions listed
+in the [cloud test inventory](../../docs/credentialed-test-inventory.md#inputs-to-separate-from-assertions).

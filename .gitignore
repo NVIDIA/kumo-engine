@@ -51,6 +51,7 @@ env/*
 venv
 venv/*
 .venv
+.venv-public-tests/
 mise.local.toml
 
 dist/*
@@ -171,3 +172,5 @@ certs/
 docker/build-artifacts/
 docker/compose/config/generated/
 pytest-of-*/
+
+/public-reports/

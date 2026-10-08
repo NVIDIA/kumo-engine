@@ -21,7 +21,10 @@ from kumo_core.prediction import (
     generate_prediction_table,
     materialize_prediction_task,
 )
-from kumo_core.prediction_options import resolve_classification_threshold
+from kumo_core.prediction_options import (
+    resolve_classification_threshold,
+    resolve_num_classes_to_return,
+)
 from kumo_core.task_dataset import TaskDatasetMaterializeSpec
 from kumo_core.train.autoregression import (
     AUTOREGRESSION_COL,
@@ -30,6 +33,55 @@ from kumo_core.train.autoregression import (
 from kumo_core.types import TaskType
 from kumoapi.typing import TimeUnit
 from pandas import Timestamp
+
+
+@pytest.mark.parametrize("task_type", [TaskType.STATIC_LINK_PREDICTION,
+                                       TaskType.TEMPORAL_LINK_PREDICTION])
+@pytest.mark.parametrize("count", [1, 500])
+def test_link_prediction_count_accepts_boundaries(task_type, count):
+    assert resolve_num_classes_to_return(task_type, count, top_k=3) == count
+
+
+@pytest.mark.parametrize("task_type", [TaskType.STATIC_LINK_PREDICTION,
+                                       TaskType.TEMPORAL_LINK_PREDICTION])
+@pytest.mark.parametrize("count, message", [
+    (None, "specify the number of predictions"),
+    (501, "less than or equal to 500"),
+    (0, "positive integer"),
+    (-1, "positive integer"),
+    (True, "positive integer"),
+    (1.5, "positive integer"),
+])
+def test_link_prediction_count_rejects_invalid_values(task_type, count, message):
+    with pytest.raises(ValueError, match=message):
+        resolve_num_classes_to_return(task_type, count, top_k=3)
+
+
+@pytest.mark.parametrize("task_type", [TaskType.STATIC_LINK_PREDICTION,
+                                       TaskType.TEMPORAL_LINK_PREDICTION])
+@pytest.mark.parametrize("count", [None, 501])
+def test_link_embeddings_clear_count_without_prediction_limit(task_type, count):
+    assert resolve_num_classes_to_return(
+        task_type, count, top_k=3, has_predictions=False) is None
+
+
+@pytest.mark.parametrize("task_type", [TaskType.MULTICLASS_CLASSIFICATION,
+                                       TaskType.MULTILABEL_CLASSIFICATION,
+                                       TaskType.MULTILABEL_RANKING])
+def test_classification_count_defaults_and_overrides(task_type):
+    assert resolve_num_classes_to_return(task_type, None, top_k=3) == 3
+    assert resolve_num_classes_to_return(task_type, 501, top_k=3) == 501
+    assert resolve_num_classes_to_return(task_type, None) is None
+    assert resolve_num_classes_to_return(
+        task_type, 2, top_k=3, has_predictions=False) is None
+
+
+@pytest.mark.parametrize("task_type", [TaskType.REGRESSION,
+                                       TaskType.BINARY_CLASSIFICATION,
+                                       TaskType.FORECASTING])
+def test_prediction_count_rejects_tasks_with_single_output(task_type):
+    with pytest.raises(ValueError, match="can only be specified"):
+        resolve_num_classes_to_return(task_type, 3)
 
 
 @pytest.mark.parametrize(
@@ -542,7 +594,7 @@ def test_score_prediction_metadata_options(monkeypatch, tmp_path, task_type,
     monkeypatch.setattr(prediction, '_prediction_worker_devices', lambda _:
                         (None, ))
     monkeypatch.setattr(prediction, '_score_prediction_shard',
-                        lambda *, worker_id, config: config)
+                        lambda *, worker_id, config, **_: config)
 
     config = prediction.score_prediction(
         materialized=SimpleNamespace(manifest_path='manifest',
@@ -602,3 +654,53 @@ def test_temporal_prediction_checks_anchor_before_compilation(
         assert runtime.compile_options is None
     else:
         assert generate_prediction_table(req, runtime=runtime).row_count == 7
+
+
+def test_in_process_scoring_parses_the_task_manifest_once(
+        monkeypatch, tmp_path):
+    from kumo_core.resolved_task import ResolvedNumericalTask
+    from kumo_core.task_dataset import DiskgraphTaskManifest
+    from kumo_core.train import artifact_manifest
+    from kumo_core.train.diskgraph_nested_trainer import DiskgraphNestedTrainer
+    from kumo_core.types import PredictionArtifactType
+
+    loaded, loads, predicts = [], [], []
+
+    def load_manifest(path):
+        loaded.append(SimpleNamespace(task_type='regression',
+                                      stage_counts={'predict': 1}))
+        return loaded[-1]
+
+    def load_trainer(*args, **kwargs):
+        loads.append(kwargs)
+        return SimpleNamespace(predict=lambda **kw: predicts.append(kw))
+
+    monkeypatch.setattr(DiskgraphTaskManifest, 'load', load_manifest)
+    monkeypatch.setattr(ResolvedNumericalTask, 'from_manifest',
+                        lambda *_, **__: None)
+    monkeypatch.setattr(DiskgraphNestedTrainer, 'load', load_trainer)
+    monkeypatch.setattr(artifact_manifest, 'hash_prediction_config',
+                        lambda _: 'runtime-hash')
+    monkeypatch.setattr(artifact_manifest, 'publish_prediction_selection',
+                        lambda references, **kwargs: references[0])
+    monkeypatch.setattr(prediction, '_publish_scored_shard',
+                        lambda *_, **__: None)
+    monkeypatch.setattr(prediction, '_prediction_worker_devices', lambda _:
+                        (None, ))
+    encoders = object()
+
+    prediction.score_prediction(
+        materialized=SimpleNamespace(manifest_path='manifest',
+                                     bundle_dir='bundle'),
+        model_dir=str(tmp_path),
+        run_id='prediction',
+        scratch_dir=str(tmp_path),
+        artifacts=frozenset({PredictionArtifactType.PREDICTIONS}),
+        graph_snapshot_id='snapshot',
+        source_config_sha256='source',
+        encoders=encoders,
+    )
+
+    assert len(loaded) == 1
+    assert predicts[0]['task_manifest'] is loaded[0]
+    assert loads[0]['encoders'] is encoders

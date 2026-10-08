@@ -169,7 +169,10 @@ def _settles(produced, expected, seconds=2.0):
     return len(produced) == expected
 
 
-def test_the_queued_page_bound_outranks_the_worker_ceiling():
+def test_the_queued_page_bound_outranks_the_worker_ceiling(monkeypatch):
+    # A ceiling caps the available CPUs; pin the budget independently of the
+    # runner's quota so this test exercises the queue and worker limits.
+    monkeypatch.setattr(cpu, "cpu_budget", lambda: 8)
     assert _encoder_count(QUEUED_PAGE_BYTES, 1000) == 1
     assert _encoder_count(PAGE_BYTES, 2) == 2
     assert _encoder_count(PAGE_BYTES, 0) == 1

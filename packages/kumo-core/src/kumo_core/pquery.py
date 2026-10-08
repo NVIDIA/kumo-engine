@@ -14,13 +14,16 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
+from dataclasses import replace
 from datetime import datetime, timezone
 from enum import Enum
 from numbers import Integral
 from typing import Any, Mapping, Sequence
 
 from diskgraph import read_col_stats
+from kumoapi.common import ValidationResponse
 from kumoapi.encoder import EncoderType
 from kumoapi.graph import (
     ColumnKey,
@@ -164,6 +167,8 @@ class ValidatedNativeQuery:
     rhs_is_temporal: bool
     list_distinct_target_is_array: bool
     forecast_length: int
+    validation_response: ValidationResponse = dataclass_field(
+        default_factory=ValidationResponse, compare=False)
 
 
 @dataclass(frozen=True)
@@ -714,6 +719,7 @@ def parse_and_validate_query(
             rhs_table and (rhs_table.time_column or rhs_table.end_time_column)),
         list_distinct_target_is_array=rhs_node_type is not None,
         forecast_length=forecast_length,
+        validation_response=response,
     )
 
 

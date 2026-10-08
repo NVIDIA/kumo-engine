@@ -12,7 +12,10 @@ fi
 export PATH="${HOME}/.cargo/bin:${PATH}"
 
 if ! command -v rustup >/dev/null 2>&1; then
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  rustup_installer_commit="d95a37b6ab92cc1e455d1576039333c97ca3e2c5"
+  curl --proto '=https' --tlsv1.2 -sSf \
+    "https://raw.githubusercontent.com/rust-lang/rustup/${rustup_installer_commit}/rustup-init.sh" |
+    sh -s -- -y
   # shellcheck disable=SC1090
   source "${HOME}/.cargo/env"
   export PATH="${HOME}/.cargo/bin:${PATH}"

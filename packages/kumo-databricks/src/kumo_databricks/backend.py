@@ -92,7 +92,7 @@ class DatabricksSourceBackend(_DatabricksSessions):
         ... ))
         >>> bricks = kumo.DatabricksConnector(  # doctest: +SKIP
         ...     name='analytics', catalog='main', schema_name='features',
-        ...     warehouse_id='4b9b953939869799', identity=identity)
+        ...     warehouse_id='warehouse-id', identity=identity)
     """
 
     source_type = DataSourceType.DATABRICKS

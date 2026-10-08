@@ -102,6 +102,7 @@ def fetch_all(
     fetch: Fetch,
     diagnosis: str = "",
     worker_ceiling: int | None = None,
+    workers: int | None = None,
 ) -> tuple[str, ...]:
     """Concurrent because serial fetching stretches the window a batch of
     presigned links must stay valid for. ``fetch`` writes the file itself, so
@@ -127,7 +128,8 @@ def fetch_all(
                     partial(_fetch_one, staged, generation, fetch, diagnosis)
                     for staged in files
                 ],
-                workers=min(download_workers(worker_ceiling), len(files)),
+                workers=min(workers or download_workers(worker_ceiling),
+                            len(files)),
                 stop=stop,
             ))
         result = _promote_generation(generation, dest, downloaded)

@@ -186,6 +186,65 @@ def test_link_prediction_output_columns(graph, link, fields):
     assert list(frames['embeddings']) == ['ID', 'TYPE', 'EMBEDDING', *metadata]
 
 
+@pytest.mark.parametrize('num_classes_to_return, expected', [
+    (2, 2), (5, 5)
+])
+@pytest.mark.parametrize('export', [False, True])
+def test_link_prediction_respects_explicit_count(
+        graph, link, num_classes_to_return, expected, export, tmp_path):
+    options = {'num_classes_to_return': num_classes_to_return}
+    if export:
+        options['output_config'] = PredictionOutputConfig(
+            connector=kumo.FileConnector(root_dir=str(tmp_path)),
+            output_paths={'predictions': 'ranking/'})
+    frame = _predict(graph, link, None, **options)['predictions']
+
+    assert frame.groupby('ENTITY').size().eq(expected).all()
+    if export:
+        exported = pd.concat(
+            pd.read_parquet(path) for path in tmp_path.glob('ranking/*.parquet'))
+        assert exported.groupby('ENTITY').size().eq(expected).all()
+
+
+@pytest.mark.parametrize('count, message', [
+    (None, 'specify the number of predictions'), (501, 'less than or equal to 500')
+])
+@pytest.mark.parametrize('export', [False, True])
+def test_link_prediction_rejects_invalid_count_before_materialization(
+        graph, link, count, message, export, tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    trainer, _, table = link
+    _, snapshot, _ = graph
+    materialize = Mock(side_effect=AssertionError('materialization began'))
+    monkeypatch.setattr('kumo_core.prediction.materialize_prediction_task',
+                        materialize)
+    before = set(trainer.scratch_dir.glob('runs/*-predict-*'))
+    output = (PredictionOutputConfig(
+        connector=kumo.FileConnector(root_dir=str(tmp_path)),
+        output_paths={'predictions': 'ranking/'}) if export else None)
+
+    with pytest.raises(ValueError, match=message):
+        trainer.predict(table, snapshot=snapshot, num_classes_to_return=count,
+                        output_config=output)
+
+    materialize.assert_not_called()
+    assert set(trainer.scratch_dir.glob('runs/*-predict-*')) == before
+    assert not list(tmp_path.iterdir())
+
+
+def test_link_embeddings_do_not_require_count(graph, link, tmp_path):
+    trainer, _, table = link
+    _, snapshot, _ = graph
+    output = PredictionOutputConfig(
+        connector=kumo.FileConnector(root_dir=str(tmp_path)),
+        output_paths={'embeddings': 'embeddings/'})
+
+    trainer.predict(table, snapshot=snapshot, output_config=output)
+
+    assert list(tmp_path.glob('embeddings/*.parquet'))
+
+
 def test_later_export_rejects_extra_fields(graph, classifier, tmp_path):
     _, snapshot, _ = graph
     trainer, _, table = classifier
@@ -207,3 +266,61 @@ def test_later_export_rejects_extra_fields(graph, classifier, tmp_path):
     written = [p.read_bytes() for p in copied]
     expected = [Path(f).read_bytes() for f in sorted(result.files)]
     assert written == expected
+
+
+@pytest.mark.parametrize('num_workers', [1, 2])
+def test_multilabel_thresholds_preserve_scores(tmp_path, num_workers):
+    previous = get_scratch_dir()
+    kumo.configure(scratch_dir=tmp_path / 'scratch')
+    try:
+        data = tmp_path / 'data'
+        data.mkdir()
+        pd.DataFrame({
+            'ID': range(120),
+            'VALUE': np.arange(120) / 120,
+            'TAGS': [['a', 'b'], ['b', 'c'], ['a', 'c']] * 33 +
+            [['a', 'b']] + [None] * 20,
+        }).to_parquet(data / 'users.parquet')
+        connector = kumo.FileConnector(root_dir=str(data))
+        graph = kumo.Graph({
+            'users': kumo.Table.from_source_table(connector['users'],
+                                                  primary_key='ID'),
+        })
+        snapshot = graph.snapshot()
+        query = kumo.PredictiveQuery(
+            graph, 'PREDICT users.TAGS CLASSIFY TOP 3 FOR EACH users.ID')
+        plan = ModelPlan()
+        plan.training_job.num_experiments = 1
+        plan.training_job.disable_explain = True
+        plan.optimization.max_epochs = 1
+        plan.optimization.max_steps_per_epoch = 2
+        plan.optimization.batch_size = [32]
+        plan.model_architecture.channels = [16]
+        trainer = kumo.Trainer(plan)
+        result = trainer.fit(query.generate_training_table(snapshot),
+                             snapshot=snapshot)
+        trainer = kumo.Trainer.load(result.bundle_dir)
+        table = query.generate_prediction_table(snapshot)
+        scores = None
+        for threshold in (None, 0.0, 0.25, 1.0):
+            output = trainer.predict(
+                table, snapshot=snapshot, num_workers=num_workers,
+                binary_classification_threshold=threshold).frame
+            output = output.sort_values(['ENTITY', 'CLASS']).reset_index(
+                drop=True)
+            assert len(output) == 20 * 3
+            effective = 0.5 if threshold is None else threshold
+            np.testing.assert_array_equal(output['PREDICTED'],
+                                          output['SCORE'] > effective)
+            current = output[['ENTITY', 'CLASS', 'SCORE']]
+            if scores is None:
+                scores = current
+            else:
+                pd.testing.assert_frame_equal(scores, current)
+        assert not output['PREDICTED'].any()
+        for threshold in (-0.1, 1.1, float('nan'), float('inf')):
+            with pytest.raises(ValueError, match='between 0 and 1'):
+                trainer.predict(table, snapshot=snapshot,
+                                binary_classification_threshold=threshold)
+    finally:
+        kumo.configure(scratch_dir=previous)

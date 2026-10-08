@@ -150,7 +150,7 @@ def test_the_scratch_directory_is_removed_however_the_read_ends(table_fp):
 def test_the_bridge_delegates_the_choice_of_mode_to_kumo_core(table_fp):
     """The one check here that mode selection happens at all: which mode runs
     and when a denial retries streamed are ``kumo_core``'s, and are pinned by
-    ``packages/kumo-core/tests/sources/test_read_table.py``. What this adds is
+    ``packages/kumo-core/tests/sources/unit/test_read_table.py``. What this adds is
     that the bridge routes through it -- a fallback reads twice into the same
     scratch directory, and the destination still gets what the second read
     wrote.

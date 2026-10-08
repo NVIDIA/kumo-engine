@@ -35,7 +35,14 @@ class SnowflakeTableConnector:
 
 
 def withSnowflakeCredentials(func: Callable):
-    from kumo.testing._skip import skip_if
+    """Load credentials during pytest setup, before cloud resource fixtures."""
+    import pytest
+
+    return pytest.mark.usefixtures('snowflake_credentials')(func)
+
+
+def setup_snowflake_credentials() -> None:
+    import pytest
 
     try:
         secrets = get_secrets("xva19026.snowflakecomputing.com")
@@ -50,7 +57,8 @@ def withSnowflakeCredentials(func: Callable):
     has_no_credentials = (
         not os.getenv(snowflake_connector._ENV_SNOWFLAKE_USER)
         or not os.getenv(snowflake_connector._ENV_SNOWFLAKE_PRIVATE_KEY))
-    return skip_if(has_no_credentials, "No Snowflake credentials found", func)
+    if has_no_credentials:
+        pytest.skip("No Snowflake credentials found")
 
 
 @contextlib.contextmanager
@@ -82,7 +90,6 @@ def disable_snowflake_env_credentials() -> Generator[None, None, None]:
 # :mod:`kumo.connector.snowflake_session`. Optionally takes a connector so
 # tests can pin a specific auth scope (the session cache key is derived from
 # the connector).
-@withSnowflakeCredentials
 def setup_full_snowflake_session(
     tempdir,
     snow_connector: Optional[SnowflakeConnector] = None,
@@ -98,6 +105,13 @@ def setup_full_snowflake_session(
     returns the cached Snowpark session used by both production code and
     tests.
     """
+    has_env_credentials = (
+        os.getenv(snowflake_connector._ENV_SNOWFLAKE_USER)
+        and (os.getenv(snowflake_connector._ENV_SNOWFLAKE_PASSWORD)
+             or os.getenv(snowflake_connector._ENV_SNOWFLAKE_PRIVATE_KEY)))
+    if snow_connector is None or (
+            not snow_connector._credentials and not has_env_credentials):
+        setup_snowflake_credentials()
     fsutil.rm(osp.join(get_home_dir(), 'train_table'))
     # Drop any prior cached sessions so a fresh fixture run rebuilds the
     # Snowpark connection.

@@ -53,6 +53,7 @@ def require_kumo_public_datasets_s3() -> None:
 
 @pytest.fixture()
 def writable_snowflake_table(
+        snowflake_credentials
 ) -> Generator[SnowflakeTableConnector, None, None]:
     name = f'TEST_PREDICTION_{str(uuid.uuid1()).upper().replace("-", "")}'
     connector = writable_snowflake_config('snowflake').as_connector('xva19026')
@@ -63,7 +64,7 @@ def writable_snowflake_table(
 
 
 @pytest.fixture()
-def snowflake_financial_connector() -> SnowflakeConnector:
+def snowflake_financial_connector(snowflake_credentials) -> SnowflakeConnector:
     return financial_snowflake_config("name").as_connector('xva19026')
 
 

@@ -130,23 +130,12 @@ def _arrow_string_array(values: Any) -> pa.Array:
     return pa.array(array, from_pandas=True).cast(pa.string())
 
 
-def _arrow_class_array(values: Any) -> pa.Array:
-    """Mirror ``_normalize_mixed_type_class_column`` without pandas."""
-    array = np.asarray(values)
-    if array.dtype.kind != 'O':
-        return pa.array(array, from_pandas=True)
-
-    inferred_dtype = pd.api.types.infer_dtype(array, skipna=True)
-    if inferred_dtype.startswith('mixed'):
-        return _arrow_string_array(array)
-    return pa.array(array, from_pandas=True)
-
-
 def _build_ttng_lp_chunk_output(
     prediction: dict[str, Any],
     *,
     rhs_node_ids: np.ndarray,
     rhs_pk_arr: np.ndarray,
+    rhs_pk_type: pa.DataType,
     lhs_fkey_name: str,
     time_col: str,
     ignore_time_col: bool,
@@ -157,6 +146,8 @@ def _build_ttng_lp_chunk_output(
     rhs_table: str,
     embedding_extra_fields: set[str],
     embedding_ids_as_string: bool,
+    class_metadata: dict[bytes, bytes] | None = None,
+    rhs_pk_mixed: bool = False,
 ) -> ArrowPredOutput:
     """Build TT-NG LP output directly as Arrow without pandas frames."""
     import torch
@@ -186,19 +177,30 @@ def _build_ttng_lp_chunk_output(
                 f'[TT-NG LP] prediction rows ({target_rows}) do not match '
                 f'anchors ({n_rows})')
 
-        flat = np.where(target.reshape(-1) < 0, 0, target.reshape(-1))
+        flat = target.reshape(-1)
+        missing = flat < 0
         positions = np.searchsorted(rhs_node_ids, flat)
         valid = positions < rhs_node_ids.shape[0]
         if rhs_node_ids.shape[0]:
             valid &= rhs_node_ids[np.minimum(positions,
                                              rhs_node_ids.shape[0] - 1)] == flat
-        if not bool(valid.all()):
+        if not bool((valid | missing).all()):
             raise RuntimeError(
                 '[TT-NG LP] prediction contains a non-canonical RHS node ID')
-        class_values = rhs_pk_arr[positions]
+        if missing.all():
+            class_values = pa.nulls(flat.size, type=rhs_pk_type)
+        else:
+            values = rhs_pk_arr[np.where(missing, 0, positions)]
+            if rhs_pk_mixed:
+                values = [
+                    None if value is None or pd.isna(value) else str(value)
+                    for value in values
+                ]
+            class_values = pa.array(values, type=rhs_pk_type, mask=missing,
+                                    from_pandas=True)
         arrays: list[pa.Array] = [
             pa.array(np.repeat(lhs_pkey, k)),
-            _arrow_class_array(class_values),
+            class_values,
         ]
         names = [lhs_fkey_name, 'CLASS']
         if score is not None:
@@ -215,7 +217,8 @@ def _build_ttng_lp_chunk_output(
                 None).to_datetime64()
             arrays.append(_arrow_timestamp_us(np.full(flat.shape[0], job_time)))
             names.append('JOB_TIMESTAMP')
-        table = pa.Table.from_arrays(arrays, names=names)
+        table = pa.Table.from_arrays(arrays, names=names,
+                                     metadata=class_metadata)
     else:
         # Keep the unrequested prediction stream empty while this batch emits
         # LHS embeddings.
@@ -851,12 +854,17 @@ class DiskgraphNestedTrainer(NestedTrainer):
 
         return {"layers": layers}
 
-    def init(self) -> "DiskgraphNestedTrainer":
+    def init(
+        self,
+        *,
+        task_manifest: DiskgraphTaskManifest | None = None,
+    ) -> "DiskgraphNestedTrainer":
         """Build the datamodule over the bundle, then the PL trainer + model.
 
         Idempotent: AutoTrainer appends a callback onto ``pl_trainer.callbacks``
         after the first call, so re-entry must not rebuild ``pl_trainer`` (it
-        would drop the callback).
+        would drop the callback). ``task_manifest`` is this bundle's manifest
+        when the caller already loaded it.
         """
         if self._fully_initialized and not self.fit_mode.is_refit:
             return self
@@ -872,9 +880,11 @@ class DiskgraphNestedTrainer(NestedTrainer):
 
         manifest_path = osp.join(self.diskgraph_task_dataset_bundle_dir,
                                  'manifest.json')
-        logger.info('[TT-NG] Loading task-dataset bundle from %s',
-                    manifest_path)
-        tm = DiskgraphTaskManifest.load(manifest_path)
+        tm = task_manifest
+        if tm is None:
+            logger.info('[TT-NG] Loading task-dataset bundle from %s',
+                        manifest_path)
+            tm = DiskgraphTaskManifest.load(manifest_path)
 
         self._configure_model_triple_from_manifest(
             tm,
@@ -1343,6 +1353,7 @@ class DiskgraphNestedTrainer(NestedTrainer):
         top_k: int | None = None,
         artifact_stats_collector: PredictionArtifactStatsCollector
         | None = None,
+        task_manifest: DiskgraphTaskManifest | None = None,
     ) -> Any:
         """TT-NG batch prediction over the wheel-backed predict stage.
 
@@ -1392,7 +1403,8 @@ class DiskgraphNestedTrainer(NestedTrainer):
                 progress_log_dir=progress_log_dir,
                 progress_log_id=progress_log_id, partition_id=partition_id,
                 total_partitions=total_partitions,
-                output_partition_ids=output_partition_ids, top_k=top_k)
+                output_partition_ids=output_partition_ids, top_k=top_k,
+                task_manifest=task_manifest)
             if artifact_stats_collector is not None:
                 link_prediction_kwargs["artifact_stats_collector"] = (
                     artifact_stats_collector)
@@ -1401,7 +1413,7 @@ class DiskgraphNestedTrainer(NestedTrainer):
         self._prediction_mode = True
         if emit_predictions:
             top_k = self._preprocess_top_k(top_k)
-        self.init()
+        self.init(task_manifest=task_manifest)
         self.pl_model.eval_top_k = None
         output_partition_ids = output_partition_ids or [partition_id]
 
@@ -1661,6 +1673,10 @@ class DiskgraphNestedTrainer(NestedTrainer):
                     self.pl_model._kumo_return_predict_embeddings = old_flag
                 else:
                     delattr(self.pl_model, '_kumo_return_predict_embeddings')
+            # The per-call writer class is a reference cycle; release what its
+            # methods close over so this trainer and its data module free on
+            # return rather than at the next garbage collection.
+            datamodule = _build_output = None
         if writer.saved_output_count == 0:
             raise RuntimeError('[TT-NG] predict produced no batches')
         logger.info('[TT-NG] saved batch prediction output to %s', output_dir)
@@ -1687,6 +1703,7 @@ class DiskgraphNestedTrainer(NestedTrainer):
         top_k: int | None = None,
         artifact_stats_collector: PredictionArtifactStatsCollector
         | None = None,
+        task_manifest: DiskgraphTaskManifest | None = None,
     ) -> Any:
         """TT-NG batch prediction for link prediction (all 4 model families).
 
@@ -1717,7 +1734,7 @@ class DiskgraphNestedTrainer(NestedTrainer):
                 'Batch prediction must request predictions or embeddings.')
 
         self._prediction_mode = True
-        self.init()
+        self.init(task_manifest=task_manifest)
         output_partition_ids = output_partition_ids or [partition_id]
 
         has_emb_hook_fn = (self.pl_model._get_register_embedding_hook_fn()
@@ -1796,6 +1813,26 @@ class DiskgraphNestedTrainer(NestedTrainer):
             # current raw-key map so the module's post-load hook can reorder
             # old learned rows and mean-initialize genuinely new entities.
             self.pl_model.set_rhs_index_map(rhs_index_map)
+        # Infer once without retaining another copy of the full RHS catalog.
+        rhs_pk_mixed = (emit_predictions and rhs_pk_arr.dtype.kind == 'O'
+                        and pd.api.types.infer_dtype(
+                            rhs_pk_arr, skipna=True).startswith('mixed'))
+        if not emit_predictions:
+            rhs_pk_type = pa.null()
+        elif rhs_pk_mixed:
+            rhs_pk_type = pa.string()
+        elif rhs_pk_arr.dtype.kind == 'O':
+            rhs_pk_type = pa.infer_type(rhs_pk_arr, from_pandas=True)
+        else:
+            rhs_pk_type = pa.from_numpy_dtype(rhs_pk_arr.dtype)
+        class_metadata = None
+        if pa.types.is_integer(rhs_pk_type):
+            class_dtype = (pd.UInt64Dtype()
+                           if pa.types.is_unsigned_integer(rhs_pk_type) else
+                           pd.Int64Dtype())
+            class_metadata = pa.Table.from_pandas(
+                pd.DataFrame({'CLASS': pd.Series(dtype=class_dtype)}),
+                preserve_index=False).schema.metadata
         embedding_ids_as_string = rhs_pk_arr.dtype.kind in {'O', 'S', 'U'}
         fkey_columns = list(task.train_table.foreign_key_columns)
         lhs_fkey_name = fkey_columns[0] if fkey_columns else 'ENTITY'
@@ -1812,6 +1849,8 @@ class DiskgraphNestedTrainer(NestedTrainer):
                 prediction,
                 rhs_node_ids=catalog_node_ids,
                 rhs_pk_arr=rhs_pk_arr,
+                rhs_pk_type=rhs_pk_type,
+                rhs_pk_mixed=rhs_pk_mixed,
                 lhs_fkey_name=lhs_fkey_name,
                 time_col=time_col,
                 ignore_time_col=ignore_time_col,
@@ -1822,6 +1861,7 @@ class DiskgraphNestedTrainer(NestedTrainer):
                 rhs_table=rhs_table,
                 embedding_extra_fields=embedding_extra_fields,
                 embedding_ids_as_string=embedding_ids_as_string,
+                class_metadata=class_metadata,
             )
 
         def _rhs_embedding_tables(
@@ -2016,6 +2056,8 @@ class DiskgraphNestedTrainer(NestedTrainer):
                     self.pl_model._kumo_return_predict_embeddings = old_flag
                 else:
                     delattr(self.pl_model, '_kumo_return_predict_embeddings')
+            # See predict(): release what the per-call writer class closes over.
+            datamodule = _build_chunk_output = None
         if writer.saved_output_count == 0:
             raise RuntimeError('[TT-NG LP] predict produced no batches')
         logger.info('[TT-NG LP] saved batch prediction output to %s',

@@ -17,12 +17,10 @@ from kumo.connector.csv_connector import CSVConnector
 from kumo.connector.parquet_connector import ParquetConnector
 from kumo.connector.snowflake_connector import SnowflakeConnector
 from kumo.graph.graph import Graph
-from kumo.testing.snowflake import withSnowflakeCredentials
 
 
 @pytest.fixture(scope='module')
-@withSnowflakeCredentials
-def snowflake_connector() -> SnowflakeConnector:
+def snowflake_connector(snowflake_credentials) -> SnowflakeConnector:
     connector = SnowflakeConnector('snowflake',
                                    account='xva19026',
                                    warehouse='WH_XS',

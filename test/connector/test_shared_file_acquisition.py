@@ -158,7 +158,7 @@ def test_hosted_unknown_input_size_uses_existing_scoped_estimator(
             assert active
             info = filesystem.get_file_info(path)
             return SimpleNamespace(path=info.path, type=info.type, size=None,
-                                   mtime=info.mtime)
+                                   mtime=info.mtime, mtime_ns=info.mtime_ns)
 
         def open_input_stream(self, path):
             assert active

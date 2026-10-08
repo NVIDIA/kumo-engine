@@ -39,6 +39,8 @@ uses.
 Not supported (yet): `suggest_prediction_table_plan` (explicitly deferred).
 """
 
+import logging
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime
 from functools import cached_property
@@ -68,6 +70,7 @@ from kumo_core.training.workflow import (
     build_training_task_plan,
 )
 from kumo_core.types import TaskType as CoreTaskType
+from kumoapi.common import ValidationResponse
 from kumoapi.json_serde import to_json_dict
 from kumoapi.model_plan import ModelPlan, RunMode, TrainingTableGenerationPlan
 from kumoapi.pquery import QueryType
@@ -86,6 +89,8 @@ from kumo.engine.pquery.prediction_table import (
     _compile_prediction_table,
 )
 from kumo.engine.pquery.training_table import TrainingTable
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -136,15 +141,24 @@ class PredictiveQuery:
                 f"self.graph (id {self.graph.id!r}) -- call "
                 "self.graph.snapshot() and pass its result.")
 
-    def validate(self) -> None:
-        r"""Validates this query against `self.graph`'s schema (via
-        `self._parsed`). Mirrors the cloud SDK's `PredictiveQuery.
-        validate()`, but unlike the existing local backend's non-raising
-        `ValidationResponse` contract (`kumoai/backend/local/pquery.py`'s
-        `_LocalPQueryBackend.validate`), an invalid query is raised, not
-        reported back -- the same exception `self._parsed` itself raises.
+    def validate(self, verbose: bool = True) -> ValidationResponse:
+        r"""Return validation warnings and information for a valid query.
+
+        Invalid queries raise the same exception as query parsing. The
+        response is a copy, so modifying it does not alter cached diagnostics.
+
+        Args:
+            verbose: Whether to log non-error output of this validation, as
+                the cloud SDK does: warnings and information at WARNING level,
+                or a confirmation at INFO level when the response is empty.
         """
-        self._parsed
+        response = deepcopy(self._parsed.validation_response)
+        if verbose:
+            if response.empty():
+                logger.info("Query %s is configured correctly.", self.query)
+            else:
+                logger.warning(response.message())
+        return response
 
     def get_task_type(self) -> TaskType:
         r"""Infers this query's task type (binary classification, regression,

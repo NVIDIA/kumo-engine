@@ -22,37 +22,46 @@ from kumo_snowflake.staging import (
 )
 from kumoapi.typing import Dtype
 
-STAGE, PREFIX = '"KUMO_TESTS"."HM_SAMPLED"."KUMO_INGEST"', "TRANSACTIONS/"
-SOURCE = '"KUMO_TESTS"."HM_SAMPLED"."TRANSACTIONS"'
-COLUMNS = {"CUSTOMER_ID": Dtype.string, "PRICE": Dtype.float}
+STAGE = '"SYNTHETIC_DB"."SYNTHETIC_SCHEMA"."KUMO_INGEST"'
+PREFIX = "EVENTS/"
+SOURCE = '"SYNTHETIC_DB"."SYNTHETIC_SCHEMA"."EVENTS"'
+COLUMNS = {"ENTITY_ID": Dtype.string, "VALUE": Dtype.float}
 WIDE_ENOUGH = 5
 NEVER_ENOUGH = 0.5
 LISTING = [
-    ("kumo_ingest/TRANSACTIONS/data_0_0_0.snappy.parquet", 12, "md5", "date"),
-    ("kumo_ingest/TRANSACTIONS/data_0_1_0.snappy.parquet", 8, "md5", "date"),
+    ("kumo_ingest/EVENTS/data_0_0_0.snappy.parquet", 12, "md5", "date"),
+    ("kumo_ingest/EVENTS/data_0_1_0.snappy.parquet", 8, "md5", "date"),
 ]
+
+
+@pytest.fixture(autouse=True)
+def outside_spcs(monkeypatch, tmp_path):
+    """These tests exercise batched presigning without a runtime token mount."""
+    monkeypatch.setattr("kumo_snowflake.staging.SPCS_TOKEN_PATH",
+                        str(tmp_path / "missing-spcs-token"))
 
 
 @pytest.mark.parametrize("declared,expression", [
     ("TIMESTAMP_TZ",
-     'CAST(CONVERT_TIMEZONE(\'UTC\', "T_DAT") AS TIMESTAMP_NTZ)'),
+     'CAST(CONVERT_TIMEZONE(\'UTC\', "EVENT_TIME") AS TIMESTAMP_NTZ)'),
     ("TIMESTAMP_LTZ",
-     'CAST(CONVERT_TIMEZONE(\'UTC\', "T_DAT") AS TIMESTAMP_NTZ)'),
-    ("TIMESTAMP_NTZ", 'CAST("T_DAT" AS TIMESTAMP_NTZ)'),
-    (None, 'CAST("T_DAT" AS TIMESTAMP_NTZ)'),
+     'CAST(CONVERT_TIMEZONE(\'UTC\', "EVENT_TIME") AS TIMESTAMP_NTZ)'),
+    ("TIMESTAMP_NTZ", 'CAST("EVENT_TIME" AS TIMESTAMP_NTZ)'),
+    (None, 'CAST("EVENT_TIME" AS TIMESTAMP_NTZ)'),
 ])
 def test_only_a_timestamp_carrying_an_instant_is_converted_to_utc(
         declared, expression):
-    types = {"T_DAT": declared} if declared else {}
-    assert build_projection({"T_DAT": Dtype.time}, {"T_DAT": "ts"},
+    types = {"EVENT_TIME": declared} if declared else {}
+    assert build_projection({"EVENT_TIME": Dtype.time}, {"EVENT_TIME": "ts"},
                             types) == f'{expression} AS "ts"'
     assert "CAST" not in build_projection(COLUMNS)
 
 
 def test_a_legacy_date_dtype_does_not_leave_ltz_unloadable():
-    assert build_projection({"T_DAT": Dtype.date}, source_types={
-        "T_DAT": "TIMESTAMP_LTZ"
-    }) == 'CAST(CONVERT_TIMEZONE(\'UTC\', "T_DAT") AS TIMESTAMP_NTZ) AS "T_DAT"'
+    assert build_projection({"EVENT_TIME": Dtype.date}, source_types={
+        "EVENT_TIME": "TIMESTAMP_LTZ"
+    }) == ('CAST(CONVERT_TIMEZONE(\'UTC\', "EVENT_TIME") AS TIMESTAMP_NTZ) '
+           'AS "EVENT_TIME"')
 
 
 def test_an_identifier_longer_than_snowflake_allows_is_refused():
@@ -67,7 +76,7 @@ def test_the_stage_is_temporary_and_server_side_encrypted():
     create_stage(cursor, STAGE)
     assert cursor.sql() == [
         'CREATE TEMPORARY STAGE IF NOT EXISTS '
-        '"KUMO_TESTS"."HM_SAMPLED"."KUMO_INGEST" '
+        '"SYNTHETIC_DB"."SYNTHETIC_SCHEMA"."KUMO_INGEST" '
         "ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')"
     ]
 
@@ -75,14 +84,14 @@ def test_the_stage_is_temporary_and_server_side_encrypted():
 def test_an_unload_that_reports_nothing_is_refused():
     with pytest.raises(PermanentSourceError):
         unload(FakeCursor({"COPY INTO": []}), stage=STAGE, prefix=PREFIX,
-               projection='"PRICE"', source=SOURCE)
+               projection='"VALUE"', source=SOURCE)
 
 
 def test_listing_returns_stage_relative_paths_and_their_sizes():
     files = list_prefix(FakeCursor({"LIST ": LISTING}), STAGE, PREFIX)
     assert [(f.path, f.size) for f in files] == [
-        ("TRANSACTIONS/data_0_0_0.snappy.parquet", 12),
-        ("TRANSACTIONS/data_0_1_0.snappy.parquet", 8),
+        ("EVENTS/data_0_0_0.snappy.parquet", 12),
+        ("EVENTS/data_0_1_0.snappy.parquet", 8),
     ]
 
 
@@ -122,11 +131,11 @@ def test_a_missing_presigned_url_is_refused():
 
 
 def files_and_urls():
-    files = (StagedFile("TRANSACTIONS/one.parquet",
-                        12), StagedFile("TRANSACTIONS/two.parquet", 8))
+    files = (StagedFile("EVENTS/one.parquet",
+                        12), StagedFile("EVENTS/two.parquet", 8))
     return files, {
-        "TRANSACTIONS/one.parquet": "https://one",
-        "TRANSACTIONS/two.parquet": "https://two",
+        "EVENTS/one.parquet": "https://one",
+        "EVENTS/two.parquet": "https://two",
     }
 
 

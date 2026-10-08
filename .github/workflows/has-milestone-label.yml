@@ -11,11 +11,12 @@ name: Sync "has_milestone" label with issue milestone (bugs only, no cleanup)
 "on":
   issues:
     types: [opened, edited, labeled, milestoned, demilestoned]
-permissions:
-  contents: read
-  issues: write
+permissions: {}
+
 jobs:
   sync-label:
+    permissions:
+      issues: write
     runs-on: ubuntu-latest
     steps:
       - name: Sync milestone label for bug issues

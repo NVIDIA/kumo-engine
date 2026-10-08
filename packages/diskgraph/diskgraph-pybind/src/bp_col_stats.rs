@@ -23,7 +23,7 @@ use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use diskgraph_core::accumulators::{
     kumo_entry, kumo_key, CategoryCountStrategy, WelfordAccumulator, MAX_CATEGORIES,
 };
-use diskgraph_ingest::col_stats::{minify_kumo_stats, FileColStats, TableCategoryCounts};
+use diskgraph_ingest::col_stats::{FileColStats, TableCategoryCounts};
 use diskgraph_ingest::graph_config::{ColumnSpec, IngestedType, SemanticType, TimestampUnit};
 use diskgraph_ingest::PublicIngestError;
 use diskgraph_rowpack::{ColumnValueObserver, RowAccess, RowAccessHints, RowAccessStats};
@@ -863,17 +863,14 @@ pub fn compute_parquet_col_stats(
 /// Test-focused variant of [`compute_parquet_col_stats`] with an injectable
 /// retained-vocabulary limit. Production callers always use
 /// [`MAX_CATEGORIES`] through the public wrapper above.
-pub(crate) fn compute_parquet_col_stats_with_max_categories(
-    parquet_paths: &[&Path],
-    columns: &[ColumnSpec],
-    data_version: &str,
+fn accumulate_parquet_col_stats<'a>(
+    parquet_paths: &'a [&'a Path],
+    columns: &'a [ColumnSpec],
     max_categories: u64,
-) -> Result<(String, String)> {
+) -> Result<(FileColStats, Arc<TableCategoryCounts>, Accumulated<'a>)> {
     if max_categories == 0 {
         bail!("category count limit must be greater than zero");
     }
-    let names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
-    let types: Vec<IngestedType> = columns.iter().map(|c| c.ingested_dtype.clone()).collect();
     let stypes: Vec<_> = columns.iter().map(|c| c.semantic_type).collect();
     for col in columns {
         validate_stats_dtype(col)?;
@@ -911,7 +908,7 @@ pub(crate) fn compute_parquet_col_stats_with_max_categories(
 
     let score_class = find_score_class(columns);
 
-    let (mut acc, by_class, integer_ranges) = if work.is_empty() {
+    let (acc, by_class, integer_ranges) = if work.is_empty() {
         let mut fcs = FileColStats::new_with_categories(columns, Arc::clone(&table_cat));
         fcs.flush_categories();
         (
@@ -953,14 +950,102 @@ pub(crate) fn compute_parquet_col_stats_with_max_categories(
                 },
             )?
     };
+    Ok((
+        acc,
+        table_cat,
+        Accumulated {
+            parquet_paths,
+            columns,
+            work,
+            parquet_indices,
+            integer_spec_indices,
+            integer_ranges,
+            by_class,
+            score_class,
+        },
+    ))
+}
 
-    // Serialization drains category state, so derive min from the full map.
-    let mut full = acc.to_kumo_json(&names, &types, Some(&table_cat), None, data_version);
+/// Everything besides the column stats that the finishing passes need.
+struct Accumulated<'a> {
+    parquet_paths: &'a [&'a Path],
+    columns: &'a [ColumnSpec],
+    work: Vec<(usize, usize)>,
+    parquet_indices: Vec<Vec<usize>>,
+    integer_spec_indices: Vec<usize>,
+    integer_ranges: Vec<IntegerRange>,
+    by_class: ByClassStats,
+    score_class: Option<(usize, usize)>,
+}
+
+/// Test-focused variant of [`compute_parquet_col_stats`] with an injectable
+/// retained-vocabulary limit. Production callers always use
+/// [`MAX_CATEGORIES`] through the public wrapper above.
+pub(crate) fn compute_parquet_col_stats_with_max_categories(
+    parquet_paths: &[&Path],
+    columns: &[ColumnSpec],
+    data_version: &str,
+    max_categories: u64,
+) -> Result<(String, String)> {
+    let (acc, table_cat, run) =
+        accumulate_parquet_col_stats(parquet_paths, columns, max_categories)?;
+    let names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
+    let types: Vec<IngestedType> = columns.iter().map(|c| c.ingested_dtype.clone()).collect();
+    let mut kumo = acc.into_kumo_stats(
+        "prediction",
+        &names,
+        &types,
+        Some(table_cat),
+        None,
+        data_version,
+    )?;
+    let mut full = std::mem::take(&mut kumo.stats);
+    add_distribution_stats(&run, &mut full, data_version)?;
+    // Category arrays are filled in, and trimmed for min, when serialized.
+    let mut min = full.clone();
+    add_summary_stats_by_class(&run, &mut full, &mut min, data_version);
+    Ok((
+        kumo.to_json_string(&full, usize::MAX)?,
+        kumo.to_json_string(&min, MIN_COL_STATS_CATEGORY_LIMIT)?,
+    ))
+}
+
+fn add_summary_stats_by_class(
+    run: &Accumulated<'_>,
+    full: &mut JsonMap<String, JsonValue>,
+    min: &mut JsonMap<String, JsonValue>,
+    data_version: &str,
+) {
+    // The cache fallback reads this stat from the min variant.
+    if let Some((key, entry)) =
+        build_summary_stats_by_class(run.columns, run.score_class, &run.by_class, data_version)
+    {
+        full.insert(key.clone(), entry.clone());
+        min.insert(key, entry);
+    }
+}
+
+/// Exact integer endpoints and the histograms, from a second pass.
+fn add_distribution_stats(
+    run: &Accumulated<'_>,
+    full: &mut JsonMap<String, JsonValue>,
+    data_version: &str,
+) -> Result<()> {
+    let Accumulated {
+        parquet_paths,
+        columns,
+        work,
+        parquet_indices,
+        integer_spec_indices,
+        integer_ranges,
+        ..
+    } = run;
+    let (parquet_paths, columns) = (*parquet_paths, *columns);
 
     // FileColStats uses floating accumulators for every numerical dtype. Keep
     // its mean/variance/quantiles, but restore exact integer endpoints before
     // serializing transformed prediction columns above f64's exact range.
-    for (&spec_idx, range) in integer_spec_indices.iter().zip(&integer_ranges) {
+    for (&spec_idx, range) in integer_spec_indices.iter().zip(integer_ranges.iter()) {
         let name = &columns[spec_idx].name;
         for (stat, value) in [("MIN", range.min), ("MAX", range.max)] {
             if let (Some(entry), Some(value)) = (
@@ -1001,7 +1086,7 @@ pub(crate) fn compute_parquet_col_stats_with_max_categories(
         .collect();
     let integer_specs: Vec<IntegerHistogramSpec> = integer_spec_indices
         .iter()
-        .zip(integer_ranges)
+        .zip(integer_ranges.iter())
         .filter_map(|(&spec_idx, range)| {
             let (min, max) = (range.min?, range.max?);
             let value_range = (i128::from(max) - i128::from(min)) as u128;
@@ -1143,16 +1228,7 @@ pub(crate) fn compute_parquet_col_stats_with_max_categories(
             );
         }
     }
-
-    let mut min = minify_kumo_stats(&full, MIN_COL_STATS_CATEGORY_LIMIT);
-    // The cache fallback reads this stat from the min variant.
-    if let Some((key, entry)) =
-        build_summary_stats_by_class(columns, score_class, &by_class, data_version)
-    {
-        full.insert(key.clone(), entry.clone());
-        min.insert(key, entry);
-    }
-    Ok((to_json_string(&full)?, to_json_string(&min)?))
+    Ok(())
 }
 
 fn build_summary_stats_by_class(
@@ -1187,10 +1263,6 @@ fn build_summary_stats_by_class(
         ),
         kumo_entry(JsonValue::Object(classes), false, data_version, total),
     ))
-}
-
-fn to_json_string(map: &JsonMap<String, JsonValue>) -> Result<String> {
-    Ok(serde_json::to_string(map)?)
 }
 
 #[cfg(test)]
@@ -1285,6 +1357,98 @@ mod tests {
             full["status__kumo.categorical__UNIQUE_FRACTION__False"]["approx"],
             json!(false)
         );
+    }
+
+    /// The pre-streaming implementation: copy the counts into JSON values,
+    /// then deep-clone and truncate for min.
+    fn legacy_col_stats(
+        paths: &[&Path],
+        columns: &[ColumnSpec],
+        max_categories: u64,
+    ) -> (String, String) {
+        use diskgraph_ingest::col_stats::minify_kumo_stats;
+        let (mut acc, table_cat, run) =
+            accumulate_parquet_col_stats(paths, columns, max_categories).unwrap();
+        let names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
+        let types: Vec<IngestedType> = columns.iter().map(|c| c.ingested_dtype.clone()).collect();
+        let mut full = acc.to_kumo_json(&names, &types, Some(&table_cat), None, "v1");
+        add_distribution_stats(&run, &mut full, "v1").unwrap();
+        let mut min = minify_kumo_stats(&full, MIN_COL_STATS_CATEGORY_LIMIT);
+        add_summary_stats_by_class(&run, &mut full, &mut min, "v1");
+        (
+            serde_json::to_string(&full).unwrap(),
+            serde_json::to_string(&min).unwrap(),
+        )
+    }
+
+    #[test]
+    fn streamed_output_matches_legacy_output() {
+        // Under a binding cap, which values are admitted depends on row-group
+        // scheduling, so that case reads one row group to stay deterministic.
+        for (files, rows_per_group, cap) in [(2, 250, MAX_CATEGORIES), (1, 10_000, 25)] {
+            check_streamed_matches_legacy(files, rows_per_group, cap);
+        }
+    }
+
+    fn check_streamed_matches_legacy(files: u64, rows_per_group: usize, cap: u64) {
+        let dir = tempdir().unwrap();
+        let schema = Schema::new(vec![
+            Field::new("item", DataType::Utf8, true),
+            Field::new("store", DataType::Int64, true),
+            Field::new("qty", DataType::Int64, true),
+            Field::new("price", DataType::Float64, true),
+            Field::new("SCORE", DataType::Float64, true),
+            Field::new("CLASS", DataType::Int64, true),
+        ]);
+        let mut paths = Vec::new();
+        for file in 0..files {
+            let rows = 0..1_500u64;
+            let key = |r: u64| (r * 7919 + file * 31) % 211;
+            let path = dir.path().join(format!("p{file}.parquet"));
+            write_parquet(
+                &path,
+                schema.clone(),
+                vec![
+                    StdArc::new(StringArray::from_iter(rows.clone().map(|r| {
+                        (r % 17 != 0).then(|| format!("item-{}", key(r) % (1 + key(r) / 3)))
+                    }))) as ArrayRef,
+                    StdArc::new(Int64Array::from_iter_values(
+                        rows.clone().map(|r| (key(r) % 40) as i64 - 20),
+                    )) as ArrayRef,
+                    StdArc::new(Int64Array::from_iter_values(
+                        rows.clone().map(|r| key(r) as i64),
+                    )) as ArrayRef,
+                    StdArc::new(Float64Array::from_iter_values(
+                        rows.clone().map(|r| key(r) as f64 / 3.0),
+                    )) as ArrayRef,
+                    StdArc::new(Float64Array::from_iter_values(
+                        rows.clone().map(|r| (r % 100) as f64 / 100.0),
+                    )) as ArrayRef,
+                    StdArc::new(Int64Array::from_iter_values(rows.map(|r| (r % 3) as i64)))
+                        as ArrayRef,
+                ],
+                rows_per_group,
+            );
+            paths.push(path);
+        }
+        let paths: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+        let columns = vec![
+            col("item", IngestedType::String, SemanticType::Categorical),
+            col("store", IngestedType::Int64, SemanticType::Id),
+            col("qty", IngestedType::Int64, SemanticType::Numerical),
+            col("price", IngestedType::Float64, SemanticType::Numerical),
+            col("SCORE", IngestedType::Float64, SemanticType::Numerical),
+            col("CLASS", IngestedType::Int64, SemanticType::Categorical),
+        ];
+        let streamed =
+            compute_parquet_col_stats_with_max_categories(&paths, &columns, "v1", cap).unwrap();
+        assert_eq!(
+            streamed,
+            legacy_col_stats(&paths, &columns, cap),
+            "cap {cap}"
+        );
+        assert!(streamed.0.contains("SUMMARY_STATS_BY_CLASS"));
+        assert!(streamed.0.contains("HISTOGRAM"));
     }
 
     #[test]

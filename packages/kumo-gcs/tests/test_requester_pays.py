@@ -138,3 +138,19 @@ def test_empty_bucket_is_a_directory(transport):
     transport.contents.clear()
     assert transport.access.filesystem.get_file_info(
         'bucket').type == FileType.Directory
+
+
+def test_identity_uses_fresh_generation_metadata_and_billing(transport):
+    assert transport.access.object_identity('bucket/data/a.csv') == ('123', '7')
+    assert transport.access.object_identity('bucket/data/a.csv') == ('123', '7')
+    assert ('billing', 'billing-project') in transport.requests
+
+
+def test_identity_preserves_access_errors(transport):
+    # reload is the SDK metadata request in the real client.
+    from unittest.mock import patch
+
+    with patch('kumo_gcs.download.GCSDownloader.object_identity',
+               side_effect=Forbidden('denied')):
+        with pytest.raises(SourceAccessDeniedError):
+            transport.access.object_identity('bucket/data/a.csv')

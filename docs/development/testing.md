@@ -14,9 +14,18 @@ local check does not establish a supported deployment or GPU profile.
 | Helm contract | [Helm CI checks](../../.github/workflows/kumo-helm-ci.yml) | Helm, Python, and each check's declared tooling |
 | Integration/GPU | Selected workflow, storage, training, or deployment tests | Explicit services, data, GPU/runtime resources, and operator credentials where required |
 
+Shared test setup loads Snowflake credentials only when a selected test requests
+them. Live Snowflake tests still need credentials and access to the service.
+In `test` and `dev_local` deployment modes, instance discovery uses the hostname
+without querying the EC2 metadata service.
+
 Run from the repository root unless a component guide says otherwise.
 Python package test suites have different roots and fixtures; inspect the
 package's configuration before invoking pytest over multiple packages.
+
+For connector changes, start with the [public test command](public-tests.md).
+It builds its prerequisites and runs without cloud credentials. The
+[test matrix](../connector-test-matrix.md) lists coverage and CI limits.
 
 ## Report evidence
 

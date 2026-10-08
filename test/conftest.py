@@ -21,6 +21,10 @@ import tempfile  # noqa: E402
 import time  # noqa: E402
 import uuid  # noqa: E402
 from collections.abc import Callable  # noqa: E402
+from test.fixtures.backend_cache import (  # noqa: E402, F401
+    auto_setup_kumo_backend,
+    backend_cache,
+)
 from typing import Dict  # noqa: E402
 from typing import Generator  # noqa: E402
 from typing import List  # noqa: E402
@@ -50,7 +54,6 @@ from kumoapi.typing import Dtype, Stype  # noqa: E402
 from snowflake.snowpark import Session as SnowparkSession  # noqa: E402
 
 import kumo.data as data  # noqa: E402
-import kumo.home  # noqa: E402
 from io_utils import fsutil, kumo_dataclass  # noqa: E402
 from io_utils.databricks import DatabricksConnectionInfo  # noqa: E402
 from io_utils.fsutil.uri import UCURI  # noqa: E402
@@ -65,6 +68,7 @@ from kumo.graph.table import Table  # noqa: E402
 from kumo.task.task import Task  # noqa: E402
 from kumo.testing import withDatabricksCredentials  # noqa: E402
 from kumo.testing.generator import EdgeSpec, GraphSpec, TableSpec  # noqa: E402
+from kumo.testing.snowflake import setup_snowflake_credentials  # noqa: E402
 from kumo.utils.embedding_models import embedding_model_store  # noqa: E402
 
 # Set the test IAM role for get_temporary_aws_credential fallback. This
@@ -553,6 +557,7 @@ def _create_snowflake_graph(
         tables (list, optional): list of tables to be included in the graph.
             Must use fully-qualified names.
     """
+    setup_snowflake_credentials()
     root = osp.join(osp.dirname(osp.realpath(__file__)), 'csv_data', name)
 
     connector = snowflake_connector.SnowflakeConnector(
@@ -1442,13 +1447,15 @@ def create_task() -> Callable:
     return _create_task
 
 
+@pytest.fixture(scope='session')
+def snowflake_credentials() -> None:
+    setup_snowflake_credentials()
+
+
 @pytest.fixture(scope="module")
-def snowflake_session(schema: str = 'FINANCIAL_PYTEST') -> SnowparkSession:
-
-    from io_utils.secrets import get_secrets
-
-    private_key = get_secrets(
-        "xva19026.snowflakecomputing.com")["kumo_user_secretkey"]
+def snowflake_session(snowflake_credentials,
+                      schema: str = 'FINANCIAL_PYTEST') -> SnowparkSession:
+    private_key = os.environ[snowflake_connector._ENV_SNOWFLAKE_PRIVATE_KEY]
 
     from cryptography.hazmat.primitives import serialization
 
@@ -1584,46 +1591,19 @@ def tempdir(request):
         return tempdir
 
 
-@pytest.fixture
-def auto_setup_kumo_backend() -> bool:
-    return True
-
-
 @pytest.fixture(autouse=True)
 def run_before_and_after_tests(auto_setup_kumo_backend: bool,
+                               backend_cache,
                                tmp_path: pathlib.Path):
     if not auto_setup_kumo_backend:
         yield
         return
-    """With `autouse=True`, we run this function before and after each test
-    to set appropriate backends for each test."""
-    # The data persist dir is derived from deploy_env() (kumo.data
-    # .get_persist_dir); in TEST mode it resolves to a stable path under the
-    # repo cache dir. It's wiped after each test below to preserve the old
-    # per-test-empty seeding contract.
-    data_persist_dir = data.get_persist_dir()
-    os.makedirs(data_persist_dir, exist_ok=True)
-
-    # The engine layer (DiskGraph) holds no process-global state: the persist
-    # dir is threaded explicitly and there is no engine mode, so there is
-    # nothing to reset between tests here.
-
+    # Restore the statistics methods before the shared cache fixture cleans up.
     restore_col_stats_fallback = _install_dg_col_stats_fallback()
     try:
-        # Run the test:
         yield
     finally:
         restore_col_stats_fallback()
-
-        # Drop the process-wide BackendCacheManager and wipe the (deploy_env
-        # derived) data persist dir so the next test starts from an empty
-        # data backend. Setup is re-driven by this autouse fixture.
-        data.reset_active_cache_for_test()
-        fsutil.rm(data.get_persist_dir(), ignore_errors=True)
-        # Reset artifacts in home dir:
-        fsutil.rm(
-            kumo.home.HomeDirManager(kumo.home.get_home_dir()).pseudo_time_dir,
-            ignore_errors=True)
 
 
 @pytest.fixture(scope='session', autouse=True)

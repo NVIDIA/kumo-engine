@@ -7,6 +7,7 @@ import errno
 import os
 import threading
 import time
+from contextlib import nullcontext
 
 import numpy as np
 import pandas as pd
@@ -740,13 +741,16 @@ def test_embedding_close_failure_aborts_prediction_partition(
     assert not writer._embedding_writer._temp_dir.exists()
 
 
-def test_ttng_lp_callback_builds_arrow_without_pandas_dataframe(monkeypatch):
+@pytest.mark.parametrize("invalid_id", [None, 3, 99])
+@pytest.mark.parametrize("first_key", ["rhs-0", 1])
+def test_ttng_lp_callback_builds_arrow_without_pandas_dataframe(
+        monkeypatch, invalid_id, first_key):
     from kumo_core.train import diskgraph_nested_trainer as trainer_module
 
     dataframe_type = pd.DataFrame
     expected = pd.DataFrame({
         "USER_ID": ["lhs-a", "lhs-a", "lhs-b", "lhs-b"],
-        "CLASS": [None, "rhs-0", "rhs-2", "rhs-0"],
+        "CLASS": [None, str(first_key), "rhs-2", None],
         "SCORE":
         np.array([0.9, 0.8, 0.7, 0.6], dtype=np.float32),
         "EVENT_TIME":
@@ -760,31 +764,39 @@ def test_ttng_lp_callback_builds_arrow_without_pandas_dataframe(monkeypatch):
         raise AssertionError("TT-NG LP output must not materialize pandas")
 
     monkeypatch.setattr(trainer_module.pd, "DataFrame", reject_dataframe)
-    output = trainer_module._build_ttng_lp_chunk_output(
-        {
-            "pkey":
-            np.array(["lhs-a", "lhs-b"], dtype=object),
-            "target":
-            np.array([[1, 0], [2, -1]], dtype=np.int64),
-            "score":
-            np.array([[0.9, 0.8], [0.7, 0.6]], dtype=np.float32),
-            "time":
-            np.array([1_700_000_000_000_000_000, 1_700_000_001_000_000_000],
-                     dtype=np.int64),
-        },
-        rhs_node_ids=np.arange(3, dtype=np.int64),
-        rhs_pk_arr=np.array(["rhs-0", None, "rhs-2"], dtype=object),
-        lhs_fkey_name="USER_ID",
-        time_col="EVENT_TIME",
-        ignore_time_col=False,
-        job_start_time=None,
-        emit_predictions=True,
-        emit_embeddings=False,
-        lhs_table="users",
-        rhs_table="items",
-        embedding_extra_fields=set(),
-        embedding_ids_as_string=True,
-    )
+    context = (pytest.raises(RuntimeError, match="non-canonical RHS node ID")
+               if invalid_id is not None else nullcontext())
+    with context:
+        output = trainer_module._build_ttng_lp_chunk_output(
+            {
+                "pkey":
+                np.array(["lhs-a", "lhs-b"], dtype=object),
+                "target":
+                np.array([[1, 0], [2, -1 if invalid_id is None else invalid_id]
+                          ], dtype=np.int64),
+                "score":
+                np.array([[0.9, 0.8], [0.7, 0.6]], dtype=np.float32),
+                "time":
+                np.array([1_700_000_000_000_000_000, 1_700_000_001_000_000_000],
+                         dtype=np.int64),
+            },
+            rhs_node_ids=np.arange(3, dtype=np.int64),
+            rhs_pk_arr=np.array([first_key, None, "rhs-2"], dtype=object),
+            rhs_pk_mixed=isinstance(first_key, int),
+            rhs_pk_type=pa.string(),
+            lhs_fkey_name="USER_ID",
+            time_col="EVENT_TIME",
+            ignore_time_col=False,
+            job_start_time=None,
+            emit_predictions=True,
+            emit_embeddings=False,
+            lhs_table="users",
+            rhs_table="items",
+            embedding_extra_fields=set(),
+            embedding_ids_as_string=True,
+        )
+    if invalid_id is not None:
+        return
 
     assert isinstance(output, ArrowPredOutput)
     assert output.table.column_names == [
@@ -794,7 +806,7 @@ def test_ttng_lp_callback_builds_arrow_without_pandas_dataframe(monkeypatch):
         "lhs-a", "lhs-a", "lhs-b", "lhs-b"
     ]
     assert output.table.column("CLASS").to_pylist() == [
-        None, "rhs-0", "rhs-2", "rhs-0"
+        None, str(first_key), "rhs-2", None
     ]
     assert output.table.schema.field("EVENT_TIME").type == pa.timestamp("us")
     monkeypatch.setattr(trainer_module.pd, "DataFrame", dataframe_type)
@@ -820,25 +832,6 @@ def test_arrow_string_conversion_preserves_null_and_mixed_semantics():
     ]
 
 
-def test_arrow_class_conversion_preserves_nonmixed_object_types():
-    from kumo_core.train import diskgraph_nested_trainer as trainer_module
-
-    strings = trainer_module._arrow_class_array(
-        np.array(["one", None, "three"], dtype=object))
-    assert strings.type == pa.string()
-    assert strings.to_pylist() == ["one", None, "three"]
-
-    binary = trainer_module._arrow_class_array(
-        np.array([b"one", None, b"three"], dtype=object))
-    assert binary.type == pa.binary()
-    assert binary.to_pylist() == [b"one", None, b"three"]
-
-    mixed = trainer_module._arrow_class_array(
-        np.array([1, "two", None], dtype=object))
-    assert mixed.type == pa.string()
-    assert mixed.to_pylist() == ["1", "two", None]
-
-
 def test_ttng_lp_object_integer_class_matches_legacy_artifact(tmp_path):
     from kumo_core.train import diskgraph_nested_trainer as trainer_module
 
@@ -850,6 +843,7 @@ def test_ttng_lp_object_integer_class_matches_legacy_artifact(tmp_path):
         },
         rhs_node_ids=np.arange(3, dtype=np.int64),
         rhs_pk_arr=np.array([10, None, 30], dtype=object),
+        rhs_pk_type=pa.int64(),
         lhs_fkey_name="USER_ID",
         time_col="EVENT_TIME",
         ignore_time_col=True,
@@ -900,7 +894,8 @@ def test_ttng_lp_arrow_embedding_matches_legacy_schema(tmp_path):
     output = trainer_module._build_ttng_lp_chunk_output(
         prediction,
         rhs_node_ids=np.arange(2, dtype=np.int64),
-        rhs_pk_arr=np.array(["rhs-0", "rhs-1"], dtype=object),
+        rhs_pk_arr=np.array(["rhs-0", "rhs-1"]),
+        rhs_pk_type=pa.string(),
         lhs_fkey_name="USER_ID",
         time_col="EVENT_TIME",
         ignore_time_col=False,
@@ -930,8 +925,22 @@ def test_ttng_lp_arrow_embedding_matches_legacy_schema(tmp_path):
         "ANCHOR_TIMESTAMP").type == pa.timestamp("ns")
 
 
-def test_arrow_lp_artifacts_match_legacy_values_schema_and_metadata(tmp_path):
+@pytest.mark.parametrize("targets", [
+    [[0, 1], [2, -1]],
+    [[-1, -1], [-1, -1]],
+    [[0, 1], [2, 0]],
+])
+@pytest.mark.parametrize(("rhs_keys", "class_dtype"), [
+    (["rhs-0", "rhs-1", "rhs-2"], None),
+    ([2**60 + 1, 2**60 + 2, 2**60 + 3], pd.Int64Dtype()),
+    ([2**63 + 1, 2**63 + 2, 2**63 + 3], pd.UInt64Dtype()),
+])
+def test_arrow_lp_artifacts_match_legacy_values_schema_and_metadata(
+        tmp_path, targets, rhs_keys, class_dtype):
+    import torch
     from kumo_core.train import diskgraph_nested_trainer as trainer_module
+    from kumo_core.train.mapping import NODE_INDEX_COLUMN
+    from kumo_core.train.trainer import create_lp_prediction_output
 
     time_values = np.array(
         [1_700_000_000_123_456_789, 1_700_000_001_987_654_321],
@@ -942,13 +951,14 @@ def test_arrow_lp_artifacts_match_legacy_values_schema_and_metadata(tmp_path):
     arrow_output = trainer_module._build_ttng_lp_chunk_output(
         {
             "pkey": np.array(["lhs-a", "lhs-b"], dtype=object),
-            "target": np.array([[0, 1], [2, -1]], dtype=np.int64),
-            "score": np.array([[0.9, 0.8], [0.7, 0.6]], dtype=np.float32),
+            "target": np.array(targets, dtype=np.int64),
+            "score": np.array([[0., 0.8], [0.7, 0.]], dtype=np.float32),
             "time": time_values,
             "lhs_embedding": embeddings,
         },
         rhs_node_ids=np.arange(3, dtype=np.int64),
-        rhs_pk_arr=np.array(["rhs-0", None, "rhs-2"], dtype=object),
+        rhs_pk_arr=np.asarray(rhs_keys),
+        rhs_pk_type=pa.infer_type(np.asarray(rhs_keys)),
         lhs_fkey_name="USER_ID",
         time_col="EVENT_TIME",
         ignore_time_col=False,
@@ -959,16 +969,32 @@ def test_arrow_lp_artifacts_match_legacy_values_schema_and_metadata(tmp_path):
         rhs_table="items",
         embedding_extra_fields={"ANCHOR_TIMESTAMP", "JOB_TIMESTAMP"},
         embedding_ids_as_string=True,
+        class_metadata=(pa.Table.from_pandas(
+            pd.DataFrame({'CLASS': pd.Series(
+                dtype=class_dtype)}), preserve_index=False).schema.metadata
+                        if class_dtype is not None else None),
     )
+    target_tensor = torch.tensor(targets)
+    legacy_frame = create_lp_prediction_output(
+        outs={
+            "pkey": np.array(["lhs-a", "lhs-b"]),
+            "target": target_tensor,
+            "score": torch.tensor([[0., 0.8], [0.7, 0.]]),
+        },
+        lhs_fkey_name="USER_ID",
+        rhs_index_map=pd.DataFrame({NODE_INDEX_COLUMN: range(3)},
+                                   index=rhs_keys),
+    )
+    assert target_tensor.tolist() == targets
+    expected_classes = [
+        rhs_keys[i] if i >= 0 else None for row in targets for i in row
+    ]
+    assert arrow_output.table.column("CLASS").to_pylist() == expected_classes
+    assert arrow_output.table.column("SCORE").to_pylist()[0] == 0.
+    legacy_frame["EVENT_TIME"] = np.repeat(time_values.astype("datetime64[ns]"),
+                                           2)
     legacy_output = PredOutput(
-        pd.DataFrame({
-            "USER_ID": ["lhs-a", "lhs-a", "lhs-b", "lhs-b"],
-            "CLASS": ["rhs-0", None, "rhs-2", "rhs-0"],
-            "SCORE":
-            np.array([0.9, 0.8, 0.7, 0.6], dtype=np.float32),
-            "EVENT_TIME":
-            np.repeat(time_values.astype("datetime64[ns]"), 2),
-        }),
+        legacy_frame,
         pd.DataFrame({
             "ID": ["lhs-a", "lhs-b"],
             "TYPE": ["users", "users"],
@@ -989,6 +1015,11 @@ def test_arrow_lp_artifacts_match_legacy_values_schema_and_metadata(tmp_path):
             job_start_time=job_start,
     ) as writer:
         writer.write(legacy_output)
+        if all(i < 0 for row in targets for i in row):
+            following = legacy_frame.copy()
+            following["CLASS"] = pd.array([rhs_keys[0]] * 4,
+                                          dtype=legacy_frame.CLASS.dtype)
+            writer.write(PredOutput(following))
     with StreamingPredOutputWriter(
             str(arrow_dir),
             0,
@@ -996,10 +1027,26 @@ def test_arrow_lp_artifacts_match_legacy_values_schema_and_metadata(tmp_path):
             job_start_time=job_start,
     ) as writer:
         writer.write(arrow_output)
+        if all(i < 0 for row in targets for i in row):
+            writer.write(
+                ArrowPredOutput(
+                    arrow_output.table.set_column(
+                        1, "CLASS",
+                        pa.array(np.repeat(np.asarray(rhs_keys)[:1], 4)))))
+            expected_classes += [rhs_keys[0]] * 4
 
     for artifact in ("predictions.parquet", "embeddings.parquet"):
         legacy = _read_parts(legacy_dir / artifact)
         arrow = _read_parts(arrow_dir / artifact)
         assert arrow.num_rows == legacy.num_rows
         assert arrow.schema.equals(legacy.schema, check_metadata=False)
-        pd.testing.assert_frame_equal(arrow.to_pandas(), legacy.to_pandas())
+        assert arrow.equals(legacy, check_metadata=False)
+        if artifact == "predictions.parquet":
+            assert arrow.column("CLASS").to_pylist() == expected_classes
+            for directory in (legacy_dir, arrow_dir):
+                classes = pd.read_parquet(directory / artifact)['CLASS']
+                assert classes.dropna().tolist() == [
+                    value for value in expected_classes if value is not None
+                ]
+                if class_dtype is not None:
+                    assert classes.dtype == class_dtype

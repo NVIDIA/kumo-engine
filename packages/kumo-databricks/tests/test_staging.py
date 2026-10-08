@@ -14,7 +14,7 @@ from kumo_databricks.staging import clear_volume, download, list_parquet, stage
 from kumoapi.typing import Dtype
 
 SOURCE = "`samples`.`tpch`.`customer`"
-LOCATION = "/Volumes/kumo_test_catalogue/amazon_10k/vol/out"
+LOCATION = "/Volumes/example_catalog/example_schema/vol/out"
 COLUMNS = {
     "c_custkey": Dtype.int64,
     "c_name": Dtype.string,

@@ -2,8 +2,11 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Stage a directly referenced connector table as one local parquet file."""
+"""Stage a directly referenced connector table as local parquet parts."""
 
+import errno
+import os
+import shutil
 from pathlib import Path
 
 import pyarrow.dataset as ds
@@ -13,7 +16,7 @@ from kumo.engine.connector.source_table import SourceTable
 
 
 def stage_source_table(source_table: SourceTable, destination: Path) -> Path:
-    """Read ``source_table`` through its connector and retain one parquet."""
+    """Read ``source_table`` through its connector and retain its parquet parts."""
     if not isinstance(source_table, SourceTable):
         raise TypeError("source_table must be a kumo.engine SourceTable")
     destination.mkdir(parents=True, exist_ok=False)
@@ -38,22 +41,27 @@ def stage_source_table(source_table: SourceTable, destination: Path) -> Path:
             paths = [Path(path)]
     if not paths or any(not path.exists() for path in paths):
         raise RuntimeError("Custom-table staging produced no parquet files.")
-    if len(paths) == 1 and paths[0].is_file():
-        return paths[0]
-
-    # ``pyarrow.dataset`` accepts one directory, and it accepts a list of
-    # datasets, but a list of directory strings is interpreted as a list of
-    # files.  Build each connector result independently so partitioned table
-    # directories and multi-location sources follow the same streaming path.
-    datasets = [ds.dataset(str(path), format="parquet") for path in paths]
-    dataset = datasets[0] if len(datasets) == 1 else ds.dataset(datasets)
-    output = destination / "custom.parquet"
-    writer = pq.ParquetWriter(output, dataset.schema)
-    try:
-        for batch in dataset.to_batches():
-            writer.write_batch(batch)
-    finally:
-        writer.close()
+    # DiskGraph accepts one file or a flat directory of parquet parts. Flatten
+    # connector directories without re-encoding or combining their row groups.
+    output = destination / "parts"
+    output.mkdir()
+    parts = [
+        Path(fragment.path) for path in paths
+        for fragment in ds.dataset(str(path), format="parquet").get_fragments()
+    ]
+    if not parts:
+        raise RuntimeError("Custom-table staging produced no parquet files.")
+    for index, part in enumerate(parts):
+        target = output / f"part-{index:05d}.parquet"
+        try:
+            # Relative links keep the retained source and parts directory
+            # together if the staging tree moves.
+            target.symlink_to(os.path.relpath(part.resolve(), output.resolve()))
+        except OSError as error:
+            if error.errno not in (
+                    errno.EPERM, errno.EACCES, errno.EOPNOTSUPP, errno.ENOSYS):
+                raise
+            shutil.copyfile(part, target)
     return output
 
 
@@ -66,11 +74,15 @@ def _validate_source(path, query, graph, *, weight_col, split_col,
     from kumoapi.common import KumoValidationError, ValidationResponse
     from kumoapi.typing import Dtype
 
-    parquet_file = pq.ParquetFile(path)
-    schema = custom_table.stored_schema(
-        parquet_file.schema_arrow,
-        parquet_file.metadata.metadata,
-    )
+    path = Path(path)
+    parts = sorted(path.glob("*.parquet")) if path.is_dir() else [path]
+    if not parts:
+        raise RuntimeError("Custom-table staging produced no parquet files.")
+    with pq.ParquetFile(parts[0]) as parquet_file:
+        schema = custom_table.stored_schema(
+            parquet_file.schema_arrow,
+            parquet_file.metadata.metadata,
+        )
     task_type = TaskType(query.task_type)
     entity = graph.table(query.entity_table)
     anchored = (query_is_temporal(query, graph) if prediction else
@@ -122,8 +134,16 @@ def _validate_source(path, query, graph, *, weight_col, split_col,
     if not errors:
         tally = custom_table.Tally(schema, rules)
         columns = custom_table.scanned_columns(schema, rules)
-        for batch in parquet_file.iter_batches(columns=columns):
-            tally.feed(batch)
+        for part in parts:
+            with pq.ParquetFile(part) as part_file:
+                part_schema = custom_table.stored_schema(
+                    part_file.schema_arrow, part_file.metadata.metadata)
+                if not part_schema.equals(schema):
+                    raise ValueError(
+                        f"Custom-table parquet parts must have matching "
+                        f"schemas; {part} differs from {parts[0]}.")
+                for batch in part_file.iter_batches(columns=columns):
+                    tally.feed(batch)
         errors += custom_table.content_errors(tally, rules)
     if errors:
         raise ValueError(ValidationResponse(errors=errors).error_message())

@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+services:
+  minio:
+    image: ${PUBLIC_TEST_RUN_ID:?}-minio
+    build:
+      context: .
+      dockerfile: Dockerfile.minio
+    command: server /data --certs-dir /tls
+    environment:
+      MINIO_ROOT_USER_FILE: /fixture/secrets/root-user
+      MINIO_ROOT_PASSWORD_FILE: /fixture/secrets/root-password
+    volumes:
+      - ../../docker/compose/config/minio-test:/fixture:ro
+      - ${PROOF_TLS_DIR:?}:/tls:ro
+    networks:
+      default:
+        # The wrong-addressing-style test must reach TLS, not fail at DNS.
+        aliases: [kumo-dataplane.localhost]
+  init:
+    image: ${PUBLIC_TEST_RUN_ID:?}-minio
+    pull_policy: never
+    depends_on: [minio]
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        until mc alias set fixture https://minio:9000 \
+          "$$(cat /fixture/secrets/root-user)" "$$(cat /fixture/secrets/root-password)"; do sleep 1; done
+        mc mb --ignore-existing fixture/kumo-dataplane fixture/kumo-artifacts fixture/kumo-connector
+        for name in kumo readonly connector; do
+          policy="$$name-policy.json"
+          if [ "$$name" = kumo ]; then policy=policy.json; fi
+          key="$$(cat /fixture/secrets/$$name-access-key)"
+          mc admin policy create fixture "$$name" "/fixture/$$policy"
+          mc admin user add fixture "$$key" "$$(cat /fixture/secrets/$$name-secret-key)"
+          mc admin policy attach fixture "$$name" --user "$$key"
+        done
+    volumes:
+      - ../../docker/compose/config/minio-test:/fixture:ro
+      - ${PROOF_TLS_DIR:?}/public.crt:/root/.mc/certs/CAs/public.crt:ro
+networks:
+  default:
+    internal: true

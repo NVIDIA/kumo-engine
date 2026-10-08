@@ -15,6 +15,7 @@ from kumo.testing.snowflake import SnowflakeTableConnector
 
 @pytest.fixture()
 def writable_snowflake_table(
+        snowflake_credentials
 ) -> Generator[SnowflakeTableConnector, None, None]:
     name = f'TEST_PREDICTION_{str(uuid.uuid1()).upper().replace("-", "")}'
     connector = writable_snowflake_config('snowflake').as_connector('xva19026')

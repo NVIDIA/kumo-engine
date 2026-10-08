@@ -15,6 +15,11 @@ Dataplane/L2 transfer and publication remain runtime responsibilities.
 `ArtifactSink` contracts using shared object-store machinery in `kumo-core`.
 Installing this distribution registers its source, sink and identity plugins.
 
-From the monorepo root, run the unit tests with no credentials:
+From the repository root, run the public tests without cloud credentials:
 
-    pytest packages/kumo-gcs/tests -q
+```bash
+python3 scripts/test_public.py --group gcs
+```
+
+See the [public test guide](../../docs/development/public-tests.md) for setup
+and the [test matrix](../../docs/connector-test-matrix.md#reader-groups) for coverage.

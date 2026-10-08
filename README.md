@@ -34,6 +34,7 @@ service, web UI, connectors, and deployment definitions. Start with the
 
 - [Setup and prerequisites](docs/development/setup.md)
 - [Testing and validation tiers](docs/development/testing.md)
+- [Public connector tests](docs/development/public-tests.md)
 - [Generated artifacts](docs/development/generated-artifacts.md)
 - [UI development](docs/development/ui.md)
 - [Agent instructions and setup](docs/development/agents.md)

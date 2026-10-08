@@ -3,7 +3,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-set -e
+set -eo pipefail
 
 UNAME_S=$(uname -s)
 UNAME_M=$(uname -m)
@@ -40,7 +40,13 @@ if DEPLOY_STAGE=dev TEMPORAL_SERVER=localhost TEMPORAL_ADDRESS="$TEMPORAL_ADDRES
 else
     if ! command -v temporal &> /dev/null; then
         echo "Install Temporal CLI, see https://docs.temporal.io/cli"
-        for i in 1 2 3 4 5; do (curl -sSf https://temporal.download/cli.sh) && break || sleep 5; done | sh
+        temporal_installer_commit="daa3f466fcb5cc37d5a1081a73106523299e0a56"
+        temporal_cli_version="1.9.1"
+        for i in 1 2 3 4 5; do
+            curl -sSf \
+                "https://raw.githubusercontent.com/temporalio/cli/${temporal_installer_commit}/install.sh" && break
+            sleep 5
+        done | sh -s -- --version "${temporal_cli_version}"
         export PATH=$PATH:$HOME/.temporalio/bin
         SHELL_NAME="$(basename "${SHELL:-bash}")"
         case "$SHELL_NAME" in

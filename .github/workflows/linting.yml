@@ -242,11 +242,10 @@ jobs:
 
       - name: Install ShellCheck
         if: steps.deploy-shell-changes.outputs.any_changed == 'true'
-        run: |
-          if ! command -v shellcheck >/dev/null 2>&1; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq shellcheck
-          fi
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 12
+        with:
+          packages: shellcheck
 
       - name: Check changed deployment shell scripts
         if: steps.deploy-shell-changes.outputs.any_changed == 'true'
@@ -340,21 +339,6 @@ jobs:
         with:
           python-version: "3.14"
           activate-environment: true
-
-      - name: Install lxml build dependencies
-        if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.only_changed != 'true'
-        run: |
-          # The Chrome repo preinstalled on the runner image has
-          # intermittently served a stale/mismatched Packages.gz, which apt
-          # treats as fatal for the whole `update` rather than skipping it.
-          # See .github/actions/setup/action.yml for the same cleanup.
-          for apt_file in `grep -lr dl.google.com/linux/chrome /etc/apt/sources.list.d/`; do sudo rm $apt_file; done
-          # redshift-connector caps lxml<6.0.0, and lxml only ships cp314
-          # wheels from 6.0.1 onward, so on Python 3.14 uv builds lxml 5.4.0
-          # from its sdist, which needs these dev headers.
-          sudo apt-get -qq update
-          sudo apt-get install -y -qq --no-install-recommends libxml2-dev libxslt1-dev
-        shell: bash
 
       # Reuse the DiskGraph wheel that testing.yml caches per source tree, as
       # .github/actions/setup does, instead of compiling it on every run.

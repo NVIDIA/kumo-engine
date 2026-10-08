@@ -3,9 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 r"""Synchronous local model training, prediction, and bundle loading."""
 
+import gc
 import hashlib
 import json
 import logging
+import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -171,6 +173,16 @@ def _find_holdout(log_dir: str) -> tuple[Optional[Path], Optional[bool]]:
                        'truncation is unknown.', meta)
         truncated = None
     return path, truncated
+
+
+def _collect_garbage(stage: str) -> None:
+    # Lightning links each trainer to its data module and model in reference
+    # cycles; free a finished run now rather than at a later collection.
+    started = time.perf_counter()
+    collected = gc.collect()
+    logger.debug('%s: garbage collection collected %d objects in %.2fs', stage,
+                 collected,
+                 time.perf_counter() - started)
 
 
 def _to_core_model_plan(model_plan: ModelPlan) -> CoreModelPlan:
@@ -407,6 +419,8 @@ class Trainer:
             holdout_path=holdout_path,
             holdout_truncated=holdout_truncated,
         )
+        del result
+        _collect_garbage('fit')
         return self._finish_fit(
             training_result,
             predictive_query=train_table.query,
@@ -482,10 +496,12 @@ class Trainer:
         CUDA execution requires one visible device per concurrent scorer.
 
         ``num_classes_to_return`` must be a positive integer when supplied.
+        Link predictions require an explicit count of at most 500. Embeddings
+        alone do not require a count.
 
-        Binary classification requires an explicit threshold, matching hosted
-        and the existing local backend. The shared policy validates it; labels
-        change without changing the retained positive probabilities.
+        Binary classification requires an explicit threshold. Multilabel
+        classification defaults to 0.5. Both accept thresholds from 0 to 1;
+        thresholds change predicted labels without changing class scores.
         """
         from kumo_core.prediction_options import (
             validate_num_classes_to_return,
@@ -502,6 +518,7 @@ class Trainer:
         from kumo_core.prediction_options import (
             prediction_query_contract,
             resolve_classification_threshold,
+            resolve_num_classes_to_return,
         )
         from kumo_core.types import TaskType
 
@@ -525,12 +542,17 @@ class Trainer:
         artifact_type = (PredictionArtifactType.PREDICTIONS
                          if PredictionArtifactType.PREDICTIONS in artifacts else
                          PredictionArtifactType.EMBEDDINGS)
-        if (task_type is TaskType.MULTILABEL_CLASSIFICATION
-                and binary_classification_threshold is not None
-                and artifact_type is PredictionArtifactType.PREDICTIONS):
-            raise ValueError(
-                'Local batch prediction does not support an explicit '
-                'classification threshold for multilabel prediction output')
+        # Parse against the selected graph so its topology, feature schema,
+        # and index coordinates drive task materialization. The generated
+        # population and anchors still come from the immutable PredictionTable.
+        native_graph = normalize_graph(graph_config)
+        parsed = parse_and_validate_query(prediction_table.query, native_graph)
+        num_classes_to_return = resolve_num_classes_to_return(
+            task_type,
+            num_classes_to_return,
+            top_k=parsed.query.top_k,
+            has_predictions=PredictionArtifactType.PREDICTIONS in artifacts,
+        )
 
         write_files = None
         if output_config is not None:
@@ -547,9 +569,15 @@ class Trainer:
                     preflight(output_config.connector, destination,
                               write_mode=output_config.write_mode)
 
-        require_trained_embedding_models(
-            self._embedding_models,
-            self._training_result.artifact_paths.get('encoders'))
+        from kumo_core.encoders.config import EncodersConfig
+        from kumo_core.io.json import load_json
+
+        # Loaded once: the embedding check and the in-process scorer share it.
+        encoders_path = self._training_result.artifact_paths.get('encoders')
+        encoders = (load_json(encoders_path, EncodersConfig)
+                    if encoders_path and Path(encoders_path).is_file() else
+                    None)
+        require_trained_embedding_models(self._embedding_models, encoders)
 
         from kumo_core.prediction import (
             GeneratedPredictionTable,
@@ -563,12 +591,6 @@ class Trainer:
         run_dir = self.scratch_dir / 'runs' / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        # Parse against the selected graph so its topology, feature schema,
-        # and index coordinates drive task materialization. The generated
-        # population and anchors below still come directly from the immutable
-        # PredictionTable and are not compiled again.
-        native_graph = normalize_graph(graph_config)
-        parsed = parse_and_validate_query(prediction_table.query, native_graph)
         if self._training_table_generation_plan is not None:
             parsed = resolve_query_forecast(
                 parsed, native_graph, self._training_table_generation_plan)
@@ -608,6 +630,11 @@ class Trainer:
         )
         materialized = materialize_prediction_task(request, generated,
                                                    graph_index_id=snapshot.id)
+        timestamps = request.timestamps
+        forecast_options = forecast_task_options(request)
+        # Scoring reloads the materialized feature schema; drop this copy
+        # first so the parent and its forked loader workers never hold both.
+        del request, task_dataset
 
         model_dir = str(
             _stage_model_bundle(
@@ -618,7 +645,7 @@ class Trainer:
         extra_fields = ([f.value for f in output_config.extra_fields]
                         if output_config is not None else [])
         source_identity = [
-            snapshot.id, prediction_table.query, request.timestamps,
+            snapshot.id, prediction_table.query, timestamps,
             sorted(kind.value for kind in artifacts), num_classes_to_return,
             threshold, extra_fields
         ]
@@ -639,12 +666,14 @@ class Trainer:
             source_config_sha256=hashlib.sha256(
                 json.dumps(source_identity, sort_keys=True,
                            default=str).encode()).hexdigest(),
-            binary_threshold=(threshold if task_type
-                              is TaskType.BINARY_CLASSIFICATION else None),
-            forecast_options=forecast_task_options(request),
+            binary_threshold=threshold,
+            forecast_options=forecast_options,
             embedding_models=self._embedding_models,
+            encoders=encoders,
         )
 
+        del encoders
+        _collect_garbage('predict')
         result = PredictionResult(selection, artifact_type)
         if output_config is not None:
             result._export(output_config)

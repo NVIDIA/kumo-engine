@@ -101,7 +101,8 @@ class ObjectStoreSessions(ABC):
               region: Optional[str]) -> ObjectStoreSourceReader:
         access = self._source_access(connector, bucket, region)
         return ObjectStoreSourceReader(access.filesystem, root=root,
-                                       fetch=access.fetch)
+                                       fetch=access.fetch,
+                                       object_identity=access.object_identity)
 
     def _placement(self, connector: SourceConnector,
                    table_name: str) -> Tuple[str, str, str, Optional[str]]:

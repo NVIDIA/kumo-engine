@@ -17,23 +17,31 @@ permissions:
   contents: read
 
 jobs:
+  # Built on a CPU runner so the GPU job doesn't spend its time compiling.
+  # This condition gates both jobs. The repository labeler owns the
+  # path-to-component mapping. Avoid a second, inevitably divergent list here,
+  # and never run fork code on the trusted CUDA runner.
+  diskgraph-wheel:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(github.event.pull_request.labels.*.name, 'ml-algorithms'))
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_diskgraph-wheel.yml
+
   gpu:
     name: kumo-core-gpu
+    # Runs only when diskgraph-wheel does.
+    needs: [diskgraph-wheel]
     env:
-      FAISS_GPU_AMD64_RELEASE_ASSET_ID: '599288714'
+      FAISS_GPU_AMD64_RELEASE_TAG: faiss-gpu-amd64-1.14.3-cu130sm120-cp314-v1
       FAISS_GPU_AMD64_RELEASE_ASSET: faiss_gpu-1.14.3+cu130sm120-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
       FAISS_GPU_AMD64_RELEASE_SHA256: ed9162596b6b1e9eeffc11675cd57eef622d891c27e8c02e2315930fee0f67aa
     environment:
       name: gha-kumo-workflow-tests
       # This job uses environment-scoped OIDC; it does not deploy an application.
       deployment: false
-    # The repository labeler owns the path-to-component mapping. Avoid a
-    # second, inevitably divergent list here, and never run fork code on the
-    # trusted CUDA runner.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.pull_request.head.repo.full_name == github.repository &&
-      contains(github.event.pull_request.labels.*.name, 'ml-algorithms'))
     runs-on: [self-hosted, cuda]
     timeout-minutes: 60
     permissions:
@@ -54,6 +62,7 @@ jobs:
         with:
           github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
           cuda-version: cu130
+          diskgraph-wheel-artifact: diskgraph-wheel
 
       - name: Expose pip-installed CUDA runtime libraries
         run: |
@@ -80,12 +89,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          curl --fail --location --retry 5 --retry-all-errors \
-            --header 'Accept: application/octet-stream' \
-            --header "Authorization: Bearer $GH_TOKEN" \
-            --header 'X-GitHub-Api-Version: 2022-11-28' \
+          api=(curl --fail --silent --show-error --location --retry 5 --retry-all-errors
+            --header "Authorization: Bearer $GH_TOKEN"
+            --header 'X-GitHub-Api-Version: 2022-11-28')
+          # Look the asset up by release tag and name: its ID differs in each
+          # repository that carries the release.
+          asset_url="$("${api[@]}" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$FAISS_GPU_AMD64_RELEASE_TAG" \
+            | python -c 'import json, os, sys; name = os.environ["FAISS_GPU_AMD64_RELEASE_ASSET"]; urls = [a["url"] for a in json.load(sys.stdin)["assets"] if a["name"] == name]; print(urls[0]) if urls else sys.exit("Release asset not found: " + name)')"
+          "${api[@]}" --header 'Accept: application/octet-stream' \
             --output "3rdparty/kumo-wheels/$FAISS_GPU_AMD64_RELEASE_ASSET" \
-            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/assets/$FAISS_GPU_AMD64_RELEASE_ASSET_ID"
+            "$asset_url"
           printf '%s  %s\n' \
             "$FAISS_GPU_AMD64_RELEASE_SHA256" \
             "3rdparty/kumo-wheels/$FAISS_GPU_AMD64_RELEASE_ASSET" \

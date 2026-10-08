@@ -88,7 +88,8 @@ def test_valid_class_count_reaches_scorer(task_type, count, tmp_path,
         (None, task_type.value))
     monkeypatch.setattr('kumo_core.pquery.normalize_graph', lambda *args: None)
     monkeypatch.setattr('kumo_core.pquery.parse_and_validate_query',
-                        lambda *args: object())
+                        lambda *args: SimpleNamespace(
+                            query=SimpleNamespace(top_k=None)))
     monkeypatch.setattr(
         'kumo.engine.trainer.trainer.build_generated_training_task_dataset',
         lambda **kwargs: object())
@@ -107,6 +108,12 @@ def test_valid_class_count_reaches_scorer(task_type, count, tmp_path,
                             forecast_timeframe_step=None)
     snapshot = SimpleNamespace(graph_config={}, index_path=tmp_path, id='snap')
 
+    if task_type.is_link_pred and count is None:
+        with pytest.raises(ValueError, match='specify the number of predictions'):
+            trainer.predict(table, snapshot=snapshot,
+                            num_classes_to_return=count)
+        score.assert_not_called()
+        return
     trainer.predict(table, snapshot=snapshot, num_classes_to_return=count)
 
     assert score.call_args.kwargs['top_k'] == count

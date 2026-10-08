@@ -21,6 +21,7 @@ from typing import IO, Any, Literal, Optional
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pytorch_lightning as pl
 import torch
 from kumo_core.callbacks import (
@@ -61,7 +62,7 @@ from kumo_core.train.loss import (
     MultiQuantileLoss,
     loss_resolver,
 )
-from kumo_core.train.mapping import NODE_INDEX_COLUMN, from_index_to_raw
+from kumo_core.train.mapping import NODE_INDEX_COLUMN
 from kumo_core.train.node_gnn_module import NodeGNNLightningModule
 from kumo_core.train.output import EvalOutput, PredOutput
 from kumo_core.training.config import (
@@ -3153,12 +3154,13 @@ def create_lp_prediction_output(
     lhs_ids = np.asarray(outs['pkey']).repeat(outs['target'].size(-1))
 
     # Convert RHS node IDs to original IDs:
-    # TODO(matthias, manan): See comment in IDLinkGNNLightningModule about
-    # handling the scenario of LHS nodes having less than `k` connections to
-    # RHS nodes. In this case, outs['target'] will contain -1; when formatting,
-    # we will just assign 0 for now:
-    outs['target'][outs['target'] == -1] = 0
-    rhs_ids = from_index_to_raw(outs['target'].view(-1), rhs_index_map)
+    target = outs['target'].view(-1).cpu().numpy()
+    indices = pa.array(target, mask=target == -1)
+    values = pa.Array.from_pandas(rhs_index_map.index.to_numpy())
+    class_dtype = (pd.UInt64Dtype() if pa.types.is_unsigned_integer(values.type)
+                   else pd.Int64Dtype() if pa.types.is_signed_integer(
+                       values.type) else pd.ArrowDtype(values.type))
+    rhs_ids = values.take(indices).to_pandas(types_mapper=lambda _: class_dtype)
 
     df = pd.DataFrame({
         lhs_fkey_name: lhs_ids,

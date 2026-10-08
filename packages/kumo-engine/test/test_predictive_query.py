@@ -47,8 +47,8 @@ from kumo.engine.trainer.trainer import _to_core_model_plan
 
 
 @pytest.mark.parametrize('connector_kind', ['file', 's3'])
-def test_classify_top_k_boundaries_on_generated_table(connector_kind, tmp_path,
-                                                      monkeypatch):
+def test_classify_top_k_boundaries_on_generated_table(
+        connector_kind, tmp_path, monkeypatch, local_s3_object_identity):
     storage = tmp_path / 'storage'
     source = storage / 'bucket'
     source.mkdir(parents=True)
@@ -95,6 +95,8 @@ def test_classify_top_k_boundaries_on_generated_table(connector_kind, tmp_path,
             query.validate()
 
     snapshot = graph.snapshot()
+    if connector_kind == 's3':
+        assert local_s3_object_identity.count('bucket/users.parquet') >= 2
     oversized = PredictiveQuery(
         graph, 'PREDICT users.labels CLASSIFY TOP 4 FOR EACH users.id')
     with pytest.raises(ValueError, match='TOP K 4.*1\\.\\.3'):
@@ -305,8 +307,9 @@ def test_generated_weight_rejected_before_artifacts(connector_kind, tmp_path,
         'kumo.engine.pquery.predictive_query.build_training_task_plan',
         lambda workflow: native_plan,
     )
-    monkeypatch.setattr('kumo.engine.pquery.predictive_query.generate_train_table',
-                        lambda request: generated)
+    monkeypatch.setattr(
+        'kumo.engine.pquery.predictive_query.generate_train_table',
+        lambda request: generated)
 
     table = query.generate_training_table(snapshot)
 
@@ -390,8 +393,9 @@ def test_forecast_generation_retains_effective_plan(graph_snapshot, tmp_path,
         'kumo.engine.pquery.predictive_query.build_training_task_plan',
         lambda workflow: native_plan,
     )
-    monkeypatch.setattr('kumo.engine.pquery.predictive_query.generate_train_table',
-                        lambda plan: generated)
+    monkeypatch.setattr(
+        'kumo.engine.pquery.predictive_query.generate_train_table',
+        lambda plan: generated)
 
     table = query.generate_training_table(
         snapshot,
@@ -415,10 +419,11 @@ def test_prediction_compiler_uses_plan_forecast_horizon(graph_snapshot,
     graph, snapshot = graph_snapshot
     query = PredictiveQuery(
         graph, 'PREDICT COUNT(orders.*, 0, 1, days) FOR EACH users.id')
-    monkeypatch.setattr('kumo_core.pquery.read_col_stats',
-                        lambda *args: ('{"amount__MEAN": 1, '
-                                       '"ts__MIN__False": 1704067200000000000, '
-                                       '"ts__MAX__False": 1711843200000000000}'))
+    monkeypatch.setattr(
+        'kumo_core.pquery.read_col_stats', lambda *args:
+        ('{"amount__MEAN": 1, '
+         '"ts__MIN__False": 1704067200000000000, '
+         '"ts__MAX__False": 1711843200000000000}'))
     monkeypatch.setattr('kumo_core.pquery._infer_encoder',
                         lambda column, stats: {'name': 'Numerical'})
     captured = []
@@ -445,8 +450,7 @@ def test_prediction_compiler_uses_plan_forecast_horizon(graph_snapshot,
 def test_custom_training_table_materializes_weight_and_manual_split(
         graph_snapshot, tmp_path, monkeypatch):
     graph, snapshot = graph_snapshot
-    query = PredictiveQuery(graph,
-                            'PREDICT users.label FOR EACH users.id')
+    query = PredictiveQuery(graph, 'PREDICT users.label FOR EACH users.id')
     source = graph.tables[0].connector['custom_rows']
     rows = tmp_path / 'custom.parquet'
     rows.touch()
@@ -462,15 +466,15 @@ def test_custom_training_table_materializes_weight_and_manual_split(
 
     monkeypatch.setattr('kumo.engine.pquery._custom_source.stage_source_table',
                         lambda source_table, destination: rows)
-    monkeypatch.setattr('kumo.engine.pquery._custom_source.validate_training_source',
-                        lambda *args: None)
+    monkeypatch.setattr(
+        'kumo.engine.pquery._custom_source.validate_training_source',
+        lambda *args: None)
 
     def build(**kwargs):
         captured['plan_kwargs'] = kwargs
         return native_plan
 
-    monkeypatch.setattr(
-        'kumo_core.pquery.build_native_pquery_task_plan', build)
+    monkeypatch.setattr('kumo_core.pquery.build_native_pquery_task_plan', build)
 
     def generate(request, custom):
         captured['custom'] = custom
@@ -480,8 +484,8 @@ def test_custom_training_table_materializes_weight_and_manual_split(
             staging_dir=str(staging),
         )
 
-    monkeypatch.setattr(
-        'kumo_core.training.table.generate_custom_train_table', generate)
+    monkeypatch.setattr('kumo_core.training.table.generate_custom_train_table',
+                        generate)
 
     table = TrainingTable.from_source_table(
         source,
@@ -494,8 +498,7 @@ def test_custom_training_table_materializes_weight_and_manual_split(
     assert table.required_stages == ('train', 'val', 'test')
     assert captured['custom'].parquet_path == str(rows)
     assert captured['custom'].weight_column == 'WEIGHT'
-    generation = captured['plan_kwargs'][
-        'model_plan'].training_table_generation
+    generation = captured['plan_kwargs']['model_plan'].training_table_generation
     assert generation.split == (
         "ManualSplit(col='SPLIT', train_value=0, val_value=1, test_value=2)")
 
@@ -503,16 +506,16 @@ def test_custom_training_table_materializes_weight_and_manual_split(
 def test_custom_training_table_uses_the_normal_inferred_split(
         graph_snapshot, tmp_path, monkeypatch):
     graph, snapshot = graph_snapshot
-    query = PredictiveQuery(graph,
-                            'PREDICT users.label FOR EACH users.id')
+    query = PredictiveQuery(graph, 'PREDICT users.label FOR EACH users.id')
     rows = tmp_path / 'custom.parquet'
     rows.touch()
     staging = tmp_path / 'staging'
     captured = {}
     monkeypatch.setattr('kumo.engine.pquery._custom_source.stage_source_table',
                         lambda source_table, destination: rows)
-    monkeypatch.setattr('kumo.engine.pquery._custom_source.validate_training_source',
-                        lambda *args: None)
+    monkeypatch.setattr(
+        'kumo.engine.pquery._custom_source.validate_training_source',
+        lambda *args: None)
 
     def build(**kwargs):
         captured.update(kwargs)
@@ -522,8 +525,7 @@ def test_custom_training_table_uses_the_normal_inferred_split(
             task_dataset=SimpleNamespace(required_stages=('train', 'val')),
         )
 
-    monkeypatch.setattr(
-        'kumo_core.pquery.build_native_pquery_task_plan', build)
+    monkeypatch.setattr('kumo_core.pquery.build_native_pquery_task_plan', build)
     monkeypatch.setattr(
         'kumo_core.training.table.generate_custom_train_table',
         lambda request, custom: SimpleNamespace(
@@ -605,8 +607,8 @@ def test_mismatched_graph_keys_fail_before_staging(graph_snapshot, monkeypatch,
     def unexpected_staging(*args, **kwargs):
         pytest.fail('invalid graph reached connector staging')
 
-    monkeypatch.setattr(type(orders.connector.source_backend),
-                        'prepare_ingest', unexpected_staging)
+    monkeypatch.setattr(type(orders.connector.source_backend), 'prepare_ingest',
+                        unexpected_staging)
     with pytest.raises(ValueError, match='orders.user_id.*users.id'):
         getattr(invalid, operation)()
 
@@ -665,8 +667,7 @@ def test_custom_prediction_table_materializes_exact_source_rows(
         'kumo.engine.pquery.prediction_table.generate_custom_prediction_table',
         generate,
     )
-    plan = TrainingTableGenerationPlan(lag_timesteps=3,
-                                       timeframe_step=2)
+    plan = TrainingTableGenerationPlan(lag_timesteps=3, timeframe_step=2)
 
     table = PredictionTable.from_source_table(
         source,
@@ -688,10 +689,11 @@ def test_custom_prediction_table_materializes_exact_source_rows(
 @pytest.mark.parametrize('field',
                          ['train_table_path_override', 'task_path_override'])
 def test_generation_rejects_ignored_path_overrides(tmp_path, field):
-    pq.write_table(pa.table({
-        'id': pa.array(range(10), type=pa.int64()),
-        'label': [True, False] * 5,
-    }), tmp_path / 'users.parquet')
+    pq.write_table(
+        pa.table({
+            'id': pa.array(range(10), type=pa.int64()),
+            'label': [True, False] * 5,
+        }), tmp_path / 'users.parquet')
     graph = Graph([
         Table.from_source_table(
             FileConnector(root_dir=str(tmp_path))['users.parquet'],
@@ -710,8 +712,7 @@ def test_generation_rejects_ignored_path_overrides(tmp_path, field):
     'entity_candidate',
     'entity_candidate_aggregation',
 ])
-def test_entity_candidate_settings_rejected(field, graph_snapshot,
-                                            monkeypatch):
+def test_entity_candidate_settings_rejected(field, graph_snapshot, monkeypatch):
     graph, snapshot = graph_snapshot
     query = PredictiveQuery(
         graph, 'PREDICT COUNT(orders.*, 0, 7, days) > 0 FOR EACH users.id')
@@ -719,8 +720,66 @@ def test_entity_candidate_settings_rejected(field, graph_snapshot,
                         lambda: pytest.fail('started generation'))
     plan = TrainingTableGenerationPlan(**{field: 'candidate'})
 
-    with pytest.raises(ValueError, match=f"'training_table_generation.{field}'"
-                       " is not supported.*WHERE filter"):
+    with pytest.raises(
+            ValueError, match=f"'training_table_generation.{field}'"
+            " is not supported.*WHERE filter"):
         query.generate_training_table(snapshot, plan)
     with pytest.raises(ValueError, match=f"{field}' is not supported"):
         query.generate_prediction_table(snapshot, plan=plan)
+
+
+@pytest.mark.parametrize('query, title', [
+    ('PREDICT AVG(orders.amount, 0, 7, days) FOR EACH users.id',
+     'Semantic Type Mismatch'),
+    ('PREDICT users.label FOR EACH users.id WHERE users.id IS IN (1, 2)',
+     'Operation Deprecated'),
+])
+def test_validate_returns_warnings_without_ingestion(graph_snapshot, query,
+                                                     title):
+    graph, snapshot = graph_snapshot
+    graph = Graph([
+        table.with_column('amount', stype=Stype.categorical)
+        if table.table_name == 'orders' else table for table in graph.tables
+    ], graph.edges)
+    pquery = PredictiveQuery(graph, query)
+    result = pquery.validate()
+    assert result.ok
+    assert title in [warning.title for warning in result.warnings]
+    result.warnings.clear()
+    assert title in [warning.title for warning in pquery.validate().warnings]
+    assert not snapshot.index_path.exists()
+
+
+def test_validate_logs_warnings_only_when_verbose(graph_snapshot, caplog):
+    graph, _ = graph_snapshot
+    graph = Graph([
+        table.with_column('amount', stype=Stype.categorical)
+        if table.table_name == 'orders' else table for table in graph.tables
+    ], graph.edges)
+    pquery = PredictiveQuery(
+        graph, 'PREDICT AVG(orders.amount, 0, 7, days) FOR EACH users.id')
+    logger_name = 'kumo.engine.pquery.predictive_query'
+    with caplog.at_level('INFO', logger=logger_name):
+        pquery.validate(verbose=False)
+        assert not caplog.records
+        result = pquery.validate()
+    assert [r.levelname for r in caplog.records] == ['WARNING']
+    assert caplog.records[0].getMessage() == result.message()
+
+    caplog.clear()
+    clean = PredictiveQuery(graph, 'PREDICT users.label FOR EACH users.id')
+    with caplog.at_level('INFO', logger=logger_name):
+        clean.validate()
+    assert [r.levelname for r in caplog.records] == ['INFO']
+    assert 'configured correctly' in caplog.records[0].getMessage()
+
+
+def test_validate_returns_empty_response_and_still_raises_errors(
+        graph_snapshot):
+    graph, snapshot = graph_snapshot
+    query = PredictiveQuery(graph, 'PREDICT users.label FOR EACH users.id')
+    assert query.validate().empty()
+    with pytest.raises(ValueError):
+        PredictiveQuery(graph,
+                        'PREDICT users.missing FOR EACH users.id').validate()
+    assert not snapshot.index_path.exists()

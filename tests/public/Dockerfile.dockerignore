@@ -1,0 +1,82 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# This Dockerfile-specific allowlist supersedes the root .dockerignore, which
+# excludes tests/. Keep Git metadata, local environments and hosted fixtures out.
+**
+!packages/kumo-api/kumoapi/**
+# Connector source closure only; kumo-core also contains the ML runtime.
+!packages/kumo-core/src/kumo_core/__init__.py
+!packages/kumo-core/src/kumo_core/sources/*.py
+!packages/kumo-core/src/kumo_core/csv_rules.py
+!packages/kumo-core/src/kumo_core/custom_sql.py
+!packages/kumo-core/src/kumo_core/artifact_staging.py
+!packages/kumo-core/src/kumo_core/stype_inference.py
+!packages/kumo-core/src/kumo_core/types/__init__.py
+!packages/kumo-core/src/kumo_core/types/enums.py
+!packages/kumo-core/src/kumo_core/types/conversions.py
+# BigQuery's repeated-string type conversion imports this decision lazily.
+!packages/kumo-core/src/kumo_core/training/__init__.py
+!packages/kumo-core/src/kumo_core/training/options.py
+!packages/kumo-core/tests/__init__.py
+!packages/kumo-core/tests/sources/**
+!packages/kumo-s3/src/**
+!packages/kumo-s3/tests/**
+!packages/kumo-gcs/src/**
+!packages/kumo-gcs/tests/**
+!packages/kumo-databricks/src/**
+!packages/kumo-databricks/tests/**
+!packages/kumo-snowflake/src/**
+!packages/kumo-snowflake/tests/**
+!packages/kumo-bigquery/src/**
+# The BigQuery live file is needed by the isolated, synthetic-ADC gate tests.
+!packages/kumo-bigquery/tests/**
+# ADLS range reads use the hosted filesystem's ordinary import boundary.
+# Admit its shared support and local/ADLS backends, not hosted test setup.
+!io_utils/__init__.py
+!io_utils/dataclasses.py
+!io_utils/errors.py
+!io_utils/logging.py
+!io_utils/retry.py
+!io_utils/fsutil/__init__.py
+!io_utils/fsutil/adls_arrow.py
+!io_utils/fsutil/api.py
+!io_utils/fsutil/common.py
+!io_utils/fsutil/credentials.py
+!io_utils/fsutil/generic.py
+!io_utils/fsutil/impl_adls.py
+!io_utils/fsutil/impl_local.py
+!io_utils/fsutil/logging_policy.py
+!io_utils/fsutil/uri.py
+!async_utils/__init__.py
+!async_utils/caching.py
+!async_utils/instrument.py
+!async_utils/sync.py
+!monitoring/__init__.py
+!monitoring/tracing.py
+!service_framework/__init__.py
+!service_framework/deploy_stage.py
+!service_framework/env_var.py
+!test/__init__.py
+!test/io_utils/__init__.py
+!test/io_utils/fsutil/__init__.py
+!test/io_utils/fsutil/adls/**
+!scripts/test_public_connectors.py
+!scripts/test_public.py
+!test/scripts/public_tests/**
+!tests/public/**
+**/__pycache__/
+**/*.pyc
+# Never copy developer credentials or environments from these trees.
+**/.git
+**/.venv
+**/venv
+**/.env
+**/.env.*
+**/.aws
+**/.azure
+**/.config
+**/.cache
+**/*.pem
+**/*.key

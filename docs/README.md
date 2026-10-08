@@ -11,6 +11,7 @@ Keep one maintained explanation per topic and link to it from agent guidance.
 | System topology and execution boundaries | [Architecture](../ARCHITECTURE.md) |
 | Development prerequisites and setup side effects | [Setup](development/setup.md) |
 | Local StateDB inspection and reset behavior | [SQLite](development/sqlite.md) |
+| Run tests without cloud credentials | [Public tests](development/public-tests.md) |
 | Choose a validation tier | [Testing](development/testing.md) |
 | Regenerate derived files | [Generated artifacts](development/generated-artifacts.md) |
 | UI conventions and shared components | [UI development](development/ui.md) |

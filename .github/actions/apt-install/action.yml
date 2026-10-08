@@ -1,0 +1,93 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: "apt-install"
+description: "Install apt packages from a .deb cache, falling back to bounded, retried apt-get"
+inputs:
+  packages:
+    description: 'Space-separated apt package names.'
+    required: true
+
+runs:
+  using: "composite"
+
+  steps:
+    - name: Plan apt install
+      id: plan
+      run: |
+        missing=()
+        for pkg in $PACKAGES; do
+          if [ "$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null)" != installed ]; then
+            missing+=("$pkg")
+          fi
+        done
+        [ ${#missing[@]} -eq 0 ] && { echo "Already installed: $PACKAGES"; exit 0; }
+        sorted=$(printf '%s\n' "${missing[@]}" | sort -u | tr '\n' ' ')
+        hash=$(printf '%s' "$sorted" | sha256sum | cut -c1-16)
+        key="apt-debs-v1-${ImageOS:-none}-${ImageVersion:-none}-${RUNNER_ARCH}-${hash}"
+        echo "packages=$sorted" >> "$GITHUB_OUTPUT"
+        echo "key=$key" >> "$GITHUB_OUTPUT"
+        echo "dir=/tmp/apt-debs/$key" >> "$GITHUB_OUTPUT"
+      env:
+        PACKAGES: ${{ inputs.packages }}
+      shell: bash
+
+    - name: Restore apt .deb cache
+      id: cache
+      if: steps.plan.outputs.packages != '' && runner.environment == 'github-hosted'
+      uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25  # v5
+      with:
+        path: ${{ steps.plan.outputs.dir }}
+        key: ${{ steps.plan.outputs.key }}
+
+    - name: Install apt packages
+      if: steps.plan.outputs.packages != ''
+      run: |
+        read -r -a pkgs <<< "$PACKAGES"
+        # Read only the Ubuntu archive sources: third-party repos preinstalled
+        # on the runner image have hung or served broken indexes, and none of
+        # them provides what we install.
+        parts=$(mktemp -d)
+        grep -lE 'ubuntu\.com|mirror\+file:' /etc/apt/sources.list.d/* 2>/dev/null | xargs -r cp -t "$parts" || true
+        opts=(-y --no-install-recommends -o Dir::Etc::sourceparts="$parts" -o Acquire::Retries=3
+              -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120)
+        deadline=$((SECONDS + 600))
+        apt_get() {
+          local limit=$1; shift
+          for attempt in 1 2 3; do
+            local left=$((deadline - SECONDS))
+            [ "$left" -gt 0 ] || break
+            sudo timeout -k 15 "$((left < limit ? left : limit))" apt-get "${opts[@]}" "$@" && return 0
+            echo "::warning::apt-get $* failed (attempt $attempt)"
+            sleep 5
+          done
+          return 1
+        }
+
+        # The cached set is exactly what this runner image was missing, so
+        # dpkg needs neither package indexes nor the network.
+        if [ "$CACHE_HIT" = true ]; then
+          sudo timeout -k 15 180 dpkg -i "$DEB_DIR"/*.deb && exit 0
+          echo "::warning::Installing cached .debs failed; falling back to apt-get"
+        fi
+
+        sudo rm -rf "$DEB_DIR"
+        mkdir -p "$DEB_DIR/partial"
+        apt_get 120 update
+        apt_get 240 -qq install --download-only -o Dir::Cache::Archives="$DEB_DIR" "${pkgs[@]}"
+        apt_get 180 -qq install --no-download -o Dir::Cache::Archives="$DEB_DIR" "${pkgs[@]}"
+        sudo rm -rf "$DEB_DIR/partial" "$DEB_DIR/lock"
+        sudo chown -R "$(id -u):$(id -g)" "$DEB_DIR"
+      env:
+        PACKAGES: ${{ steps.plan.outputs.packages }}
+        DEB_DIR: ${{ steps.plan.outputs.dir }}
+        CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+      shell: bash
+
+    - name: Save apt .deb cache
+      if: steps.plan.outputs.packages != '' && runner.environment == 'github-hosted' && steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25  # v5
+      with:
+        path: ${{ steps.plan.outputs.dir }}
+        key: ${{ steps.plan.outputs.key }}

@@ -1657,7 +1657,9 @@ def snowflake_key_pair_credentials() -> Generator[KeyPair, None, None]:
 
 @pytest.fixture()
 def snowflake_connector_request(
-    client: TestClient, ) -> Callable[[str, bool], CreateConnectorArgs]:
+    client: TestClient,
+    snowflake_credentials,
+) -> Callable[[str, bool], CreateConnectorArgs]:
     key_pair = KeyPair(
         user=SecretStr(os.environ['SNOWFLAKE_USER']),
         private_key=SecretStr(os.environ['SNOWFLAKE_PRIVATE_KEY']),

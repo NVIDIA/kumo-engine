@@ -72,9 +72,9 @@ def test_both_volume_spellings_name_the_same_stage(path):
 
 
 @pytest.mark.parametrize("path", [
-    "s3://internal/predictions/",
+    "s3://example-bucket/predictions/",
     "abfss://a@b.dfs.core.windows.net/predictions/",
-    "gs://internal/predictions/",
+    "gs://example-bucket/predictions/",
     "/Volumes/main/features/external/predictions/",
     "/Volumes/other/features/_kumo_staging/artifact-export/job/",
     "/Volumes/main/features/_kumo_staging/elsewhere/job",
@@ -98,7 +98,7 @@ def test_a_local_dataset_is_never_mistaken_for_a_volume(tmp_path):
 def test_a_remote_artifact_is_refused_before_anything_runs():
     warehouse = Warehouse()
     with pytest.raises(ValueError, match="only local Parquet files"):
-        load(warehouse, "s3://internal/predictions/")
+        load(warehouse, "s3://example-bucket/predictions/")
     assert warehouse.statements == []
 
 

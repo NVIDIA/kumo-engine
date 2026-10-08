@@ -176,6 +176,8 @@ def _filesystems(options):
     yield s3.anonymous_filesystem(BUCKET, region="us-east-1", options=options)
 
 
+# These tests use a loopback server. The public container has no external network.
+@pytest.mark.allow_hosts(["127.0.0.1"])
 def test_503_retried_past_three_attempts(unavailable):
     handler, options = unavailable
     handler.failures = 3
@@ -185,6 +187,7 @@ def test_503_retried_past_three_attempts(unavailable):
         assert handler.seen == {f"/{BUCKET}/part-0.parquet": 4}
 
 
+@pytest.mark.allow_hosts(["127.0.0.1"])
 def test_no_lifetime_retry_cap(unavailable):
     handler, options = unavailable
     handler.failures = 1

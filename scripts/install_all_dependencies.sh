@@ -30,12 +30,11 @@ install_system_packages_linux() {
   echo "Installing system packages"
 
   sudo apt-get update -y
-  # redshift-connector caps lxml below its first Python 3.14 wheel, so local
-  # installs need the XML headers. ARM64 native extensions also need OpenBLAS
-  # and SWIG when PyG and FAISS wheels are built from source.
+  # ARM64 native extensions need OpenBLAS and SWIG when PyG and FAISS wheels
+  # are built from source.
   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     apt-utils cmake curl g++ gcc gdb git gnupg2 graphviz libkrb5-dev \
-    libopenblas-dev libxml2-dev libxslt1-dev pass sqlite3 ssh swig vim make
+    libopenblas-dev pass sqlite3 ssh swig vim make
 }
 
 install_system_packages_macos() {

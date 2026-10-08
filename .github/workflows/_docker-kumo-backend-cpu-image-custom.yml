@@ -79,9 +79,11 @@ jobs:
           fi
 
       - name: Install fuse-overlayfs
+        timeout-minutes: 15
         run: |
-          sudo apt -y update
-          sudo apt-get install fuse-overlayfs
+          apt_get() { for i in 1 2 3; do sudo timeout -k 15 300 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120 "$@" && return 0; sleep 10; done; return 1; }
+          apt_get update
+          apt_get install -y fuse-overlayfs
           mkdir -vp ~/.config/containers
           echo "[storage]"           > ~/.config/containers/storage.conf
           echo "driver=\"overlay\"" >> ~/.config/containers/storage.conf

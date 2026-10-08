@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Only repository source, package metadata, and selected fixture trees.
+**
+!setup.py
+!setup.cfg
+!pyproject.toml
+!uv.lock
+!MANIFEST.in
+!README.md
+!LICENSE
+!KUMO-THIRD-PARTY.txt
+!3rdparty/kumo-wheels/torch_geometric-*.whl
+!bin/kumo-auto
+!bin/kumo-pred
+!packages/diskgraph/pyproject.toml
+!tools/glove-6b-50d/pyproject.toml
+# Public fake accounts and policies for the local storage fixture.
+!docker/compose/config/minio-test/**
+!packages/kumo-api/**
+!packages/kumo-sdk/**
+!packages/kumo-engine/**
+!packages/kumo-core/**
+!packages/kumo-pql/**
+!packages/kumo-s3/**
+!packages/kumo-gcs/**
+!packages/kumo-snowflake/**
+!packages/kumo-databricks/**
+!packages/kumo-bigquery/**
+!async_utils/**
+!common_utils/**
+!io_utils/**
+!kumo/**
+!monitoring/**
+!pool/**
+!rest/**
+!service_framework/**
+!statedb/**
+!temporalio_commons/**
+!test/**
+!tests/public_setup/pytest.ini
+**/.git
+**/.venv
+**/venv
+**/.env
+**/.env.*
+**/.aws
+**/.azure
+**/.config
+**/.cache
+**/__pycache__
+**/*.pyc
+**/*.pem
+**/*.key

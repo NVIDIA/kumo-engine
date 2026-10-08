@@ -2,6 +2,8 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import hashlib
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -12,6 +14,25 @@ from kumoapi.typing import Stype
 import kumo.engine as kumo
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine.graph import GraphSnapshot
+
+
+@pytest.fixture
+def local_s3_object_identity(monkeypatch):
+    """Give local-filesystem S3 doubles content-sensitive provider tokens.
+
+    Local NativeFiles have no S3 metadata. Real Arrow metadata is covered by
+    kumo-s3's HTTP endpoint tests; these engine tests exercise the callers.
+    """
+    probes = []
+
+    def identity(filesystem, path):
+        with filesystem.open_input_file(path) as stream:
+            contents = stream.read()
+        probes.append(path)
+        return (hashlib.sha256(contents).hexdigest(), '', str(len(contents)))
+
+    monkeypatch.setattr('kumo_s3.access._object_identity', identity)
+    return probes
 
 
 @pytest.fixture

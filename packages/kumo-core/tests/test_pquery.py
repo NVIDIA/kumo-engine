@@ -1829,3 +1829,39 @@ def test_month_planning_preserves_calendar_windows(
         query, '/synthetic-index', TrainingTableGenerationPlan(**options),
         {}, 'RandomSplit', ())
     assert timestamps == tuple(Timestamp(value).value for value in expected)
+
+
+@pytest.mark.parametrize('query, title', [
+    ('PREDICT users.age FOR EACH users.id WHERE users.age > 1',
+     'Semantic Type Mismatch'),
+    ('PREDICT users.label FOR EACH users.id WHERE users.age IS IN (1, 2)',
+     'Operation Deprecated'),
+])
+def test_successful_query_preserves_shared_validation_warnings(query, title):
+    from kumoapi.common import ValidationResponse
+    from kumopql.parser import PQLParser
+    from kumopql.validator import PredictiveQueryValidator
+
+    graph = graph_config()
+    graph['tables'][0]['cols'][1]['stype'] = 'categorical'
+    validator = PredictiveQueryValidator(
+        graph=to_api_graph(normalize_graph(graph)))
+    _, expected = validator.validate_predictive_query(
+        PQLParser().to_parsed_predictive_query(query))
+    parsed = parse_and_validate_query(query, graph)
+    assert parsed.validation_response == expected
+    assert parsed.validation_response.ok
+    assert title in [warning.title for warning in expected.warnings]
+    assert replace(parsed, forecast_length=3).validation_response == expected
+    metadata = replace(parsed, query=query)
+    without_diagnostics = replace(metadata,
+                                  validation_response=ValidationResponse())
+    assert metadata == without_diagnostics
+    assert hash(metadata) == hash(without_diagnostics)
+
+
+def test_clean_query_has_empty_validation_response():
+    parsed = parse_and_validate_query('PREDICT users.label FOR EACH users.id',
+                                      graph_config())
+    assert parsed.validation_response.ok
+    assert parsed.validation_response.empty()

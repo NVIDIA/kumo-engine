@@ -4,7 +4,6 @@
 from typing import Any, Optional, Union
 
 import kumo_s3
-from botocore.config import Config
 from kumo_core.sources.errors import ReconnectRequiredError
 from kumo_core.sources.object_store_access import ObjectStoreAccess
 from kumo_core.sources.object_store_backend import ObjectStoreSourceBackend
@@ -98,10 +97,7 @@ class S3Sessions(ObjectStoreSessions):
                 endpoint_url=connection.endpoint_url if connection else None,
                 options=arrow_connection_options(connection.endpoint_url,
                                                  connection.addressing_style)
-                if connection else None, client_config=Config(
-                    signature_version='s3v4', s3={
-                        'addressing_style': connection.addressing_style
-                    }) if connection else None)
+                if connection else None)
 
     def _filesystem(self, connector: Any, bucket: str,
                     region: Optional[str]) -> S3FileSystem:

@@ -10,9 +10,9 @@ from fakes import FakeCursor
 from kumo_core.sources.errors import PermanentSourceError, SourceNotFoundError
 from kumo_snowflake.identity import column_types, data_version, hour_version
 
-DATABASE, SCHEMA, TABLE = "KUMO_TESTS", "HM_SAMPLED", "TRANSACTIONS"
-ALTERED = datetime(2025, 2, 13, 12, 2, 38, tzinfo=timezone.utc)
-ALTERED_VERSION = "1739448158"
+DATABASE, SCHEMA, TABLE = "SYNTHETIC_DB", "SYNTHETIC_SCHEMA", "EVENTS"
+ALTERED = datetime(2024, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+ALTERED_VERSION = "1704164645"
 
 
 def cursor(table_type="BASE TABLE", last_altered=ALTERED, table_name=TABLE):
@@ -35,12 +35,11 @@ def test_a_table_is_stamped_with_the_second_it_was_last_altered():
 
 
 def test_a_table_is_matched_with_exact_identifier_case():
-    assert stamp(table="transactions",
-                 table_name="transactions") == (ALTERED_VERSION)
+    assert stamp(table="events", table_name="events") == (ALTERED_VERSION)
 
 
 def test_a_differently_cased_table_is_not_substituted():
-    assert stamp(table_name="transactions") == hour_version()
+    assert stamp(table_name="events") == hour_version()
 
 
 @pytest.mark.parametrize("table_type", ["VIEW", "MATERIALIZED VIEW"])
@@ -65,15 +64,15 @@ def test_a_source_the_catalog_does_not_hold_is_reported_not_quietly_dated():
 def test_the_stamp_preserves_resolved_database_schema_and_table_case():
     recorder = FakeCursor({
         "TABLE_TYPE": [("BASE TABLE", )],
-        "LAST_ALTERED": [("transactions", ALTERED)],
+        "LAST_ALTERED": [("events", ALTERED)],
     })
-    data_version(recorder, database="kumo_tests", schema="hm_sampled",
-                 table="transactions")
+    data_version(recorder, database="synthetic_db", schema="synthetic_schema",
+                 table="events")
     assert [params for _, params in recorder.statements] == [
-        ("hm_sampled", "transactions"),
-        ("hm_sampled", "transactions"),
+        ("synthetic_schema", "events"),
+        ("synthetic_schema", "events"),
     ]
-    assert all('"kumo_tests".INFORMATION_SCHEMA.TABLES' in statement
+    assert all('"synthetic_db".INFORMATION_SCHEMA.TABLES' in statement
                for statement in recorder.sql())
 
 

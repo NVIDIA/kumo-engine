@@ -4,6 +4,7 @@
 
 import json
 from collections import Counter
+from functools import partial
 
 import numpy as np
 import pandas as pd
@@ -204,3 +205,55 @@ def test_reexport_and_trailing_slash(graph):
     assert config.table_name == 'retry/'
     assert listing() == before
     assert before[1] == first.num_rows == sum(_seeds(table)[1].values())
+
+
+@pytest.mark.parametrize('prediction', [False, True])
+def test_custom_link_table_ingests_multiple_weighted_parts(
+        graph, monkeypatch, prediction):
+    from kumo_core.sources import object_store
+
+    _, snapshot, connector, out = graph
+    query = ('PREDICT LIST_DISTINCT(events.ITEM_ID, 0, 7, days) '
+             'RANK TOP 3 FOR EACH ents.ID')
+    pquery, table, exported = _export(graph, query,
+                                      f'multipart_base_{prediction}')
+    monkeypatch.setattr(
+        object_store, 'materialize_arrow_streams',
+        partial(object_store.materialize_arrow_streams, max_rows_per_shard=20))
+    if prediction:
+        source = exported.select(['ENTITY1', 'TIMESTAMP'])
+        # Two files force multipart staging for prediction too.
+        root = out / 'multipart_prediction'
+        root.mkdir()
+        middle = source.num_rows // 2
+        pq.write_table(source.slice(0, middle), root / 'part-0.parquet')
+        pq.write_table(source.slice(middle), root / 'part-1.parquet')
+        predicted = kumo.PredictionTable.from_source_table(
+            connector['multipart_prediction'], pq=pquery, snapshot=snapshot)
+        assert predicted.row_count == source.num_rows
+    else:
+        weights = pa.array([[float(index + 1) for index in range(len(values))]
+                            for values in exported['TARGET1'].to_pylist()],
+                           pa.list_(pa.float64()))
+        weighted = exported.append_column('WEIGHT', weights)
+        pq.write_table(weighted, out / 'multipart_weighted.parquet')
+        reimported = kumo.TrainingTable.from_source_table(
+            connector['multipart_weighted.parquet'],
+            TrainingTableSpec(weight_col='WEIGHT', split_col='SPLIT'),
+            pq=pquery, snapshot=snapshot)
+        assert reimported.train_table_path.is_dir()
+        assert len(list(reimported.train_table_path.glob('*.parquet'))) > 1
+        seeds, counts = _seeds(reimported)
+        original, original_counts = _seeds(table)
+        assert counts == original_counts
+        for key in original:
+            columns = ['ENTITY1', 'TIMESTAMP', 'TARGET1']
+            assert _rows(seeds[key], columns) == _rows(original[key], columns)
+            expected = weighted.filter(
+                pa.array([
+                    split == SPLITS[key]
+                    for split in weighted['SPLIT'].to_pylist()
+                ]))
+            assert _rows(seeds[key],
+                         columns + ['WEIGHT']) == _rows(expected,
+                                                        columns + ['WEIGHT'])

@@ -20,6 +20,7 @@ from kumo_core.embedding_models import (
     GloVeVectors,
     TokenEmbeddingModel,
 )
+from kumo_core.utils.nofile import ensure_nofile
 from kumoapi.plugin import ModelRegistryLocation
 
 from kumo.engine._version import __version__
@@ -88,3 +89,5 @@ __all__ = [
     "PredictionOutputConfig",
     "TrainingTableOutputConfig",
 ]
+
+ensure_nofile()
