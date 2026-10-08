@@ -26,7 +26,7 @@ on:  # yamllint disable-line rule:truthy
       runner_label:
         description: 'GitHub runner label'
         required: false
-        default: 'ubuntu-22.04-large'
+        default: 'linux-amd64-cpu8'
         type: string
       target_platform:
         description: 'Container platform'
@@ -78,12 +78,18 @@ jobs:
             exit 1
           fi
 
-      - name: Install fuse-overlayfs
+      - name: Install container tools
         timeout-minutes: 15
         run: |
           apt_get() { for i in 1 2 3; do sudo timeout -k 15 300 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120 "$@" && return 0; sleep 10; done; return 1; }
           apt_get update
           apt_get install -y fuse-overlayfs
+          # NVIDIA runners lack buildah/podman, and Ubuntu 24.04 blocks the user namespaces rootless buildah needs.
+          if ! command -v buildah >/dev/null; then
+            apt_get install -y buildah podman uidmap
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+            grep -q "^$(id -un):" /etc/subuid || sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$(id -un)"
+          fi
           mkdir -vp ~/.config/containers
           echo "[storage]"           > ~/.config/containers/storage.conf
           echo "driver=\"overlay\"" >> ~/.config/containers/storage.conf
