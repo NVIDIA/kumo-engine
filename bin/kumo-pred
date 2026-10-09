@@ -1,0 +1,495 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+import argparse
+import json
+import os
+import os.path as osp
+
+from kumo_core.callbacks import prediction_progress_logger as progress_logger
+from kumo_core.job_config import (
+    PredictionConfig,
+    PredStatus,
+    TrainDirOverrides,
+)
+from kumo_core.task_dataset import DiskgraphTaskManifest
+from kumo_core.train.artifact_stats import (
+    PREDICTION_ARTIFACT_STATS_PATH_ENV,
+    PREDICTION_ARTIFACT_STATS_REQUEST_ENV,
+    PredictionArtifactStatsCollector,
+    PredictionArtifactStatsRequest,
+)
+from kumo_core.train.trainer import load_encoders
+from kumo_core.types import PredictionArtifactType
+from kumoapi.jobs import PredictionProgress
+from kumoapi.typing import ColStatType
+
+from common_utils.startup import log_app_startup
+from io_utils import fsutil, logging
+from io_utils.json import load_json, save_json_atomic
+from kumo.config.prediction import PartitionedPredictionProgressHelper
+from kumo.data import get_active_cache
+from kumo.explain.utils import BP_XAI_FOLDER_NAME
+from kumo.home import HomeDirManager, get_home_dir
+from kumo.platform_errors import as_platform_public_exception
+from kumo.runtime import init
+from kumo.task.task import Task
+from kumo.train.artifact_manifest import hash_prediction_config
+from kumo.train.prediction_partitions import split_partitions_across_jobs
+from kumo.train.runtime_diagnostics import (
+    get_instance_id,
+    run_all_check_commands,
+)
+from kumo.train.trainer_runtime import monolith_trainer_runtime_kwargs
+from kumo.train.utils.progress_util import PARTITION_FILE_PREFIX
+from monitoring import tracing
+from rest.backends.ml_backend.timing import kumo_timing
+
+PRED_TABLE = "pred_table"
+logger = logging.getLogger(__name__)
+
+
+def _artifact_stats_request(
+    json_path: str,
+    pred_config: PredictionConfig,
+) -> tuple[str, PredictionArtifactStatsRequest] | None:
+    request_value = os.environ.get(PREDICTION_ARTIFACT_STATS_REQUEST_ENV)
+    payload_path = os.environ.get(PREDICTION_ARTIFACT_STATS_PATH_ENV)
+    if request_value is None and payload_path is None:
+        return None
+    if request_value is None or payload_path is None:
+        raise RuntimeError("Prediction artifact stats request is incomplete")
+    parsed = json.loads(request_value)
+    if not isinstance(parsed, dict):
+        raise ValueError("Prediction artifact stats request must be an object")
+    request = PredictionArtifactStatsRequest.from_dict(parsed)
+    request.validate()
+    config_sha256 = hash_prediction_config(json_path)
+    if request.runtime_config_sha256 != config_sha256:
+        raise ValueError("Prediction artifact stats config digest mismatch")
+    if request.output_dir != pred_config.output_dir:
+        raise ValueError("Prediction artifact stats output directory mismatch")
+    if request.runtime_shard_id != pred_config.start_partition_id:
+        raise ValueError("Prediction artifact stats runtime worker mismatch")
+    if request.runtime_shard_count != pred_config.num_partitions:
+        raise ValueError(
+            "Prediction artifact stats runtime worker count mismatch")
+    output_ranges = split_partitions_across_jobs(
+        pred_config.effective_output_num_partitions,
+        pred_config.num_partitions,
+    )
+    expected_range = output_ranges[pred_config.start_partition_id]
+    if expected_range != (request.output_partition_start,
+                          request.output_partition_stop):
+        raise ValueError("Prediction artifact stats output range mismatch")
+    configured_artifacts = set()
+    if pred_config.return_predictions:
+        configured_artifacts.add(PredictionArtifactType.PREDICTIONS)
+    if pred_config.return_embeddings:
+        configured_artifacts.add(PredictionArtifactType.EMBEDDINGS)
+    if set(request.expected_artifact_types) != configured_artifacts:
+        raise ValueError("Prediction artifact stats output set mismatch")
+    return payload_path, request
+
+
+def _set_identity_encoder_defaults(enc_stats: dict) -> None:
+    """Set identity defaults (MEAN=0, STD=1) for missing encoder stats."""
+    if ColStatType.MEAN not in enc_stats:
+        enc_stats[ColStatType.MEAN] = 0.0
+    if ColStatType.STD not in enc_stats:
+        enc_stats[ColStatType.STD] = 1.0
+
+
+def _get_encoder_stats(encoders):
+    """Extract target encoder stats dict, or None if unavailable."""
+    target = getattr(encoders, 'target', None)
+    target_encoder = getattr(target, 'encoder', None)
+    if target_encoder is None or not hasattr(target_encoder, '_stats'):
+        return None, None
+    enc_stats = target_encoder._stats
+    # Promote string keys to ColStatType if present.
+    if ColStatType.MEAN not in enc_stats and 'MEAN' in enc_stats:
+        enc_stats[ColStatType.MEAN] = enc_stats['MEAN']
+    if ColStatType.STD not in enc_stats and 'STD' in enc_stats:
+        enc_stats[ColStatType.STD] = enc_stats['STD']
+    target_col = getattr(target, 'col_name', 'TARGET')
+    return enc_stats, target_col
+
+
+def _find_train_table_col_stats_path(
+        pred_config: PredictionConfig) -> str | None:
+    """Locate the train-table col-stats artifact under train_dir."""
+    train_dir = pred_config.train_dir
+    if not train_dir:
+        return None
+    # Diskgraph producer writes artifacts at {output_path}.artifacts/.
+    # The training table output path is deterministic.
+    path = osp.join(
+        train_dir,
+        'intermediate_train_tables',
+        'diskgraph_train_table',
+        'train_table.parquet.artifacts',
+        'stats.train_table_col_stats.json',
+    )
+    if osp.exists(path):
+        return path
+    return None
+
+
+def _maybe_patch_target_encoder_stats_from_prediction_artifact(
+    pred_config: PredictionConfig,
+    encoders,
+) -> None:
+    enc_stats, target_col = _get_encoder_stats(encoders)
+    if enc_stats is None:
+        return
+    # Already have both stats — nothing to do.
+    if ColStatType.MEAN in enc_stats and ColStatType.STD in enc_stats:
+        return
+
+    stats_path = pred_config.diskgraph_prediction_col_stats_path
+    if not isinstance(stats_path, str) or not stats_path:
+        logger.warning('No diskgraph prediction col-stats path configured; '
+                       'using identity defaults')
+        _set_identity_encoder_defaults(enc_stats)
+        return
+    if not fsutil.exists(stats_path):
+        logger.warning(
+            "diskgraph prediction col-stats path does not exist: %s; "
+            "using identity defaults",
+            stats_path,
+        )
+        _set_identity_encoder_defaults(enc_stats)
+        return
+
+    try:
+        payload = json.loads(fsutil.read_text(stats_path))
+    except Exception:
+        logger.warning('Failed to parse diskgraph prediction col-stats; '
+                       'using identity defaults')
+        _set_identity_encoder_defaults(enc_stats)
+        return
+    if not isinstance(payload, dict):
+        logger.warning('diskgraph prediction col-stats payload is not a dict; '
+                       'using identity defaults')
+        _set_identity_encoder_defaults(enc_stats)
+        return
+    stats_map = payload.get('stats')
+    if not isinstance(stats_map, dict):
+        logger.warning(
+            'diskgraph prediction col-stats payload missing stats map; '
+            'using identity defaults')
+        _set_identity_encoder_defaults(enc_stats)
+        return
+
+    def _extract_stat(stat_name: str, smap: dict):
+        wanted_prefixes = [f"{target_col}__", 'TARGET__']
+        for key, item in smap.items():
+            if not isinstance(key, str):
+                continue
+            if not any(key.startswith(prefix) for prefix in wanted_prefixes):
+                continue
+            if f"__{stat_name}__" not in key and f"__{stat_name.lower()}__" not in key:
+                continue
+            if isinstance(item, dict):
+                return item.get('value')
+        return None
+
+    mean = _extract_stat('MEAN', stats_map)
+    std = _extract_stat('STD', stats_map)
+
+    # Fallback to training table col-stats if prediction stats incomplete.
+    if mean is None or std is None:
+        train_stats_path = _find_train_table_col_stats_path(pred_config)
+        if train_stats_path and fsutil.exists(train_stats_path):
+            try:
+                train_payload = json.loads(fsutil.read_text(train_stats_path))
+                train_stats = train_payload.get('stats', {})
+                if isinstance(train_stats, dict):
+                    mean = _extract_stat('MEAN', train_stats)
+                    std = _extract_stat('STD', train_stats)
+                    if mean is not None and std is not None:
+                        logger.info(
+                            'Loaded target MEAN/STD from train-table '
+                            'col-stats artifact: %s',
+                            train_stats_path,
+                        )
+            except Exception:
+                pass
+
+    if mean is None or std is None:
+        logger.warning(
+            'diskgraph prediction col-stats missing target MEAN/STD for %s; '
+            'using identity defaults',
+            target_col,
+        )
+        _set_identity_encoder_defaults(enc_stats)
+        return
+
+    if ColStatType.MEAN not in enc_stats:
+        enc_stats[ColStatType.MEAN] = mean
+    if ColStatType.STD not in enc_stats:
+        enc_stats[ColStatType.STD] = std
+    logger.info(
+        "Patched target encoder stats from prediction col-stats artifact: %s",
+        stats_path,
+    )
+
+
+def run_ttng_batch_prediction(
+    pred_config: PredictionConfig,
+    task: Task,
+    model_dir: str,
+    artifact_stats_request: tuple[str, PredictionArtifactStatsRequest]
+    | None = None,
+) -> None:
+    from kumo_core.train.diskgraph_nested_trainer import DiskgraphNestedTrainer
+
+    runtime_worker_id = pred_config.start_partition_id
+    runtime_num_workers = pred_config.num_partitions
+    output_num_partitions = pred_config.effective_output_num_partitions
+    output_partition_ranges = split_partitions_across_jobs(
+        output_num_partitions, runtime_num_workers)
+    logger.info("[TT-NG] worker processing shard %s/%s", runtime_worker_id,
+                runtime_num_workers)
+    output_start, output_stop = output_partition_ranges[runtime_worker_id]
+    output_partition_ids = list(range(output_start, output_stop))
+    artifact_stats_collector = (PredictionArtifactStatsCollector(
+        pred_config.output_dir,
+        artifact_stats_request[1].expected_artifact_types,
+    ) if artifact_stats_request is not None else None)
+    chunk_output = bool(output_partition_ids)
+    save_partition_id = (output_partition_ids[0]
+                         if chunk_output else runtime_worker_id)
+    save_total_partitions = (output_num_partitions
+                             if chunk_output else runtime_num_workers)
+    progress_helper = PartitionedPredictionProgressHelper(
+        path=osp.join(pred_config.home_dir,
+                      f'{PARTITION_FILE_PREFIX}{runtime_worker_id}.json'),
+        total_partitions=1,
+    )
+    bundle_dir = pred_config.diskgraph_task_dataset_bundle_dir
+    manifest = DiskgraphTaskManifest.load(osp.join(bundle_dir, 'manifest.json'))
+    resolved_task = task.to_resolved_numerical_task(manifest)
+    with kumo_timing("kumo_pred.ttng_trainer_load"):
+        trainer = DiskgraphNestedTrainer.load(
+            resolved_task,
+            model_dir,
+            version=None,
+            infer_config_path=False,
+            track_version=False,
+            binary_threshold=pred_config.binary_threshold,
+            diskgraph_task_dataset_bundle_dir=bundle_dir,
+            **monolith_trainer_runtime_kwargs(),
+        )
+    with kumo_timing("kumo_pred.ttng_load_encoders"):
+        trainer.encoders = load_encoders(osp.dirname(trainer.log_dir))
+    assert trainer.encoders is not None, (
+        'TT-NG BP: encoders.json missing in model dir')
+    logger.info("[TT-NG] predicting shard %s via %s", runtime_worker_id,
+                bundle_dir)
+    with kumo_timing("kumo_pred.ttng_predict"):
+        predict_kwargs = dict(
+            output_dir=pred_config.output_dir,
+            task=resolved_task,
+            return_embeddings=pred_config.return_embeddings,
+            return_predictions=pred_config.return_predictions,
+            job_start_time=pred_config.start_time,
+            ignore_time_col=pred_config.ignore_time_col,
+            pred_time_col_name=pred_config.pred_time_col_name,
+            output_extra_fields=pred_config.output_extra_fields,
+            max_output_file_size=pred_config.max_prediction_file_size_bytes,
+            progress_log_dir=pred_config.home_dir,
+            progress_log_id=runtime_worker_id,
+            partition_id=save_partition_id,
+            total_partitions=save_total_partitions,
+            output_partition_ids=(output_partition_ids
+                                  if chunk_output else None),
+            runtime_num_workers=runtime_num_workers,
+            runtime_worker_id=runtime_worker_id,
+            top_k=pred_config.top_k,
+        )
+        if artifact_stats_collector is not None:
+            predict_kwargs["artifact_stats_collector"] = (
+                artifact_stats_collector)
+        trainer.predict(**predict_kwargs)
+    task_type = getattr(task, 'task_type', None)
+    supports_ttng_xai = (task_type is not None and
+                         ((task_type.is_node_pred and task_type.supports_xai)
+                          or task_type.is_link_pred))
+    if (not pred_config.disable_explain and runtime_worker_id == 0
+            and supports_ttng_xai):
+        bp_xai_dir = osp.join(pred_config.home_dir, BP_XAI_FOLDER_NAME)
+        trainer.set_runtime_worker_shard(
+            runtime_num_workers=1,
+            runtime_worker_id=0,
+        )
+        with kumo_timing("kumo_pred.ttng_explain"):
+            trainer.explain(
+                explain_methods=[
+                    'column_analysis', 'gradient', 'subgraph_collector'
+                ],
+                stage='pred',
+                root_dir=bp_xai_dir,
+                top_k=pred_config.top_k,
+            )
+    prediction_progress = load_json(
+        osp.join(
+            pred_config.home_dir,
+            progress_logger.PredictionProgressLogger.FILE_NAME_WITH_ID.format(
+                progress_log_id=runtime_worker_id)),
+        PredictionProgress,
+    )
+    _ = progress_logger.PredictionProgressLogger(
+        pred_config.home_dir, runtime_worker_id,
+        prediction_progress.total_iterations)
+    progress_helper.update_progress(1)
+    if artifact_stats_request is not None:
+        assert artifact_stats_collector is not None
+        artifact_stats_path, request = artifact_stats_request
+        payload = artifact_stats_collector.build_payload(request)
+        save_json_atomic(payload.to_dict(), artifact_stats_path)
+
+
+def run_batch_prediction(
+    pred_config: PredictionConfig,
+    task: Task,
+    model_dir: str | None = None,
+    artifact_stats_request: tuple[str, PredictionArtifactStatsRequest]
+    | None = None,
+) -> None:
+    # TT-NG is the only prediction path: a task-dataset bundle dir is always
+    # configured, so ``run_ttng_batch_prediction`` handles every prediction and
+    # returns. The legacy in-memory feature-store predict tail (engine clients,
+    # per-partition loop) was removed with the rest of the pre-TT-NG dataplane.
+    assert pred_config.diskgraph_task_dataset_bundle_dir, (
+        'TT-NG BP: diskgraph_task_dataset_bundle_dir must be set')
+    run_ttng_batch_prediction(
+        pred_config,
+        task,
+        model_dir or pred_config.model_dir,
+        artifact_stats_request=artifact_stats_request,
+    )
+
+
+@tracing.trace()
+def main(json_path: str):
+    pred_config = PredictionConfig.load(json_path)
+    assert pred_config.start_partition_id < pred_config.stop_partition_id
+    assert pred_config.stop_partition_id <= pred_config.num_partitions
+
+    with kumo_timing("kumo_pred.kumo_init"):
+        init(
+            name=pred_config.task_name,
+            home_dir=pred_config.home_dir,
+            initialize_logging=False,
+            initialize_tracing=False,
+        )
+    logger.info("kumo-pred initialized")
+
+    # Initialize the logging with file-logging disabled:
+    logging.initialize_logging(
+        mode=logging.LoggingMode.DEVELOPMENT,
+        log_to_file=False,
+    )
+    log_app_startup()
+    logger.info(f"Execute kumo-pred on: {get_instance_id()}")
+
+    with kumo_timing("kumo_pred.run_check_commands"):
+        run_all_check_commands()
+
+    # Load any additional data that may be needed
+    model_dir = pred_config.model_dir
+    overrides_path = HomeDirManager(
+        pred_config.train_dir).train_dir_overrides_file
+    if fsutil.exists(overrides_path):
+        overrides = load_json(overrides_path, TrainDirOverrides)
+        model_dir = overrides.model_dir
+
+    # Load persisted, materialized task from prediction directory. Do not
+    # re-materialize edges here, although they will be re-materialized for
+    # each partition when performing the actual predictions:
+    with kumo_timing("kumo_pred.task_load"):
+        task = Task.load(
+            pred_config.task_name,
+            pred_config.home_dir,
+        )
+
+    # Load all cached table and column statistics:
+    with kumo_timing("kumo_pred.load_table_caches"):
+        get_active_cache().load_all_table_caches(task.graph.config())
+
+    with kumo_timing("kumo_pred.run_batch_prediction"):
+        run_batch_prediction(
+            pred_config,
+            task,
+            model_dir=model_dir,
+            artifact_stats_request=_artifact_stats_request(
+                json_path, pred_config),
+        )
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='KUMO Prediction Script')
+
+    add = parser.add_argument
+    add(
+        '--json',
+        dest='json',
+        type=str,
+        required=True,
+        help="JSON file containing the PredictionConfig for the task",
+    )
+
+    return parser.parse_args()
+
+
+if __name__ == '__main__':
+    import gc
+    import sys
+    import traceback
+
+    args = parse_args()
+    exit_code = 0
+    try:
+        main(args.json)
+    except Exception as e:
+        # In case of an exception, save the status as FAILED and
+        # the error message.
+        logger.info(f'Error in running prediction: {e}, Saving state to '
+                    f'{PredStatus.file_path(get_home_dir())}')
+        pred_status = PredStatus.load(get_home_dir())
+
+        if pred_status.stacktrace is None:
+            pred_status.stacktrace = ''.join(
+                traceback.format_exception(e, e, e.__traceback__))
+
+        public_error = as_platform_public_exception(e)
+        if public_error is not None:
+            pred_status.error_msg = public_error.get_user_message()
+        elif "out of memory" in pred_status.stacktrace.lower():
+            # Detect CUDA OOM errors (cudaMalloc, OutOfMemoryError, etc.)
+            pred_status.error_msg = (f"Out-of-memory (OOM) error: {e}")
+        else:
+            pred_status.error_msg = ""  # No user-facing message for internal errors
+
+        pred_status.save(get_home_dir())
+        traceback.print_exc()
+        exit_code = 1
+    except SystemExit as exc:
+        exit_code = exc.code if isinstance(
+            exc.code, int) else (0 if exc.code is None else 1)
+    except BaseException:
+        traceback.print_exc()
+        exit_code = 1
+    finally:
+        # Results and status are durable by here. On py3.14, normal
+        # interpreter shutdown joins the DiskGraph sampler's native thread and
+        # hangs, so the parent never sees the child exit. os._exit skips
+        # finalization; in finally so no exit path can bypass it.
+        gc.collect()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(exit_code)

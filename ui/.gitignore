@@ -1,0 +1,8 @@
+
+# NVIDIA Sans is PROPRIETARY — never commit its font files anywhere. The
+# air-gapped story for NVIDIA Sans is the metric-matched "NVIDIA Sans Fallback"
+# (local()-only, no binary). JetBrains Mono (open, SIL OFL 1.1) IS committed
+# under public/fonts/jetbrains-mono/ with its OFL.txt.
+public/fonts/nvidia-sans/**
+src/fonts/NVIDIASans*
+src/fonts/NVIDIA*

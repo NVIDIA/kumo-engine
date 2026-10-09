@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: S3 persist dir cleanup
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      validate_oidc_only:
+        description: Validate AWS OIDC without running cleanup
+        required: true
+        type: boolean
+        default: false
+  schedule:
+    - cron: "0 7 * * 3,5"  # Every Monday and Friday at 7:00am UTC/11pm PST
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  emr_cost_update:
+    environment: gha-s3-cleanup-reporting
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository and submodules
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-s3-cleanup-reporting
+          aws-region: us-west-2
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Set up packages
+        if: ${{ !inputs.validate_oidc_only }}
+        uses: ./.github/actions/setup
+        with:
+          github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+
+      - name: Cleanup doordash-cache bucket
+        if: ${{ always() && !inputs.validate_oidc_only }}
+        run: |
+          python tools/cleanup_s3_persist.py --s3_path s3://kumo-doordash-cache/kumo/
+
+      - name: Cleanup doordash-cache preprod bucket
+        if: ${{ always() && !inputs.validate_oidc_only }}
+        run: |
+          python tools/cleanup_s3_persist.py --s3_path s3://kumo-doordash-cache/doordash-preprod/
+
+      - name: Cleanup prod-dataplane-ue bucket
+        if: ${{ always() && !inputs.validate_oidc_only }}
+        run: |
+          python tools/cleanup_s3_persist.py --s3_path s3://kumo-prod-ue1-dataplane-bucket
+
+      - name: Cleanup prod-dataplane bucket
+        if: ${{ always() && !inputs.validate_oidc_only }}
+        run: |
+          python tools/cleanup_s3_persist.py --s3_path s3://kumo-prod-dataplane-bucket
+          python tools/cleanup_s3_persist.py --s3_path s3://kumo-doordash-cache/kumo/prod/

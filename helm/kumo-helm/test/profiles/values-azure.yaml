@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+global:
+  tenant: profile-test
+
+image:
+  tag: "test-version"
+
+
+kumoConfig:
+  storage:
+    dataBucket: abfss://profile@profiletest.dfs.core.windows.net/disk-graph
+  diskgraph:
+    nodeTypes:
+      test-gpu:
+        ssd_gib: 256
+        gpu_count: 1
+
+serviceAccounts:
+  control:
+    annotations:
+      azure.workload.identity/client-id: 00000000-0000-0000-0000-000000000001
+  worker:
+    annotations:
+      azure.workload.identity/client-id: 00000000-0000-0000-0000-000000000002
+  controller:
+    annotations:
+      azure.workload.identity/client-id: 00000000-0000-0000-0000-000000000003
+
+workloads:
+  poolcontroller:
+    extraEnv:
+      POOL_INIT_EPHEMERAL_CANARY_ENABLED: false
+
+postgres:
+  host: state-profile-test.postgres.database.azure.com
+  database: postgres
+  username: kumo-aks-wi

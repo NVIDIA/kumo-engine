@@ -1,0 +1,352 @@
+{
+    "predictive_query": "PREDICT ORDERS_1781333580003.K_SYMBOL FOR EACH ORDERS_1781333580003.ORDERS_ID",
+    "graph_definition": {
+        "tables": {
+            "ORDERS_1781333580003": {
+                "cols": [
+                    {
+                        "name": "ORDERS_ID",
+                        "stype": "ID",
+                        "dtype": "int64",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "ACCOUNT_ID",
+                        "stype": "ID",
+                        "dtype": "int64",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "BANK_TO",
+                        "stype": "categorical",
+                        "dtype": "string",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "ACCOUNT_TO",
+                        "stype": "numerical",
+                        "dtype": "int64",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "AMOUNT",
+                        "stype": "numerical",
+                        "dtype": "float64",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "K_SYMBOL",
+                        "stype": "categorical",
+                        "dtype": "string",
+                        "timestamp_format": null
+                    }
+                ],
+                "source_table": {
+                    "s3_path": "s3://kumo-public-datasets/financial/parquet/ORDERS.parquet",
+                    "connector_id": "FINANCIAL_1781333580003",
+                    "source_table_name": "ORDERS",
+                    "file_type": null,
+                    "data_source_type": "S3"
+                },
+                "pkey": "ORDERS_ID",
+                "time_col": null,
+                "end_time_col": null
+            },
+            "TRANS_1781333580003": {
+                "cols": [
+                    {
+                        "name": "TRANS_ID",
+                        "stype": "ID",
+                        "dtype": "int32",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "ACCOUNT_ID",
+                        "stype": "ID",
+                        "dtype": "int64",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "DATE",
+                        "stype": "timestamp",
+                        "dtype": "date",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "TYPE",
+                        "stype": "categorical",
+                        "dtype": "string",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "OPERATION",
+                        "stype": "categorical",
+                        "dtype": "string",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "AMOUNT",
+                        "stype": "numerical",
+                        "dtype": "float64",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "BALANCE",
+                        "stype": "numerical",
+                        "dtype": "int32",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "K_SYMBOL",
+                        "stype": "categorical",
+                        "dtype": "string",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "BANK",
+                        "stype": "categorical",
+                        "dtype": "string",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "ACCOUNT",
+                        "stype": "numerical",
+                        "dtype": "int32",
+                        "timestamp_format": null
+                    }
+                ],
+                "source_table": {
+                    "s3_path": "s3://kumo-public-datasets/financial/parquet/TRANS",
+                    "connector_id": "FINANCIAL_1781333580003",
+                    "source_table_name": "TRANS",
+                    "file_type": null,
+                    "data_source_type": "S3"
+                },
+                "pkey": "TRANS_ID",
+                "time_col": "DATE",
+                "end_time_col": null
+            },
+            "ACCOUNT_1781333580003": {
+                "cols": [
+                    {
+                        "name": "ACCOUNT_ID",
+                        "stype": "ID",
+                        "dtype": "int64",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "DISTRICT_ID",
+                        "stype": "ID",
+                        "dtype": "int64",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "FREQUENCY",
+                        "stype": "categorical",
+                        "dtype": "string",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "DATE",
+                        "stype": "timestamp",
+                        "dtype": "date",
+                        "timestamp_format": null
+                    }
+                ],
+                "source_table": {
+                    "s3_path": "s3://kumo-public-datasets/financial/parquet/ACCOUNT.parquet",
+                    "connector_id": "FINANCIAL_1781333580003",
+                    "source_table_name": "ACCOUNT",
+                    "file_type": null,
+                    "data_source_type": "S3"
+                },
+                "pkey": "ACCOUNT_ID",
+                "time_col": "DATE",
+                "end_time_col": null
+            }
+        },
+        "col_groups": [
+            {
+                "columns": [
+                    {
+                        "table_name": "TRANS_1781333580003",
+                        "col_name": "ACCOUNT_ID"
+                    },
+                    {
+                        "table_name": "ORDERS_1781333580003",
+                        "col_name": "ACCOUNT_ID"
+                    },
+                    {
+                        "table_name": "ACCOUNT_1781333580003",
+                        "col_name": "ACCOUNT_ID"
+                    }
+                ]
+            }
+        ]
+    },
+    "training_table_gen_plan": {
+        "split": "RandomSplit(ratio=[0.8, 0.1, 0.1], seed=None)",
+        "weight_col": null
+    },
+    "model_plan": {
+        "training_table_generation": {
+            "split": "RandomSplit(ratio=[0.8, 0.1, 0.1], seed=None)",
+            "weight_col": null
+        },
+        "training_job": {
+            "num_experiments": 2,
+            "metrics": [
+                "acc"
+            ],
+            "tune_metric": "acc",
+            "pruning": {
+                "min_epochs": 2,
+                "k": 3,
+                "min_delta": 0,
+                "patience": 1
+            },
+            "refit_trainval": false,
+            "refit_full": false
+        },
+        "column_processing": {
+            "encoder_overrides": null,
+            "na_strategy": null
+        },
+        "neighbor_sampling": {
+            "num_neighbors": [
+                {
+                    "hop1": {
+                        "default": 12
+                    },
+                    "hop2": {
+                        "default": 12
+                    }
+                }
+            ],
+            "sample_from_entity_table": true,
+            "adaptive_sampling": false
+        },
+        "optimization": {
+            "max_epochs": 8,
+            "min_steps_per_epoch": 30,
+            "max_steps_per_epoch": 1000,
+            "max_val_steps": 1000,
+            "max_test_steps": 2000,
+            "loss": [
+                "cross_entropy"
+            ],
+            "optimizer": [
+                "Adam"
+            ],
+            "base_lr": [
+                0.0001,
+                0.0005,
+                0.001,
+                0.005,
+                0.01,
+                0.05
+            ],
+            "weight_decay": [
+                0,
+                5e-8,
+                5e-7,
+                0.000005
+            ],
+            "batch_size": [
+                512,
+                1024
+            ],
+            "early_stopping": [
+                {
+                    "min_delta": 0,
+                    "patience": 3
+                }
+            ],
+            "lr_scheduler": [
+                {
+                    "name": "cosine_with_warmup_restarts",
+                    "interval": "step",
+                    "kwargs": {
+                        "warmup_ratio_or_steps": 0.1
+                    }
+                },
+                {
+                    "name": "constant_with_warmup",
+                    "interval": "step",
+                    "kwargs": {
+                        "warmup_ratio_or_steps": 0.1
+                    }
+                },
+                {
+                    "name": "linear_with_warmup",
+                    "interval": "step",
+                    "kwargs": {
+                        "warmup_ratio_or_steps": 0.1
+                    }
+                },
+                {
+                    "name": "cosine_with_warmup",
+                    "interval": "step",
+                    "kwargs": {
+                        "warmup_ratio_or_steps": 0.1
+                    }
+                }
+            ]
+        },
+        "model_architecture": {
+            "model": [
+                {
+                    "name": "GNN",
+                    "channels": [
+                        64,
+                        128,
+                        256
+                    ],
+                    "aggregation": [
+                        [
+                            "sum",
+                            "mean",
+                            "max"
+                        ],
+                        [
+                            "sum",
+                            "mean",
+                            "min",
+                            "max",
+                            "std"
+                        ]
+                    ],
+                    "dropout": [
+                        0
+                    ]
+                }
+            ],
+            "num_pre_message_passing_layers": [
+                0,
+                1,
+                2
+            ],
+            "num_post_message_passing_layers": [
+                1,
+                2
+            ],
+            "activation": [
+                "relu",
+                "leaky_relu",
+                "elu",
+                "gelu"
+            ],
+            "normalization": [
+                "layer_norm"
+            ],
+            "use_seq_id": [
+                false
+            ]
+        }
+    },
+    "enable_baselines": false,
+    "job_tags": {
+        "FINANCIAL_MULTICLASS_CLASSIFICATION_1781333580003": "FINANCIAL_MULTICLASS_CLASSIFICATION_1781333580003"
+    },
+    "user": "Momentic Test"
+}

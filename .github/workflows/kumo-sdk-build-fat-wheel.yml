@@ -1,0 +1,97 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kumo SDK - Build fat wheel
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >
+          Bundle version to bake into the fat wheel. Must be PEP 440-compliant.
+          If empty, packages/kumo-engine/scripts/build_fat_wheel.sh defaults
+          to <today's date>+<short commit>.
+        type: string
+        required: false
+        default: ''
+      retention_days:
+        description: How long GitHub keeps the uploaded artifact.
+        type: number
+        required: false
+        default: 30
+      python_tag:
+        description: >
+          Target interpreter tag, e.g. cp312. If empty, build_fat_wheel.sh's
+          own default is used.
+        type: string
+        required: false
+        default: ''
+      extra_components:
+        description: >
+          Optional packages, e.g. kumo-databricks,kumo-s3. Engine is always
+          included. Leave empty to include all optional components.
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04-large
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
+      - name: Set up Rust
+        # This org's Actions allowlist only permits dtolnay/rust-toolchain at
+        # @master or a pinned SHA, not @stable.
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88  # master, allowlisted
+        with:
+          toolchain: stable
+
+      # cargo-zigbuild shells out to `zig`; without it on PATH it falls back
+      # to `python -m ziglang`, which needs the ziglang package installed.
+      - name: Install zig
+        run: pip install ziglang
+
+      - name: Cache Stanford's glove.6B.zip
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
+        with:
+          path: ~/.cache/kumo/glove.6B.zip
+          key: glove-6b-zip-617afb2fe6cbd085c235baf7a465b96f4112bd7f7ccb2b2cbd649fed9cbcf2fb
+
+      - name: Build fat wheel
+        env:
+          GITHUB_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+          BUNDLE_VERSION: ${{ inputs.version }}
+          PYTHON_TAG_INPUT: ${{ inputs.python_tag }}
+          EXTRA_COMPONENTS_INPUT: ${{ inputs.extra_components }}
+        run: |
+          args=()
+          if [ -n "${PYTHON_TAG_INPUT}" ]; then
+            args+=(--python-tag "${PYTHON_TAG_INPUT}")
+          fi
+          if [ -n "${EXTRA_COMPONENTS_INPUT}" ]; then
+            args+=(--extra-components "${EXTRA_COMPONENTS_INPUT}")
+          fi
+          ./packages/kumo-engine/scripts/build_fat_wheel.sh "${args[@]}"
+
+      # GitHub-hosted artifact storage, not S3: no AWS role to provision, and
+      # the build is otherwise done. Swap for an S3 upload (or add one
+      # alongside) once a dedicated IAM role/environment exists -- see the
+      # discussion on the PR that added this workflow.
+      - name: Upload fat wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: kumo-fat-wheel-${{ github.sha }}
+          path: packages/kumo-engine/dist/*.whl
+          retention-days: ${{ inputs.retention_days }}

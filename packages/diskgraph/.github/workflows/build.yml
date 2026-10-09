@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+---
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ startsWith(github.ref, 'refs/pull/') || github.run_number }}
+  # Only cancel intermediate builds if on a PR
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+# Checkout only; the wheel is built locally and not published.
+permissions:
+  contents: read
+
+jobs:
+  build-wheel:
+    runs-on: ubuntu-22.04-large
+    env:
+      # `lld` (LLVM, Apache 2.0 + LLVM exception) keeps peak
+      # link-time RAM well under budget on this workspace's AWS-SDK
+      # / arrow / parquet chain. Even though the larger runner has
+      # 16 GB, GNU ld's per-job peak on these crates is ~4 GB and 4
+      # parallel link jobs (default `nproc` parallelism) exhausts
+      # it. lld avoids that. lld picked over mold to avoid AGPL.
+      #
+      # `+aes,+sse2` repeated here because RUSTFLAGS env var
+      # overrides `.cargo/config.toml`'s [target.x86_64] rustflags
+      # entirely (cargo precedence: env > config). gxhash's
+      # compile_error! macro fails the build without these.
+      RUSTFLAGS: "-C target-feature=+aes,+sse2 -C link-arg=-fuse-ld=lld"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install lld linker
+        timeout-minutes: 10
+        run: |
+          command -v ld.lld >/dev/null && exit 0
+          # Only the Ubuntu archive sources: a third-party repo on the runner
+          # image can hang `apt-get update` with no timeout.
+          parts=$(mktemp -d)
+          grep -lE 'ubuntu\.com|mirror\+file:' /etc/apt/sources.list.d/* 2>/dev/null | xargs -r cp -t "$parts" || true
+          apt_get() { for i in 1 2 3; do sudo timeout -k 15 180 apt-get -o Dir::Etc::sourceparts="$parts" -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120 "$@" && return 0; sleep 10; done; return 1; }
+          apt_get update
+          apt_get install -y -qq --no-install-recommends lld
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: stable
+
+      - name: Build wheel
+        run: |
+          scripts/build_python_wheel.sh --python python3.11 --out target/wheels --zig

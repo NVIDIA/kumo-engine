@@ -1,0 +1,38 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- include "kumoEdge.validate" . -}}
+{{- if eq .Values.mode "azure-appgw" }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "kumoEdge.name" . }}
+  labels:
+    {{- include "kumoEdge.labels" . | nindent 4 }}
+  annotations:
+    appgw.ingress.kubernetes.io/health-probe-path: /
+    appgw.ingress.kubernetes.io/ssl-redirect: "true"
+    appgw.ingress.kubernetes.io/use-private-ip: {{ .Values.appgw.usePrivateIp | quote }}
+    {{- with .Values.extraAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: azure-application-gateway
+  tls:
+    - hosts:
+        - {{ .Values.host | quote }}
+      secretName: {{ .Values.appgw.tlsSecretName }}
+  rules:
+    - host: {{ .Values.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Values.target.service }}
+                port:
+                  number: {{ .Values.target.port }}
+{{- end }}

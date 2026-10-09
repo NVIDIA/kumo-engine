@@ -1,0 +1,116 @@
+{
+    "suggested_model_plan": {
+        "model_plan": {
+            "training_table_generation": {
+                "split": "RandomSplit(ratio=[0.8, 0.1, 0.1])",
+                "train_start_offset": "???",
+                "train_end_offset": "???",
+                "start_time": "???",
+                "end_time": "???",
+                "timeframe_step": "???",
+                "forecast_length": "???",
+                "lag_timesteps": "???",
+                "year_over_year": "???",
+                "entity_candidate": null,
+                "entity_candidate_aggregation": null,
+                "task_path_override": null,
+                "train_table_path_override": null
+            },
+            "training_job": {
+                "num_experiments": 4,
+                "metrics": ["mae", "mse", "rmse"],
+                "tune_metric": "mae",
+                "disable_compilation": true,
+                "refit_trainval": false,
+                "refit_full": false,
+                "disable_explain": false,
+                "manual_seed": null,
+                "enable_baselines": false
+            },
+            "column_processing": { "encoder_overrides": null },
+            "neighbor_sampling": {
+                "max_target_neighbors_per_entity": "???",
+                "num_neighbors": [
+                    {
+                        "hop1": { "default": 12 },
+                        "hop2": { "default": 12 },
+                        "hop3": null,
+                        "hop4": null,
+                        "hop5": null,
+                        "hop6": null
+                    }
+                ],
+                "sample_from_entity_table": true
+            },
+            "optimization": {
+                "max_epochs": 8,
+                "min_steps_per_epoch": 30,
+                "max_steps_per_epoch": 1000,
+                "max_val_steps": 1000,
+                "max_test_steps": 2000,
+                "loss": ["huber"],
+                "base_lr": [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05],
+                "weight_decay": [0.0, 5e-8, 5e-7, 5e-6],
+                "batch_size": [512, 1024],
+                "early_stopping": [{ "min_delta": 0.0, "patience": 3 }],
+                "lr_scheduler": [
+                    {
+                        "name": "cosine_with_warmup_restarts",
+                        "interval": "step",
+                        "kwargs": { "warmup_ratio_or_steps": 0.1 }
+                    },
+                    {
+                        "name": "constant_with_warmup",
+                        "interval": "step",
+                        "kwargs": { "warmup_ratio_or_steps": 0.1 }
+                    },
+                    {
+                        "name": "linear_with_warmup",
+                        "interval": "step",
+                        "kwargs": { "warmup_ratio_or_steps": 0.1 }
+                    },
+                    {
+                        "name": "cosine_with_warmup",
+                        "interval": "step",
+                        "kwargs": { "warmup_ratio_or_steps": 0.1 }
+                    }
+                ],
+                "majority_sampling_ratio": "???",
+                "weight_mode": "???"
+            },
+            "model_architecture": {
+                "model": [
+                    {
+                        "name": "GNN",
+                        "channels": [64, 128, 256],
+                        "aggregation": [
+                            ["sum", "mean", "max"],
+                            ["sum", "mean", "min", "max", "std"]
+                        ]
+                    }
+                ],
+                "channels": "???",
+                "num_pre_message_passing_layers": [0, 1, 2],
+                "num_post_message_passing_layers": [1, 2],
+                "aggregation": "???",
+                "activation": ["relu", "leaky_relu", "elu", "gelu"],
+                "normalization": ["layer_norm"],
+                "module": "???",
+                "handle_new_target_entities": "???",
+                "target_embedding_mode": "???",
+                "output_embedding_dim": "???",
+                "ranking_embedding_loss_coeff": "???",
+                "distance_measure": "???",
+                "use_seq_id": [false],
+                "prediction_time_encodings": "???",
+                "past_encoder": "???",
+                "handle_new_entities": "???",
+                "forecast_type": "???"
+            }
+        },
+        "task_type": "regression",
+        "query_type": "static",
+        "has_train_table_weight_col": false
+    },
+    "suggested_model_plan_yaml": "training_table_generation:\n  split: RandomSplit(ratio=[0.8, 0.1, 0.1])\ntraining_job:\n  num_experiments: 4\n  metrics:\n  - mae\n  - mse\n  - rmse\n  tune_metric: mae\n  refit_trainval: false\n  refit_full: false\ncolumn_processing:\n  encoder_overrides:\nneighbor_sampling:\n  num_neighbors:\n  - hop1:\n      default: 12\n    hop2:\n      default: 12\n  sample_from_entity_table: true\noptimization:\n  max_epochs: 8\n  min_steps_per_epoch: 30\n  max_steps_per_epoch: 1000\n  max_val_steps: 1000\n  max_test_steps: 2000\n  loss:\n  - huber\n  base_lr:\n  - 0.0001\n  - 0.0005\n  - 0.001\n  - 0.005\n  - 0.01\n  - 0.05\n  weight_decay:\n  - 0.0\n  - 5.0e-08\n  - 5.0e-07\n  - 5.0e-06\n  batch_size:\n  - 512\n  - 1024\n  early_stopping:\n  - min_delta: 0.0\n    patience: 3\n  lr_scheduler:\n  - name: cosine_with_warmup_restarts\n    interval: step\n    kwargs:\n      warmup_ratio_or_steps: 0.1\n  - name: constant_with_warmup\n    interval: step\n    kwargs:\n      warmup_ratio_or_steps: 0.1\n  - name: linear_with_warmup\n    interval: step\n    kwargs:\n      warmup_ratio_or_steps: 0.1\n  - name: cosine_with_warmup\n    interval: step\n    kwargs:\n      warmup_ratio_or_steps: 0.1\nmodel_architecture:\n  model:\n  - name: GNN\n    channels:\n    - 64\n    - 128\n    - 256\n    aggregation:\n    - [sum, mean, max]\n    - [sum, mean, min, max, std]\n  num_pre_message_passing_layers:\n  - 0\n  - 1\n  - 2\n  num_post_message_passing_layers:\n  - 1\n  - 2\n  activation:\n  - relu\n  - leaky_relu\n  - elu\n  - gelu\n  normalization:\n  - layer_norm\n  use_seq_id:\n  - false"
+}

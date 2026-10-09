@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# ── Provider edge for a Kumo release ─────────────────────────────────────────
+# Installed alongside kumo-helm, into the SAME namespace: an Ingress or Route
+# can only target a Service in its own namespace.
+#
+# kumo-helm deliberately does not own this. Skip this chart entirely and bring
+# your own ingress if you prefer — nothing in the app depends on it existing.
+
+mode: none        # none | alb-acm | azure-appgw | openshift
+
+# Public DNS name; REQUIRED unless mode=none. Must match the exposure.host given
+# to kumo-helm, which drives the UI→API base URL and the app-generated absolute
+# URLs.
+host: ""
+
+# The Kumo Service this edge routes to. Defaults match kumo-helm's frontend.
+target:
+  service: kumo-ui
+  port: 80
+  portName: http  # named port on the Service; used by the OpenShift Route
+
+# mode=alb-acm (EKS). ACM terminates public HTTPS at the ALB.
+alb:
+  certificateArn: ""            # REQUIRED for alb-acm
+  scheme: internet-facing       # internet-facing | internal
+  healthcheckPath: /
+
+# mode=azure-appgw (AKS). Application Gateway terminates HTTPS.
+appgw:
+  tlsSecretName: ""             # REQUIRED for azure-appgw; kubernetes.io/tls
+  usePrivateIp: true
+
+# Merged onto the created resource.
+extraLabels: {}
+extraAnnotations: {}

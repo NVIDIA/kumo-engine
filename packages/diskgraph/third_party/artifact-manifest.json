@@ -1,0 +1,5207 @@
+{
+  "artifacts": [
+    {
+      "default_features": true,
+      "dependency_kinds": [
+        "normal"
+      ],
+      "features": [
+        "extension-module",
+        "pyo3/abi3-py311"
+      ],
+      "id": "diskgraph-extension",
+      "label": "diskgraph._c.abi3.so",
+      "packages": [
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "addr2line",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.25.1"
+        },
+        {
+          "license": "0BSD OR MIT OR Apache-2.0",
+          "name": "adler2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.0.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "ahash",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.12"
+        },
+        {
+          "license": "Unlicense OR MIT",
+          "name": "aho-corasick",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.1.4"
+        },
+        {
+          "license": "MIT",
+          "name": "aligned-vec",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.6.4"
+        },
+        {
+          "license": "BSD-3-Clause",
+          "name": "alloc-no-stdlib",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.0.4"
+        },
+        {
+          "license": "BSD-3-Clause",
+          "name": "alloc-stdlib",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "anstream",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "anstyle",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.14"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "anstyle-parse",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "anstyle-query",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.1.5"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "anyhow",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.104"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "arc-swap",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.9.1"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "arrow",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "arrow-arith",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "Apache-2.0 AND MIT",
+          "name": "arrow-array",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "arrow-buffer",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "arrow-cast",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "arrow-csv",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "arrow-data",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "arrow-ipc",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "arrow-json",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "arrow-ord",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "arrow-pyarrow",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "arrow-row",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "arrow-schema",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "arrow-select",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "arrow-string",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "async-trait",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.89"
+        },
+        {
+          "license": "MIT",
+          "name": "atoi",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.0.0"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "atomic-waker",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.1.2"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-config",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.8.18"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-credential-types",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.2.14"
+        },
+        {
+          "license": "ISC AND (Apache-2.0 OR ISC)",
+          "name": "aws-lc-rs",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.18.1"
+        },
+        {
+          "license": "ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0)",
+          "name": "aws-lc-sys",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.45.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-runtime",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.7.4"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-sdk-sso",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.101.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-sdk-ssooidc",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.103.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-sdk-sts",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.106.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-sigv4",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.4.5"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-async",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.2.14"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-http",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.63.6"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-http-client",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.1.13"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-json",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.62.7"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-observability",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.6"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-query",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.60.15"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-runtime",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.11.3"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-runtime-api",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.12.3"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-runtime-api-macros",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-schema",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-types",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.4.9"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-xml",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.60.15"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-types",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.3.16"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "backtrace",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.76"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "base64",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.21.7"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "base64",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.22.1"
+        },
+        {
+          "license": "MIT",
+          "name": "base64-simd",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.0"
+        },
+        {
+          "license": "MIT",
+          "name": "bincode",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.3.3"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "bitflags",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.3.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "bitflags",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.13.0"
+        },
+        {
+          "license": "MIT",
+          "name": "bitvec",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "block-buffer",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.4"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "block-buffer",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.12.1"
+        },
+        {
+          "license": "BSD-3-Clause AND MIT",
+          "name": "brotli",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "8.0.3"
+        },
+        {
+          "license": "BSD-3-Clause/MIT",
+          "name": "brotli-decompressor",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "5.0.1"
+        },
+        {
+          "license": "Unlicense OR MIT",
+          "name": "byteorder",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.5.0"
+        },
+        {
+          "license": "MIT",
+          "name": "bytes",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.11.1"
+        },
+        {
+          "license": "Apache-2.0/MIT",
+          "name": "bytes-utils",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.4"
+        },
+        {
+          "license": "MIT",
+          "name": "cacheline-ef",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.1.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "cfg-if",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.4"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "chacha20",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "chrono",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.45"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "clap",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "4.6.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "clap_builder",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "4.6.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "clap_derive",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "4.6.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "clap_lex",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.1.0"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "cmov",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.5.4"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "colorchoice",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.5"
+        },
+        {
+          "license": "MIT",
+          "name": "combine",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "4.6.7"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "common_traits",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.11.4"
+        },
+        {
+          "license": "MIT",
+          "name": "console",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.15.11"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "const-oid",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "cpp_demangle",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.5"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "cpufeatures",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.17"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "cpufeatures",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "crc32fast",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.5.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "crossbeam-channel",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.5.15"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "crossbeam-deque",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.6"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "crossbeam-epoch",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.9.21"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "crossbeam-utils",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.21"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "crypto-common",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.7"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "crypto-common",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.2"
+        },
+        {
+          "license": "Unlicense/MIT",
+          "name": "csv",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.4.0"
+        },
+        {
+          "license": "Unlicense/MIT",
+          "name": "csv-core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.13"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "ctutils",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.2"
+        },
+        {
+          "license": "MIT",
+          "name": "darling",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.23.0"
+        },
+        {
+          "license": "MIT",
+          "name": "darling_core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.23.0"
+        },
+        {
+          "license": "MIT",
+          "name": "darling_macro",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.23.0"
+        },
+        {
+          "license": "MIT",
+          "name": "dashmap",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "6.2.1"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "debugid",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "deranged",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.5.8"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "digest",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.7"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "digest",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.11.3"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "diskgraph-core",
+          "source": "diskgraph-core/Cargo.toml",
+          "source_kind": "workspace-first-party",
+          "version": "0.1.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "diskgraph-engine",
+          "source": "diskgraph-engine/Cargo.toml",
+          "source_kind": "workspace-first-party",
+          "version": "0.1.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "diskgraph-fs",
+          "source": "diskgraph-fs/Cargo.toml",
+          "source_kind": "workspace-first-party",
+          "version": "0.1.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "diskgraph-index",
+          "source": "diskgraph-index/Cargo.toml",
+          "source_kind": "workspace-first-party",
+          "version": "0.1.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "diskgraph-ingest",
+          "source": "diskgraph-ingest/Cargo.toml",
+          "source_kind": "workspace-first-party",
+          "version": "0.1.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "diskgraph-limits",
+          "source": "diskgraph-limits/Cargo.toml",
+          "source_kind": "workspace-first-party",
+          "version": "0.1.0"
+        },
+        {
+          "license": "MIT",
+          "name": "diskgraph-ptrhash",
+          "source": "diskgraph-ptrhash/Cargo.toml",
+          "source_kind": "vendored-third-party",
+          "version": "1.1.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "diskgraph-pybind",
+          "source": "diskgraph-pybind/Cargo.toml",
+          "source_kind": "workspace-first-party",
+          "version": "0.1.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "diskgraph-rowpack",
+          "source": "diskgraph-rowpack/Cargo.toml",
+          "source_kind": "workspace-first-party",
+          "version": "0.1.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "diskgraph-train-table",
+          "source": "diskgraph-train-table/Cargo.toml",
+          "source_kind": "workspace-first-party",
+          "version": "0.1.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "displaydoc",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.6"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "either",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.16.0"
+        },
+        {
+          "license": "MIT",
+          "name": "endian-type",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.2"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "enum-as-inner",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.6.1"
+        },
+        {
+          "license": "Apache-2.0 OR LGPL-2.1-or-later",
+          "name": "epserde",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.0"
+        },
+        {
+          "license": "Apache-2.0 OR LGPL-2.1-or-later",
+          "name": "epserde-derive",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.0"
+        },
+        {
+          "license": "MIT",
+          "name": "equator",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.2"
+        },
+        {
+          "license": "MIT",
+          "name": "equator-macro",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.2"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "equivalent",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "errno",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.14"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "fast-float2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.4"
+        },
+        {
+          "license": "MIT",
+          "name": "fasteval",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.4"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "fastrand",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.4.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "fd-lock",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "3.0.13"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "filetime",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.29"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "findshlibs",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.2"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "flatbuffers",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "25.12.19"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "flate2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.1.9"
+        },
+        {
+          "license": "Apache-2.0 / MIT",
+          "name": "fnv",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.7"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "form_urlencoded",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.2.2"
+        },
+        {
+          "license": "MIT",
+          "name": "funty",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.0.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "futures",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.32"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "futures-channel",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.32"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "futures-core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.32"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "futures-executor",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.32"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "futures-io",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.32"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "futures-macro",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.32"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "futures-sink",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.32"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "futures-task",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.32"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "futures-util",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.32"
+        },
+        {
+          "license": "MIT",
+          "name": "generic-array",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.14.7"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "getrandom",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.17"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "getrandom",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.4"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "getrandom",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "gimli",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.32.3"
+        },
+        {
+          "license": "MIT",
+          "name": "gxhash",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "3.5.0"
+        },
+        {
+          "license": "MIT",
+          "name": "h2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.19"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "half",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.7.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "hashbrown",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.14.5"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "hashbrown",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.16.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "hashbrown",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.17.1"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "hdrhistogram",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "7.5.4"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "heck",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.5.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "hex",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.3"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "hmac",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.13.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "home",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.5.12"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "http",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.12"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "http",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.4.2"
+        },
+        {
+          "license": "MIT",
+          "name": "http-body",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.6"
+        },
+        {
+          "license": "MIT",
+          "name": "http-body",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.1"
+        },
+        {
+          "license": "MIT",
+          "name": "http-body-util",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.3"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "httparse",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.10.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "humantime",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.3.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "hybrid-array",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.12"
+        },
+        {
+          "license": "MIT",
+          "name": "hyper",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.10.1"
+        },
+        {
+          "license": "Apache-2.0 OR ISC OR MIT",
+          "name": "hyper-rustls",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.27.9"
+        },
+        {
+          "license": "MIT",
+          "name": "hyper-util",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.20"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "iana-time-zone",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.65"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "icu_collections",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.2.0"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "icu_locale_core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.2.0"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "icu_normalizer",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.2.0"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "icu_normalizer_data",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.2.0"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "icu_properties",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.2.0"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "icu_properties_data",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.2.0"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "icu_provider",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.2.0"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "ident_case",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "idna",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.1.0"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "idna_adapter",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.2.2"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "impl-tools",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.3"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "impl-tools-lib",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.11.4"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "indexmap",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.14.0"
+        },
+        {
+          "license": "MIT",
+          "name": "indicatif",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.17.11"
+        },
+        {
+          "license": "MIT",
+          "name": "integer-encoding",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "3.0.4"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "ipnet",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.12.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "is_terminal_polyfill",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.70.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "itertools",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.12.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "itertools",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.14.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "itoa",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.18"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "lazy_static",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.5.0"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "lexical-core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.6"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "lexical-parse-float",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.6"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "lexical-parse-integer",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.6"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "lexical-util",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.7"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "lexical-write-float",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.6"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "lexical-write-integer",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.6"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "libc",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.186"
+        },
+        {
+          "license": "MIT",
+          "name": "libm",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.16"
+        },
+        {
+          "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+          "name": "linux-raw-sys",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.12.1"
+        },
+        {
+          "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+          "name": "linux-raw-sys",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.15"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "litemap",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "lock_api",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.14"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "log",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.32"
+        },
+        {
+          "license": "MIT",
+          "name": "lz4_flex",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.12.2"
+        },
+        {
+          "license": "MIT",
+          "name": "lz4_flex",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.13.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "maligned",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.1"
+        },
+        {
+          "license": "MIT",
+          "name": "matchers",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "md-5",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.6"
+        },
+        {
+          "license": "Apache-2.0 OR LGPL-2.1-or-later",
+          "name": "mem_dbg",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.4"
+        },
+        {
+          "license": "Apache-2.0 OR LGPL-2.1-or-later",
+          "name": "mem_dbg-derive",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.1"
+        },
+        {
+          "license": "Unlicense OR MIT",
+          "name": "memchr",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.8.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "memmap2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.9.11"
+        },
+        {
+          "license": "MIT",
+          "name": "memoffset",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.7.1"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "minimal-lexical",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.1"
+        },
+        {
+          "license": "MIT OR Zlib OR Apache-2.0",
+          "name": "miniz_oxide",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.9"
+        },
+        {
+          "license": "MIT",
+          "name": "mio",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.2.1"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "mmap-rs",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.6.1"
+        },
+        {
+          "license": "MIT",
+          "name": "nibble_vec",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.0"
+        },
+        {
+          "license": "MIT",
+          "name": "nix",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.26.4"
+        },
+        {
+          "license": "MIT",
+          "name": "nom",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "7.1.3"
+        },
+        {
+          "license": "MIT",
+          "name": "nu-ansi-term",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.50.3"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "num-bigint",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.6"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "num-complex",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.6"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "num-conv",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "num-integer",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.46"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "num-traits",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.19"
+        },
+        {
+          "license": "MIT",
+          "name": "number_prefix",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.0"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "object",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.37.3"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "object_store",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.13.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "once_cell",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.21.4"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "openssl-probe",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.1"
+        },
+        {
+          "license": "MIT",
+          "name": "ordered-float",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.10.1"
+        },
+        {
+          "license": "MIT",
+          "name": "outref",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.5.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "parking_lot",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.12.5"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "parking_lot_core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.9.12"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "parquet",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "paste",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.15"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "percent-encoding",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.3.2"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "pin-project-lite",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.17"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "pin-utils",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.0"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "portable-atomic",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.13.1"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "potential_utf",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.5"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "powerfmt",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "pprof",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.14.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "ppv-lite86",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.21"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "proc-macro-error-attr2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.0.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "proc-macro-error2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.0.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "proc-macro2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.106"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "prost",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.12.6"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "prost-derive",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.12.6"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "pyo3",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.28.3"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "pyo3-build-config",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.28.3"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "pyo3-ffi",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.28.3"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "pyo3-log",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.13.3"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "pyo3-macros",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.28.3"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "pyo3-macros-backend",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.28.3"
+        },
+        {
+          "license": "MIT",
+          "name": "quick-xml",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.39.4"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "quote",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.45"
+        },
+        {
+          "license": "MIT",
+          "name": "radium",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.7.0"
+        },
+        {
+          "license": "MIT",
+          "name": "radix_trie",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "rand",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "rand",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.6"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "rand_chacha",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "rand_core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "rand_core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.6.4"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "rayon",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.12.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "rayon-core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.13.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "regex",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.12.4"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "regex-automata",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.14"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "regex-lite",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.9"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "regex-syntax",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.11"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "reqwest",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.12.28"
+        },
+        {
+          "license": "Apache-2.0 AND ISC",
+          "name": "ring",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.17.14"
+        },
+        {
+          "license": "MIT",
+          "name": "rmp",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.15"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "rustc-demangle",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.27"
+        },
+        {
+          "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+          "name": "rustix",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.38.44"
+        },
+        {
+          "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+          "name": "rustix",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.1.4"
+        },
+        {
+          "license": "Apache-2.0 OR ISC OR MIT",
+          "name": "rustls",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.23.45"
+        },
+        {
+          "license": "Apache-2.0 OR ISC OR MIT",
+          "name": "rustls-native-certs",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.4"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "rustls-pki-types",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.14.1"
+        },
+        {
+          "license": "ISC",
+          "name": "rustls-webpki",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.103.15"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "rustversion",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.22"
+        },
+        {
+          "license": "MIT",
+          "name": "rustyline",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "12.0.0"
+        },
+        {
+          "license": "Apache-2.0 OR BSL-1.0",
+          "name": "ryu",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.23"
+        },
+        {
+          "license": "Unlicense/MIT",
+          "name": "same-file",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.6"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "scopeguard",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.2.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "sealed",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.6.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "seq-macro",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.6"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "serde",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.228"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "serde_core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.228"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "serde_derive",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.228"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "serde_json",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.150"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "serde_urlencoded",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.7.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "serde_with",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "3.21.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "serde_with_macros",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "3.21.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "sha1",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.6"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "sha2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.9"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "sha2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.11.0"
+        },
+        {
+          "license": "MIT",
+          "name": "sharded-slab",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.7"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "signal-hook-registry",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.4.8"
+        },
+        {
+          "license": "MIT",
+          "name": "simd-adler32",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.9"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "simdutf8",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.5"
+        },
+        {
+          "license": "MIT",
+          "name": "slab",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.12"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "smallvec",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.15.2"
+        },
+        {
+          "license": "BSD-3-Clause",
+          "name": "snap",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.1.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "socket2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.6.4"
+        },
+        {
+          "license": "MIT",
+          "name": "spin",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "stable_deref_trait",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.2.1"
+        },
+        {
+          "license": "MIT",
+          "name": "strsim",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.11.1"
+        },
+        {
+          "license": "BSD-3-Clause",
+          "name": "subtle",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.6.1"
+        },
+        {
+          "license": "MIT",
+          "name": "symbolic-common",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "12.18.3"
+        },
+        {
+          "license": "MIT",
+          "name": "symbolic-demangle",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "12.18.3"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "syn",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.0.117"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "sync_wrapper",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.2"
+        },
+        {
+          "license": "MIT",
+          "name": "synstructure",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.13.2"
+        },
+        {
+          "license": "MIT",
+          "name": "sysctl",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.5.5"
+        },
+        {
+          "license": "MIT",
+          "name": "sysinfo",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.30.13"
+        },
+        {
+          "license": "MIT",
+          "name": "tap",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.1"
+        },
+        {
+          "license": "Apache-2.0 WITH LLVM-exception",
+          "name": "target-lexicon",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.13.5"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "tempfile",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "3.27.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "thiserror",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.69"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "thiserror",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.0.18"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "thiserror-impl",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.69"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "thiserror-impl",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.0.18"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "thread_local",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.1.9"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "thrift",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.17.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "time",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.47"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "time-core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.8"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "tinystr",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.3"
+        },
+        {
+          "license": "MIT",
+          "name": "tokio",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.52.3"
+        },
+        {
+          "license": "MIT",
+          "name": "tokio-macros",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.7.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "tokio-rustls",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.26.4"
+        },
+        {
+          "license": "MIT",
+          "name": "tokio-util",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.7.18"
+        },
+        {
+          "license": "MIT",
+          "name": "tower",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.5.3"
+        },
+        {
+          "license": "MIT",
+          "name": "tower-http",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.6.11"
+        },
+        {
+          "license": "MIT",
+          "name": "tower-layer",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.3"
+        },
+        {
+          "license": "MIT",
+          "name": "tower-service",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.3"
+        },
+        {
+          "license": "MIT",
+          "name": "tracing",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.44"
+        },
+        {
+          "license": "MIT",
+          "name": "tracing-attributes",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.31"
+        },
+        {
+          "license": "MIT",
+          "name": "tracing-core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.36"
+        },
+        {
+          "license": "MIT",
+          "name": "tracing-log",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.0"
+        },
+        {
+          "license": "MIT",
+          "name": "tracing-subscriber",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.23"
+        },
+        {
+          "license": "MIT",
+          "name": "try-lock",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.5"
+        },
+        {
+          "license": "MIT",
+          "name": "twox-hash",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.1.3"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "typenum",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.20.1"
+        },
+        {
+          "license": "(MIT OR Apache-2.0) AND Unicode-3.0",
+          "name": "unicode-ident",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.24"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "unicode-segmentation",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.13.3"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "unicode-width",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.14"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "unicode-width",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.2"
+        },
+        {
+          "license": "ISC",
+          "name": "untrusted",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.9.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "ureq",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.12.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "url",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.5.8"
+        },
+        {
+          "license": "MIT",
+          "name": "urlencoding",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.1.3"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "utf8_iter",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.4"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "utf8parse",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.2"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "uuid",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.23.3"
+        },
+        {
+          "license": "MIT",
+          "name": "uuid-simd",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.0"
+        },
+        {
+          "license": "MIT",
+          "name": "vsimd",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.0"
+        },
+        {
+          "license": "Unlicense/MIT",
+          "name": "walkdir",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.5.0"
+        },
+        {
+          "license": "MIT",
+          "name": "want",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.1"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "writeable",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.6.3"
+        },
+        {
+          "license": "MIT",
+          "name": "wyz",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.5.1"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "xmlparser",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.13.6"
+        },
+        {
+          "license": "BSL-1.0",
+          "name": "xxhash-rust",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.19"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "yoke",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.3"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "yoke-derive",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.2"
+        },
+        {
+          "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
+          "name": "zerocopy",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.52"
+        },
+        {
+          "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
+          "name": "zerocopy-derive",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.52"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "zerofrom",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.8"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "zerofrom-derive",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.7"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "zeroize",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.9.0"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "zerotrie",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.4"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "zerovec",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.11.6"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "zerovec-derive",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.11.3"
+        },
+        {
+          "license": "Zlib",
+          "name": "zlib-rs",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.6.3"
+        },
+        {
+          "license": "MIT",
+          "name": "zmij",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.21"
+        },
+        {
+          "license": "MIT",
+          "name": "zstd",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.13.3"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "zstd-safe",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "7.2.4"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "zstd-sys",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.0.16+zstd.1.5.7"
+        }
+      ],
+      "root": "diskgraph-pybind",
+      "targets": [
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu"
+      ]
+    },
+    {
+      "default_features": true,
+      "dependency_kinds": [
+        "normal"
+      ],
+      "features": [],
+      "id": "diskgraph-ingest",
+      "label": "bin/ingest",
+      "packages": [
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "addr2line",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.25.1"
+        },
+        {
+          "license": "0BSD OR MIT OR Apache-2.0",
+          "name": "adler2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.0.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "ahash",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.12"
+        },
+        {
+          "license": "Unlicense OR MIT",
+          "name": "aho-corasick",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.1.4"
+        },
+        {
+          "license": "MIT",
+          "name": "aligned-vec",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.6.4"
+        },
+        {
+          "license": "BSD-3-Clause",
+          "name": "alloc-no-stdlib",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.0.4"
+        },
+        {
+          "license": "BSD-3-Clause",
+          "name": "alloc-stdlib",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "anstream",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "anstyle",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.14"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "anstyle-parse",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "anstyle-query",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.1.5"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "anyhow",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.104"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "arc-swap",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.9.1"
+        },
+        {
+          "license": "Apache-2.0 AND MIT",
+          "name": "arrow-array",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "arrow-buffer",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "arrow-cast",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "arrow-csv",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "arrow-data",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "arrow-ipc",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "arrow-ord",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "arrow-schema",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "arrow-select",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "async-trait",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.89"
+        },
+        {
+          "license": "MIT",
+          "name": "atoi",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.0.0"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "atomic-waker",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.1.2"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-config",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.8.18"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-credential-types",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.2.14"
+        },
+        {
+          "license": "ISC AND (Apache-2.0 OR ISC)",
+          "name": "aws-lc-rs",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.18.1"
+        },
+        {
+          "license": "ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0)",
+          "name": "aws-lc-sys",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.45.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-runtime",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.7.4"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-sdk-sso",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.101.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-sdk-ssooidc",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.103.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-sdk-sts",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.106.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-sigv4",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.4.5"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-async",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.2.14"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-http",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.63.6"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-http-client",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.1.13"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-json",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.62.7"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-observability",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.6"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-query",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.60.15"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-runtime",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.11.3"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-runtime-api",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.12.3"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-runtime-api-macros",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-schema",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-types",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.4.9"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-smithy-xml",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.60.15"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "aws-types",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.3.16"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "backtrace",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.76"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "base64",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.22.1"
+        },
+        {
+          "license": "MIT",
+          "name": "base64-simd",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.0"
+        },
+        {
+          "license": "MIT",
+          "name": "bincode",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.3.3"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "bitflags",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.3.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "bitflags",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.13.0"
+        },
+        {
+          "license": "MIT",
+          "name": "bitvec",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "block-buffer",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.4"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "block-buffer",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.12.1"
+        },
+        {
+          "license": "BSD-3-Clause AND MIT",
+          "name": "brotli",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "8.0.3"
+        },
+        {
+          "license": "BSD-3-Clause/MIT",
+          "name": "brotli-decompressor",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "5.0.1"
+        },
+        {
+          "license": "Unlicense OR MIT",
+          "name": "byteorder",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.5.0"
+        },
+        {
+          "license": "MIT",
+          "name": "bytes",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.11.1"
+        },
+        {
+          "license": "Apache-2.0/MIT",
+          "name": "bytes-utils",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.4"
+        },
+        {
+          "license": "MIT",
+          "name": "cacheline-ef",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.1.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "cfg-if",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.4"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "chacha20",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "chrono",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.45"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "clap",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "4.6.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "clap_builder",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "4.6.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "clap_derive",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "4.6.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "clap_lex",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.1.0"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "cmov",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.5.4"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "colorchoice",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.5"
+        },
+        {
+          "license": "MIT",
+          "name": "combine",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "4.6.7"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "common_traits",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.11.4"
+        },
+        {
+          "license": "MIT",
+          "name": "console",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.15.11"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "const-oid",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "cpp_demangle",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.5"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "cpufeatures",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.17"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "cpufeatures",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "crossbeam-deque",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.6"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "crossbeam-epoch",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.9.21"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "crossbeam-utils",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.21"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "crypto-common",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.7"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "crypto-common",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.2"
+        },
+        {
+          "license": "Unlicense/MIT",
+          "name": "csv",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.4.0"
+        },
+        {
+          "license": "Unlicense/MIT",
+          "name": "csv-core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.13"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "ctutils",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.2"
+        },
+        {
+          "license": "MIT",
+          "name": "darling",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.23.0"
+        },
+        {
+          "license": "MIT",
+          "name": "darling_core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.23.0"
+        },
+        {
+          "license": "MIT",
+          "name": "darling_macro",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.23.0"
+        },
+        {
+          "license": "MIT",
+          "name": "dashmap",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "6.2.1"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "debugid",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "deranged",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.5.8"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "digest",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.7"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "digest",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.11.3"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "diskgraph-core",
+          "source": "diskgraph-core/Cargo.toml",
+          "source_kind": "workspace-first-party",
+          "version": "0.1.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "diskgraph-fs",
+          "source": "diskgraph-fs/Cargo.toml",
+          "source_kind": "workspace-first-party",
+          "version": "0.1.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "diskgraph-index",
+          "source": "diskgraph-index/Cargo.toml",
+          "source_kind": "workspace-first-party",
+          "version": "0.1.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "diskgraph-ingest",
+          "source": "diskgraph-ingest/Cargo.toml",
+          "source_kind": "workspace-first-party",
+          "version": "0.1.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "diskgraph-limits",
+          "source": "diskgraph-limits/Cargo.toml",
+          "source_kind": "workspace-first-party",
+          "version": "0.1.0"
+        },
+        {
+          "license": "MIT",
+          "name": "diskgraph-ptrhash",
+          "source": "diskgraph-ptrhash/Cargo.toml",
+          "source_kind": "vendored-third-party",
+          "version": "1.1.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "diskgraph-rowpack",
+          "source": "diskgraph-rowpack/Cargo.toml",
+          "source_kind": "workspace-first-party",
+          "version": "0.1.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "displaydoc",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.6"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "either",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.16.0"
+        },
+        {
+          "license": "MIT",
+          "name": "endian-type",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.2"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "enum-as-inner",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.6.1"
+        },
+        {
+          "license": "Apache-2.0 OR LGPL-2.1-or-later",
+          "name": "epserde",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.0"
+        },
+        {
+          "license": "Apache-2.0 OR LGPL-2.1-or-later",
+          "name": "epserde-derive",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.0"
+        },
+        {
+          "license": "MIT",
+          "name": "equator",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.2"
+        },
+        {
+          "license": "MIT",
+          "name": "equator-macro",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.2"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "equivalent",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "errno",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.14"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "fast-float2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.4"
+        },
+        {
+          "license": "MIT",
+          "name": "fasteval",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.4"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "fastrand",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.4.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "fd-lock",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "3.0.13"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "filetime",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.29"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "findshlibs",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.2"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "flatbuffers",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "25.12.19"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "flate2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.1.9"
+        },
+        {
+          "license": "Apache-2.0 / MIT",
+          "name": "fnv",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.7"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "form_urlencoded",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.2.2"
+        },
+        {
+          "license": "MIT",
+          "name": "funty",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.0.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "futures",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.32"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "futures-channel",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.32"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "futures-core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.32"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "futures-executor",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.32"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "futures-io",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.32"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "futures-macro",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.32"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "futures-sink",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.32"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "futures-task",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.32"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "futures-util",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.32"
+        },
+        {
+          "license": "MIT",
+          "name": "generic-array",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.14.7"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "getrandom",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.17"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "getrandom",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.4"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "getrandom",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "gimli",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.32.3"
+        },
+        {
+          "license": "MIT",
+          "name": "gxhash",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "3.5.0"
+        },
+        {
+          "license": "MIT",
+          "name": "h2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.19"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "half",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.7.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "hashbrown",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.14.5"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "hashbrown",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.17.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "heck",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.5.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "hex",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.3"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "hmac",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.13.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "home",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.5.12"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "http",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.12"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "http",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.4.2"
+        },
+        {
+          "license": "MIT",
+          "name": "http-body",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.6"
+        },
+        {
+          "license": "MIT",
+          "name": "http-body",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.1"
+        },
+        {
+          "license": "MIT",
+          "name": "http-body-util",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.3"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "httparse",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.10.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "humantime",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.3.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "hybrid-array",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.12"
+        },
+        {
+          "license": "MIT",
+          "name": "hyper",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.10.1"
+        },
+        {
+          "license": "Apache-2.0 OR ISC OR MIT",
+          "name": "hyper-rustls",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.27.9"
+        },
+        {
+          "license": "MIT",
+          "name": "hyper-util",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.20"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "iana-time-zone",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.65"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "icu_collections",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.2.0"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "icu_locale_core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.2.0"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "icu_normalizer",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.2.0"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "icu_normalizer_data",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.2.0"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "icu_properties",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.2.0"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "icu_properties_data",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.2.0"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "icu_provider",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.2.0"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "ident_case",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "idna",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.1.0"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "idna_adapter",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.2.2"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "impl-tools",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.3"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "impl-tools-lib",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.11.4"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "indexmap",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.14.0"
+        },
+        {
+          "license": "MIT",
+          "name": "indicatif",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.17.11"
+        },
+        {
+          "license": "MIT",
+          "name": "integer-encoding",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "3.0.4"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "ipnet",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.12.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "is_terminal_polyfill",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.70.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "itertools",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.12.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "itertools",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.14.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "itoa",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.18"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "lazy_static",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.5.0"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "lexical-core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.6"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "lexical-parse-float",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.6"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "lexical-parse-integer",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.6"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "lexical-util",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.7"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "lexical-write-float",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.6"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "lexical-write-integer",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.6"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "libc",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.186"
+        },
+        {
+          "license": "MIT",
+          "name": "libm",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.16"
+        },
+        {
+          "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+          "name": "linux-raw-sys",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.12.1"
+        },
+        {
+          "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+          "name": "linux-raw-sys",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.15"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "litemap",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "lock_api",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.14"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "log",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.32"
+        },
+        {
+          "license": "MIT",
+          "name": "lz4_flex",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.12.2"
+        },
+        {
+          "license": "MIT",
+          "name": "lz4_flex",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.13.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "maligned",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.1"
+        },
+        {
+          "license": "MIT",
+          "name": "matchers",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "md-5",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.6"
+        },
+        {
+          "license": "Apache-2.0 OR LGPL-2.1-or-later",
+          "name": "mem_dbg",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.4"
+        },
+        {
+          "license": "Apache-2.0 OR LGPL-2.1-or-later",
+          "name": "mem_dbg-derive",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.1"
+        },
+        {
+          "license": "Unlicense OR MIT",
+          "name": "memchr",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.8.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "memmap2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.9.11"
+        },
+        {
+          "license": "MIT",
+          "name": "memoffset",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.7.1"
+        },
+        {
+          "license": "MIT OR Zlib OR Apache-2.0",
+          "name": "miniz_oxide",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.9"
+        },
+        {
+          "license": "MIT",
+          "name": "mio",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.2.1"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "mmap-rs",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.6.1"
+        },
+        {
+          "license": "MIT",
+          "name": "nibble_vec",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.0"
+        },
+        {
+          "license": "MIT",
+          "name": "nix",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.26.4"
+        },
+        {
+          "license": "MIT",
+          "name": "nu-ansi-term",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.50.3"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "num-bigint",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.6"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "num-complex",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.6"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "num-conv",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "num-integer",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.46"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "num-traits",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.19"
+        },
+        {
+          "license": "MIT",
+          "name": "number_prefix",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.0"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "object",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.37.3"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "object_store",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.13.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "once_cell",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.21.4"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "openssl-probe",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.1"
+        },
+        {
+          "license": "MIT",
+          "name": "ordered-float",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.10.1"
+        },
+        {
+          "license": "MIT",
+          "name": "outref",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.5.2"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "parking_lot",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.12.5"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "parking_lot_core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.9.12"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "parquet",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "58.4.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "paste",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.15"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "percent-encoding",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.3.2"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "pin-project-lite",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.17"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "pin-utils",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.0"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "portable-atomic",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.13.1"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "potential_utf",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.5"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "powerfmt",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.0"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "pprof",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.14.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "ppv-lite86",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.21"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "proc-macro-error-attr2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.0.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "proc-macro-error2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.0.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "proc-macro2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.106"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "prost",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.12.6"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "prost-derive",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.12.6"
+        },
+        {
+          "license": "MIT",
+          "name": "quick-xml",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.39.4"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "quote",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.45"
+        },
+        {
+          "license": "MIT",
+          "name": "radium",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.7.0"
+        },
+        {
+          "license": "MIT",
+          "name": "radix_trie",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "rand",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "rand",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.6"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "rand_chacha",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "rand_core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "rand_core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.6.4"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "rayon",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.12.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "rayon-core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.13.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "regex",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.12.4"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "regex-automata",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.14"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "regex-lite",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.9"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "regex-syntax",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.11"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "reqwest",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.12.28"
+        },
+        {
+          "license": "Apache-2.0 AND ISC",
+          "name": "ring",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.17.14"
+        },
+        {
+          "license": "MIT",
+          "name": "rmp",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.15"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "rustc-demangle",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.27"
+        },
+        {
+          "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+          "name": "rustix",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.38.44"
+        },
+        {
+          "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+          "name": "rustix",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.1.4"
+        },
+        {
+          "license": "Apache-2.0 OR ISC OR MIT",
+          "name": "rustls",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.23.45"
+        },
+        {
+          "license": "Apache-2.0 OR ISC OR MIT",
+          "name": "rustls-native-certs",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.4"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "rustls-pki-types",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.14.1"
+        },
+        {
+          "license": "ISC",
+          "name": "rustls-webpki",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.103.15"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "rustversion",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.22"
+        },
+        {
+          "license": "MIT",
+          "name": "rustyline",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "12.0.0"
+        },
+        {
+          "license": "Apache-2.0 OR BSL-1.0",
+          "name": "ryu",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.23"
+        },
+        {
+          "license": "Unlicense/MIT",
+          "name": "same-file",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.6"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "scopeguard",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.2.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "sealed",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.6.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "seq-macro",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.6"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "serde",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.228"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "serde_core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.228"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "serde_derive",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.228"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "serde_json",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.150"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "serde_urlencoded",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.7.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "serde_with",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "3.21.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "serde_with_macros",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "3.21.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "sha1",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.6"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "sha2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.9"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "sha2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.11.0"
+        },
+        {
+          "license": "MIT",
+          "name": "sharded-slab",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.7"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "signal-hook-registry",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.4.8"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "simdutf8",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.5"
+        },
+        {
+          "license": "MIT",
+          "name": "slab",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.4.12"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "smallvec",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.15.2"
+        },
+        {
+          "license": "BSD-3-Clause",
+          "name": "snap",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.1.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "socket2",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.6.4"
+        },
+        {
+          "license": "MIT",
+          "name": "spin",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.10.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "stable_deref_trait",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.2.1"
+        },
+        {
+          "license": "MIT",
+          "name": "strsim",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.11.1"
+        },
+        {
+          "license": "BSD-3-Clause",
+          "name": "subtle",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.6.1"
+        },
+        {
+          "license": "MIT",
+          "name": "symbolic-common",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "12.18.3"
+        },
+        {
+          "license": "MIT",
+          "name": "symbolic-demangle",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "12.18.3"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "syn",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.0.117"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "sync_wrapper",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.2"
+        },
+        {
+          "license": "MIT",
+          "name": "synstructure",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.13.2"
+        },
+        {
+          "license": "MIT",
+          "name": "sysctl",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.5.5"
+        },
+        {
+          "license": "MIT",
+          "name": "sysinfo",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.30.13"
+        },
+        {
+          "license": "MIT",
+          "name": "tap",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "tempfile",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "3.27.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "thiserror",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.69"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "thiserror",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.0.18"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "thiserror-impl",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.69"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "thiserror-impl",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.0.18"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "thread_local",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.1.9"
+        },
+        {
+          "license": "Apache-2.0",
+          "name": "thrift",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.17.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "time",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.47"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "time-core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.8"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "tinystr",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.3"
+        },
+        {
+          "license": "MIT",
+          "name": "tokio",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.52.3"
+        },
+        {
+          "license": "MIT",
+          "name": "tokio-macros",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.7.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "tokio-rustls",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.26.4"
+        },
+        {
+          "license": "MIT",
+          "name": "tokio-util",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.7.18"
+        },
+        {
+          "license": "MIT",
+          "name": "tower",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.5.3"
+        },
+        {
+          "license": "MIT",
+          "name": "tower-http",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.6.11"
+        },
+        {
+          "license": "MIT",
+          "name": "tower-layer",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.3"
+        },
+        {
+          "license": "MIT",
+          "name": "tower-service",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.3"
+        },
+        {
+          "license": "MIT",
+          "name": "tracing",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.44"
+        },
+        {
+          "license": "MIT",
+          "name": "tracing-attributes",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.31"
+        },
+        {
+          "license": "MIT",
+          "name": "tracing-core",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.36"
+        },
+        {
+          "license": "MIT",
+          "name": "tracing-log",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.0"
+        },
+        {
+          "license": "MIT",
+          "name": "tracing-subscriber",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.23"
+        },
+        {
+          "license": "MIT",
+          "name": "try-lock",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.5"
+        },
+        {
+          "license": "MIT",
+          "name": "twox-hash",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.1.3"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "typenum",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.20.1"
+        },
+        {
+          "license": "(MIT OR Apache-2.0) AND Unicode-3.0",
+          "name": "unicode-ident",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.24"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "unicode-segmentation",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.13.3"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "unicode-width",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.14"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "unicode-width",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.2"
+        },
+        {
+          "license": "ISC",
+          "name": "untrusted",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.9.0"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "ureq",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.12.1"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "url",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.5.8"
+        },
+        {
+          "license": "MIT",
+          "name": "urlencoding",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.1.3"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "utf8_iter",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.4"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "utf8parse",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.2"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "uuid",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.23.3"
+        },
+        {
+          "license": "MIT",
+          "name": "uuid-simd",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.0"
+        },
+        {
+          "license": "MIT",
+          "name": "vsimd",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.0"
+        },
+        {
+          "license": "Unlicense/MIT",
+          "name": "walkdir",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.5.0"
+        },
+        {
+          "license": "MIT",
+          "name": "want",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.3.1"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "writeable",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.6.3"
+        },
+        {
+          "license": "MIT",
+          "name": "wyz",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.5.1"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "xmlparser",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.13.6"
+        },
+        {
+          "license": "BSL-1.0",
+          "name": "xxhash-rust",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.19"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "yoke",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.3"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "yoke-derive",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.2"
+        },
+        {
+          "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
+          "name": "zerocopy",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.52"
+        },
+        {
+          "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
+          "name": "zerocopy-derive",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.8.52"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "zerofrom",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.8"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "zerofrom-derive",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.1.7"
+        },
+        {
+          "license": "Apache-2.0 OR MIT",
+          "name": "zeroize",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.9.0"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "zerotrie",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.2.4"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "zerovec",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.11.6"
+        },
+        {
+          "license": "Unicode-3.0",
+          "name": "zerovec-derive",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.11.3"
+        },
+        {
+          "license": "Zlib",
+          "name": "zlib-rs",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.6.3"
+        },
+        {
+          "license": "MIT",
+          "name": "zmij",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "1.0.21"
+        },
+        {
+          "license": "MIT",
+          "name": "zstd",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "0.13.3"
+        },
+        {
+          "license": "MIT OR Apache-2.0",
+          "name": "zstd-safe",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "7.2.4"
+        },
+        {
+          "license": "MIT/Apache-2.0",
+          "name": "zstd-sys",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "source_kind": "registry-or-git",
+          "version": "2.0.16+zstd.1.5.7"
+        }
+      ],
+      "root": "diskgraph-ingest",
+      "targets": [
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu"
+      ]
+    }
+  ],
+  "cargo_lock_sha256": "a15882fa1f033603621879ead0ae202a394550b438b0a96ba2c7dfbce5588760",
+  "schema": 1
+}

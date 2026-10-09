@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "diskgraph-datagenerator"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+arrow-array = "58.4.0"
+arrow-schema = "58.4.0"
+clap = { version = "4.4", features = ["derive"] }
+indicatif = "0.17"
+parquet = { version = "58.4.0", features = ["arrow", "async"] }
+chrono = "0.4"
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+futures-util = "0.3"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync"] }
+url = "2"
+diskgraph-infer = { path = "../diskgraph-infer" }
+diskgraph-ingest = { path = "../diskgraph-ingest" }
+diskgraph-index = { path = "../diskgraph-index" }
+diskgraph-core = { path = "../diskgraph-core" }
+object_store = { version = "0.13.1", features = ["aws", "gcp", "azure"] }
+tempfile = "3"
+uuid = { version = "1.4", features = ["v4"] }
+diskgraph-fs = { path = "../diskgraph-fs" }
+
+[[bin]]
+name = "diskgraph-datagenerator"
+path = "src/main.rs"
+
+[[bin]]
+name = "download-ingested-graph"
+path = "src/bin/download_ingested_graph.rs"
+
+[[bin]]
+name = "validate-s3-ingest"
+path = "src/bin/validate_s3.rs"

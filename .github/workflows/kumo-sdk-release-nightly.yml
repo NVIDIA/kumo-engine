@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kumo SDK - Nightly release
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+  schedule:
+    - cron: '0 1 * * *'  # 1:00am UTC/9:00pm PST aligned with Kumo docker image builds
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+    working-directory: packages/kumo-sdk
+
+jobs:
+  config:
+    runs-on: ubuntu-24.04
+    outputs:
+      version_today: ${{ steps.set-version.outputs.version_today }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+
+      - name: Set version suffix for the release
+        id: set-version
+        run: |
+          __version__=$(python -c 'exec(input()); print(__version__)' < kumoai_studio/_version.py)
+          VERSION_NUM=$(npx semver --coerce $__version__)
+          echo "VERSION_NUM=$VERSION_NUM" >> $GITHUB_ENV
+          TODAY=$(TZ='America/Los_Angeles' date +'%Y%m%d%H%M')
+          echo "TODAY=$TODAY" >> $GITHUB_ENV
+          VERSION_TODAY=${VERSION_NUM}.dev${TODAY}
+          echo "version_today=${VERSION_TODAY}" >> $GITHUB_OUTPUT
+
+  build-wheels:
+    needs: [config]
+    uses: ./.github/workflows/kumo-sdk-build-wheels.yml
+    with:
+      temporary-version: ${{ needs.config.outputs.version_today }}
+      artifact-name: wheels-${{ github.sha }}-${{ github.run_id }}
+      expected-version: ${{ needs.config.outputs.version_today }}
+      is-release: true
+      continue-on-error: false  # block release if any build fails
+
+  upload-wheels:
+    needs: [build-wheels]
+    if: ${{ needs.build-wheels.result == 'success' }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/kumo-sdk-upload-wheels.yml
+    with:
+      artifact-name: wheels-${{ github.sha }}-${{ github.run_id }}
+      upload-to-s3: true
+      upload-to-testpypi: true
+      upload-to-pypi: false
+    secrets: inherit

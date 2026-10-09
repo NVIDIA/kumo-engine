@@ -1,0 +1,15 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- define "stack.namespaceLabels" -}}
+kumo.ai/temporal-client=true
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kumo-stack-namespace-labels
+data:
+  labels.txt: |-
+{{ include "stack.namespaceLabels" . | indent 4 }}

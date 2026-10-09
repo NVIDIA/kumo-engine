@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Red Hat OpenShift Container Platform overlay. The stack applies this before
+# rendered customer values. It adapts pod security to restricted-v2; the
+# default ARO recipe does not install or require a service mesh.
+global:
+  containerSecurityContext:
+    # restricted-v2 supplies the namespace UID; never request a fixed UID.
+    runAsNonRoot: true
+    runAsUser: null
+    runAsGroup: null
+  podSecurityContext:
+    runAsUser: null
+    runAsGroup: null
+    fsGroup: null
+    supplementalGroups: null
+
+# restricted-v2 assigns namespace-valid volume groups dynamically.
+workloads:
+  databackend:
+    ingestScratch:
+      fsGroup: null
+  poolcontroller:
+    runtimeFsGroup: null

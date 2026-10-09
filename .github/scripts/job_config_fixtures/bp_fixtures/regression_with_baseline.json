@@ -1,0 +1,19 @@
+{
+    "model_training_job_id": "trainingjob-6256de9399184dfab1c5112113d2581f",
+    "graph_snapshot_id": "graph-3ac39e6f81cf7627df4c27d4d93ab498@aed77cab7e10bfee4904703ba9961333",
+    "explanations": false,
+    "filter_overrides": {
+        "entity_filter": "",
+        "target_filter": ""
+    },
+    "job_tags": {
+        "FINANCIAL_TEMPORAL_REG_PRED_1781333580003": "FINANCIAL_TEMPORAL_REG_PRED_1781333580003"
+    },
+    "predict_options": {
+        "num_workers": 1
+    },
+    "predictive_query": "PREDICT AVG(TRANS_1781333580003.AMOUNT, 0, 30, days) FOR EACH ACCOUNT_1781333580003.ACCOUNT_ID",
+    "user": "Momentic Test",
+    "graph_id": "3ac39e6f81cf7627df4c27d4d93ab498",
+    "anchor_time": "inferred"
+}

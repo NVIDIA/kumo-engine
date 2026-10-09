@@ -1,0 +1,20 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: kumo-ui
+  labels:
+    app: kumo-ui
+    {{- include "kumo.commonLabels" . | nindent 4 }}
+spec:
+  selector:
+    app: kumo-ui
+  ports:
+  - name: http
+    port: 80
+    targetPort: 3000
+    protocol: TCP

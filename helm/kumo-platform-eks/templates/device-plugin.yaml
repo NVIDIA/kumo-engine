@@ -1,0 +1,48 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- if .Values.devicePlugin.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kumo-nvidia-device-plugin
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kumo-platform-eks.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kumo-nvidia-device-plugin
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kumo-nvidia-device-plugin
+        {{- include "kumo-platform-eks.labels" . | nindent 8 }}
+    spec:
+      priorityClassName: system-node-critical
+      nodeSelector:
+        {{- toYaml .Values.devicePlugin.nodeSelector | nindent 8 }}
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: nvidia-device-plugin
+          image: "{{ .Values.devicePlugin.image.repository }}:{{ .Values.devicePlugin.image.tag }}"
+          imagePullPolicy: {{ .Values.devicePlugin.image.pullPolicy }}
+          args: ["--fail-on-init-error=false"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.devicePlugin.resources | nindent 12 }}
+          volumeMounts:
+            - name: device-plugin
+              mountPath: /var/lib/kubelet/device-plugins
+      volumes:
+        - name: device-plugin
+          hostPath:
+            path: /var/lib/kubelet/device-plugins
+            type: Directory
+{{- end }}

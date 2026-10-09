@@ -1,0 +1,153 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+import importlib
+import logging
+
+from .api import (
+    ObjectIdentity,
+    PartMetadata,
+    PresignedHelper,
+    atomic_write_text,
+    contains_subdir,
+    customer_facing_path,
+    dirsize,
+    exists,
+    filesize,
+    generate_directory_read_sas,
+    get_binary_handle,
+    get_handle,
+    get_last_modified_time,
+    get_many_if_present,
+    get_presigned_helper,
+    has_write_permission,
+    isdir,
+    listdir,
+    makedirs,
+    object_identity,
+    read_binary,
+    read_text,
+    rm,
+    supports_multipart_upload,
+    touch,
+    write_binary,
+    write_text,
+    write_text_if_absent,
+    zip_directory,
+    zip_files,
+)
+from .common import (  # noqa: F401
+    TemporaryDirectory,
+    get_scheme,
+    is_local,
+    is_ucv,
+    mkdtemp,
+    support_fs,
+)
+from .credentials import (
+    ExplicitFilesystemCredentialsRequired,
+    credential_scope,
+    credentials_for_provider,
+    pyarrow_filesystem,
+    with_filesystem_credentials,
+)
+from .generic import (
+    PARQUET_ROW_GROUP_SIZE,
+    abspath,
+    copy,
+    copy_file,
+    copy_files_threaded,
+    copy_one_level_directory,
+    copy_tree_threaded,
+    copy_two_level_directory,
+    exists_async,
+    expanduser,
+    file_lines,
+    file_tree,
+    is_adls,
+    is_empty_dir,
+    is_gcs,
+    is_s3,
+    s3_as_s3a,
+    s3a_as_s3,
+    torch_load,
+    torch_save,
+)
+
+logger = logging.getLogger(__name__)
+"""
+N.B. importing impl_* is required to pick up singledispatch overloads
+"""
+for module_name in ("impl_local", "impl_s3", "impl_gcs", "impl_ucv",
+                    "impl_adls"):
+    try:
+        importlib.import_module(f".{module_name}", package=__name__)
+        logger.debug('Loaded fsutil implementation module: %s', module_name)
+    except ImportError:
+        logger.debug('fsutil implementation module: %s is missing, skip',
+                     module_name)
+
+__all__ = [
+    'PARQUET_ROW_GROUP_SIZE',
+    'ObjectIdentity',
+    'PartMetadata',
+    'PresignedHelper',
+    'atomic_write_text',
+    'TemporaryDirectory',
+    'customer_facing_path',
+    'abspath',
+    'contains_subdir',
+    'copy',
+    'copy_file',
+    'copy_files_threaded',
+    'copy_one_level_directory',
+    'copy_tree_threaded',
+    'copy_two_level_directory',
+    'dirsize',
+    'exists',
+    'exists_async',
+    'expanduser',
+    'file_lines',
+    'file_tree',
+    'filesize',
+    'get_binary_handle',
+    'generate_directory_read_sas',
+    'get_handle',
+    'get_last_modified_time',
+    'get_many_if_present',
+    'get_presigned_helper',
+    'has_write_permission',
+    'is_empty_dir',
+    'get_scheme',
+    'supports_multipart_upload',
+    'is_gcs',
+    'is_local',
+    'is_adls',
+    'is_s3',
+    'is_ucv',
+    'isdir',
+    'listdir',
+    'makedirs',
+    'mkdtemp',
+    'object_identity',
+    'read_binary',
+    'read_text',
+    'rm',
+    's3_as_s3a',
+    's3a_as_s3',
+    'support_fs',
+    'torch_load',
+    'torch_save',
+    'touch',
+    'write_binary',
+    'write_text',
+    'write_text_if_absent',
+    'zip_directory',
+    'zip_files',
+    'ExplicitFilesystemCredentialsRequired',
+    'credential_scope',
+    'credentials_for_provider',
+    'pyarrow_filesystem',
+    'with_filesystem_credentials',
+]

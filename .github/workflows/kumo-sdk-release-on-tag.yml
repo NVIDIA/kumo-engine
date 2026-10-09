@@ -1,0 +1,92 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kumo SDK - Release on tag
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    tags:
+      # Creating a tag on previous release branch and pushing it won't trigger
+      # this workflow because this workflow doesn't exist on previous release
+      # branches, e.g., kumo-sdk-v2.4.
+      - 'kumo-sdk-v*.*.*'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-tag:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Validate tag and source version
+        run: |
+          if [[ ! "${{ github.ref_name }}" =~ ^kumo-sdk-v[0-9]+\.[0-9]+\.[0-9]+(b[0-9]+|rc[0-9]+)?$ ]]; then
+            echo "Unsupported SDK release tag: ${{ github.ref_name }}"
+            exit 1
+          fi
+          source_version=$(python -c 'exec(input()); print(__version__)' < packages/kumo-sdk/kumoai_studio/_version.py)
+          if [[ "kumo-sdk-v${source_version}" != "${{ github.ref_name }}" ]]; then
+            echo "Tag ${{ github.ref_name }} does not match source version ${source_version}."
+            exit 1
+          fi
+
+  build-wheels:
+    needs: [validate-tag]
+    uses: ./.github/workflows/kumo-sdk-build-wheels.yml
+    with:
+      temporary-version: ''
+      artifact-name: wheels-${{ github.sha }}-${{ github.run_id }}
+      expected-version: ${{ github.ref_name }}
+      is-release: true
+      continue-on-error: false  # block release if any build fails
+      retention-days: 14
+
+  stage-testpypi:
+    needs: [build-wheels]
+    if: ${{ needs.build-wheels.result == 'success' }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/kumo-sdk-upload-wheels.yml
+    with:
+      artifact-name: wheels-${{ github.sha }}-${{ github.run_id }}
+      upload-to-testpypi: true
+    secrets: inherit
+
+  publish-pypi:
+    needs: [stage-testpypi]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/kumo-sdk-upload-wheels.yml
+    with:
+      artifact-name: wheels-${{ github.sha }}-${{ github.run_id }}
+      upload-to-pypi: true
+      allow-s3-failure: true
+      upload-to-s3: true
+    secrets: inherit
+
+  create-release:
+    needs: [publish-pypi]
+    runs-on: ubuntu-24.04
+    env:
+      GH_REPO: ${{ github.repository }}
+    permissions:
+      contents: write
+    steps:
+      - name: Create a GitHub release (pre-release)
+        if: ${{ contains(github.ref_name, 'b') || contains(github.ref_name, 'rc') }}
+        run: |
+          gh release create ${{ github.ref_name }} --verify-tag --generate-notes --title ${{ github.ref_name }} --prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Create a GitHub release
+        if: ${{ !contains(github.ref_name, 'b') && !contains(github.ref_name, 'rc') }}
+        run: |
+          gh release create ${{ github.ref_name }} --verify-tag --generate-notes --title ${{ github.ref_name }}
+        env:
+          GH_TOKEN: ${{ github.token }}

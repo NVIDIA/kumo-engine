@@ -1,0 +1,150 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Jenkins Agent Docker Image
+
+on:  # yamllint disable-line rule:truthy
+  schedule:
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: >-
+          Pinned kumo-ai/kumo branch, SHA, or tag to build. The workflow
+          resolves it once and the image build checks out the resolved SHA.
+        required: false
+        default: master
+      image_tag:
+        description: >-
+          ECR tag to push in addition to the resolved kumo SHA. Use a
+          non-latest tag when validating a change.
+        required: false
+        default: latest
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  ECR_IMAGE_REGISTRY: 926922431314.dkr.ecr.us-west-2.amazonaws.com
+
+jobs:
+  build:
+    environment: gha-kumo-jenkins-agent-publish
+    name: Build Jenkins agent docker image
+    runs-on: ubuntu-22.04-large
+
+    steps:
+      - name: Check out publisher source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Resolve kumo source ref
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          repository: kumo-ai/kumo
+          token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+          path: ./kumo
+          ref: ${{ inputs.ref || 'master' }}
+          persist-credentials: false
+
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+
+      - name: Install fuse-overlayfs (upstream)
+        timeout-minutes: 15
+        run: |
+          apt_get() { for i in 1 2 3; do sudo timeout -k 15 300 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120 "$@" && return 0; sleep 10; done; return 1; }
+          apt_get update
+          apt_get install -y fuse-overlayfs
+          # apt's 1.7.1 has rmdir/ENOTEMPTY races on heavy pip uninstalls.
+          sudo curl -fL \
+            "https://github.com/containers/fuse-overlayfs/releases/download/v1.16/fuse-overlayfs-x86_64" \
+            -o /usr/bin/fuse-overlayfs
+          sudo chmod +x /usr/bin/fuse-overlayfs
+          fuse-overlayfs --version
+          mkdir -vp ~/.config/containers
+          printf "[storage]\ndriver=\"overlay\"\n[storage.options]\nmount_program=\"/usr/bin/fuse-overlayfs\"\n" > ~/.config/containers/storage.conf
+          cat ~/.config/containers/storage.conf
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-jenkins-agent-publish
+          aws-region: us-west-2
+
+      - name: Log in to AWS ECR
+        shell: bash
+        run: |
+          aws ecr get-login-password --region us-west-2 \
+            | podman login --username AWS --password-stdin "$ECR_IMAGE_REGISTRY"
+
+      - name: Declare image tags and immutable source ref
+        id: vars
+        shell: bash
+        run: |
+          kumo_sha=$(git -C ./kumo rev-parse HEAD)
+          echo "kumo_sha=$kumo_sha" >> "$GITHUB_OUTPUT"
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            date_pst=$(TZ="America/Los_Angeles" date +'%Y%m%d')
+            echo "release_tags=latest nightly-${date_pst}" >> "$GITHUB_OUTPUT"
+          else
+            echo "release_tags=${{ inputs.image_tag || 'latest' }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prepare image-build secrets
+        shell: bash
+        env:
+          KUMO_GITHUB_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+        run: |
+          umask 077
+          printf '%s' "$KUMO_GITHUB_TOKEN" > "$RUNNER_TEMP/github-token"
+          {
+            echo '[default]'
+            printf 'aws_access_key_id=%s\n' "$AWS_ACCESS_KEY_ID"
+            printf 'aws_secret_access_key=%s\n' "$AWS_SECRET_ACCESS_KEY"
+            printf 'aws_session_token=%s\n' "$AWS_SESSION_TOKEN"
+          } > "$RUNNER_TEMP/aws-credentials"
+
+      - name: Build Image
+        id: build-image
+        uses: redhat-actions/buildah-build@7a95fa7ee0f02d552a32753e7414641a04307056 # v2
+        with:
+          image: jenkins-agent
+          tags: ${{ steps.vars.outputs.release_tags }} ${{ steps.vars.outputs.kumo_sha }}
+          context: ./docker
+          containerfiles: |
+            ./docker/Dockerfile.jenkins_agent
+          build-args: |
+            KUMO_REF=${{ steps.vars.outputs.kumo_sha }}
+          extra-args: |
+            --secret=id=aws_credentials,src=${{ runner.temp }}/aws-credentials
+            --secret=id=github_token,src=${{ runner.temp }}/github-token
+
+      - name: Remove image-build secrets
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/aws-credentials" "$RUNNER_TEMP/github-token"
+
+      - name: Push To AWS ECR
+        id: push-to-ecr
+        uses: redhat-actions/push-to-registry@5ed88d269cf581ea9ef6dd6806d01562096bee9c # v2.8
+        with:
+          image: ${{ steps.build-image.outputs.image }}
+          tags: ${{ steps.build-image.outputs.tags }}
+          registry: ${{ env.ECR_IMAGE_REGISTRY }}/testing
+
+      - name: Print Image URL
+        run: |
+          echo "Image pushed to AWS ECR: ${{ steps.push-to-ecr.outputs.registry-paths }}"
+
+      - name: Send Slack notification on failure
+        if: ${{ failure() }}
+        uses: ./.github/actions/slack-notification-action
+        with:
+          channel-id: "C05MUC2FTRN"
+          job-status: ${{ job.status }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+          slack-bot-token: ${{ secrets.SLACK_BOT_TOKEN }}

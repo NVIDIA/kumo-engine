@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# CI test: GCP static Application Default Credentials, without workload identity.
+global:
+  tenant: "gcp-static-test"
+
+image:
+  tag: "test-version"
+
+kumoConfig:
+  storage:
+    dataBucket: "gs://test-bucket/disk-graph"
+  gsaKey:
+    existingSecret: "gcp-application-credentials"
+    projectId: "gcp-test-project"
+  diskgraph:
+    storageClass: pd-balanced
+    storageCapacityTracking: advisory
+    nodeTypes:
+      test-gpu: { ssd_gib: 800 }
+
+# GSA-key ADC is the object-storage identity; no KSA federation annotations.
+serviceAccounts:
+  control:
+    annotations: {}
+  worker:
+    annotations: {}
+  controller:
+    annotations: {}
+
+postgres:
+  authMode: ""
+  dsnSecret:
+    secretName: kumo-statedb
+    key: statedb

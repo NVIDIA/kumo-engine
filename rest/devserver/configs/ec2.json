@@ -1,0 +1,17 @@
+{
+  "data_compute": {
+    "type": "DISKGRAPH"
+  },
+  "orchestration": {
+    "type": "cloud"
+  },
+  "secrets": {
+    "backend": "aws_sm"
+  },
+  "storage": {
+    "artifact_root": "s3://kumo-public-datasets"
+  },
+  "logging": {
+    "backend": "cloudwatch"
+  }
+}

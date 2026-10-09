@@ -1,0 +1,174 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Kumo-owned policy around the stock Temporal chart.
+kumoTemporal:
+  # REQUIRED via profiles/aws.yaml or profiles/azure.yaml.
+  platform: ""
+  security:
+    transport:
+      # The default stack keeps in-cluster gRPC plaintext and restricts access
+      # with NetworkPolicy. Mesh encryption is an explicit advanced setting.
+      encryptionRequired: false
+      meshNamespaceLabels: {}
+  networkPolicy:
+    enabled: true
+    # Label each Kumo tenant namespace with this exact map. Namespace-scoped
+    # clients may then reach the Temporal frontend; Temporal components may
+    # communicate with one another within the release namespace.
+    clientNamespaceLabels:
+      kumo.ai/temporal-client: "true"
+
+# Values below are passed directly to the pinned, unmodified upstream chart.
+# Keep the two SQL stores deliberately symmetric: one role, one Secret/key,
+# two pre-created databases, and the upstream schema Job as the only migrator.
+temporal:
+  fullnameOverride: temporal
+  imagePullSecrets: []
+
+  serviceAccount:
+    create: true
+    name: temporal
+
+  additionalLabels:
+    kumo.ai/managed-service: temporal
+
+  server:
+    enabled: true
+    image:
+      repository: docker.io/temporalio/server
+      tag: "1.31.2"
+      pullPolicy: IfNotPresent
+    replicaCount: 1
+    versionCheckDisabled: true
+    logLevel: info
+    metrics:
+      annotations:
+        enabled: false
+      serviceMonitor:
+        enabled: false
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+    securityContext:
+      fsGroup: 1000
+      runAsUser: 1000
+      runAsNonRoot: true
+      seccompProfile:
+        type: RuntimeDefault
+    config:
+      logLevel: info
+      persistence:
+        defaultStore: default
+        visibilityStore: visibility
+        # Temporal documents this as immutable after first deployment.
+        numHistoryShards: 512
+        datastores:
+          default:
+            sql:
+              createDatabase: false
+              manageSchema: true
+              pluginName: postgres12_pgx
+              driverName: postgres12_pgx
+              databaseName: temporal
+              connectAddr: REPLACE_POSTGRES_HOST:5432
+              connectProtocol: tcp
+              user: temporal
+              existingSecret: REPLACE_TEMPORAL_POSTGRES_SECRET
+              secretKey: password
+              maxConns: 20
+              maxIdleConns: 20
+              maxConnLifetime: 1h
+              tls:
+                enabled: true
+                enableHostVerification: true
+          visibility:
+            sql:
+              createDatabase: false
+              manageSchema: true
+              pluginName: postgres12_pgx
+              driverName: postgres12_pgx
+              databaseName: temporal_visibility
+              connectAddr: REPLACE_POSTGRES_HOST:5432
+              connectProtocol: tcp
+              user: temporal
+              existingSecret: REPLACE_TEMPORAL_POSTGRES_SECRET
+              secretKey: password
+              maxConns: 20
+              maxIdleConns: 20
+              maxConnLifetime: 1h
+              tls:
+                enabled: true
+                enableHostVerification: true
+      namespaces:
+        # Tenant namespace registration remains owned by kumo-helm.
+        create: false
+
+    frontend:
+      containerSecurityContext: &serverContainerSecurityContext
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+    internal-frontend:
+      enabled: false
+      containerSecurityContext: *serverContainerSecurityContext
+    history:
+      containerSecurityContext: *serverContainerSecurityContext
+    matching:
+      containerSecurityContext: *serverContainerSecurityContext
+    worker:
+      containerSecurityContext: *serverContainerSecurityContext
+
+  # The image remains available to schema and `helm test` Jobs, but there is
+  # no long-running admin-tools Deployment.
+  admintools:
+    enabled: false
+    image:
+      repository: docker.io/temporalio/admin-tools
+      tag: "1.31.2"
+      pullPolicy: IfNotPresent
+
+  web:
+    enabled: false
+
+  schema:
+    useHelmHooks: true
+    backoffLimit: 3
+    ttlSecondsAfterFinished: 86400
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    securityContext:
+      fsGroup: 1000
+      runAsUser: 1000
+      runAsNonRoot: true
+      seccompProfile:
+        type: RuntimeDefault
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: [ALL]
+
+  # The compatibility shims are only for older Temporal images and create
+  # unnecessary ConfigMaps/mounts with the pinned 1.31 server.
+  shims:
+    dockerize: false
+    elasticsearchTool: false
+
+  test:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi

@@ -1,0 +1,16 @@
+node_modules/
+build/
+dist/
+package.json
+package-lock.json
+env.js
+public/env-config.js
+src/utils/PQLParsing/grammar
+src/components/Jobs/JobsListTable.tsx
+docs/Coding_Guidelines.md
+README.md
+src/styles/theme/_buttons.scss
+src/styles/theme/_navbar.scss
+src/styles/theme/_utilities.scss
+src/styles/theme/_variables.scss
+stacktracer/README.md

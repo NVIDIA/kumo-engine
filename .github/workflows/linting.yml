@@ -1,0 +1,510 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Linting
+
+on: # yamllint disable-line rule:truthy
+  push:
+    branches:
+      - master
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ startsWith(github.ref, 'refs/pull/') || github.run_number }}
+  # Only cancel intermediate builds if on a PR:
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+  flake8:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check for lockfile-only changes
+        id: lockfile-only
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        with:
+          files: |
+            uv.lock
+
+      - name: Set up Python
+        if: steps.lockfile-only.outputs.only_changed != 'true'
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.14"
+          activate-environment: true
+
+      - name: Install dependencies
+        if: steps.lockfile-only.outputs.only_changed != 'true'
+        run: |
+          uv pip install flake8==7.1.2
+
+      - name: Run linting
+        if: steps.lockfile-only.outputs.only_changed != 'true'
+        run: |
+          flake8 --extend-exclude .venv .
+
+  isort:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check for lockfile-only changes
+        id: lockfile-only
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        with:
+          files: |
+            uv.lock
+
+      - name: Set up Python
+        if: steps.lockfile-only.outputs.only_changed != 'true'
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.14"
+          activate-environment: true
+
+      - name: Install dependencies
+        if: steps.lockfile-only.outputs.only_changed != 'true'
+        run: |
+          uv pip install isort==5.12.0
+
+      - name: Run linting
+        if: steps.lockfile-only.outputs.only_changed != 'true'
+        run: |
+          isort --extend-skip .venv --check-only .
+
+  pyroma:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check for lockfile-only changes
+        id: lockfile-only
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        with:
+          files: |
+            uv.lock
+
+      - name: Set up Python
+        if: steps.lockfile-only.outputs.only_changed != 'true'
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.14"
+          activate-environment: true
+
+      - name: Install dependencies
+        if: steps.lockfile-only.outputs.only_changed != 'true'
+        run: |
+          uv pip install pyroma==5.0.0 'setuptools>=80.10.2,<82' setuptools-scm[toml]==8.3.1 wheel==0.45.1
+
+      - name: Check package metadata
+        if: steps.lockfile-only.outputs.only_changed != 'true'
+        run: |
+          pyroma --min=9 .
+
+  licensing:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.14"
+          activate-environment: true
+
+      - name: Install test dependencies
+        run: |
+          uv pip install pytest==9.0.3
+
+      - name: Check source and manifest licensing
+        run: |
+          python scripts/check_license_headers.py
+          python scripts/check_python_license_metadata.py
+          pytest -q --confcutdir=test/scripts test/scripts/test_check_license_headers.py test/scripts/test_python_license_metadata.py
+
+      - name: Build Python wheels
+        run: |
+          projects=(
+            .
+            packages/kumo-api
+            packages/kumo-bigquery
+            packages/kumo-core
+            packages/kumo-databricks
+            packages/kumo-gcs
+            packages/kumo-pql
+            packages/kumo-s3
+            packages/kumo-sdk
+            packages/kumo-snowflake
+            packages/kumo-engine
+            tools/glove-6b-50d
+          )
+          for project in "${projects[@]}"; do
+            uv build --wheel --no-build-logs --out-dir "$RUNNER_TEMP/license-wheels" "$project"
+          done
+
+      - name: Inspect wheel license metadata
+        run: |
+          python scripts/check_python_license_metadata.py --wheel-dir "$RUNNER_TEMP/license-wheels" --require-all
+
+  yamllint:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check for lockfile-only changes
+        id: lockfile-only
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        with:
+          files: |
+            uv.lock
+
+      - name: Set up Python
+        if: steps.lockfile-only.outputs.only_changed != 'true'
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.14"
+          activate-environment: true
+
+      - name: Install dependencies
+        if: steps.lockfile-only.outputs.only_changed != 'true'
+        run: |
+          uv pip install yamllint
+
+      - name: Run linting
+        if: steps.lockfile-only.outputs.only_changed != 'true'
+        run: |
+          yamllint .
+
+  deploy_static:
+    name: deploy_static
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+
+      - name: Check for deployment shell changes
+        id: deploy-shell-changes
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        with:
+          files: |
+            deploy/**/*.sh
+
+      - name: Check for deployment Terraform changes
+        id: deploy-terraform-changes
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        with:
+          files: |
+            deploy/azure/terraform/**/*.tf
+            deploy/azure/terraform/terraform.tfvars.example
+            deploy/gcp/terraform/**/*.tf
+            deploy/gcp/terraform/terraform.tfvars.example
+
+      - name: Check for deployment Packer changes
+        id: deploy-packer-changes
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        with:
+          files: |
+            deploy/**/*.pkr.hcl
+
+      - name: Check for deployment test changes
+        id: deploy-test-changes
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        with:
+          files: |
+            deploy/**
+            docker/compose/docker-compose.singlehost*.yml
+            scripts/compose-local-preflight.sh
+            test/compose/test_compose_local_preflight.py
+            test/deploy/test_cloud_storage_preflight.py
+
+      - name: Install ShellCheck
+        if: steps.deploy-shell-changes.outputs.any_changed == 'true'
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 12
+        with:
+          packages: shellcheck
+
+      - name: Check changed deployment shell scripts
+        if: steps.deploy-shell-changes.outputs.any_changed == 'true'
+        env:
+          CHANGED_SHELL_FILES: ${{ steps.deploy-shell-changes.outputs.all_changed_files }}
+        run: |
+          read -r -a shell_files <<< "$CHANGED_SHELL_FILES"
+          shellcheck "${shell_files[@]}"
+          for script in "${shell_files[@]}"; do
+            bash -n "$script"
+          done
+
+      - name: Set up Terraform
+        if: steps.deploy-terraform-changes.outputs.any_changed == 'true'
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd  # v3
+        with:
+          terraform_version: "1.15.8"
+          terraform_wrapper: false
+
+      - name: Check Azure and GCP Terraform
+        if: steps.deploy-terraform-changes.outputs.any_changed == 'true'
+        run: |
+          for cloud in azure gcp; do
+            terraform_dir="deploy/${cloud}/terraform"
+            terraform fmt -check -recursive "$terraform_dir"
+            cp "$terraform_dir/terraform.tfvars.example" "/tmp/${cloud}.tfvars"
+            terraform fmt -check "/tmp/${cloud}.tfvars"
+            terraform -chdir="$terraform_dir" init -backend=false -input=false
+            terraform -chdir="$terraform_dir" validate
+          done
+
+      - name: Set up Packer
+        if: steps.deploy-packer-changes.outputs.any_changed == 'true'
+        uses: hashicorp/setup-packer@ce93c3c08a6c2ff2275bf4b54ff0d9a75f6c9789  # v3.4.0
+        with:
+          version: "1.15.4"
+
+      - name: Check changed Packer template formatting
+        if: steps.deploy-packer-changes.outputs.any_changed == 'true'
+        env:
+          CHANGED_PACKER_FILES: ${{ steps.deploy-packer-changes.outputs.all_changed_files }}
+        run: |
+          read -r -a packer_files <<< "$CHANGED_PACKER_FILES"
+          for template in "${packer_files[@]}"; do
+            packer fmt -check "$template"
+            packer validate -syntax-only "$template"
+          done
+
+      - name: Set up Python for deployment tests
+        if: steps.deploy-test-changes.outputs.any_changed == 'true'
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          python-version: "3.14"
+
+      - name: Run focused offline deployment tests
+        if: steps.deploy-test-changes.outputs.any_changed == 'true'
+        run: |
+          uvx --python 3.14 --from pytest==9.0.3 pytest -c /dev/null --confcutdir=test/deploy -q test/deploy/test_cloud_storage_preflight.py
+          uvx --python 3.14 --from pytest==9.0.3 pytest -c /dev/null --confcutdir=test/compose -q test/compose/test_compose_local_preflight.py
+
+  pyright:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check for lockfile-only changes
+        id: lockfile-only
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        with:
+          files: |
+            uv.lock
+
+      # This enables us to skip the pyright check for ui only changes.
+      # Note, it's not possible use the standard `on.pull_request` method to
+      # do this, as we need to mark the overall workflow as success to satisfy
+      # the master branch protection rule, and this does not happen if we skip
+      # the entire workflow
+      - name: Check for only ui file changes
+        id: ui-changes
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        with:
+          files: |
+            ui/**
+
+      - name: Set up Python
+        if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.only_changed != 'true'
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.14"
+          activate-environment: true
+
+      # Reuse the DiskGraph wheel that testing.yml caches per source tree, as
+      # .github/actions/setup does, instead of compiling it on every run.
+      - name: Compute DiskGraph wheel cache key
+        id: diskgraph-wheel-key
+        if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.only_changed != 'true'
+        run: echo "key=$(./scripts/diskgraph wheel-key)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore DiskGraph wheel
+        id: diskgraph-wheel-cache
+        if: steps.diskgraph-wheel-key.outputs.key != ''
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: /tmp/diskgraph-wheel
+          key: ${{ steps.diskgraph-wheel-key.outputs.key }}
+
+      # Sync first, so DiskGraph's dependencies are present when the step
+      # below installs its wheel (--no-deps) and verifies the import.
+      - name: Install KUMO
+        if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.only_changed != 'true'
+        run: |
+          uv sync --frozen --no-install-package diskgraph --all-packages --extra full --extra dev --extra cpu
+
+      - name: Install DiskGraph
+        if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.only_changed != 'true'
+        run: |
+          ./scripts/diskgraph install --python "$(command -v python)" -f ${DISKGRAPH_WHEEL_DIR:+--wheel "$DISKGRAPH_WHEEL_DIR"}
+        env:
+          DISKGRAPH_WHEEL_DIR: ${{ steps.diskgraph-wheel-cache.outputs.cache-hit == 'true' && '/tmp/diskgraph-wheel' || '' }}
+
+      - name: Run Kumo-core package checks
+        if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.only_changed != 'true'
+        run: make check-kumo-core
+
+      - name: Run type checker
+        if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.only_changed != 'true'
+        run: |
+          pyright -p pyrightconfig.json
+
+      - name: Run type checker using the precommit config
+        if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.only_changed != 'true'
+        run: |
+          pyright -p precommit-pyrightconfig.json
+
+  uilint:
+    permissions:
+      contents: read
+      packages: read
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check for lockfile-only changes
+        id: lockfile-only
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        with:
+          files: |
+            uv.lock
+
+      # This enables us to skip the uilint workflow.
+      # Note, it's not possible use the standard `on.pull_request` method to
+      # do this, as we need to mark the overall workflow as success to satisfy
+      # the master branch protection rule, and this does not happen if we skip
+      # the entire workflow
+      - name: Check for only ui related file changes
+        id: ui-changes
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        with:
+          files: |
+            ui/**
+
+      - name: Set up Node.js
+        if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.any_changed == 'true'
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "22"
+
+      - name: Install UI dependencies
+        if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.any_changed == 'true'
+        run: |
+          cd ui
+          npm run install:catalog
+          npm ci
+
+      - name: Run ESLint
+        if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.any_changed == 'true'
+        run: |
+          cd ui
+          npm run lint-check
+
+      - name: Run Prettier
+        if: steps.lockfile-only.outputs.only_changed != 'true' && steps.ui-changes.outputs.any_changed == 'true'
+        run: |
+          cd ui
+          npm run format-check
+
+  # Keep this job name stable: master branch protection requires the
+  # setup_dependencies status context.
+  setup_dependencies:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check versions match VERSION
+        run: python3 scripts/stamp_version.py --check
+
+      - name: Validate first-party Kumo dependencies
+        run: |
+          python - <<'PY'
+          import re
+          import tomllib
+          from pathlib import Path
+
+          api_pyproject = Path("packages/kumo-api/pyproject.toml")
+          api_version = tomllib.loads(api_pyproject.read_text())["project"]["version"]
+          if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[a-z]+[0-9]+)?", api_version) is None:
+              raise SystemExit(f"Invalid packages/kumo-api version: {api_version}")
+
+          setup_text = Path("setup.py").read_text()
+          expected = 'kumo_api_dep = f"kumo-api=={kumo_api_ver}"'
+          if expected not in setup_text:
+              raise SystemExit("setup.py does not use the first-party kumo-api version")
+
+          pql_pyproject = Path("packages/kumo-pql/pyproject.toml")
+          pql_version = tomllib.loads(pql_pyproject.read_text())["project"]["version"]
+          if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[a-z]+[0-9]+)?", pql_version) is None:
+              raise SystemExit(f"Invalid packages/kumo-pql version: {pql_version}")
+          if '"kumo-pql>=0.1.0,<0.2"' not in setup_text:
+              raise SystemExit("setup.py does not use the first-party kumo-pql package")
+          if "kumo-pql.git" in setup_text:
+              raise SystemExit("Kumo PQL must not be resolved from a Git URL")
+          PY
+
+  uv_lock:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.14"
+
+      # Fails when a pyproject.toml/setup.py change was
+      # not followed by `uv lock`.
+      - name: Check uv.lock is up to date
+        run: uv lock --check
+
+  dependency-boundaries:
+    # Replaces Pants's per-package dependency-boundary enforcement (removed
+    # with pants_check): a uv workspace shares one lock/environment, so uv
+    # itself can't catch a package importing something only installed
+    # because a sibling workspace member needs it. See
+    # scripts/ci/check_dependency_boundaries.sh for the full rationale, the
+    # per-package scope, and the reviewed baseline of pre-existing findings.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.14"
+          enable-cache: false
+
+      - run: scripts/ci/check_dependency_boundaries.sh

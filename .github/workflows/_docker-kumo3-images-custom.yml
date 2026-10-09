@@ -1,0 +1,634 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: (Manual) Kumo 3 images (cpu + gpu + ui)
+
+# Builds the Kumo 3 deployable image set — kumo/kumo-backend-cpu,
+# kumo/kumo-backend-gpu and kumo/kumo-ui — for one ref. The three build in
+# parallel and push to <ref>_tmp; promote retags them to <ref> once the whole
+# set has built. This is the only entry point that publishes a kumo-backend
+# image.
+#
+# The set has to reach ECR together: the backend images bake
+# kumo_version.txt = kumo_repo_ref, and at runtime pool/images.py resolves that
+# baked value to kumo-backend-gpu:<baked> for every pool pod. Nothing at deploy
+# time pulls the GPU image, so a ref missing it deploys green and fails later
+# as a silent ImagePullBackOff when the first pool pod is spawned.
+
+on:  # yamllint disable-line rule:truthy
+  workflow_call:
+    inputs:
+      kumo_repo_ref:
+        description: 'Branch name or full commit SHA to build the image set from'
+        required: true
+        type: string
+      images:
+        description: 'all | cpu | gpu | ui. Non-"all" is rejected for full-SHA refs and whenever alias_tag is set'
+        required: false
+        default: 'all'
+        type: string
+      alias_tag:
+        description: 'Extra tag applied after promote (e.g. nightly-20260729)'
+        required: false
+        default: ''
+        type: string
+      bake_glove_level:
+        description: 'GloVe bake: basic (~150MB, default), all (~8GB), none'
+        required: false
+        default: 'basic'
+        type: string
+      force_rebuild:
+        description: 'Rebuild even if the images already exist for this ref'
+        required: false
+        default: false
+        type: boolean
+      publish_to_acr:
+        description: 'Also publish the complete image set to the customer ACR'
+        required: false
+        default: false
+        type: boolean
+      caller_id:
+        description: 'Opaque token echoed into run-name so a dispatcher can find its own run'
+        required: false
+        default: ''
+        type: string
+  workflow_dispatch:
+    inputs:
+      kumo_repo_ref:
+        description: 'Branch name or full commit SHA to build the image set from'
+        required: true
+        type: string
+      images:
+        description: 'all | cpu | gpu | ui. Non-"all" is rejected for full-SHA refs and whenever alias_tag is set'
+        required: false
+        default: 'all'
+        type: string
+      alias_tag:
+        description: 'Extra tag applied after promote (e.g. nightly-20260729)'
+        required: false
+        default: ''
+        type: string
+      bake_glove_level:
+        description: 'GloVe bake: basic | all | none'
+        required: false
+        default: 'basic'
+        type: string
+      force_rebuild:
+        description: 'Rebuild even if the images already exist for this ref'
+        required: false
+        default: false
+        type: boolean
+      publish_to_acr:
+        description: 'Also publish the complete image set to the customer ACR'
+        required: false
+        default: false
+        type: boolean
+      caller_id:
+        description: 'Opaque token echoed into run-name so a dispatcher can find its own run'
+        required: false
+        default: ''
+        type: string
+
+run-name: >-
+  Kumo 3 images ${{ inputs.kumo_repo_ref }}${{ inputs.caller_id && format(' [{0}]', inputs.caller_id) || '' }}
+
+permissions:
+  contents: read
+
+# Every run for a ref pushes and then deletes that ref's _tmp tags.
+concurrency:
+  group: kumo3-images-${{ inputs.kumo_repo_ref }}
+
+jobs:
+  guard:
+    name: Require workflow from master
+    runs-on: ubuntu-22.04
+    steps:
+      # The AWS environments used below allow only the master branch. Keep
+      # this check outside those environments so an invalid dispatch fails
+      # immediately instead of waiting for an environment deployment gate.
+      - name: Validate workflow ref
+        if: ${{ github.ref != 'refs/heads/master' }}
+        env:
+          WORKFLOW_REF: ${{ github.ref }}
+        run: |
+          echo "::error::Kumo 3 image publication must use the workflow from master"
+          echo "::error::workflow ref was ${WORKFLOW_REF}"
+          exit 1
+
+  plan:
+    name: Plan image set
+    needs: guard
+    permissions:
+      contents: read
+      id-token: write
+    environment: gha-kumo3-image-set-ecr-read
+    runs-on: ubuntu-22.04
+    outputs:
+      need_cpu: ${{ steps.plan.outputs.need_cpu }}
+      need_gpu: ${{ steps.plan.outputs.need_gpu }}
+      need_ui: ${{ steps.plan.outputs.need_ui }}
+      build_cpu: ${{ steps.plan.outputs.build_cpu }}
+      build_gpu: ${{ steps.plan.outputs.build_gpu }}
+      build_ui: ${{ steps.plan.outputs.build_ui }}
+      # Repos in scope for this run; verify-parity iterates it.
+      selected_repos: ${{ steps.plan.outputs.selected_repos }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7  # v6.0.0
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo3-image-set-ecr-read
+          aws-region: us-west-2
+
+      - name: Decide what to build
+        id: plan
+        env:
+          AWS_DEFAULT_REGION: us-west-2
+          REF: ${{ inputs.kumo_repo_ref }}
+          IMAGES: ${{ inputs.images }}
+          ALIAS: ${{ inputs.alias_tag }}
+          FORCE: ${{ inputs.force_rebuild }}
+          PUBLISH_TO_ACR: ${{ inputs.publish_to_acr }}
+        run: |
+          set -euo pipefail
+
+          # is_full_sha: the ref names an immutable commit, so the set built
+          # from it is a deployable artifact and must be complete.
+          # cacheable: repo:<full-sha> in ECR was built from that commit, so
+          # reusing it is sound.
+          if [[ "${REF}" =~ ^[0-9a-f]{40}$ ]]; then
+            is_full_sha=1
+          else
+            is_full_sha=0
+          fi
+          if [[ "${is_full_sha}" -eq 1 && "${FORCE}" != "true" ]]; then
+            cacheable=1
+          else
+            cacheable=0
+          fi
+
+          if [[ "${IMAGES}" != "all" ]]; then
+            if [[ "${is_full_sha}" -eq 1 || -n "${ALIAS}" ]]; then
+              echo "::error::images='${IMAGES}' is only allowed for branch refs" \
+                   "without an alias. '${REF}' is a deployable artifact and must" \
+                   "be built as a complete set."
+              exit 1
+            fi
+            case "${IMAGES}" in
+              cpu|gpu|ui) ;;
+              *) echo "::error::images must be one of: all, cpu, gpu, ui"; exit 1 ;;
+            esac
+          fi
+
+          if [[ "${PUBLISH_TO_ACR}" == "true" ]]; then
+            if [[ "${IMAGES}" != "all" || -n "${ALIAS}" ]]; then
+              echo "::error::publish_to_acr requires images=all and no alias_tag"
+              exit 1
+            fi
+            if [[ "${is_full_sha}" -ne 1 \
+                  && ! "${REF}" =~ ^v([3-9]|[1-9][0-9]+)\.[0-9]+(\.[0-9]+)?$ ]]; then
+              echo "::error::publish_to_acr requires a full Git SHA or a Kumo 3 release ref"
+              exit 1
+            fi
+            if [[ "${GITHUB_REF}" != "refs/heads/master" ]]; then
+              echo "::error::publish_to_acr must use the workflow from master"
+              exit 1
+            fi
+          fi
+
+          # Returns 1 only for a genuinely absent tag; any other ECR error
+          # aborts the run.
+          ecr_tag_exists() {
+            local repo="$1" tag="$2" err
+            if err=$(aws ecr describe-images \
+                       --repository-name "${repo}" \
+                       --image-ids "imageTag=${tag}" 2>&1 >/dev/null); then
+              return 0
+            fi
+            if grep -q 'ImageNotFoundException' <<< "${err}"; then
+              return 1
+            fi
+            echo "::error::ECR lookup failed for ${repo}:${tag} — ${err}"
+            exit 1
+          }
+
+          selected_repos=""
+
+          plan_one() {
+            local key="$1" repo="$2"
+            local need=false build=false
+
+            if [[ "${IMAGES}" != "all" && "${IMAGES}" != "${key}" ]]; then
+              echo "- ${repo}: not selected (images=${IMAGES})"
+              echo "need_${key}=false"  >> "$GITHUB_OUTPUT"
+              echo "build_${key}=false" >> "$GITHUB_OUTPUT"
+              return 0
+            fi
+
+            selected_repos="${selected_repos} ${repo}"
+
+            if [[ "${cacheable}" -eq 1 ]] && ecr_tag_exists "${repo}" "${REF}"; then
+              echo "✓ ${repo}:${REF} already in ECR — skipping build"
+            else
+              need=true
+              if [[ "${cacheable}" -eq 1 ]] \
+                   && ecr_tag_exists "${repo}" "${REF}_tmp"; then
+                echo "✓ ${repo}:${REF}_tmp left by an earlier run —" \
+                     "skipping build, will promote"
+              else
+                build=true
+                echo "→ ${repo}: building ${REF}_tmp"
+              fi
+            fi
+
+            echo "need_${key}=${need}"   >> "$GITHUB_OUTPUT"
+            echo "build_${key}=${build}" >> "$GITHUB_OUTPUT"
+          }
+
+          echo "ref=${REF} images=${IMAGES} alias=${ALIAS:-<none>}" \
+               "force_rebuild=${FORCE} is_full_sha=${is_full_sha} cacheable=${cacheable}"
+          plan_one cpu kumo/kumo-backend-cpu
+          plan_one gpu kumo/kumo-backend-gpu
+          plan_one ui  kumo/kumo-ui
+
+          echo "selected_repos=${selected_repos# }" >> "$GITHUB_OUTPUT"
+
+  # Job outputs are strings and the string 'false' is truthy, hence `== 'true'`.
+  cpu:
+    needs: plan
+    if: ${{ needs.plan.outputs.build_cpu == 'true' }}
+    # issues/pull-requests: the builder's post-comment-failure job comments on
+    # the PR when a build fails.
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+      pull-requests: write
+    uses: ./.github/workflows/_docker-kumo-backend-cpu-image-custom.yml
+    with:
+      kumo_repo_ref: ${{ inputs.kumo_repo_ref }}
+      bake_glove_level: ${{ inputs.bake_glove_level }}
+      image_tag_suffix: _tmp
+      push_image: true
+    secrets: inherit
+
+  gpu:
+    needs: plan
+    if: ${{ needs.plan.outputs.build_gpu == 'true' }}
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+      pull-requests: write
+    uses: ./.github/workflows/_docker-kumo-backend-gpu-image-custom.yml
+    with:
+      kumo_repo_ref: ${{ inputs.kumo_repo_ref }}
+      bake_glove_level: ${{ inputs.bake_glove_level }}
+      image_tag_suffix: _tmp
+      push_image: true
+    secrets: inherit
+
+  ui:
+    needs: plan
+    if: ${{ needs.plan.outputs.build_ui == 'true' }}
+    # id-token: the UI builder authenticates to ECR with OIDC
+    # (aws-actions/configure-aws-credentials).
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+      packages: read
+      pull-requests: write
+    uses: ./.github/workflows/_docker-ui-image-custom.yml
+    with:
+      kumo_repo_ref: ${{ inputs.kumo_repo_ref }}
+      image_tag_suffix: _tmp
+    secrets: inherit
+
+  promote:
+    name: Promote image set
+    needs: [plan, cpu, gpu, ui]
+    # Runs when a builder was skipped (the cached path), but not when one
+    # failed or was cancelled. It also requires plan success so a failed
+    # master-ref guard cannot flow through plan=skipped into promotion.
+    if: >-
+      ${{ always() && !cancelled()
+          && needs.plan.result == 'success'
+          && !contains(needs.*.result, 'failure')
+          && !contains(needs.*.result, 'cancelled') }}
+    permissions:
+      contents: read
+      id-token: write
+    environment: gha-kumo3-image-set-promote
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7  # v6.0.0
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo3-image-set-promote
+          aws-region: us-west-2
+
+      - name: Retag _tmp manifests onto the real tag
+        env:
+          AWS_DEFAULT_REGION: us-west-2
+          REF: ${{ inputs.kumo_repo_ref }}
+          ALIAS: ${{ inputs.alias_tag }}
+          NEED_CPU: ${{ needs.plan.outputs.need_cpu }}
+          NEED_GPU: ${{ needs.plan.outputs.need_gpu }}
+          NEED_UI: ${{ needs.plan.outputs.need_ui }}
+        run: |
+          set -euo pipefail
+
+          # ECR retag is a manifest copy: no layers move, so this is seconds
+          # regardless of image size.
+          retag() {
+            local repo="$1" src="$2" dst="$3" manifest
+            manifest=$(aws ecr batch-get-image \
+              --repository-name "${repo}" \
+              --image-ids "imageTag=${src}" \
+              --query 'images[0].imageManifest' --output text)
+            if [[ -z "${manifest}" || "${manifest}" == "None" ]]; then
+              echo "::error::no manifest for ${repo}:${src}"
+              exit 1
+            fi
+            aws ecr put-image \
+              --repository-name "${repo}" \
+              --image-tag "${dst}" \
+              --image-manifest "${manifest}" > /dev/null
+            echo "  ${repo}:${src} → :${dst}"
+          }
+
+          promote_one() {
+            local repo="$1" needed="$2" src
+
+            # An image already published for this ref has its manifest under
+            # <ref>; this is the path an alias applied to an already-built SHA
+            # takes.
+            if [[ "${needed}" == "true" ]]; then
+              src="${REF}_tmp"
+              retag "${repo}" "${src}" "${REF}"
+            else
+              src="${REF}"
+            fi
+
+            if [[ -n "${ALIAS}" ]]; then
+              retag "${repo}" "${src}" "${ALIAS}"
+            fi
+          }
+
+          echo "Promoting ${REF}${ALIAS:+ (alias ${ALIAS})}"
+          promote_one kumo/kumo-backend-cpu "${NEED_CPU}"
+          promote_one kumo/kumo-backend-gpu "${NEED_GPU}"
+          promote_one kumo/kumo-ui          "${NEED_UI}"
+
+          discard_tmp() {
+            local repo="$1" needed="$2" out
+            [[ "${needed}" == "true" ]] || return 0
+            # An authorization failure exits non-zero; a per-image failure
+            # exits 0 and reports in .failures.
+            if out=$(aws ecr batch-delete-image \
+                       --repository-name "${repo}" \
+                       --image-ids "imageTag=${REF}_tmp" \
+                       --output json 2>&1) \
+               && [[ "$(jq -r '.failures | length' <<< "${out}" 2>/dev/null)" == "0" ]]; then
+              echo "  ${repo}:${REF}_tmp removed"
+            else
+              echo "::warning::could not remove ${repo}:${REF}_tmp: $(tr '\n' ' ' <<< "${out}")"
+            fi
+          }
+
+          discard_tmp kumo/kumo-backend-cpu "${NEED_CPU}"
+          discard_tmp kumo/kumo-backend-gpu "${NEED_GPU}"
+          discard_tmp kumo/kumo-ui          "${NEED_UI}"
+
+  verify-parity:
+    name: Verify image set and optionally publish to ACR
+    needs: [plan, promote]
+    # Runs once promote has been attempted.
+    if: ${{ always() && needs.promote.result != 'skipped' }}
+    permissions:
+      contents: read
+      id-token: write
+    environment: gha-kumo3-image-set-ecr-read
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7  # v6.0.0
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo3-image-set-ecr-read
+          aws-region: us-west-2
+
+      - name: Confirm every image resolves in ECR
+        env:
+          AWS_DEFAULT_REGION: us-west-2
+          # The wrapper below owns the backoff, so the CLI does not add a
+          # second, hidden layer of retries underneath each attempt.
+          AWS_RETRY_MODE: standard
+          AWS_MAX_ATTEMPTS: 1
+          REF: ${{ inputs.kumo_repo_ref }}
+          ALIAS: ${{ inputs.alias_tag }}
+          SELECTED_REPOS: ${{ needs.plan.outputs.selected_repos }}
+        run: |
+          set -uo pipefail
+
+          # Only ImageNotFoundException means the tag is absent; any other
+          # response says nothing about whether the set is complete. Retries
+          # because this runs immediately after promote's put-image calls.
+          probe() {
+            local repo="$1" tag="$2" attempt err
+            local max_attempts=6
+            for (( attempt = 1; attempt <= max_attempts; attempt++ )); do
+              if err=$(aws ecr describe-images \
+                         --repository-name "${repo}" \
+                         --image-ids "imageTag=${tag}" 2>&1 >/dev/null); then
+                echo present
+                return 0
+              fi
+              case "${err}" in
+                *ImageNotFoundException*)
+                  echo absent
+                  return 0
+                  ;;
+                # Waiting will not change any of these.
+                *AccessDenied*|*UnrecognizedClientException*|\
+                *InvalidClientTokenId*|*InvalidSignatureException*|\
+                *RepositoryNotFoundException*)
+                  echo "${err}"
+                  return 1
+                  ;;
+              esac
+              (( attempt < max_attempts )) && sleep $(( attempt * 5 ))
+            done
+            echo "${err}"
+            return 1
+          }
+
+          missing=0
+          unreadable=0
+          for repo in ${SELECTED_REPOS}; do
+            for tag in "${REF}" ${ALIAS:+"${ALIAS}"}; do
+              if ! result=$(probe "${repo}" "${tag}"); then
+                echo "::error::could not determine whether ${repo}:${tag}" \
+                     "exists: $(tr '\n' ' ' <<< "${result}")"
+                unreadable=1
+              elif [[ "${result}" == "present" ]]; then
+                echo "✓ ${repo}:${tag}"
+              else
+                echo "::error::${repo}:${tag} is missing after promote"
+                missing=1
+              fi
+            done
+          done
+
+          if [[ "${missing}" -ne 0 ]]; then
+            echo "::error::Kumo 3 image set is incomplete for ${REF} —" \
+                 "do not deploy this ref."
+            exit 1
+          fi
+          if [[ "${unreadable}" -ne 0 ]]; then
+            echo "::error::Could not verify the image set for ${REF}; ECR did" \
+                 "not answer. The images themselves may be fine."
+            exit 1
+          fi
+          echo "Kumo 3 image set complete for ${REF}${ALIAS:+ and ${ALIAS}}."
+
+      - name: Install crane
+        if: ${{ inputs.publish_to_acr }}
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            https://github.com/google/go-containerregistry/releases/download/v0.20.2/go-containerregistry_Linux_x86_64.tar.gz \
+            -o /tmp/go-containerregistry_Linux_x86_64.tar.gz
+          echo "c14340087103ba9dadf61d45acd20675490fd0ccbd56ac7901fc1b502137f44b  /tmp/go-containerregistry_Linux_x86_64.tar.gz" \
+            | sha256sum -c -
+          sudo tar -xzf /tmp/go-containerregistry_Linux_x86_64.tar.gz -C /usr/local/bin crane
+
+      - name: Log in to ECR
+        if: ${{ inputs.publish_to_acr }}
+        run: |
+          set -euo pipefail
+          aws ecr get-login-password --region us-west-2 \
+            | crane auth login --username AWS --password-stdin \
+                926922431314.dkr.ecr.us-west-2.amazonaws.com
+
+      - name: Log in to Azure with OIDC
+        # Azure prerequisite: the AZURE_CLIENT_ID service principal must have
+        # a federated identity credential with:
+        #   issuer:   https://token.actions.githubusercontent.com
+        #   subject:  repo:kumo-ai/kumo:environment:gha-kumo3-image-set-ecr-read
+        #   audience: api://AzureADTokenExchange
+        # It also needs permission to push to the ACR named by ACR_NAME.
+        if: ${{ inputs.publish_to_acr }}
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43  # v3.0.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to ACR
+        if: ${{ inputs.publish_to_acr }}
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+          ACR_LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER }}
+        run: |
+          set -euo pipefail
+          az acr login --name "${ACR_NAME}" --expose-token \
+            --query accessToken --output tsv \
+            | crane auth login \
+                --username 00000000-0000-0000-0000-000000000000 \
+                --password-stdin "${ACR_LOGIN_SERVER}"
+
+      - name: Publish exact ECR image set to ACR
+        if: ${{ inputs.publish_to_acr }}
+        env:
+          REF: ${{ inputs.kumo_repo_ref }}
+          ACR_LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER }}
+        run: |
+          set -euo pipefail
+          ecr=926922431314.dkr.ecr.us-west-2.amazonaws.com
+          digests="${RUNNER_TEMP}/acr-digests"
+          : > "${digests}"
+
+          for repo in kumo/kumo-backend-cpu kumo/kumo-backend-gpu kumo/kumo-ui; do
+            digest=$(crane digest "${ecr}/${repo}:${REF}")
+            printf '%s %s\n' "${repo}" "${digest}" >> "${digests}"
+          done
+
+          while read -r repo digest; do
+            source="${ecr}/${repo}@${digest}"
+            destination="${ACR_LOGIN_SERVER}/${repo}:${REF}"
+            existing=$(crane digest "${destination}" 2>/dev/null || true)
+            if [[ "${existing}" != "${digest}" ]]; then
+              crane copy "${source}" "${destination}"
+            fi
+          done < "${digests}"
+
+          while read -r repo digest; do
+            source="${ecr}/${repo}:${REF}"
+            destination="${ACR_LOGIN_SERVER}/${repo}:${REF}"
+            source_digest=$(crane digest "${source}")
+            destination_digest=$(crane digest "${destination}")
+            if [[ "${source_digest}" != "${digest}" \
+                  || "${destination_digest}" != "${digest}" ]]; then
+              echo "::error::Digest mismatch for ${repo}:${REF}"
+              exit 1
+            fi
+            printf 'Published `%s` (`%s`)\n' \
+              "${destination}" "${destination_digest}" >> "${GITHUB_STEP_SUMMARY}"
+          done < "${digests}"
+
+  notify-failure:
+    name: Notify on failure
+    needs: [guard, plan, cpu, gpu, ui, promote, verify-parity]
+    # Covers every way the set can fail to publish: a failed build (which
+    # skips promote and verify-parity), a failed promote, and a failed parity
+    # check. Nothing else alerts on these — the builders' own
+    # post-comment-failure job comments on a PR, and this workflow has none.
+    if: ${{ always() && contains(needs.*.result, 'failure') }}
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          persist-credentials: false
+
+      - name: Describe the failure
+        id: describe
+        env:
+          BUILDS: >-
+            cpu=${{ needs.cpu.result }} gpu=${{ needs.gpu.result }}
+            ui=${{ needs.ui.result }}
+          PROMOTE: ${{ needs.promote.result }}
+          VERIFY: ${{ needs.verify-parity.result }}
+          PLAN: ${{ needs.plan.result }}
+          GUARD: ${{ needs.guard.result }}
+        run: |
+          set -uo pipefail
+          if [[ "${GUARD}" == "failure" ]]; then
+            summary="did not publish — workflow must run from master"
+          elif [[ "${VERIFY}" == "failure" ]]; then
+            # promote ran and left the set incomplete: the tags are live.
+            summary="published an incomplete set — DO NOT DEPLOY this ref"
+          elif [[ "${PROMOTE}" == "failure" ]]; then
+            summary="failed while promoting; the set may be partially tagged"
+          elif [[ "${PLAN}" == "failure" ]]; then
+            summary="failed to plan (${PLAN})"
+          else
+            # A build failed, so promote never ran and no <ref> tag was
+            # published. Nothing is deployable, which is the safe outcome.
+            summary="did not publish — a build failed (${BUILDS})"
+          fi
+          echo "summary=${summary}" >> "$GITHUB_OUTPUT"
+          echo "${summary}"
+
+      - name: Send Slack notification
+        uses: ./.github/actions/slack-notification-action
+        with:
+          channel-id: "C05MUC2FTRN"
+          job-status: failure
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+          slack-bot-token: ${{ secrets.SLACK_BOT_TOKEN }}
+          message: >-
+            Kumo 3 images for `${{ inputs.kumo_repo_ref }}`
+            ${{ steps.describe.outputs.summary }}.

@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+set -euo pipefail
+
+# Run diskgraph-ingest on a local source directory or diskgraph_config.json.
+#
+# Quick usage:
+#   ./diskgraph-ingest/scripts/ingest_local.sh /path/to/source_dir
+#   ./diskgraph-ingest/scripts/ingest_local.sh -d /path/to/source_dir
+#   ./diskgraph-ingest/scripts/ingest_local.sh /path/to/source /path/to/output --col-stats --cat-count-strategy hybrid
+#
+# Flags:
+#   -P  Disable pprof profiling output (default: enabled).
+#   -d  Build with debuginfo + frame pointers for stack dumps.
+#   -m  Enable jemalloc heap dump watchdog.
+#
+# Any extra arguments after SOURCE [OUTPUT] are passed through to the ingest binary.
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/rustflags.sh"
+
+ULIMIT_NOFILE="${ULIMIT_NOFILE:-100000}"
+if ! ulimit -n "${ULIMIT_NOFILE}" 2>/dev/null; then
+  echo "warning: failed to raise ulimit -n to ${ULIMIT_NOFILE}; current limit may be too low" >&2
+fi
+
+PROFILE_ENABLED="true"
+DEBUGINFO_ENABLED="false"
+MEM_PROFILE_ENABLED="false"
+PARALLEL_ENABLED="${PARALLEL_ENABLED:-true}"
+POSITIONAL=()
+for arg in "$@"; do
+  case "${arg}" in
+    -P)
+      PROFILE_ENABLED="false"
+      ;;
+    -d)
+      DEBUGINFO_ENABLED="true"
+      ;;
+    -m)
+      MEM_PROFILE_ENABLED="true"
+      ;;
+    *)
+      POSITIONAL+=("${arg}")
+      ;;
+  esac
+done
+set -- "${POSITIONAL[@]}"
+
+SOURCE="${SOURCE:-${1:-}}"
+OUTPUT="${OUTPUT:-${2:-}}"
+EXTRA_ARGS=("${@:3}")
+
+if [[ -z "${SOURCE}" ]]; then
+  echo "Usage: SOURCE=/path/to/source_dir_or_metadata [OUTPUT=path] $0 [-P] [-d] [-m]" >&2
+  exit 1
+fi
+
+if [[ -d "${SOURCE}" ]]; then
+  INPUT_NAME="$(basename "${SOURCE}")"
+else
+  INPUT_NAME="$(basename "$(dirname "${SOURCE}")")"
+fi
+
+if [[ -z "${OUTPUT}" ]]; then
+  if [[ -n "${DISKGRAPH_DATA_ROOT:-}" ]]; then
+    DEFAULT_OUT_ROOT="${DISKGRAPH_DATA_ROOT%/}/diskgraph-index"
+  elif [[ -d /mnt/localssd ]]; then
+    DEFAULT_OUT_ROOT="/mnt/localssd/diskgraph-index"
+  else
+    DEFAULT_OUT_ROOT="/tmp/diskgraph-index"
+  fi
+  OUTPUT="${OUT_ROOT:-${DEFAULT_OUT_ROOT}}/${INPUT_NAME}"
+fi
+
+env_args=()
+if [[ "${DEBUGINFO_ENABLED}" == "true" ]]; then
+  env_args+=(CARGO_PROFILE_RELEASE_DEBUG=1)
+  env_args+=(RUSTFLAGS="$(diskgraph_release_rustflags -C debuginfo=1 -C force-frame-pointers=yes)")
+fi
+base_env=(PATH="${PATH}" HOME="${HOME}" USER="${USER}")
+
+USE_CARGO_RUN="true"
+if [[ "${MEM_PROFILE_ENABLED}" == "true" ]]; then
+  if [[ "${DEBUGINFO_ENABLED}" == "false" ]]; then
+    env_args+=(CARGO_PROFILE_RELEASE_DEBUG=1)
+    env_args+=(RUSTFLAGS="$(diskgraph_release_rustflags -C debuginfo=1 -C force-frame-pointers=yes)")
+  fi
+  env -i "${base_env[@]}" \
+    MALLOC_CONF= _RJEM_MALLOC_CONF= _rjem_MALLOC_CONF= \
+    JEMALLOC_CONF= JEMALLOC_SYS_WITH_MALLOC_CONF= JEMALLOC_OPTIONS= \
+    "${env_args[@]}" \
+    cargo build -p diskgraph-ingest --bin ingest --release --features mem-profile
+  env_args+=(MALLOC_CONF= _rjem_MALLOC_CONF=)
+  env_args+=(_RJEM_MALLOC_CONF="${_RJEM_MALLOC_CONF:-prof:true}")
+  env_args+=(JEMALLOC_CONF= JEMALLOC_SYS_WITH_MALLOC_CONF= JEMALLOC_OPTIONS=)
+  args=(./target/release/ingest)
+  USE_CARGO_RUN="false"
+elif [[ -n "${MALLOC_CONF:-}" || -n "${_RJEM_MALLOC_CONF:-}" || -n "${_rjem_MALLOC_CONF:-}" || -n "${JEMALLOC_CONF:-}" || -n "${JEMALLOC_SYS_WITH_MALLOC_CONF:-}" || -n "${JEMALLOC_OPTIONS:-}" ]]; then
+  env_args+=(MALLOC_CONF= _RJEM_MALLOC_CONF= _rjem_MALLOC_CONF=)
+  env_args+=(JEMALLOC_CONF= JEMALLOC_SYS_WITH_MALLOC_CONF= JEMALLOC_OPTIONS=)
+  args=(cargo run -p diskgraph-ingest --bin ingest --release)
+else
+  args=(cargo run -p diskgraph-ingest --bin ingest --release)
+fi
+if [[ "${USE_CARGO_RUN}" == "true" ]]; then
+  args+=(-- --source "${SOURCE}" --output "${OUTPUT}" --dest local)
+else
+  args+=(--source "${SOURCE}" --output "${OUTPUT}" --dest local)
+fi
+if [[ "${PROFILE_ENABLED}" == "true" ]]; then
+  args+=(--profile)
+fi
+if [[ "${MEM_PROFILE_ENABLED}" == "true" ]]; then
+  args+=(--mem-profile)
+fi
+if [[ "${PARALLEL_ENABLED}" == "true" ]]; then
+  args+=(--parallel)
+fi
+args+=(${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"})
+env ${env_args[@]+"${env_args[@]}"} "${args[@]}"
+
+echo -e "\033[36;1mNext:\033[0m ./diskgraph-ingest/scripts/perf_explorer.sh \"${INPUT_NAME}\""
+echo -e "\033[36;1mNext:\033[0m ./diskgraph-train-table/scripts/train_table.sh ${OUTPUT}"

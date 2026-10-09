@@ -1,0 +1,201 @@
+{
+  "name": "COUPON_PURCHASE_PREDICTION",
+  "data_source_dict": {},
+  "tables": [
+    {
+      "table_name": "COUPON_LIST",
+      "data_source": null,
+      "data_version": null,
+      "pkey": {
+        "name": "COUPON_ID_HASH",
+        "stype": null,
+        "dtype": "string",
+        "na_values": null,
+        "metadata": {},
+        "drop_duplicates": false
+      },
+      "fkeys": [],
+      "cols": [
+        {
+          "name": "PRICE_RATE",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        },
+        {
+          "name": "CATALOG_PRICE",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        },
+        {
+          "name": "DISCOUNT_PRICE",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        },
+        {
+          "name": "DISPFROM",
+          "stype": null,
+          "dtype": "date",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        }
+      ],
+      "time_col": {
+          "name": "DISFROM",
+          "stype": null,
+          "dtype": "date",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        },
+      "end_time_col":{
+          "name": "DISPEND",
+          "stype": null,
+          "dtype": "date",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        },
+      "source_name": null,
+      "stats": {}
+    },
+    {
+      "table_name": "COUPON_DETAIL",
+      "data_source": null,
+      "data_version": null,
+      "pkey": {
+        "name": "PURCHASEID_HASH",
+        "stype": null,
+        "dtype": "string",
+        "na_values": null,
+        "metadata": {},
+        "drop_duplicates": false
+      },
+      "fkeys": [
+        {
+          "name": "COUPON_ID_HASH",
+          "stype": null,
+          "dtype": "string",
+          "na_values": null,
+          "metadata": {},
+          "dst_table": "COUPON_LIST",
+          "dst_key": null,
+          "dst_data_source": null,
+          "stats": {}
+        },
+        {
+          "name": "USER_ID_HASH",
+          "stype": null,
+          "dtype": "string",
+          "na_values": null,
+          "metadata": {},
+          "dst_table": "USER_LIST",
+          "dst_key": null,
+          "dst_data_source": null,
+          "stats": {}
+        }
+      ],
+      "cols": [
+        {
+          "name": "I_DATE",
+          "stype": null,
+          "dtype": "date",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        },
+        {
+          "name": "ITEM_COUNT",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        }
+      ],
+      "time_col": null,
+      "source_name": null,
+      "stats": {}
+    },
+    {
+      "table_name": "USER_LIST",
+      "data_source": null,
+      "data_version": null,
+      "pkey": {
+        "name": "USER_ID_HASH",
+        "stype": null,
+        "dtype": "string",
+        "na_values": null,
+        "metadata": {},
+        "drop_duplicates": false
+      },
+      "fkeys": [],
+      "cols": [
+        {
+          "name": "REG_DATE",
+          "stype": null,
+          "dtype": "date",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        },
+        {
+          "name": "AGE",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        },
+        {
+          "name": "SEX_ID",
+          "stype": null,
+          "dtype": "string",
+          "na_values": null,
+          "metadata": {},
+          "encoder": null,
+          "stats": {}
+        }
+      ],
+      "time_col":{
+        "name": "REG_DATE",
+        "stype": null,
+        "dtype": "date",
+        "na_values": null,
+        "metadata": {},
+        "encoder": null,
+        "stats": {}
+      },
+      "end_time_col":{
+        "name": "WITHDRAW_DATE",
+        "stype": null,
+        "dtype": "date",
+        "na_values": null,
+        "metadata": {},
+        "encoder": null,
+        "stats": {}
+      },
+      "source_name": null,
+      "stats": {}
+    }
+  ]
+}

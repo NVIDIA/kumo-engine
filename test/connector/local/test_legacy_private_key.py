@@ -1,0 +1,164 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""Regression guard for legacy-encrypted Snowflake key-pair private keys.
+
+kumo/connector/sql_connector.py loads customer-provided private keys with
+the shared provider ``load_private_key`` primitive. The cryptography pin sat
+at 38.0.4 for years out of fear that newer releases (built against OpenSSL 3.2+,
+which gates legacy ciphers behind the "legacy" provider) would reject
+keys encrypted with legacy ciphers. Modern cryptography implements PEM /
+PKCS#8 key decryption in Rust independent of the bundled OpenSSL's
+provider set, so these formats keep loading. This test pins that claim so
+a future cryptography bump that regresses legacy-cipher loading fails CI
+instead of breaking Snowflake key-pair auth in production.
+
+The fixture keys are throwaway 2048-bit RSA keys generated for this test
+(passphrase "testpass"); they protect nothing.
+"""
+from cryptography.hazmat.primitives.asymmetric import rsa
+from kumo_snowflake.keys import load_private_key
+
+PASSPHRASE = b"testpass"
+
+TRADITIONAL_PEM_DES3 = """\
+-----BEGIN RSA PRIVATE KEY-----
+Proc-Type: 4,ENCRYPTED
+DEK-Info: DES-EDE3-CBC,572BD69BA5FECEF1
+
+ONbItCYj9KjrReydwgScQPK+96UsdM1wDwvhtOLYWaiWUlOW9AWstgW3+F4bhJRh
+h+2jg0mGI7itEEwvsN4oALsg0e+sAPNYzNtqqf3RbS+EGbEu9Typ5hfvc7suu3ee
+Cy5J9+/feWegXuaSkspLCrg4Box1glO7Qg+w5Z1N1lkz/PSgpFvRzRPQW4r8cFKd
+lhzK8bq3dDMH5n0jRzqZHBQ+7+bYYDMInLw3ECYGI7i3z3uMS/BPvOD1V7nIyXV9
+9UPC5Kz1gUqTbA6G7PS0c2ulaNE4D+MGe7AFP2brNopXVvEuDBlRjmx5oZ8knhSs
+JUUIxUl1/3pivZ0xcKWYt32xbpFozQ/VwILYiRNXhTmaFrQ4qz1sxWvuHJ7jkaCH
+y1YjreDFmfdIsBT9ItQo5LCKP351+1FNqJs4OFpk/8LyUDeCKesS6V3TBKM6xiAT
+dMk1pAAoxAD+R9C+H6siEo7exn7vzZvHKdUakWSpVNrQ7jPKldtjymAWDf7FF/Ne
+O5mm6lsPx3NTFgiAQnxUGfMB+IceE+Q8/Sq+2rJqZEAn+JUcwvbJWSxgyEUz3Ou6
+S44oNX+rUHabfmgkiqkU3wTn1m+8FoD919fEoo4hlY5hVeyi3whTvmYougyAdOJE
+1XaXQfUsFoZ+Pq+ATx/pYuA79MzHKN6ff7ZmGWear0LQ9AGYTnIXvh9txAjcKJen
+ioXw25/zsPiM/BjpfVkTrL0yEruIUfW/0ATEFXJhudk1qMw8uoK2gUoQa1lFuuau
+LSBprHTruzDY/hEuFNilKc1Tvf5VZQNdKQvJkdbua37Kmq16uYyYoR9/Pgg9Cj6t
+ixW+s3Fc3BWeUlapzxvtrOLhqn6qV5Nphox4Qxye0ZnuWLtTD6xrcxEvk6ekSuKh
+oFvQoiByzdgAOy+RalqbDZbW/yQ15IwFHjd6MYy5iQJ756/3n/KFQ0Q/rlFU7K8X
+mYiNxChEVNLoYUN7L6ZT6MTIPdNuFWApMT99RoknsCEqH3T6NYCKD2zA5/yZF0dG
+cwgXR7SW4gEITzUOcDOcE6lEbcrbakWGsXTTUmR5v0Y0lGlTzKxkdT/cSvPsjMSg
+JBvaBQFjOgp81Q62eUoqmKnOPtiDVw7kif9Yb3P1uWtRuvCGD5B6sWAvx3rJD9ZA
+amauIe8/5Zd3HnzylQPfSrRBibAXvy63KE8BUNGNd6sYBTN3eKfW+4lKXJuaB5//
+gkYPpgR57nFXiAjzWtX4TvwYzrWw7iB3B5+6F7to1poXXfB//BLrnUHcxt1tIubx
+UNwG84wo/hL6zsflwbIyarW1PBNRKChDA93wGltvQb5qUKWTp/l+GUbeIAMr4fyh
+2RacStYu363WwVRbfDgSq7tLw4A12gQf3OXJ5QBbLPczar4tB10lwJ7CR4e8Heo+
+RA+2Nu0Dxa1GgxkTI4yQD/aULVEl6841W0z39bXDa/h1TlhbIl3MCBSbU9RXTEWs
+XS3Gr7/Um1E3/zBh8DYP29dCtcBUg/5t3b2UkC0xybrNB3A8c4VbTVC+ZUbPsa7S
+BJXVa3GI/l1GNTwMlVz3aKFTz/qag5wPviy8R74ChIrdjPqNzNheREKCY1en6Yqs
+-----END RSA PRIVATE KEY-----
+"""
+
+PKCS8_PBE_SHA1_3DES = """\
+-----BEGIN ENCRYPTED PRIVATE KEY-----
+MIIE6jAcBgoqhkiG9w0BDAEDMA4ECCKQ2/opcFpNAgIIAASCBMgOQbxFwMy6P3Xq
+L5jm3/JBFi3iBc77HVtL7ATA5bzJ2raAbDHzwvwx2hW9cbi+vcSSlPAzTvYekVo/
+vsR+x4M0oTiiA/IrAls7VMz75X+yuMJd9tW4hP2ikrVnQGxpcDtwjAh4UUU2XCgB
+sHof5yxKfEzIfpGwKJ/soU24z5FS04pkHs8rbMCVl4/9VCiWMCq9mc/OmyqYIgX+
+SSHAiSDDunzEA8p9LtrwettNWDmrPzG1XgaHriluqf256my+xUhWe9a9xUHRGP2R
+QqDQK+634oKdgpohFChRXrkjY0HUyYH4cn4tNjbg+cOvCo59E9ZsEOaboNPPs/tI
+lme4vqr4IShzr7omdQjYy00B72avBbgfWx+vv6DM+wBqUysOkYGjMy3fepBEGSuN
+4AV/RAhYHxt5BtNePal+ySl914gAx2GkC0D5AVxaw1TsuW8rJPpgMrHbSc6qPv3x
+SfTmra0M//RV0FXwqAp/aj3zoQKwnB4f6wcfgeYhcperVwWEtTR/GyBbM0plZ2OH
+I4x0odPeNDapNrOXzxQ45bmlVc1MuQ5i8m5gB9PX+bA3J3X352W1TGW2/yNj0FGz
+8hq3SSM8DvBo9MpFNb4IRjod2kV3L8QuaRzCMVjwhMJDBDM+KEqGydVlkM9BgKPH
+7TEP1uVky45SivJIvJGloQt8IHtJGuHYl3QtXDdexvR2StQSrdND50C2Iurx7B0t
+cx4YthlmS0cc9c69+mACh8ddB9n9X3d/vvN+wzMZ2NkgMS1kLoEqQdLhehm+jFl8
+AP9eofraTnnIJ9IAZoSodq6kCXIGdCQ+lz/t47K+6Dw2O5r+CAQz+O+AVzezqzO1
+7PzIV3pTwb0jDiFMsofKRvBUr6RFdPam1QDprE6Aa9JU76m2k0bAhxTcLJiExFKR
+10sGgoYLBg878LqhMW3hD6skiFBPFtxtJ5jAJ0+j2NUO6QrMpts0PUa5DdGe+NOv
+5NVUxDP1+1m9ewFUHACLI+TwOFezTLNlGw7G8q0hVU4cCv+ggnL++Q8+ba/GEOGU
+wQsqtlpNhkRxIZUbhpLNSiUkFl1d++/aQ/SVspYf2lE4RwnyV9i8JHtt+1zh+zNU
+X1fJLz0C1GKf2e7p10qbhNtlXNL85gaNA6wxZQeRQsZ3kNdooUxAOrWK1RiW3FMb
+Z9SZANDTEPIzx8vq+SHTrjgG8dInrYvftr+mgRcPiAyrxHrKhdofSdt8dTBvnaaP
+GEgLokM1z09RhGaNKo31ZBdG2E09eyCkCOQpvT3O6brP+bksBSNDLm8nyFFlZ8IT
+6e/c/PaJ5cDOKb+B3N3XscFEjB3nnnVUKASpu/VhN8l1P+N08NFTrnyPLEetxgjg
+eeA4WN0YjAxV5Hv/LbWsBW5dewFDz2j3eZm5exlGc35vC/+eFq/lD722yQMR3BUr
+p2Af7XC0SE4v/Tu9Mnr5kccOqkFSIK0/1oQIZGT9roEsYB8AbrEtHZ9RvJ3E6ozz
+61SKwFi3kdZ8U9zW/IVDAWrLxDabvQPmwT1PT89TjZGxyPN7FBub3E9fBBa0D9QM
+gjY+7/lnl8qY7NTmzQfxhBh4U2B9iaGcupLdDqIIVFIq6y4rMbBVtF5rUq6GiWRz
+hGMV1jXZKaSXyiAgUD8=
+-----END ENCRYPTED PRIVATE KEY-----
+"""
+
+PKCS8_PBE_MD5_DES = """\
+-----BEGIN ENCRYPTED PRIVATE KEY-----
+MIIE6TAbBgkqhkiG9w0BBQMwDgQInb4+n0m93y4CAggABIIEyBQZn095HOxSfCIT
+3Mir37tntRtpZs5NtteVfYWaBs0LMJZuacDWqauBIXSnIirNzRAXQXyvQ9rqw4ng
+hchD3KQuWINXMS38GWl6HR/fujctBbxemJ+OIodMDeNDqrUCbm32Fi0Cozt/948w
+NZi3VFNvjZf/msqdq9v/vWvrgcxJlhx/ELPZHiZ5UQ/dzwAzz6x/2KBSmqUWVxA2
+t6B+DVXTBPs7isCb0to+UD030okDBZRnjLoJaVoyrGssL3CZmVVXaUNOPcOgQ0+i
+KbMgr3HET7L52zR6xjkAJ8e6Nypdl9ZMzr0rvMbWVEhRIFXU0rIw0ncwqtEd0JOy
+FeCOnBTOFkeyoIdBUDg1tZOrMFUBipL6+IFTSisOlSAzSy/fy+ZxfM5wiRrmmqoa
+uZQIzDaYvBN6Wus49yZ5amaMBeL+6MGP0e8sU2hw19vDr9VSVpBydbj4b2IBhpEy
+qmIDzCmE4ZzRY2n7VeMrbzwazZLV6eDLieWfkHXSKJNMzy2THkKotJR3S9e9S9KR
+4QeQVqlQWbWYjXHcYM8PsKhtZ3I21KP+R9+24GKto/BSGhMt8al0Zt8NcSu4ALD/
+7LayLa8g1OdoOAavuxeimAJKx0hA8pt4U0kORoMpU7r1GgpcSUP8xnN4d4PK09fd
+UyrVJg8FGnncSharAlS5aJfxOuD288STmNIQSpuMEAdSzeDoKqmPqSI/KBL9ox8g
+6h+RwopaDLjbfapK8QcLGivdQSEaITCYjJ/QYFkeBiNg5D7lNah8sMez1gAqh1tQ
+TFGf8FYMrzoo1U1j1C7M3HvPPqX1WjEdT5vB3bCL2IqZLQAiUc41gU2D5tchr4W/
+mFtMv7uBOzO3mwbzNCJIm3adpmId0Jg7vyzthuACvLtJCHLmH3lwAQ2ycTW1dbrn
+BuMPaWLVg45S+C7C/yVMWSnHkz4Yx4hBh4SFyfHD/lTctDEU2OpT2nM3anoq8sd+
+EOyshAFuZjvwb2VCtjKSb8Y6/zgkZtxpgaBplTZ43g4efjQz/6AAA0Npt0MnlIBq
+8bGZh1LDRMQjy20FmQEFQ0Tm8Q4gu1Mrot3EbMxlSrmm0lAS+DtcfenetxuKI68G
+ulDJz5lvKpDapBo7bByXwnDgbZ3DPotmcelc0gUF7ikO36vo0vaXk5YorgLDBFEp
+xlHch0XzU3o175fAWeElmYAyXk/dojo83u0bkS24oQgCNhCik96sZR6/Hl/r8jd3
+sqsAtWHMPIQ5HypxZe29rp5h+Z/ES+cTXN2nnDVlC85KFCyUctmCJcriLnXrAPgn
+zoslpg5wBak2a/u5MydhGDXtsgHF5wu9G8/l4Xl53OGjTTPmpGEhQimvXwz2cDHL
+kd/9A8v4+D2tWCxhvq+RWAKRoqeroiStE3fAoLtsTCI0i52n9MP+xIQOtQrYZT6j
+witPgDd64c8529D2X6eSeHqTT2Ps13yAH1E3KK9tlzuPnJn6TupTTA+Fjmuvdo4k
+JmiubaEKCXPQwHEvzi2GfT1MNfF4uZxfqbeMxNRDkLlWSrjOhtNdv09csc5G6T1P
+kmclhddryP5OUV1ztt7qKGy2MgXv1r/DK9Ok9zYYMbZyxyHzjd4f1edk1QDyW1Dv
+u0w0hODiElaZiSzr7w==
+-----END ENCRYPTED PRIVATE KEY-----
+"""
+
+PKCS8_PBE_SHA1_RC2_40 = """\
+-----BEGIN ENCRYPTED PRIVATE KEY-----
+MIIE6jAcBgoqhkiG9w0BDAEGMA4ECJaiNrqYzGvMAgIIAASCBMg3YRJL1V4z02Nm
+PEeMirAyir3CEEP+z5AZPrrNSW/qDCmAYwJxUPbL/ekLJ+ozT2f7q0kkSF2tH+kB
+3PDrw6MhU+FU0nLfX7OtSxY2t+rDcV0GCwYBZ/Ni7ytdMMCQLxPzoRIVnxz990SF
+YpklBlSkOeuI4F+QvaGNd/Spq0lUQcU9cl98R2Yp5kJwlWPMbhMkyF+dzq7Tg7yl
+/mLOYPiebwEZ8iKKMIprV9ek8LSQiveDOj90jR+jakQAf2SNoJO+TcvGipCWe9JG
+dXaaIAqdBmxbONQLEkytdGzCLS8qEsXAQETQO+TaeKDILHmSid2xeoGa3Ef+zNf4
+DuQFp7NvwHtKNGguCqMbv9dEn044ntLT8oOXMj1FjUhrBzE6LDP7+K016XUkKSkf
+nBbSv5qJq/xGQAxTQ4LFles7ElfAZ/TodThmtYG/kMPaKXpl1uvpJM34gLs/iCwV
+xKNgVNxe4z25o8iCzzmNmHepCOyys8XyIR4Et3gIVAkEW6pnWNY8N/gPJgeOW/2g
+tp020g3tkgArtxkMwhOvLtrEdPe05sYuZJINfV1moT1SGkYS7RRn5ytVNErWy6xD
+abkc2qPsG0IZMIJPnynSX6Peq2TKnC4xOnUt8uiqCugM8zCbozdGKqFwts2Ui/4V
+sSdm53ZhK9yc40fHOrht36eEFTi/pSPswOwcVZYPZhhB2hHVpGabumi8yDKuwkxX
+EnEg6udrRId3h6TSgyPrpqxJ6tGYrU9ioNvEhwVMSq8WA9DqocMPIMrZp0Tb5Eoa
+YCbrt1lBG+EWmOs2OsVsyRRS2cDrY1TKMZHGvI46xzYzwl9Z7zJEKsmAve7JBpZr
+O5NTaEASGhf4BOsYGw7RtlTmbxQ87NQDsflopsFI7eIPbDrPwhbS9BPMbfzDBEN4
+Hwa5tTkh+nGOUS6TljqYEjV2xPfi+Eolyy73QJvCC4kxVAKsK6oPbI0hInUSbYvF
+2HmjoYYQaQlNWRKw1XsYXQtG7iZfBfHgsvSiW5peFR8DgQu0FoiC+rtg8DATrnnz
+8yODgvgYRV995NC4WRfijVfMO5Bu2elPMTuczcvjRkSKhf3Xpu0yD4irIaHAPO5u
+HQ+AIIAUh+O99pEzpkI0PWj9Td+TzG7U3gtN5o6YZ+CSkKfjFt8UmbGR1gm0cluu
+o4oYbvGf+ih46Cg9UbfSfJtqhu77DUPar0hNNUKlSeUgFOiIgpPiXBG5irGQJjzK
+qD8AQu58jb769bMqBCHnUMO/O5G2tTX3cmXvaEqQP0e54CokMbx5zNcib19EMuyQ
+El/yUTTavjYpfixFG599m9GYXaPyc/b3ZqwVehJ/VRgxvXkJ1pg3+gK+7xgII2PL
+eXAcV9IxC2E3IeP3HVW7XIhZOY3kEnoFlxIiPi+U2CC10n4UcZks22Q6yWHFjCc9
+wjiWv93TNhQbcmXKfjwwwjgjDUjS9Cf5p4b5XRCvrgrmnHLNtthx5tbXkS7xnCD3
+Xm8lF3TAQUDs9NejczdO393Ao0a5pYO8/LAxjIVBAPsFXrFmag/GKr1sCrFCcnHA
+IpGufVGWpJIuTSz9SQ4Q8lW6uM7UMCWpfSlL575Wf0R8fCA4fBvKTtBN64tmKIeX
+g0+E3cxL9yOrx+b+csc=
+-----END ENCRYPTED PRIVATE KEY-----
+"""
+
+LEGACY_KEYS = {
+    "traditional PEM, DES-EDE3-CBC": TRADITIONAL_PEM_DES3,
+    "PKCS#8 v1, PBE-SHA1-3DES": PKCS8_PBE_SHA1_3DES,
+    "PKCS#8 v1, PBE-MD5-DES": PKCS8_PBE_MD5_DES,
+    "PKCS#8 v1, PBE-SHA1-RC2-40": PKCS8_PBE_SHA1_RC2_40,
+}
+
+
+def test_legacy_encrypted_private_keys_load():
+    for label, pem in LEGACY_KEYS.items():
+        key = load_private_key(pem, PASSPHRASE.decode())
+        assert isinstance(key, rsa.RSAPrivateKey), label

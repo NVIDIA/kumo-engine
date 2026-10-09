@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+set -Eeuo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+KUMO="${SCRIPT_DIR}/kumo"
+
+[[ $# -gt 0 ]] || {
+  printf 'Usage: e2e-install --values FILE [--platform eks|aks|aro]\n' >&2
+  exit 2
+}
+
+bash "${KUMO}" install "$@"
+bash "${KUMO}" conformance "$@"
+bash "${KUMO}" verify gpu-lifecycle "$@"
+bash "${KUMO}" verify container-policy "$@"
+
+printf 'Fresh-cluster Kumo installation, routing, GPU lifecycle, and image policy passed.\n'

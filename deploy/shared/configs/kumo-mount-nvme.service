@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[Unit]
+Description=Mount Kumo NVMe diskgraph volume before Docker
+ConditionPathExists=/usr/local/bin/mount-nvme.sh
+Before=docker.service
+After=local-fs.target dlami-nvme.service
+Wants=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/mount-nvme.sh
+# TRIM after mounting to prevent SSD write cliff after repeated
+# write/delete cycles. Guard with `mountpoint` so we only trim when
+# `/mnt/localssd` is a real mounted filesystem.
+ExecStartPost=/bin/sh -c 'mountpoint -q /mnt/localssd && fstrim -v /mnt/localssd || true'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

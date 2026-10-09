@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+import logging
+
+import pytest
+
+from kumo.testing.fixtures.task import (
+    forecasting_task,
+    get_temporal_task,
+    static_order_classification_task,
+    static_task,
+    temporal_hyperedge_task,
+    temporal_marketplace_task,
+    temporal_task,
+    user_item_marketplace_graph,
+    user_store_graph,
+)
+
+__all__ = [
+    'forecasting_task',
+    'get_temporal_task',
+    'static_order_classification_task',
+    'static_task',
+    'temporal_hyperedge_task',
+    'temporal_marketplace_task',
+    'temporal_task',
+    'user_item_marketplace_graph',
+    'user_store_graph',
+]
+
+
+@pytest.fixture(autouse=True)
+def disable_logging():
+    # In ML tests, we usually don't care about heaps of logs from other modules
+    logging.getLogger('kumo.data').setLevel(logging.ERROR)
+    logging.getLogger('kumo.pquery').setLevel(logging.ERROR)
+    logging.getLogger('kumo.stats').setLevel(logging.ERROR)
+    logging.getLogger('kumo.graph').setLevel(logging.ERROR)
+    logging.getLogger('kumo.connector').setLevel(logging.ERROR)
+    logging.getLogger('io_utils').setLevel(logging.ERROR)

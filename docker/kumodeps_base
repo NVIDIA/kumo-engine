@@ -1,0 +1,150 @@
+#!/bin/bash -e
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+#
+# Install OS + Python + heavy stable runtime deps for kumo backend
+# base images. Parameterized for cpu vs gpu via CUDA_VERSION:
+#
+#   CUDA_VERSION=cpu     -> CPU torch wheel  (default)
+#   CUDA_VERSION=cu130   -> CUDA 13.0 torch wheel
+#
+# This script targets the BASE image. It installs the heavy slow-changing
+# layers (Python toolchain, torch) so backend images stacked on
+# top can rebuild quickly when only kumo source changes.
+#
+# Used by: Dockerfile.kumo_base_cpu, Dockerfile.kumo_base_gpu
+#
+
+CUDA_VERSION="${CUDA_VERSION:-cpu}"
+TORCH_VERSION="${TORCH_VERSION:-2.12.0}"
+PYTHON_VERSION="${PYTHON_VERSION:-3.14.7}"
+PYTHON_SHA256="${PYTHON_SHA256:-3b48dac8fb59f62eaa67ac83c1eb12bda1b7a08406dd286e252c11a66be27f81}"
+
+sudo apt-get update -y
+sudo apt-get install -y curl
+
+# OS-level build tools + Python 3.14 toolchain. build-essential and the
+# lib*-dev packages are needed on the ubuntu:24.04 (CPU) base; the
+# nvidia/cuda runtime base is otherwise minimal too, so we install the
+# same set on both for symmetry. The compiler and libc/linux-libc headers
+# intentionally remain available at runtime for torch.compile's inductor
+# backend.
+# Python is built from the checksummed python.org source release instead of
+# deadsnakes because that PPA can lag security patch releases (it still served
+# 3.14.6 after CVE-2026-15308 was fixed in 3.14.7).
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    apt-utils \
+    build-essential \
+    cmake \
+    g++ \
+    gcc \
+    gdb \
+    git \
+    gnupg2 \
+    graphviz \
+    libbz2-dev \
+    libexpat1-dev \
+    libffi-dev \
+    libgdbm-compat-dev \
+    libgdbm-dev \
+    libkrb5-dev \
+    liblzma-dev \
+    libncurses-dev \
+    libnss3-dev \
+    libreadline-dev \
+    libsqlite3-dev \
+    libssl-dev \
+    libxml2-dev \
+    libxslt1-dev \
+    openssl \
+    pass \
+    tk-dev \
+    uuid-dev \
+    vim \
+    zlib1g-dev
+# NOTE: the `ssh` metapackage (openssh-client + openssh-server) is
+# intentionally not installed. Nothing in the build or runtime uses ssh
+# (git deps resolve over https; k8s uses exec, not sshd), and openssh-server
+# seeds /etc/ssh/ssh_host_*_key private keys that image secret scanners flag.
+# git only *recommends* openssh-client, which --no-install-recommends skips.
+
+if [ "${CUDA_VERSION}" != "cpu" ] && [ "$(dpkg --print-architecture)" = "amd64" ]; then
+    # Driver/runtime utilities for GPU device discovery (nvidia-smi etc).
+    # ARM64 receives these from the host NVIDIA container runtime.
+    sudo apt-get install -y --no-install-recommends nvidia-utils-470
+fi
+
+sudo apt-get clean
+sudo apt-get autoremove -y
+sudo rm -rf /var/lib/apt/lists/*
+
+PYTHON_SOURCE="Python-${PYTHON_VERSION}.tar.xz"
+curl --fail --location --silent --show-error \
+    "https://www.python.org/ftp/python/${PYTHON_VERSION}/${PYTHON_SOURCE}" \
+    --output "/tmp/${PYTHON_SOURCE}"
+echo "${PYTHON_SHA256}  /tmp/${PYTHON_SOURCE}" | sha256sum --check --strict
+tar -xJf "/tmp/${PYTHON_SOURCE}" -C /tmp
+pushd "/tmp/Python-${PYTHON_VERSION}"
+./configure --prefix=/usr/local --with-ensurepip=install
+make -j"$(nproc)"
+sudo make altinstall
+popd
+sudo rm -rf "/tmp/Python-${PYTHON_VERSION}" "/tmp/${PYTHON_SOURCE}"
+
+# Pin Python 3.14 as the default `python` / `python3`. Idempotent — clears
+# whatever python3.x links the base image happens to ship with.
+sudo rm -f /usr/bin/python /usr/bin/python3
+sudo ln -s /usr/local/bin/python3.14 /usr/bin/python
+sudo ln -s /usr/local/bin/python3.14 /usr/bin/python3
+test "$(python3 -c 'import platform; print(platform.python_version())')" = "${PYTHON_VERSION}"
+python3 -c "import bz2, ctypes, dbm.gnu, lzma, sqlite3, ssl, tkinter, uuid"
+
+# Bootstrap pip + setuptools, system-wide. The backend image later runs
+# `uv pip install --system` which writes to /usr/local; installing here as
+# kumouser (the default for non-root pip) would put everything in ~/.local
+# and shadow the /usr/local copy at runtime, wasting ~700 MB on a duplicate
+# torch tree.
+#
+# setuptools/wheel/numpy are pinned to the versions kumo's lockfile resolves
+# for `.[full]`, so the backend's resolution sees them already satisfied and
+# never upgrades a package in place over this read-only base layer (buildah
+# overlayfs rejects the in-place write with Errno 13). pip is left unpinned —
+# it is not part of the `.[full]` resolve, so `uv pip install --system` never
+# touches it.
+curl -sS https://bootstrap.pypa.io/get-pip.py | sudo python3
+sudo python3 -m pip install --upgrade "setuptools==81.0.0" pip
+
+# Strip setuptools' bundled pytest fixtures. setuptools ships test data under
+# pkg_resources/tests/data/, including a dummy `my_test_package-1.0-py3.7.egg`
+# whose EGG-INFO/PKG-INFO makes Syft's installed-package cataloger report a
+# phantom pip package `my-test-package 1.0` (UNKNOWN license, no provenance)
+# in the shipped backend images (Santander OSRB finding #5). The fixtures have
+# no runtime role; remove every bundled test tree, then assert the phantom is
+# gone so a future setuptools that relocates it fails the build here.
+SITE_PACKAGES="$(python3 -c 'import setuptools, os; print(os.path.dirname(os.path.dirname(setuptools.__file__)))')"
+sudo rm -rf \
+    "${SITE_PACKAGES}/pkg_resources/tests" \
+    "${SITE_PACKAGES}/setuptools/tests" \
+    "${SITE_PACKAGES}/setuptools/_distutils/tests"
+test ! -e "${SITE_PACKAGES}/pkg_resources/tests"
+
+# Stable bottom-of-stack deps. Kept here (rather than in the backend layer)
+# so backend rebuilds don't re-resolve them.
+sudo python3 -m pip install numpy==2.3.3 "wheel==0.47.0"
+
+sudo python3 -m pip install \
+    "torch==${TORCH_VERSION}" \
+    --extra-index-url "https://download.pytorch.org/whl/${CUDA_VERSION}"
+
+sudo python3 -m pip cache purge
+
+# Sanity check: imports succeed and CUDA build matches the variant.
+python3 -c "import torch, numpy"
+! command -v java
+if [ "${CUDA_VERSION}" != "cpu" ]; then
+    python3 -c "import torch; assert torch.version.cuda is not None, 'expected torch CUDA build'"
+else
+    python3 -c "import torch; assert torch.version.cuda is None, 'expected torch CPU build'"
+fi

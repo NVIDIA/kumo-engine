@@ -1,0 +1,75 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kumo-api
+  labels:
+    app: kumo-api
+    {{- include "kumo.commonLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.workloads.api.replicas }}
+  revisionHistoryLimit: 2
+  {{- include "kumo.noSurgeRollingStrategy" . | nindent 2 }}
+  selector:
+    matchLabels:
+      app: kumo-api
+  template:
+    metadata:
+      annotations:
+        checksum/kumo-config: {{ include (print $.Template.BasePath "/configmap-kumo-config.yaml") . | sha256sum }}
+        {{- include "kumo.podAnnotations" . | nindent 8 }}
+      labels:
+        app: kumo-api
+        tenant: {{ .Values.global.tenant }}
+        {{- include "kumo.frontendPodLabels" (dict "root" . "component" "backend") | nindent 8 }}
+        {{- include "kumo.workloadPodLabels" (dict "root" . "role" "control") | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "kumo.serviceAccountName" (dict "root" . "role" "control") }}
+      automountServiceAccountToken: {{ include "kumo.serviceAccountAutomount" (dict "root" . "role" "control") }}
+      securityContext:
+        {{- include "kumo.podSecurityContext" (dict "root" . "extra" dict) | nindent 8 }}
+      {{- include "kumo.nodeTargeting" . | nindent 6 }}
+      {{- include "kumo.imagePullSecrets" . | nindent 6 }}
+      containers:
+      - name: kumo-rest
+        # kumo-api runs the same image as kumo-rest (internal/public API entrypoint)
+        image: {{ include "kumo.restImage" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        securityContext:
+          {{- include "kumo.containerSecurityContext" (dict "root" . "extra" dict) | nindent 10 }}
+        command: ["/bin/sh"]
+        args: ["-c", "python3 /opt/app/rest/public/main.py"]
+        ports:
+        - containerPort: 8000
+          name: http
+        - containerPort: 9123
+          name: metrics
+        env:
+        - name: REST_API_PORT
+          value: "8000"
+        - name: METRICS_PORT
+          value: "9123"
+        - name: OC_CAUSE
+          value: "1"
+        # Explicit env wins over the shared ConfigMap compatibility path.
+        - name: FORWARDED_ALLOW_IPS
+          value: "*"
+        {{- include "kumo.tenantSecretKeyEnv" . | nindent 8 }}
+        {{- include "kumo.downwardApiEnv" . | nindent 8 }}
+        envFrom:
+        - configMapRef:
+            name: kumo-config
+        resources:
+          {{- toYaml .Values.workloads.api.resources | nindent 10 }}
+        volumeMounts:
+        {{- include "kumo.temporalVolumeMount" . | nindent 8 }}
+        {{- include "kumo.secretsVolumeMount" . | nindent 8 }}
+        {{- include "kumo.gcpApplicationCredentialsVolumeMount" . | nindent 8 }}
+      volumes:
+      {{- include "kumo.temporalVolume" . | nindent 6 }}
+      {{- include "kumo.secretsVolume" . | nindent 6 }}
+      {{- include "kumo.gcpApplicationCredentialsVolume" . | nindent 6 }}

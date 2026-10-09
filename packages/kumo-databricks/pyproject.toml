@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kumo-databricks"
+version = "0.1.0.dev1"
+description = "Databricks source and sink integration for Kumo"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+  "kumo-core==0.1.0.dev1",
+  "kumo-api>=3.0.0",
+  "databricks-sql-connector>=4.5.0",
+  "databricks-sdk>=0.49",
+  "pandas>=1.5,<3",
+  "pyarrow>=14",
+  "pydantic>=2.11",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=7.4",
+]
+
+# Installing this distribution activates the same provider for the hosted SDK
+# and for kumo-engine.  The workflow itself remains owned by those callers;
+# this package supplies Databricks source, sink, and identity capabilities.
+[project.entry-points."kumoai_studio.sources"]
+databricks = "kumo_databricks.backend:DatabricksSourceBackend"
+
+[project.entry-points."kumoai_studio.sinks"]
+databricks = "kumo_databricks.sink:DatabricksSinkBackend"
+
+[project.entry-points."kumoai_studio.identities"]
+databricks = "kumo_databricks.session"
+
+[tool.uv.sources]
+kumo-core = { workspace = true }
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["src", "../kumo-core/src", "../kumo-core/tests"]

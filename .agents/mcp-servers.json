@@ -1,0 +1,14 @@
+{
+  "_comment": "Master MCP server configuration. Run 'python3 .agents/scripts/sync-mcp.py' to sync to Claude and Codex configs.",
+  "servers": {
+    "codex": {
+      "description": "Codex MCP for AI-assisted analysis and code review",
+      "command": "npx",
+      "args": ["-y", "codex-mcp-server"],
+      "tools": [
+        "codex",
+        "codex-reply"
+      ]
+    }
+  }
+}

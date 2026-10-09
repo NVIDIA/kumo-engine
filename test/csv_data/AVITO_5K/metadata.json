@@ -1,0 +1,347 @@
+{
+    "name": "AVITO_5K",
+    "data_source_dict": {},
+    "tables": [
+        {
+            "table_name": "Category",
+            "source_table_name": "Category",
+            "table_type": "dimension",
+            "cols": [
+                {
+                    "name": "LEVEL",
+                    "stype": "categorical",
+                    "dtype": "int64"
+                },
+                {
+                    "name": "PARENTCATEGORYID",
+                    "stype": "ID",
+                    "dtype": "int64"
+                },
+                {
+                    "name": "SUBCATEGORYID",
+                    "stype": "ID",
+                    "dtype": "int64"
+                }
+            ],
+            "pkey": {
+                "name": "CATEGORYID",
+                "stype": "ID",
+                "dtype": "int64"
+            },
+            "time_col": null
+        },
+        {
+            "table_name": "AdsInfo",
+            "source_table_name": "AdsInfo",
+            "table_type": "dimension",
+            "cols": [
+                {
+                    "name": "Params",
+                    "stype": "categorical",
+                    "dtype": "string"
+                },
+                {
+                    "name": "Price",
+                    "stype": "numerical",
+                    "dtype": "float"
+                },
+                {
+                    "name": "Title",
+                    "stype": "text",
+                    "dtype": "string"
+                },
+                {
+                    "name": "IsContext",
+                    "stype": "categorical",
+                    "dtype": "float"
+                }
+            ],
+            "pkey": {
+                "name": "AdID",
+                "stype": "ID",
+                "dtype": "float"
+            },
+            "time_col": null,
+            "fkeys": [
+                {
+                    "name": "CategoryID",
+                    "stype": "ID",
+                    "dtype": "float",
+                    "dst_table": "Category",
+                    "dst_key": "CATEGORYID"
+                },
+                {
+                    "name": "LocationID",
+                    "stype": "ID",
+                    "dtype": "float",
+                    "dst_table": "Location",
+                    "dst_key": "LocationID"
+                }
+            ]
+        },
+        {
+            "table_name": "Location",
+            "source_table_name": "Location",
+            "table_type": "dimension",
+            "cols": [
+                {
+                    "name": "Level",
+                    "stype": "categorical",
+                    "dtype": "float"
+                },
+                {
+                    "name": "RegionID",
+                    "stype": "ID",
+                    "dtype": "float"
+                },
+                {
+                    "name": "CityID",
+                    "stype": "ID",
+                    "dtype": "float"
+                }
+            ],
+            "pkey": {
+                "name": "LocationID",
+                "stype": "ID",
+                "dtype": "float"
+            },
+            "time_col": null,
+            "view_args": null,
+            "fkeys": []
+        },
+        {
+            "table_name": "PhoneRequestsStream",
+            "source_table_name": "PhoneRequestsStream",
+            "table_type": "fact",
+            "cols": [
+                {
+                    "name": "IPID",
+                    "stype": "ID",
+                    "dtype": "float"
+                },
+                {
+                    "name": "PhoneRequestDate",
+                    "stype": "timestamp",
+                    "dtype": "date"
+                }
+            ],
+            "pkey": null,
+            "time_col": {
+                "name": "PhoneRequestDate",
+                "stype": "timestamp",
+                "dtype": "date"
+            },
+            "fkeys": [
+                {
+                    "name": "UserID",
+                    "stype": "ID",
+                    "dtype": "int64",
+                    "dst_table": "UserInfo",
+                    "dst_key": " UserID"
+                },
+                {
+                    "name": "AdID",
+                    "stype": "ID",
+                    "dtype": "float",
+                    "dst_table": "AdsInfo",
+                    "dst_key": "AdID"
+                }
+            ],
+            "view_args": null
+        },
+        {
+            "table_name": "SearchInfo",
+            "source_table_name": "SearchInfo",
+            "table_type": "fact",
+            "cols": [
+                {
+                    "name": "SearchDate",
+                    "stype": "timestamp",
+                    "dtype": "date"
+                },
+                {
+                    "name": "IPID",
+                    "stype": "ID",
+                    "dtype": "int64"
+                },
+                {
+                    "name": "IsUserLoggedOn",
+                    "stype": "categorical",
+                    "dtype": "int64"
+                },
+                {
+                    "name": "SearchQuery",
+                    "stype": "categorical",
+                    "dtype": "string"
+                },
+                {
+                    "name": "SearchParams",
+                    "stype": "categorical",
+                    "dtype": "string"
+                }
+            ],
+            "pkey": {
+                "name": "SearchID",
+                "stype": "ID",
+                "dtype": "int64"
+            },
+            "time_col": {
+                "name": "SearchDate",
+                "stype": "timestamp",
+                "dtype": "date"
+            },
+            "fkeys": [
+                {
+                    "name": "LocationID",
+                    "stype": "ID",
+                    "dtype": "int64",
+                    "dst_table": "Location",
+                    "dst_key": "LocationID"
+                },
+                {
+                    "name": "UserID",
+                    "stype": "ID",
+                    "dtype": "int64",
+                    "dst_table": "UserInfo",
+                    "dst_key": "UserID"
+                },
+                {
+                    "name": "CategoryID",
+                    "stype": "ID",
+                    "dtype": "int64",
+                    "dst_table": "Category",
+                    "dst_key": "CATEGORYID"
+                }
+            ],
+            "view_args": null
+        },
+        {
+            "table_name": "SearchStream",
+            "source_table_name": "SearchStream",
+            "table_type": "dimension",
+            "cols": [
+                {
+                    "name": "Position",
+                    "stype": "categorical",
+                    "dtype": "int64"
+                },
+                {
+                    "name": "ObjectType",
+                    "stype": "categorical",
+                    "dtype": "int64"
+                },
+                {
+                    "name": "HistCTR",
+                    "stype": "numerical",
+                    "dtype": "float"
+                },
+                {
+                    "name": "IsClick",
+                    "stype": "categorical",
+                    "dtype": "float"
+                },
+                {
+                    "name": "SearchDate",
+                    "stype": "timestamp",
+                    "dtype": "date"
+                }
+            ],
+            "pkey": {
+                "name": "SearchID",
+                "stype": "ID",
+                "dtype": "int64"
+            },
+            "time_col": {
+                "name": "SearchDate",
+                "stype": "timestamp",
+                "dtype": "date"
+            },
+            "fkeys": [
+                {
+                    "name": "AdID",
+                    "stype": "ID",
+                    "dtype": "int64",
+                    "dst_table": "AdsInfo",
+                    "dst_key": "AdID"
+                }
+            ],
+            "view_args": null
+        },
+        {
+            "connector_id": "COMMON_ID",
+            "table_name": "UserInfo",
+            "source_table_name": "UserInfo",
+            "table_type": "dimension",
+            "cols": [
+                {
+                    "name": "UserAgentID",
+                    "stype": "ID",
+                    "dtype": "int64"
+                },
+                {
+                    "name": "UserAgentOSID",
+                    "stype": "ID",
+                    "dtype": "int64"
+                },
+                {
+                    "name": "UserDeviceID",
+                    "stype": "ID",
+                    "dtype": "int64"
+                },
+                {
+                    "name": "UserAgentFamilyID",
+                    "stype": "ID",
+                    "dtype": "int64"
+                }
+            ],
+            "pkey": {
+                "name": "UserID",
+                "stype": "ID",
+                "dtype": "int64"
+            },
+            "time_col": null,
+            "view_args": null
+        },
+        {
+            "connector_id": "COMMON_ID",
+            "table_name": "VisitStream",
+            "source_table_name": "VisitStream",
+            "table_type": "fact",
+            "cols": [
+                {
+                    "name": "IPID",
+                    "stype": "ID",
+                    "dtype": "float"
+                },
+                {
+                    "name": "ViewDate",
+                    "stype": "timestamp",
+                    "dtype": "date"
+                }
+            ],
+            "pkey": null,
+            "time_col": {
+                "name": "ViewDate",
+                "stype": "timestamp",
+                "dtype": "date"
+            },
+            "fkeys": [
+                {
+                    "name": "UserID",
+                    "stype": "ID",
+                    "dtype": "int64",
+                    "dst_table": "UserInfo",
+                    "dst_key": "UserID"
+                },
+                {
+                    "name": "AdID",
+                    "stype": "ID",
+                    "dtype": "float",
+                    "dst_table": "AdsInfo",
+                    "dst_key:": "AdID"
+                }
+            ],
+            "view_args": null
+        }
+    ]
+}

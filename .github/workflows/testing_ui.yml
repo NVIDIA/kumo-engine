@@ -1,0 +1,234 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: UI Testing and Coverage
+
+on: # yamllint disable-line rule:truthy
+  push:
+    branches:
+      - master
+    paths:
+      - "ui/**"
+      - "packages/kumo-ui-catalog/**"
+      - "packages/kumo-pql/kumopql/grammar/PQLGrammar.g4"
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+    inputs:
+      full_test:
+        description: "Run the full test suite"
+        type: boolean
+        default: true
+        required: false
+  schedule:
+    - cron: "00 1 * * 5" # Every Friday at 01:00 UTC (6AM IST)
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ startsWith(github.ref, 'refs/pull/') || github.run_number }}
+  # Only cancel intermediate builds if on a PR:
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+permissions:
+  contents: read
+
+env:
+  GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+
+jobs:
+  vitest:
+    permissions:
+      contents: read
+      packages: read
+    runs-on: ubuntu-22.04-large
+    continue-on-error: true
+    outputs:
+      ui_changed: ${{ steps.ui-changes.outputs.any_changed }}
+      coverage_artifact: ${{ steps.coverage-upload.outputs.artifact-id }}
+      coverage_dir: ${{ steps.vars.outputs.dir }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Check for UI changes
+        id: ui-changes
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47.0.0
+        with:
+          files: |
+            ui/**
+            packages/kumo-ui-catalog/**
+            packages/kumo-pql/kumopql/grammar/PQLGrammar.g4
+
+      - name: Free up disk space
+        if: steps.ui-changes.outputs.any_changed == 'true' || github.event_name == 'schedule'
+        shell: bash
+        run: |
+          echo "=== Disk usage before cleanup ==="
+          df -h /
+          # Remove large preinstalled toolchains the vitest job does not need.
+          # Frees ~30-40 GB on the ubuntu-latest root volume.
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo rm -rf /usr/local/share/boost || true
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune -af || true
+          echo "=== Disk usage after cleanup ==="
+          df -h /
+
+      - name: Set up Node.js
+        if: steps.ui-changes.outputs.any_changed == 'true' || github.event_name == 'schedule'
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        if: steps.ui-changes.outputs.any_changed == 'true' || github.event_name == 'schedule'
+        run: |
+          cd ui
+          npm run install:catalog
+          npm ci
+
+      - name: Verify generated PQL grammar
+        if: steps.ui-changes.outputs.any_changed == 'true' || github.event_name == 'schedule'
+        run: |
+          cd ui
+          npm run compile-grammar-to-ts
+          git diff --exit-code -- src/utils/PQLParsing/grammar
+
+      - name: Run UI tests with coverage
+        if: steps.ui-changes.outputs.any_changed == 'true' || github.event_name == 'schedule'
+        timeout-minutes: 15
+        run: |
+          cd ui
+          npx vitest run --coverage
+
+      - name: Set destination path
+        id: vars
+        if: always() && (steps.ui-changes.outputs.any_changed == 'true' || github.event_name == 'schedule')
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "dir=${{ github.event.pull_request.number }}/ui-coverage" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "dir=$(date +%F)/ui-coverage" >> $GITHUB_OUTPUT
+          else
+            echo "dir=${{ github.ref_name }}/ui-coverage" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload coverage for trusted publication
+        id: coverage-upload
+        if: ${{ always() && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (steps.ui-changes.outputs.any_changed == 'true' || github.event_name == 'schedule') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ui-coverage
+          path: ui/ui-coverage/
+          if-no-files-found: error
+
+      - name: Write coverage to job summary
+        if: always() && (steps.ui-changes.outputs.any_changed == 'true' || github.event_name == 'schedule')
+        run: |
+          python3 << 'PYEOF' >> "$GITHUB_STEP_SUMMARY"
+          import json, os
+
+          def fmt_ranges(lines):
+              if not lines:
+                  return ''
+              srt = sorted(lines)
+              ranges, s, e = [], srt[0], srt[0]
+              for ln in srt[1:]:
+                  if ln == e + 1:
+                      e = ln
+                  else:
+                      ranges.append(str(s) if s == e else f'{s}-{e}')
+                      s = e = ln
+              ranges.append(str(s) if s == e else f'{s}-{e}')
+              return ', '.join(ranges)
+
+          with open('ui/ui-coverage/coverage-final.json') as fh:
+              data = json.load(fh)
+          totals = {k: [0, 0] for k in ['statements', 'functions', 'branches', 'lines']}
+          rows = []
+          paths = list(data.keys())
+          prefix = os.path.commonpath(paths) + '/' if paths else ''
+          for fpath, fd in data.items():
+              s = fd.get('s', {}); fm = fd.get('f', {}); b = fd.get('b', {}); l = fd.get('l', {})
+              sm = fd.get('statementMap', {}); fnm = fd.get('fnMap', {})
+              st = len(s); sc = sum(1 for v in s.values() if v > 0)
+              ft = len(fm); fc = sum(1 for v in fm.values() if v > 0)
+              bt = sum(len(vs) for vs in b.values()); bc = sum(1 for vs in b.values() for v in vs if v > 0)
+              lt = len(l); lc = sum(1 for v in l.values() if v > 0)
+              for key, t, c in [('statements', st, sc), ('functions', ft, fc), ('branches', bt, bc), ('lines', lt, lc)]:
+                  totals[key][0] += t; totals[key][1] += c
+              uncov_lines = {sm[sid]['start']['line'] for sid, cnt in s.items() if cnt == 0 and sid in sm}
+              uncov_fns = [fnm[fid].get('name', '?') for fid, cnt in fm.items() if cnt == 0 and fid in fnm]
+              rel = fpath[len(prefix):]
+              sp = round(sc/st*100, 1) if st else 100.0
+              fp2 = round(fc/ft*100, 1) if ft else 100.0
+              bp = round(bc/bt*100, 1) if bt else 100.0
+              rows.append((sp, rel, st, sc, ft, fc, bt, bc, fp2, bp, fmt_ranges(uncov_lines), uncov_fns))
+          if not totals['lines'][0]:
+              totals['lines'] = totals['statements']
+          rows.sort()
+          print('## UI Test Coverage\n')
+          print('| Metric | Coverage |')
+          print('|--------|----------|')
+          for k in ['lines', 'statements', 'functions', 'branches']:
+              n, c = totals[k]
+              pct = round(c/n*100, 2) if n else 0
+              e = '✅' if pct >= 80 else '⚠️'
+              print(f'| {k.capitalize()} | {e} {pct}% ({c}/{n}) |')
+          print()
+          print('<details>')
+          print('<summary>Per-file breakdown</summary>')
+          print()
+          print('| File | Stmts | Funcs | Branches | Uncovered lines | Uncovered functions |')
+          print('|------|-------|-------|----------|-----------------|---------------------|')
+          for sp, rel, st, sc, ft, fc, bt, bc, fp2, bp, uncov_lines, uncov_fns in rows:
+              se = '✅' if sp >= 80 else '⚠️'
+              fe = '✅' if fp2 >= 80 else '⚠️'
+              be = '✅' if bp >= 80 else '⚠️'
+              fns_str = ', '.join(f'`{fn}`' for fn in uncov_fns)
+              print(f'| `{rel}` | {se} {sp}% ({sc}/{st}) | {fe} {fp2}% ({fc}/{ft}) | {be} {bp}% ({bc}/{bt}) | {uncov_lines} | {fns_str} |')
+          print()
+          print('</details>')
+          PYEOF
+
+  publish-coverage:
+    needs: vitest
+    if: ${{ always() && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.vitest.outputs.coverage_artifact != '' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    timeout-minutes: 5
+    continue-on-error: true
+    steps:
+      - name: Download coverage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ui-coverage
+          path: ui/ui-coverage
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@329bcc8f12caed2cefe5a5b80781499a6f3b361b # v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./ui/ui-coverage
+          destination_dir: ${{ needs.vitest.outputs.coverage_dir }}
+
+  comment-coverage:
+    needs: vitest
+    if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.vitest.outputs.ui_changed == 'true' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Comment on PR
+        uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3.0.2
+        with:
+          recreate: true
+          header: ui-coverage
+          message: |
+            #### UI Test Jobs Completed on ${{ github.sha }}
+            * ⚡ [Test run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            * 📊 [Coverage summary](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})

@@ -1,0 +1,50 @@
+[
+    {
+        "id": "connector-project-upload",
+        "timestamps": {
+            "created_at": "2025-03-03T05:08:24.401503+00:00",
+            "updated_at": "2025-03-03T05:08:24.401606+00:00"
+        },
+        "config": null,
+        "description": "Contains all manually-uploaded CSV datasets. This connector cannot be modified or deleted."
+    },
+    {
+        "description": "Contains all manually-uploaded Parquet datasets. This connector cannot be modified or deleted."
+    },
+    {
+        "id": null,
+        "timestamps": {
+            "created_at": "2025-03-01T04:35:09.047000+00:00",
+            "updated_at": "2025-03-01T04:35:09.047164+00:00"
+        },
+        "config": {
+            "name": "hnm",
+            "account": "example-account",
+            "warehouse": "WH_XS",
+            "database": "KUMO",
+            "schema_name": "TEST_SNOWFLAKE_TYPE",
+            "type": "snowflake"
+        },
+        "description": ""
+    },
+    {
+        "id": "finance",
+        "timestamps": {
+            "created_at": "2025-03-01T04:36:20.347219+00:00",
+            "updated_at": "2025-03-01T04:36:20.347361+00:00"
+        },
+        "description": ""
+    },
+    {
+        "config": {
+            "name": "hnm_downsampled_dataset",
+            "root_dir": "s3://kumo-public-datasets/momentic-downsampled-parquet/hnm_downsampled/",
+            "type": "file"
+        },
+        "description": "",
+        "timestamps": {
+            "created_at": "2024-11-04T06:15:43.141658+00:00",
+            "updated_at": "2024-11-04T06:15:43.141828+00:00"
+        }
+    }
+]

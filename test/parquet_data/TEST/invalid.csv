@@ -1,0 +1,1 @@
+This CSV file should be ignored by the parquet connector during unit tests.

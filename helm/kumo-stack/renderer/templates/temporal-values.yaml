@@ -1,0 +1,52 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- define "stack.temporalValues" -}}
+kumoTemporal:
+  platform: {{ include "stack.provider" . }}
+  security:
+    transport:
+      encryptionRequired: false
+      meshNamespaceLabels: {}
+temporal:
+  {{- if .Values.images.temporal.pullSecretName }}
+  imagePullSecrets:
+    - name: {{ .Values.images.temporal.pullSecretName }}
+  {{- end }}
+  server:
+    nodeSelector:
+      {{- include "stack.cpuNodeSelector" . | nindent 6 }}
+    image:
+      repository: {{ .Values.images.temporal.serverRepository }}
+      tag: {{ printf "%s@%s" .Values.images.temporal.tag .Values.images.temporal.serverDigest | quote }}
+    config:
+      persistence:
+        datastores:
+          default:
+            sql:
+              connectAddr: {{ printf "%s:%v" .Values.cloud.postgres.host .Values.cloud.postgres.port | quote }}
+              user: {{ .Values.cloud.postgres.temporalUser | quote }}
+              existingSecret: {{ .Values.cloud.postgres.temporalSecretName | quote }}
+              secretKey: {{ .Values.cloud.postgres.temporalSecretKey | quote }}
+          visibility:
+            sql:
+              connectAddr: {{ printf "%s:%v" .Values.cloud.postgres.host .Values.cloud.postgres.port | quote }}
+              user: {{ .Values.cloud.postgres.temporalUser | quote }}
+              existingSecret: {{ .Values.cloud.postgres.temporalSecretName | quote }}
+              secretKey: {{ .Values.cloud.postgres.temporalSecretKey | quote }}
+  admintools:
+    nodeSelector:
+      {{- include "stack.cpuNodeSelector" . | nindent 6 }}
+    image:
+      repository: {{ .Values.images.temporal.adminToolsRepository }}
+      tag: {{ printf "%s@%s" .Values.images.temporal.tag .Values.images.temporal.adminToolsDigest | quote }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kumo-stack-temporal-values
+data:
+  values.yaml: |-
+{{ include "stack.temporalValues" . | indent 4 }}

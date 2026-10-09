@@ -1,0 +1,58 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: workload-manager
+  labels:
+    {{- include "kumo.commonLabels" . | nindent 4 }}
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments/status"]
+  verbs: ["get", "list", "watch"]
+# Subresource for the controller's scale-to-0 of a cache-daemon Deployment during pool-worker
+# teardown (patch_namespaced_deployment_scale). `patch` on `deployments` does NOT cover the
+# `deployments/scale` subresource — it is authorized independently. Mirrors kumo-delivery's
+# role-poolcontroller.
+- apiGroups: ["apps"]
+  resources: ["deployments/scale"]
+  verbs: ["patch"]
+# `deletecollection` (distinct from `delete`) backs delete_collection_namespaced_job, which the
+# controller uses to bulk-delete activity Jobs by label selector (orphan cleanup + teardown).
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
+- apiGroups: ["batch"]
+  resources: ["jobs/status"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["pods/log", "pods/status"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# The pool controller creates one PVC per DiskGraph cache daemon (its cache volume)
+# at materialize, and the init pool-validation canary creates a same-sized PVC to prove a node
+# with compatible storage can bind + schedule before the controller reports healthy. Mirrors
+# kumo-delivery's role-poolcontroller (source of truth).
+- apiGroups: [""]
+  resources: ["persistentvolumeclaims"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+# The pool controller protects each DiskGraph cache daemon with a PodDisruptionBudget
+# (maxUnavailable: 0) so the autoscaler won't evict an in-use cache node — this replaced
+# the former cluster-scoped node-patch RBAC, so it is now fully namespaced (chart-owned).
+- apiGroups: ["policy"]
+  resources: ["poddisruptionbudgets"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+# Note: no node/PV rules — nodes/PVs are cluster-scoped (a namespaced Role can't grant them)
+# and the controller no longer needs them: cache-daemon disruption protection is the
+# namespaced PDB above, and node targeting is by labels the customer puts on the cache pools.

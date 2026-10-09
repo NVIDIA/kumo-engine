@@ -1,0 +1,26 @@
+[
+  {
+    "config": {
+      "name": "financial_csv_local_connector",
+      "root_dir": "./test/csv_data/FINANCIAL",
+      "type": "file"
+    },
+    "description": ""
+  },
+  {
+    "config": {
+      "name": "financial_e2e_csv_local_connector",
+      "root_dir": "./test/csv_data/FINANCIAL_E2E",
+      "type": "file"
+    },
+    "description": ""
+  },
+  {
+    "config": {
+      "name": "coupon_purchase_prediction_csv_local_connector",
+      "root_dir": "./test/csv_data/COUPON_PURCHASE_PREDICTION",
+      "type": "file"
+    },
+    "description": ""
+  }
+]

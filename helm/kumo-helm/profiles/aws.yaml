@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# AWS/EKS platform overlay. Apply this file before tenant-specific values.
+
+image:
+  registry: nvcr.io
+  repoPath: 1000161941370113/kumo-3
+  pullSecretName: ""
+
+kumoConfig:
+  storage:
+    dataBucket: s3://REPLACE_WITH_DATA_BUCKET/disk-graph
+    region: us-west-2
+  # The AWS profile already requires a tenant-scoped worker IRSA role. Make it
+  # available to S3 source connectors without duplicating static credentials.
+  ambientS3:
+    enabled: true
+  diskgraph:
+    dataRoot: /mnt/localssd
+    storageClass: ebs-gp3-xfs
+    # EBS provisions network block storage on demand and does not publish
+    # topology-local CSIStorageCapacity objects.
+    storageCapacityTracking: advisory
+
+
+temporal:
+  # The bundled in-cluster Temporal endpoint is plaintext on EKS.
+  clientMtlsSecret: ""
+
+postgres:
+  authMode: aws_iam
+  region: us-west-2

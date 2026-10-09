@@ -1,0 +1,614 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Playwright Tests
+
+on: # yamllint disable-line rule:truthy
+  push:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/playwright_ui.yml"
+      - "Makefile"
+      - "bin/**"
+      - "docker/**"
+      - "kumo/**"
+      - "pool/**"
+      - "pyproject.toml"
+      - "rest/**"
+      - "scripts/diskgraph"
+      - "scripts/seed_playwright_local_stack.py"
+      - "scripts/up_local_temporal_cli.sh"
+      - "setup.cfg"
+      - "setup.py"
+      - "temporalio_commons/**"
+      - "test/rest/integ/connector_args/test_e2e_connector_args.json"
+      - "test/rest/integ/test_cases/test_e2e_fixtures.json"
+      - "test/csv_data/**"
+      - "ui/**"
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  pages: write
+  pull-requests: write
+  packages: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ startsWith(github.ref, 'refs/pull/') || github.run_number }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  # Backend devserver process tree (mirrors rest/devserver/main.py panels):
+  #   REST_PORT       — private REST (rest/main.py), seeded + proxied by the UI
+  #   PUBLIC_REST_PORT — public REST (rest/public/main.py)
+  #   UI_PORT         — vite preview server (Playwright BASE_URL)
+  #   TEMPORAL_PORT   — local Temporal dev server (configs/local.json -> :7233)
+  REST_PORT: "8000"
+  PUBLIC_REST_PORT: "8001"
+  UI_PORT: "3000"
+  TEMPORAL_PORT: "7233"
+  # Local-only deploy config: DISKGRAPH data compute, singlehost pool,
+  # custom orchestration @ localhost:7233, and local storage
+  # rooted at KUMO_HOME (see rest/devserver/configs/local.json).
+  DEPLOY_ENV_CONFIG_FILE: rest/devserver/configs/local.json
+  DEPLOY_STAGE: dev
+  DISABLE_AUTH: "true"
+  TEMPORAL_SERVER: localhost
+  CUDA: cpu
+
+jobs:
+  # AWS-backed validation only runs from trusted refs; PR and merge-group events
+  # skip. This condition gates both jobs.
+  diskgraph-wheel:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_diskgraph-wheel.yml
+
+  playwright:
+    # Runs only when diskgraph-wheel does.
+    needs: [diskgraph-wheel]
+    environment:
+      name: gha-kumo-playwright-ui-read
+    # Larger runner (more RAM + CPU) than ubuntu-latest's 2-CPU/7 GB: the seed
+    # process re-imports the full torch/PyG/kumo stack while all 6 backend
+    # processes are already resident, and on 7 GB that dlopen thrashes into
+    # swap and never finishes. The extra headroom also speeds the backend
+    # pip-install and the npm/vite build. Same runner 11 other workflows use.
+    runs-on: ubuntu-22.04-large
+    timeout-minutes: 35
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 40
+
+      - name: Check for UI / backend changes
+        id: ui-changes
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47.0.0
+        with:
+          files: |
+            .github/workflows/playwright_ui.yml
+            Makefile
+            bin/**
+            docker/**
+            kumo/**
+            pool/**
+            pyproject.toml
+            rest/**
+            scripts/diskgraph
+            scripts/seed_playwright_local_stack.py
+            scripts/up_local_temporal_cli.sh
+            setup.cfg
+            setup.py
+            temporalio_commons/**
+            test/rest/integ/connector_args/test_e2e_connector_args.json
+            test/rest/integ/test_cases/test_e2e_fixtures.json
+            test/csv_data/**
+            ui/**
+
+      # ---------------------------------------------------------------------
+      # Backend env (no Docker). Same composite action the fast pytest/integ
+      # jobs use on ubuntu-latest: setup-uv + prebuilt abi3 diskgraph wheel
+      # (scripts/diskgraph install) + Torch and the vendored pure-Python PyG wheel.
+      # It checks out this repository into the workspace root and activates the
+      # uv-managed venv for subsequent steps. AWS creds are only needed here
+      # (prebuilt-wheel pull), not at runtime.
+      # ---------------------------------------------------------------------
+      - name: Configure AWS credentials
+        if: steps.ui-changes.outputs.any_changed == 'true'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-playwright-ui-read
+          aws-region: us-west-2
+
+      - name: Set up backend (diskgraph wheel + torch/PyG)
+        if: steps.ui-changes.outputs.any_changed == 'true'
+        timeout-minutes: 20
+        uses: ./.github/actions/setup
+        with:
+          github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN || secrets.GITHUB_TOKEN }}
+          cuda-version: cpu
+          diskgraph-wheel-artifact: diskgraph-wheel
+
+      - name: Set up Node.js
+        if: steps.ui-changes.outputs.any_changed == 'true'
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: ui/package-lock.json
+
+      # ---------------------------------------------------------------------
+      # Install + build the UI BEFORE starting the backend process tree.
+      # npm ci and the vite build are CPU/memory-heavy; running them while the
+      # REST + Temporal workers + pool processes are already live starves a
+      # 2-CPU / 7 GB runner into swap (install ballooned from ~45s to >9 min).
+      # With the runner idle here, install matches build-ui's ~45s baseline.
+      # ---------------------------------------------------------------------
+      - name: Install UI dependencies
+        if: steps.ui-changes.outputs.any_changed == 'true'
+        working-directory: ui
+        timeout-minutes: 8
+        run: |
+          rm -rf node_modules
+          npm run install:catalog
+          npm ci
+
+      - name: Install Playwright browsers
+        if: steps.ui-changes.outputs.any_changed == 'true'
+        working-directory: ui
+        run: npx playwright install --with-deps chromium firefox webkit
+
+      # ---------------------------------------------------------------------
+      # Build the UI and serve it with `vite preview`, proxying /v0 + /v1 to
+      # the local private REST (API_PROXY_TARGET). Same model as
+      # momentic-ui-tests.yml. update-env stamps UI_LOCAL/AUTH_DISABLED into
+      # env-config.js so the SPA runs auth-disabled. Built here (backend not
+      # yet up) — vite bakes the proxy target; the proxy connects lazily at
+      # request time during preview, after the backend is started below.
+      # ---------------------------------------------------------------------
+      - name: Build UI
+        if: steps.ui-changes.outputs.any_changed == 'true'
+        working-directory: ui
+        env:
+          UI_LOCAL: "true"
+          AUTH_DISABLED: "true"
+          API_PROXY_TARGET: "http://localhost:${{ env.REST_PORT }}"
+        run: |
+          bash scripts/setup-tsconfig.sh --reset
+          npm run build
+
+      # The Temporal startup script below runs the server inside tmux.
+      - name: Install tmux
+        if: steps.ui-changes.outputs.any_changed == 'true'
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 12
+        with:
+          packages: tmux
+
+      # ---------------------------------------------------------------------
+      # Local Temporal dev server on :7233 — the address configs/local.json
+      # pins (orchestration.server_address = localhost:7233). The script
+      # installs the self-contained Temporal CLI (a Go binary; no Java) when
+      # missing, starts `temporal server start-dev --namespace devtest
+      # --port 7233`, and blocks on wait_server_ready.py until the namespace
+      # the deploy env resolves (devtest, for DEPLOY_STAGE=dev) is reachable.
+      # ---------------------------------------------------------------------
+      - name: Start local Temporal dev server
+        if: steps.ui-changes.outputs.any_changed == 'true'
+        timeout-minutes: 4
+        env:
+          TEMPORAL_PORT: ${{ env.TEMPORAL_PORT }}
+          TEMPORAL_NAMESPACE: devtest
+          # The script runs `temporal server start-dev` (a blocking foreground
+          # server) inside a detached tmux session named local_temporal. The
+          # tmux server is a daemon, so the session — and the Temporal server
+          # it hosts — survives this step and stays up for the whole job.
+          # An empty --db-filename keeps Temporal state in-memory, all the
+          # per-run Playwright seed needs.
+          TEMPORAL_SESSION_NAME: local_temporal
+        run: |
+          set -euo pipefail
+          PYTHON_BIN="$(command -v python)" \
+            TEMPORAL_PORT="${TEMPORAL_PORT}" \
+            TEMPORAL_NAMESPACE="${TEMPORAL_NAMESPACE}" \
+            TEMPORAL_READY_TIMEOUT=150 \
+            bash scripts/up_local_temporal_cli.sh
+
+      # ---------------------------------------------------------------------
+      # Backend process tree. These are exactly the rest/devserver/main.py
+      # panels minus the UI / monitoring / memusage panels: private REST,
+      # data-backend + ml-workflow Temporal workers, public REST, pool
+      # controller, and a singlehost pool worker. Each carries the same env
+      # the devserver panels carry (DEPLOY_ENV_CONFIG_FILE, DISABLE_AUTH,
+      # REST_API_PORT). Backgrounded with nohup; stdout/stderr -> per-process
+      # logs for diagnostics.
+      # ---------------------------------------------------------------------
+      - name: Start backend processes
+        if: steps.ui-changes.outputs.any_changed == 'true'
+        id: backend
+        timeout-minutes: 3
+        env:
+          KUMO_HOME: ${{ runner.temp }}/kumo-home
+        run: |
+          set -euo pipefail
+          LOGS="${RUNNER_TEMP}/kumo-playwright/logs"
+          mkdir -p "$LOGS" "$KUMO_HOME"
+
+          # Load the devserver .env defaults (DEPLOY_STAGE, DISABLE_AUTH,
+          # feature flags) the REST/worker panels rely on; the
+          # job-level env above wins for the keys it sets.
+          set -a
+          # shellcheck source=/dev/null
+          . rest/devserver/.env
+          set +a
+
+          PY="$(command -v python)"
+          export PYTHONUNBUFFERED=1
+
+          # Every process below calls init_temporal_runtime(), which binds a
+          # Temporal-SDK Prometheus exporter at WORKER_METRICS_PORT (default
+          # 9000) -> they collide ("Address already in use") unless each gets a
+          # DISTINCT port. REST/public-REST also run their own prometheus_client
+          # (METRICS_PORT) and pool-controller its own (POOL_METRICS_PORT).
+          # Assign distinct ports per process, mirroring rest/devserver/main.py.
+          export WORKER_METRICS_HOST=127.0.0.1
+
+          start_proc() {
+            local name="$1"
+            shift
+            echo "==> starting ${name}: $*"
+            nohup env "$@" > "${LOGS}/${name}.log" 2>&1 &
+            echo "$!" >> "${RUNNER_TEMP}/kumo-playwright/pids.txt"
+          }
+
+          # Private REST API (rest/main.py reads REST_API_PORT).
+          start_proc rest \
+            REST_API_PORT="${REST_PORT}" \
+            DISABLE_AUTH="${DISABLE_AUTH}" \
+            WORKER_METRICS_PORT=9001 METRICS_PORT=9002 \
+            "$PY" rest/main.py
+
+          # Public REST API (rest/public/main.py reads REST_API_PORT).
+          start_proc public-rest \
+            REST_API_PORT="${PUBLIC_REST_PORT}" \
+            DISABLE_AUTH="${DISABLE_AUTH}" \
+            WORKER_METRICS_PORT=9003 METRICS_PORT=9004 \
+            "$PY" rest/public/main.py
+
+          # Data-backend Temporal worker (WORKERS = DATA_BACKEND_WORKER_NAME).
+          start_proc t-worker-data \
+            WORKERS=data-backend-worker \
+            WORKER_METRICS_PORT=9005 \
+            "$PY" temporalio_commons/worker_main.py
+
+          # ML-workflow Temporal worker (WORKERS = ML_WORKFLOW_WORKER).
+          # The seed injects a DONE training job straight into the StateDB, so
+          # no real training runs here; this worker is kept only to mirror the
+          # devserver panel set.
+          start_proc t-worker-ml \
+            WORKERS=ml-workflow-worker \
+            WORKER_METRICS_PORT=9006 \
+            "$PY" temporalio_commons/worker_main.py
+
+          # Pool controller (AutoRPC server for the singlehost diskgraph pool).
+          start_proc pool-controller \
+            WORKER_METRICS_PORT=9007 POOL_METRICS_PORT=9008 \
+            "$PY" -m pool.controller_main
+
+          # Singlehost pool worker (daemon role) — runs the diskgraph
+          # ingest-chain activities the workflows route through.
+          DAEMON_TQ="$("$PY" -c 'from pool.task_queues import SINGLEHOST_DAEMON_TQ; print(SINGLEHOST_DAEMON_TQ)')"
+          start_proc pool-worker \
+            POOL_WORKER_UID=singlehost \
+            POOL_TASK_QUEUE="${DAEMON_TQ}" \
+            POOL_STORAGE_MODE=daemon-on-pvc \
+            WORKER_METRICS_PORT=9009 POOL_METRICS_PORT=9010 \
+            "$PY" -m pool.worker_main
+
+          echo "kumo_home=${KUMO_HOME}" >> "$GITHUB_OUTPUT"
+
+      # ---------------------------------------------------------------------
+      # Readiness: REST /health must answer and the client-config endpoint
+      # must report auth_disabled=true (the same readiness signal the seed
+      # asserts and the old compose readiness loop used). Bounded curl loop.
+      # ---------------------------------------------------------------------
+      - name: Wait for backend readiness
+        if: steps.ui-changes.outputs.any_changed == 'true'
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          LOGS="${RUNNER_TEMP}/kumo-playwright/logs"
+          deadline=$((SECONDS + 240))
+          ok=0
+          while (( SECONDS < deadline )); do
+            if curl -sf "http://localhost:${REST_PORT}/health" >/dev/null 2>&1; then
+              tmp="$(mktemp)"
+              code="$(curl -s -o "$tmp" -m 15 -w '%{http_code}' \
+                "http://localhost:${REST_PORT}/v0/authentication/client-config" || echo 000)"
+              auth_disabled="$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1])).get("auth_disabled")).lower())' "$tmp" 2>/dev/null || true)"
+              rm -f "$tmp"
+              echo "  health OK; client-config endpoint -> HTTP ${code}, auth_disabled=${auth_disabled:-unknown}"
+              if [[ "$code" == "200" && "$auth_disabled" == "true" ]]; then
+                ok=1
+                break
+              fi
+            else
+              echo "  waiting for REST /health on :${REST_PORT} ..."
+            fi
+            sleep 5
+          done
+          if [[ "$ok" != "1" ]]; then
+            echo "ERROR: backend did not become ready before timeout" >&2
+            echo "--- rest.log (tail) ---" >&2
+            tail -n 120 "${LOGS}/rest.log" 2>/dev/null || true
+            exit 1
+          fi
+
+      - name: Start UI preview server
+        if: steps.ui-changes.outputs.any_changed == 'true'
+        working-directory: ui
+        env:
+          UI_LOCAL: "true"
+          AUTH_DISABLED: "true"
+          API_PROXY_TARGET: "http://localhost:${{ env.REST_PORT }}"
+          REACT_APP_PORT: ${{ env.UI_PORT }}
+        run: |
+          set -euo pipefail
+          nohup npx vite preview > "${RUNNER_TEMP}/kumo-playwright/logs/vite-ui.log" 2>&1 &
+          echo "$!" >> "${RUNNER_TEMP}/kumo-playwright/pids.txt"
+
+      - name: Wait for UI
+        if: steps.ui-changes.outputs.any_changed == 'true'
+        working-directory: ui
+        run: |
+          npx wait-on "http-get://localhost:${UI_PORT}" --timeout 120000 \
+            || { echo "--- vite log ---"; cat "${RUNNER_TEMP}/kumo-playwright/logs/vite-ui.log"; exit 1; }
+
+      # ---------------------------------------------------------------------
+      # Seed via the existing transport-agnostic seed script, pointed at the
+      # LOCAL private REST (no docker cp / docker exec). The CSV root is the
+      # in-repo test/csv_data, localized by the script. The script injects a
+      # DONE training job into the StateDB directly (no real training), so the
+      # step finishes in seconds.
+      # ---------------------------------------------------------------------
+      - name: Seed local stack
+        if: steps.ui-changes.outputs.any_changed == 'true'
+        timeout-minutes: 12
+        env:
+          # KUMO_HOME must match the backend step: the seed opens the same
+          # StateDB the running REST does (rooted at KUMO_HOME); a
+          # different value would write the injected row to an invisible file.
+          KUMO_HOME: ${{ runner.temp }}/kumo-home
+          PYTHONUNBUFFERED: "1"
+          PLAYWRIGHT_SEED_BASE_URL: "http://localhost:${{ env.REST_PORT }}"
+          PLAYWRIGHT_SEED_CONNECTORS: ${{ github.workspace }}/test/rest/integ/connector_args/test_e2e_connector_args.json
+          PLAYWRIGHT_SEED_FIXTURE: ${{ github.workspace }}/test/rest/integ/test_cases/test_e2e_fixtures.json
+          PLAYWRIGHT_SEED_CSV_ROOT: ${{ github.workspace }}/test/csv_data
+        run: |
+          set -uo pipefail
+          LOGS="${RUNNER_TEMP}/kumo-playwright/logs"
+          # Bounded to 300s (the seed is ~15s when healthy); the script's
+          # faulthandler watchdog dumps stuck stacks every 90s before the kill.
+          rc=0
+          timeout --kill-after=30s 300s \
+            python -X faulthandler scripts/seed_playwright_local_stack.py || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "=== seed failed (rc=$rc) — tailing backend logs ==="
+            for f in rest public-rest t-worker-data t-worker-ml pool-controller; do
+              [ -f "$LOGS/$f.log" ] && {
+                echo "--- $f.log (tail -150) ---"
+                tail -150 "$LOGS/$f.log"
+              }
+            done
+            exit "$rc"
+          fi
+
+      - name: Run Playwright tests
+        if: steps.ui-changes.outputs.any_changed == 'true'
+        id: playwright
+        timeout-minutes: 12
+        working-directory: ui
+        env:
+          CI: "true"
+          # Must be 127.0.0.1 to match the API base ui/env.js stamps
+          # (REACT_APP_BASE_URL_PROD): with axios withCredentials, a
+          # localhost page calling 127.0.0.1 is credentialed cross-origin
+          # and the browser blocks it.
+          BASE_URL: "http://127.0.0.1:${{ env.UI_PORT }}/"
+          PLAYWRIGHT_WORKERS: "2"
+          PLAYWRIGHT_JSON_OUTPUT_NAME: playwright-results.json
+        run: |
+          set -euo pipefail
+          npx playwright test --reporter=line,json,html
+
+      # ---------------------------------------------------------------------
+      # Diagnostics on ANY outcome (incl. timeout/cancel) BEFORE teardown:
+      # backend + worker logs, vite log, listening ports, process snapshot.
+      # ---------------------------------------------------------------------
+      - name: Capture diagnostics
+        if: always() && steps.ui-changes.outputs.any_changed == 'true'
+        run: |
+          LOGS="${RUNNER_TEMP}/kumo-playwright/logs"
+          mkdir -p "$LOGS"
+          {
+            echo "=== listening ports ==="
+            ss -tlnp 2>/dev/null || true
+            echo
+            echo "=== kumo/temporal/vite processes ==="
+            ps aux | grep -E 'rest/main.py|rest/public/main.py|worker_main.py|pool\.(controller|worker)_main|temporal server start-dev|vite' | grep -v grep || true
+          } > "${LOGS}/processes.txt" 2>&1 || true
+          # Capture the Temporal dev server pane (started in a tmux session).
+          tmux capture-pane -p -S -300 -t local_temporal > "${LOGS}/temporal.log" 2>&1 || true
+
+      - name: Stop backend processes
+        if: always() && steps.ui-changes.outputs.any_changed == 'true'
+        run: |
+          # Best-effort teardown of every backgrounded process + Temporal.
+          if [[ -f "${RUNNER_TEMP}/kumo-playwright/pids.txt" ]]; then
+            while read -r pid; do
+              [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
+            done < "${RUNNER_TEMP}/kumo-playwright/pids.txt"
+          fi
+          pkill -9 -f "rest/main.py" 2>/dev/null || true
+          pkill -9 -f "rest/public/main.py" 2>/dev/null || true
+          pkill -9 -f "worker_main.py" 2>/dev/null || true
+          pkill -9 -f "pool.controller_main" 2>/dev/null || true
+          pkill -9 -f "pool.worker_main" 2>/dev/null || true
+          pkill -9 -f "temporal server start-dev" 2>/dev/null || true
+          pkill -9 -f "vite preview" 2>/dev/null || true
+          tmux kill-session -t local_temporal 2>/dev/null || true
+
+      - name: Upload diagnostics
+        if: always() && steps.ui-changes.outputs.any_changed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-diagnostics
+          path: ${{ runner.temp }}/kumo-playwright/logs/
+          retention-days: 7
+
+      # Raw per-test traces/screenshots/videos. Unlike the HTML report (only
+      # written when Playwright finishes), these exist on disk even when the
+      # step is killed by its timeout mid-run.
+      - name: Upload test results
+        if: failure() && steps.ui-changes.outputs.any_changed == 'true' && steps.playwright.outcome == 'failure'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-test-results
+          path: ui/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload HTML report
+        if: failure() && steps.ui-changes.outputs.any_changed == 'true' && steps.playwright.outcome == 'failure' && hashFiles('ui/playwright-report/index.html') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-html-report
+          path: ui/playwright-report/
+          retention-days: 7
+
+      - name: Set destination path
+        if: always() && steps.ui-changes.outputs.any_changed == 'true' && (steps.playwright.outcome == 'success' || steps.playwright.outcome == 'failure') && hashFiles('ui/playwright-report/index.html') != ''
+        id: vars
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "dir=${{ github.event.pull_request.number }}/playwright-report" >> $GITHUB_OUTPUT
+          else
+            echo "dir=${{ github.ref_name }}/playwright-report" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Deploy to GitHub Pages
+        if: always() && steps.ui-changes.outputs.any_changed == 'true' && (steps.playwright.outcome == 'success' || steps.playwright.outcome == 'failure') && hashFiles('ui/playwright-report/index.html') != ''
+        # Cosmetic report publish; gh-pages branch push contends across
+        # concurrent PR runs and can hang. continue-on-error keeps it from
+        # failing the job; timeout-minutes keeps a hung push from running the
+        # job into the 35-min cap (which shows as a misleading "cancelled").
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: peaceiris/actions-gh-pages@329bcc8f12caed2cefe5a5b80781499a6f3b361b # v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./ui/playwright-report
+          destination_dir: ${{ steps.vars.outputs.dir }}
+          keep_files: true
+
+      - name: Write job summary
+        if: failure() && steps.ui-changes.outputs.any_changed == 'true' && steps.playwright.outcome == 'failure' && hashFiles('ui/playwright-results.json') != ''
+        run: |
+          python3 << 'PYEOF' >> "$GITHUB_STEP_SUMMARY"
+          import json, sys, re
+
+          try:
+              with open('ui/playwright-results.json') as f:
+                  data = json.load(f)
+          except Exception as e:
+              print(f"Could not read results: {e}")
+              sys.exit(0)
+
+          browser_stats = {}
+          failed_tests = []
+
+          def collect(suites, path=""):
+              for suite in suites:
+                  title = suite.get('title', '')
+                  current = f"{path} > {title}".lstrip(' > ') if path else title
+                  for spec in suite.get('specs', []):
+                      spec_full = f"{current} > {spec['title']}".lstrip(' > ')
+                      for test in spec.get('tests', []):
+                          browser = test.get('projectName', 'unknown')
+                          status = test.get('status', '')
+                          bs = browser_stats.setdefault(browser, {'passed': 0, 'failed': 0, 'skipped': 0})
+                          if status == 'expected':
+                              bs['passed'] += 1
+                          elif status == 'unexpected':
+                              bs['failed'] += 1
+                              error = ''
+                              for r in test.get('results', []):
+                                  all_errs = r.get('errors', [])
+                                  if not all_errs:
+                                      continue
+                                  best = max(all_errs, key=lambda e: len(e.get('message', '') or e.get('value', '')))
+                                  msg = best.get('message', '') or best.get('value', '')
+                                  if msg:
+                                      clean = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', msg)
+                                      lines = [l.strip() for l in clean.split('\n') if l.strip()]
+                                      err_line = next((l[7:] for l in lines if l.startswith('Error: ')), lines[0] if lines else '')
+                                      waiting = next((l.lstrip('- ') for l in lines if 'waiting for' in l), '')
+                                      error = (f"{err_line} - {waiting}" if waiting else err_line)[:200]
+                                      break
+                              failed_tests.append({'test': spec_full, 'browser': browser, 'error': error})
+                          elif status == 'skipped':
+                              bs['skipped'] += 1
+                  collect(suite.get('suites', []), current)
+
+          collect(data.get('suites', []))
+
+          print("## Playwright Tests Failed\n")
+
+          print("| Browser | Passed | Failed | Skipped |")
+          print("|---------|--------|--------|---------|")
+          tp = tf = ts = 0
+          for b in ['chromium', 'firefox', 'webkit', 'edge']:
+              if b in browser_stats:
+                  s = browser_stats[b]
+                  print(f"| {b} | {s['passed']} | {s['failed']} | {s['skipped']} |")
+                  tp += s['passed']; tf += s['failed']; ts += s['skipped']
+          print(f"| **Total** | **{tp}** | **{tf}** | **{ts}** |")
+
+          if failed_tests:
+              print('\n<details>')
+              print('<summary>Click to view Failed Tests</summary>')
+              print()
+              print("| Test | Browser | Error |")
+              print("|------|---------|-------|")
+              seen = set()
+              for ft in failed_tests:
+                  key = (ft['test'], ft['browser'])
+                  if key not in seen:
+                      seen.add(key)
+                      error = ft['error'].replace('|', '\\|')
+                      print(f"| {ft['test']} | {ft['browser']} | {error} |")
+              print()
+              print('</details>')
+          PYEOF
+
+      - name: Create a comment on PR
+        if: failure() && github.event_name == 'pull_request' && steps.ui-changes.outputs.any_changed == 'true' && steps.playwright.outcome == 'failure'
+        run: |
+          echo "#### Playwright Tests Failed on ${{ github.sha }}" >> pr_comment.md
+          echo "* [View failure summary](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> pr_comment.md
+
+      - name: Comment on PR
+        uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3.0.2
+        if: failure() && github.event_name == 'pull_request' && steps.ui-changes.outputs.any_changed == 'true' && steps.playwright.outcome == 'failure'
+        with:
+          recreate: true
+          header: playwright-report
+          path: pr_comment.md

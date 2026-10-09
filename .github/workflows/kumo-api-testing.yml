@@ -1,0 +1,153 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# The wheel is built once and tested as-installed across Python 3.11-3.14.
+name: Kumo API - Testing
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches:
+      - master
+    paths:
+      - 'packages/kumo-api/**'
+      - '.github/workflows/kumo-api-*'
+  pull_request:
+    paths:
+      - 'packages/kumo-api/**'
+      - '.github/workflows/kumo-api-*'
+  merge_group:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+    working-directory: packages/kumo-api
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ startsWith(github.ref, 'refs/pull/') || github.run_number }} # yamllint disable-line
+  # Only cancel intermediate builds if on a PR:
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+  schema-compat:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository and submodules
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: '3.11'
+          activate-environment: true
+          # This job installs nothing via uv (schema checks below are disabled),
+          # so no cache is ever created. Disable caching to avoid the post-job
+          # `uv cache prune` failing on a missing cache dir.
+          enable-cache: false
+
+      - name: Get version from pyproject.toml
+        id: get-version
+        run: |
+          VERSION=$(awk '/^\[project\]/{p=1;next} p&&/^version/{gsub(/[^0-9.]/, "", $3);print $3;exit}' pyproject.toml)
+          echo "version=$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # - name: Check schema compatibility (Pydantic v2)
+      #   run: |
+      #     uv pip install '.[release-check]' 'pydantic>=2.7'
+      #     python -m tools.schema_compat check-release --version ${{ steps.get-version.outputs.version }}
+      #   env:
+      #     AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      #     AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      #     AWS_DEFAULT_REGION: us-west-2
+
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository and submodules
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: '3.11'
+          activate-environment: true
+
+      - name: Build wheel
+        run: |
+          # kumo-api is a uv workspace member, so a bare `uv build` resolves
+          # the enclosing workspace root and writes the wheel to the repo
+          # root's dist/ instead of here. Force the output location so the
+          # artifact upload below (path: packages/kumo-api/dist/*.whl) finds it.
+          uv build --wheel --out-dir dist
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: kumo-api-wheel
+          path: packages/kumo-api/dist/*.whl
+
+  pytest-matrix:
+    runs-on: ubuntu-24.04
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13', '3.14']
+
+    steps:
+      - name: Checkout repository and submodules
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          activate-environment: true
+
+      - name: Download wheel artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: kumo-api-wheel
+          path: packages/kumo-api/dist
+
+      - name: Install Kumo API (from built wheel)
+        run: |
+          uv pip install dist/*.whl pytest pyarrow tabulate cryptography 'pydantic>=2'
+
+      - name: Verify Kumo API installation
+        uses: ./packages/kumo-api/.github/actions/verify-import
+        with:
+          pydantic-version: 'pydantic>=2'
+          skip-install: 'true'
+
+      - name: Run test suite
+        run: |
+          uv run --no-project pytest \
+            -W error::UserWarning \
+            -W error::DeprecationWarning \
+            -W ignore:.*pkg_resources.*:DeprecationWarning
+
+  # Gate job that reports a single `pytest` status. Branch protection requires a
+  # bare `pytest` context, but the matrix above only emits `pytest-matrix (3.x)`.
+  # This aggregates the matrix result into one required check that is green only
+  # when every Python version passes (and red/error if any leg fails or is
+  # skipped/cancelled).
+  pytest:
+    runs-on: ubuntu-24.04
+    needs: pytest-matrix
+    if: ${{ always() }}
+    steps:
+      - name: Check matrix result
+        run: |
+          if [ "${{ needs.pytest-matrix.result }}" != "success" ]; then
+            echo "pytest matrix result: ${{ needs.pytest-matrix.result }}"
+            exit 1
+          fi
+          echo "All pytest matrix legs passed."
+        working-directory: .

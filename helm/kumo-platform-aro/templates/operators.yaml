@@ -1,0 +1,58 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- if eq .Values.operators.mode "dedicated" }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openshift-nfd
+  labels:
+    {{- include "kumo-platform-aro.labels" . | nindent 4 }}
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: nfd
+  namespace: openshift-nfd
+spec:
+  targetNamespaces: [openshift-nfd]
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: nfd
+  namespace: openshift-nfd
+spec:
+  channel: {{ .Values.operators.nfdChannel }}
+  name: nfd
+  source: {{ .Values.operators.nfdSource }}
+  sourceNamespace: {{ .Values.operators.sourceNamespace }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nvidia-gpu-operator
+  labels:
+    {{- include "kumo-platform-aro.labels" . | nindent 4 }}
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: nvidia-gpu-operator
+  namespace: nvidia-gpu-operator
+spec:
+  targetNamespaces: [nvidia-gpu-operator]
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: gpu-operator-certified
+  namespace: nvidia-gpu-operator
+spec:
+  channel: {{ .Values.operators.gpuChannel }}
+  name: gpu-operator-certified
+  source: {{ .Values.operators.gpuSource }}
+  sourceNamespace: {{ .Values.operators.sourceNamespace }}
+{{- end }}

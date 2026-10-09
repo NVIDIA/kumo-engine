@@ -1,0 +1,868 @@
+{
+    "tables": {
+        "FINANCE_TRANS": {
+            "K_SYMBOL (1 hop)": {
+                "col_id": "FINANCE_TRANS.K_SYMBOL",
+                "stype": "categorical",
+                "variance_score": 0.05031296458037324,
+                "gradient_score": 0.011,
+                "cohort": {
+                    "json_data": {
+                        "Column Value": [
+                            "UROK",
+                            "SLUZBY",
+                            "SIPO",
+                            " ",
+                            "DUCHOD",
+                            "POJISTNE",
+                            "UVER",
+                            "SANKC. UROK",
+                            "N/A"
+                        ],
+                        "Population Ratio": [
+                            0.17721441388130188, 0.15937721729278564,
+                            0.11939749866724014, 0.0436556451022625,
+                            0.03848640248179436, 0.01343903224915266,
+                            0.004834247753024101, 0.0007115505868569016,
+                            0.44288405776023865
+                        ],
+                        "Target Average Score": [
+                            0.008417544886469841, 0.0007746065384708345,
+                            0.0004149390442762524, 0.0, 0.0, 0.0,
+                            0.003941643051803112, 0.0, 0.01701345480978489
+                        ],
+                        "Predicted Average Score": [
+                            0.004056778736412525, 0.00006705005944240838,
+                            0.00005086986129754223, 0.00004366076609585434,
+                            0.00005928855171077885, 0.00004133049878873862,
+                            0.000048015124775702134, 0.0013753282837569714,
+                            0.01072149071842432
+                        ]
+                    },
+                    "dimensions": [
+                        {
+                            "name": "Data Field",
+                            "all_values": [
+                                "Column Value",
+                                "Population Ratio",
+                                "Target Average Score",
+                                "Predicted Average Score"
+                            ],
+                            "value_type": "str"
+                        }
+                    ]
+                }
+            },
+            "TYPE (1 hop)": {
+                "col_id": "FINANCE_TRANS.TYPE",
+                "stype": "categorical",
+                "variance_score": 0.021265748675649884,
+                "gradient_score": 0.0023,
+                "cohort": {
+                    "json_data": {
+                        "Column Value": ["VYDAJ", "PRIJEM", "VYBER"],
+                        "Population Ratio": [
+                            0.5955647230148315, 0.39406126737594604,
+                            0.010374009609222412
+                        ],
+                        "Target Average Score": [
+                            0.006301201414316893, 0.013835420832037926,
+                            0.0013469794066622853
+                        ],
+                        "Predicted Average Score": [
+                            0.003926306497305632, 0.00799539964646101,
+                            0.00009291034075431526
+                        ]
+                    },
+                    "dimensions": [
+                        {
+                            "name": "Data Field",
+                            "all_values": [
+                                "Column Value",
+                                "Population Ratio",
+                                "Target Average Score",
+                                "Predicted Average Score"
+                            ],
+                            "value_type": "str"
+                        }
+                    ]
+                }
+            },
+            "AMOUNT (1 hop)": {
+                "col_id": "FINANCE_TRANS.AMOUNT",
+                "stype": "numerical",
+                "variance_score": 0.04913175644797053,
+                "gradient_score": 0.0016,
+                "cohort": {
+                    "json_data": {
+                        "Column Value": [
+                            "[720.2 - 1449]",
+                            "(1449 - 1975]",
+                            "(1975 - 2312]",
+                            "(2312 - 2783]",
+                            "(2783 - 3935]",
+                            "(3935 - 5300]",
+                            "(5300 - 6756]",
+                            "(6756 - 8278]",
+                            "(8278 - 1.064e+04]",
+                            "(1.064e+04 - 2.19e+04]"
+                        ],
+                        "Population Ratio": [
+                            0.10000000149011612, 0.10000000149011612,
+                            0.10000000149011612, 0.10015624761581421,
+                            0.09984374791383743, 0.10000000149011612,
+                            0.10000000149011612, 0.10000000149011612,
+                            0.10000000149011612, 0.10000000149011612
+                        ],
+                        "Target Average Score": [
+                            0.010937499813735485, 0.01718750037252903,
+                            0.010937499813735485, 0.018720747902989388,
+                            0.015649452805519104, 0.0015625000232830644,
+                            0.004687500186264515, 0.010937499813735485, 0.0,
+                            0.0015625000232830644
+                        ],
+                        "Predicted Average Score": [
+                            0.005216122604906559, 0.010753502137959003,
+                            0.007425428368151188, 0.015151013620197773,
+                            0.006295922212302685, 0.0004455206508282572,
+                            0.0018837240058928728, 0.007486569695174694,
+                            0.00007773849938530475, 0.00015072638052515686
+                        ]
+                    },
+                    "dimensions": [
+                        {
+                            "name": "Data Field",
+                            "all_values": [
+                                "Column Value",
+                                "Population Ratio",
+                                "Target Average Score",
+                                "Predicted Average Score"
+                            ],
+                            "value_type": "str"
+                        }
+                    ]
+                }
+            },
+            "ACCOUNT (1 hop)": {
+                "col_id": "FINANCE_TRANS.ACCOUNT",
+                "stype": "numerical",
+                "variance_score": 0.0002010208253608919,
+                "gradient_score": 0.0014,
+                "cohort": {
+                    "json_data": {
+                        "Column Value": [
+                            "[0 - 9.861e+06]",
+                            "(9.861e+06 - 2.337e+07]",
+                            "(2.337e+07 - 3.205e+07]",
+                            "(3.205e+07 - 3.969e+07]",
+                            "(3.969e+07 - 4.576e+07]",
+                            "(4.576e+07 - 5.197e+07]",
+                            "(5.197e+07 - 5.793e+07]",
+                            "(5.793e+07 - 6.614e+07]",
+                            "(6.614e+07 - 7.596e+07]",
+                            "(7.596e+07 - 9.996e+07]"
+                        ],
+                        "Population Ratio": [
+                            0.1002492904663086, 0.09989316016435623,
+                            0.09989316016435623, 0.10007122159004211,
+                            0.09989316016435623, 0.1002492904663086,
+                            0.09971509873867035, 0.10007122159004211,
+                            0.09989316016435623, 0.10007122159004211
+                        ],
+                        "Target Average Score": [
+                            0.007104795891791582, 0.0, 0.0, 0.0,
+                            0.001782531151548028, 0.0, 0.0, 0.0, 0.0, 0.0
+                        ],
+                        "Predicted Average Score": [
+                            0.00011636679118964821, 0.00005353366941562854,
+                            0.000052441911975620314, 0.00005313086512614973,
+                            0.00005111020800541155, 0.000051181603339500725,
+                            0.00004932834781357087, 0.000049414480599807575,
+                            0.00005348620470613241, 0.000052585714001907036
+                        ]
+                    },
+                    "dimensions": [
+                        {
+                            "name": "Data Field",
+                            "all_values": [
+                                "Column Value",
+                                "Population Ratio",
+                                "Target Average Score",
+                                "Predicted Average Score"
+                            ],
+                            "value_type": "str"
+                        }
+                    ]
+                }
+            },
+            "BANK (1 hop)": {
+                "col_id": "FINANCE_TRANS.BANK",
+                "stype": "categorical",
+                "variance_score": 0.0332923244736655,
+                "gradient_score": 0.0032,
+                "cohort": {
+                    "json_data": {
+                        "Column Value": [
+                            "QR",
+                            "AB",
+                            "ST",
+                            "YZ",
+                            "GH",
+                            "EF",
+                            "KL",
+                            "UV",
+                            "OP",
+                            "OTHER(*)"
+                        ],
+                        "Population Ratio": [
+                            0.02158949337899685, 0.020347600802779198,
+                            0.021243296563625336, 0.020067844539880753,
+                            0.019560718908905983, 0.019896386191248894,
+                            0.0200351532548666, 0.020010020583868027,
+                            0.019808270037174225, 0.8174412250518799
+                        ],
+                        "Target Average Score": [
+                            0.0, 0.0, 0.0012557763839140534, 0.0, 0.0, 0.0,
+                            0.0009510723175480962, 0.0, 0.0,
+                            0.011221623979508877
+                        ],
+                        "Predicted Average Score": [
+                            0.00004987862484995276, 0.00005001138197258115,
+                            0.00005310110645950772, 0.00005032836997997947,
+                            0.000049281883548246697, 0.000052438546845223755,
+                            0.00005186953421798535, 0.00005472750126500614,
+                            0.00005195284393266775, 0.006704588886350393
+                        ]
+                    },
+                    "dimensions": [
+                        {
+                            "name": "Data Field",
+                            "all_values": [
+                                "Column Value",
+                                "Population Ratio",
+                                "Target Average Score",
+                                "Predicted Average Score"
+                            ],
+                            "value_type": "str"
+                        }
+                    ]
+                }
+            },
+            "DATE (1 hop)": {
+                "col_id": "FINANCE_TRANS.DATE",
+                "stype": "timestamp",
+                "variance_score": 0.2283201969442684,
+                "gradient_score": 0.0604,
+                "cohort": {
+                    "json_data": {
+                        "Column Value": [
+                            "[0 months, 7 months)",
+                            "[7 months, 14 months)",
+                            "[14 months, 21 months)",
+                            "[21 months, 28 months)",
+                            "[28 months, 35 months)",
+                            "[35 months, 42 months)",
+                            "[42 months, 49 months)",
+                            "[49 months, 56 months)",
+                            "[56 months, 63 months)",
+                            "[63 months, 70 months)"
+                        ],
+                        "Population Ratio": [
+                            0.36869439482688904, 0.360882967710495,
+                            0.21458794176578522, 0.049413759261369705,
+                            0.0030977309215813875, 0.0013810601085424423,
+                            0.0008035030914470553, 0.0005887203733436763,
+                            0.0004143726546317339, 0.00013554474571719766
+                        ],
+                        "Target Average Score": [
+                            0.004127638414502144, 0.0058808960020542145,
+                            0.00885147973895073, 0.025334037840366364,
+                            0.27414846420288086, 0.4560903310775757,
+                            0.42775386571884155, 0.46674251556396484,
+                            0.5820605754852295, 0.6236136555671692
+                        ],
+                        "Predicted Average Score": [
+                            0.0015354270581156015, 0.00338257965631783,
+                            0.005441434681415558, 0.017564984038472176,
+                            0.16956543922424316, 0.31222856044769287,
+                            0.3117730915546417, 0.35323062539100647,
+                            0.4539707601070404, 0.47601792216300964
+                        ]
+                    },
+                    "dimensions": [
+                        {
+                            "name": "Data Field",
+                            "all_values": [
+                                "Column Value",
+                                "Population Ratio",
+                                "Target Average Score",
+                                "Predicted Average Score"
+                            ],
+                            "value_type": "str"
+                        }
+                    ]
+                }
+            },
+            "COUNT(*) (1 hop)": {
+                "col_id": "FINANCE_TRANS.COUNT(*)",
+                "stype": null,
+                "variance_score": 0.14875044603223836,
+                "gradient_score": null,
+                "cohort": {
+                    "json_data": {
+                        "Column Value": [
+                            "[7 - 70]",
+                            "(70 - 103]",
+                            "(103 - 123+]"
+                        ],
+                        "Population Ratio": [
+                            0.10171875357627869, 0.1015625, 0.7967187762260437
+                        ],
+                        "Target Average Score": [
+                            0.07373271882534027, 0.01076923031359911,
+                            0.0007844675565138459
+                        ],
+                        "Predicted Average Score": [
+                            0.04797902703285217, 0.005472114775329828,
+                            0.00006763594865333289
+                        ]
+                    },
+                    "dimensions": [
+                        {
+                            "name": "Data Field",
+                            "all_values": [
+                                "Column Value",
+                                "Population Ratio",
+                                "Target Average Score",
+                                "Predicted Average Score"
+                            ],
+                            "value_type": "str"
+                        }
+                    ]
+                }
+            },
+            "BALANCE (1 hop)": {
+                "col_id": "FINANCE_TRANS.BALANCE",
+                "stype": "numerical",
+                "variance_score": 0.08471357508196066,
+                "gradient_score": 0.0068,
+                "cohort": {
+                    "json_data": {
+                        "Column Value": [
+                            "[-2406 - 1.732e+04]",
+                            "(1.732e+04 - 2.033e+04]",
+                            "(2.033e+04 - 2.37e+04]",
+                            "(2.37e+04 - 2.821e+04]",
+                            "(2.821e+04 - 3.302e+04]",
+                            "(3.302e+04 - 3.82e+04]",
+                            "(3.82e+04 - 4.427e+04]",
+                            "(4.427e+04 - 5.141e+04]",
+                            "(5.141e+04 - 6.178e+04]",
+                            "(6.178e+04 - 9.968e+04]"
+                        ],
+                        "Population Ratio": [
+                            0.10000000149011612, 0.10000000149011612,
+                            0.10000000149011612, 0.10000000149011612,
+                            0.10000000149011612, 0.10000000149011612,
+                            0.10000000149011612, 0.10000000149011612,
+                            0.10000000149011612, 0.10000000149011612
+                        ],
+                        "Target Average Score": [
+                            0.03750000149011612, 0.01718750037252903,
+                            0.01406249962747097, 0.0078125,
+                            0.010937499813735485, 0.0, 0.0015625000232830644,
+                            0.0031250000465661287, 0.0, 0.0
+                        ],
+                        "Predicted Average Score": [
+                            0.028301823884248734, 0.008156263269484043,
+                            0.004909626208245754, 0.004559964872896671,
+                            0.0077431402169167995, 0.0003873808600474149,
+                            0.0006552539998665452, 0.000061998245655559,
+                            0.00007735088729532436, 0.00004733799141831696
+                        ]
+                    },
+                    "dimensions": [
+                        {
+                            "name": "Data Field",
+                            "all_values": [
+                                "Column Value",
+                                "Population Ratio",
+                                "Target Average Score",
+                                "Predicted Average Score"
+                            ],
+                            "value_type": "str"
+                        }
+                    ]
+                }
+            },
+            "OPERATION (1 hop)": {
+                "col_id": "FINANCE_TRANS.OPERATION",
+                "stype": "categorical",
+                "variance_score": 0.05307182198652203,
+                "gradient_score": 0.0102,
+                "cohort": {
+                    "json_data": {
+                        "Column Value": [
+                            "VYBER",
+                            "PREVOD NA UCET",
+                            "VKLAD",
+                            "PREVOD Z UCTU",
+                            "VYBER KARTOU",
+                            "N/A"
+                        ],
+                        "Population Ratio": [
+                            0.40723228454589844, 0.1891607791185379,
+                            0.14638923108577728, 0.07045765221118927,
+                            0.009545688517391682, 0.17721441388130188
+                        ],
+                        "Target Average Score": [
+                            0.009035080671310425, 0.00024176105216611177,
+                            0.027053166180849075, 0.0, 0.004362061154097319,
+                            0.008417544886469841
+                        ],
+                        "Predicted Average Score": [
+                            0.005720267537981272, 0.00004815856664208695,
+                            0.01658279076218605, 0.00005983453957014717,
+                            0.00007818562880856916, 0.004056778736412525
+                        ]
+                    },
+                    "dimensions": [
+                        {
+                            "name": "Data Field",
+                            "all_values": [
+                                "Column Value",
+                                "Population Ratio",
+                                "Target Average Score",
+                                "Predicted Average Score"
+                            ],
+                            "value_type": "str"
+                        }
+                    ]
+                }
+            }
+        },
+        "FINANCE_ACCOUNT": {
+            "FREQUENCY (seed entities)": {
+                "col_id": "FINANCE_ACCOUNT.FREQUENCY",
+                "stype": "categorical",
+                "variance_score": 0.014089125779847502,
+                "gradient_score": 0.0778,
+                "cohort": {
+                    "json_data": {
+                        "Column Value": [
+                            "POPLATEK MESICNE",
+                            "POPLATEK TYDNE",
+                            "POPLATEK PO OBRATU"
+                        ],
+                        "Population Ratio": [
+                            0.9393749833106995, 0.041875001043081284,
+                            0.01875000074505806
+                        ],
+                        "Target Average Score": [
+                            0.009647372178733349, 0.0037313431967049837, 0.0
+                        ],
+                        "Predicted Average Score": [
+                            0.005836253520101309, 0.00012341713591013104,
+                            0.00012866909673903137
+                        ]
+                    },
+                    "dimensions": [
+                        {
+                            "name": "Data Field",
+                            "all_values": [
+                                "Column Value",
+                                "Population Ratio",
+                                "Target Average Score",
+                                "Predicted Average Score"
+                            ],
+                            "value_type": "str"
+                        }
+                    ]
+                }
+            },
+            "DATE (seed entities)": {
+                "col_id": "FINANCE_ACCOUNT.DATE",
+                "stype": "timestamp",
+                "variance_score": 0.03006523495664655,
+                "gradient_score": 0.7434,
+                "cohort": {
+                    "json_data": {
+                        "Column Value": [
+                            "[6 months, 12 months)",
+                            "[12 months, 18 months)",
+                            "[18 months, 24 months)",
+                            "[24 months, 30 months)",
+                            "[30 months, 36 months)",
+                            "[36 months, 42 months)",
+                            "[42 months, 48 months)",
+                            "[48 months, 54 months)",
+                            "[54 months, 60 months)"
+                        ],
+                        "Population Ratio": [
+                            0.047124601900577545, 0.1309904158115387,
+                            0.15195687115192413, 0.1952875405550003,
+                            0.15055911242961884, 0.09524760395288467,
+                            0.07428114861249924, 0.06289935857057571,
+                            0.09165335446596146
+                        ],
+                        "Target Average Score": [
+                            0.012711863964796066, 0.007621951401233673,
+                            0.01182654406875372, 0.011247443966567516,
+                            0.007957560010254383, 0.010482179932296276,
+                            0.005376344081014395, 0.0031746032182127237,
+                            0.00871459674090147
+                        ],
+                        "Predicted Average Score": [
+                            0.002021743915975094, 0.006272654514759779,
+                            0.006529831327497959, 0.009493580088019371,
+                            0.004082363098859787, 0.004198479000478983,
+                            0.002579013118520379, 0.0002476309600751847,
+                            0.0009669227874837816
+                        ]
+                    },
+                    "dimensions": [
+                        {
+                            "name": "Data Field",
+                            "all_values": [
+                                "Column Value",
+                                "Population Ratio",
+                                "Target Average Score",
+                                "Predicted Average Score"
+                            ],
+                            "value_type": "str"
+                        }
+                    ]
+                }
+            },
+            "DISTRICT_ID (seed entities)": {
+                "col_id": "FINANCE_ACCOUNT.DISTRICT_ID",
+                "stype": "ID",
+                "variance_score": 0.1334295552008849,
+                "gradient_score": 0.0508,
+                "cohort": {
+                    "json_data": {
+                        "Column Value": [
+                            "1",
+                            "70",
+                            "74",
+                            "54",
+                            "64",
+                            "72",
+                            "68",
+                            "5",
+                            "46",
+                            "OTHER(*)"
+                        ],
+                        "Population Ratio": [
+                            0.11640624701976776, 0.03125, 0.02828124910593033,
+                            0.025624999776482582, 0.018124999478459358,
+                            0.02046874910593033, 0.017812499776482582, 0.015625,
+                            0.014843749813735485, 0.7115625143051147
+                        ],
+                        "Target Average Score": [
+                            0.004026845563203096, 0.004999999888241291, 0.0,
+                            0.0, 0.0, 0.022900763899087906,
+                            0.008771929889917374, 0.0, 0.031578946858644485,
+                            0.010540184564888477
+                        ],
+                        "Predicted Average Score": [
+                            0.00017168562044389546, 0.0040489984676241875,
+                            0.0001504052779637277, 0.00007894291775301099,
+                            0.0010983841493725777, 0.02041599154472351,
+                            0.0010763437021523714, 0.0006063592154532671,
+                            0.0008967652102001011, 0.0068264733999967575
+                        ]
+                    },
+                    "dimensions": [
+                        {
+                            "name": "Data Field",
+                            "all_values": [
+                                "Column Value",
+                                "Population Ratio",
+                                "Target Average Score",
+                                "Predicted Average Score"
+                            ],
+                            "value_type": "str"
+                        }
+                    ]
+                }
+            }
+        },
+        "FINANCE_ORDERS": {
+            "K_SYMBOL (1 hop)": {
+                "col_id": "FINANCE_ORDERS.K_SYMBOL",
+                "stype": "categorical",
+                "variance_score": 0.0122917499312832,
+                "gradient_score": 0.0115,
+                "cohort": {
+                    "json_data": {
+                        "Column Value": [
+                            "SIPO",
+                            "UVER",
+                            "POJISTNE",
+                            "LEASING",
+                            "N/A"
+                        ],
+                        "Population Ratio": [
+                            0.7227410078048706, 0.0490877702832222,
+                            0.0412198007106781, 0.04891519621014595,
+                            0.13803625106811523
+                        ],
+                        "Target Average Score": [
+                            0.0005116944084875286, 0.02260170876979828, 0.0,
+                            0.0037802415899932384, 0.0
+                        ],
+                        "Predicted Average Score": [
+                            0.000056603370467200875, 0.005564785562455654,
+                            0.00005195201811147854, 0.00023610782227478921,
+                            0.00004709782297140919
+                        ]
+                    },
+                    "dimensions": [
+                        {
+                            "name": "Data Field",
+                            "all_values": [
+                                "Column Value",
+                                "Population Ratio",
+                                "Target Average Score",
+                                "Predicted Average Score"
+                            ],
+                            "value_type": "str"
+                        }
+                    ]
+                }
+            },
+            "BANK_TO (1 hop)": {
+                "col_id": "FINANCE_ORDERS.BANK_TO",
+                "stype": "categorical",
+                "variance_score": 0.006222025016413977,
+                "gradient_score": 0.0041,
+                "cohort": {
+                    "json_data": {
+                        "Column Value": [
+                            "QR",
+                            "YZ",
+                            "AB",
+                            "WX",
+                            "ST",
+                            "KL",
+                            "UV",
+                            "IJ",
+                            "GH",
+                            "OTHER(*)"
+                        ],
+                        "Population Ratio": [
+                            0.08582346886396408, 0.07611870765686035,
+                            0.07268551737070084, 0.07756102085113525,
+                            0.08193725347518921, 0.07649777829647064,
+                            0.07585674524307251, 0.0806952640414238,
+                            0.0775209590792656, 0.29530325531959534
+                        ],
+                        "Target Average Score": [
+                            0.0021545530762523413, 0.0, 0.0, 0.0,
+                            0.0022567417472600937, 0.00241721048951149,
+                            0.002437637187540531, 0.0, 0.0, 0.00313087017275393
+                        ],
+                        "Predicted Average Score": [
+                            0.00006623191438848153, 0.00005400239388109185,
+                            0.00005574683746090159, 0.000049686237616697326,
+                            0.00006780576222809032, 0.00005058173701399937,
+                            0.00005867408981430344, 0.00005295806840877049,
+                            0.00005820300066261552, 0.0009952561231330037
+                        ]
+                    },
+                    "dimensions": [
+                        {
+                            "name": "Data Field",
+                            "all_values": [
+                                "Column Value",
+                                "Population Ratio",
+                                "Target Average Score",
+                                "Predicted Average Score"
+                            ],
+                            "value_type": "str"
+                        }
+                    ]
+                }
+            },
+            "AMOUNT (1 hop)": {
+                "col_id": "FINANCE_ORDERS.AMOUNT",
+                "stype": "numerical",
+                "variance_score": 0.005170768045201734,
+                "gradient_score": 0.0054,
+                "cohort": {
+                    "json_data": {
+                        "Column Value": [
+                            "[397 - 1249]",
+                            "(1249 - 1785]",
+                            "(1785 - 2121]",
+                            "(2121 - 2484]",
+                            "(2484 - 2976]",
+                            "(2976 - 3424]",
+                            "(3424 - 4067]",
+                            "(4067 - 5268]",
+                            "(5268 - 7358]",
+                            "(7358 - 1.481e+04]"
+                        ],
+                        "Population Ratio": [
+                            0.10040680319070816, 0.0998520702123642,
+                            0.1002218946814537, 0.09966716170310974,
+                            0.0998520702123642, 0.10059171915054321,
+                            0.09948224574327469, 0.1002218946814537,
+                            0.10003697872161865, 0.09966716170310974
+                        ],
+                        "Target Average Score": [
+                            0.0, 0.003703703638166189, 0.0018450184725224972,
+                            0.0, 0.0, 0.0, 0.0, 0.0018450184725224972,
+                            0.0036968577187508345, 0.005565862637013197
+                        ],
+                        "Predicted Average Score": [
+                            0.00010691835632314906, 0.0015798198292031884,
+                            0.00006895841215737164, 0.000053474854212254286,
+                            0.00005313775909598917, 0.00005243271516519599,
+                            0.0002847289142664522, 0.0010048899566754699,
+                            0.00006478169962065294, 0.00007466576062142849
+                        ]
+                    },
+                    "dimensions": [
+                        {
+                            "name": "Data Field",
+                            "all_values": [
+                                "Column Value",
+                                "Population Ratio",
+                                "Target Average Score",
+                                "Predicted Average Score"
+                            ],
+                            "value_type": "str"
+                        }
+                    ]
+                }
+            },
+            "ACCOUNT_TO (1 hop)": {
+                "col_id": "FINANCE_ORDERS.ACCOUNT_TO",
+                "stype": "numerical",
+                "variance_score": 0.005209451055625694,
+                "gradient_score": 0.0102,
+                "cohort": {
+                    "json_data": {
+                        "Column Value": [
+                            "[4.81e+04 - 1.417e+07]",
+                            "(1.417e+07 - 2.534e+07]",
+                            "(2.534e+07 - 3.447e+07]",
+                            "(3.447e+07 - 4.215e+07]",
+                            "(4.215e+07 - 5.003e+07]",
+                            "(5.003e+07 - 5.602e+07]",
+                            "(5.602e+07 - 6.356e+07]",
+                            "(6.356e+07 - 7.229e+07]",
+                            "(7.229e+07 - 8.316e+07]",
+                            "(8.316e+07 - 9.996e+07]"
+                        ],
+                        "Population Ratio": [
+                            0.1002218946814537, 0.0998520702123642,
+                            0.10040680319070816, 0.0998520702123642,
+                            0.09966716170310974, 0.10003697872161865,
+                            0.1002218946814537, 0.0998520702123642,
+                            0.10003697872161865, 0.0998520702123642
+                        ],
+                        "Target Average Score": [
+                            0.0, 0.0055555556900799274, 0.0018416206585243344,
+                            0.0, 0.001855287584476173, 0.0,
+                            0.0018450184725224972, 0.0, 0.0018484288593754172,
+                            0.003703703638166189
+                        ],
+                        "Predicted Average Score": [
+                            0.00028459460008889437, 0.0015888676280155778,
+                            0.00006103762279963121, 0.000051721617637667805,
+                            0.00004992995673092082, 0.000058869303757091984,
+                            0.000059462505305418745, 0.000048246412916341797,
+                            0.00013276946265250444, 0.0010102208470925689
+                        ]
+                    },
+                    "dimensions": [
+                        {
+                            "name": "Data Field",
+                            "all_values": [
+                                "Column Value",
+                                "Population Ratio",
+                                "Target Average Score",
+                                "Predicted Average Score"
+                            ],
+                            "value_type": "str"
+                        }
+                    ]
+                }
+            },
+            "COUNT(*) (1 hop)": {
+                "col_id": "FINANCE_ORDERS.COUNT(*)",
+                "stype": null,
+                "variance_score": 0.124462234966087,
+                "gradient_score": null,
+                "cohort": {
+                    "json_data": {
+                        "Column Value": [
+                            "[0 - 0]",
+                            "(0 - 1]",
+                            "(1 - 2]",
+                            "(2 - 3]",
+                            "(3 - 5+]"
+                        ],
+                        "Population Ratio": [
+                            0.1550000011920929, 0.4935937523841858,
+                            0.20906250178813934, 0.08171875029802322,
+                            0.06062500178813934
+                        ],
+                        "Target Average Score": [
+                            0.05040322616696358, 0.0028490028344094753, 0.0,
+                            0.0, 0.0
+                        ],
+                        "Predicted Average Score": [
+                            0.03359713405370712, 0.0005373077583499253,
+                            0.00004856204759562388, 0.00005545725070987828,
+                            0.000042186300561297685
+                        ]
+                    },
+                    "dimensions": [
+                        {
+                            "name": "Data Field",
+                            "all_values": [
+                                "Column Value",
+                                "Population Ratio",
+                                "Target Average Score",
+                                "Predicted Average Score"
+                            ],
+                            "value_type": "str"
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    "navigation": {
+        "root_table_name": "FINANCE_ACCOUNT",
+        "navigation_tree": {
+            "FINANCE_TRANS": [
+                "FINANCE_TRANS.DATE",
+                "FINANCE_TRANS.TYPE",
+                "FINANCE_TRANS.OPERATION",
+                "FINANCE_TRANS.AMOUNT",
+                "FINANCE_TRANS.BALANCE",
+                "FINANCE_TRANS.K_SYMBOL",
+                "FINANCE_TRANS.BANK",
+                "FINANCE_TRANS.ACCOUNT"
+            ],
+            "FINANCE_ACCOUNT": [
+                "FINANCE_ACCOUNT.DISTRICT_ID",
+                "FINANCE_ACCOUNT.FREQUENCY",
+                "FINANCE_ACCOUNT.DATE",
+                "FINANCE_TRANS",
+                "FINANCE_ORDERS"
+            ],
+            "FINANCE_ORDERS": [
+                "FINANCE_ORDERS.BANK_TO",
+                "FINANCE_ORDERS.ACCOUNT_TO",
+                "FINANCE_ORDERS.AMOUNT",
+                "FINANCE_ORDERS.K_SYMBOL"
+            ]
+        }
+    }
+}

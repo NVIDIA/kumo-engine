@@ -1,0 +1,225 @@
+{
+  "version": 1,
+  "license_identifier": "Apache-2.0",
+  "copyright_holder": "NVIDIA CORPORATION & AFFILIATES.",
+  "rights_statement": "All rights reserved.",
+  "max_header_lines": 12,
+  "candidate_types": {
+    "extensions": {
+      ".cfg": ["hash"],
+      ".cjs": ["slash", "block"],
+      ".conf": ["hash"],
+      ".css": ["block"],
+      ".g4": ["slash"],
+      ".hcl": ["hash"],
+      ".html": ["html"],
+      ".js": ["slash", "block"],
+      ".jsonc": ["slash", "block"],
+      ".mjs": ["slash", "block"],
+      ".pbtxt": ["hash"],
+      ".proto": ["slash", "block"],
+      ".py": ["hash"],
+      ".rs": ["slash"],
+      ".service": ["hash"],
+      ".sh": ["hash"],
+      ".sql": ["dash"],
+      ".template": ["hash"],
+      ".tf": ["hash"],
+      ".toml": ["hash"],
+      ".tpl": ["helm", "hash"],
+      ".ts": ["slash", "block"],
+      ".tsx": ["slash", "block"],
+      ".yaml": ["hash", "helm"],
+      ".yml": ["hash", "helm"]
+    },
+    "basenames": {
+      ".env": ["hash"],
+      "BUILD": ["hash"],
+      "BUILD.bazel": ["hash"],
+      "Brewfile": ["hash"],
+      "GNUmakefile": ["hash"],
+      "MANIFEST.in": ["hash"],
+      "MODULE.bazel": ["hash"],
+      "Makefile": ["hash"],
+      "NOTES.txt": ["helm"],
+      "WORKSPACE": ["hash"],
+      "env.batch-validation": ["hash"],
+      "env.internal-testing.example": ["hash"],
+      "env.minio-test.example": ["hash"],
+      "env.minio-tls-test.example": ["hash"]
+    },
+    "basename_prefixes": {
+      ".env.": ["hash"],
+      "Dockerfile": ["hash"]
+    },
+    "basename_suffixes": {
+      ".Dockerfile": ["hash"],
+      ".tfvars.example": ["hash"]
+    },
+    "path_styles": {
+      "helm/kumo-stack/renderer/templates/namespace-labels.txt": ["helm"],
+      "helm/kumo-stack/renderer/templates/runtime.txt": ["helm"]
+    },
+    "include_shebang_files": true
+  },
+  "preamble_exceptions": [
+    {
+      "path": "packages/kumo-sdk/kumoai_studio/_version.py",
+      "line_pattern": "^__version__\\s*=\\s*(['\\\"]).+\\1$",
+      "reason": "Release automation requires the version assignment on line 1."
+    }
+  ],
+  "license_scopes": [
+    {
+      "pattern": "packages/kumo-api/**",
+      "license_identifier": "MIT",
+      "reason": "The kumo-api distribution remains MIT licensed."
+    }
+  ],
+  "derived_sources": [
+    {
+      "name": "torchtext tokenizer and spaCy stop words",
+      "paths": [
+        "kumo/utils/text.py"
+      ],
+      "license_identifier": "Apache-2.0 AND BSD-3-Clause AND MIT",
+      "required_copyright_lines": [
+        "SPDX-FileCopyrightText: Copyright (c) James Bradbury and Soumith Chintala 2016",
+        "SPDX-FileCopyrightText: Copyright (C) 2016-2024 ExplosionAI GmbH, 2016 spaCy GmbH, 2015 Matthew Honnibal"
+      ],
+      "provenance": "https://github.com/pytorch/text/blob/9bed85d7a7ae13cf8c28598a88d8e461fe1afcb4/torchtext/data/utils.py and https://github.com/explosion/spaCy/blob/32c4b638ae0e042264fadc3ceb3ab67147c7b6f5/spacy/lang/en/stop_words.py"
+    },
+    {
+      "name": "Fabric Toolbox execution-plan visualizer",
+      "paths": [
+        "tools/pquery_tracing/visualize_pquery_plan.py"
+      ],
+      "license_identifier": "Apache-2.0 AND MIT",
+      "required_copyright_lines": [
+        "SPDX-FileCopyrightText: Copyright (c) 2024 Gerhard Brueckl"
+      ],
+      "provenance": "https://github.com/gbrueckl/Fabric.Toolbox/blob/58212be03380d45c9798ee610d61f2808776941b/DataEngineering/Library/VisualizeExecutionPlan.py"
+    },
+    {
+      "name": "Temporal updatable timer sample",
+      "paths": [
+        "rest/backends/common/updatable_timer_lib.py"
+      ],
+      "license_identifier": "Apache-2.0 AND MIT",
+      "required_copyright_lines": [
+        "SPDX-FileCopyrightText: Copyright (c) 2022 Temporal Technologies Inc. All rights reserved."
+      ],
+      "provenance": "https://github.com/temporalio/samples-python/blob/7577bd6f52652cb82ad9818074931a794d568a39/updatable_timer/updatable_timer_lib.py"
+    },
+    {
+      "name": "scikit-learn ROC plotting example",
+      "paths": [
+        "kumo/utils/visualization.py"
+      ],
+      "license_identifier": "Apache-2.0 AND BSD-3-Clause",
+      "required_copyright_lines": [
+        "SPDX-FileCopyrightText: Copyright (c) 2007-2021 The scikit-learn developers."
+      ],
+      "provenance": "https://github.com/scikit-learn/scikit-learn/blob/02b41de8fca096d92aea6a5336fce372b842c5c7/examples/model_selection/plot_roc.py"
+    },
+    {
+      "name": "Starlette HTTPException",
+      "paths": [
+        "packages/kumo-sdk/kumoai_studio/exceptions.py"
+      ],
+      "license_identifier": "Apache-2.0 AND BSD-3-Clause",
+      "required_copyright_lines": [
+        "SPDX-FileCopyrightText: Copyright (c) 2018, Encode OSS Ltd."
+      ],
+      "provenance": "https://github.com/Kludex/starlette/blob/b5126b2063dbd6fa46d3e60b4a7117c99dcdbe6e/starlette/exceptions.py"
+    },
+    {
+      "name": "xyflow control icons",
+      "paths": [
+        "packages/kumo-ui-catalog/src/components/blocks/visual-graph/hop-graph.tsx"
+      ],
+      "license_identifier": "Apache-2.0 AND MIT",
+      "required_copyright_lines": [
+        "SPDX-FileCopyrightText: Copyright (c) 2019-2025 webkid GmbH"
+      ],
+      "notice_file": "packages/kumo-ui-catalog/THIRD-PARTY.txt",
+      "provenance": "https://github.com/xyflow/xyflow/tree/ede221a7ad9555763edc2321033d3c3e61261da2/packages/react/src/additional-components/Controls/Icons"
+    },
+    {
+      "name": "pytorch-forecasting distribution metrics",
+      "paths": [
+        "packages/kumo-core/src/kumo_core/evaluation/distribution.py"
+      ],
+      "license_identifier": "Apache-2.0 AND MIT",
+      "required_copyright_lines": [
+        "SPDX-FileCopyrightText: Copyright 2020 Jan Beitner"
+      ],
+      "provenance": "https://github.com/sktime/pytorch-forecasting/blob/4039c0da8d3a6ffa687968ec7aea985f047d8658/pytorch_forecasting/metrics/base_metrics.py"
+    },
+    {
+      "name": "shadcn/ui",
+      "paths": [
+        "packages/kumo-ui-catalog/src/components/theme-provider.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/accordion.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/alert.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/avatar.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/badge.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/breadcrumb.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/button.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/calendar.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/card.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/checkbox.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/collapsible.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/combobox.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/command.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/dialog.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/dropdown-menu.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/hover-card.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/input.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/label.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/pagination.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/popover.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/progress.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/radio-group.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/scroll-area.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/select.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/separator.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/sheet.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/sidebar.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/singleselect.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/skeleton.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/slider.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/sonner.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/switch.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/table.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/tabs.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/text-area.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/toggle-group.tsx",
+        "packages/kumo-ui-catalog/src/components/ui/tooltip.tsx",
+        "packages/kumo-ui-catalog/src/hooks/use-mobile.ts",
+        "packages/kumo-ui-catalog/src/kumo-ui-catalog.css",
+        "packages/kumo-ui-catalog/src/lib/utils.ts"
+      ],
+      "license_identifier": "Apache-2.0 AND MIT",
+      "required_copyright_lines": [
+        "SPDX-FileCopyrightText: Copyright (c) 2023 shadcn"
+      ],
+      "notice_file": "packages/kumo-ui-catalog/THIRD-PARTY.txt",
+      "provenance": "https://github.com/shadcn-ui/ui"
+    }
+  ],
+  "exclusions": [
+    {
+      "pattern": "helm/kumo-temporal/charts/temporal/**",
+      "kind": "vendored",
+      "license": "MIT",
+      "reason": "Vendored upstream Temporal Helm chart; preserve upstream files and license."
+    },
+    {
+      "pattern": "packages/diskgraph/diskgraph-ptrhash/**",
+      "kind": "vendored",
+      "license": "MIT",
+      "reason": "Vendored upstream PtrHash sources; preserve the upstream files and license."
+    }
+  ]
+}

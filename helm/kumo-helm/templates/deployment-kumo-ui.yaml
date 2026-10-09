@@ -1,0 +1,84 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- $externalHost := "" -}}
+{{- $externalScheme := "http" -}}
+{{- if not (kindIs "string" .Values.exposure.host) -}}
+{{- fail "frontend exposure.host must be a string" -}}
+{{- end -}}
+{{- $externalHost = .Values.exposure.host -}}
+{{- if $externalHost -}}
+{{- if or
+      (gt (len $externalHost) 253)
+      (not (regexMatch "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$" $externalHost))
+      (regexMatch "^[0-9]+(\\.[0-9]+){3}$" $externalHost) -}}
+{{- fail "frontend exposure.host must be a lowercase DNS-1123 hostname (not a scheme, IP, port, path, or wildcard)" -}}
+{{- end -}}
+{{- $externalScheme = "https" -}}
+{{- else if .Values.auth.enabled -}}
+{{- fail "auth.enabled=true requires a nonempty exposure.host" -}}
+{{- end -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kumo-ui
+  labels:
+    app: kumo-ui
+    {{- include "kumo.commonLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.workloads.ui.replicas }}
+  revisionHistoryLimit: 2
+  {{- include "kumo.noSurgeRollingStrategy" . | nindent 2 }}
+  selector:
+    matchLabels:
+      app: kumo-ui
+  template:
+    metadata:
+      annotations:
+        checksum/ui-config: {{ include (print $.Template.BasePath "/configmap-ui-config.yaml") . | sha256sum }}
+        {{- include "kumo.podAnnotations" . | nindent 8 }}
+      labels:
+        app: kumo-ui
+        tenant: {{ .Values.global.tenant }}
+        {{- include "kumo.frontendPodLabels" (dict "root" . "component" "frontend") | nindent 8 }}
+        {{- include "kumo.workloadPodLabels" (dict "root" . "role" "frontend") | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "kumo.serviceAccountName" (dict "root" . "role" "frontend") }}
+      automountServiceAccountToken: {{ include "kumo.serviceAccountAutomount" (dict "root" . "role" "frontend") }}
+      securityContext:
+        {{- include "kumo.podSecurityContext" (dict "root" . "extra" dict) | nindent 8 }}
+      {{- include "kumo.nodeTargeting" . | nindent 6 }}
+      {{- include "kumo.imagePullSecrets" . | nindent 6 }}
+      containers:
+      - name: kumo-ui
+        image: {{ include "kumo.uiImage" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        securityContext:
+          {{- include "kumo.containerSecurityContext" (dict "root" . "extra" dict) | nindent 10 }}
+        ports:
+        - containerPort: 3000
+          name: http
+        env:
+        {{- include "kumo.downwardApiEnv" . | nindent 8 }}
+        - name: KUMO_UI_ROUTING_MODE
+          value: "frontend"
+        - name: KUMO_PRIVATE_UPSTREAM
+          value: "kumo-rest:80"
+        - name: KUMO_PUBLIC_UPSTREAM
+          value: "kumo-api:80"
+        - name: KUMO_EXTERNAL_HOST
+          value: {{ $externalHost | quote }}
+        - name: KUMO_EXTERNAL_SCHEME
+          value: {{ $externalScheme | quote }}
+        resources:
+          {{- toYaml .Values.workloads.ui.resources | nindent 10 }}
+        volumeMounts:
+        - mountPath: /tmp/config
+          name: ui-config
+          readOnly: true
+      volumes:
+      - name: ui-config
+        configMap:
+          name: ui-config

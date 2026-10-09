@@ -1,0 +1,693 @@
+{
+  "$defs": {
+    "ADLSRelativeSource": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "mode": {
+          "const": "relative",
+          "default": "relative",
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "ADLSRelativeSource",
+      "type": "object"
+    },
+    "ADLSSourceTable": {
+      "additionalProperties": false,
+      "properties": {
+        "connector_id": {
+          "title": "Connector Id",
+          "type": "string"
+        },
+        "file_type": {
+          "$ref": "#/$defs/FileType"
+        },
+        "source": {
+          "discriminator": {
+            "mapping": {
+              "relative": "#/$defs/ADLSRelativeSource",
+              "uri": "#/$defs/ADLSURISource"
+            },
+            "propertyName": "mode"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ADLSRelativeSource"
+            },
+            {
+              "$ref": "#/$defs/ADLSURISource"
+            }
+          ],
+          "title": "Source"
+        },
+        "data_source_type": {
+          "const": "ADLS",
+          "default": "ADLS",
+          "title": "Data Source Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connector_id",
+        "file_type",
+        "source"
+      ],
+      "title": "ADLSSourceTable",
+      "type": "object"
+    },
+    "ADLSURISource": {
+      "additionalProperties": false,
+      "properties": {
+        "uri": {
+          "title": "Uri",
+          "type": "string"
+        },
+        "mode": {
+          "const": "uri",
+          "default": "uri",
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "uri"
+      ],
+      "title": "ADLSURISource",
+      "type": "object"
+    },
+    "BigQuerySourceTable": {
+      "additionalProperties": false,
+      "properties": {
+        "bigquery_connector_id": {
+          "title": "Bigquery Connector Id",
+          "type": "string"
+        },
+        "table_name": {
+          "title": "Table Name",
+          "type": "string"
+        },
+        "project_id": {
+          "title": "Project Id",
+          "type": "string"
+        },
+        "dataset_id": {
+          "title": "Dataset Id",
+          "type": "string"
+        },
+        "data_source_type": {
+          "const": "BIGQUERY",
+          "default": "BIGQUERY",
+          "title": "Data Source Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bigquery_connector_id",
+        "table_name",
+        "project_id",
+        "dataset_id"
+      ],
+      "title": "BigQuerySourceTable",
+      "type": "object"
+    },
+    "Column": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "stype": {
+          "$ref": "#/$defs/Stype"
+        },
+        "dtype": {
+          "$ref": "#/$defs/Dtype"
+        },
+        "timestamp_format": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TimestampUnit"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Timestamp Format"
+        },
+        "multicategorical_delimiter": {
+          "anyOf": [
+            {
+              "enum": [
+                ",",
+                "|",
+                ";",
+                "\t"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Multicategorical Delimiter"
+        }
+      },
+      "required": [
+        "name",
+        "stype",
+        "dtype"
+      ],
+      "title": "Column",
+      "type": "object"
+    },
+    "ColumnKey": {
+      "additionalProperties": false,
+      "properties": {
+        "table_name": {
+          "title": "Table Name",
+          "type": "string"
+        },
+        "col_name": {
+          "title": "Col Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "table_name",
+        "col_name"
+      ],
+      "title": "ColumnKey",
+      "type": "object"
+    },
+    "ColumnKeyGroup": {
+      "additionalProperties": false,
+      "properties": {
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/ColumnKey"
+          },
+          "title": "Columns",
+          "type": "array"
+        }
+      },
+      "required": [
+        "columns"
+      ],
+      "title": "ColumnKeyGroup",
+      "type": "object"
+    },
+    "ConnectorType": {
+      "enum": [
+        "snowflake",
+        "databricks",
+        "bigquery",
+        "s3",
+        "gcs",
+        "adls"
+      ],
+      "title": "ConnectorType",
+      "type": "string"
+    },
+    "CustomSQLSourceTable": {
+      "properties": {
+        "connector_id": {
+          "title": "Connector Id",
+          "type": "string"
+        },
+        "sql": {
+          "title": "Sql",
+          "type": "string"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        },
+        "connector_type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConnectorType"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "referenced_tables": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Referenced Tables",
+          "type": "array"
+        },
+        "data_source_type": {
+          "const": "CUSTOM_SQL",
+          "default": "CUSTOM_SQL",
+          "title": "Data Source Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connector_id",
+        "sql",
+        "table"
+      ],
+      "title": "CustomSQLSourceTable",
+      "type": "object"
+    },
+    "DatabricksSourceTable": {
+      "additionalProperties": false,
+      "properties": {
+        "databricks_connector_id": {
+          "title": "Databricks Connector Id",
+          "type": "string"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        },
+        "data_source_type": {
+          "const": "DATABRICKS",
+          "default": "DATABRICKS",
+          "title": "Data Source Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "databricks_connector_id",
+        "table"
+      ],
+      "title": "DatabricksSourceTable",
+      "type": "object"
+    },
+    "Dtype": {
+      "enum": [
+        "bool",
+        "int",
+        "byte",
+        "int16",
+        "int32",
+        "int64",
+        "float",
+        "float32",
+        "float64",
+        "string",
+        "binary",
+        "date",
+        "time",
+        "timedelta",
+        "floatlist",
+        "intlist",
+        "stringlist",
+        "unsupported"
+      ],
+      "title": "Dtype",
+      "type": "string"
+    },
+    "FileType": {
+      "enum": [
+        "CSV",
+        "PARQUET"
+      ],
+      "title": "FileType",
+      "type": "string"
+    },
+    "GCSRelativeSource": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "mode": {
+          "const": "relative",
+          "default": "relative",
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "GCSRelativeSource",
+      "type": "object"
+    },
+    "GCSSourceTable": {
+      "additionalProperties": false,
+      "properties": {
+        "connector_id": {
+          "title": "Connector Id",
+          "type": "string"
+        },
+        "file_type": {
+          "$ref": "#/$defs/FileType"
+        },
+        "source": {
+          "discriminator": {
+            "mapping": {
+              "relative": "#/$defs/GCSRelativeSource",
+              "uri": "#/$defs/GCSURISource"
+            },
+            "propertyName": "mode"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/GCSRelativeSource"
+            },
+            {
+              "$ref": "#/$defs/GCSURISource"
+            }
+          ],
+          "title": "Source"
+        },
+        "data_source_type": {
+          "const": "GCS",
+          "default": "GCS",
+          "title": "Data Source Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connector_id",
+        "file_type",
+        "source"
+      ],
+      "title": "GCSSourceTable",
+      "type": "object"
+    },
+    "GCSURISource": {
+      "additionalProperties": false,
+      "properties": {
+        "uri": {
+          "title": "Uri",
+          "type": "string"
+        },
+        "mode": {
+          "const": "uri",
+          "default": "uri",
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "uri"
+      ],
+      "title": "GCSURISource",
+      "type": "object"
+    },
+    "S3RelativeSource": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "mode": {
+          "const": "relative",
+          "default": "relative",
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "S3RelativeSource",
+      "type": "object"
+    },
+    "S3SourceTable": {
+      "additionalProperties": false,
+      "properties": {
+        "connector_id": {
+          "title": "Connector Id",
+          "type": "string"
+        },
+        "file_type": {
+          "$ref": "#/$defs/FileType"
+        },
+        "source": {
+          "discriminator": {
+            "mapping": {
+              "relative": "#/$defs/S3RelativeSource",
+              "uri": "#/$defs/S3URISource"
+            },
+            "propertyName": "mode"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/S3RelativeSource"
+            },
+            {
+              "$ref": "#/$defs/S3URISource"
+            }
+          ],
+          "title": "Source"
+        },
+        "data_source_type": {
+          "const": "S3",
+          "default": "S3",
+          "title": "Data Source Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connector_id",
+        "file_type",
+        "source"
+      ],
+      "title": "S3SourceTable",
+      "type": "object"
+    },
+    "S3URISource": {
+      "additionalProperties": false,
+      "properties": {
+        "uri": {
+          "title": "Uri",
+          "type": "string"
+        },
+        "mode": {
+          "const": "uri",
+          "default": "uri",
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "uri"
+      ],
+      "title": "S3URISource",
+      "type": "object"
+    },
+    "SnowflakeSourceTable": {
+      "additionalProperties": false,
+      "properties": {
+        "snowflake_connector_id": {
+          "title": "Snowflake Connector Id",
+          "type": "string"
+        },
+        "database": {
+          "title": "Database",
+          "type": "string"
+        },
+        "schema_name": {
+          "title": "Schema Name",
+          "type": "string"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        },
+        "data_source_type": {
+          "const": "SNOWFLAKE",
+          "default": "SNOWFLAKE",
+          "title": "Data Source Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "snowflake_connector_id",
+        "database",
+        "schema_name",
+        "table"
+      ],
+      "title": "SnowflakeSourceTable",
+      "type": "object"
+    },
+    "Stype": {
+      "enum": [
+        "numerical",
+        "categorical",
+        "multicategorical",
+        "ID",
+        "text",
+        "timestamp",
+        "sequence",
+        "image",
+        "unsupported"
+      ],
+      "title": "Stype",
+      "type": "string"
+    },
+    "TableDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "cols": {
+          "items": {
+            "$ref": "#/$defs/Column"
+          },
+          "title": "Cols",
+          "type": "array"
+        },
+        "source_table": {
+          "discriminator": {
+            "mapping": {
+              "ADLS": "#/$defs/ADLSSourceTable",
+              "BIGQUERY": "#/$defs/BigQuerySourceTable",
+              "CUSTOM_SQL": "#/$defs/CustomSQLSourceTable",
+              "DATABRICKS": "#/$defs/DatabricksSourceTable",
+              "GCS": "#/$defs/GCSSourceTable",
+              "S3": "#/$defs/S3SourceTable",
+              "SNOWFLAKE": "#/$defs/SnowflakeSourceTable",
+              "UNAVAILABLE": "#/$defs/UnavailableSourceTable"
+            },
+            "propertyName": "data_source_type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/S3SourceTable"
+            },
+            {
+              "$ref": "#/$defs/SnowflakeSourceTable"
+            },
+            {
+              "$ref": "#/$defs/DatabricksSourceTable"
+            },
+            {
+              "$ref": "#/$defs/BigQuerySourceTable"
+            },
+            {
+              "$ref": "#/$defs/GCSSourceTable"
+            },
+            {
+              "$ref": "#/$defs/ADLSSourceTable"
+            },
+            {
+              "$ref": "#/$defs/CustomSQLSourceTable"
+            },
+            {
+              "$ref": "#/$defs/UnavailableSourceTable"
+            }
+          ],
+          "title": "Source Table"
+        },
+        "pkey": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pkey"
+        },
+        "time_col": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Time Col"
+        },
+        "end_time_col": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Time Col"
+        }
+      },
+      "required": [
+        "cols",
+        "source_table"
+      ],
+      "title": "TableDefinition",
+      "type": "object"
+    },
+    "TimestampUnit": {
+      "enum": [
+        "s",
+        "ms",
+        "us",
+        "ns"
+      ],
+      "title": "TimestampUnit",
+      "type": "string"
+    },
+    "UnavailableSourceTable": {
+      "additionalProperties": false,
+      "properties": {
+        "table": {
+          "title": "Table",
+          "type": "string"
+        },
+        "data_source_type": {
+          "const": "UNAVAILABLE",
+          "default": "UNAVAILABLE",
+          "title": "Data Source Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "table"
+      ],
+      "title": "UnavailableSourceTable",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "tables": {
+      "additionalProperties": {
+        "$ref": "#/$defs/TableDefinition"
+      },
+      "title": "Tables",
+      "type": "object"
+    },
+    "col_groups": {
+      "items": {
+        "$ref": "#/$defs/ColumnKeyGroup"
+      },
+      "title": "Col Groups",
+      "type": "array"
+    }
+  },
+  "required": [
+    "tables",
+    "col_groups"
+  ],
+  "title": "GraphDefinition",
+  "type": "object"
+}

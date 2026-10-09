@@ -1,0 +1,50 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- /* Cache nodes may leave NVMe raw for a local-volume CSI driver, while
+overflow nodes need it exposed as kubelet ephemeral storage. */ -}}
+{{- $classes := list
+  (dict "name" "kumo-cpu" "instanceStorePolicy" "" "rootVolumeGiB" 0)
+  (dict "name" "kumo-gpu"
+    "instanceStorePolicy" .Values.karpenter.cacheGpuInstanceStorePolicy
+    "rootVolumeGiB" (int .Values.karpenter.cacheGpuRootVolumeGiB))
+  (dict "name" "kumo-gpu-ephemeral" "instanceStorePolicy" "RAID0"
+    "rootVolumeGiB" 0) -}}
+{{- range $class := $classes }}
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: {{ $class.name }}
+  labels:
+    {{- include "kumo-platform-eks.labels" $ | nindent 4 }}
+spec:
+  role: {{ $.Values.karpenter.nodeRole | quote }}
+  amiSelectorTerms:
+    - alias: {{ $.Values.karpenter.amiAlias | quote }}
+  subnetSelectorTerms:
+    - tags:
+        {{- toYaml $.Values.karpenter.subnetSelectorTags | nindent 8 }}
+  securityGroupSelectorTerms:
+    - tags:
+        {{- toYaml $.Values.karpenter.securityGroupSelectorTags | nindent 8 }}
+  tags:
+    karpenter.sh/discovery: {{ $.Values.clusterName | quote }}
+    kumo.ai/platform: eks
+  {{- if $class.instanceStorePolicy }}
+  instanceStorePolicy: {{ $class.instanceStorePolicy }}
+  {{- end }}
+  {{- if $class.rootVolumeGiB }}
+  # /dev/xvda is AL2023's root device. Sizing it prevents DiskPressure when
+  # kubelet and containerd cannot use the instance store.
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: {{ $class.rootVolumeGiB }}Gi
+        volumeType: gp3
+        encrypted: true
+        deleteOnTermination: true
+  {{- end }}
+---
+{{- end }}

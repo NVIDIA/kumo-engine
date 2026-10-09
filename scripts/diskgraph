@@ -1,0 +1,204 @@
+#!/bin/bash -e
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+DISKGRAPH_SOURCE="${REPO_ROOT}/packages/diskgraph"
+
+usage() {
+    cat <<'EOF'
+Usage:
+  scripts/diskgraph stage-source --out <dir>
+  scripts/diskgraph install [--python <python>] [-f] [--wheel <wheel-or-dir>]
+  scripts/diskgraph verify [--python <python>] [--require-pin]
+  scripts/diskgraph hash-source
+  scripts/diskgraph wheel-env
+  scripts/diskgraph wheel-key
+
+The source is packages/diskgraph in this Kumo checkout.
+EOF
+}
+
+require_source() {
+    if [ ! -f "${DISKGRAPH_SOURCE}/pyproject.toml" ]; then
+        echo "DiskGraph source not found at ${DISKGRAPH_SOURCE}" >&2
+        exit 1
+    fi
+}
+
+require_python() {
+    if ! command -v "$1" >/dev/null 2>&1; then
+        echo "Python interpreter not found: $1" >&2
+        exit 1
+    fi
+}
+
+require_uv() {
+    if ! command -v uv >/dev/null 2>&1; then
+        echo "uv is required; install project toolchains with: mise install" >&2
+        exit 1
+    fi
+}
+
+verify_install() {
+    local python_bin="$1"
+    "$python_bin" - <<'PY'
+import os
+from importlib import metadata
+from pathlib import Path
+
+metadata.distribution("diskgraph")
+import diskgraph
+from diskgraph import SamplerEngine  # noqa: F401
+
+ingest = Path(diskgraph.__file__).parent / "bin" / "ingest"
+if not ingest.is_file() or not os.access(ingest, os.X_OK):
+    raise SystemExit(f"diskgraph ingest binary missing or not executable: {ingest}")
+print("diskgraph import ok")
+print(f"diskgraph ingest binary ok: {ingest}")
+PY
+
+    local ingest_bin
+    ingest_bin="$("$python_bin" - <<'PY'
+from pathlib import Path
+import diskgraph
+print(Path(diskgraph.__file__).parent / "bin" / "ingest")
+PY
+)"
+    "$ingest_bin" --help | grep -q -- '--output-dataplane-dir'
+}
+
+cmd_install() {
+    local python_bin="${VENV_PYTHON:-./.venv/bin/python}"
+    local force_reinstall=0
+    local target="$DISKGRAPH_SOURCE"
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --python) python_bin="${2:-}"; shift 2 ;;
+            -f|--force) force_reinstall=1; shift ;;
+            --wheel) target="${2:-}"; shift 2 ;;
+            *) echo "Unknown install argument: $1" >&2; usage >&2; exit 2 ;;
+        esac
+    done
+
+    if [ -d "$target" ] && [ "$target" != "$DISKGRAPH_SOURCE" ]; then
+        local -a wheels=("$target"/diskgraph-*.whl)
+        target="${wheels[0]}"
+    fi
+    if [ "$target" = "$DISKGRAPH_SOURCE" ]; then
+        require_source
+    elif [ ! -f "$target" ]; then
+        echo "DiskGraph wheel not found: $target" >&2
+        exit 1
+    fi
+    require_python "$python_bin"
+    require_uv
+    local -a install_args=(--python "$python_bin" --no-deps)
+    if [ "$force_reinstall" = "1" ]; then
+        install_args+=(--force-reinstall)
+    fi
+    uv pip install "${install_args[@]}" "$target"
+    verify_install "$python_bin"
+}
+
+cmd_verify() {
+    local python_bin="${VENV_PYTHON:-./.venv/bin/python}"
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --python) python_bin="${2:-}"; shift 2 ;;
+            --require-pin) shift ;;
+            *) echo "Unknown verify argument: $1" >&2; usage >&2; exit 2 ;;
+        esac
+    done
+    require_python "$python_bin"
+    verify_install "$python_bin"
+}
+
+copy_source() {
+    local destination="$1"
+    require_source
+    mkdir -p "$destination"
+    find "$destination" -mindepth 1 ! -name '.gitignore' -exec rm -rf {} +
+    tar -C "$DISKGRAPH_SOURCE" \
+        --exclude .git \
+        --exclude .gitignore \
+        --exclude target \
+        -cf - . | tar -C "$destination" -xf -
+}
+
+cmd_stage_source() {
+    local destination=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --out) destination="${2:-}"; shift 2 ;;
+            *) echo "Unknown stage-source argument: $1" >&2; usage >&2; exit 2 ;;
+        esac
+    done
+    if [ -z "$destination" ]; then
+        echo "stage-source requires --out <dir>" >&2
+        exit 2
+    fi
+    copy_source "$destination"
+}
+
+cmd_hash_source() {
+    require_source
+    python3 - "$DISKGRAPH_SOURCE" <<'PY'
+import hashlib
+import os
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve()
+digest = hashlib.sha256()
+for current, directories, files in os.walk(root):
+    directories[:] = sorted(name for name in directories
+                             if name not in {'.git', 'target'})
+    for name in sorted(files):
+        path = Path(current, name)
+        relative = path.relative_to(root).as_posix()
+        digest.update(relative.encode())
+        digest.update(b'\0')
+        digest.update(path.read_bytes())
+        digest.update(b'\0')
+print(f'DISKGRAPH_SOURCE={root}')
+print(f'DISKGRAPH_SOURCE_SHA256={digest.hexdigest()}')
+PY
+}
+
+# CI wheel build settings; the wheel cache key covers them.
+WHEEL_RUST_TOOLCHAIN=1.98.1
+WHEEL_RUSTFLAGS='-C target-feature=+aes,+sse2 -C link-arg=-fuse-ld=lld -C debuginfo=line-tables-only'
+
+cmd_wheel_env() {
+    printf 'RUST_TOOLCHAIN=%s\nRUSTFLAGS=%s\n' "$WHEEL_RUST_TOOLCHAIN" "$WHEEL_RUSTFLAGS"
+}
+
+cmd_wheel_key() {
+    require_source
+    local tree settings
+    tree="$(git -C "$REPO_ROOT" rev-parse HEAD:packages/diskgraph)"
+    settings="$(cmd_wheel_env | sha256sum | cut -c1-12)"
+    echo "diskgraph-wheel-v2-${RUNNER_OS:-$(uname -s)}-${RUNNER_ARCH:-$(uname -m)}-${tree}-rust${WHEEL_RUST_TOOLCHAIN}-${settings}"
+}
+
+command="${1:-}"
+if [ -z "$command" ]; then
+    usage >&2
+    exit 2
+fi
+shift
+case "$command" in
+    install) cmd_install "$@" ;;
+    verify) cmd_verify "$@" ;;
+    stage-source) cmd_stage_source "$@" ;;
+    hash-source) cmd_hash_source "$@" ;;
+    wheel-env) cmd_wheel_env ;;
+    wheel-key) cmd_wheel_key ;;
+    -h|--help|help) usage ;;
+    *) echo "Unknown command: $command" >&2; usage >&2; exit 2 ;;
+esac

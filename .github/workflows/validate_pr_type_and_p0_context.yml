@@ -1,0 +1,263 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Validate PR Type and P0 Context
+
+on:  # yamllint disable-line rule:truthy
+  pull_request:
+    # Only PRs targeting a release branch (vX.Y) are gated. PRs into
+    # master need no pr-type label; the gate exists to keep unjustified changes
+    # off certified branches, so it runs only where backports land.
+    branches:
+      - 'v[0-9]*'
+    types: [opened, edited, reopened, synchronize, ready_for_review, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-pr-type:
+    name: Validate PR type label
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    steps:
+      - name: Validate PR type label
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const PR_TYPE_LABELS = {
+              regular: 'pr-type/regular',
+              p0Master: 'pr-type/p0-bug-fix-master',
+              releaseTestFix: 'pr-type/release-test-fix',
+              backport: 'pr-type/backport'
+            };
+
+            function checkMissingP0FixPlaceholders(prBody) {
+              const missingPlaceholders = [];
+              if (prBody.includes('<!-- GitHub issue links -->')) {
+                missingPlaceholders.push('Related P0 bug / incident ticket(s)');
+              }
+              if (prBody.includes('<!-- Plain language: what breaks for customers? -->')) {
+                missingPlaceholders.push('Brief symptoms / customer impact');
+              }
+              if (prBody.includes('<!-- e.g. "all EU SaaS" -->')) {
+                missingPlaceholders.push('Known affected customers / envs');
+              }
+              if (prBody.includes('<!-- Must check: 1) earliest version bug appeared, 2) ensuring forward-ported to all affected versions without gaps -->')) {
+                missingPlaceholders.push('Affected versions');
+              }
+              return missingPlaceholders;
+            }
+
+            const prNumber = context.payload.pull_request.number;
+            const body = (context.payload.pull_request.body || '').trim();
+
+            const { data: currentLabels } = await github.rest.issues.listLabelsOnIssue({
+              ...context.repo,
+              issue_number: prNumber,
+            });
+            const currentLabelNames = currentLabels.map(l => l.name);
+
+            // Check if PR has exactly one PR type label
+            const prTypeLabels = currentLabelNames.filter(name =>
+              Object.values(PR_TYPE_LABELS).includes(name)
+            );
+
+            if (prTypeLabels.length === 0) {
+              core.setFailed(
+                'PR type label is required. Please add exactly one label from:\n' +
+                '- pr-type/regular - Regular change\n' +
+                '- pr-type/p0-bug-fix-master - P0 Bug / Incident fix on `master`\n' +
+                '- pr-type/release-test-fix - Release-test fix (pre-certification only, no customer impact yet)\n' +
+                '- pr-type/backport - Backport / hotfix PR to a release branch'
+              );
+              return;
+            }
+
+            if (prTypeLabels.length > 1) {
+              core.setFailed(`Multiple PR type labels found: ${prTypeLabels.join(', ')}. Please keep only one PR type label.`);
+              return;
+            }
+
+            const prTypeLabel = prTypeLabels[0];
+            core.info(`PR type label detected: ${prTypeLabel}`);
+
+            const baseBranch = context.payload.pull_request.base.ref;
+            const isReleaseBranch = /^v\d+\.\d+$/.test(baseBranch);
+
+            // All PRs targeting release branches MUST have backport label
+            if (isReleaseBranch && prTypeLabel !== PR_TYPE_LABELS.backport) {
+              core.setFailed(
+                `All PRs targeting release branches must be labeled with '${PR_TYPE_LABELS.backport}'. ` +
+                `This PR targets release branch '${baseBranch}' but has label '${prTypeLabel}'. ` +
+                `Please change the PR type label to '${PR_TYPE_LABELS.backport}'.`
+              );
+              return;
+            }
+
+            // Validate backport PR requirements
+            if (prTypeLabel === PR_TYPE_LABELS.backport) {
+              core.info('Backport / hotfix PR detected.');
+
+              // Check if the base branch is a release branch (already checked above, but verify format)
+              if (!isReleaseBranch) {
+                core.setFailed('Base branch is not a release branch. Please select a release branch when creating a backport / hotfix PR.');
+                return;
+              }
+
+              // Extract master PR URL from the template section
+              const masterUrlMatch = body.match(/Related master PR:\s*(\S+)/);
+              if (!masterUrlMatch || masterUrlMatch[1].includes('<PR_URL>')) {
+                core.setFailed(
+                  'Backport / hotfix PR requires a "Related master PR" URL in the PR description. ' +
+                  'Please add it in the "If Backport / Hotfix PR" section.'
+                );
+                return;
+              }
+
+              const masterUrl = masterUrlMatch[1];
+              const prMatch = masterUrl.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
+              if (!prMatch) {
+                core.setFailed(
+                  'The "Related master PR" does not look like a valid GitHub pull request URL. Please fix it.'
+                );
+                return;
+              }
+
+              const [, owner, repo, prNumberStr] = prMatch;
+              const masterPrNumber = parseInt(prNumberStr, 10);
+
+              // Fetch the master PR
+              let masterPr;
+              try {
+                const response = await github.rest.pulls.get({
+                  owner,
+                  repo,
+                  pull_number: masterPrNumber,
+                });
+                masterPr = response.data;
+              } catch (error) {
+                core.setFailed(
+                  `Failed to fetch the master PR #${masterPrNumber} from ${owner}/${repo}. ` +
+                  `Please verify the PR URL is correct and accessible. Error: ${error.message}`
+                );
+                return;
+              }
+
+              // Check if master PR has pr-type/p0-bug-fix-master or pr-type/release-test-fix label
+              const { data: masterPrLabels } = await github.rest.issues.listLabelsOnIssue({
+                owner,
+                repo,
+                issue_number: masterPrNumber,
+              });
+              const masterPrLabelNames = masterPrLabels.map(l => l.name);
+
+              const isP0Master = masterPrLabelNames.includes(PR_TYPE_LABELS.p0Master);
+              const isReleaseTestFix = masterPrLabelNames.includes(PR_TYPE_LABELS.releaseTestFix);
+
+              // Release-test-fix is always allowed for backports
+              if (isReleaseTestFix) {
+                core.info('Backport PR points to a release-test-fix PR.');
+                return;
+              }
+
+              // If not release-test-fix, must be P0 fix or linked to incident/P0
+              const masterBody = (masterPr.body || '').trim();
+
+              if (!isP0Master) {
+                // Check if master PR is linked to incident/P0 issues
+                const relatedSectionMatch = masterBody.match(
+                  /Related P0 bug \/ incident ticket\(s\):([\s\S]*?)(?:\n\*\*If Backport|\n### Checklist|$)/
+                );
+
+                let incidentLinked = false;
+                if (relatedSectionMatch) {
+                  const block = relatedSectionMatch[1];
+                  const issueNumbers = new Set();
+
+                  const hashRefs = block.match(/#(\d+)/g) || [];
+                  for (const ref of hashRefs) {
+                    issueNumbers.add(parseInt(ref.slice(1), 10));
+                  }
+
+                  const urlRefs = block.match(/issues\/(\d+)/g) || [];
+                  for (const ref of urlRefs) {
+                    const numMatch = ref.match(/(\d+)/);
+                    if (numMatch) {
+                      issueNumbers.add(parseInt(numMatch[1], 10));
+                    }
+                  }
+
+                  for (const issueNumber of issueNumbers) {
+                    try {
+                      const { data: issue } = await github.rest.issues.get({
+                        owner,
+                        repo,
+                        issue_number: issueNumber,
+                      });
+                      const labelNames = issue.labels.map(l =>
+                        typeof l === 'string' ? l : l.name
+                      );
+                      if (
+                        labelNames.includes('incident') ||
+                        (labelNames.includes('0 - Priority P0') && labelNames.includes('bug'))
+                      ) {
+                        incidentLinked = true;
+                        break;
+                      }
+                    } catch (error) {
+                      // If issue doesn't exist or can't be accessed, skip it
+                      core.warning(`Could not fetch issue #${issueNumber} from ${owner}/${repo}: ${error.message}`);
+                      continue;
+                    }
+                  }
+                }
+
+                if (!incidentLinked) {
+                  core.setFailed(
+                    'Backport / hotfix PR must point to either:\n' +
+                    '1. A release-test-fix PR (pr-type/release-test-fix label), OR\n' +
+                    '2. A P0 bug fix PR (pr-type/p0-bug-fix-master label) that is linked to an incident or P0 bug issue.\n\n' +
+                    'The master PR is neither a marked as release-test-fix nor linked to any incident or P0 bug issue (labels `incident` or `0 - Priority P0` bug). ' +
+                    'Every backport has a risk of introducing regressions, and introduces the need for environments to be upgraded. ' +
+                    'Improve the master PR by linking to an incident or P0 bug issue, or marking it as a release-test-fix PR. If neither of those options applies, please reconsider the need of this backport, provide a short reasoning within the PR description and request approval from the release captain in #release.'
+                  );
+                  return;
+                }
+              }
+
+              // Verify required information is filled out in master PR
+              // (applies to both p0-bug-fix-master labeled PRs and incident-linked PRs)
+              const missingPlaceholders = checkMissingP0FixPlaceholders(masterBody);
+              if (missingPlaceholders.length > 0) {
+                const reason = isP0Master
+                  ? 'marked as a "P0 Bug / Incident fix on master"'
+                  : 'linked to an incident/P0 bug';
+                core.setFailed(
+                  `The master PR is ${reason} but still contains template placeholders in: ` +
+                  missingPlaceholders.join(', ') +
+                  '. Please fill out this section - the Adoption Pod uses this information (affected customers/versions/symptoms) to assess risk and decide which customers need upgrading.'
+                );
+                return;
+              }
+            }
+
+            // Validate P0 fix requirements
+            if (prTypeLabel === PR_TYPE_LABELS.p0Master) {
+              const missingPlaceholders = checkMissingP0FixPlaceholders(body);
+              if (missingPlaceholders.length > 0) {
+                core.setFailed(
+                  'This PR is marked as a "P0 Bug / Incident fix on master" but still contains template placeholders in: ' +
+                  missingPlaceholders.join(', ') +
+                  '. Please fill out this section - the Adoption Pod uses this information (affected customers/versions/symptoms) to assess risk and decide which customers need upgrading.'
+                );
+                return;
+              }
+            }
+
+            core.info('PR Type and P0 context validation passed.');

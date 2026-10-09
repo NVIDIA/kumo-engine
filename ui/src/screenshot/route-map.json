@@ -1,0 +1,175 @@
+[
+    {
+        "key": "new_training_workflow",
+        "description": "New Training page and model planner workflow",
+        "patterns": [
+            "^ui/src/pages/NewJob/Training/",
+            "^ui/src/components/NewJob/Training/",
+            "^ui/src/components/PredictiveQueries/Training/ModelPlanner",
+            "^ui/src/components/PredictiveQueries/Write/ModelPlanner"
+        ],
+        "routes": ["/newjob/training/"],
+        "recipeKeys": ["new_training"]
+    },
+    {
+        "key": "new_training_graph_preview",
+        "description": "New Training graph preview and table view workflow",
+        "patterns": ["^ui/src/components/Graphs/InformationPanel/"],
+        "routes": ["/newjob/training/"],
+        "recipeKeys": ["new_training_graph_table_view"]
+    },
+    {
+        "key": "new_prediction_workflow",
+        "description": "New Prediction workflow",
+        "patterns": [
+            "^ui/src/pages/NewJob/Prediction/",
+            "^ui/src/components/NewJob/Prediction/"
+        ],
+        "routes": ["/newjob/prediction/"],
+        "recipeKeys": ["new_prediction"]
+    },
+    {
+        "key": "connector_creation_workflow",
+        "description": "Connector creation and source selection workflow",
+        "patterns": ["^ui/src/pages/Connectors/NewConnector/"],
+        "routes": ["/connectors/new-connector"],
+        "recipeKeys": ["new_connector"]
+    },
+    {
+        "key": "table_creation_workflow",
+        "description": "Table creation and source selection workflow",
+        "patterns": ["^ui/src/components/Tables/Connect/"],
+        "routes": ["/tables/new-table"],
+        "recipeKeys": ["new_table"]
+    },
+    {
+        "key": "graph_creation_workflow",
+        "description": "Graph creation, table selection, and graph setup workflow",
+        "patterns": [
+            "^ui/src/pages/Graphs/NewGraph/",
+            "^ui/src/components/Graphs/GraphConfigPanel/",
+            "^ui/src/components/Graphs/LinkSetup/",
+            "^ui/src/components/Graphs/NameInput/"
+        ],
+        "routes": ["/graphs/new-graph"],
+        "recipeKeys": ["new_graph"]
+    },
+    {
+        "key": "graph_select_tables_workflow",
+        "description": "Graph creation table selection stage",
+        "patterns": ["^ui/src/components/Graphs/SelectTables/"],
+        "routes": ["/graphs/new-graph"],
+        "recipeKeys": ["new_graph_select_tables"]
+    },
+    {
+        "key": "entity_list_workflows",
+        "description": "Connector, table, and graph list pages",
+        "patterns": ["^ui/src/components/ListOverview/"],
+        "routes": ["/connectors/", "/tables/", "/graphs/"],
+        "recipeKeys": ["entity_lists"]
+    },
+    {
+        "key": "jobs_list_workflows",
+        "description": "Shared model and prediction list page component",
+        "patterns": ["^ui/src/pages/Jobs/JobsList"],
+        "routes": ["/models/", "/predictions/"],
+        "recipeKeys": ["jobs_lists"]
+    },
+    {
+        "key": "model_list_workflows",
+        "description": "Model list page",
+        "patterns": [
+            "^ui/src/pages/Jobs/JobsList\\.tsx$",
+            "^ui/src/pages/Jobs/__tests__/ModelList\\.test\\.tsx$"
+        ],
+        "routes": ["/models/"],
+        "recipeKeys": ["models_list"]
+    },
+    {
+        "key": "prediction_list_workflows",
+        "description": "Prediction list page",
+        "patterns": [
+            "^ui/src/pages/Jobs/JobsList\\.tsx$",
+            "^ui/src/pages/Jobs/__tests__/PredictionList\\.test\\.tsx$"
+        ],
+        "routes": ["/predictions/"],
+        "recipeKeys": ["predictions_list"]
+    },
+    {
+        "key": "model_detail_workflows",
+        "description": "Model detail page",
+        "patterns": [
+            "^ui/src/components/Jobs/Training/TrainingJobOverview",
+            "^ui/src/components/Jobs/Training/TrainingJob.tsx"
+        ],
+        "routes": ["/models/training/"],
+        "recipeKeys": ["model_details"]
+    },
+    {
+        "key": "training_table_detail_workflows",
+        "description": "Training table generation detail page",
+        "patterns": [
+            "^ui/src/components/Jobs/TrainingTable/TrainingTableGeneration\\.tsx$",
+            "^ui/src/components/Jobs/TrainingTable/TrainingTableGenOverview\\.tsx$"
+        ],
+        "routes": ["/models/trainingtable/"],
+        "recipeKeys": ["training_table_details"]
+    },
+    {
+        "key": "prediction_detail_workflows",
+        "description": "Prediction detail page",
+        "patterns": [
+            "^ui/src/components/Jobs/Prediction/PredictionJobOverview",
+            "^ui/src/components/Jobs/Prediction/PredictionJob.tsx"
+        ],
+        "routes": ["/predictions/prediction/"],
+        "recipeKeys": ["prediction_details"]
+    },
+    {
+        "key": "prediction_table_detail_workflows",
+        "description": "Prediction table generation detail page",
+        "patterns": [
+            "^ui/src/components/Jobs/PredictionTable/PredictionTableGeneration\\.tsx$",
+            "^ui/src/components/Jobs/PredictionTable/PredictionTableGenOverview\\.tsx$"
+        ],
+        "routes": ["/predictions/predictiontable/"],
+        "recipeKeys": ["prediction_table_details"]
+    },
+    {
+        "key": "prediction_outputs_workflows",
+        "description": "Prediction outputs panel",
+        "patterns": [
+            "^ui/src/components/BatchPredictions/PredictionOutputsOverview/"
+        ],
+        "routes": ["/predictions/prediction/"],
+        "recipeKeys": ["prediction_outputs"]
+    },
+    {
+        "key": "project_settings_workflow",
+        "description": "Project settings workflow",
+        "patterns": ["^ui/src/components/Project/ProjectSettings"],
+        "routes": ["/project/settings/"],
+        "recipeKeys": ["project_settings"]
+    },
+    {
+        "key": "project_list_workflow",
+        "description": "Project switcher dialog workflow",
+        "patterns": ["^ui/src/components/Project/ProjectList"],
+        "routes": ["/connectors/"],
+        "recipeKeys": ["project_list"]
+    },
+    {
+        "key": "new_project_workflow",
+        "description": "New Project dialog workflow",
+        "patterns": ["^ui/src/components/Project/NewProject"],
+        "routes": ["/connectors/"],
+        "recipeKeys": ["new_project"]
+    },
+    {
+        "key": "project_forms_workflow",
+        "description": "Shared project form controls",
+        "patterns": ["^ui/src/components/Project/NameInput/ProjectNameInput"],
+        "routes": ["/project/settings/", "/connectors/"],
+        "recipeKeys": ["project_forms"]
+    }
+]

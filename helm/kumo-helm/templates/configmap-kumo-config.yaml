@@ -1,0 +1,113 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kumo-config
+  labels:
+    {{- include "kumo.commonLabels" . | nindent 4 }}
+data:
+  # ── Identity ───────────────────────────────────────────────────────────────
+  INSTANCE_ID: {{ .Values.global.tenant | quote }}
+  DEPLOY_STAGE: {{ include "kumo.deployStage" . | quote }}
+  DISABLE_AUTH: {{ not .Values.auth.enabled | quote }}
+  AUTH0_CREDENTIALS_SECRETS_NAME: "AUTH0_CREDENTIALS"
+  # Disabled-auth sentinel. Works around an app bug: Auth0Credentials.available()
+  # (rest/config/authentication.py) only catches SecretAccessException, so the k8s_mount
+  # backend's SecretNotFoundException crashes startup even with DISABLE_AUTH=true — and
+  # available() is evaluated before the disable_auth short-circuit. The secret provider
+  # checks env vars before files, so this sentinel makes available() return False cleanly.
+  AUTH0_CREDENTIALS: "disabled"
+  {{- if .Values.auth.enabled }}
+  # Cookie auth (direct_connect) forbids wildcard CORS (kumo rest/settings.py
+  # validate_cors_allowed_origins) — emit explicit browser origins.
+  {{- $origins := .Values.auth.allowedReturnOrigins | default list }}
+  {{- if .Values.exposure.host }}
+  {{- $origins = prepend $origins (printf "https://%s" .Values.exposure.host) }}
+  {{- end }}
+  {{- if not $origins }}
+  {{- fail "auth.enabled=true requires explicit CORS origins: set exposure.host and/or auth.allowedReturnOrigins (direct_connect cookie auth rejects wildcard '*')" }}
+  {{- end }}
+  REST_CORS_ALLOWED_ORIGINS: {{ join "," $origins | quote }}
+  {{- end }}
+
+  # ── Object storage (S3) ──────────────────────────────────────────────────────
+  # AWS_REGION is consumed by boto3's S3 client; emitted only for an s3:// dataBucket
+  # (irrelevant for gs:// or abfss://). AWS_ACCOUNT_ID is intentionally NOT set — no
+  # functional reader in DiskGraph mode.
+  {{- if hasPrefix "s3://" .Values.kumoConfig.storage.dataBucket }}
+  AWS_REGION: {{ .Values.kumoConfig.storage.region | quote }}
+  {{- end }}
+
+  # ── Object storage (GCP) ────────────────────────────────────────────────────
+  {{- with (.Values.kumoConfig.gsaKey | default dict) }}
+  {{- if .existingSecret }}
+  GOOGLE_APPLICATION_CREDENTIALS: {{ include "kumo.gcpApplicationCredentialsPath" $ | quote }}
+  {{- if .projectId }}
+  GOOGLE_CLOUD_PROJECT: {{ .projectId | quote }}
+  {{- end }}
+  {{- end }}
+  {{- end }}
+
+  # ── Deploy config ────────────────────────────────────────────────────────────
+  # DEPLOY_ENV_CONFIG_JSON is the SINGLE unified config consumed by ALL kumo pods via
+  # deploy_env(): data_compute (DiskGraph + pool), orchestration (Temporal
+  # address/namespace/mTLS), secrets, storage.data_plane_storage_root, logging. It
+  # supersedes the legacy scattered env vars (CUSTOM_S3_DATA_PLANE_BUCKET, TEMPORAL_*,
+  # DATA_BACKEND, USE_S3_DB_STORAGE, …), which were the pre-migration fallback.
+  DEPLOY_ENV_CONFIG_JSON: {{ include "kumo.deployEnvConfigJson" . | quote }}
+
+  # ── REST API ───────────────────────────────────────────────────────────────
+  REST_API_HOST: "0.0.0.0"
+  DRIVER_RPC_TIMEOUT_SEC: "300"
+
+  # ── Feature flags (mirrors live diskgraph-test) ──────────────────────────────
+  CLEAN_TABLE_VERSION_CACHE: "true"
+  DELETE_OLD_BP_JOBS: "true"
+  DISABLE_PQLV2: "false"
+  DISABLE_REMOTE_INGESTION: "false"
+  ENABLE_ASYNC_INGESTION: "true"
+  ENABLE_DEMO_FEATURES: "false"
+  ENABLE_K8S_BACKEND: "1"
+  ENABLE_PRIVATE_PREVIEW: "true"
+  ENABLE_REMOTE_GRAPHENGINE: "false"
+  ENABLE_TEMPORAL_BACKEND: "true"
+  INGESTION_PARQUET_BLOCK_SIZE: "5242880"
+  IS_V2_UI: "true"
+  KUMO_EXPLAINER_RAISE_ON_ERROR: "false"
+  KUMO_TESTING: "False"
+  MAX_BP_JOBS_PER_WORKFLOW: "20"
+  MIN_CATEGORY_FREQUENCY_FRAC: "0.000001"
+  ML_MAX_CONCURRENT_JOBS_TOTAL: "5"
+  ML_MAX_CONCURRENT_PREDICTION_JOBS: "1"
+  ML_MAX_CONCURRENT_TRAINING_JOBS: "1"
+  ML_USE_JOB_QUEUE: "true"
+  PERFORM_V2_UPGRADE: "true"
+
+  # ── Observability ──────────────────────────────────────────────────────────
+  {{- if .Values.observability.otlpHostname }}
+  JAEGER_HOSTNAME: {{ .Values.observability.otlpHostname | quote }}
+  JAEGER_PORT: {{ .Values.observability.otlpPort | quote }}
+  {{- end }}
+  SLACK_URL: {{ .Values.observability.slackUrl | quote }}
+
+  # ── Worker/dataplane ────────────────────────────────────────────────────────
+  USE_IN_CLUSTER_K8S: "true"
+  # Base for runtime GPU/CPU pool images (pool/images.py joins with
+  # kumo-backend-{gpu,cpu}); same image.repoPath as templated images so an
+  # air-gap/mirror override relocates the runtime daemon too.
+  DEFAULT_REGISTRY: "{{ include "kumo.imageRepoBase" . }}/"
+  NUM_GPU_PER_JOB: "0"
+  POOL_NOFILE_SOFT_LIMIT: {{ .Values.kumoConfig.diskgraph.poolWorkerNofileSoftLimit | quote }}
+  # TT-NG pipeline toggle — see kumoConfig.diskgraph.ttNg in values.yaml.
+  KUMO_DISKGRAPH_TT_NG_ENABLED: {{ .Values.kumoConfig.diskgraph.ttNg | quote }}
+
+  # ── Extra env (escape hatch) ─────────────────────────────────────────────────
+  {{- range $key, $val := .Values.workloads.rest.extraEnv }}
+  {{- if not (or (eq $key "FORWARDED_ALLOW_IPS") (eq $key "DIRECT_CONNECT_PASSWORD_LOGIN_IP_RATE_LIMIT_ENABLED") (eq $key "POOL_NOFILE_SOFT_LIMIT")) }}
+  {{ $key }}: {{ $val | quote }}
+  {{- end }}
+  {{- end }}

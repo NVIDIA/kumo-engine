@@ -1,0 +1,117 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Public connector tests
+
+on:  # yamllint disable-line rule:truthy
+  pull_request:
+  push:
+    branches: [master]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-connectors-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  diskgraph-wheel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - id: wheel-key
+        run: echo "key=public-docker-$(./scripts/diskgraph wheel-key)-${{ hashFiles('tests/public_setup/Dockerfile.diskgraph*') }}" >> "$GITHUB_OUTPUT"
+      - id: wheel-cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: public-reports/wheel
+          key: ${{ steps.wheel-key.outputs.key }}
+      - name: Build DiskGraph from public source
+        if: steps.wheel-cache.outputs.cache-hit != 'true'
+        run: python3 scripts/test_public.py --build-wheel --reports public-reports
+      - if: steps.wheel-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: public-reports/wheel
+          key: ${{ steps.wheel-key.outputs.key }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: public-diskgraph-wheel
+          path: public-reports/wheel/diskgraph-*.whl
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  source-tests:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: connectors
+            runner: ubuntu-24.04
+          - group: connectors
+            runner: ubuntu-24.04-arm
+          - group: hosted-sdk
+            runner: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Check test runner failure handling
+        if: matrix.group == 'connectors'
+        run: python3 -m unittest discover -s test/scripts/public_tests -v
+      - name: Build and run public tests
+        run: |
+          umask 077
+          python3 scripts/test_public.py --group '${{ matrix.group }}'
+      - name: Save results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: public-tests-${{ matrix.group }}-${{ matrix.runner }}
+          path: |
+            public-reports/*.xml
+            public-reports/*.log
+            public-reports/results.json
+          retention-days: 7
+
+  native-tests:
+    needs: [diskgraph-wheel]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [local-sdk, mixed-files, pandas, minio, shared-sql]
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: public-diskgraph-wheel
+          path: public-reports/wheel
+      - name: Build and run public tests
+        run: |
+          umask 077
+          python3 scripts/test_public.py --group '${{ matrix.group }}' \
+            --wheel-dir public-reports/wheel
+      - name: Save results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: public-tests-${{ matrix.group }}
+          path: |
+            public-reports/*.xml
+            public-reports/*.log
+            public-reports/results.json
+          retention-days: 7

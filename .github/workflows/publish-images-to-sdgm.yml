@@ -1,0 +1,143 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: (Manual) Publish backend/UI images to sdgm NGC
+
+# Mirrors the three prebuilt images (kumo-backend-cpu, kumo-backend-gpu,
+# kumo-ui) at a given tag from ECR to the sdgm NGC org
+# (nvcr.io/1000161941370113/kumo-3 by default, ext-kumo-ea when isEA is true),
+# reusing the SAME tag.
+#
+# The images are NOT built here — they must already exist in ECR at the tag.
+# Each image is resolved to its immutable digest, trivy-scanned BY DIGEST, and
+# published (all-or-nothing) only if all three scans are clean:
+#   - vulns:   0 fixable CRITICAL/HIGH  (MEDIUM is not a publish blocker, e.g.
+#              build-tool CVEs like setuptools that can't be bumped without
+#              dropping pkg_resources)
+#   - secrets: 0, regardless of severity
+# Scanning + publishing the DIGEST (not the tag) closes a TOCTOU window: the ECR
+# repos are MUTABLE, so a tag could be re-pointed (e.g. a rebuild of the same
+# SHA) between the scan and the publish. We pin the digest (ship exactly the
+# bytes we scanned, destination still tagged normally) AND abort if the tag
+# moved before publishing — the sdgm destination is treated as immutable, so a
+# stale/unscanned publish there couldn't be overwritten to fix.
+#
+# nvstaging is intentionally NOT a target (no service-account key; those
+# publishes stay offline with a personal PAT). This automates only sdgm.
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag already present in ECR to publish (e.g. a kumo commit SHA)'
+        required: true
+        type: string
+      isEA:
+        description: 'Publish to ext-kumo-ea instead of kumo-3'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  ECR_REGISTRY: 926922431314.dkr.ecr.us-west-2.amazonaws.com
+  SDGM_REGISTRY: nvcr.io/1000161941370113/${{ inputs.isEA && 'ext-kumo-ea' || 'kumo-3' }}
+  AWS_REGION: us-west-2
+
+jobs:
+  publish:
+    # Single job so the scanned digest is the exact image published — no
+    # cross-job re-resolution of a mutable tag. Scan-all-then-publish-all keeps
+    # the all-or-nothing gate (the scan step fails before anything publishes).
+    environment: gha-kumo-image-sync-ecr-read
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7  # v6.0.0
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-image-sync-ecr-read
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR (source)
+        uses: aws-actions/amazon-ecr-login@376925c9d111252e87ae59691e5a442dd100ef6a  # v2.1.3
+
+      - name: Login to NGC sdgm (destination)
+        env:
+          NGC_SDGM_ADMIN: ${{ secrets.NGC_SDGM_ADMIN }}
+        run: |
+          printf '%s' "$NGC_SDGM_ADMIN" \
+            | docker login nvcr.io --username '$oauthtoken' --password-stdin
+
+      - name: Install Trivy
+        run: |
+          # Installer pinned to the trivy v0.72.0 commit; binary pinned to v0.72.0.
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/8a32853686209a428179bb3a1688802b25691564/contrib/install.sh \
+            | sudo sh -s -- -b /usr/local/bin v0.72.0
+          trivy --version
+
+      - name: Resolve digests + scan gate (all three; fails before any publish)
+        env:
+          TAG: ${{ inputs.tag }}   # via env, never interpolated into the script
+        run: |
+          set -euo pipefail
+          : > digests.txt
+          for image in kumo-backend-cpu kumo-backend-gpu kumo-ui; do
+            ref="${ECR_REGISTRY}/kumo/${image}:${TAG}"
+            # TODO(multi-arch): these images are single-platform (linux/amd64,
+            # built with buildah --platform). trivy --image-src remote scans a
+            # single platform, so if they ever become multi-arch manifest lists
+            # we would publish unscanned non-amd64 layers. Guard against that:
+            # fail loudly here so whoever introduces multi-arch must also add
+            # per-platform scanning, instead of silently shipping unscanned
+            # platforms.
+            mt="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.MediaType}}')"
+            case "$mt" in
+              *manifest.list*|*image.index*)
+                echo "::error::${image} is a multi-arch manifest list (${mt}); this workflow scans a single platform. Add per-platform scanning before publishing."
+                exit 1 ;;
+            esac
+            # Pin to the immutable digest the tag currently points at.
+            digest="$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')"
+            byd="${ECR_REGISTRY}/kumo/${image}@${digest}"
+            echo "::group::scan ${image} (${digest})"
+            # Vulns: only fixable CRITICAL/HIGH block (see header re: MEDIUM).
+            trivy image --image-src remote --scanners vuln \
+              --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 \
+              --timeout 30m "$byd"
+            # Secrets: ANY detected secret blocks, regardless of severity.
+            trivy image --image-src remote --scanners secret \
+              --exit-code 1 --timeout 30m "$byd"
+            echo "::endgroup::"
+            echo "${image} ${digest}" >> digests.txt
+          done
+
+      - name: Publish (copy the scanned digest -> sdgm:TAG)
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          # Abort if any tag moved since we scanned it. The destination (NGC) is
+          # treated as immutable — a stale/unscanned publish there can't be
+          # overwritten to fix — so we refuse rather than ship a snapshot that no
+          # longer matches the tag. Re-check ALL images before publishing ANY, so
+          # this stays all-or-nothing (no partial publish).
+          while read -r image digest; do
+            now="$(docker buildx imagetools inspect "${ECR_REGISTRY}/kumo/${image}:${TAG}" --format '{{.Manifest.Digest}}')"
+            if [ "${now}" != "${digest}" ]; then
+              echo "::error::${image}:${TAG} moved during the run (scanned ${digest}, now ${now}); aborting before any publish. Re-run to scan + publish the current image."
+              exit 1
+            fi
+          done < digests.txt
+          # All three still match what we scanned — publish all.
+          while read -r image digest; do
+            src="${ECR_REGISTRY}/kumo/${image}@${digest}"
+            dst="${SDGM_REGISTRY}/${image}:${TAG}"
+            echo "Copying ${src} -> ${dst}"
+            # Source pinned by digest, destination keeps the normal tag.
+            docker buildx imagetools create --tag "$dst" "$src"
+            echo "Published \`${dst}\` (from \`${digest}\`)" >> "$GITHUB_STEP_SUMMARY"
+          done < digests.txt

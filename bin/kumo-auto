@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+import argparse
+import gc
+import os
+import os.path as osp
+import sys
+import traceback
+
+# On macOS, force CPU training. MPS is selected automatically by PyTorch
+# Lightning but embedding_bag (used by GloVe) is not implemented for MPS,
+# causing every forward pass to transfer data MPS↔CPU and making training
+# ~10x slower than pure CPU for text-heavy workloads.
+if sys.platform == 'darwin':
+    os.environ.setdefault('KUMO_ACCELERATOR', 'cpu')
+
+from kumo_core.job_config import JobConfig, TrainStatus
+from kumo_core.resolved_task import ResolvedTaskSampling
+from kumo_core.task_dataset import DiskgraphTaskManifest
+from kumo_core.training.config import FitMode
+from kumo_core.training.orchestration import (
+    CallableTrainingOptions,
+    ResolvedTrainingInput,
+    TrainingBindings,
+    run_callable_training,
+)
+from kumo_core.types import ExplainMethod
+
+from common_utils.startup import log_app_startup
+from io_utils import logging
+from kumo.automl.runtime import (
+    MonolithAutoTrainingInstrumentation,
+    MonolithAutoTrainingRuntime,
+    MonolithVitalArtifactPublisher,
+    infer_authoring_max_target_neighbors_per_entity,
+    monolith_vital_artifact_sources,
+)
+from kumo.home import get_home_dir
+from kumo.platform_errors import as_platform_public_exception
+from kumo.runtime import init
+from kumo.task.task import Task
+from kumo.train.runtime_diagnostics import (
+    get_instance_id,
+    run_all_check_commands,
+)
+from rest.backends.ml_backend.timing import kumo_timing
+
+logger = logging.getLogger(__name__)
+_REDUCE_GRAPH_SIZE_MSG = ('Your modeling plan is requesting a subgraph '
+                          'size that is too large. To fix this, you can '
+                          'use the `num_neighbors` option to reduce the '
+                          'size of the neighborhood, or remove any large '
+                          'columns from your dataset (such as '
+                          'high-dimensional embedding columns).')
+
+
+def main(args):
+    job_config = JobConfig.load(args.json)
+
+    with kumo_timing("kumo_auto.kumo_init"):
+        init(
+            name=job_config.task_name,
+            home_dir=job_config.home_dir,
+            initialize_logging=False,
+            initialize_tracing=False,
+        )
+
+    logger.info("kumo-auto initialized")
+
+    # Initialize the logging with file-logging disabled:
+    logging.initialize_logging(
+        mode=logging.LoggingMode.DEVELOPMENT,
+        log_to_file=False,
+    )
+    log_app_startup()
+    logger.info("Execute kumo-auto on: "
+                f"{get_instance_id()}")
+
+    with kumo_timing("kumo_auto.run_check_commands"):
+        run_all_check_commands()
+
+    status = TrainStatus.load(get_home_dir(), args.debug)
+    # If job already succeeded and not in debug mode, we just
+    # exit program to prevent retry due to failed XAI.
+    if status.succeeded and not args.debug:
+        logger.warning("Skip retry as training job is already succeeded.")
+        return
+    # If job already failed with valid exceptions, do not automatically retry.
+    if not status.allow_k8s_retry and not args.debug:
+        raise RuntimeError("No k8s retry allowed. Enable 'debug' mode to "
+                           "retry.")
+
+    try:
+
+        status = TrainStatus.load(get_home_dir(), args.debug)
+        status.num_tries += 1
+        status.save(get_home_dir())
+        training_runtime = MonolithAutoTrainingRuntime()
+
+        with kumo_timing("kumo_auto.task_load"):
+            authoring_task = Task.load(
+                job_config.task_name,
+                job_config.home_dir,
+            )
+            task_manifest = DiskgraphTaskManifest.load(
+                osp.join(job_config.diskgraph_task_dataset_bundle_dir,
+                         "manifest.json"))
+            resolved_task = authoring_task.to_resolved_numerical_task(
+                task_manifest,
+                column_stats=task_manifest.load_column_stats(),
+                sampling=ResolvedTaskSampling(
+                    max_target_neighbors_per_entity=(
+                        infer_authoring_max_target_neighbors_per_entity(
+                            authoring_task)), ),
+            )
+        resolved_training_input = ResolvedTrainingInput(
+            task=resolved_task,
+            model_plan=training_runtime.load_automl_config(job_config),
+            home_dir=job_config.home_dir,
+            task_dataset_bundle_dir=(
+                job_config.diskgraph_task_dataset_bundle_dir),
+            warm_start_trainer_dir=job_config.warm_start_trainer_dir,
+        )
+
+        def before_evaluate():
+            status = TrainStatus.load(get_home_dir(), args.debug)
+            status.num_test_tries += 1
+            status.save(get_home_dir())
+
+        training_result = run_callable_training(
+            resolved_training_input,
+            bindings=TrainingBindings(
+                runtime=training_runtime,
+                instrumentation=MonolithAutoTrainingInstrumentation(),
+                resolve_vital_artifacts=monolith_vital_artifact_sources,
+                artifact_publisher=MonolithVitalArtifactPublisher(),
+                before_evaluate=before_evaluate,
+            ),
+            options=CallableTrainingOptions(
+                random_state_seed=args.seed,
+                debug=args.debug,
+                overwrite_train_table_edge=args.overwrite_train_table_edge,
+            ),
+        )
+        best_trainer = training_result.best_trainer
+
+        # Update train status with marking job has succeeded, to prevent
+        # future retries caused by XAI failure
+        status = TrainStatus.load(get_home_dir())
+        status.allow_k8s_retry = False
+        status.succeeded = True
+        status.save(get_home_dir())
+
+    except Exception as e:
+        stacktrace = ''.join(traceback.format_exception(e, e, e.__traceback__))
+        logger.warning(stacktrace)
+
+        status = TrainStatus.load(get_home_dir())
+
+        if status.stacktrace is None:
+            status.stacktrace = stacktrace
+
+        public_error = as_platform_public_exception(e)
+        if public_error is not None:
+            status.error_msg = public_error.get_user_message()
+            status.allow_k8s_retry = not public_error.non_retryable
+        elif "Unable to locate credentials" in str(stacktrace):
+            # In case of s3 credential issue, retry will help.
+            status.allow_k8s_retry = True
+        elif "out of memory" in stacktrace.lower():
+            # Detect CUDA OOM errors (cudaMalloc, OutOfMemoryError, etc.)
+            status.allow_k8s_retry = False
+            status.error_msg = (
+                "Out-of-memory (OOM) error: The training job ran out of "
+                "memory. To resolve this issue, consider:\n"
+                "- Reducing the batch size in your training configuration\n"
+                "- Reducing the number of sampled neighbors (num_neighbors)\n"
+                "- Excluding high-cardinality columns from the graph\n\n"
+                f"Error: {e}")
+        elif "Failed to initialize NVML: Unknown Error" in str(stacktrace):
+            # This specific NVML error is transient on newly provisioned nodes
+            # where the NVIDIA device plugin or drivers may not be fully ready.
+            # Other NVML errors (e.g., no GPU found) won't be fixed by retry.
+            status.allow_k8s_retry = True
+        else:
+            # In case of an exception, retry on k8s would not help so we
+            # disable retry in the train status.
+            status.allow_k8s_retry = False
+            # Special case: graph size error is user-actionable
+            if 'message larger than max' in str(e):
+                status.error_msg = f'{str(e)}. {_REDUCE_GRAPH_SIZE_MSG}'
+        status.save(get_home_dir())
+        raise e
+
+    if job_config.disable_explain:
+        logger.warning("Test set explanations have been disabled.")
+    else:
+        explain_methods = [
+            ExplainMethod.COLUMN_ANALYSIS,
+            ExplainMethod.GRADIENT,
+            ExplainMethod.SUBGRAPH_COLLECTOR,
+        ]
+        fit_mode_to_use = FitMode.fit
+        if best_trainer.refit_cfg.refitted_trainval:
+            fit_mode_to_use = FitMode.refit_trainval
+
+        with kumo_timing("kumo_auto.explain_test"):
+            best_trainer.explain(explain_methods=explain_methods, stage='test',
+                                 fit_mode_to_use=fit_mode_to_use)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='KUMO Training Script')
+
+    add = parser.add_argument
+    add(
+        '--json',
+        dest='json',
+        type=str,
+        required=True,
+        help=(
+            "JSON file containing the JobConfig for the task, automl config "
+            "and env variables, the config is defined in kumo/train/utils.py"),
+    )
+    add(
+        '--debug',
+        dest='debug',
+        required=False,
+        action='store_true',
+        help='Enable debug mode of auto trainer, ignore previous oom failure.',
+    )
+    add(
+        '--seed',
+        dest='seed',
+        type=int,
+        required=False,
+        default=None,
+        help='Random seed for reproducible results.',
+    )
+    add(
+        '--overwrite_train_table_edge',
+        dest='overwrite_train_table_edge',
+        required=False,
+        default=False,
+        help=("Overwrite the existing training table edges when materializing "
+              "the graph"),
+    )
+    return parser.parse_args()
+
+
+if __name__ == '__main__':
+    # Results are durable once main() returns. On py3.14, normal interpreter
+    # shutdown joins the DiskGraph sampler's native thread and hangs, so the
+    # parent never sees the child exit. os._exit skips finalization.
+    exit_code = 0
+    try:
+        main(parse_args())
+    except SystemExit as exc:
+        exit_code = exc.code if isinstance(
+            exc.code, int) else (0 if exc.code is None else 1)
+    except BaseException:
+        # main() already recorded the failure in TrainStatus; exit non-zero.
+        traceback.print_exc()
+        exit_code = 1
+    gc.collect()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(exit_code)

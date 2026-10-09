@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# AWS/EKS overlay. Apply before site-specific values.
+kumoTemporal:
+  platform: aws
+  security:
+    transport:
+      encryptionRequired: false
+      meshNamespaceLabels: {}
+  # The stock chart's server liveness probes originate from the kubelet.
+  # AWS VPC CNI network-policy enforcement blocks those node-originated
+  # probes. Security groups and Kubernetes namespace policy form the EKS
+  # boundary; this profile does not require a service mesh.
+  networkPolicy:
+    enabled: false
+
+temporal:
+  server:
+    # Updating this annotation with the packaged bundle digest rolls the server
+    # pods when the provider trust bundle changes.
+    podAnnotations:
+      kumo.ai/aws-rds-ca-sha256: 3904eb87884e7f062f6634d4e52f30cca4f6ad0c10142a960184b60cc3852a60
+    additionalVolumes:
+      - name: aws-rds-ca
+        configMap:
+          name: kumo-temporal-aws-rds-ca
+          items:
+            - key: aws-rds-roots.pem
+              path: aws-rds-roots.pem
+    additionalVolumeMounts:
+      - name: aws-rds-ca
+        mountPath: /etc/temporal/provider-certs
+        readOnly: true
+    config:
+      persistence:
+        datastores:
+          default:
+            sql:
+              tls:
+                caFile: /etc/temporal/provider-certs/aws-rds-roots.pem
+          visibility:
+            sql:
+              tls:
+                caFile: /etc/temporal/provider-certs/aws-rds-roots.pem
+
+  admintools:
+    additionalVolumes:
+      - name: aws-rds-ca
+        configMap:
+          # Schema is a pre-install/pre-upgrade hook, so it needs a CA
+          # ConfigMap created in an earlier hook phase.
+          name: kumo-temporal-aws-rds-ca-schema
+          items:
+            - key: aws-rds-roots.pem
+              path: aws-rds-roots.pem
+    additionalVolumeMounts:
+      - name: aws-rds-ca
+        mountPath: /etc/temporal/provider-certs
+        readOnly: true
+
+  schema:
+    podAnnotations:
+      kumo.ai/aws-rds-ca-sha256: 3904eb87884e7f062f6634d4e52f30cca4f6ad0c10142a960184b60cc3852a60

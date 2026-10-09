@@ -1,0 +1,19 @@
+{
+    "model_training_job_id": "trainingjob-643b107ebe94421bab84caed2c4ddff7",
+    "graph_snapshot_id": "graph-87d8eade28e9903332977300d2c39fe0@489091d95bde4dc02123802e874efd61",
+    "explanations": false,
+    "filter_overrides": {
+        "entity_filter": "",
+        "target_filter": ""
+    },
+    "job_tags": {
+        "FINANCIAL_STATIC_REG_PRED_1781333580003": "FINANCIAL_STATIC_REG_PRED_1781333580003"
+    },
+    "predict_options": {
+        "num_workers": 1
+    },
+    "predictive_query": "PREDICT TRANS_1781333580003.ACCOUNT FOR EACH TRANS_1781333580003.TRANS_ID WHERE TRANS_1781333580003.TYPE = \"PRIJEM\"",
+    "user": "John Doe",
+    "graph_id": "87d8eade28e9903332977300d2c39fe0",
+    "anchor_time": "inferred"
+}

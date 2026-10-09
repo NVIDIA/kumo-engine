@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+kumoTemporal:
+  security:
+    transport:
+      encryptionRequired: true
+      meshNamespaceLabels:
+        istio.io/rev: asm-1-26
+
+temporal:
+  server:
+    config:
+      persistence:
+        datastores:
+          default:
+            sql:
+              connectAddr: temporal.postgres.database.azure.com:5432
+              user: temporal_runtime
+              existingSecret: temporal-postgres
+          visibility:
+            sql:
+              connectAddr: temporal.postgres.database.azure.com:5432
+              user: temporal_runtime
+              existingSecret: temporal-postgres

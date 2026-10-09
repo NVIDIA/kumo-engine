@@ -1,0 +1,34 @@
+{
+    "appCssImports": 0,
+    "appCssLoc": 0,
+    "kumoCssLoc": 0,
+    "inlineStyleOccurrences": 16,
+    "filesWithInlineStyles": 12,
+    "arbitraryTailwindClasses": {
+        "dynamic": 8,
+        "viewport": 10,
+        "hardcodedPixels": 0
+    },
+    "neutralPaletteFiles": 0,
+    "catalogAdoptionRatio": 0.6,
+    "filesRenderingUiWithoutCatalogImport": 138,
+    "classAssertingTestFiles": 7,
+    "indirectClassNameFiles": 7,
+    "bidirectionalUiToFeatureImports": 0,
+    "cnAdopters": 38,
+    "templateLiteralClassNameFiles": 4,
+    "uiFilesImportingHooksOrStores": 3,
+    "presentationCandidates": 57,
+    "complexity": {
+        "highComplexityFiles": 56,
+        "mediumComplexityFiles": 43,
+        "filesOver400Loc": 48,
+        "filesOver20Imports": 13,
+        "avgImportsPerFile": 7.2,
+        "avgLocPerFile": 213
+    },
+    "circularDeps": 0,
+    "layerViolations": 0,
+    "storybookStories": 0,
+    "axeViolationsCriticalSerious": null
+}

@@ -1,0 +1,33 @@
+{
+    "model_training_job_id": "trainingjob-9f8b259b4f764c8f932ad5912a926ec2",
+    "graph_snapshot_id": "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460",
+    "explanations": false,
+    "filter_overrides": {
+        "entity_filter": "FINANCE_ACCOUNT.FREQUENCY = 'POPLATEK MESICNE'",
+        "target_filter": ""
+    },
+    "job_tags": {},
+    "predict_options": {
+        "num_workers": 2,
+        "binary_classification_threshold": 0.6
+    },
+    "predictive_query": "PREDICT COUNT(FINANCE_TRANS.*, 0, 30, days) = 0 FOR EACH FINANCE_ACCOUNT.ACCOUNT_ID WHERE FINANCE_ACCOUNT.FREQUENCY = 'POPLATEK MESICNE'",
+    "graph_id": "d445eeb8b2aa1b79a142406239fa74e8",
+    "anchor_time": "inferred",
+    "outputs": [
+        {
+            "storage_type": "S3",
+            "artifact_type": "PREDICTIONS",
+            "extra_fields": [],
+            "file_path": "momentic_predictions/predictions/pred/new_predictions_file.csv"
+        },
+        {
+            "storage_type": "S3",
+            "artifact_type": "EMBEDDINGS",
+            "extra_fields": [],
+            "file_path": "momentic_predictions/predictions/pred/new_embeddings_file.parquet"
+        }
+    ],
+    "tags": [],
+    "user": "test user"
+}

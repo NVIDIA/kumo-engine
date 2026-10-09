@@ -1,0 +1,85 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Test backend images
+
+on:  # yamllint disable-line rule:truthy
+  pull_request:
+    paths:
+      - '.github/workflows/_docker-kumo-backend-*-image-custom.yml'
+      - '.github/workflows/testing_arm_images.yml'
+      - 'uv.lock'
+      - '3rdparty/kumo-wheels/**'
+      - 'docker/Dockerfile.kumo_backend_cpu'
+      - 'docker/Dockerfile.kumo_backend_gpu'
+      - 'docker/kumodeps_base'
+      - 'docker/build_diskgraph_wheel'
+      - 'scripts/diskgraph'
+      - 'scripts/build_faiss_gpu_amd64_wheel.sh'
+      - 'scripts/build_faiss_gpu_arm64_wheel.sh'
+      - 'scripts/gen_third_party.py'
+      - 'scripts/update_packages.sh'
+      - 'docker/Makefile'
+      - 'setup.py'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  gpu:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: arm
+            target_platform: linux/arm64
+            cuda_arch_list: '12.1'
+            image_tag_suffix: '-arm64-ci'
+          - runner: ubuntu-22.04-large
+            target_platform: linux/amd64
+            cuda_arch_list: ''
+            image_tag_suffix: '-amd64-ci'
+    uses: ./.github/workflows/_docker-kumo-backend-gpu-image-custom.yml
+    with:
+      kumo_repo_ref: ${{ github.event.pull_request.head.sha }}
+      bake_glove_level: none
+      runner_label: ${{ matrix.runner }}
+      target_platform: ${{ matrix.target_platform }}
+      cuda_arch_list: ${{ matrix.cuda_arch_list }}
+      # These CI runners have no NVIDIA device; device-backed smoke tests run
+      # separately on GPU hosts.
+      exercise_gpu: false
+      image_tag_suffix: ${{ matrix.image_tag_suffix }}
+      push_image: false
+    secrets: inherit
+
+  cpu:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: arm
+            target_platform: linux/arm64
+            image_tag_suffix: '-arm64-ci'
+          - runner: ubuntu-22.04-large
+            target_platform: linux/amd64
+            image_tag_suffix: '-amd64-ci'
+    uses: ./.github/workflows/_docker-kumo-backend-cpu-image-custom.yml
+    with:
+      kumo_repo_ref: ${{ github.event.pull_request.head.sha }}
+      bake_glove_level: none
+      runner_label: ${{ matrix.runner }}
+      target_platform: ${{ matrix.target_platform }}
+      image_tag_suffix: ${{ matrix.image_tag_suffix }}
+      push_image: false
+    secrets: inherit

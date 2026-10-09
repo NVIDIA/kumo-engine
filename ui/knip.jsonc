@@ -1,0 +1,84 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+{
+    "$schema": "./node_modules/knip/schema.json",
+    // The `!` suffix marks a pattern as "production". `knip --production` (see the
+    // knip:production npm script) analyzes ONLY these production files, so test
+    // files are dropped as consumers. A component imported solely from a test then
+    // shows up as an Unused File — i.e. knip flags it as rendered only in tests and
+    // suggests deleting it. Plain `knip` (default mode) keeps using every pattern,
+    // including test files, and continues to warn about ordinary unused code.
+    "entry": [
+        "src/routes/Routes.tsx!",
+        "*.config.{ts,js,mjs}",
+        "orval.config.ts"
+    ],
+    "project": ["src/**/*.{ts,tsx,js}!", "*.config.{ts,js}"],
+    // Treat ALL test-support files — specs plus the `.mock.ts` / fixture helpers
+    // under `__tests__/` and `src/tests/` — as vitest test files. This is the key
+    // to making both modes correct:
+    //   • default mode: they are entry points, so they (and the production exports
+    //     they consume, e.g. GraphResponse / ValidateQueryStringRequest used only
+    //     in a `.mock.ts`) count as used and are NOT falsely flagged.
+    //   • --production mode: knip drops these test entries, so a component imported
+    //     only from a test surfaces as an Unused File — AND the fixtures themselves
+    //     are not re-reported as unused, since they are recognized as test files.
+    // (Do NOT negate these out of `project` instead: a negation applies in BOTH
+    // modes and would stop their imports from counting in default mode, which is
+    // exactly what produced false-positive "unused type" reports.)
+    "vitest": {
+        "entry": [
+            "src/**/*.{test,spec}.{ts,tsx}",
+            "src/**/__tests__/**/*.{ts,tsx}",
+            "src/tests/**/*.{ts,tsx}"
+        ]
+    },
+    "ignore": [
+        "src/gen/**",
+        "src/utils/PQLParsing/grammar/**",
+        // Hand-rolled legacy types being progressively replaced by Orval-generated
+        // types in gen/v[01]/. Several exports (FPID, TrialProgress, JobTags,
+        // TopKFeatures, TopKFeaturesGlobal, EntityNodePredRfm, CategoryNodePredRfm)
+        // are currently unused but kept until callsites migrate. Drop this entry
+        // once the file is empty or every export is referenced.
+        "src/types/training_job.ts"
+        // NOTE: test files are intentionally NOT ignored here. `ignore` suppresses
+        // reports but STILL counts a file's imports as usage — which would mask
+        // test-only components. Test files are instead auto-detected via the vitest
+        // plugin: they act as entry points in default mode (so their own exports
+        // aren't falsely flagged) and are excluded in `--production` mode.
+    ],
+    // Enum members are disabled: most Kumo enums map members to backend string
+    // values (sTypes, runMode, inputState, CtaSourceName, route paths). knip only
+    // tracks references to the member symbol, not its string value, so backend-
+    // contract enums always look "unused" and produce permanent false positives.
+    // Genuinely-dead members were removed manually; this rule stays off to avoid
+    // re-flagging the contract enums on every future API addition.
+    "ignoreDependencies": [
+        "ajv",
+        "lint-staged",
+        "@codemirror/lang-javascript",
+        "@codemirror/lang-sql",
+        "@codemirror/lang-yaml",
+        "orval",
+        "process",
+        "@redux-devtools/extension",
+        "@types/d3-force",
+        "assert",
+        "attr-accept",
+        "cmdk",
+        "eslint-plugin-jsx-a11y",
+        "eslint-plugin-tailwindcss",
+        // Used by @import "tailwindcss" in the UI catalog stylesheet; Knip does not scan CSS imports.
+        "tailwindcss"
+    ],
+    "ignoreExportsUsedInFile": true,
+    "rules": {
+        "enumMembers": "off",
+        "dependencies": "error",
+        "devDependencies": "error",
+        "unlisted": "warn"
+    }
+}

@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+clusterName: REPLACE_CLUSTER_NAME
+
+karpenter:
+  nodeRole: REPLACE_KARPENTER_NODE_ROLE
+  amiAlias: al2023@latest
+  # Cache nodes only: RAID0 gives local NVMe to kubelet; "" leaves it raw for a
+  # local-volume CSI driver. Quote the empty string.
+  cacheGpuInstanceStorePolicy: RAID0
+  # Increase when unbounded /mnt/ebs-scratch ingest spill needs more space.
+  cacheGpuRootVolumeGiB: 200
+  subnetSelectorTags:
+    karpenter.sh/discovery: REPLACE_CLUSTER_NAME
+  securityGroupSelectorTags:
+    karpenter.sh/discovery: REPLACE_CLUSTER_NAME
+
+nodePools:
+  # m7a.2xlarge fits the control plane after system reservations. maxCpu=32
+  # preserves the previous four-node ceiling and leaves room for Karpenter node
+  # replacement; Kumo Deployment rollouts themselves use maxSurge=0.
+  cpu:
+    enabled: true
+    # Additional labels stamped on the CPU pool alongside kumo.ai/node-pool=cpu.
+    labels: {}
+    instanceTypes: [m7a.2xlarge]
+    capacityTypes: [on-demand]
+    maxCpu: "32"
+  cacheTiers:
+    - name: small
+      instanceTypes: [g4dn.xlarge]
+      capacityTypes: [on-demand]
+      ssdGiB: 256
+      gpuCount: 1
+      maxCpu: "8"
+    - name: medium
+      instanceTypes: [g4dn.2xlarge]
+      capacityTypes: [on-demand]
+      ssdGiB: 512
+      gpuCount: 1
+      maxCpu: "16"
+    - name: large
+      instanceTypes: [g4dn.8xlarge]
+      capacityTypes: [on-demand]
+      ssdGiB: 1024
+      gpuCount: 1
+      maxCpu: "64"
+  ephemeral:
+    instanceTypes: [g4dn.xlarge]
+    capacityTypes: [on-demand]
+    maxCpu: "8"
+  expireAfter: 720h
+  consolidateAfter: 5m
+
+storageClass:
+  create: true
+  name: ebs-gp3-xfs
+  volumeType: gp3
+  fsType: xfs
+  encrypted: true
+  reclaimPolicy: Delete
+
+devicePlugin:
+  enabled: true
+  image:
+    repository: nvcr.io/nvidia/k8s-device-plugin
+    tag: v0.19.0
+    pullPolicy: IfNotPresent
+  nodeSelector:
+    kumo.ai/gpu-node: "true"
+  resources:
+    requests: {cpu: 25m, memory: 32Mi}
+    limits: {cpu: 200m, memory: 128Mi}

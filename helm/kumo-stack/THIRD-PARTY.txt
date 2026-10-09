@@ -1,0 +1,6 @@
+Kumo Helm bundle third-party notices
+
+This bundle includes the Temporal Helm chart, licensed under the MIT License.
+The copyright notice and license text are distributed at:
+
+  charts/kumo-temporal/charts/temporal/LICENSE

@@ -1,0 +1,113 @@
+{
+    "id": "bp-job-3f5f52a53f01473d8c5123ff7ba4fd15",
+    "config": {
+        "predictive_query_id": "NA-558e58967ac7fadf2a9a408fa4a8b52d",
+        "training_job_id": "trainingjob-9f8b259b4f764c8f932ad5912a926ec2",
+        "task_type": "binary_classification",
+        "num_classes_to_return": null,
+        "binary_classification_threshold": 0.6,
+        "prediction_time": null,
+        "lag_timesteps": null,
+        "year_over_year": false,
+        "forecast_length": null,
+        "filter_override_args": null,
+        "transformation": null,
+        "outputs": [
+            {
+                "artifact_type": "PREDICTIONS",
+                "file_path": "s3://kumo-public-datasets/momentic_predictions/pred/predictions/new_predictions_file.csv",
+                "storage_type": "S3",
+                "extra_fields": [],
+                "file_type": null
+            },
+            {
+                "artifact_type": "EMBEDDINGS",
+                "file_path": "s3://kumo-public-datasets/momentic_predictions/pred/predictions/new_embeddings_file.parquet",
+                "storage_type": "S3",
+                "extra_fields": [],
+                "file_type": null
+            }
+        ],
+        "output_table_name": null,
+        "output_directory": null,
+        "output_types": null,
+        "num_parallel_workers_limit": 2,
+        "generate_pred_table_job_id": "gen-predtable-job-e01e53529bcf443ea47dae482a58d383",
+        "custom_pred_table_source": {
+            "connector_id": "connector-prediction-inputs",
+            "source": {
+                "mode": "relative",
+                "path": "customers/2026/07/06/prediction-input.parquet"
+            }
+        },
+        "graph_id": "NA-d445eeb8b2aa1b79a142406239fa74e8",
+        "graph_data_version": "6f0ae33ac31edb0c321fbe182e39e460",
+        "pquery_def_fpid": "558e58967ac7fadf2a9a408fa4a8b52d",
+        "explanations": false
+    },
+    "timestamps": {
+        "created_at": "2025-04-09T05:19:10.268477+00:00",
+        "updated_at": "2025-04-09T05:27:46.421947+00:00"
+    },
+    "predictive_query_link": {
+        "name": "NA-558e58967ac7fadf2a9a408fa4a8b52d",
+        "id": "NA-558e58967ac7fadf2a9a408fa4a8b52d",
+        "training_job_id": null
+    },
+    "execution": {
+        "status": "DONE",
+        "log": {
+            "stage_name": "Done",
+            "last_updated_at": "2025-04-09T05:26:59.925502+00:00",
+            "detail": "This job successfully completed!"
+        },
+        "start_time": "2025-04-09T05:19:00.229711+00:00",
+        "last_updated_at": "2025-04-09T05:27:46.421947+00:00",
+        "workflow_end_state": 2,
+        "failure_info": null,
+        "progress": {
+            "iterations_completed": 5,
+            "iterations_remaining": 0,
+            "start_time": "2025-04-09T05:26:07.466376+00:00",
+            "elapsed_time": 1.427677,
+            "estimated_end_time": "2025-04-09T05:26:08.894053+00:00"
+        },
+        "results": {
+            "key_cols": ["COUNT(FINANCE_TRANS.*, 0, 30, days) = 0"],
+            "output_artifact_stats": [
+                {
+                    "artifact_type": "PREDICTIONS",
+                    "num_rows": 4168,
+                    "num_cols": 4,
+                    "size_bytes": 144113,
+                    "output_path": "s3://kumo-public-datasets/momentic_predictions/pred/predictions/new_predictions_file.csv/"
+                },
+                {
+                    "artifact_type": "EMBEDDINGS",
+                    "num_rows": 4168,
+                    "num_cols": 2,
+                    "size_bytes": 5525667,
+                    "output_path": "s3://kumo-public-datasets/momentic_predictions/pred/predictions/new_embeddings_file.parquet/"
+                }
+            ],
+            "num_rows": -1,
+            "num_cols": -1,
+            "size_bytes": -1,
+            "output_paths": []
+        }
+    },
+    "graph_link": {
+        "name": "NA-d445eeb8b2aa1b79a142406239fa74e8",
+        "id": "NA-d445eeb8b2aa1b79a142406239fa74e8",
+        "snapshot_id": null
+    },
+    "description": "",
+    "batch_prediction_workflow_id": null,
+    "tags": {
+        "pquery_id": "pquery-558e58967ac7fadf2a9a408fa4a8b52d",
+        "model_id": "trainingjob-9f8b259b4f764c8f932ad5912a926ec2",
+        "new_prediction_job": "new_prediction_job"
+    },
+    "job_source": "UI",
+    "user": "test user"
+}

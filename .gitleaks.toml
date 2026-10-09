@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+title = "Kumo secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "These password values are synthetic inputs for authentication tests."
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^[A-Za-z]+Pass[0-9]+$''']
+paths = [
+  '''^test/rest/auth/test_direct_connect_auth_routes\.py$''',
+  '''^test/rest/driver/test_direct_connect_auth_storage\.py$''',
+  '''^ui/src/pages/Login/__tests__/DirectConnectLogin\.test\.tsx$''',
+]
+
+[[allowlists]]
+description = "Allow only the four known test-only legacy encrypted key vectors."
+targetRules = ["private-key"]
+condition = "AND"
+regexTarget = "match"
+regexes = ['''ONbItCYj9KjrReydwgScQPK\+96UsdM1wDwvhtOLY|MIIE6jAcBgoqhkiG9w0BDAEDMA4ECCKQ2/opcFpN|MIIE6TAbBgkqhkiG9w0BBQMwDgQInb4\+n0m93y4C|MIIE6jAcBgoqhkiG9w0BDAEGMA4ECJaiNrqYzGvM''']
+paths = ['''^test/connector/test_legacy_private_key\.py$''']
+
+[[allowlists]]
+description = "This Storybook example shows the YOUR_API_KEY documentation placeholder."
+targetRules = ["curl-auth-header"]
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''^YOUR_API_KEY$''']
+paths = ['''^packages/kumo-ui-catalog/src/stories/components/ui/Markdown\.stories\.tsx$''']

@@ -1,0 +1,6 @@
+
+# diskgraph is fetched by SHA from S3 (scripts/diskgraph install), never vendored.
+diskgraph-*.whl
+
+# CUDA Faiss is fetched from a versioned Kumo ML GitHub Release, never vendored.
+faiss_gpu-*.whl

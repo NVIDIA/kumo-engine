@@ -1,0 +1,120 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kumo SDK - Upload wheels
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      artifact-name:
+        type: string
+        required: true
+      allow-s3-failure:
+        type: boolean
+        required: false
+        default: false
+      upload-to-s3:
+        type: boolean
+        required: false
+        default: false
+      upload-to-testpypi:
+        type: boolean
+        required: false
+        default: false
+      upload-to-pypi:
+        type: boolean
+        required: false
+        default: false
+  workflow_call:
+    inputs:
+      artifact-name:
+        type: string
+        required: true
+      allow-s3-failure:
+        type: boolean
+        required: false
+        default: false
+      upload-to-s3:
+        type: boolean
+        required: false
+        default: false
+      upload-to-testpypi:
+        type: boolean
+        required: false
+        default: false
+      upload-to-pypi:
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+defaults:
+  run:
+    shell: bash
+    working-directory: packages/kumo-sdk
+
+jobs:
+  wheel:
+    if: ${{ vars.KUMO_SDK_PUBLICATION_ENABLED == 'true' }}
+    runs-on: ubuntu-24.04
+    environment: kumo-sdk-release
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Download wheels
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ./packages/kumo-sdk/release-artifact
+
+      - name: Prepare validated wheel
+        run: |
+          ls -ahl release-artifact/
+          mkdir dist
+          cp release-artifact/*.whl dist/
+
+      - name: Upload wheels to TestPyPI
+        if: ${{ inputs.upload-to-testpypi }}
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
+        with:
+          packages-dir: packages/kumo-sdk/dist
+          repository-url: https://test.pypi.org/legacy/
+          user: __token__
+          password: ${{ secrets.TEST_PYPI_TOKEN }}
+          skip-existing: true
+          verbose: true
+
+      - name: Upload wheels to PyPI
+        if: ${{ inputs.upload-to-pypi }}
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
+        with:
+          packages-dir: packages/kumo-sdk/dist
+          repository-url: https://upload.pypi.org/legacy/
+          user: __token__
+          password: ${{ secrets.PYPI_TOKEN }}
+          skip-existing: true
+          verbose: true
+
+      - name: Configure AWS credentials
+        if: ${{ inputs.upload-to-s3 }}
+        continue-on-error: ${{ inputs.allow-s3-failure }}
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/github-actions-kumo-sdk-upload-wheels
+          aws-region: us-west-2
+          role-session-name: kumo-sdk-upload-wheels-${{ github.run_id }}
+
+      - name: Upload wheels to internal S3
+        if: ${{ inputs.upload-to-s3 }}
+        continue-on-error: ${{ inputs.allow-s3-failure }}
+        # packages/nightly is the established general SDK nightly channel;
+        # downstream consumers (deployment automation, engineering docs)
+        # reference it.
+        run: |
+          aws s3 sync dist s3://kumo-sdk/packages/nightly

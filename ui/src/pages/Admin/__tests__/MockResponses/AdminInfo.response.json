@@ -1,0 +1,8 @@
+{
+    "user_is_customer_admin": true,
+    "customer_admin_emails": ["test1@kumo.ai", "test2@kumo.ai"],
+    "customer_admin_info": {
+        "api_enabled": true
+    },
+    "organization_name": "test"
+}

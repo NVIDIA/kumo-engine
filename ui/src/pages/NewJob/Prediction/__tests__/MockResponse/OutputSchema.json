@@ -1,0 +1,30 @@
+[
+    {
+        "name": "ENTITY",
+        "stype": "ID",
+        "dtype": "string",
+        "metadata": {},
+        "timestamp_unit": null
+    },
+    {
+        "name": "TARGET_PRED",
+        "stype": "categorical",
+        "dtype": "bool",
+        "metadata": {},
+        "timestamp_unit": null
+    },
+    {
+        "name": "False_PROB",
+        "stype": "numerical",
+        "dtype": "float",
+        "metadata": {},
+        "timestamp_unit": null
+    },
+    {
+        "name": "True_PROB",
+        "stype": "numerical",
+        "dtype": "float",
+        "metadata": {},
+        "timestamp_unit": null
+    }
+]

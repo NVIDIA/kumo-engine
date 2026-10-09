@@ -1,0 +1,1 @@
+CSV connector should ignore this file in the unit test

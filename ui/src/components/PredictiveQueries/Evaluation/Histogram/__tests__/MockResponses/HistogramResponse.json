@@ -1,0 +1,387 @@
+{
+    "histogram_res": {
+        "label_distribution": {
+            "train_table_stats": null,
+            "val_table_stats": {
+                "target_mean": 0.06,
+                "target_min": 0,
+                "target_max": 2,
+                "target_percentile_25": 0,
+                "target_percentile_75": 0,
+                "target_median": 0,
+                "target_mode": 0,
+                "target_mode_percentage": 0.97,
+                "target_mode_count": 97,
+                "histogram": {
+                    "bins": [
+                        -0.04, 0, 0.04, 0.08, 0.12, 0.16, 0.2, 0.24, 0.28, 0.32,
+                        0.36, 0.4, 0.44, 0.48, 0.52, 0.56, 0.6, 0.64, 0.68,
+                        0.72, 0.76, 0.8, 0.84, 0.88, 0.92, 0.96, 1, 1.04, 1.08,
+                        1.12, 1.16, 1.2, 1.24, 1.28, 1.32, 1.36, 1.4, 1.44,
+                        1.48, 1.52, 1.56, 1.6, 1.64, 1.68, 1.72, 1.76, 1.8,
+                        1.84, 1.88, 1.92, 1.96, 2
+                    ],
+                    "counts": [
+                        0, 97, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3
+                    ],
+                    "bin_width": 0.04,
+                    "num_bins": 51
+                }
+            },
+            "test_table_stats": {
+                "target_mean": 0.17,
+                "target_min": 0,
+                "target_max": 2,
+                "target_percentile_25": 0,
+                "target_percentile_75": 0,
+                "target_median": 0,
+                "target_mode": 0,
+                "target_mode_percentage": 0.89,
+                "target_mode_count": 89,
+                "histogram": {
+                    "bins": [
+                        -0.04, 0, 0.04, 0.08, 0.12, 0.16, 0.2, 0.24, 0.28, 0.32,
+                        0.36, 0.4, 0.44, 0.48, 0.52, 0.56, 0.6, 0.64, 0.68,
+                        0.72, 0.76, 0.8, 0.84, 0.88, 0.92, 0.96, 1, 1.04, 1.08,
+                        1.12, 1.16, 1.2, 1.24, 1.28, 1.32, 1.36, 1.4, 1.44,
+                        1.48, 1.52, 1.56, 1.6, 1.64, 1.68, 1.72, 1.76, 1.8,
+                        1.84, 1.88, 1.92, 1.96, 2
+                    ],
+                    "counts": [
+                        0, 89, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6
+                    ],
+                    "bin_width": 0.04,
+                    "num_bins": 51
+                }
+            }
+        },
+        "prediction_distribution": {
+            "train_table_stats": null,
+            "val_table_stats": {
+                "target_mean": 0.003929546102881432,
+                "target_min": -0.0036486461758613586,
+                "target_max": 0.016929715871810913,
+                "target_percentile_25": -0.0016217976808547974,
+                "target_percentile_75": 0.016929715871810913,
+                "target_median": -0.0005194023251533508,
+                "target_mode": null,
+                "target_mode_percentage": null,
+                "target_mode_count": null,
+                "histogram": {
+                    "bins": [
+                        -0.04, 0, 0.04, 0.08, 0.12, 0.16, 0.2, 0.24, 0.28, 0.32,
+                        0.36, 0.4, 0.44, 0.48, 0.52, 0.56, 0.6, 0.64, 0.68,
+                        0.72, 0.76, 0.8, 0.84, 0.88, 0.92, 0.96, 1, 1.04, 1.08,
+                        1.12, 1.16, 1.2, 1.24, 1.28, 1.32, 1.36, 1.4, 1.44,
+                        1.48, 1.52, 1.56, 1.6, 1.64, 1.68, 1.72, 1.76, 1.8,
+                        1.84, 1.88, 1.92, 1.96, 2
+                    ],
+                    "counts": [
+                        62, 38, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                    ],
+                    "bin_width": 0.04,
+                    "num_bins": 51
+                }
+            },
+            "test_table_stats": {
+                "target_mean": 0.0018225184176117182,
+                "target_min": -0.004264913499355316,
+                "target_max": 0.016929715871810913,
+                "target_percentile_25": -0.0016100816428661346,
+                "target_percentile_75": 0.00028942152857780457,
+                "target_median": -0.0008158311247825623,
+                "target_mode": null,
+                "target_mode_percentage": null,
+                "target_mode_count": null,
+                "histogram": {
+                    "bins": [
+                        -0.04, 0, 0.04, 0.08, 0.12, 0.16, 0.2, 0.24, 0.28, 0.32,
+                        0.36, 0.4, 0.44, 0.48, 0.52, 0.56, 0.6, 0.64, 0.68,
+                        0.72, 0.76, 0.8, 0.84, 0.88, 0.92, 0.96, 1, 1.04, 1.08,
+                        1.12, 1.16, 1.2, 1.24, 1.28, 1.32, 1.36, 1.4, 1.44,
+                        1.48, 1.52, 1.56, 1.6, 1.64, 1.68, 1.72, 1.76, 1.8,
+                        1.84, 1.88, 1.92, 1.96, 2
+                    ],
+                    "counts": [
+                        72, 28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                    ],
+                    "bin_width": 0.04,
+                    "num_bins": 51
+                }
+            }
+        }
+    },
+    "query_info": {
+        "query_dialect": "PQLANG_V2",
+        "testSplitSize": 0,
+        "id": "trainingjob-bed43f8f2fc54ea985439b026dbe0865",
+        "queryName": "trainingjob-bed43f8f2fc54ea985439b026dbe0865",
+        "queryName_link": "",
+        "queryYaml": "PREDICT COUNT(transaction.Quantity\nWHERE transaction.Description STARTS WITH \"CARD\", 0, 90,days)\nFOR EACH customer.CustomerID",
+        "trainingConfigYaml": "PREDICT COUNT(transaction.Quantity\nWHERE transaction.Description STARTS WITH \"CARD\", 0, 90,days)\nFOR EACH customer.CustomerID",
+        "queryDescription": "We finished running neural architecture search experiments, and trained a model with the most predictive set of parameters for your pQuery",
+        "advancedOptionsYaml": "",
+        "modelPlannerYaml": "training_table_generation:\n  split: ApproxDateOffsetSplit(ratio=[0.8, 0.1, 0.1])\n  train_start_offset: inferred\n  train_end_offset: inferred\n  start_time: '???'\n  end_time: '???'\n  timeframe_step: inferred\n  forecast_length: 1\n  lag_timesteps: 0\n  year_over_year: false\n  entity_candidate: null\n  entity_candidate_aggregation: null\n  task_path_override: null\n  train_table_path_override: null\ntraining_job:\n  num_experiments: 4\n  metrics:\n    - mae\n    - mse\n    - rmse\n  tune_metric: mae\n  pruning: '???'\n  disable_compilation: true\n  refit_trainval: false\n  refit_full: false\n  disable_explain: false\n  manual_seed: null\n  enable_baselines: false\ncolumn_processing:\n  encoder_overrides: null\nneighbor_sampling:\n  max_target_neighbors_per_entity: '???'\n  num_neighbors:\n    - hop1:\n        default: 12\n        customer.CustomerID->transaction.CustomerID: inferred\n      hop2:\n        default: 12\n      hop3: null\n      hop4: null\n      hop5: null\n      hop6: null\n  sample_from_entity_table: '???'\n  adaptive_sampling: false\noptimization:\n  max_epochs: 8\n  min_steps_per_epoch: 30\n  max_steps_per_epoch: 1000\n  max_val_steps: 1000\n  max_test_steps: 2000\n  loss:\n    - huber\n  base_lr:\n    - 0.0001\n    - 0.0005\n    - 0.001\n    - 0.005\n    - 0.01\n    - 0.05\n  weight_decay:\n    - 0\n    - 5.e-8\n    - 5.e-7\n    - 0.000005\n  batch_size:\n    - 512\n    - 1024\n  early_stopping:\n    - min_delta: 0\n      patience: 3\n  lr_scheduler:\n    - name: cosine_with_warmup_restarts\n      interval: step\n      kwargs:\n        warmup_ratio_or_steps: 0.1\n    - name: constant_with_warmup\n      interval: step\n      kwargs:\n        warmup_ratio_or_steps: 0.1\n    - name: linear_with_warmup\n      interval: step\n      kwargs:\n        warmup_ratio_or_steps: 0.1\n    - name: cosine_with_warmup\n      interval: step\n      kwargs:\n        warmup_ratio_or_steps: 0.1\n  majority_sampling_ratio: '???'\n  weight_mode: '???'\n  target_fraction: '???'\n  overlap_ratio: '???'\nmodel_architecture:\n  model:\n    - name: GNN\n      channels:\n        - 64\n        - 128\n        - 256\n      aggregation:\n        - - sum\n          - mean\n          - max\n        - - sum\n          - mean\n          - min\n          - max\n          - std\n  channels: '???'\n  num_pre_message_passing_layers:\n    - 0\n    - 1\n    - 2\n  num_post_message_passing_layers:\n    - 1\n    - 2\n  aggregation: '???'\n  activation:\n    - relu\n    - leaky_relu\n    - elu\n    - gelu\n  normalization:\n    - layer_norm\n  module: '???'\n  handle_new_target_entities: '???'\n  target_embedding_mode: '???'\n  output_embedding_dim: '???'\n  ranking_embedding_loss_coeff: '???'\n  distance_measure: '???'\n  use_seq_id:\n    - false\n  prediction_time_encodings:\n    - false\n  past_encoder:\n    - decomposed\n  handle_new_entities: true\n  forecast_type: '???'\n",
+        "generationPlan": "split: ApproxDateOffsetSplit(ratio=[0.8, 0.1, 0.1])\ntrain_start_offset: inferred\ntrain_end_offset: inferred\nstart_time: '???'\nend_time: '???'\ntimeframe_step: inferred\nforecast_length: 1\nlag_timesteps: 0\nyear_over_year: false\nentity_candidate: null\nentity_candidate_aggregation: null\ntask_path_override: null\ntrain_table_path_override: null\n",
+        "trainingPlan": "training_table_generation:\n  split: ApproxDateOffsetSplit(ratio=[0.8, 0.1, 0.1])\n  train_start_offset: inferred\n  train_end_offset: inferred\n  start_time: '???'\n  end_time: '???'\n  timeframe_step: inferred\n  forecast_length: 1\n  lag_timesteps: 0\n  year_over_year: false\n  entity_candidate: null\n  entity_candidate_aggregation: null\n  task_path_override: null\n  train_table_path_override: null\ntraining_job:\n  num_experiments: 4\n  metrics:\n    - mae\n    - mse\n    - rmse\n  tune_metric: mae\n  pruning: '???'\n  disable_compilation: true\n  refit_trainval: false\n  refit_full: false\n  disable_explain: false\n  manual_seed: null\n  enable_baselines: false\ncolumn_processing:\n  encoder_overrides: null\nneighbor_sampling:\n  max_target_neighbors_per_entity: '???'\n  num_neighbors:\n    - hop1:\n        default: 12\n        customer.CustomerID->transaction.CustomerID: inferred\n      hop2:\n        default: 12\n      hop3: null\n      hop4: null\n      hop5: null\n      hop6: null\n  sample_from_entity_table: '???'\n  adaptive_sampling: false\noptimization:\n  max_epochs: 8\n  min_steps_per_epoch: 30\n  max_steps_per_epoch: 1000\n  max_val_steps: 1000\n  max_test_steps: 2000\n  loss:\n    - huber\n  base_lr:\n    - 0.0001\n    - 0.0005\n    - 0.001\n    - 0.005\n    - 0.01\n    - 0.05\n  weight_decay:\n    - 0\n    - 5.e-8\n    - 5.e-7\n    - 0.000005\n  batch_size:\n    - 512\n    - 1024\n  early_stopping:\n    - min_delta: 0\n      patience: 3\n  lr_scheduler:\n    - name: cosine_with_warmup_restarts\n      interval: step\n      kwargs:\n        warmup_ratio_or_steps: 0.1\n    - name: constant_with_warmup\n      interval: step\n      kwargs:\n        warmup_ratio_or_steps: 0.1\n    - name: linear_with_warmup\n      interval: step\n      kwargs:\n        warmup_ratio_or_steps: 0.1\n    - name: cosine_with_warmup\n      interval: step\n      kwargs:\n        warmup_ratio_or_steps: 0.1\n  majority_sampling_ratio: '???'\n  weight_mode: '???'\n  target_fraction: '???'\n  overlap_ratio: '???'\nmodel_architecture:\n  model:\n    - name: GNN\n      channels:\n        - 64\n        - 128\n        - 256\n      aggregation:\n        - - sum\n          - mean\n          - max\n        - - sum\n          - mean\n          - min\n          - max\n          - std\n  channels: '???'\n  num_pre_message_passing_layers:\n    - 0\n    - 1\n    - 2\n  num_post_message_passing_layers:\n    - 1\n    - 2\n  aggregation: '???'\n  activation:\n    - relu\n    - leaky_relu\n    - elu\n    - gelu\n  normalization:\n    - layer_norm\n  module: '???'\n  handle_new_target_entities: '???'\n  target_embedding_mode: '???'\n  output_embedding_dim: '???'\n  ranking_embedding_loss_coeff: '???'\n  distance_measure: '???'\n  use_seq_id:\n    - false\n  prediction_time_encodings:\n    - false\n  past_encoder:\n    - decomposed\n  handle_new_entities: true\n  forecast_type: '???'\n",
+        "graphName": "GraphName",
+        "graphSnapshotId": "graph-eb2650cd1f7c522fc8d513b7965b3f51@6fb82eb61b0ae592b4d07569cbf2ca9d",
+        "trainTableJobId": "gen-traintable-job-bed43f8f2fc54ea985439b026dbe0865",
+        "trainTableJobStatus": "DONE",
+        "dateCreated": "Thu Apr 10, 2025, 9:31:55 AM",
+        "dateUpdated": "Thu Apr 10, 2025, 9:35:22 AM",
+        "created": "2 months ago",
+        "updated": "2 months ago",
+        "trainingJobId": "trainingjob-bed43f8f2fc54ea985439b026dbe0865",
+        "latestTrainingJobId": "trainingjob-bed43f8f2fc54ea985439b026dbe0865",
+        "trainingStatus": "DONE",
+        "statusKey": "Progress",
+        "log": {
+            "stage_name": "Done",
+            "last_updated_at": "Thu Apr 10 2025",
+            "detail": "This job successfully completed!"
+        },
+        "queryId": "pquery-24d6823dfe7fdc1c8314b3ca6febfff2",
+        "taskType": "regression",
+        "queryType": "temporal",
+        "trainingStatusMessage": "This job successfully completed!",
+        "callToActions": [],
+        "timePeriods": false,
+        "trainedOnData": "",
+        "evaluatedOnData": "",
+        "trainSplitSize": 0,
+        "runtime": "04m",
+        "runMode": null,
+        "description": "",
+        "estTimings": {
+            "text": "Total Training Time",
+            "value": "4m"
+        },
+        "estExperiments": {
+            "text": "Total Experiments",
+            "value": "4"
+        },
+        "queryProgressStats": {
+            "xAxisLabels": [1, 2, 3, 4],
+            "datasets": [
+                {
+                    "color": "#ff6666",
+                    "value": [
+                        0.06565539538860321, 0.06659023463726044,
+                        0.06718670576810837, 0.06713804602622986
+                    ],
+                    "label": "Best validation metric"
+                }
+            ],
+            "xLabel": "Experiments",
+            "yLabel": "mae",
+            "mode": "min"
+        },
+        "trainingStartTime": "Loading...",
+        "results": {
+            "total_training_time_sec": 86,
+            "total_iterations": 4,
+            "test_metrics": [
+                {
+                    "name": "loss",
+                    "val": 0.11471514403820038
+                },
+                {
+                    "name": "mae",
+                    "val": 0.17303670942783356
+                },
+                {
+                    "name": "mse",
+                    "val": 0.28883087635040283
+                },
+                {
+                    "name": "rmse",
+                    "val": 0.5374298691749573
+                }
+            ],
+            "val_metrics": [
+                {
+                    "name": "loss",
+                    "val": 0.04508855193853378
+                },
+                {
+                    "name": "mae",
+                    "val": 0.06565539538860321
+                },
+                {
+                    "name": "mse",
+                    "val": 0.12027249485254288
+                },
+                {
+                    "name": "rmse",
+                    "val": 0.3468032479286194
+                }
+            ],
+            "train_metrics": [
+                {
+                    "name": "loss",
+                    "val": 0.005068344064056873
+                },
+                {
+                    "name": "mae",
+                    "val": 0.021370410919189453
+                },
+                {
+                    "name": "mse",
+                    "val": 0.010136688128113747
+                },
+                {
+                    "name": "rmse",
+                    "val": 0.1006811186671257
+                }
+            ],
+            "_test_explain_file_path": "./jobs/trainingjob-bed43f8f2fc54ea985439b026dbe0865/test_explain.json.gz",
+            "confusion_matrix": {
+                "test_eval": {
+                    "description": "Test confusion matrix",
+                    "true_positives": [10],
+                    "false_positives": [2],
+                    "true_negatives": [15],
+                    "false_negatives": [3],
+                    "thresholds": [0.5]
+                }
+            },
+            "time_periods": {
+                "test": {
+                    "start": "2011-09-09T13:46:00",
+                    "end": "2011-12-08T13:46:00",
+                    "is_pseudo": false
+                },
+                "val": {
+                    "start": "2011-06-11T13:46:00",
+                    "end": "2011-09-09T13:46:00",
+                    "is_pseudo": false
+                },
+                "train": {
+                    "start": "2011-03-13T13:46:00",
+                    "end": "2011-06-11T13:46:00",
+                    "is_pseudo": false
+                }
+            },
+            "prediction_horizons": {
+                "test": {
+                    "start": "2011-09-09T13:46:00",
+                    "end": "2011-12-08T13:46:00",
+                    "is_pseudo": false
+                },
+                "val": {
+                    "start": "2011-06-11T13:46:00",
+                    "end": "2011-09-09T13:46:00",
+                    "is_pseudo": false
+                },
+                "train": {
+                    "start": "2011-03-13T13:46:00",
+                    "end": "2011-06-11T13:46:00",
+                    "is_pseudo": false
+                }
+            },
+            "split_sizes": {
+                "train": 100,
+                "val": 100,
+                "test": 100
+            },
+            "test_period": {
+                "test_start": "",
+                "test_end": ""
+            },
+            "key_cols": [],
+            "output_artifact_stats": [
+                {
+                    "artifact_type": "PREDICTIONS",
+                    "num_rows": 100,
+                    "num_cols": 5,
+                    "size_bytes": 1024,
+                    "output_path": "/tmp/predictions.csv"
+                }
+            ],
+            "output_artifact_metadata": {},
+            "output_artifact_schema": [],
+            "num_rows": 0,
+            "num_cols": 0,
+            "size_bytes": 0,
+            "output_path": "",
+            "output_paths": []
+        },
+        "enable_baselines": false,
+        "status": "DONE",
+        "isV2": true,
+        "jobSource": "WEB",
+        "tags": {
+            "unit_test_customer": "unit_test_customer",
+            "pquery_id": "pquery-24d6823dfe7fdc1c8314b3ca6febfff2"
+        },
+        "trialProgress": {
+            "iterations_completed": 4,
+            "iterations_remaining": 0,
+            "start_time": "2025-04-10T09:33:34.098Z",
+            "elapsed_time": 86.347812,
+            "estimated_end_time": "2025-04-10T09:35:22.821Z",
+            "trial_progress": [
+                {
+                    "trial_id": "0",
+                    "best_train_metric": {
+                        "name": "mae",
+                        "val": 0.019487053155899048
+                    },
+                    "best_validation_metric": {
+                        "name": "mae",
+                        "val": 0.06565539538860321
+                    }
+                },
+                {
+                    "trial_id": "1",
+                    "best_train_metric": {
+                        "name": "mae",
+                        "val": 0.021318716928362846
+                    },
+                    "best_validation_metric": {
+                        "name": "mae",
+                        "val": 0.06659023463726044
+                    }
+                },
+                {
+                    "trial_id": "2",
+                    "best_train_metric": {
+                        "name": "mae",
+                        "val": 0.03573412820696831
+                    },
+                    "best_validation_metric": {
+                        "name": "mae",
+                        "val": 0.06718670576810837
+                    }
+                },
+                {
+                    "trial_id": "3",
+                    "best_train_metric": {
+                        "name": "mae",
+                        "val": 0.021154342219233513
+                    },
+                    "best_validation_metric": {
+                        "name": "mae",
+                        "val": 0.06713804602622986
+                    }
+                }
+            ],
+            "metric_mode": "min"
+        }
+    },
+    "data_split": {
+        "label": "Holdout Data (33.33% of samples)",
+        "value": "test",
+        "samples": 100,
+        "prediction_horizon": "2011-09-09 - 2011-12-08"
+    }
+}

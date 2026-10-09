@@ -1,0 +1,34 @@
+[run]
+source =
+  async_utils
+  io_utils
+  kumo
+  rest
+  service_framework
+  temporalio_commons
+omit =
+  kumo/testing/*
+  rest/devserver/*
+  rest/scripts/*
+branch = True
+# Without ``thread`` here, every Python statement in our multi-threaded
+# Temporal workers contends on coverage's single global trace lock
+# (``lock_data`` in ``coverage/collector.py``), which is what made
+# snapshot tests time out under coverage in CI.
+concurrency = thread,multiprocessing
+relative_files = True
+
+[report]
+exclude_lines =
+  pragma: no cover
+  warn
+  raise
+  except
+  raise NotImplementedError
+
+  # Don't complain if non-runnable code isn't run:
+  if 0:
+  if __name__ == .__main__.:
+
+  # Don't complain about abstract methods, they aren't run:
+  @(abc\.)?abstractmethod

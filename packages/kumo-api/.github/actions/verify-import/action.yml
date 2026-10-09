@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: MIT
+
+name: 'Verify kumoapi import'
+description: 'Verify that all kumoapi modules can be imported without deprecation warnings'
+
+inputs:
+  pydantic-version:
+    description: 'Pydantic version specifier (e.g., "pydantic<2" or "pydantic>=2.7")'
+    required: true
+  install-extras:
+    description: 'Package extras to install (e.g., "test" or "release-check")'
+    required: false
+    default: ''
+  skip-install:
+    description: 'Skip package installation (use when package is already installed)'
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Install package and verify import
+      shell: bash
+      working-directory: packages/kumo-api
+      run: |
+        if [ "${{ inputs.skip-install }}" != "true" ]; then
+          if [ -n "${{ inputs.install-extras }}" ]; then
+            uv pip install '.[${{ inputs.install-extras }}]' '${{ inputs.pydantic-version }}'
+          else
+            uv pip install . '${{ inputs.pydantic-version }}'
+          fi
+        fi
+        uv run --no-project python -W error::DeprecationWarning -c "
+        import kumoapi.common
+        import kumoapi.data_snapshot
+        import kumoapi.data_source
+        import kumoapi.encoder
+        import kumoapi.graph
+        import kumoapi.jobs
+        import kumoapi.json_serde
+        import kumoapi.model_plan
+        import kumoapi.source_table
+        import kumoapi.table
+        import kumoapi.task
+        import kumoapi.train
+        import kumoapi.typing
+        import kumoapi.explain
+        import kumoapi.pquery
+        print('Import OK with ${{ inputs.pydantic-version }}')
+        "

@@ -1,0 +1,592 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Momentic UI Tests
+
+"on":
+  workflow_dispatch:
+    inputs:
+      kumo_ref:
+        description: "kumo git ref (branch / tag / SHA) to test against"
+        required: false
+        default: "master"
+      kumo_tests_ref:
+        description: "kumo-tests git ref (branch / tag / SHA) to test against"
+        required: false
+        default: "master"
+      test_name:
+        description: "Momentic test name or folder path to run (substring match — e.g. 'create-connectorv2-financial-binary' or 'nightly-tests/end-to-end-tests')"
+        required: false
+        default: "create-connectorv2-financial-binary"
+      skip_bootstrap:
+        description: "Skip venv bootstrap — use pre-baked runner venv"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  packages: read
+  issues: write
+  id-token: write
+
+concurrency:
+  group: momentic-devserver-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run-tests:
+    environment: gha-kumo-workflow-tests
+    name: Momentic UI tests
+    runs-on: [self-hosted, Linux, X64, ec2, m5, devserver]
+    timeout-minutes: 90
+
+    env:
+      AWS_TEST_ROLE_ARN: arn:aws:iam::926922431314:role/gha-kumo-preprod-test-s3
+      KUMO_REPO_PATH: ${{ github.workspace }}/kumo
+      KUMO_TESTS_DIR: ${{ github.workspace }}/kumo-tests
+      DISKGRAPH_DATA_ROOT: ${{ vars.DISKGRAPH_DATA_ROOT || '/mnt/localssd/diskgraph-data' }}
+      DEVSERVER_PORT: "10002"
+      API_PORT: "10001"
+      UI_PORT: "3000"
+      AWS_DEFAULT_REGION: ${{ vars.AWS_DEFAULT_REGION || 'us-west-2' }}
+      ENABLE_UI_SCHEMA_VALIDATION: "false"
+
+    steps:
+      - name: Pre-checkout workspace cleanup
+        id: pre_checkout_cleanup
+        shell: bash
+        run: |
+          sudo rm -rf "${{ github.workspace }}/kumo/ui/build" 2>/dev/null || true
+          sudo rm -rf "${{ github.workspace }}/kumo/ui/node_modules" 2>/dev/null || true
+          if [[ -d "${{ github.workspace }}/kumo" ]]; then
+            sudo chown -R "$(id -u):$(id -g)" "${{ github.workspace }}/kumo" 2>/dev/null || true
+          fi
+
+      - name: Checkout kumo
+        id: checkout_kumo
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.inputs.kumo_ref || 'master' }}
+          path: kumo
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout kumo-tests
+        id: checkout_kumo_tests
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: kumo-ai/kumo-tests
+          ref: ${{ github.event.inputs.kumo_tests_ref || 'master' }}
+          token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+          path: kumo-tests
+          persist-credentials: false
+
+      - name: Install uv
+        id: install_uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: ${{ vars.AWS_DEFAULT_REGION || 'us-west-2' }}
+
+      - name: Bootstrap kumo venv
+        id: bootstrap_kumo_venv
+        if: ${{ github.event.inputs.skip_bootstrap != 'true' }}
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd "$KUMO_REPO_PATH"
+          run_with_github_auth() {
+            local basic_auth
+            basic_auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+            GIT_CONFIG_GLOBAL=/dev/null \
+              GIT_CONFIG_COUNT=3 \
+              GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+              GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${basic_auth}" \
+              GIT_CONFIG_KEY_1=url.https://github.com/.insteadOf \
+              GIT_CONFIG_VALUE_1=ssh://git@github.com/ \
+              GIT_CONFIG_KEY_2=url.https://github.com/.insteadOf \
+              GIT_CONFIG_VALUE_2=git@github.com: \
+              "$@"
+          }
+          hash_input=""
+          for f in setup.py pyproject.toml uv.lock scripts/update_packages.sh; do
+            [[ -f "$f" ]] && hash_input+="$(sha256sum "$f")"
+          done
+          venv_hash=$(echo "$hash_input" | sha256sum | awk '{print $1}')
+          marker=".venv/.cache_hash"
+          if [[ -f "$marker" ]] && [[ "$(cat "$marker")" == "$venv_hash" ]]; then
+            echo "Venv cache hit ($venv_hash), skipping rebuild"
+          else
+            echo "Building kumo venv (hash $venv_hash)..."
+            rm -rf .venv venv
+            uv venv --python python3.11 .venv
+            MAKEFLAGS=-j8 CMAKE_BUILD_PARALLEL_LEVEL=8 \
+              run_with_github_auth make install-all-dependencies
+            uv pip install --python .venv/bin/python pip
+            echo "$venv_hash" > .venv/.cache_hash
+          fi
+          [[ -L venv ]] || ln -s .venv venv
+
+      - name: Install diskgraph wheel
+        id: install_diskgraph_wheel
+        shell: bash
+        run: |
+          cd "$KUMO_REPO_PATH"
+          source venv/bin/activate
+          make install-diskgraph
+
+      - name: Start devserver
+        id: start_devserver
+        shell: bash
+        env:
+          KUMO_HOME: ${{ vars.KUMO_HOME || '/mnt/localssd/kumo-home' }}
+        run: |
+          set -euo pipefail
+          MAIN_PY="$KUMO_REPO_PATH/rest/devserver/main.py"
+          if [[ -f "$MAIN_PY" ]] && grep -q 'panels.append(ui_panel(web_ui_port, rest_api_port, docker_label))' "$MAIN_PY"; then
+            sed -i 's/panels\.append(ui_panel(web_ui_port, rest_api_port, docker_label))/pass  # UI panel disabled in CI: docker npm ci runs as root/' "$MAIN_PY"
+          fi
+          chmod +x "$KUMO_TESTS_DIR/scripts/start_devserver.sh"
+          "$KUMO_TESTS_DIR/scripts/start_devserver.sh" --backend diskgraph
+
+      - name: Set up public API key
+        id: setup_public_api_key
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            if curl -sf "http://localhost:${{ env.API_PORT }}/health" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          KEY=$(curl -sf -X POST \
+            "http://localhost:${{ env.API_PORT }}/v0/api-keys/admin" \
+            -H "Content-Type: application/json" \
+            -d "{\"name\":\"momentic-ci-${{ github.run_id }}\",\"type\":\"admin\"}" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['value'])")
+          echo "PUBLIC_API_KEY=${KEY}" >> "$GITHUB_ENV"
+
+      - name: Set up Node.js
+        id: setup_node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: kumo/ui/package-lock.json
+
+      - name: Install UI Dependencies
+        id: install_ui_dependencies
+        working-directory: kumo/ui
+        run: |
+          npm run install:catalog
+          npm ci
+
+      - name: Build UI
+        id: build_ui
+        working-directory: kumo/ui
+        run: |
+          bash scripts/setup-tsconfig.sh --reset
+          npm run build
+          npm run update-env
+        env:
+          UI_LOCAL: "true"
+          API_PROXY_TARGET: "http://localhost:${{ env.API_PORT }}"
+
+      - name: Start UI preview server
+        id: start_ui_preview_server
+        working-directory: kumo/ui
+        run: |
+          nohup npx vite preview > /tmp/vite-ui.log 2>&1 &
+        env:
+          UI_LOCAL: "true"
+          API_PROXY_TARGET: "http://localhost:${{ env.API_PORT }}"
+
+      - name: Wait for UI
+        id: wait_for_ui
+        working-directory: kumo/ui
+        run: |
+          npx wait-on "http-get://localhost:${{ env.UI_PORT }}" --timeout 120000 \
+            || { echo "--- vite log ---"; cat /tmp/vite-ui.log; exit 1; }
+
+      - name: Verify servers ready
+        id: servers_ready
+        if: always()
+        shell: bash
+        run: |
+          if [[ "${{ steps.setup_public_api_key.outcome }}" != "success" ]]; then
+            echo "Devserver setup failed (outcome: ${{ steps.setup_public_api_key.outcome }})"
+            exit 1
+          fi
+          if [[ "${{ steps.wait_for_ui.outcome }}" != "success" ]]; then
+            echo "UI server not ready (outcome: ${{ steps.wait_for_ui.outcome }})"
+            exit 1
+          fi
+          echo "Both devserver and UI server are ready"
+
+      - name: Install Momentic CLI
+        id: install_momentic_cli
+        working-directory: kumo-tests/momentic-tests
+        run: npm ci
+
+      - name: Install Momentic browsers
+        id: install_momentic_browsers
+        working-directory: kumo-tests/momentic-tests
+        run: npx momentic install-browsers --all
+
+      - name: Set up Momentic local environment
+        id: setup_momentic_local_environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONFIG_FILE="$KUMO_TESTS_DIR/momentic-tests/momentic.config.yaml"
+          python3 "$KUMO_REPO_PATH/.github/scripts/momentic_pipeline.py" \
+          momentic-env "$CONFIG_FILE" "http://localhost:${{ env.UI_PORT }}/"
+
+      - name: Run Momentic tests - Connector to Training creation E2E
+        id: run_connector_to_training_e2e
+        working-directory: kumo-tests/momentic-tests
+        env:
+          MOMENTIC_API_KEY: ${{ secrets.MOMENTIC_API_KEY }}
+          TEST_EMAIL: ${{ secrets.MOMENTIC_USERNAME }}
+          TEST_PASSWORD: ${{ secrets.MOMENTIC_PASSWORD }}
+        run: |
+          BASE_URL="http://localhost:${{ env.UI_PORT }}/"
+          npx momentic run \
+            nightly-tests/end-to-end-tests/e2e-financial-binary-connector-to-training-test.test.yaml \
+            --url-override "$BASE_URL" --env local
+
+      - name: Upload results
+        id: upload_results_connector_training
+        if: always() && steps.servers_ready.outcome == 'success'
+        working-directory: kumo-tests/momentic-tests
+        env:
+          MOMENTIC_API_KEY: ${{ secrets.MOMENTIC_API_KEY }}
+        run: npx momentic results upload test-results
+
+      - name: Trigger training jobs via public API
+        id: trigger_training_jobs
+        if: always() && steps.servers_ready.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Background the (serialized) training chain so the page tests below
+          # overlap it; "Poll training job status" joins TRIGGER_PID.
+          python3 "$KUMO_REPO_PATH/.github/scripts/momentic_pipeline.py" \
+            trigger-jobs "http://localhost:${{ env.DEVSERVER_PORT }}/v1" \
+            > "${RUNNER_TEMP:-/tmp}/trigger-jobs.log" 2>&1 &
+          echo "TRIGGER_PID=$!" >> "$GITHUB_ENV"
+          echo "Launched trigger-jobs in background (PID $!)"
+
+      - name: Run Momentic tests - Connector, Table and Graph page tests
+        id: run_connector_table_graph_page_tests
+        if: always() && steps.servers_ready.outcome == 'success'
+        working-directory: kumo-tests/momentic-tests
+        env:
+          MOMENTIC_API_KEY: ${{ secrets.MOMENTIC_API_KEY }}
+          TEST_EMAIL: ${{ secrets.MOMENTIC_USERNAME }}
+          TEST_PASSWORD: ${{ secrets.MOMENTIC_PASSWORD }}
+          SERVICE_AC_KEY: ${{ secrets.SERVICE_AC_KEY }}
+          SNOW_CONNECTOR_PASSWORD: ${{ secrets.SNOW_CONNECTOR_PASSWORD }}
+          SNOW_CONNECTOR_USER: ${{ secrets.SNOW_CONNECTOR_USER }}
+          DB_CLIENT_ID: ${{ secrets.DB_CLIENT_ID }}
+          DB_CLIENT_SECRET: ${{ secrets.DB_CLIENT_SECRET }}
+        run: |
+          BASE_URL="http://localhost:${{ env.UI_PORT }}/"
+          npx momentic run \
+            nightly-tests/connectors-page-tests \
+            nightly-tests/tables-page-tests \
+            nightly-tests/graphs-page-tests \
+            --parallel 4 \
+            --url-override "$BASE_URL" --env local
+
+      - name: Upload results
+        id: upload_results_page_tests
+        if: always() && steps.servers_ready.outcome == 'success'
+        working-directory: kumo-tests/momentic-tests
+        env:
+          MOMENTIC_API_KEY: ${{ secrets.MOMENTIC_API_KEY }}
+        run: npx momentic results upload test-results
+
+      - name: Poll training job status
+        id: poll_training_job_status
+        if: always() && steps.servers_ready.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Join the background trigger-jobs chain before polling.
+          if [[ -n "${TRIGGER_PID:-}" ]]; then
+            echo "Waiting for background trigger-jobs (PID $TRIGGER_PID) to finish..."
+            while kill -0 "$TRIGGER_PID" 2>/dev/null; do sleep 10; done
+            echo "--- trigger-jobs.log ---"
+            cat "${RUNNER_TEMP:-/tmp}/trigger-jobs.log" || true
+          fi
+          # Poll the launched training jobs from the state file and, on failure,
+          # chase the gen-train-table sub-job where the root cause often lives.
+          python3 "$KUMO_REPO_PATH/.github/scripts/momentic_pipeline.py" \
+            poll-jobs "http://localhost:${{ env.DEVSERVER_PORT }}/v1" \
+            --resource training_jobs --state-key jobs \
+            --deadline-seconds 720 --chase-train-table
+
+      - name: Run Momentic tests - Create Prediction
+        id: run_create_prediction
+        if: always() && steps.servers_ready.outcome == 'success'
+        working-directory: kumo-tests/momentic-tests
+        env:
+          MOMENTIC_API_KEY: ${{ secrets.MOMENTIC_API_KEY }}
+          TEST_EMAIL: ${{ secrets.MOMENTIC_USERNAME }}
+          TEST_PASSWORD: ${{ secrets.MOMENTIC_PASSWORD }}
+        run: |
+          BASE_URL="http://localhost:${{ env.UI_PORT }}/"
+          npx momentic run \
+            nightly-tests/end-to-end-tests/create-prediction-job-financial-binary.test.yaml \
+            --url-override "$BASE_URL" --env local
+
+      - name: Upload results
+        id: upload_results_create_prediction
+        if: always() && steps.servers_ready.outcome == 'success'
+        working-directory: kumo-tests/momentic-tests
+        env:
+          MOMENTIC_API_KEY: ${{ secrets.MOMENTIC_API_KEY }}
+        run: npx momentic results upload test-results
+
+      - name: Trigger prediction job
+        id: trigger_prediction_job
+        if: always() && steps.servers_ready.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Background the prediction chain so the model/overview page tests
+          # below overlap it; "Poll prediction job status" joins PRED_TRIGGER_PID.
+          python3 "$KUMO_REPO_PATH/.github/scripts/momentic_pipeline.py" \
+            trigger-prediction-jobs "http://localhost:${{ env.DEVSERVER_PORT }}/v1" \
+            > "${RUNNER_TEMP:-/tmp}/trigger-prediction-jobs.log" 2>&1 &
+          echo "PRED_TRIGGER_PID=$!" >> "$GITHUB_ENV"
+          echo "Launched trigger-prediction-jobs in background (PID $!)"
+
+      - name: Run Momentic tests - Training Job overview, Models and Jobs page tests
+        id: run_training_overview_models_tests
+        if: always() && steps.servers_ready.outcome == 'success'
+        working-directory: kumo-tests/momentic-tests
+        env:
+          MOMENTIC_API_KEY: ${{ secrets.MOMENTIC_API_KEY }}
+          TEST_EMAIL: ${{ secrets.MOMENTIC_USERNAME }}
+          TEST_PASSWORD: ${{ secrets.MOMENTIC_PASSWORD }}
+        run: |
+          BASE_URL="http://localhost:${{ env.UI_PORT }}/"
+          npx momentic run \
+            nightly-tests/end-to-end-tests/overview-evaluation-explanation-financial-binary.test.yaml \
+            nightly-tests/models-page-tests \
+            nightly-tests/overview-training-evaluation-explanation-tests \
+            --parallel 4 \
+            --url-override "$BASE_URL" --env local
+
+      - name: Upload results
+        id: upload_results_training_overview
+        if: always() && steps.servers_ready.outcome == 'success'
+        working-directory: kumo-tests/momentic-tests
+        env:
+          MOMENTIC_API_KEY: ${{ secrets.MOMENTIC_API_KEY }}
+        run: npx momentic results upload test-results
+
+      - name: Poll prediction job status
+        id: poll_prediction_job_status
+        if: always() && steps.servers_ready.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Join the background trigger-prediction-jobs before polling.
+          if [[ -n "${PRED_TRIGGER_PID:-}" ]]; then
+            echo "Waiting for background trigger-prediction-jobs (PID $PRED_TRIGGER_PID) to finish..."
+            while kill -0 "$PRED_TRIGGER_PID" 2>/dev/null; do sleep 10; done
+            echo "--- trigger-prediction-jobs.log ---"
+            cat "${RUNNER_TEMP:-/tmp}/trigger-prediction-jobs.log" || true
+          fi
+          # Poll the launched prediction jobs from the state file; a run that
+          # launched none is fine (--allow-empty exits 0).
+          python3 "$KUMO_REPO_PATH/.github/scripts/momentic_pipeline.py" \
+            poll-jobs "http://localhost:${{ env.DEVSERVER_PORT }}/v1" \
+            --resource prediction_jobs --state-key prediction_jobs \
+            --deadline-seconds 600 --allow-empty
+
+      - name: Run Momentic tests - Prediction Job overview and Predictions page tests
+        id: run_prediction_overview_predictions_tests
+        if: always() && steps.servers_ready.outcome == 'success'
+        working-directory: kumo-tests/momentic-tests
+        env:
+          MOMENTIC_API_KEY: ${{ secrets.MOMENTIC_API_KEY }}
+          TEST_EMAIL: ${{ secrets.MOMENTIC_USERNAME }}
+          TEST_PASSWORD: ${{ secrets.MOMENTIC_PASSWORD }}
+        run: |
+          BASE_URL="http://localhost:${{ env.UI_PORT }}/"
+          npx momentic run \
+            nightly-tests/end-to-end-tests/bp-predictions-details-financial-binary.test.yaml \
+            nightly-tests/predictions-page-tests \
+            nightly-tests/prediction-output-tests \
+            --parallel 4 \
+            --url-override "$BASE_URL" --env local
+
+      - name: Upload results
+        id: upload_results_prediction_overview
+        if: always() && steps.servers_ready.outcome == 'success'
+        working-directory: kumo-tests/momentic-tests
+        env:
+          MOMENTIC_API_KEY: ${{ secrets.MOMENTIC_API_KEY }}
+        run: npx momentic results upload test-results
+
+      - name: Run Momentic tests - Archive Jobs
+        id: run_archive_tests
+        if: always() && steps.servers_ready.outcome == 'success'
+        working-directory: kumo-tests/momentic-tests
+        env:
+          MOMENTIC_API_KEY: ${{ secrets.MOMENTIC_API_KEY }}
+          TEST_EMAIL: ${{ secrets.MOMENTIC_USERNAME }}
+          TEST_PASSWORD: ${{ secrets.MOMENTIC_PASSWORD }}
+        run: |
+          BASE_URL="http://localhost:${{ env.UI_PORT }}/"
+          npx momentic run \
+            nightly-tests/archive-job \
+            --parallel 2 \
+            --url-override "$BASE_URL" --env local
+
+      - name: Upload results
+        id: upload_results_archive_tests
+        if: always() && steps.servers_ready.outcome == 'success'
+        working-directory: kumo-tests/momentic-tests
+        env:
+          MOMENTIC_API_KEY: ${{ secrets.MOMENTIC_API_KEY }}
+        run: npx momentic results upload test-results
+
+      - name: Run Momentic tests - Delete Entries
+        id: run_delete_entries
+        if: always() && steps.servers_ready.outcome == 'success'
+        working-directory: kumo-tests/momentic-tests
+        env:
+          MOMENTIC_API_KEY: ${{ secrets.MOMENTIC_API_KEY }}
+          TEST_EMAIL: ${{ secrets.MOMENTIC_USERNAME }}
+          TEST_PASSWORD: ${{ secrets.MOMENTIC_PASSWORD }}
+        run: |
+          BASE_URL="http://localhost:${{ env.UI_PORT }}/"
+          npx momentic run \
+            nightly-tests/delete-entries/delete-entities.test.yaml \
+            --url-override "$BASE_URL" --env local
+
+      - name: Upload results
+        id: upload_results_delete_entries
+        if: always() && steps.servers_ready.outcome == 'success'
+        working-directory: kumo-tests/momentic-tests
+        env:
+          MOMENTIC_API_KEY: ${{ secrets.MOMENTIC_API_KEY }}
+        run: npx momentic results upload test-results
+
+      - name: Capture diagnostics on failure
+        if: failure()
+        shell: bash
+        run: |
+          DIAG_DIR="${{ github.workspace }}/diagnostics-${{ github.run_id }}"
+          mkdir -p "$DIAG_DIR"
+          echo "=== tmux sessions (devserver socket) ===" | tee "$DIAG_DIR/summary.txt"
+          tmux -L devserver list-sessions 2>&1 | tee -a "$DIAG_DIR/summary.txt" || true
+          for sess in $(tmux -L devserver list-sessions -F '#{session_name}' 2>/dev/null || true); do
+            for pane in $(tmux -L devserver list-panes -t "$sess" -F '#{pane_id}' 2>/dev/null || true); do
+              tmux -L devserver capture-pane -t "$pane" -p -S -500 2>/dev/null \
+                | tee "$DIAG_DIR/tmux_${sess}_${pane}.txt" || true
+            done
+          done
+          echo "--- Vite UI log ---" | tee -a "$DIAG_DIR/summary.txt"
+          cat /tmp/vite-ui.log 2>/dev/null | tee "$DIAG_DIR/vite-ui.log" || true
+          echo "=== listening ports ===" | tee -a "$DIAG_DIR/summary.txt"
+          ss -tlnp 2>/dev/null | tee "$DIAG_DIR/listening_ports.txt" || true
+          echo "=== devserver processes ===" | tee -a "$DIAG_DIR/summary.txt"
+          ps aux | grep -E 'devserver|uvicorn|rest|temporal' | grep -v grep \
+            | tee "$DIAG_DIR/processes.txt" || true
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: diagnostics-${{ github.run_id }}
+          path: ${{ github.workspace }}/diagnostics-${{ github.run_id }}/
+          if-no-files-found: ignore
+
+      - name: Summarize failed steps
+        id: report_failures
+        if: always()
+        shell: bash
+        env:
+          # The full steps context — the reporter flags any step whose outcome
+          # is 'failure' and emits failed/title/body/slack_message outputs that
+          # the ticket + Slack steps below consume.
+          STEPS_JSON: ${{ toJSON(steps) }}
+        run: |
+          python3 "$KUMO_REPO_PATH/.github/scripts/momentic_pipeline.py" \
+            report-failures
+
+      - name: Create ticket for failed steps
+        id: create_ticket
+        if: always() && github.event_name == 'schedule' && steps.report_failures.outputs.failed == 'true'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          TITLE: ${{ steps.report_failures.outputs.title }}
+          BODY: ${{ steps.report_failures.outputs.body }}
+        with:
+          script: |
+            const { TITLE, BODY } = process.env;
+            let issue;
+            try {
+              issue = (await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: TITLE,
+                body: BODY,
+                labels: ['manipal'],
+              })).data;
+            } catch (e) {
+              core.warning(`create with label failed (${e.message}); retrying without label`);
+              issue = (await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: TITLE,
+                body: BODY,
+              })).data;
+            }
+            core.info(`Created ticket: ${issue.html_url}`);
+            core.setOutput('issue_url', issue.html_url);
+
+      - name: Send Slack notification for failed steps
+        if: always() && github.event_name == 'schedule' && steps.report_failures.outputs.failed == 'true'
+        uses: ./kumo/.github/actions/slack-notification-action
+        with:
+          channel-id: "C06KZUA6T9V"
+          job-status: ${{ job.status }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+          slack-bot-token: ${{ secrets.SLACK_BOT_TOKEN }}
+          message: |
+            ${{ steps.report_failures.outputs.slack_message }}
+            Ticket: ${{ steps.create_ticket.outputs.issue_url }}
+
+      - name: Post-run cleanup
+        if: always()
+        shell: bash
+        run: |
+          pkill -9 -f "rest/devserver/main.py" 2>/dev/null || true
+          pkill -9 -f "rest/public/main.py" 2>/dev/null || true
+          pkill -9 -f "worker_main.py" 2>/dev/null || true
+          pkill -9 -f "temporal server start-dev" 2>/dev/null || true
+          pkill -9 -f "vite" 2>/dev/null || true
+          tmux -L devserver kill-server 2>/dev/null || true
+          tmux kill-session -t local_temporal 2>/dev/null || true
+          rm -rf /tmp/devserver-* /tmp/vite-ui.log /tmp/devserver.pid 2>/dev/null || true
+          sudo rm -rf "${{ github.workspace }}/kumo/ui/build" 2>/dev/null || true
+          sudo rm -rf "${{ github.workspace }}/kumo/ui/node_modules" 2>/dev/null || true
+          if [[ -d "${{ github.workspace }}/kumo" ]]; then
+            sudo chown -R "$(id -u):$(id -g)" "${{ github.workspace }}/kumo" 2>/dev/null || true
+          fi

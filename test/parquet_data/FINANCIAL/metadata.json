@@ -1,0 +1,568 @@
+{
+    "name": "FINANCIAL",
+    "data_source_dict": {},
+    "tables": [
+      {
+        "table_name": "ACCOUNT",
+        "data_source": null,
+        "data_version": null,
+        "pkey": {
+          "name": "ACCOUNT_ID",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "drop_duplicates": false
+        },
+        "fkeys": [
+          {
+            "name": "DISTRICT_ID",
+            "stype": null,
+            "dtype": "int",
+            "na_values": null,
+            "metadata": {},
+            "dst_table": "DISTRICT",
+            "dst_key": null,
+            "dst_data_source": null,
+            "stats": {}
+          }
+        ],
+        "cols": [
+          {
+            "name": "FREQUENCY",
+            "stype": null,
+            "dtype": "string",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "DATE",
+            "stype": null,
+            "dtype": "date",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          }
+        ],
+        "time_col": null,
+        "source_name": null,
+        "stats": {}
+      },
+      {
+        "table_name": "CARD",
+        "data_source": null,
+        "data_version": null,
+        "pkey": {
+          "name": "CARD_ID",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "drop_duplicates": false
+        },
+        "fkeys": [
+          {
+            "name": "DISP_ID",
+            "stype": null,
+            "dtype": "int",
+            "na_values": null,
+            "metadata": {},
+            "dst_table": "DISP",
+            "dst_key": null,
+            "dst_data_source": null,
+            "stats": {}
+          }
+        ],
+        "cols": [
+          {
+            "name": "TYPE",
+            "stype": null,
+            "dtype": "string",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "ISSUED",
+            "stype": null,
+            "dtype": "date",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          }
+        ],
+        "time_col": null,
+        "source_name": null,
+        "stats": {}
+      },
+      {
+        "table_name": "CLIENT",
+        "data_source": null,
+        "data_version": null,
+        "pkey": {
+          "name": "CLIENT_ID",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "drop_duplicates": false
+        },
+        "fkeys": [
+          {
+            "name": "DISTRICT_ID",
+            "stype": null,
+            "dtype": "int",
+            "na_values": null,
+            "metadata": {},
+            "dst_table": "DISTRICT",
+            "dst_key": null,
+            "dst_data_source": null,
+            "stats": {}
+          }
+        ],
+        "cols": [
+          {
+            "name": "GENDER",
+            "stype": null,
+            "dtype": "string",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "BIRTH_DATE",
+            "stype": null,
+            "dtype": "date",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          }
+        ],
+        "time_col": null,
+        "source_name": null,
+        "stats": {}
+      },
+      {
+        "table_name": "DISP",
+        "data_source": null,
+        "data_version": null,
+        "pkey": {
+          "name": "DISP_ID",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "drop_duplicates": false
+        },
+        "fkeys": [
+          {
+            "name": "CLIENT_ID",
+            "stype": null,
+            "dtype": "int",
+            "na_values": null,
+            "metadata": {},
+            "dst_table": "CLIENT",
+            "dst_key": null,
+            "dst_data_source": null,
+            "stats": {}
+          },
+          {
+            "name": "ACCOUNT_ID",
+            "stype": null,
+            "dtype": "int",
+            "na_values": null,
+            "metadata": {},
+            "dst_table": "ACCOUNT",
+            "dst_key": null,
+            "dst_data_source": null,
+            "stats": {}
+          }
+        ],
+        "cols": [
+          {
+            "name": "TYPE",
+            "stype": null,
+            "dtype": "string",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          }
+        ],
+        "time_col": null,
+        "source_name": null,
+        "stats": {}
+      },
+      {
+        "table_name": "DISTRICT",
+        "data_source": null,
+        "data_version": null,
+        "pkey": {
+          "name": "DISTRICT_ID",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "drop_duplicates": false
+        },
+        "fkeys": [],
+        "cols": [
+          {
+            "name": "A3",
+            "stype": null,
+            "dtype": "string",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "A4",
+            "stype": null,
+            "dtype": "float",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "A5",
+            "stype": null,
+            "dtype": "float",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "A6",
+            "stype": null,
+            "dtype": "float",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "A7",
+            "stype": null,
+            "dtype": "float",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "A8",
+            "stype": null,
+            "dtype": "float",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "A9",
+            "stype": null,
+            "dtype": "float",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "A10",
+            "stype": null,
+            "dtype": "float",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "A11",
+            "stype": null,
+            "dtype": "float",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "A12",
+            "stype": null,
+            "dtype": "float",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "A13",
+            "stype": null,
+            "dtype": "float",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "A14",
+            "stype": null,
+            "dtype": "float",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "A15",
+            "stype": null,
+            "dtype": "float",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "A16",
+            "stype": null,
+            "dtype": "float",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          }
+        ],
+        "time_col": null,
+        "source_name": null,
+        "stats": {}
+      },
+      {
+        "table_name": "LOAN",
+        "data_source": null,
+        "data_version": null,
+        "pkey": {
+          "name": "LOAN_ID",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "drop_duplicates": false
+        },
+        "fkeys": [
+          {
+            "name": "ACCOUNT_ID",
+            "stype": null,
+            "dtype": "int",
+            "na_values": null,
+            "metadata": {},
+            "dst_table": "ACCOUNT",
+            "dst_key": null,
+            "dst_data_source": null,
+            "stats": {}
+          }
+        ],
+        "cols": [
+          {
+            "name": "DATE",
+            "stype": null,
+            "dtype": "date",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "AMOUNT",
+            "stype": null,
+            "dtype": "float",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "DURATION",
+            "stype": null,
+            "dtype": "int",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "PAYMENTS",
+            "stype": null,
+            "dtype": "float",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "STATUS",
+            "stype": null,
+            "dtype": "string",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          }
+        ],
+        "time_col": null,
+        "source_name": null,
+        "stats": {}
+      },
+      {
+        "table_name": "ORDERS",
+        "data_source": null,
+        "data_version": null,
+        "pkey": {
+          "name": "ORDERS_ID",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "drop_duplicates": false
+        },
+        "fkeys": [
+          {
+            "name": "ACCOUNT_ID",
+            "stype": null,
+            "dtype": "int",
+            "na_values": null,
+            "metadata": {},
+            "dst_table": "ACCOUNT",
+            "dst_key": null,
+            "dst_data_source": null,
+            "stats": {}
+          }
+        ],
+        "cols": [
+          {
+            "name": "BANK_TO",
+            "stype": null,
+            "dtype": "string",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "AMOUNT",
+            "stype": null,
+            "dtype": "float",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "K_SYMBOL",
+            "stype": null,
+            "dtype": "string",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          }
+        ],
+        "time_col": null,
+        "source_name": null,
+        "stats": {}
+      },
+      {
+        "table_name": "TRANS",
+        "data_source": null,
+        "data_version": null,
+        "pkey": {
+          "name": "TRANS_ID",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "drop_duplicates": false
+        },
+        "fkeys": [
+          {
+            "name": "ACCOUNT_ID",
+            "stype": null,
+            "dtype": "int",
+            "na_values": null,
+            "metadata": {},
+            "dst_table": "ACCOUNT",
+            "dst_key": null,
+            "dst_data_source": null,
+            "stats": {}
+          }
+        ],
+        "cols": [
+          {
+            "name": "DATE",
+            "stype": null,
+            "dtype": "date",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "TYPE",
+            "stype": null,
+            "dtype": "string",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "OPERATION",
+            "stype": null,
+            "dtype": "string",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "AMOUNT",
+            "stype": null,
+            "dtype": "float",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "BALANCE",
+            "stype": null,
+            "dtype": "float",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          },
+          {
+            "name": "K_SYMBOL",
+            "stype": null,
+            "dtype": "string",
+            "na_values": null,
+            "metadata": {},
+            "encoder": null,
+            "stats": {}
+          }
+        ],
+        "time_col": null,
+        "source_name": null,
+        "stats": {}
+      }
+    ]
+  }

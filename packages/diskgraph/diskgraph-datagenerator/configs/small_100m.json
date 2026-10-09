@@ -1,0 +1,48 @@
+{
+  "total_rows": 100000000,
+  "seed": 17,
+  "batch_size": 200000,
+  "row_group_size": 1000000,
+  "tables": [
+    {
+      "name": "users",
+      "row_percent": 40,
+      "shards": 32,
+      "columns": [
+        { "name": "user_id", "dtype": "int64", "primary_key": true },
+        { "name": "email", "dtype": "string", "gen": { "type": "string", "min_len": 8, "max_len": 20, "alphabet": "lower" } },
+        { "name": "is_active", "dtype": "bool", "gen": { "type": "bool", "true_ratio": 0.9 } },
+        { "name": "signup_date", "dtype": "date", "gen": { "type": "date", "start_ymd": "2020-01-01", "step_days": 1 } },
+        { "name": "rating", "dtype": "float32", "gen": { "type": "uniform_float", "min": 1.0, "max": 5.0 } }
+      ]
+    },
+    {
+      "name": "products",
+      "row_percent": 20,
+      "shards": 16,
+      "columns": [
+        { "name": "product_id", "dtype": "string", "primary_key": true, "key_encoding": "hex" },
+        { "name": "category", "dtype": "string", "gen": { "type": "categorical", "values": ["apparel", "tools", "books", "grocery"] } },
+        { "name": "price", "dtype": "float64", "gen": { "type": "uniform_float", "min": 1.0, "max": 999.0 } },
+        { "name": "created_ts", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1640995200000, "step_ms": 60000 } }
+      ]
+    },
+    {
+      "name": "orders",
+      "row_percent": 40,
+      "shards": 32,
+      "columns": [
+        { "name": "order_id", "dtype": "int64", "primary_key": true },
+        { "name": "user_id", "dtype": "int64" },
+        { "name": "product_id", "dtype": "string" },
+        { "name": "quantity", "dtype": "int32", "gen": { "type": "uniform_int", "min": 1, "max": 8 } },
+        { "name": "order_ts", "dtype": "timestamp", "timestamp_unit": "millis", "gen": { "type": "timestamp", "start_epoch_ms": 1640995200000, "step_ms": 250 } },
+        { "name": "order_weight", "dtype": "float32", "gen": { "type": "uniform_float", "min": 0.1, "max": 5.0 } }
+      ]
+    }
+  ],
+  "relationships": [
+    { "src_table": "orders", "src_column": "user_id", "dst_table": "users", "dst_column": "user_id", "distribution": { "type": "uniform" } },
+    { "src_table": "orders", "src_column": "product_id", "dst_table": "products", "dst_column": "product_id", "distribution": { "type": "uniform" } }
+  ]
+}

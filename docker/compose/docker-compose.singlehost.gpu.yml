@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+services:
+  kumo-pool-worker:
+    image: ${KUMO_GPU_IMAGE:-${KUMO_IMAGE_REGISTRY:-kumo}/kumo-backend-gpu:${KUMO_IMAGE_TAG}}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

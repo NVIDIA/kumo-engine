@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["kumoTemporal", "temporal"],
+  "properties": {
+    "kumoTemporal": {
+      "type": "object",
+      "required": ["platform", "security", "networkPolicy"],
+      "properties": {
+        "platform": {
+          "type": "string",
+          "enum": ["aws", "azure"]
+        },
+        "security": {
+          "type": "object",
+          "required": ["transport"],
+          "properties": {
+            "transport": {
+              "type": "object",
+              "required": ["encryptionRequired", "meshNamespaceLabels"],
+              "properties": {
+                "encryptionRequired": {
+                  "type": "boolean"
+                },
+                "meshNamespaceLabels": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "networkPolicy": {
+          "type": "object",
+          "required": ["enabled", "clientNamespaceLabels"],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "clientNamespaceLabels": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "temporal": {
+      "type": "object",
+      "required": ["server", "admintools", "web", "schema", "shims"],
+      "properties": {
+        "server": {
+          "type": "object",
+          "required": ["enabled", "image", "config"],
+          "properties": {
+            "enabled": {
+              "const": true
+            },
+            "image": {
+              "type": "object",
+              "required": ["repository", "tag"],
+              "properties": {
+                "repository": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "tag": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "config": {
+              "type": "object",
+              "required": ["persistence", "namespaces"]
+            }
+          }
+        },
+        "admintools": {
+          "type": "object",
+          "required": ["enabled", "image"],
+          "properties": {
+            "enabled": {
+              "const": false
+            },
+            "image": {
+              "type": "object",
+              "required": ["repository", "tag"],
+              "properties": {
+                "repository": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "tag": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        "web": {
+          "type": "object",
+          "required": ["enabled"],
+          "properties": {
+            "enabled": {
+              "const": false
+            }
+          }
+        },
+        "schema": {
+          "type": "object",
+          "required": ["useHelmHooks"],
+          "properties": {
+            "useHelmHooks": {
+              "const": true
+            }
+          }
+        },
+        "shims": {
+          "type": "object",
+          "required": ["dockerize", "elasticsearchTool"],
+          "properties": {
+            "dockerize": {
+              "const": false
+            },
+            "elasticsearchTool": {
+              "const": false
+            }
+          }
+        }
+      }
+    }
+  }
+}

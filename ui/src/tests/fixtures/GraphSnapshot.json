@@ -1,0 +1,205 @@
+{
+    "snapshot_resource": {
+        "id": "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460",
+        "table_ids": {
+            "FINANCE_TRANS": "table-bc150313117da0324bfe31ca4ff499e5@1664307208",
+            "FINANCE_ACCOUNT": "table-002e03c10b6e6d565f546bc50505145e@1659426523",
+            "FINANCE_ORDERS": "NA.NA-ccaf9a4a904985c04cd0be0c96d6857c"
+        },
+        "stages": {
+            "INGEST": {
+                "status": "DONE",
+                "start_time": "2025-04-03T07:24:11.700500+00:00",
+                "end_time": "2025-04-03T07:24:11.700500+00:00",
+                "warnings": [],
+                "error": null
+            }
+        }
+    },
+    "definition": {
+        "tables": {
+            "FINANCE_TRANS": {
+                "cols": [
+                    {
+                        "name": "TRANS_ID",
+                        "stype": "ID",
+                        "dtype": "int32",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "ACCOUNT_ID",
+                        "stype": "ID",
+                        "dtype": "int32",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "DATE",
+                        "stype": "timestamp",
+                        "dtype": "date",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "TYPE",
+                        "stype": "categorical",
+                        "dtype": "string",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "OPERATION",
+                        "stype": "categorical",
+                        "dtype": "string",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "AMOUNT",
+                        "stype": "numerical",
+                        "dtype": "int32",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "BALANCE",
+                        "stype": "numerical",
+                        "dtype": "int32",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "K_SYMBOL",
+                        "stype": "categorical",
+                        "dtype": "string",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "BANK",
+                        "stype": "categorical",
+                        "dtype": "string",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "ACCOUNT",
+                        "stype": "numerical",
+                        "dtype": "int32",
+                        "timestamp_format": null
+                    }
+                ],
+                "source_table": {
+                    "s3_path": "s3://kumo-public-datasets/financial/parquet/TRANS",
+                    "connector_id": "FINANCIAL_DOWNSAMPLED_DATASET_V2",
+                    "source_table_name": "TRANS",
+                    "file_type": null,
+                    "data_source_type": "S3"
+                },
+                "pkey": "TRANS_ID",
+                "time_col": "DATE",
+                "end_time_col": null
+            },
+            "FINANCE_ACCOUNT": {
+                "cols": [
+                    {
+                        "name": "ACCOUNT_ID",
+                        "stype": "ID",
+                        "dtype": "int64",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "DISTRICT_ID",
+                        "stype": "ID",
+                        "dtype": "int64",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "FREQUENCY",
+                        "stype": "categorical",
+                        "dtype": "string",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "DATE",
+                        "stype": "timestamp",
+                        "dtype": "date",
+                        "timestamp_format": null
+                    }
+                ],
+                "source_table": {
+                    "s3_path": "s3://kumo-public-datasets/financial/parquet/ACCOUNT.parquet",
+                    "connector_id": "FINANCIAL_DOWNSAMPLED_DATASET_V2",
+                    "source_table_name": "ACCOUNT",
+                    "file_type": null,
+                    "data_source_type": "S3"
+                },
+                "pkey": "ACCOUNT_ID",
+                "time_col": "DATE",
+                "end_time_col": null
+            },
+            "FINANCE_ORDERS": {
+                "cols": [
+                    {
+                        "name": "ORDERS_ID",
+                        "stype": "ID",
+                        "dtype": "int64",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "ACCOUNT_ID",
+                        "stype": "ID",
+                        "dtype": "int64",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "BANK_TO",
+                        "stype": "categorical",
+                        "dtype": "string",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "ACCOUNT_TO",
+                        "stype": "numerical",
+                        "dtype": "int64",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "AMOUNT",
+                        "stype": "numerical",
+                        "dtype": "float64",
+                        "timestamp_format": null
+                    },
+                    {
+                        "name": "K_SYMBOL",
+                        "stype": "categorical",
+                        "dtype": "string",
+                        "timestamp_format": null
+                    }
+                ],
+                "source_table": {
+                    "s3_path": "s3://kumo-public-datasets/financial/parquet/ORDERS.parquet",
+                    "connector_id": "FINANCIAL_DOWNSAMPLED_DATASET_V2",
+                    "source_table_name": "ORDERS",
+                    "file_type": null,
+                    "data_source_type": "S3"
+                },
+                "pkey": "ORDERS_ID",
+                "time_col": null,
+                "end_time_col": null
+            }
+        },
+        "col_groups": [
+            {
+                "columns": [
+                    {
+                        "table_name": "FINANCE_TRANS",
+                        "col_name": "ACCOUNT_ID"
+                    },
+                    {
+                        "table_name": "FINANCE_ORDERS",
+                        "col_name": "ACCOUNT_ID"
+                    },
+                    {
+                        "table_name": "FINANCE_ACCOUNT",
+                        "col_name": "ACCOUNT_ID"
+                    }
+                ]
+            }
+        ]
+    },
+    "total_num_rows": 1067291,
+    "total_size_bytes": 982056960
+}

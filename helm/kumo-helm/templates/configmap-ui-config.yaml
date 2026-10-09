@@ -1,0 +1,28 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- $baseUrl := "/internal" -}}
+{{- if .Values.exposure.host -}}
+{{- $baseUrl = printf "https://%s/internal" .Values.exposure.host -}}
+{{- end -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ui-config
+  labels:
+    {{- include "kumo.commonLabels" . | nindent 4 }}
+data:
+  env.js: |
+    window._env_ = {
+        REACT_APP_BASE_URL_DEV: {{ $baseUrl | quote }},
+        REACT_APP_BASE_URL_PROD: {{ $baseUrl | quote }},
+        AUTH0_SPA_APP_CLIENT_ID: "",
+        AUTH0_DOMAIN: "",
+        KUMO_AUTH_BACKEND: {{ ternary "direct_connect" "auth0" .Values.auth.enabled | quote }},
+        AUTH_DISABLED: {{ not .Values.auth.enabled }},
+        SHOW_MOCKUP_FEATURES: false,
+        ENABLE_PRIVATE_PREVIEW: true,
+        ENABLE_PQLV2: true,
+    };

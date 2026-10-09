@@ -1,0 +1,81 @@
+{
+    "id": "bp-job-3f5f52a53f01473d8c5123ff7ba4fd15",
+    "config": {
+        "predictive_query_id": "NA-558e58967ac7fadf2a9a408fa4a8b52d",
+        "training_job_id": "trainingjob-9f8b259b4f764c8f932ad5912a926ec2",
+        "task_type": "binary_classification",
+        "num_classes_to_return": null,
+        "binary_classification_threshold": 0.6,
+        "prediction_time": null,
+        "lag_timesteps": null,
+        "year_over_year": false,
+        "forecast_length": null,
+        "filter_override_args": null,
+        "transformation": null,
+        "outputs": [
+            {
+                "artifact_type": "PREDICTIONS",
+                "file_path": "s3://kumo-public-datasets/momentic_predictions/pred/predictions/new_predictions_file.csv",
+                "storage_type": "S3",
+                "extra_fields": [],
+                "file_type": null
+            },
+            {
+                "artifact_type": "EMBEDDINGS",
+                "file_path": "s3://kumo-public-datasets/momentic_predictions/pred/predictions/new_embeddings_file.parquet",
+                "storage_type": "S3",
+                "extra_fields": [],
+                "file_type": null
+            }
+        ],
+        "output_table_name": null,
+        "output_directory": null,
+        "output_types": null,
+        "num_parallel_workers_limit": 2,
+        "generate_pred_table_job_id": "gen-predtable-job-e01e53529bcf443ea47dae482a58d383",
+        "custom_pred_table_source": null,
+        "graph_id": "NA-d445eeb8b2aa1b79a142406239fa74e8",
+        "graph_data_version": "6f0ae33ac31edb0c321fbe182e39e460",
+        "pquery_def_fpid": "558e58967ac7fadf2a9a408fa4a8b52d",
+        "explanations": false
+    },
+    "timestamps": {
+        "created_at": "2025-04-09T05:19:10.268477+00:00",
+        "updated_at": "2025-04-09T05:27:46.421947+00:00"
+    },
+    "predictive_query_link": {
+        "name": "NA-558e58967ac7fadf2a9a408fa4a8b52d",
+        "id": "NA-558e58967ac7fadf2a9a408fa4a8b52d",
+        "training_job_id": null
+    },
+    "execution": {
+        "status": "FAILED",
+        "log": {
+            "stage_name": "Failed",
+            "last_updated_at": "2025-03-12T07:41:37.841668+00:00",
+            "detail": "BATCH_PREDICTION_JOB failed: Workflow execution failed!\ncaused by failure in child workflow MaterializePredictionTaskWorkflow, message: Child Workflow execution failed\ncaused by failure in activity materialize_prediction_task, message: Activity task failed\ncaused by <class 'ModuleNotFoundError'>, message: Activity materialize_prediction_task failed due to unexpected error: No module named 'kumo.task.split.split'; 'kumo.task.split' is not a package"
+        },
+        "start_time": "2025-04-09T05:19:00.229711+00:00",
+        "last_updated_at": "2025-04-09T05:27:46.421947+00:00",
+        "workflow_end_state": 4,
+        "failure_info": {
+            "message": "BATCH_PREDICTION_JOB failed: Workflow execution failed!\ncaused by failure in child workflow MaterializePredictionTaskWorkflow, message: Child Workflow execution failed\ncaused by failure in activity materialize_prediction_task, message: Activity task failed\ncaused by <class 'ModuleNotFoundError'>, message: Activity materialize_prediction_task failed due to unexpected error: No module named 'kumo.task.split.split'; 'kumo.task.split' is not a package",
+            "stacktrace": ""
+        },
+        "progress": null,
+        "results": null
+    },
+    "graph_link": {
+        "name": "NA-d445eeb8b2aa1b79a142406239fa74e8",
+        "id": "NA-d445eeb8b2aa1b79a142406239fa74e8",
+        "snapshot_id": null
+    },
+    "description": "",
+    "batch_prediction_workflow_id": null,
+    "tags": {
+        "pquery_id": "pquery-558e58967ac7fadf2a9a408fa4a8b52d",
+        "model_id": "trainingjob-9f8b259b4f764c8f932ad5912a926ec2",
+        "new_prediction_job": "new_prediction_job"
+    },
+    "job_source": "UI"
+}

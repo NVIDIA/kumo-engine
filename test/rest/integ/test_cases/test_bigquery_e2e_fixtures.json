@@ -1,0 +1,156 @@
+{
+  "tables": [
+    {
+      "cols": [
+        {"name": "FREQUENCY",   "stype": "categorical", "dtype": "string", "timestamp_format": null},
+        {"name": "DATE",        "stype": "timestamp",   "dtype": "date",   "timestamp_format": null},
+        {"name": "DISTRICT_ID", "stype": "ID",          "dtype": "int",    "timestamp_format": null},
+        {"name": "ACCOUNT_ID",  "stype": "ID",          "dtype": "int",    "timestamp_format": null}
+      ],
+      "source_table": {
+        "bigquery_connector_id": "financial_bq",
+        "table_name": "ACCOUNT",
+        "project_id": "kumo-engineering",
+        "dataset_id": "financial",
+        "data_source_type": "BIGQUERY"
+      },
+      "pkey": "ACCOUNT_ID",
+      "time_col": null,
+      "end_time_col": null
+    },
+    {
+      "cols": [
+        {"name": "AMOUNT",     "stype": "numerical",   "dtype": "int",    "timestamp_format": null},
+        {"name": "DURATION",   "stype": "categorical", "dtype": "int",    "timestamp_format": null},
+        {"name": "PAYMENTS",   "stype": "numerical",   "dtype": "float",  "timestamp_format": null},
+        {"name": "STATUS",     "stype": "categorical", "dtype": "string", "timestamp_format": null},
+        {"name": "ACCOUNT_ID", "stype": "ID",          "dtype": "int",    "timestamp_format": null},
+        {"name": "LOAN_ID",    "stype": "ID",          "dtype": "int",    "timestamp_format": null},
+        {"name": "DATE",       "stype": "timestamp",   "dtype": "date",   "timestamp_format": null}
+      ],
+      "source_table": {
+        "bigquery_connector_id": "financial_bq",
+        "table_name": "LOAN",
+        "project_id": "kumo-engineering",
+        "dataset_id": "financial",
+        "data_source_type": "BIGQUERY"
+      },
+      "pkey": "LOAN_ID",
+      "time_col": "DATE",
+      "end_time_col": null
+    },
+    {
+      "cols": [
+        {"name": "TYPE",       "stype": "categorical", "dtype": "string", "timestamp_format": null},
+        {"name": "OPERATION",  "stype": "categorical", "dtype": "string", "timestamp_format": null},
+        {"name": "AMOUNT",     "stype": "numerical",   "dtype": "float",  "timestamp_format": null},
+        {"name": "BALANCE",    "stype": "numerical",   "dtype": "float",  "timestamp_format": null},
+        {"name": "K_SYMBOL",   "stype": "categorical", "dtype": "string", "timestamp_format": null},
+        {"name": "ACCOUNT_ID", "stype": "ID",          "dtype": "int",    "timestamp_format": null},
+        {"name": "TRANS_ID",   "stype": "ID",          "dtype": "int",    "timestamp_format": null},
+        {"name": "DATE",       "stype": "timestamp",   "dtype": "date",   "timestamp_format": null}
+      ],
+      "source_table": {
+        "bigquery_connector_id": "financial_bq",
+        "table_name": "TRANS",
+        "project_id": "kumo-engineering",
+        "dataset_id": "financial",
+        "data_source_type": "BIGQUERY"
+      },
+      "pkey": "TRANS_ID",
+      "time_col": "DATE",
+      "end_time_col": null
+    }
+  ],
+  "graphs": [
+    {
+      "tables": {
+        "ACCOUNT": {
+          "cols": [
+            {"name": "FREQUENCY",   "stype": "categorical", "dtype": "string", "timestamp_format": null},
+            {"name": "DATE",        "stype": "timestamp",   "dtype": "date",   "timestamp_format": null},
+            {"name": "DISTRICT_ID", "stype": "ID",          "dtype": "int",    "timestamp_format": null},
+            {"name": "ACCOUNT_ID",  "stype": "ID",          "dtype": "int",    "timestamp_format": null}
+          ],
+          "source_table": {
+            "bigquery_connector_id": "financial_bq",
+            "table_name": "ACCOUNT",
+            "project_id": "kumo-engineering",
+            "dataset_id": "financial",
+            "data_source_type": "BIGQUERY"
+          },
+          "pkey": "ACCOUNT_ID",
+          "time_col": null,
+          "end_time_col": null
+        },
+        "LOAN": {
+          "cols": [
+            {"name": "AMOUNT",     "stype": "numerical",   "dtype": "int",    "timestamp_format": null},
+            {"name": "DURATION",   "stype": "categorical", "dtype": "int",    "timestamp_format": null},
+            {"name": "PAYMENTS",   "stype": "numerical",   "dtype": "float",  "timestamp_format": null},
+            {"name": "STATUS",     "stype": "categorical", "dtype": "string", "timestamp_format": null},
+            {"name": "ACCOUNT_ID", "stype": "ID",          "dtype": "int",    "timestamp_format": null},
+            {"name": "LOAN_ID",    "stype": "ID",          "dtype": "int",    "timestamp_format": null},
+            {"name": "DATE",       "stype": "timestamp",   "dtype": "date",   "timestamp_format": null}
+          ],
+          "source_table": {
+            "bigquery_connector_id": "financial_bq",
+            "table_name": "LOAN",
+            "project_id": "kumo-engineering",
+            "dataset_id": "financial",
+            "data_source_type": "BIGQUERY"
+          },
+          "pkey": "LOAN_ID",
+          "time_col": "DATE",
+          "end_time_col": null
+        },
+        "TRANS": {
+          "cols": [
+            {"name": "TYPE",       "stype": "categorical", "dtype": "string", "timestamp_format": null},
+            {"name": "OPERATION",  "stype": "categorical", "dtype": "string", "timestamp_format": null},
+            {"name": "AMOUNT",     "stype": "numerical",   "dtype": "float",  "timestamp_format": null},
+            {"name": "BALANCE",    "stype": "numerical",   "dtype": "float",  "timestamp_format": null},
+            {"name": "K_SYMBOL",   "stype": "categorical", "dtype": "string", "timestamp_format": null},
+            {"name": "ACCOUNT_ID", "stype": "ID",          "dtype": "int",    "timestamp_format": null},
+            {"name": "TRANS_ID",   "stype": "ID",          "dtype": "int",    "timestamp_format": null},
+            {"name": "DATE",       "stype": "timestamp",   "dtype": "date",   "timestamp_format": null}
+          ],
+          "source_table": {
+            "bigquery_connector_id": "financial_bq",
+            "table_name": "TRANS",
+            "project_id": "kumo-engineering",
+            "dataset_id": "financial",
+            "data_source_type": "BIGQUERY"
+          },
+          "pkey": "TRANS_ID",
+          "time_col": "DATE",
+          "end_time_col": null
+        }
+      },
+      "col_groups": [
+        {
+          "columns": [
+            {"table_name": "ACCOUNT", "col_name": "ACCOUNT_ID"},
+            {"table_name": "LOAN",    "col_name": "ACCOUNT_ID"},
+            {"table_name": "TRANS",   "col_name": "ACCOUNT_ID"}
+          ]
+        }
+      ]
+    }
+  ],
+  "queries": [
+    {
+      "query_str": "PREDICT SUM(LOAN.AMOUNT, 0, 360, days) FOR EACH ACCOUNT.ACCOUNT_ID",
+      "graph_fpid": "ea0607477f15f36caa731e1b543a187c",
+      "pquery_name": "bigquery_regression_base",
+      "description": "",
+      "model_planner_yaml": "",
+      "run_mode": "debug",
+      "task_type": null,
+      "query_type": null,
+      "list_distinct_target_is_array": false,
+      "enable_baselines": false
+    }
+  ],
+  "predictions": null
+}

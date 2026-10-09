@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directories:
+      - "/"
+      - "/.github/actions/setup"
+      - "/.github/actions/slack-notification-action"
+      - "/packages/kumo-api/.github/actions/verify-import"
+    schedule:
+      interval: "daily"
+      time: "00:00"
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 5

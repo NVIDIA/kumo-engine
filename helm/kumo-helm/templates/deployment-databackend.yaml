@@ -1,0 +1,133 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- $podSecurityExtra := dict -}}
+{{- with .Values.workloads.databackend.ingestScratch -}}
+{{- if and .enabled (eq (.type | default "emptyDir") "ephemeral") (hasKey . "fsGroup") (not (kindIs "invalid" .fsGroup)) -}}
+{{- $_ := set $podSecurityExtra "fsGroup" .fsGroup -}}
+{{- end -}}
+{{- end -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: databackend
+  labels:
+    app: databackend
+    {{- include "kumo.commonLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.workloads.databackend.replicas }}
+  revisionHistoryLimit: 2
+  {{- include "kumo.noSurgeRollingStrategy" . | nindent 2 }}
+  selector:
+    matchLabels:
+      app: databackend
+  template:
+    metadata:
+      annotations:
+        checksum/kumo-config: {{ include (print $.Template.BasePath "/configmap-kumo-config.yaml") . | sha256sum }}
+        {{- include "kumo.podAnnotations" . | nindent 8 }}
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8103"
+      labels:
+        app: databackend
+        tenant: {{ .Values.global.tenant }}
+        {{- include "kumo.workloadPodLabels" (dict "root" . "role" "worker") | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "kumo.serviceAccountName" (dict "root" . "role" "worker") }}
+      automountServiceAccountToken: {{ include "kumo.serviceAccountAutomount" (dict "root" . "role" "worker") }}
+      # An explicit ingestScratch.fsGroup is merged here for root-owned CSI
+      # volumes; null lets OpenShift or another platform assign a valid group.
+      securityContext:
+        {{- include "kumo.podSecurityContext" (dict "root" . "extra" $podSecurityExtra) | nindent 8 }}
+      {{- include "kumo.nodeTargeting" . | nindent 6 }}
+      {{- include "kumo.imagePullSecrets" . | nindent 6 }}
+      containers:
+      - name: kumo-databackend
+        image: {{ include "kumo.dataplaneImage" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        securityContext:
+          {{- include "kumo.containerSecurityContext" (dict "root" . "extra" dict) | nindent 10 }}
+        command: ["/bin/sh"]
+        # The mkdir matters: TMPDIR (set below when ingestScratch is enabled) points into
+        # the scratch volume, and Python's tempfile silently falls back to /tmp when the
+        # TMPDIR directory does not exist.
+        args: ["-c", "mkdir -p \"${TMPDIR:-/tmp}\" && exec python3 /opt/app/temporalio_commons/worker_main.py"]
+        env:
+        - name: WORKERS
+          value: "data-backend-worker"
+        - name: WORKER_METRICS_PORT
+          value: "8003"
+        - name: WORKER_APP_METRICS_PORT
+          value: "8103"
+        {{- with .Values.workloads.databackend.ingestScratch }}
+        {{- if .enabled }}
+        # Bulk connector staging (FileConnector._stage_external_source) writes to Python's
+        # tempdir, /tmp by default, i.e. the container overlay. /tmp itself cannot be
+        # overmounted because the image bakes content there (diskgraph-wheel), so route
+        # the tempdir into the scratch volume instead (kumo-ai/kumo#30091).
+        - name: TMPDIR
+          value: {{ printf "%s/tmp" $.Values.kumoConfig.diskgraph.dataRoot | quote }}
+        {{- end }}
+        {{- end }}
+        {{- include "kumo.downwardApiEnv" . | nindent 8 }}
+        {{- include "kumo.tenantSecretKeyEnv" . | nindent 8 }}
+        envFrom:
+        - configMapRef:
+            name: kumo-config
+        ports:
+        - containerPort: 8003
+          name: metrics
+        - containerPort: 8103
+          name: app-metrics
+        {{- include "kumo.temporalWorkerLiveness" . | nindent 8 }}
+        resources:
+          {{- toYaml .Values.workloads.databackend.resources | nindent 10 }}
+        volumeMounts:
+        {{- include "kumo.temporalVolumeMount" . | nindent 8 }}
+        {{- include "kumo.secretsVolumeMount" . | nindent 8 }}
+        {{- include "kumo.gcpApplicationCredentialsVolumeMount" . | nindent 8 }}
+        {{- with .Values.workloads.databackend.ingestScratch }}
+        {{- if .enabled }}
+        # Ingest staging scratch (kumo-ai/kumo#30091): covers the routed tempdir
+        # ({dataRoot}/tmp via TMPDIR above) and the DiskGraph local ingest root
+        # ({dataRoot}/local-ingest).
+        - name: ingest-scratch
+          mountPath: {{ $.Values.kumoConfig.diskgraph.dataRoot }}
+        {{- end }}
+        {{- end }}
+      volumes:
+      {{- include "kumo.temporalVolume" . | nindent 6 }}
+      {{- include "kumo.secretsVolume" . | nindent 6 }}
+      {{- include "kumo.gcpApplicationCredentialsVolume" . | nindent 6 }}
+      {{- with .Values.workloads.databackend.ingestScratch }}
+      {{- if .enabled }}
+      - name: ingest-scratch
+        {{- $type := .type | default "emptyDir" }}
+        {{- if eq $type "ephemeral" }}
+        {{- if or (not .storageClass) (not .size) }}
+        {{- fail "workloads.databackend.ingestScratch.type=ephemeral requires both ingestScratch.storageClass and ingestScratch.size (the PVC request)" }}
+        {{- end }}
+        ephemeral:
+          volumeClaimTemplate:
+            metadata:
+              labels:
+                app: databackend
+            spec:
+              accessModes: ["ReadWriteOnce"]
+              storageClassName: {{ .storageClass }}
+              resources:
+                requests:
+                  storage: {{ .size }}
+        {{- else if ne $type "emptyDir" }}
+        {{- fail (printf "workloads.databackend.ingestScratch.type must be 'emptyDir' or 'ephemeral', got %q" .type) }}
+        {{- else if .sizeLimit }}
+        emptyDir:
+          sizeLimit: {{ .sizeLimit }}
+        {{- else }}
+        emptyDir: {}
+        {{- end }}
+      {{- end }}
+      {{- end }}

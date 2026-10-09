@@ -1,0 +1,9 @@
+{
+    "LTV on Hnm 10k": "entity: customers.customer_id\nwhatif: COUNT(transactions.*, 0, 90, days) > 0\ntarget: SUM(transactions.price, 0, 90, days)\ntemporal_entity_filter: SUM(transactions.price, -60, 0, days) > 0\n",
+    "LTV on Hnm 10k - AVG": "entity: customers.customer_id\nwhatif: COUNT(transactions.*, 0, 90, days) > 0\ntarget: AVG(transactions.price, 0, 90, days)\ntemporal_entity_filter: SUM(transactions.price, -60, 0, days) > 0\n",
+    "LTV on Hnm 10k - LAST": "entity: customers.customer_id\nwhatif: COUNT(transactions.*, 0, 90, days) > 0\ntarget: LAST(transactions.price, 0, 90, days)\ntemporal_entity_filter: SUM(transactions.price, -60, 0, days) > 0\n",
+    "Churn on Hnm 10k": "entity: customers.customer_id\ntarget: COUNT(transactions.*, 0, 90, days) > 0\ntemporal_entity_filter: SUM(transactions.price, -60, 0, days) > 0.05\n",
+    "LTV with entity filters": "entity: customers.customer_id\ntarget: SUM(transactions.price, 0, 90, days)\ntemporal_entity_filter: LAST(transactions.sales_channel_id, -60, 0, days) = 1\nentity_filter: (customers.fashion_news_frequency = \"NONE\") AND (customers.age > 30)\n",
+    "AVG purchase price": "entity: customers.customer_id\ntarget: AVG(transactions.price, 0, 90, days)\ntemporal_entity_filter: LAST(transactions.sales_channel_id, -60, 0, days) = 1\nentity_filter: (customers.fashion_news_frequency = \"NONE\") AND (customers.age > 30)\n",
+    "Max purchase price": "entity: customers.customer_id\ntarget: MAX(transactions.price, 0, 90, days)\ntemporal_entity_filter: LAST(transactions.sales_channel_id, -60, 0, days) = 1\nentity_filter: (customers.fashion_news_frequency = \"NONE\") AND (customers.age > 30)\n"
+}

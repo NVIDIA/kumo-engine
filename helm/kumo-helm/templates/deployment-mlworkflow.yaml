@@ -1,0 +1,80 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlworkflow
+  labels:
+    app: mlworkflow
+    {{- include "kumo.commonLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.workloads.mlworkflow.replicas }}
+  revisionHistoryLimit: 2
+  {{- include "kumo.noSurgeRollingStrategy" . | nindent 2 }}
+  selector:
+    matchLabels:
+      app: mlworkflow
+  template:
+    metadata:
+      annotations:
+        checksum/kumo-config: {{ include (print $.Template.BasePath "/configmap-kumo-config.yaml") . | sha256sum }}
+        {{- include "kumo.podAnnotations" . | nindent 8 }}
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8105"
+      labels:
+        app: mlworkflow
+        tenant: {{ .Values.global.tenant }}
+        {{- include "kumo.workloadPodLabels" (dict "root" . "role" "worker") | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "kumo.serviceAccountName" (dict "root" . "role" "worker") }}
+      automountServiceAccountToken: {{ include "kumo.serviceAccountAutomount" (dict "root" . "role" "worker") }}
+      securityContext:
+        {{- include "kumo.podSecurityContext" (dict "root" . "extra" dict) | nindent 8 }}
+      {{- include "kumo.nodeTargeting" . | nindent 6 }}
+      {{- include "kumo.imagePullSecrets" . | nindent 6 }}
+      containers:
+      - name: kumo-mlworkflow
+        image: {{ include "kumo.dataplaneImage" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        securityContext:
+          {{- include "kumo.containerSecurityContext" (dict "root" . "extra" dict) | nindent 10 }}
+        command: ["/bin/sh"]
+        args: ["-c", "python3 /opt/app/temporalio_commons/worker_main.py"]
+        env:
+        - name: WORKERS
+          value: "ml-workflow-worker"
+        - name: WORKER_METRICS_PORT
+          value: "8005"
+        - name: WORKER_APP_METRICS_PORT
+          value: "8105"
+        - name: MAX_CONCURRENT_PARQUET_IO
+          value: {{ .Values.workloads.mlworkflow.maxConcurrentParquetIO | quote }}
+        - name: TRAINER_DEDICATED_TOLERATION_VALUE
+          value: "trainer-{{ .Values.global.tenant }}"
+        - name: GRAPHSTORE_DEDICATED_TOLERATION_VALUE
+          value: "graphstore-{{ .Values.global.tenant }}"
+        {{- include "kumo.downwardApiEnv" . | nindent 8 }}
+        {{- include "kumo.tenantSecretKeyEnv" . | nindent 8 }}
+        envFrom:
+        - configMapRef:
+            name: kumo-config
+        ports:
+        - containerPort: 8005
+          name: metrics
+        - containerPort: 8105
+          name: app-metrics
+        {{- include "kumo.temporalWorkerLiveness" . | nindent 8 }}
+        resources:
+          {{- toYaml .Values.workloads.mlworkflow.resources | nindent 10 }}
+        volumeMounts:
+        {{- include "kumo.temporalVolumeMount" . | nindent 8 }}
+        {{- include "kumo.secretsVolumeMount" . | nindent 8 }}
+        {{- include "kumo.gcpApplicationCredentialsVolumeMount" . | nindent 8 }}
+      volumes:
+      {{- include "kumo.temporalVolume" . | nindent 6 }}
+      {{- include "kumo.secretsVolume" . | nindent 6 }}
+      {{- include "kumo.gcpApplicationCredentialsVolume" . | nindent 6 }}

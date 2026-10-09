@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kumo-glove-6b-50d"
+version = "1.0.0"
+description = "GloVe 6B 50d word vectors in Kumo's embedding-model format"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0 AND PDDL-1.0"
+license-files = ["LICENSE", "THIRD-PARTY.txt"]
+authors = [{name = "Kumo.AI", email = "hello@kumo.ai"}]
+
+[project.entry-points."kumo.embedding_models"]
+glove = "kumo_glove_6b_50d:ROOT"
+
+[tool.setuptools.package-data]
+kumo_glove_6b_50d = ["data/*"]

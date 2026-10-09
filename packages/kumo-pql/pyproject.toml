@@ -1,0 +1,129 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kumo-pql"
+version = "0.1.0"
+description = "Parser and validator for Kumo's Predictive Query Language"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = [
+    "antlr4-python3-runtime==4.9.3",
+    "kumo-api>=3.0.0,<4",
+    "pandas>=1.5,<3",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+docs = [
+    "sphinx<8.0.0",
+    "sphinx-autodoc-typehints",
+    "sphinx-copybutton",
+    "sphinx-rtd-theme",
+]
+
+[tool.setuptools.packages.find]
+include = ["kumopql*"]
+
+[tool.uv.sources]
+kumo-api = { workspace = true }
+
+[tool.yapf]
+based_on_style="pep8"
+split_before_named_assigns=false
+blank_line_before_nested_class_or_def=false
+
+[tool.isort]
+known_first_party=["kumopql", "test"]
+multi_line_output=3
+include_trailing_comma=true
+skip=[".gitignore", "__init__.py", "build"]
+skip_glob=["kumopql/grammar/**"]
+
+[tool.pytest.ini_options]
+addopts=[
+    "--capture=no",
+    "--color=yes",
+    "-vv",
+]
+testpaths=["test"]
+xfail_strict=true
+filterwarnings=[
+    "ignore:distutils:DeprecationWarning",
+    "ignore:faiss:DeprecationWarning",
+    "ignore:.*pkg_resources.*:DeprecationWarning",
+    "ignore:No (positive|negative) samples in targets:UserWarning",
+    "error::FutureWarning",
+]
+
+[tool.mypy]
+files=["kumopql", "test"]
+python_version="3.11"
+install_types=true
+non_interactive=true
+ignore_missing_imports=true
+show_error_codes=true
+warn_redundant_casts=true
+warn_unused_configs=true
+warn_unused_ignores=true
+disallow_untyped_defs=true
+disallow_incomplete_defs=true
+check_untyped_defs=true
+exclude=["kumopql/grammar/*", "docs/*"]
+follow_imports="silent"
+
+[tool.ruff]  # https://docs.astral.sh/ruff/rules
+src=["kumopql", "test"]
+line-length=80
+indent-width=4
+target-version="py310"
+exclude=["kumopql/grammar/*"]
+
+[tool.ruff.lint]
+select=[
+    "B",  # flake8-bugbear
+    "D",  # pydocstyle
+    "UP",  # pyupgrade
+]
+ignore=[
+    "B018",  # Ignore "Found useless expression. Either assign it to a variable or remove it."
+    "B905",  # Ignore "`zip()` without an explicit `strict=` parameter"
+    "D100",  # TODO Don't ignore "Missing docstring in public module"
+    "D101",  # TODO Don't ignore "Missing docstring in public class"
+    "D102",  # TODO Don't ignore "Missing docstring in public method"
+    "D103",  # TODO Don't ignore "Missing docstring in public function"
+    "D104",  # TODO Don't ignore "Missing docstring in public package"
+    "D105",  # Ignore "Missing docstring in magic method"
+    "D107",  # Ignore "Missing docstring in __init__"
+    "D205",  # Ignore "blank line required between summary line and description"
+]
+
+[tool.ruff.format]
+quote-style="single"
+
+[tool.ruff.lint.pydocstyle]
+convention="google"
+
+[tool.coverage.run]
+relative_files=true
+
+[tool.coverage.report]
+exclude_also=[
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "except ImportError",
+    "if __name__ == .__main__.:",
+    "@(abc\\.)?abstractmethod",
+]
+
+[tool.coverage.html]
+title="Kumo PQL Coverage Report"
+skip_covered=true
+skip_empty=true

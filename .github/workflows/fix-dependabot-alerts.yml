@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Automate dependabot fixes
+
+on:  # yamllint disable-line rule:truthy
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  checks: read
+  contents: write
+  issues: write
+  pull-requests: write
+  security-events: read
+
+jobs:
+  fix-alerts:
+    uses: kumo-ai/.github/.github/workflows/fix-dependabot-alerts.yml@02ccc098bda8d2db576f6357df02720daf3703b6 # main
+    with:
+      initial_pr_labels: pr-type/regular,release-notes/internal
+    secrets: inherit

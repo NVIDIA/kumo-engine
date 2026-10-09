@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# User Guide: https://github.com/actions/labeler
+#
+# List of all labels: https://github.com/kumo-ai/kumo/labels
+#
+manipal:
+  - any:
+      - changed-files:
+          - any-glob-to-any-file: ['ui/**/*']
+
+ux:
+  - any:
+      - changed-files:
+          - any-glob-to-any-file: ['rest/**/*', 'temporalio_commons']
+
+predictive-query:
+  - any:
+      - changed-files:
+          - any-glob-to-any-file: ['kumo/pquery/**/*']
+
+data-platform:
+  - any:
+      - changed-files:
+          - any-glob-to-any-file: ['kumo/connector/**/*', 'kumo/stats/**/*', 'rest/backends/data_backend/**/*']
+
+ml-infra:
+  - any:
+      - changed-files:
+          - any-glob-to-any-file: ['kumo/train/**/*', 'rest/backends/ml_backend/**/*', 'kumo/diskgraph/**/*', 'tools/faiss-gpu-amd64/**/*', '.github/workflows/build-faiss-gpu-amd64-wheel.yml']
+
+ml-algorithms:
+  - any:
+      - changed-files:
+          - any-glob-to-any-file: ['kumo/explain/**/*', 'kumo/automl/**/*', 'packages/kumo-core/**/*']
+
+ui-only-pr:
+  - any:
+      - changed-files:
+          - all-globs-to-all-files: ['ui/**/*']

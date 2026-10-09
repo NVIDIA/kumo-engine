@@ -1,0 +1,65 @@
+{
+  "rest_api_driver": {
+    "fixture_export_path": "s3://kumo-prod-dataplane-bucket/prod/fixtures",
+    "allow_local_batch_pred_paths": false,
+    "allow_local_connector_file_paths": false,
+    "supported_connector_types": [
+      "snowflake",
+      "databricks",
+      "bigquery",
+      "s3",
+      "gcs",
+      "adls",
+      "file"
+    ],
+    "allow_predict_on_new_data_version": true,
+    "data_scale_limits": {
+      "max_tables_in_a_graph": 12,
+      "max_table_rows": 15000000000,
+      "max_table_cols": 2048,
+      "max_table_size_bytes": 2199023255552,
+      "max_table_size_bytes_by_connector": {
+        "bigquery": 1099511627776
+      },
+      "max_graph_total_rows": 30000000000,
+      "max_graph_total_size_bytes": 2199023255552,
+      "max_graph_total_edges": 30000000000
+    },
+    "pquery_settings": {
+      "disable_static_node_prediction": false,
+      "disable_static_link_prediction": false,
+      "disable_temporal_link_prediction": false,
+      "disable_multilabel_classification": false,
+      "disable_multilabel_ranking": false,
+      "disable_temporal_node_regression": false,
+      "disable_first_last": false,
+      "disable_first_last_on_fkey": false,
+      "use_decoupled_splits": false,
+      "disable_pquery_advanced_options": false
+    }
+  },
+  "monitoring_settings": {
+    "jaeger_hostname": "localhost",
+    "jaeger_port": 4317,
+    "init_tracing": true
+  },
+  "authentication": {
+    "disable": false,
+    "proxy": false,
+    "kumo_external_shared_iam_role": null,
+    "is_unit_test": false,
+    "direct_connect_login_method": "oidc",
+    "direct_connect_allowed_return_origins": [],
+    "direct_connect_password_login_ip_rate_limit_enabled": true
+  },
+  "data_backend_settings": {
+    "disable_async_ingestion": true
+  },
+  "app": {
+    "middleware_origin": "https://prod-customer-1.kumo.ai",
+    "server_host": "0.0.0.0",
+    "is_unit_test": false,
+    "debug": false,
+    "port": 10001
+  }
+}

@@ -1,0 +1,154 @@
+{
+  "name": "small_synthetic",
+  "data_source_dict": {},
+  "tables": [
+    {
+      "table_name": "multicat_table",
+      "data_source": null,
+      "data_version": null,
+      "pkey": null,
+      "fkeys": [],
+      "cols": [
+        {
+          "name": "PKEY",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "timestamp_unit": null,
+          "encoder": null
+        },
+        {
+          "name": "COL",
+          "stype": null,
+          "dtype": "string",
+          "na_values": null,
+          "metadata": {},
+          "timestamp_unit": null,
+          "encoder": null
+        },
+        {
+          "name": "DATE",
+          "stype": null,
+          "dtype": "date",
+          "na_values": null,
+          "metadata": {},
+          "timestamp_unit": null,
+          "encoder": null,
+          "stats": {}
+        },
+        {
+          "name": "E",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "timestamp_unit": null,
+          "encoder": null
+        },
+        {
+          "name": "BOOL",
+          "stype": null,
+          "dtype": "bool",
+          "na_values": null,
+          "metadata": {},
+          "timestamp_unit": null,
+          "encoder": null
+        },
+        {
+          "name": "VALUE",
+          "stype": null,
+          "dtype": "float",
+          "na_values": null,
+          "metadata": {},
+          "timestamp_unit": null,
+          "encoder": null
+        },
+        {
+          "name": "NUM",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "timestamp_unit": null,
+          "encoder": null
+        },
+        {
+          "name": "COL_NOSEP",
+          "stype": null,
+          "dtype": "string",
+          "na_values": null,
+          "metadata": {},
+          "timestamp_unit": null,
+          "encoder": null
+        }
+      ],
+      "time_col": {
+        "name": "DATE",
+        "stype": null,
+        "dtype": "date",
+        "na_values": null,
+        "metadata": {},
+        "timestamp_unit": null
+      },
+      "source_name": "multicat_table",
+      "stats": {}
+    },
+    {
+      "table_name": "E",
+      "data_source": null,
+      "data_version": null,
+      "pkey": {
+        "name": "E",
+        "stype": null,
+        "dtype": "int",
+        "na_values": null,
+        "metadata": {},
+        "timestamp_unit": null,
+        "drop_duplicates": false
+      },
+      "fkeys": [],
+      "cols": [
+        {
+          "name": "C",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "timestamp_unit": null,
+          "encoder": null
+        },
+        {
+          "name": "D",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "timestamp_unit": null,
+          "encoder": null
+        },
+        {
+          "name": "F",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "timestamp_unit": null,
+          "encoder": null
+        },
+        {
+          "name": "G",
+          "stype": null,
+          "dtype": "int",
+          "na_values": null,
+          "metadata": {},
+          "timestamp_unit": null,
+          "encoder": null
+        }
+      ],
+      "time_col": null,
+      "source_name": "E",
+      "stats": {}
+    }
+  ]
+}

@@ -1,0 +1,235 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Kumo Helm CI
+
+on:  # yamllint disable-line rule:truthy
+  pull_request:
+    branches: [master]
+    paths:
+      - "helm/**"
+      - ".github/workflows/kumo-helm-ci.yml"
+      - ".github/workflows/kumo-stack-release.yml"
+  push:
+    branches: [master]
+    paths:
+      - "helm/**"
+      - ".github/workflows/kumo-helm-ci.yml"
+      - ".github/workflows/kumo-stack-release.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    working-directory: helm/kumo-helm
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4  # v4
+
+      - name: Install kubeconform
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            -o /tmp/kubeconform-linux-amd64.tar.gz
+          echo "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73  /tmp/kubeconform-linux-amd64.tar.gz" \
+            | sha256sum -c -
+          sudo tar -xzf /tmp/kubeconform-linux-amd64.tar.gz -C /usr/local/bin kubeconform
+          kubeconform -v
+
+      - name: Test conformance helpers
+        run: |
+          set -euo pipefail
+          bash -n conformance/check.sh
+          bash -n conformance/csi_contract.sh
+          bash -n test/conformance/test_csi_contract.sh
+          bash -n test/conformance/test_check_csi_errors.sh
+          bash -n test/conformance/test_check_csi_node_coverage.sh
+          bash -n test/conformance/test_check_static_gcp_identity.sh
+          python3 -m py_compile conformance/preflight.py
+          bash test/conformance/test_csi_contract.sh
+          bash test/conformance/test_check_csi_errors.sh
+          bash test/conformance/test_check_csi_node_coverage.sh
+          bash test/conformance/test_check_static_gcp_identity.sh
+          python3 test/conformance/test_preflight_redaction.py
+
+      - name: Validate Kumo runtime contract guards
+        run: |
+          set -euo pipefail
+
+          error_log="${RUNNER_TEMP}/missing-node-types.log"
+          if helm template kumo . \
+            --set global.tenant=test \
+            --set image.tag=test-version \
+            --set kumoConfig.storage.dataBucket=s3://test/kumo \
+            --set kumoConfig.diskgraph.storageClass=test-wffc \
+            --set postgres.authMode=aws_iam \
+            --set postgres.host=state.test.us-west-2.rds.amazonaws.com \
+            --set postgres.region=us-west-2 \
+            --set-string serviceAccounts.control.annotations.identity=test \
+            --set-string serviceAccounts.worker.annotations.identity=test \
+            --set-string serviceAccounts.controller.annotations.identity=test \
+            > /dev/null 2>"${error_log}"; then
+            echo "::error::chart rendered without required diskgraph nodeTypes"
+            exit 1
+          fi
+          grep -Fq \
+            "kumoConfig.diskgraph.nodeTypes must contain at least one entry" \
+            "${error_log}"
+
+          pool_manifest="${RUNNER_TEMP}/poolcontroller.yaml"
+          helm template kumo . \
+            -f test/manifests/values-aws-minimal.yaml \
+            --set-json 'global.podLabels={"azure.workload.identity/use":"true"}' \
+            --show-only templates/deployment-poolcontroller.yaml \
+            > "${pool_manifest}"
+          if ! grep -A1 -F -- "- name: POOL_METRICS_PORT" "${pool_manifest}" \
+            | grep -Fqx -- '          value: "9123"'; then
+            echo "::error::POOL_METRICS_PORT must have adjacent value \"9123\""
+            exit 1
+          fi
+          if ! grep -Fq -- "- containerPort: 9123" "${pool_manifest}"; then
+            echo "::error::pool controller metrics containerPort must be 9123"
+            exit 1
+          fi
+          if grep -Fq -- "- name: METRICS_PORT" "${pool_manifest}"; then
+            echo "::error::pool controller still uses the REST metrics env name"
+            exit 1
+          fi
+          grep -A1 -F -- "- name: POOL_WORKER_POD_LABELS_JSON" "${pool_manifest}" \
+            | grep -Fqx -- '          value: "{\"azure.workload.identity/use\":\"true\"}"'
+
+      - name: Validate cloud profiles
+        run: |
+          set -euo pipefail
+          bash -n test/test-cloud-profiles.sh
+          bash test/test-cloud-profiles.sh
+          bash -n test/test-frontend-routing-contract.sh
+          bash test/test-frontend-routing-contract.sh
+          bash -n test/test-mlworkflow-parquet-io-contract.sh
+          bash test/test-mlworkflow-parquet-io-contract.sh
+          bash -n test/test-pool-worker-nofile-contract.sh
+          bash test/test-pool-worker-nofile-contract.sh
+          python3 test/test_pool_resources_contract.py
+          python3 test/test_pool_tolerations_contract.py
+          bash -n test/test-snapshot-cache-ttl-contract.sh
+          bash test/test-snapshot-cache-ttl-contract.sh
+          for provider in aws azure; do
+            helm template profile-test . \
+              -f "profiles/${provider}.yaml" \
+              -f "test/profiles/values-${provider}.yaml" \
+              | kubeconform -strict -summary -ignore-missing-schemas -kubernetes-version 1.35.0
+          done
+          for provider in aws azure; do
+            helm template profile-test . \
+              -f "profiles/${provider}.yaml" \
+              -f "test/profiles/values-${provider}.yaml" \
+              -f profiles/openshift.yaml \
+              | kubeconform -strict -summary -ignore-missing-schemas -kubernetes-version 1.35.0
+          done
+
+      - name: Lint and validate all test manifests
+        run: |
+          set -euo pipefail
+          for f in test/manifests/*.yaml; do
+            echo "=== $f ==="
+            helm lint . -f "$f"
+            helm template kumo . -f "$f" \
+              | kubeconform -strict -summary -ignore-missing-schemas -kubernetes-version 1.33.0
+          done
+
+  temporal:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: helm/kumo-temporal
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4  # v4
+
+      - name: Install kubeconform
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            -o /tmp/kubeconform-linux-amd64.tar.gz
+          echo "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73  /tmp/kubeconform-linux-amd64.tar.gz" \
+            | sha256sum -c -
+          sudo tar -xzf /tmp/kubeconform-linux-amd64.tar.gz -C /usr/local/bin kubeconform
+          kubeconform -v
+
+      - name: Stage pinned AWS RDS trust bundle
+        run: |
+          bash ../kumo-stack/release/prepare-aws-rds-ca.sh \
+            files/aws-rds-roots.pem
+
+      - name: Validate Temporal contract
+        run: |
+          set -euo pipefail
+          bash -n test/test-contract.sh
+          bash test/test-contract.sh
+
+      - name: Lint and validate provider manifests
+        run: |
+          set -euo pipefail
+          for provider in aws azure; do
+            helm lint . \
+              -f "profiles/${provider}.yaml" \
+              -f "test/values-${provider}.yaml"
+            helm template temporal . \
+              --namespace temporal \
+              -f "profiles/${provider}.yaml" \
+              -f "test/values-${provider}.yaml" \
+              | kubeconform -strict -summary -ignore-missing-schemas -kubernetes-version 1.35.0
+          done
+
+  composition:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: helm
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4  # v4
+
+      - name: Stage pinned AWS RDS trust bundle
+        run: |
+          bash kumo-stack/release/prepare-aws-rds-ca.sh \
+            kumo-temporal/files/aws-rds-roots.pem
+
+      - name: Validate composed installer and leaf charts
+        run: |
+          set -euo pipefail
+          bash -n kumo-stack/bin/kumo
+          bash -n kumo-stack/bin/e2e-install
+          bash -n kumo-stack/install.sh
+          bash -n kumo-stack/build-bundle.sh
+          for release_script in kumo-stack/release/*.sh; do
+            bash -n "${release_script}"
+          done
+          for provider in kumo-stack/providers/*.sh; do bash -n "${provider}"; done
+          for stage in kumo-stack/stages/*.sh; do bash -n "${stage}"; done
+          bash kumo-stack/test/test-render.sh
+          bash kumo-stack/test/test-stages.sh
+          bash kumo-stack/test/test-provider-closure.sh
+          bash kumo-stack/test/test-bundle.sh

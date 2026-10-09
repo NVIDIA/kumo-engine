@@ -1,0 +1,32 @@
+[
+    {
+        "name": "test",
+        "email": "test@kumo.ai",
+        "uid": "test@121254452",
+        "roles": ["Admin"]
+    },
+    {
+        "name": "test2",
+        "email": "test@manipal.net",
+        "uid": "test@34353",
+        "roles": ["Admin"]
+    },
+    {
+        "name": "test3",
+        "email": "test3@manipal.net",
+        "uid": "test@34353",
+        "roles": ["User"]
+    },
+    {
+        "name": "test4",
+        "email": "test4@manipal.net",
+        "uid": "test@3435344",
+        "roles": ["Admin", "User"]
+    },
+    {
+        "name": "test5",
+        "email": "test5@manipal.net",
+        "uid": "test@3435355",
+        "roles": []
+    }
+]

@@ -1,0 +1,89 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+Kumo — thin DiskGraph chart
+
+Tenant:        {{ .Values.global.tenant }}
+Backend tag:   {{ .Values.image.tag }}
+
+Namespace (you create this as a prerequisite — the chart does NOT):
+  - {{ .Release.Namespace }}
+
+Workloads:
+  Controlplane: kumo-rest, kumo-api, kumo-ui
+  Dataplane:    databackend, mlworkflow, kumo-poolcontroller
+
+{{- if .Values.preflight.enabled }}
+Preflight: a pre-install/pre-upgrade hook gates this release on the in-cluster
+prerequisites (Secrets + Temporal/StateDB reachability) — unless you passed
+--no-hooks, in which case NOTHING was checked. It does not cover operator-side
+prereqs (StorageClass, node pools, object storage, workload identity) — run
+conformance/check.sh prereq for the full probe, and check.sh health once pods
+settle.
+{{- end }}
+
+This chart creates NO Secrets and NO cluster-wide resources. The following must
+pre-exist before / for install (see values.yaml header for details):
+{{- if .Values.temporal.clientMtlsSecret }}
+  - Secret {{ .Values.temporal.clientMtlsSecret }} (kubernetes.io/tls) in the namespace,
+    mounted at {{ include "kumo.temporalCertDir" . }}
+{{- end }}
+{{- if (.Values.postgres.dsnSecret | default dict).secretName }}
+  - Secret {{ .Values.postgres.dsnSecret.secretName }} holding the StateDB connection
+    under key {{ .Values.postgres.dsnSecret.key }} (password auth)
+{{- with (.Values.postgres.caSecret | default dict) }}
+{{- if .secretName }}
+  - Secret {{ .secretName }} holding the Postgres CA under key {{ .key | default "ca.pem" }},
+    mounted at /var/run/secrets/kumo/ca/ca.pem
+{{- end }}
+{{- end }}
+{{- else }}
+  - Managed Postgres {{ .Values.postgres.host }} with {{ .Values.postgres.authMode }} access for the control and worker identities
+{{- end }}
+{{- with (.Values.kumoConfig.gsaKey | default dict) }}
+{{- if .existingSecret }}
+  - Secret {{ .existingSecret }} holding GCP service-account JSON under key {{ .key }},
+    mounted read-only at {{ include "kumo.gcpApplicationCredentialsPath" $ }}
+{{- end }}
+{{- end }}
+  - Self-hosted Temporal at {{ .Values.temporal.address }} with namespace
+    {{ include "kumo.temporalNamespace" . }}
+  - StorageClass {{ .Values.kumoConfig.diskgraph.storageClass }}
+{{- with .Values.workloads.databackend.ingestScratch }}
+{{- if and .enabled (eq (.type | default "emptyDir") "ephemeral") }}
+  - StorageClass {{ .storageClass }} (the workloads.databackend.ingestScratch ephemeral PVC)
+{{- end }}
+{{- end }}
+  - Object-storage prefix {{ include "kumo.dataPlaneStorageRoot" . }}
+{{- if and (hasPrefix "gs://" .Values.kumoConfig.storage.dataBucket) (.Values.kumoConfig.gsaKey | default dict).existingSecret }}
+  - Static GCP ADC configured through kumoConfig.gsaKey (workload-identity
+    annotations must be empty)
+{{- else }}
+  - Workload identity on the control, worker, and controller ServiceAccounts
+    (set via serviceAccounts.<role>.annotations)
+{{- end }}
+  - No cluster RBAC: the pool controller uses the namespaced workload-manager Role
+    (PDB + PVC) the chart provides — do NOT create a ClusterRole for it
+
+{{- if .Values.exposure.host }}
+Serve https://{{ .Values.exposure.host }} and preserve
+the host, path, and query string while routing every path through the frontend.
+This chart creates no edge resource. Route your terminating edge directly to
+kumo-ui:80, or install the kumo-edge chart for a provider Ingress or Route.
+{{- end }}
+{{- if not .Values.exposure.host }}
+Reach the UI/REST via port-forward, e.g.:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/kumo-ui 3000:80
+  kubectl -n {{ .Release.Namespace }} port-forward svc/kumo-rest 8000:80
+{{- end }}
+{{- if .Values.auth.enabled }}
+
+Auth: ENABLED (method={{ .Values.auth.method }}, backend=direct_connect).
+{{- if not (.Values.tenantSecretKey | default dict).secretName }}
+  ⚠️  auth.enabled=true derives deploy stage prod, but tenantSecretKey is unset →
+      the app will look for a Fernet key the chart did not deliver and may fail
+      to start. Provide tenantSecretKey.
+{{- end }}
+{{- end }}

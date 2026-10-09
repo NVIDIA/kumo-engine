@@ -1,0 +1,1792 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+// All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+use diskgraph_core::metadata::{EdgeRelationMetadata, NodeShardMetadata, NodeTypeMetadata};
+use diskgraph_index::{
+    builder::{ShardBuildParams, ShardBuilder},
+    layout::RelationSegment,
+    reader::ShardReader,
+    streaming::EdgeShardInput,
+};
+use lz4_flex::frame::FrameEncoder;
+use std::fs;
+use std::io::Write;
+use std::path::Path;
+use std::sync::Arc;
+use tempfile::tempdir;
+
+#[derive(Clone)]
+pub struct EdgeRow {
+    src: i64,
+    dst: i64,
+    dest_sort_key: Option<i64>,
+}
+
+#[test]
+fn build_and_read_round_trip_basic() {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    write_edges(
+        &edge_path,
+        &[
+            EdgeRow {
+                src: 0,
+                dst: 10,
+                dest_sort_key: None,
+            },
+            EdgeRow {
+                src: 0,
+                dst: 11,
+                dest_sort_key: None,
+            },
+            EdgeRow {
+                src: 1,
+                dst: 12,
+                dest_sort_key: None,
+            },
+        ],
+        false,
+    )
+    .unwrap();
+
+    let node_meta = node_meta("User", 12);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let built = builder
+        .build(&[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
+        .unwrap();
+
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
+    let header = reader.header();
+    assert_eq!(header.nodes, 13);
+    assert_eq!(header.total_offsets, 14);
+
+    let rel0 = 0;
+    let seg0 = decode_relation(&reader, 0, rel0);
+    assert_eq!(seg0.len(), 2);
+    assert_eq!(seg0[0].0, 10);
+    assert_eq!(seg0[1].0, 11);
+
+    // Node with no edges should yield empty relation data and zero-length slice.
+    let seg1 = decode_relation(&reader, 1, rel0);
+    assert_eq!(seg1.len(), 1);
+    assert_eq!(seg1[0].0, 12);
+}
+
+#[test]
+fn build_handles_all_zero_edges() {
+    let dir = tempdir().unwrap();
+
+    let node_meta = node_meta("User", 1);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let built = builder.build(&[]).unwrap();
+
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
+
+    for node in 0..=1 {
+        let seg = decode_relation(&reader, node, 0);
+        assert!(seg.is_empty(), "expected empty relation for node {}", node);
+    }
+}
+
+#[test]
+fn build_rejects_dangling_edges() {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    write_edges(
+        &edge_path,
+        &[EdgeRow {
+            src: 1,
+            dst: 42,
+            dest_sort_key: None,
+        }],
+        false,
+    )
+    .unwrap();
+
+    let node_meta = node_meta("User", 0);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let msg = match builder.build(&[EdgeShardInput {
+        relation: "Follows".into(),
+        source_shard_index: 0,
+        paths: vec![edge_path],
+    }]) {
+        Ok(_) => panic!("expected DanglingEdges error"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.contains("edges remain after exhausting node ids"),
+        "expected DanglingEdges, got {msg}"
+    );
+}
+
+#[test]
+fn build_sorts_edge_ordering_violation() {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    // src_id must be sorted ascending; make it descending to trigger violation.
+    write_edges(
+        &edge_path,
+        &[
+            EdgeRow {
+                src: 1,
+                dst: 1,
+                dest_sort_key: None,
+            },
+            EdgeRow {
+                src: 0,
+                dst: 2,
+                dest_sort_key: None,
+            },
+        ],
+        false,
+    )
+    .unwrap();
+
+    let node_meta = node_meta("User", 2);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let built = builder
+        .build(&[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
+        .unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
+    let rel0 = 0;
+    let seg0 = decode_relation(&reader, 0, rel0);
+    assert_eq!(seg0.len(), 1);
+    assert_eq!(seg0[0].0, 2);
+    let seg1 = decode_relation(&reader, 1, rel0);
+    assert_eq!(seg1.len(), 1);
+    assert_eq!(seg1[0].0, 1);
+}
+
+#[test]
+fn offsets_span_multiple_chunks_and_edges_decode_correctly() {
+    // Ensure offset delta encoding handles repeated offsets and multiple chunks.
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    write_edges(
+        &edge_path,
+        &[
+            EdgeRow {
+                src: 0,
+                dst: 10,
+                dest_sort_key: None,
+            },
+            EdgeRow {
+                src: 0,
+                dst: 11,
+                dest_sort_key: None,
+            },
+            EdgeRow {
+                src: 63,
+                dst: 63,
+                dest_sort_key: None,
+            },
+            EdgeRow {
+                src: 64,
+                dst: 120,
+                dest_sort_key: None,
+            },
+            EdgeRow {
+                src: 64,
+                dst: 121,
+                dest_sort_key: None,
+            },
+            EdgeRow {
+                src: 129,
+                dst: 5,
+                dest_sort_key: None,
+            },
+        ],
+        false,
+    )
+    .unwrap();
+
+    let node_meta = node_meta("User", 129);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let built = builder
+        .build(&[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
+        .unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
+
+    // Nodes with edges.
+    assert_eq!(decode_relation(&reader, 0, 0), vec![(10, None), (11, None)]);
+    assert_eq!(decode_relation(&reader, 63, 0), vec![(63, None)]);
+    assert_eq!(
+        decode_relation(&reader, 64, 0),
+        vec![(120, None), (121, None)]
+    );
+    assert_eq!(decode_relation(&reader, 129, 0), vec![(5, None)]);
+
+    // Nodes without edges across chunk boundary should decode as empty.
+    assert!(decode_relation(&reader, 1, 0).is_empty());
+    assert!(decode_relation(&reader, 70, 0).is_empty());
+    assert!(decode_relation(&reader, 100, 0).is_empty());
+}
+
+#[test]
+fn sort_key_round_trip_decodes_correctly() {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    write_edges(
+        &edge_path,
+        &[
+            EdgeRow {
+                src: 0,
+                dst: 10,
+                dest_sort_key: Some(5),
+            },
+            EdgeRow {
+                src: 0,
+                dst: 11,
+                dest_sort_key: Some(3),
+            },
+            EdgeRow {
+                src: 1,
+                dst: 12,
+                dest_sort_key: Some(9),
+            },
+        ],
+        true,
+    )
+    .unwrap();
+
+    let node_meta = node_meta("User", 12);
+    let relation_meta = relation_meta("Temporal", "User", "User", Some(8));
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let built = builder
+        .build(&[EdgeShardInput {
+            relation: "Temporal".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
+        .unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
+
+    assert_eq!(
+        decode_relation(&reader, 0, 0),
+        vec![(10, Some(5)), (11, Some(3))] // order preserved by sort key desc
+    );
+    assert_eq!(decode_relation(&reader, 1, 0), vec![(12, Some(9))]);
+}
+
+#[test]
+fn multi_relation_counts_and_edges_decode_correctly() {
+    let dir = tempdir().unwrap();
+    let edge_path_a = dir.path().join("edges_a.bin");
+    let edge_path_b = dir.path().join("edges_b.bin");
+    // Relation A: no sort key.
+    write_edges(
+        &edge_path_a,
+        &[EdgeRow {
+            src: 0,
+            dst: 10,
+            dest_sort_key: None,
+        }],
+        false,
+    )
+    .unwrap();
+    // Relation B: with sort key.
+    write_edges(
+        &edge_path_b,
+        &[
+            EdgeRow {
+                src: 0,
+                dst: 20,
+                dest_sort_key: Some(5),
+            },
+            EdgeRow {
+                src: 0,
+                dst: 21,
+                dest_sort_key: Some(3),
+            },
+            EdgeRow {
+                src: 1,
+                dst: 22,
+                dest_sort_key: Some(9),
+            },
+        ],
+        true,
+    )
+    .unwrap();
+
+    let node_meta = node_meta("User", 22);
+    let follows = relation_meta("Follows", "User", "User", None);
+    let temporal = relation_meta("Temporal", "User", "User", Some(16));
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![follows.clone(), temporal.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let built = builder
+        .build(&[
+            EdgeShardInput {
+                relation: "Follows".into(),
+                source_shard_index: 0,
+                paths: vec![edge_path_a],
+            },
+            EdgeShardInput {
+                relation: "Temporal".into(),
+                source_shard_index: 0,
+                paths: vec![edge_path_b],
+            },
+        ])
+        .unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
+
+    // Relation order: Follows (idx 0), Temporal (idx 1).
+    assert_eq!(decode_relation(&reader, 0, 0), vec![(10, None)]);
+    assert_eq!(
+        decode_relation(&reader, 0, 1),
+        vec![(20, Some(5)), (21, Some(3))]
+    );
+
+    assert!(decode_relation(&reader, 1, 0).is_empty());
+    assert_eq!(decode_relation(&reader, 1, 1), vec![(22, Some(9))]);
+}
+
+#[test]
+fn multi_relation_mixed_dst_widths_and_partial_edges() {
+    let dir = tempdir().unwrap();
+    let edge_path_a = dir.path().join("edges_a.bin"); // small dst ids
+    let edge_path_b = dir.path().join("edges_b.bin"); // larger dst ids + sort key
+
+    // Relation A: no sort key, small dst ids.
+    write_edges(
+        &edge_path_a,
+        &[EdgeRow {
+            src: 0,
+            dst: 3, // small dst
+            dest_sort_key: None,
+        }],
+        false,
+    )
+    .unwrap();
+    // Relation B: with sort key, larger dst ids; node 0 has multiple edges, node 1 empty.
+    write_edges(
+        &edge_path_b,
+        &[
+            EdgeRow {
+                src: 0,
+                dst: 5000,
+                dest_sort_key: Some(9),
+            },
+            EdgeRow {
+                src: 0,
+                dst: 4000,
+                dest_sort_key: Some(2),
+            },
+            EdgeRow {
+                src: 2,
+                dst: 6000,
+                dest_sort_key: Some(1),
+            },
+        ],
+        true,
+    )
+    .unwrap();
+
+    let node_meta = node_meta("User", 6000);
+    let follows = relation_meta("Follows", "User", "User", None);
+    let temporal = relation_meta("Temporal", "User", "User", Some(8));
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![follows.clone(), temporal.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let built = builder
+        .build(&[
+            EdgeShardInput {
+                relation: "Follows".into(),
+                source_shard_index: 0,
+                paths: vec![edge_path_a],
+            },
+            EdgeShardInput {
+                relation: "Temporal".into(),
+                source_shard_index: 0,
+                paths: vec![edge_path_b],
+            },
+        ])
+        .unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
+
+    // Node 0: edges in both relations; relation B should be sorted by sort key desc.
+    assert_eq!(decode_relation(&reader, 0, 0), vec![(3, None)]);
+    assert_eq!(
+        decode_relation(&reader, 0, 1),
+        vec![(5000, Some(9)), (4000, Some(2))]
+    );
+    // Node 1: empty in both relations.
+    assert!(decode_relation(&reader, 1, 0).is_empty());
+    assert!(decode_relation(&reader, 1, 1).is_empty());
+    // Node 2: only relation B has an edge.
+    assert!(decode_relation(&reader, 2, 0).is_empty());
+    assert_eq!(decode_relation(&reader, 2, 1), vec![(6000, Some(1))]);
+}
+
+#[test]
+fn truncates_large_node_without_sort_key() {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    // Two nodes; node 0 has a huge fanout, node 1 has a small edge.
+    let big_count = 70_000;
+    let mut edges = Vec::with_capacity(big_count as usize + 1);
+    for i in 0..big_count {
+        edges.push(EdgeRow {
+            src: 0,
+            dst: i as i64,
+            dest_sort_key: None,
+        });
+    }
+    edges.push(EdgeRow {
+        src: 1,
+        dst: 999,
+        dest_sort_key: None,
+    });
+    for i in 2..70 {
+        edges.push(EdgeRow {
+            src: i as i64,
+            dst: (1000 + i) as i64,
+            dest_sort_key: None,
+        });
+    }
+    write_edges(&edge_path, &edges, false).unwrap();
+
+    let node_meta = node_meta("User", 80_000);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let built = builder
+        .build(&[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
+        .unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
+    let segments0 = reader
+        .edges_for_node(0)
+        .unwrap()
+        .relation_segments()
+        .unwrap();
+    let seg = &segments0[0];
+    let entry_bytes = seg.layout.entry_bytes as u64;
+    let budget = match reader.header().delta_bytes {
+        2 => u16::MAX as u64,
+        3 => 0xFF_FF_FF,
+        4 => u32::MAX as u64,
+        _ => 0,
+    }; // base_span is 0 for first node.
+    let node_bytes =
+        varint_len_u64(seg.count as u64) as u64 + (seg.count as u64).saturating_mul(entry_bytes);
+    let truncated = seg.count < big_count as u32;
+    if reader.header().delta_bytes == 2 {
+        assert!(truncated, "expected truncation below original");
+    }
+    assert!(
+        node_bytes <= budget,
+        "truncated node payload should fit budget"
+    );
+    if truncated {
+        assert!(built.build_stats.truncated_edges_total > 0);
+    } else {
+        assert_eq!(built.build_stats.truncated_edges_total, 0);
+    }
+    // Next node should still decode correctly.
+    let segments1 = reader
+        .edges_for_node(1)
+        .unwrap()
+        .relation_segments()
+        .unwrap();
+    assert_eq!(segments1[0].count, 1);
+    let decoded1 = decode_relation(&reader, 1, 0);
+    assert_eq!(decoded1, vec![(999, None)]);
+}
+
+#[test]
+fn truncates_large_node_with_sort_key() {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    let big_count = 60_000;
+    let mut edges = Vec::with_capacity(big_count as usize + 1);
+    for i in 0..big_count {
+        edges.push(EdgeRow {
+            src: 0,
+            dst: (i + 1000) as i64,
+            dest_sort_key: Some((big_count - i) as i64),
+        });
+    }
+    // Node 1 has two edges with sort keys.
+    edges.push(EdgeRow {
+        src: 1,
+        dst: 500,
+        dest_sort_key: Some(8),
+    });
+    edges.push(EdgeRow {
+        src: 1,
+        dst: 600,
+        dest_sort_key: Some(7),
+    });
+    write_edges(&edge_path, &edges, true).unwrap();
+
+    let node_meta = node_meta("User", 80_000);
+    let relation_meta = relation_meta("Temporal", "User", "User", Some(16));
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let built = builder
+        .build(&[EdgeShardInput {
+            relation: "Temporal".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
+        .unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
+    let segments0 = reader
+        .edges_for_node(0)
+        .unwrap()
+        .relation_segments()
+        .unwrap();
+    let seg0 = &segments0[0];
+    let entry_bytes = seg0.layout.entry_bytes as u64;
+    let budget = match reader.header().delta_bytes {
+        2 => u16::MAX as u64,
+        3 => 0xFF_FF_FF,
+        4 => u32::MAX as u64,
+        _ => 0,
+    };
+    let node_bytes =
+        varint_len_u64(seg0.count as u64) as u64 + (seg0.count as u64).saturating_mul(entry_bytes);
+    let truncated = seg0.count < big_count as u32;
+    if reader.header().delta_bytes == 2 {
+        assert!(truncated, "expected truncation with sort key");
+    }
+    assert!(
+        node_bytes <= budget,
+        "truncated node payload should fit budget"
+    );
+    if truncated {
+        assert!(built.build_stats.truncated_edges_total > 0);
+    } else {
+        assert_eq!(built.build_stats.truncated_edges_total, 0);
+    }
+
+    // Node 1 should decode its two edges with sort keys intact and ordered.
+    let decoded = decode_relation(&reader, 1, 0);
+    assert_eq!(decoded, vec![(500, Some(8)), (600, Some(7))]);
+}
+
+#[test]
+fn selects_wider_offsets_for_large_edge_lists() {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    let big = 0x3FFFusize + 500;
+    let mut edges = Vec::with_capacity(big + 1);
+    for i in 0..big {
+        edges.push(EdgeRow {
+            src: 0,
+            dst: i as i64,
+            dest_sort_key: None,
+        });
+    }
+    // Following nodes to ensure later chunks decode correctly.
+    edges.push(EdgeRow {
+        src: 1,
+        dst: 999,
+        dest_sort_key: None,
+    });
+    for i in 2..70 {
+        edges.push(EdgeRow {
+            src: i as i64,
+            dst: (1000 + i) as i64,
+            dest_sort_key: None,
+        });
+    }
+    write_edges(&edge_path, &edges, false).unwrap();
+
+    let node_meta = node_meta("User", big.max(70) as u64);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let built = builder
+        .build(&[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
+        .unwrap();
+
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
+    let segments = reader
+        .edges_for_node(0)
+        .unwrap()
+        .relation_segments()
+        .unwrap();
+    let entry_bytes = segments[0].layout.entry_bytes as u64;
+    let required =
+        128u64 + varint_len_u64(big as u64) as u64 + (big as u64).saturating_mul(entry_bytes);
+    let expected = if required <= u16::MAX as u64 {
+        2
+    } else if required <= 0xFF_FF_FF {
+        3
+    } else {
+        4
+    };
+    assert_eq!(reader.header().delta_bytes, expected);
+    assert_eq!(segments[0].count as usize, big);
+    let decoded = decode_relation(&reader, 0, 0);
+    assert_eq!(decoded.len(), big);
+    assert_eq!(decoded.first(), Some(&(0, None)));
+    assert_eq!(decoded.last(), Some(&((big - 1) as u64, None)));
+    // Following nodes in later chunks still decode.
+    assert_eq!(decode_relation(&reader, 1, 0), vec![(999, None)]);
+    assert_eq!(decode_relation(&reader, 63, 0), vec![(1063, None)]);
+    assert_eq!(decode_relation(&reader, 64, 0), vec![(1064, None)]);
+}
+
+#[test]
+fn selects_32bit_offsets_with_large_node_data_budget() {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    let mut edges = Vec::with_capacity(70);
+    for i in 0..70 {
+        edges.push(EdgeRow {
+            src: i as i64,
+            dst: (10 + i) as i64,
+            dest_sort_key: None,
+        });
+    }
+    write_edges(&edge_path, &edges, false).unwrap();
+
+    let node_data_path = dir.path().join("nodes.bin");
+    let mut node_data = Vec::with_capacity(70);
+    for i in 0..70u8 {
+        node_data.push(vec![i, i.wrapping_add(1), i.wrapping_add(2)]);
+    }
+    write_node_data(&node_data_path, &node_data).unwrap();
+
+    let node_meta = NodeTypeMetadata {
+        name: "User".into(),
+        max_id: 80,
+        has_node_data: true,
+        node_data_compression: None,
+        primary_key_map: None,
+        create_time_col: None,
+        end_time_col: None,
+        shards: vec![NodeShardMetadata {
+            min_id: 0,
+            max_id: 69,
+            node_data_paths: Some(vec!["nodes.bin".into()]),
+        }],
+    };
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
+        shard_index: 0,
+        node_data_paths: Some(Arc::new(vec![node_data_path])),
+        node_data_max_len: 20_000_000,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let built = builder
+        .build(&[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
+        .unwrap();
+
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), true).unwrap();
+    assert_eq!(reader.header().delta_bytes, 4);
+    for node_id in [0u64, 63u64, 64u64, 69u64] {
+        let view = reader.edges_for_node(node_id).unwrap();
+        let segs = view.relation_segments().unwrap();
+        assert_eq!(segs[0].count, 1);
+        let expected_dst = 10 + node_id;
+        assert_eq!(
+            decode_relation(&reader, node_id, 0),
+            vec![(expected_dst, None)]
+        );
+        assert_eq!(
+            view.node_data().unwrap().unwrap(),
+            node_data[node_id as usize].as_slice()
+        );
+    }
+}
+
+#[test]
+fn reader_rejects_invalid_header() {
+    let dir = tempdir().unwrap();
+    let offsets = dir.path().join("offsets.bin");
+    let edges = dir.path().join("edges.bin");
+    let header_size =
+        bincode::serialized_size(&diskgraph_index::layout::OffsetFileHeader::new(0, 0)).unwrap()
+            as usize;
+    let mut buf = vec![0u8; header_size];
+    // total_offsets = 1 (bytes 12..20 for u64 after version + nodes)
+    buf[12..20].copy_from_slice(&1u64.to_le_bytes());
+    fs::write(&offsets, buf).unwrap();
+    fs::write(&edges, vec![]).unwrap();
+    let layouts = vec![relation_meta("Follows", "User", "User", None)];
+    let node_types = vec![node_meta("User", 0)];
+    let layouts = relation_layouts(layouts, node_types);
+    let msg = match ShardReader::open(dir.path(), layouts, false) {
+        Ok(reader) => match reader.edges_for_node(0) {
+            Ok(_) => panic!("expected offset chunk error"),
+            Err(err) => err.to_string(),
+        },
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.contains("offset delta width invalid")
+            || msg.contains("offset chunk missing")
+            || msg.contains("offset chunk range mismatch")
+            || msg.contains("node index out of range"),
+        "expected offset chunk error, got {msg}"
+    );
+}
+
+#[test]
+fn reader_rejects_offsets_out_of_bounds() {
+    let (_tmp, output_dir, layouts) = build_simple_shard(&[0], &[]); // zero-edge node
+                                                                     // Corrupt the base offset to point past the edge blob (which is empty).
+    let offsets_path = output_dir.join("offsets.bin");
+    let mut bytes = fs::read(&offsets_path).unwrap();
+    // Header is bincode-serialized OffsetFileHeader, then chunk: count(u16), base(u64)
+    let header_len = bincode::serialized_size(&diskgraph_index::layout::OffsetFileHeader::new(0, 0))
+        .unwrap() as usize;
+    // write base = large number
+    let base_pos = header_len + 2;
+    bytes[base_pos..base_pos + 8].copy_from_slice(&1_000_000u64.to_le_bytes());
+    fs::write(&offsets_path, bytes).unwrap();
+
+    let reader = ShardReader::open(&output_dir, layouts, false).unwrap();
+    let msg = match reader.edges_for_node(0) {
+        Ok(_) => panic!("expected offset bounds error"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.contains("offset points outside edge blob"),
+        "expected offset bounds error, got {msg}"
+    );
+}
+
+#[test]
+fn reader_rejects_node_index_out_of_range() {
+    let (_tmp, output_dir, layouts) = build_simple_shard(&[0], &[]);
+    let reader = ShardReader::open(&output_dir, layouts, false).unwrap();
+    let msg = match reader.edges_for_node(10) {
+        Ok(_) => panic!("expected node index out of range"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.contains("node index out of range"),
+        "expected node index error, got {msg}"
+    );
+}
+
+#[test]
+fn reader_rejects_offset_chunk_mismatch() {
+    let (_tmp, output_dir, layouts) = build_simple_shard(&[0, 1], &[]);
+    let offsets_path = output_dir.join("offsets.bin");
+    let mut bytes = fs::read(&offsets_path).unwrap();
+    // Tamper with the first chunk count to a larger number.
+    let header_len = bincode::serialized_size(&diskgraph_index::layout::OffsetFileHeader::new(0, 0))
+        .unwrap() as usize;
+    bytes[header_len] = 10;
+    bytes[header_len + 1] = 0;
+    fs::write(&offsets_path, bytes).unwrap();
+    let reader = ShardReader::open(&output_dir, layouts, false).unwrap();
+    let msg = match reader.edges_for_node(5) {
+        Ok(_) => panic!("expected offset chunk mismatch"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.contains("offset chunk range mismatch")
+            || msg.contains("offset chunk missing")
+            || msg.contains("node index out of range"),
+        "expected metadata error, got {msg}"
+    );
+}
+
+#[test]
+fn reader_rejects_truncated_edge_counts() {
+    let (_tmp, output_dir, layouts) = build_simple_shard(
+        &[0],
+        &[EdgeRow {
+            src: 0,
+            dst: 1,
+            dest_sort_key: None,
+        }],
+    );
+    let edges_path = output_dir.join("edges.bin");
+    let mut bytes = fs::read(&edges_path).unwrap();
+    // Replace the edge blob with an incomplete varint to force decode failure.
+    bytes.clear();
+    bytes.push(0x80); // varint with continuation but no following byte
+    fs::write(&edges_path, bytes).unwrap();
+    let reader = ShardReader::open(&output_dir, layouts, false).unwrap();
+    let msg = match reader.edges_for_node(0) {
+        Ok(view) => match view.relation_segments() {
+            Ok(_) => panic!("expected relation_segments error"),
+            Err(e) => e.to_string(),
+        },
+        Err(err) => err.to_string(),
+    };
+    let lower = msg.to_lowercase();
+    assert!(
+        lower.contains("unexpected eof")
+            || lower.contains("invalid data")
+            || lower.contains("offset points outside edge blob"),
+        "expected EOF/invalid data, got {msg}"
+    );
+}
+
+#[test]
+fn offsets_many_chunks_sparse_edges() {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    write_edges(
+        &edge_path,
+        &[
+            EdgeRow {
+                src: 0,
+                dst: 123,
+                dest_sort_key: None,
+            },
+            EdgeRow {
+                src: 4999,
+                dst: 321,
+                dest_sort_key: None,
+            },
+        ],
+        false,
+    )
+    .unwrap();
+
+    let node_meta = node_meta("User", 4999);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let built = builder
+        .build(&[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
+        .unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
+    assert_eq!(decode_relation(&reader, 0, 0), vec![(123, None)]);
+    assert!(decode_relation(&reader, 1, 0).is_empty());
+    assert_eq!(decode_relation(&reader, 4999, 0), vec![(321, None)]);
+}
+
+#[test]
+fn truncates_large_node_multi_relation() {
+    let dir = tempdir().unwrap();
+    let edge_path_a = dir.path().join("edges_a.bin");
+    let edge_path_b = dir.path().join("edges_b.bin");
+
+    // Large dst bits (max_id very large) plus wide dest_sort_key bits to inflate entry sizes.
+    let big = 4_000;
+    let mut edges_a = Vec::new();
+    let mut edges_b = Vec::new();
+    for i in 0..big {
+        edges_a.push(EdgeRow {
+            src: 0,
+            dst: i as i64,
+            dest_sort_key: None,
+        });
+        edges_b.push(EdgeRow {
+            src: 0,
+            dst: (i + 10_000) as i64,
+            dest_sort_key: Some((100 - (i % 100)) as i64),
+        });
+    }
+    // Node 1 has small edges to ensure post-truncation nodes still decode.
+    edges_a.push(EdgeRow {
+        src: 1,
+        dst: 999,
+        dest_sort_key: None,
+    });
+    edges_b.push(EdgeRow {
+        src: 1,
+        dst: 1999,
+        dest_sort_key: Some(5),
+    });
+
+    edges_a.sort_by(|a, b| a.src.cmp(&b.src).then_with(|| a.dst.cmp(&b.dst)));
+    edges_b.sort_by(|a, b| {
+        a.src
+            .cmp(&b.src)
+            .then_with(|| b.dest_sort_key.cmp(&a.dest_sort_key))
+    });
+
+    write_edges(&edge_path_a, &edges_a, false).unwrap();
+    write_edges(&edge_path_b, &edges_b, true).unwrap();
+
+    let node_meta = NodeTypeMetadata {
+        name: "User".into(),
+        max_id: u64::MAX - 1,
+        has_node_data: false,
+        node_data_compression: None,
+        primary_key_map: None,
+        create_time_col: None,
+        end_time_col: None,
+        shards: vec![NodeShardMetadata {
+            min_id: 0,
+            max_id: 1,
+            node_data_paths: None,
+        }],
+    };
+    let follows = relation_meta("Follows", "User", "User", None);
+    let temporal = relation_meta("Temporal", "User", "User", Some(56));
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![follows.clone(), temporal.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let built = builder
+        .build(&[
+            EdgeShardInput {
+                relation: "Follows".into(),
+                source_shard_index: 0,
+                paths: vec![edge_path_a],
+            },
+            EdgeShardInput {
+                relation: "Temporal".into(),
+                source_shard_index: 0,
+                paths: vec![edge_path_b],
+            },
+        ])
+        .unwrap();
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
+    let segments = reader
+        .edges_for_node(0)
+        .unwrap()
+        .relation_segments()
+        .unwrap();
+    let seg_a = &segments[0];
+    let seg_b = &segments[1];
+    let budget = match reader.header().delta_bytes {
+        2 => u16::MAX as u64,
+        3 => 0xFF_FF_FF,
+        4 => u32::MAX as u64,
+        _ => 0,
+    };
+    let truncated = seg_b.count < big as u32;
+    if reader.header().delta_bytes == 2 {
+        assert!(truncated && seg_b.count > 0);
+    } else {
+        assert!(seg_b.count > 0);
+    }
+    let node_bytes = varint_len_u64(seg_a.count as u64) as u64
+        + (seg_a.count as u64).saturating_mul(seg_a.layout.entry_bytes as u64)
+        + varint_len_u64(seg_b.count as u64) as u64
+        + (seg_b.count as u64).saturating_mul(seg_b.layout.entry_bytes as u64);
+    assert!(node_bytes <= budget, "truncated node fits budget");
+    if truncated {
+        assert!(built.build_stats.truncated_edges_total > 0);
+    } else {
+        assert_eq!(built.build_stats.truncated_edges_total, 0);
+    }
+    // Node 1 still decodes cleanly.
+    assert_eq!(decode_relation(&reader, 1, 0), vec![(999, None)]);
+    assert_eq!(decode_relation(&reader, 1, 1), vec![(1999, Some(5))]);
+}
+
+#[test]
+fn builder_errors_when_missing_dest_sort_key() {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    // Missing dest_sort_key even though metadata expects it.
+    write_edges(
+        &edge_path,
+        &[EdgeRow {
+            src: 0,
+            dst: 1,
+            dest_sort_key: None,
+        }],
+        false,
+    )
+    .unwrap();
+
+    let node_meta = node_meta("User", 1);
+    let relation_meta = relation_meta("Temporal", "User", "User", Some(8));
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(dir.path().join("out")),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let msg = match builder.build(&[EdgeShardInput {
+        relation: "Temporal".into(),
+        source_shard_index: 0,
+        paths: vec![edge_path],
+    }]) {
+        Ok(_) => panic!("expected missing dest_sort_key error"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.contains("binary edge missing dest_sort_key"),
+        "expected missing dest_sort_key error, got {msg}"
+    );
+}
+
+#[test]
+fn builder_accepts_binary_edges_with_64bit_sort_key() {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    let edges = vec![EdgeRow {
+        src: 0,
+        dst: 1,
+        dest_sort_key: Some(5_000_000_000),
+    }];
+    write_binary_edges(&edge_path, &edges, 1, 1, 8).unwrap();
+
+    let node_meta = node_meta("User", 1);
+    let relation_meta = relation_meta("Temporal", "User", "User", Some(64));
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let built = builder
+        .build(&[EdgeShardInput {
+            relation: "Temporal".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
+        .unwrap();
+
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), false).unwrap();
+    let decoded = decode_relation(&reader, 0, 0);
+    assert_eq!(decoded, vec![(1, Some(5_000_000_000))]);
+}
+
+#[test]
+fn builder_errors_when_dst_id_exceeds_mask() {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    // max_id = 10 so dst_bits small; use a large dst to overflow mask.
+    write_edges(
+        &edge_path,
+        &[EdgeRow {
+            src: 0,
+            dst: 10_000,
+            dest_sort_key: None,
+        }],
+        false,
+    )
+    .unwrap();
+
+    let node_meta = node_meta("User", 10);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(dir.path().join("out")),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let msg = match builder.build(&[EdgeShardInput {
+        relation: "Follows".into(),
+        source_shard_index: 0,
+        paths: vec![edge_path],
+    }]) {
+        Ok(_) => panic!("expected dst_id out of range error"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.contains("dst_id"),
+        "expected dst_id out of range, got {msg}"
+    );
+}
+
+#[test]
+fn builder_errors_when_dest_sort_key_exceeds_mask() {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    // dest_sort_key_bits = 8; value 300 exceeds mask 0xff.
+    write_edges(
+        &edge_path,
+        &[EdgeRow {
+            src: 0,
+            dst: 1,
+            dest_sort_key: Some(300),
+        }],
+        true,
+    )
+    .unwrap();
+
+    let node_meta = node_meta("User", 1);
+    let relation_meta = relation_meta("Temporal", "User", "User", Some(8));
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(dir.path().join("out")),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let msg = match builder.build(&[EdgeShardInput {
+        relation: "Temporal".into(),
+        source_shard_index: 0,
+        paths: vec![edge_path],
+    }]) {
+        Ok(_) => panic!("expected dest_sort_key out of range error"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.contains("dest_sort_key"),
+        "expected dest_sort_key out of range, got {msg}"
+    );
+}
+
+#[test]
+fn builder_errors_on_unknown_relation_name() {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    write_edges(
+        &edge_path,
+        &[EdgeRow {
+            src: 0,
+            dst: 1,
+            dest_sort_key: None,
+        }],
+        false,
+    )
+    .unwrap();
+
+    let node_meta = node_meta("User", 1);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(dir.path().join("out")),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let msg = match builder.build(&[EdgeShardInput {
+        relation: "Unknown".into(),
+        source_shard_index: 0,
+        paths: vec![edge_path],
+    }]) {
+        Ok(_) => panic!("expected UnknownRelation error"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.contains("UnknownRelation") || msg.contains("unknown relation in shard input"),
+        "expected UnknownRelation, got {msg}"
+    );
+}
+
+#[test]
+fn builder_errors_on_corrupted_binary() {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    // Write invalid bytes to edge file.
+    fs::write(&edge_path, b"not binary").unwrap();
+
+    let node_meta = node_meta("User", 0);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(dir.path().join("out")),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let msg = match builder.build(&[EdgeShardInput {
+        relation: "Follows".into(),
+        source_shard_index: 0,
+        paths: vec![edge_path],
+    }]) {
+        Ok(_) => panic!("expected binary error"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.contains("invalid binary edge width"),
+        "expected binary error, got {msg}"
+    );
+}
+
+#[test]
+fn builder_errors_on_shard_index_mismatch() {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    write_edges(
+        &edge_path,
+        &[EdgeRow {
+            src: 0,
+            dst: 1,
+            dest_sort_key: None,
+        }],
+        false,
+    )
+    .unwrap();
+
+    let node_meta = node_meta("User", 1);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(dir.path().join("out")),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let msg = match builder.build(&[EdgeShardInput {
+        relation: "Follows".into(),
+        source_shard_index: 1,
+        paths: vec![edge_path],
+    }]) {
+        Ok(_) => panic!("expected shard index mismatch"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.contains("ShardIndexMismatch") || msg.contains("shard index mismatch"),
+        "expected shard index mismatch, got {msg}"
+    );
+}
+
+#[test]
+fn builder_fails_on_missing_edge_file() {
+    let dir = tempdir().unwrap();
+    let node_meta = node_meta("User", 0);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(dir.path().join("out")),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let msg = match builder.build(&[EdgeShardInput {
+        relation: "Follows".into(),
+        source_shard_index: 0,
+        paths: vec![dir.path().join("missing.bin")],
+    }]) {
+        Ok(_) => panic!("expected IO error for missing edge file"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.contains("No such file") || msg.contains("os error"),
+        "expected IO error for missing file, got {msg}"
+    );
+}
+
+fn node_meta(name: &str, max_id: u64) -> NodeTypeMetadata {
+    NodeTypeMetadata {
+        name: name.into(),
+        max_id,
+        has_node_data: false,
+        node_data_compression: None,
+        primary_key_map: None,
+        create_time_col: None,
+        end_time_col: None,
+        shards: vec![NodeShardMetadata {
+            min_id: 0,
+            max_id,
+            node_data_paths: None,
+        }],
+    }
+}
+
+pub fn relation_meta(
+    name: &str,
+    src: &str,
+    dst: &str,
+    dest_sort_key_bits: Option<u8>,
+) -> EdgeRelationMetadata {
+    EdgeRelationMetadata {
+        name: name.into(),
+        src_type: src.into(),
+        dst_type: dst.into(),
+        shards: vec![],
+        dest_sort_key_bits,
+        dest_sort_key: None,
+        format: diskgraph_core::metadata::EdgeStorageFormat::Binary,
+        reverse_of: None,
+    }
+}
+
+pub fn write_edges(path: &Path, edges: &[EdgeRow], with_sort_key: bool) -> anyhow::Result<()> {
+    let sort_width = if with_sort_key { 8 } else { 0 };
+    write_binary_edges(path, edges, 8, 8, sort_width)
+}
+
+pub fn write_binary_edges(
+    path: &Path,
+    edges: &[EdgeRow],
+    src_width: u8,
+    dst_width: u8,
+    sort_width: u8,
+) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut writer = std::io::BufWriter::new(fs::File::create(path)?);
+    writer.write_all(&[src_width, dst_width, sort_width])?;
+    for edge in edges {
+        write_u64_width(&mut writer, edge.src as u64, src_width)?;
+        write_u64_width(&mut writer, edge.dst as u64, dst_width)?;
+        if sort_width > 0 {
+            let sort = edge.dest_sort_key.unwrap_or_default() as u64;
+            write_u64_width(&mut writer, sort, sort_width)?;
+        }
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+fn write_u64_width(
+    writer: &mut std::io::BufWriter<std::fs::File>,
+    value: u64,
+    width: u8,
+) -> anyhow::Result<()> {
+    let bytes = value.to_le_bytes();
+    writer.write_all(&bytes[..width as usize])?;
+    Ok(())
+}
+
+pub fn write_node_data(path: &Path, rows: &[Vec<u8>]) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file = fs::File::create(path)?;
+    let mut writer = FrameEncoder::new(file);
+    for row in rows {
+        let len = u32::try_from(row.len()).map_err(|_| anyhow::anyhow!("node data too large"))?;
+        writer.write_all(&len.to_le_bytes())?;
+        writer.write_all(row)?;
+    }
+    writer
+        .finish()
+        .map_err(|e| anyhow::anyhow!("node data finish failed: {e}"))?;
+    Ok(())
+}
+
+fn decode_relation(
+    reader: &ShardReader,
+    node_idx: u64,
+    relation_idx: usize,
+) -> Vec<(u64, Option<u64>)> {
+    let view = reader.edges_for_node(node_idx).unwrap();
+    let segments = view.relation_segments().unwrap();
+    let seg = &segments[relation_idx];
+    decode_segment(seg)
+}
+
+fn decode_segment(seg: &RelationSegment) -> Vec<(u64, Option<u64>)> {
+    let mut out = Vec::new();
+    if seg.count == 0 {
+        return out;
+    }
+    let mut buf = [0u8; 16];
+    for chunk in seg.data.chunks(seg.layout.entry_bytes) {
+        buf[..seg.layout.entry_bytes].copy_from_slice(chunk);
+        let val = u128::from_le_bytes(buf);
+        let dst = (val & seg.layout.dst_mask as u128) as u64;
+        let sort = seg
+            .layout
+            .dest_sort_key_bits
+            .map(|bits| (val >> seg.layout.dst_bits as u128) & ((1u128 << bits) - 1))
+            .map(|v| v as u64);
+        out.push((dst, sort));
+        buf.fill(0);
+    }
+    out
+}
+
+pub fn relation_layouts(
+    relation_metas: Vec<EdgeRelationMetadata>,
+    node_types: Vec<NodeTypeMetadata>,
+) -> Arc<Vec<diskgraph_index::layout::RelationLayout>> {
+    let layouts =
+        diskgraph_index::builder::compute_relation_layouts(&relation_metas, &node_types).unwrap();
+    Arc::new(layouts)
+}
+
+fn build_simple_shard(
+    nodes: &[i64],
+    edges: &[EdgeRow],
+) -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    Arc<Vec<diskgraph_index::layout::RelationLayout>>,
+) {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    write_edges(&edge_path, edges, false).unwrap();
+    let node_meta = node_meta("User", *nodes.iter().max().unwrap_or(&0) as u64);
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
+        shard_index: 0,
+        node_data_paths: None,
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let built = builder
+        .build(&[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
+        .unwrap();
+    (dir, output_dir, built.layouts.clone())
+}
+
+#[test]
+fn builder_writes_node_data() {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    let edges = vec![
+        EdgeRow {
+            src: 0,
+            dst: 1,
+            dest_sort_key: None,
+        },
+        EdgeRow {
+            src: 1,
+            dst: 2,
+            dest_sort_key: None,
+        },
+    ];
+    write_edges(&edge_path, &edges, false).unwrap();
+    let node_data_path = dir.path().join("nodes.bin");
+    let node_data = vec![vec![1, 2], vec![3], vec![]];
+    write_node_data(&node_data_path, &node_data).unwrap();
+
+    let node_meta = NodeTypeMetadata {
+        name: "User".into(),
+        max_id: 2,
+        has_node_data: true,
+        node_data_compression: None,
+        primary_key_map: None,
+        create_time_col: None,
+        end_time_col: None,
+        shards: vec![NodeShardMetadata {
+            min_id: 0,
+            max_id: 2,
+            node_data_paths: Some(vec!["nodes.bin".into()]),
+        }],
+    };
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
+        shard_index: 0,
+        node_data_paths: Some(Arc::new(vec![node_data_path])),
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let built = builder
+        .build(&[EdgeShardInput {
+            relation: "Follows".into(),
+            source_shard_index: 0,
+            paths: vec![edge_path],
+        }])
+        .unwrap();
+
+    let reader = ShardReader::open(&output_dir, built.layouts.clone(), true).unwrap();
+    let data0 = reader
+        .edges_for_node(0)
+        .unwrap()
+        .node_data()
+        .unwrap()
+        .unwrap();
+    let data1 = reader
+        .edges_for_node(1)
+        .unwrap()
+        .node_data()
+        .unwrap()
+        .unwrap();
+    let data2 = reader
+        .edges_for_node(2)
+        .unwrap()
+        .node_data()
+        .unwrap()
+        .unwrap();
+    assert_eq!(data0, &[1, 2]);
+    assert_eq!(data1, &[3]);
+    assert!(data2.is_empty());
+}
+
+#[test]
+fn builder_errors_on_node_data_row_count_mismatch() {
+    let dir = tempdir().unwrap();
+    let edge_path = dir.path().join("edges.bin");
+    write_edges(&edge_path, &[], false).unwrap();
+    let node_data_path = dir.path().join("nodes.bin");
+    let node_data = vec![vec![1], vec![2]]; // should be 3 rows
+    write_node_data(&node_data_path, &node_data).unwrap();
+
+    let node_meta = NodeTypeMetadata {
+        name: "User".into(),
+        max_id: 2,
+        has_node_data: true,
+        node_data_compression: None,
+        primary_key_map: None,
+        create_time_col: None,
+        end_time_col: None,
+        shards: vec![NodeShardMetadata {
+            min_id: 0,
+            max_id: 2,
+            node_data_paths: Some(vec!["nodes.bin".into()]),
+        }],
+    };
+    let relation_meta = relation_meta("Follows", "User", "User", None);
+    let output_dir = dir.path().join("out");
+    let builder = ShardBuilder::new(ShardBuildParams {
+        output_dir: Arc::new(output_dir.clone()),
+        node_meta: Arc::new(node_meta.clone()),
+        node_types: Arc::new(vec![node_meta.clone()]),
+        relation_metas: Arc::new(vec![relation_meta.clone()]),
+        shard_index: 0,
+        node_data_paths: Some(Arc::new(vec![node_data_path])),
+
+        node_data_max_len: 0,
+        mem_budget: None,
+        edge_buffer_pool: None,
+    });
+    let msg = match builder.build(&[EdgeShardInput {
+        relation: "Follows".into(),
+        source_shard_index: 0,
+        paths: vec![edge_path],
+    }]) {
+        Ok(_) => panic!("expected node data row count error"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        msg.to_lowercase().contains("node data row count"),
+        "expected node data row count error, got {msg}"
+    );
+}
+
+fn varint_len_u64(v: u64) -> usize {
+    if v <= 63 {
+        1
+    } else if v <= 0x3FFF {
+        2
+    } else if v <= 0x3F_FFFF {
+        3
+    } else if v <= 0x3FFF_FFFF {
+        4
+    } else {
+        panic!("varint_len_u64 only supports counts up to 0x3FFFFFFF");
+    }
+}

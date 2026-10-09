@@ -1,0 +1,69 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# .github/workflows/has-milestone-label.yml
+name: Sync "has_milestone" label with issue milestone (bugs only, no cleanup)
+# NOTE:
+# The `has_milestone` label is used by the incident.io GitHub integration
+# to determine when a bug issue has been triaged. This helps ensure that
+# bug issues are triaged within the designated SLA.
+"on":
+  issues:
+    types: [opened, edited, labeled, milestoned, demilestoned]
+permissions: {}
+
+jobs:
+  sync-label:
+    permissions:
+      issues: write
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Sync milestone label for bug issues
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          script: |
+            const LABEL_NAME = "has_milestone";
+            const BUG_LABEL = "bug";
+
+            const issue = context.payload.issue;
+            const number = issue.number;
+            const hasMilestone = !!issue.milestone;
+
+            // Only proceed if the issue currently has the bug label
+            const { data: labels } = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: number
+            });
+            const names = labels.map(l => l.name.toLowerCase());
+            const isBug = names.includes(BUG_LABEL.toLowerCase());
+            const hasHM = names.includes(LABEL_NAME.toLowerCase());
+
+            if (!isBug) {
+              core.info(`Issue #${number} is not labeled '${BUG_LABEL}'. Skipping without changes.`);
+              return;
+            }
+
+            // For bug issues, keep has_milestone in sync with milestone presence
+            if (hasMilestone && !hasHM) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: number,
+                labels: [LABEL_NAME]
+              });
+              core.info(`Added ${LABEL_NAME} to bug issue #${number}`);
+            } else if (!hasMilestone && hasHM) {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: number,
+                name: LABEL_NAME
+              }).catch(err => {
+                if (err.status !== 404) throw err;
+              });
+              core.info(`Removed ${LABEL_NAME} from bug issue #${number} (no milestone)`);
+            } else {
+              core.info(`No change needed for bug issue #${number}`);
+            }

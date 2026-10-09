@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Post Github Comment for Image Build Status
+
+on:   # yamllint disable-line rule:truthy
+  workflow_call:
+    inputs:
+      image_type:
+        description: 'Type of image being built'
+        required: true
+        type: string
+      build_failure:
+        description: 'If the image build failed'
+        required: true
+        type: boolean
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  post-comment:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Post Comment when Images are Building
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          script: |
+            const issue_number = context.issue && context.issue.number;
+            if (!issue_number) {
+              console.log("No issue number found. Exiting script.");
+              return;
+            }
+
+            const repo = context.repo;
+            const run_id = context.runId;
+            const image_type = "${{ inputs.image_type }}";
+            const commentBody =  ${{ inputs.build_failure }}
+              ? `Kumo ${image_type} docker image failed. Check the [GitHub Action run](https://github.com/${repo.owner}/${repo.repo}/actions/runs/${run_id}) for more details.`
+              : `Kumo ${image_type} docker image is building now.`;
+            github.rest.issues.createComment({
+              owner: repo.owner,
+              repo: repo.repo,
+              issue_number: issue_number,
+              body: commentBody,
+            })
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

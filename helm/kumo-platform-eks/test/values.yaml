@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+clusterName: test-eks
+karpenter:
+  nodeRole: KarpenterNodeRole-test-eks
+  subnetSelectorTags:
+    karpenter.sh/discovery: test-eks
+  securityGroupSelectorTags:
+    karpenter.sh/discovery: test-eks

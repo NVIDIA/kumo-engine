@@ -1,0 +1,62 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- if .Values.preflight.enabled }}
+{{- /* Namespaced RBAC only (this chart guarantees no cluster-scoped resources):
+       one Role in the release namespace granting get only on the optional
+       Temporal Secret, bound to the preflight ServiceAccount.
+       The preflight runs under its OWN hook-scoped SA (created at weight -20,
+       before the Job at -15); the namespace `default` SA must not carry Secret
+       reads. NOTE: RBAC escalation prevention means the identity running
+       helm must itself be able to read these Secrets (or hold escalate/bind) in
+       the release namespace — see the preflight comment in values.yaml. */}}
+{{- $secrets := list -}}
+{{- if .Values.temporal.clientMtlsSecret -}}
+{{- $secrets = append $secrets .Values.temporal.clientMtlsSecret -}}
+{{- end -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-preflight
+  labels:
+    {{- include "kumo.commonLabels" . | nindent 4 }}
+  annotations:
+    {{- include "kumo.preflightAuxHookAnnotations" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-preflight
+  labels:
+    {{- include "kumo.commonLabels" . | nindent 4 }}
+  annotations:
+    {{- include "kumo.preflightAuxHookAnnotations" . | nindent 4 }}
+rules:
+{{- if $secrets }}
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+    resourceNames: {{ $secrets | uniq | toJson }}
+{{- else }}
+  []
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-preflight
+  labels:
+    {{- include "kumo.commonLabels" . | nindent 4 }}
+  annotations:
+    {{- include "kumo.preflightAuxHookAnnotations" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Release.Name }}-preflight
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Release.Name }}-preflight
+    namespace: {{ .Release.Namespace }}
+{{- end }}

@@ -1,0 +1,21 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- if .Values.preflight.enabled }}
+# Delivers conformance/preflight.py (a real, lintable file — see it for the
+# what/why) into the hook pod. Inputs are env vars on the Job, so the script
+# needs no templating.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-preflight-script
+  labels:
+    {{- include "kumo.commonLabels" . | nindent 4 }}
+  annotations:
+    {{- include "kumo.preflightAuxHookAnnotations" . | nindent 4 }}
+data:
+  preflight.py: |
+{{ .Files.Get "conformance/preflight.py" | indent 4 }}
+{{- end }}

@@ -1,0 +1,20 @@
+{
+  "data_compute": {
+    "type": "DISKGRAPH",
+    "data_root": "/mnt/localssd",
+    "pool_strategy": "singlehost"
+  },
+  "orchestration": {
+    "type": "cloud"
+  },
+  "secrets": {
+    "backend": "aws_sm"
+  },
+  "storage": {
+    "data_plane_storage_root": "{kumo_home}",
+    "artifact_root": "s3://kumo-public-datasets"
+  },
+  "logging": {
+    "backend": "stdout"
+  }
+}

@@ -1,0 +1,245 @@
+{
+  "total_rows": 250000000,
+  "seed": 42,
+  "batch_size": 200000,
+  "row_group_size": 1000000,
+  "tables": [
+    {
+      "name": "accounts",
+      "row_percent": 20,
+      "shards": 32,
+      "columns": [
+        {
+          "name": "account_id",
+          "dtype": "uint64",
+          "primary_key": true
+        },
+        {
+          "name": "tier",
+          "dtype": "string",
+          "gen": {
+            "type": "categorical",
+            "values": [
+              "free",
+              "pro",
+              "enterprise"
+            ]
+          }
+        },
+        {
+          "name": "created_ts",
+          "dtype": "timestamp",
+          "timestamp_unit": "millis",
+          "gen": {
+            "type": "timestamp",
+            "start_epoch_ms": 1609459200000,
+            "step_ms": 300000
+          }
+        }
+      ]
+    },
+    {
+      "name": "devices",
+      "row_percent": 10,
+      "shards": 16,
+      "columns": [
+        {
+          "name": "device_id",
+          "dtype": "bytes",
+          "primary_key": true,
+          "fixed_len": 12,
+          "key_encoding": "u64_le"
+        },
+        {
+          "name": "os",
+          "dtype": "string",
+          "gen": {
+            "type": "categorical",
+            "values": [
+              "ios",
+              "android",
+              "linux",
+              "windows",
+              "macos"
+            ]
+          }
+        },
+        {
+          "name": "device_score",
+          "dtype": "float32",
+          "gen": {
+            "type": "uniform_float",
+            "min": 0.0,
+            "max": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "sessions",
+      "row_percent": 20,
+      "shards": 32,
+      "columns": [
+        {
+          "name": "session_id",
+          "dtype": "string",
+          "primary_key": true,
+          "fixed_len": 16,
+          "key_encoding": "hex"
+        },
+        {
+          "name": "account_id",
+          "dtype": "uint64"
+        },
+        {
+          "name": "device_id",
+          "dtype": "bytes",
+          "fixed_len": 12
+        },
+        {
+          "name": "start_ts",
+          "dtype": "timestamp",
+          "timestamp_unit": "millis",
+          "gen": {
+            "type": "timestamp",
+            "start_epoch_ms": 1640995200000,
+            "step_ms": 1000
+          }
+        }
+      ]
+    },
+    {
+      "name": "events",
+      "row_percent": 45,
+      "shards": 64,
+      "columns": [
+        {
+          "name": "event_id",
+          "dtype": "uint64",
+          "primary_key": true
+        },
+        {
+          "name": "session_id",
+          "dtype": "string",
+          "fixed_len": 16
+        },
+        {
+          "name": "device_id",
+          "dtype": "bytes",
+          "fixed_len": 12
+        },
+        {
+          "name": "event_ts",
+          "dtype": "timestamp",
+          "timestamp_unit": "millis",
+          "gen": {
+            "type": "timestamp",
+            "start_epoch_ms": 1640995200000,
+            "step_ms": 50
+          }
+        },
+        {
+          "name": "event_weight",
+          "dtype": "float64",
+          "gen": {
+            "type": "uniform_float",
+            "min": 0.0,
+            "max": 10.0
+          }
+        },
+        {
+          "name": "embedding",
+          "dtype": "float32_array",
+          "gen": {
+            "type": "array_float32",
+            "len": 8,
+            "min": -1.0,
+            "max": 1.0
+          }
+        }
+      ]
+    },
+    {
+      "name": "account_devices",
+      "row_percent": 5,
+      "shards": 16,
+      "columns": [
+        {
+          "name": "account_id",
+          "dtype": "uint64"
+        },
+        {
+          "name": "device_id",
+          "dtype": "bytes",
+          "fixed_len": 12
+        },
+        {
+          "name": "linked_ts",
+          "dtype": "timestamp",
+          "timestamp_unit": "millis",
+          "gen": {
+            "type": "timestamp",
+            "start_epoch_ms": 1640995200000,
+            "step_ms": 60000
+          }
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "src_table": "sessions",
+      "src_column": "account_id",
+      "dst_table": "accounts",
+      "dst_column": "account_id",
+      "distribution": {
+        "type": "uniform"
+      }
+    },
+    {
+      "src_table": "sessions",
+      "src_column": "device_id",
+      "dst_table": "devices",
+      "dst_column": "device_id",
+      "distribution": {
+        "type": "uniform"
+      }
+    },
+    {
+      "src_table": "events",
+      "src_column": "session_id",
+      "dst_table": "sessions",
+      "dst_column": "session_id",
+      "distribution": {
+        "type": "uniform"
+      }
+    },
+    {
+      "src_table": "events",
+      "src_column": "device_id",
+      "dst_table": "devices",
+      "dst_column": "device_id",
+      "distribution": {
+        "type": "uniform"
+      }
+    },
+    {
+      "src_table": "account_devices",
+      "src_column": "account_id",
+      "dst_table": "accounts",
+      "dst_column": "account_id",
+      "distribution": {
+        "type": "uniform"
+      }
+    },
+    {
+      "src_table": "account_devices",
+      "src_column": "device_id",
+      "dst_table": "devices",
+      "dst_column": "device_id",
+      "distribution": {
+        "type": "uniform"
+      }
+    }
+  ]
+}

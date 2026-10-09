@@ -1,0 +1,193 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Databricks Testing and Coverage
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches:
+      - master
+    paths-ignore: ["ui/**", "tools/**"]
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+    inputs:
+      full_test:
+        description: "Run the full test suite"
+        type: boolean
+        default: true
+        required: false
+      store_durations:
+        description: "Record pytest-split durations (forces minimal mode)"
+        type: boolean
+        default: false
+        required: false
+  workflow_call:
+    inputs:
+      full_test:
+        type: boolean
+        default: false
+        required: false
+      store_durations:
+        type: boolean
+        default: false
+        required: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ startsWith(github.ref, 'refs/pull/') || github.run_number }}
+  # Only cancel intermediate builds if on a PR:
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_TEST_ROLE_ARN: arn:aws:iam::926922431314:role/gha-kumo-preprod-test-s3
+  GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+  GITHUB_REF: ${{secrets.GITHUB_REF}}
+  GITHUB_API_URL: ${{secrets.GITHUB_API_URL}}
+  GITHUB_REPOSITORY: ${{secrets.GITHUB_REPOSITORY}}
+  GITHUB_REPOSITORY_OWNER: ${{secrets.GITHUB_REPOSITORY_OWNER}}
+  GITHUB_RUN_ID: ${{secrets.GITHUB_RUN_ID}}
+  STORE_DURATIONS: ${{ inputs.store_durations == true }}
+  RUN_FULL_TEST: ${{ github.event_name == 'push' || (inputs.full_test == true && inputs.store_durations != true) }}
+  FORCE_RUN_TESTS: ${{ inputs.store_durations == true }}
+
+jobs:
+  pytest:
+    environment:
+      name: gha-kumo-workflow-tests
+      # This job uses environment-scoped OIDC; it does not deploy an application.
+      deployment: false
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+
+    strategy:
+      fail-fast: false
+      matrix:
+        test_dir: [
+          # The former Databricks-compute E2E selectors were removed with the
+          # DiskGraph cutover. Databricks source/export coverage now lives in
+          # test_databricks_diskgraph_e2e.py.
+          "test/rest/test_databricks.py",
+          "test/rest/integ/test_databricks_diskgraph_e2e.py",
+        ]
+
+    steps:
+      - name: Checkout repository and submodules
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 40
+
+      - name: Set up Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          python-version: "3.14"
+          activate-environment: true
+
+      # uv.lock is deliberately excluded: a lock-only dependency bump must
+      # still run the real install + test suite (see testing.yml).
+      - name: Check for only non pytest required file changes
+        id: non-pytest-changes
+        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62  # v47.0.0
+        with:
+          files: |
+            ui/**
+            CHANGELOG.md
+            tools/**
+            benchmark/**
+
+      - name: Configure AWS credentials
+        if: env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: arn:aws:iam::926922431314:role/gha-kumo-workflow-tests
+          aws-region: us-west-2
+
+      - name: Set up packages
+        if: (env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true') && !contains(matrix.test_dir, 'diskgraph')
+        uses: ./.github/actions/setup
+        with:
+          github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+
+      - name: Set up packages (with diskgraph)
+        if: (env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true') && contains(matrix.test_dir, 'diskgraph')
+        uses: ./.github/actions/setup
+        with:
+          github_token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+
+      - name: Set up coverage artifact name
+        run: |
+          echo "ARTIFACT_NAME_SAFE=.coverage-dbx-${{ github.run_id }}-$(echo -n ${{ matrix.test_dir }} | sha256sum | awk '{print $1}')" >> $GITHUB_ENV
+
+      - name: Run minimal test suite
+        if: env.RUN_FULL_TEST != 'true' && (env.FORCE_RUN_TESTS == 'true' || steps.non-pytest-changes.outputs.only_changed != 'true')
+        timeout-minutes: 50
+        run: |
+          set -o pipefail
+          export SPARK_LOCAL_IP="127.0.0.1"
+          source ./tools/ci_pytest_log_controls.sh
+          configure_pytest_ci_output
+          start_ci_memory_monitor
+          GLOG_logtostdout=1 python -m coverage run -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=50 ${{ env.STORE_DURATIONS == 'true' && '--store-durations --durations-path=.test_durations' || '' }} ${{ matrix.test_dir }}
+          move_coverage_artifact
+        env:
+          KUMO_PYTEST_ENABLE_FSUTIL_DEBUG_LOGS: "0"
+          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          GCS_TEST_BUCKET: 'kumo-test-bucket'
+          AWS_DEFAULT_REGION: "us-west-2"
+          DEPLOY_STAGE: "test"
+          TEMPORAL_SERVER: "localhost"
+          DATA_SPARK_MEM: "1g"
+          MAX_DATA_BACKEND_WORKER_PROCESSES: "1"
+          CUDA: "cpu"
+          KUMO_ENABLE_GLOVE: "False"
+          KUMO_TESTING: "True"
+          SPARK_VERSION: "3.5"
+          DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
+
+      - name: Run full test suite
+        if: env.RUN_FULL_TEST == 'true' && steps.non-pytest-changes.outputs.only_changed != 'true'
+        timeout-minutes: 90
+        run: |
+          set -o pipefail
+          export SPARK_LOCAL_IP="127.0.0.1"
+          source ./tools/ci_pytest_log_controls.sh
+          configure_pytest_ci_output
+          FULL_TEST=1 GLOG_logtostdout=1 python -m coverage run -m pytest "${PYTEST_CI_OUTPUT_ARGS[@]}" --durations=50 ${{ matrix.test_dir }}
+          move_coverage_artifact
+        env:
+          KUMO_PYTEST_ENABLE_FSUTIL_DEBUG_LOGS: "0"
+          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          GCS_TEST_BUCKET: 'kumo-test-bucket'
+          AWS_DEFAULT_REGION: "us-west-2"
+          DEPLOY_STAGE: "test"
+          TEMPORAL_SERVER: "localhost"
+          DATA_SPARK_MEM: "1g"
+          MAX_DATA_BACKEND_WORKER_PROCESSES: "1"
+          CUDA: "cpu"
+          KUMO_TESTING: "True"
+          SPARK_VERSION: "3.5"
+          DEPLOY_ENV_CONFIG_FILE: ${{ contains(matrix.test_dir, 'diskgraph') && 'rest/devserver/configs/diskgraph-test.json' || '' }}
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ env.ARTIFACT_NAME_SAFE }}
+          path: ${{ env.ARTIFACT_NAME_SAFE }}
+          include-hidden-files: true
+
+      - name: Upload durations artifact
+        if: success() && env.STORE_DURATIONS == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: durations-${{ github.run_id }}-${{ strategy.job-index }}-of-${{ strategy.job-total }}
+          path: .test_durations
+          include-hidden-files: true
+          if-no-files-found: ignore

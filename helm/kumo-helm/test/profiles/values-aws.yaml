@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+global:
+  tenant: profile-test
+
+image:
+  tag: "test-version"
+
+
+kumoConfig:
+  storage:
+    dataBucket: s3://profile-test/disk-graph
+  diskgraph:
+    nodeTypes:
+      test-gpu:
+        ssd_gib: 400
+        gpu_count: 1
+
+serviceAccounts:
+  control:
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/kumo-control-test
+  worker:
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/kumo-worker-test
+  controller:
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::000000000000:role/kumo-controller-test
+
+postgres:
+  host: state.profile-test.us-west-2.rds.amazonaws.com
+  database: profile_test
+  username: kumo_state

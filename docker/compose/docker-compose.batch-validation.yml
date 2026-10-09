@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+x-batch-validation-env: &batch-validation-env
+  KUMO_DISKGRAPH_TT_NG_ENABLED: ${KUMO_DISKGRAPH_TT_NG_ENABLED:-false}
+  KUMO_CUSTOM_TT_ALLOW_ROW_COUNT_MISMATCH: "true"
+  ALLOW_ARRAY_TARGETS: ${ALLOW_ARRAY_TARGETS:-false}
+  SYNC_DATA_LOADER: "1"
+  KUMO_BATCH_DUMP_DIR: ${LOCAL_DATAPLANE_MOUNT:-/tmp/kumo-batch-validation/dataplane}/${STACK:-kumo}/kumo_parity
+
+services:
+  kumo-rest:
+    environment: *batch-validation-env
+
+  kumo-rest-public:
+    environment: *batch-validation-env
+
+  kumo-worker-data:
+    environment: *batch-validation-env
+
+  kumo-worker-mlworkflow:
+    environment: *batch-validation-env
+
+  kumo-pool-controller:
+    environment: *batch-validation-env
+
+  kumo-pool-worker:
+    environment: *batch-validation-env
+
+  kumo-ui:
+    image: kumo/kumo-ui:${KUMO_BATCH_VALIDATION_UI_TAG:-kumo-validation-ui}

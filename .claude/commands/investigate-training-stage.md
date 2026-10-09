@@ -1,0 +1,1 @@
+../../.agents/skills/investigate-training-stage/SKILL.md

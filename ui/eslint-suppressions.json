@@ -1,0 +1,212 @@
+{
+    "src/components/@ui/Chart/ColumnStatsChart.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/@ui/TableColumns/TableSliderOverview.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/BatchPredictions/Configurations/Configurations.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/BatchPredictions/Explanation/BPExplanationOverview.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/BatchPredictions/PredictionOutputsOverview/PredictionOutputsOverview.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/CodeEditor/CodeEditor.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/Graphs/InformationPanel/TableGraphView.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/Graphs/InformationPanel/TableView.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/Graphs/LinkGroups/GraphLinkGroups.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/Graphs/LinkSetup/GraphLinkSetup.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/Jobs/List/JobsListFilter.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/Jobs/Prediction/PredictionJobOverview.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/Jobs/PredictionTable/PredictionTableGenOverview.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/Jobs/Training/TrainingJobOverview.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/Jobs/TrainingTable/TrainingTableGenOverview.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/Jobs/TrainingTable/TrainingTableGeneration.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/NewJob/Prediction/Settings/PredictionOutput.tsx": {
+        "complexity": {
+            "count": 2
+        }
+    },
+    "src/components/Overview/JobProperties.tsx": {
+        "complexity": {
+            "count": 2
+        }
+    },
+    "src/components/PredictiveQueries/Evaluation/BinaryClassification/BinaryClassification.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/PredictiveQueries/Evaluation/Histogram/Histogram.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/PredictiveQueries/Evaluation/Overview/PQEvaluationOverview.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/PredictiveQueries/Evaluation/RegressionHeatMap/RegressionHeatMap.tsx": {
+        "complexity": {
+            "count": 2
+        }
+    },
+    "src/components/PredictiveQueries/Explanation/GraphColumnLevelOverview/GraphColumnLevelOverview.tsx": {
+        "complexity": {
+            "count": 2
+        }
+    },
+    "src/components/PredictiveQueries/Explanation/Overview/PQExplanationOverview.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/PredictiveQueries/Explanation/Prediction/LinkPrediction.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/PredictiveQueries/Training/DataStatistics/DataStatistics.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/PredictiveQueries/Training/Overview/PQTrainingOverview.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/PredictiveQueries/Training/SplitStats/trainingDataStats.tsx": {
+        "complexity": {
+            "count": 3
+        }
+    },
+    "src/components/PredictiveQueries/Training/TimeframeChart/TimeframeChart.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/PredictiveQueries/Write/ModelPlannerFormSections.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/Tables/Connect/ConnectTables.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/Tables/Connect/PreprocessingColumns.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/Tables/Connect/SampleCell.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/components/Tables/Overview/TableOverview.tsx": {
+        "complexity": {
+            "count": 2
+        }
+    },
+    "src/components/Tables/Overview/TableSliderOverview.tsx": {
+        "complexity": {
+            "count": 2
+        }
+    },
+    "src/components/Validation/Validation.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/pages/Graphs/NewGraph/NewGraph.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/pages/NewJob/Prediction/Prediction.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/pages/NewJob/Training/Training.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/pages/Tables/TablesList/TablesList.tsx": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/utils/Helpers/numberHelpers.ts": {
+        "complexity": {
+            "count": 1
+        }
+    },
+    "src/utils/jobs.ts": {
+        "complexity": {
+            "count": 3
+        }
+    }
+}

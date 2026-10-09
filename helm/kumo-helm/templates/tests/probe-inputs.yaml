@@ -1,0 +1,69 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- /*
+Probe inputs — a single JSON blob of the RESOLVED chart values that the conformance
+probe (conformance/check.sh) checks the cluster against. The probe renders it with:
+  helm template <name> <chart> -f <your-values.yaml> --show-only templates/tests/probe-inputs.yaml
+Marked as a `helm test` hook so it is NOT created by a normal `helm install`; it exists
+only to be rendered on demand. This keeps the probe in lockstep with what the chart will
+actually deploy, instead of hardcoding environment assumptions.
+*/ -}}
+{{- include "kumo.validateInstallConfig" . -}}
+{{- include "kumo.validatePodLabels" . -}}
+{{- $controlServiceAccount := include "kumo.serviceAccountConfig" (dict "root" . "role" "control") | fromJson -}}
+{{- $workerServiceAccount := include "kumo.serviceAccountConfig" (dict "root" . "role" "worker") | fromJson -}}
+{{- $controllerServiceAccount := include "kumo.serviceAccountConfig" (dict "root" . "role" "controller") | fromJson -}}
+{{- /* Cache selectors must follow the final runtime config, including kumoConfig.extra overrides. */ -}}
+{{- $runtime := include "kumo.deployEnvConfigJson" . | fromJson -}}
+{{- $gsaKey := .Values.kumoConfig.gsaKey | default dict -}}
+{{- $nodeTypes := dig "data_compute" "k8s_pool" "pool_diskgraph_node_types" (dict) $runtime -}}
+{{- $tiers := list -}}
+{{- range $t, $nt := ($nodeTypes | default dict) -}}
+{{-   if (and (kindIs "map" $nt) (hasKey $nt "ssd_gib")) -}}{{- $tiers = append $tiers (dict "ssd" $nt.ssd_gib "gpu" (hasKey $nt "gpu_count" | ternary $nt.gpu_count 1)) -}}{{- end -}}
+{{- end -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-probe-inputs
+  labels:
+    {{- include "kumo.commonLabels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+data:
+  inputs.json: {{ dict
+    "tenant" .Values.global.tenant
+    "deployStage" (include "kumo.deployStage" .)
+    "namespace" .Release.Namespace
+    "exposureHost" .Values.exposure.host
+    "storageClass" .Values.kumoConfig.diskgraph.storageClass
+    "storageCapacityTracking" .Values.kumoConfig.diskgraph.storageCapacityTracking
+    "imageRegistry" .Values.image.registry
+    "imagePullSecret" .Values.image.pullSecretName
+    "temporalAddress" (include "kumo.temporalAddress" .)
+    "temporalClientMtlsSecret" .Values.temporal.clientMtlsSecret
+    "registerNamespace" .Values.temporal.registerNamespace
+    "storageRoot" (include "kumo.dataPlaneStorageRoot" .)
+    "gcpApplicationCredentialsSecret" ($gsaKey.existingSecret | default "")
+    "gcpApplicationCredentialsKey" ($gsaKey.key | default "")
+    "identityAnnotations" (dict
+      "control" ($controlServiceAccount.annotations | default dict)
+      "worker" ($workerServiceAccount.annotations | default dict)
+      "controller" ($controllerServiceAccount.annotations | default dict))
+    "identityPodLabels" (dict
+      "control" ($controlServiceAccount.podLabels | default dict)
+      "worker" ($workerServiceAccount.podLabels | default dict)
+      "controller" ($controllerServiceAccount.podLabels | default dict))
+    "postgresAuthMode" .Values.postgres.authMode
+    "postgresHost" .Values.postgres.host
+    "postgresPort" .Values.postgres.port
+    "nodeSelector" (.Values.nodeTargeting.nodeSelector | default dict)
+    "diskgraphTiers" ($tiers | uniq)
+    "poolExtraTolerations" (dig "data_compute" "k8s_pool" "pool_extra_tolerations" (list) $runtime | default list)
+    "restSvc" "kumo-rest"
+    "apiSvc" "kumo-api"
+    "uiSvc" "kumo-ui"
+    | toJson | quote }}

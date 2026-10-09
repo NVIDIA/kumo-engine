@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Agent Skills
+
+on:  # yamllint disable-line rule:truthy
+  push:
+    branches:
+      - main
+    paths:
+      - "agent-skills/**"
+      # The skills cite modules and names from these packages; a rename must fail here.
+      - "packages/kumo-engine/**"
+      - "packages/kumo-core/**"
+      - "packages/kumo-api/**"
+      - "packages/kumo-snowflake/**"
+      - ".github/workflows/agent-skills.yml"
+  pull_request:
+    paths:
+      - "agent-skills/**"
+      # The skills cite modules and names from these packages; a rename must fail here.
+      - "packages/kumo-engine/**"
+      - "packages/kumo-core/**"
+      - "packages/kumo-api/**"
+      - "packages/kumo-snowflake/**"
+      - ".github/workflows/agent-skills.yml"
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python and uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          python-version: "3.14"
+
+      # Builds every host package and fails on any reference it does not ship, and checks that
+      # every Kumo module and SDK name the skills cite still exists.
+      - name: Test skill packaging and scripts
+        run: |
+          uvx --python 3.14 --from pytest==9.0.3 \
+            python -m pytest -c /dev/null --confcutdir=agent-skills/tests \
+            -p no:cacheprovider -q agent-skills/tests

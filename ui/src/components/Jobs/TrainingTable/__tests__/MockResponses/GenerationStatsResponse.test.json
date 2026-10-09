@@ -1,0 +1,1334 @@
+{
+    "num_expected_iterations": 72,
+    "num_finished_iterations": 72,
+    "iteration_data": [
+        {
+            "min_date": "1998-12-01T00:00:00",
+            "max_date": "1998-12-31T00:00:00",
+            "anchor_date": "1998-12-01T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 79,
+                    "False": 4421
+                },
+                "percentage": {
+                    "True": 1.7555555555555558,
+                    "False": 98.24444444444444
+                }
+            },
+            "index": 0,
+            "num_train_rows": 4500,
+            "num_entities": 4500,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1998-11-01T00:00:00",
+            "max_date": "1998-12-01T00:00:00",
+            "anchor_date": "1998-11-01T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 21,
+                    "False": 4479
+                },
+                "percentage": {
+                    "True": 0.46666666666666673,
+                    "False": 99.53333333333333
+                }
+            },
+            "index": 1,
+            "num_train_rows": 4500,
+            "num_entities": 4500,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1998-10-02T00:00:00",
+            "max_date": "1998-11-01T00:00:00",
+            "anchor_date": "1998-10-02T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 4480,
+                    "True": 20
+                },
+                "percentage": {
+                    "False": 99.55555555555556,
+                    "True": 0.4444444444444444
+                }
+            },
+            "index": 2,
+            "num_train_rows": 4500,
+            "num_entities": 4500,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1998-09-02T00:00:00",
+            "max_date": "1998-10-02T00:00:00",
+            "anchor_date": "1998-09-02T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 4479,
+                    "True": 21
+                },
+                "percentage": {
+                    "False": 99.53333333333333,
+                    "True": 0.46666666666666673
+                }
+            },
+            "index": 3,
+            "num_train_rows": 4500,
+            "num_entities": 4500,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1998-08-03T00:00:00",
+            "max_date": "1998-09-02T00:00:00",
+            "anchor_date": "1998-08-03T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 21,
+                    "False": 4479
+                },
+                "percentage": {
+                    "True": 0.46666666666666673,
+                    "False": 99.53333333333333
+                }
+            },
+            "index": 4,
+            "num_train_rows": 4500,
+            "num_entities": 4500,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1998-07-04T00:00:00",
+            "max_date": "1998-08-03T00:00:00",
+            "anchor_date": "1998-07-04T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 20,
+                    "False": 4480
+                },
+                "percentage": {
+                    "True": 0.4444444444444444,
+                    "False": 99.55555555555556
+                }
+            },
+            "index": 5,
+            "num_train_rows": 4500,
+            "num_entities": 4500,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1998-06-04T00:00:00",
+            "max_date": "1998-07-04T00:00:00",
+            "anchor_date": "1998-06-04T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 4479,
+                    "True": 21
+                },
+                "percentage": {
+                    "False": 99.53333333333333,
+                    "True": 0.46666666666666673
+                }
+            },
+            "index": 6,
+            "num_train_rows": 4500,
+            "num_entities": 4500,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1998-05-05T00:00:00",
+            "max_date": "1998-06-04T00:00:00",
+            "anchor_date": "1998-05-05T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 4480,
+                    "True": 20
+                },
+                "percentage": {
+                    "False": 99.55555555555556,
+                    "True": 0.4444444444444444
+                }
+            },
+            "index": 7,
+            "num_train_rows": 4500,
+            "num_entities": 4500,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1998-04-05T00:00:00",
+            "max_date": "1998-05-05T00:00:00",
+            "anchor_date": "1998-04-05T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 4475,
+                    "True": 25
+                },
+                "percentage": {
+                    "False": 99.44444444444444,
+                    "True": 0.5555555555555556
+                }
+            },
+            "index": 8,
+            "num_train_rows": 4500,
+            "num_entities": 4500,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1998-03-06T00:00:00",
+            "max_date": "1998-04-05T00:00:00",
+            "anchor_date": "1998-03-06T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 4474,
+                    "True": 26
+                },
+                "percentage": {
+                    "False": 99.42222222222222,
+                    "True": 0.5777777777777777
+                }
+            },
+            "index": 9,
+            "num_train_rows": 4500,
+            "num_entities": 4500,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1998-02-04T00:00:00",
+            "max_date": "1998-03-06T00:00:00",
+            "anchor_date": "1998-02-04T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 4479,
+                    "True": 21
+                },
+                "percentage": {
+                    "False": 99.53333333333333,
+                    "True": 0.46666666666666673
+                }
+            },
+            "index": 10,
+            "num_train_rows": 4500,
+            "num_entities": 4500,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1998-01-05T00:00:00",
+            "max_date": "1998-02-04T00:00:00",
+            "anchor_date": "1998-01-05T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 4475,
+                    "True": 25
+                },
+                "percentage": {
+                    "False": 99.44444444444444,
+                    "True": 0.5555555555555556
+                }
+            },
+            "index": 11,
+            "num_train_rows": 4500,
+            "num_entities": 4500,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1997-12-06T00:00:00",
+            "max_date": "1998-01-05T00:00:00",
+            "anchor_date": "1997-12-06T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 4424,
+                    "True": 22
+                },
+                "percentage": {
+                    "False": 99.50517318938371,
+                    "True": 0.4948268106162843
+                }
+            },
+            "index": 12,
+            "num_train_rows": 4446,
+            "num_entities": 4446,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1997-11-06T00:00:00",
+            "max_date": "1997-12-06T00:00:00",
+            "anchor_date": "1997-11-06T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 18,
+                    "False": 4370
+                },
+                "percentage": {
+                    "True": 0.41020966271649956,
+                    "False": 99.5897903372835
+                }
+            },
+            "index": 13,
+            "num_train_rows": 4388,
+            "num_entities": 4388,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1997-10-07T00:00:00",
+            "max_date": "1997-11-06T00:00:00",
+            "anchor_date": "1997-10-07T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 15,
+                    "False": 4296
+                },
+                "percentage": {
+                    "True": 0.3479471120389701,
+                    "False": 99.65205288796103
+                }
+            },
+            "index": 14,
+            "num_train_rows": 4311,
+            "num_entities": 4311,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1997-09-07T00:00:00",
+            "max_date": "1997-10-07T00:00:00",
+            "anchor_date": "1997-09-07T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 4218,
+                    "True": 13
+                },
+                "percentage": {
+                    "False": 99.6927440321437,
+                    "True": 0.3072559678562987
+                }
+            },
+            "index": 15,
+            "num_train_rows": 4231,
+            "num_entities": 4231,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1997-08-08T00:00:00",
+            "max_date": "1997-09-07T00:00:00",
+            "anchor_date": "1997-08-08T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 19,
+                    "False": 4144
+                },
+                "percentage": {
+                    "True": 0.45640163343742496,
+                    "False": 99.54359836656258
+                }
+            },
+            "index": 16,
+            "num_train_rows": 4163,
+            "num_entities": 4163,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1997-07-09T00:00:00",
+            "max_date": "1997-08-08T00:00:00",
+            "anchor_date": "1997-07-09T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 4067,
+                    "True": 14
+                },
+                "percentage": {
+                    "False": 99.65694682675816,
+                    "True": 0.34305317324185247
+                }
+            },
+            "index": 17,
+            "num_train_rows": 4081,
+            "num_entities": 4081,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1997-06-09T00:00:00",
+            "max_date": "1997-07-09T00:00:00",
+            "anchor_date": "1997-06-09T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 3988,
+                    "True": 11
+                },
+                "percentage": {
+                    "False": 99.7249312328082,
+                    "True": 0.27506876719179796
+                }
+            },
+            "index": 18,
+            "num_train_rows": 3999,
+            "num_entities": 3999,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1997-05-10T00:00:00",
+            "max_date": "1997-06-09T00:00:00",
+            "anchor_date": "1997-05-10T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 3906,
+                    "True": 17
+                },
+                "percentage": {
+                    "False": 99.56665816976803,
+                    "True": 0.4333418302319653
+                }
+            },
+            "index": 19,
+            "num_train_rows": 3923,
+            "num_entities": 3923,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1997-04-10T00:00:00",
+            "max_date": "1997-05-10T00:00:00",
+            "anchor_date": "1997-04-10T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 10,
+                    "False": 3826
+                },
+                "percentage": {
+                    "True": 0.2606882168925964,
+                    "False": 99.7393117831074
+                }
+            },
+            "index": 20,
+            "num_train_rows": 3836,
+            "num_entities": 3836,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1997-03-11T00:00:00",
+            "max_date": "1997-04-10T00:00:00",
+            "anchor_date": "1997-03-11T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 21,
+                    "False": 3746
+                },
+                "percentage": {
+                    "True": 0.5574727900185824,
+                    "False": 99.4425272099814
+                }
+            },
+            "index": 21,
+            "num_train_rows": 3767,
+            "num_entities": 3767,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1997-02-09T00:00:00",
+            "max_date": "1997-03-11T00:00:00",
+            "anchor_date": "1997-02-09T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 8,
+                    "False": 3685
+                },
+                "percentage": {
+                    "True": 0.2166260492824262,
+                    "False": 99.78337395071757
+                }
+            },
+            "index": 22,
+            "num_train_rows": 3693,
+            "num_entities": 3693,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1997-01-10T00:00:00",
+            "max_date": "1997-02-09T00:00:00",
+            "anchor_date": "1997-01-10T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 17,
+                    "False": 3605
+                },
+                "percentage": {
+                    "True": 0.46935394809497516,
+                    "False": 99.53064605190502
+                }
+            },
+            "index": 23,
+            "num_train_rows": 3622,
+            "num_entities": 3622,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1996-12-11T00:00:00",
+            "max_date": "1997-01-10T00:00:00",
+            "anchor_date": "1996-12-11T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 3499,
+                    "True": 19
+                },
+                "percentage": {
+                    "False": 99.45992040932347,
+                    "True": 0.5400795906765207
+                }
+            },
+            "index": 24,
+            "num_train_rows": 3518,
+            "num_entities": 3518,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1996-11-11T00:00:00",
+            "max_date": "1996-12-11T00:00:00",
+            "anchor_date": "1996-11-11T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 3398,
+                    "True": 8
+                },
+                "percentage": {
+                    "False": 99.7651203758074,
+                    "True": 0.23487962419260128
+                }
+            },
+            "index": 25,
+            "num_train_rows": 3406,
+            "num_entities": 3406,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1996-10-12T00:00:00",
+            "max_date": "1996-11-11T00:00:00",
+            "anchor_date": "1996-10-12T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 12,
+                    "False": 3287
+                },
+                "percentage": {
+                    "True": 0.3637465898757199,
+                    "False": 99.63625341012428
+                }
+            },
+            "index": 26,
+            "num_train_rows": 3299,
+            "num_entities": 3299,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1996-09-12T00:00:00",
+            "max_date": "1996-10-12T00:00:00",
+            "anchor_date": "1996-09-12T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 6,
+                    "False": 3181
+                },
+                "percentage": {
+                    "True": 0.1882648258550361,
+                    "False": 99.81173517414497
+                }
+            },
+            "index": 27,
+            "num_train_rows": 3187,
+            "num_entities": 3187,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1996-08-13T00:00:00",
+            "max_date": "1996-09-12T00:00:00",
+            "anchor_date": "1996-08-13T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 3057,
+                    "True": 12
+                },
+                "percentage": {
+                    "False": 99.60899315738025,
+                    "True": 0.39100684261974583
+                }
+            },
+            "index": 28,
+            "num_train_rows": 3069,
+            "num_entities": 3069,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1996-07-14T00:00:00",
+            "max_date": "1996-08-13T00:00:00",
+            "anchor_date": "1996-07-14T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 7,
+                    "False": 2942
+                },
+                "percentage": {
+                    "True": 0.23736859952526282,
+                    "False": 99.76263140047473
+                }
+            },
+            "index": 29,
+            "num_train_rows": 2949,
+            "num_entities": 2949,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1996-06-14T00:00:00",
+            "max_date": "1996-07-14T00:00:00",
+            "anchor_date": "1996-06-14T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 6,
+                    "False": 2808
+                },
+                "percentage": {
+                    "True": 0.21321961620469082,
+                    "False": 99.7867803837953
+                }
+            },
+            "index": 30,
+            "num_train_rows": 2814,
+            "num_entities": 2814,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1996-05-15T00:00:00",
+            "max_date": "1996-06-14T00:00:00",
+            "anchor_date": "1996-05-15T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 2729,
+                    "True": 2
+                },
+                "percentage": {
+                    "False": 99.92676675210545,
+                    "True": 0.07323324789454412
+                }
+            },
+            "index": 31,
+            "num_train_rows": 2731,
+            "num_entities": 2731,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1996-04-15T00:00:00",
+            "max_date": "1996-05-15T00:00:00",
+            "anchor_date": "1996-04-15T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 3,
+                    "False": 2616
+                },
+                "percentage": {
+                    "True": 0.11454753722794961,
+                    "False": 99.88545246277205
+                }
+            },
+            "index": 32,
+            "num_train_rows": 2619,
+            "num_entities": 2619,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1996-03-16T00:00:00",
+            "max_date": "1996-04-15T00:00:00",
+            "anchor_date": "1996-03-16T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 2514,
+                    "True": 2
+                },
+                "percentage": {
+                    "False": 99.92050874403816,
+                    "True": 0.0794912559618442
+                }
+            },
+            "index": 33,
+            "num_train_rows": 2516,
+            "num_entities": 2516,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1996-02-15T00:00:00",
+            "max_date": "1996-03-16T00:00:00",
+            "anchor_date": "1996-02-15T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 4,
+                    "False": 2397
+                },
+                "percentage": {
+                    "True": 0.16659725114535612,
+                    "False": 99.83340274885465
+                }
+            },
+            "index": 34,
+            "num_train_rows": 2401,
+            "num_entities": 2401,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1996-01-16T00:00:00",
+            "max_date": "1996-02-15T00:00:00",
+            "anchor_date": "1996-01-16T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 3,
+                    "False": 2297
+                },
+                "percentage": {
+                    "True": 0.13043478260869568,
+                    "False": 99.86956521739131
+                }
+            },
+            "index": 35,
+            "num_train_rows": 2300,
+            "num_entities": 2300,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1995-12-17T00:00:00",
+            "max_date": "1996-01-16T00:00:00",
+            "anchor_date": "1995-12-17T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 2217
+                },
+                "percentage": {
+                    "False": 100.0
+                }
+            },
+            "index": 36,
+            "num_train_rows": 2217,
+            "num_entities": 2217,
+            "num_targets": 1
+        },
+        {
+            "min_date": "1995-11-17T00:00:00",
+            "max_date": "1995-12-17T00:00:00",
+            "anchor_date": "1995-11-17T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 1,
+                    "False": 2157
+                },
+                "percentage": {
+                    "True": 0.04633920296570899,
+                    "False": 99.95366079703429
+                }
+            },
+            "index": 37,
+            "num_train_rows": 2158,
+            "num_entities": 2158,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1995-10-18T00:00:00",
+            "max_date": "1995-11-17T00:00:00",
+            "anchor_date": "1995-10-18T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 1,
+                    "False": 2100
+                },
+                "percentage": {
+                    "True": 0.047596382674916705,
+                    "False": 99.95240361732507
+                }
+            },
+            "index": 38,
+            "num_train_rows": 2101,
+            "num_entities": 2101,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1995-09-18T00:00:00",
+            "max_date": "1995-10-18T00:00:00",
+            "anchor_date": "1995-09-18T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 2,
+                    "False": 2037
+                },
+                "percentage": {
+                    "True": 0.0980872976949485,
+                    "False": 99.90191270230505
+                }
+            },
+            "index": 39,
+            "num_train_rows": 2039,
+            "num_entities": 2039,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1995-08-19T00:00:00",
+            "max_date": "1995-09-18T00:00:00",
+            "anchor_date": "1995-08-19T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 1971,
+                    "True": 1
+                },
+                "percentage": {
+                    "False": 99.94929006085192,
+                    "True": 0.05070993914807302
+                }
+            },
+            "index": 40,
+            "num_train_rows": 1972,
+            "num_entities": 1972,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1995-07-20T00:00:00",
+            "max_date": "1995-08-19T00:00:00",
+            "anchor_date": "1995-07-20T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 1,
+                    "False": 1927
+                },
+                "percentage": {
+                    "True": 0.05186721991701245,
+                    "False": 99.94813278008299
+                }
+            },
+            "index": 41,
+            "num_train_rows": 1928,
+            "num_entities": 1928,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1995-06-20T00:00:00",
+            "max_date": "1995-07-20T00:00:00",
+            "anchor_date": "1995-06-20T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 2,
+                    "False": 1881
+                },
+                "percentage": {
+                    "True": 0.10621348911311736,
+                    "False": 99.89378651088688
+                }
+            },
+            "index": 42,
+            "num_train_rows": 1883,
+            "num_entities": 1883,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1995-05-21T00:00:00",
+            "max_date": "1995-06-20T00:00:00",
+            "anchor_date": "1995-05-21T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 1823
+                },
+                "percentage": {
+                    "False": 100.0
+                }
+            },
+            "index": 43,
+            "num_train_rows": 1823,
+            "num_entities": 1823,
+            "num_targets": 1
+        },
+        {
+            "min_date": "1995-04-21T00:00:00",
+            "max_date": "1995-05-21T00:00:00",
+            "anchor_date": "1995-04-21T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 1772
+                },
+                "percentage": {
+                    "False": 100.0
+                }
+            },
+            "index": 44,
+            "num_train_rows": 1772,
+            "num_entities": 1772,
+            "num_targets": 1
+        },
+        {
+            "min_date": "1995-03-22T00:00:00",
+            "max_date": "1995-04-21T00:00:00",
+            "anchor_date": "1995-03-22T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 1719
+                },
+                "percentage": {
+                    "False": 100.0
+                }
+            },
+            "index": 45,
+            "num_train_rows": 1719,
+            "num_entities": 1719,
+            "num_targets": 1
+        },
+        {
+            "min_date": "1995-02-20T00:00:00",
+            "max_date": "1995-03-22T00:00:00",
+            "anchor_date": "1995-02-20T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 1,
+                    "False": 1673
+                },
+                "percentage": {
+                    "True": 0.05973715651135006,
+                    "False": 99.94026284348865
+                }
+            },
+            "index": 46,
+            "num_train_rows": 1674,
+            "num_entities": 1674,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1995-01-21T00:00:00",
+            "max_date": "1995-02-20T00:00:00",
+            "anchor_date": "1995-01-21T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 1,
+                    "False": 1624
+                },
+                "percentage": {
+                    "True": 0.06153846153846154,
+                    "False": 99.93846153846154
+                }
+            },
+            "index": 47,
+            "num_train_rows": 1625,
+            "num_entities": 1625,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1994-12-22T00:00:00",
+            "max_date": "1995-01-21T00:00:00",
+            "anchor_date": "1994-12-22T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 1573
+                },
+                "percentage": {
+                    "False": 100.0
+                }
+            },
+            "index": 48,
+            "num_train_rows": 1573,
+            "num_entities": 1573,
+            "num_targets": 1
+        },
+        {
+            "min_date": "1994-11-22T00:00:00",
+            "max_date": "1994-12-22T00:00:00",
+            "anchor_date": "1994-11-22T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 1,
+                    "False": 1533
+                },
+                "percentage": {
+                    "True": 0.0651890482398957,
+                    "False": 99.9348109517601
+                }
+            },
+            "index": 49,
+            "num_train_rows": 1534,
+            "num_entities": 1534,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1994-10-23T00:00:00",
+            "max_date": "1994-11-22T00:00:00",
+            "anchor_date": "1994-10-23T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 1507
+                },
+                "percentage": {
+                    "False": 100.0
+                }
+            },
+            "index": 50,
+            "num_train_rows": 1507,
+            "num_entities": 1507,
+            "num_targets": 1
+        },
+        {
+            "min_date": "1994-09-23T00:00:00",
+            "max_date": "1994-10-23T00:00:00",
+            "anchor_date": "1994-09-23T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 3,
+                    "False": 1460
+                },
+                "percentage": {
+                    "True": 0.2050580997949419,
+                    "False": 99.79494190020506
+                }
+            },
+            "index": 51,
+            "num_train_rows": 1463,
+            "num_entities": 1463,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1994-08-24T00:00:00",
+            "max_date": "1994-09-23T00:00:00",
+            "anchor_date": "1994-08-24T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 1420
+                },
+                "percentage": {
+                    "False": 100.0
+                }
+            },
+            "index": 52,
+            "num_train_rows": 1420,
+            "num_entities": 1420,
+            "num_targets": 1
+        },
+        {
+            "min_date": "1994-07-25T00:00:00",
+            "max_date": "1994-08-24T00:00:00",
+            "anchor_date": "1994-07-25T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 1388
+                },
+                "percentage": {
+                    "False": 100.0
+                }
+            },
+            "index": 53,
+            "num_train_rows": 1388,
+            "num_entities": 1388,
+            "num_targets": 1
+        },
+        {
+            "min_date": "1994-06-25T00:00:00",
+            "max_date": "1994-07-25T00:00:00",
+            "anchor_date": "1994-06-25T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 1358
+                },
+                "percentage": {
+                    "False": 100.0
+                }
+            },
+            "index": 54,
+            "num_train_rows": 1358,
+            "num_entities": 1358,
+            "num_targets": 1
+        },
+        {
+            "min_date": "1994-05-26T00:00:00",
+            "max_date": "1994-06-25T00:00:00",
+            "anchor_date": "1994-05-26T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 1324
+                },
+                "percentage": {
+                    "False": 100.0
+                }
+            },
+            "index": 55,
+            "num_train_rows": 1324,
+            "num_entities": 1324,
+            "num_targets": 1
+        },
+        {
+            "min_date": "1994-04-26T00:00:00",
+            "max_date": "1994-05-26T00:00:00",
+            "anchor_date": "1994-04-26T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 2,
+                    "False": 1260
+                },
+                "percentage": {
+                    "True": 0.15847860538827258,
+                    "False": 99.84152139461173
+                }
+            },
+            "index": 56,
+            "num_train_rows": 1262,
+            "num_entities": 1262,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1994-03-27T00:00:00",
+            "max_date": "1994-04-26T00:00:00",
+            "anchor_date": "1994-03-27T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 1227
+                },
+                "percentage": {
+                    "False": 100.0
+                }
+            },
+            "index": 57,
+            "num_train_rows": 1227,
+            "num_entities": 1227,
+            "num_targets": 1
+        },
+        {
+            "min_date": "1994-02-25T00:00:00",
+            "max_date": "1994-03-27T00:00:00",
+            "anchor_date": "1994-02-25T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 1192
+                },
+                "percentage": {
+                    "False": 100.0
+                }
+            },
+            "index": 58,
+            "num_train_rows": 1192,
+            "num_entities": 1192,
+            "num_targets": 1
+        },
+        {
+            "min_date": "1994-01-26T00:00:00",
+            "max_date": "1994-02-25T00:00:00",
+            "anchor_date": "1994-01-26T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 1161
+                },
+                "percentage": {
+                    "False": 100.0
+                }
+            },
+            "index": 59,
+            "num_train_rows": 1161,
+            "num_entities": 1161,
+            "num_targets": 1
+        },
+        {
+            "min_date": "1993-12-27T00:00:00",
+            "max_date": "1994-01-26T00:00:00",
+            "anchor_date": "1993-12-27T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 1129
+                },
+                "percentage": {
+                    "False": 100.0
+                }
+            },
+            "index": 60,
+            "num_train_rows": 1129,
+            "num_entities": 1129,
+            "num_targets": 1
+        },
+        {
+            "min_date": "1993-11-27T00:00:00",
+            "max_date": "1993-12-27T00:00:00",
+            "anchor_date": "1993-11-27T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 1,
+                    "False": 1038
+                },
+                "percentage": {
+                    "True": 0.0962463907603465,
+                    "False": 99.90375360923966
+                }
+            },
+            "index": 61,
+            "num_train_rows": 1039,
+            "num_entities": 1039,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1993-10-28T00:00:00",
+            "max_date": "1993-11-27T00:00:00",
+            "anchor_date": "1993-10-28T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 931,
+                    "True": 1
+                },
+                "percentage": {
+                    "False": 99.89270386266095,
+                    "True": 0.1072961373390558
+                }
+            },
+            "index": 62,
+            "num_train_rows": 932,
+            "num_entities": 932,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1993-09-28T00:00:00",
+            "max_date": "1993-10-28T00:00:00",
+            "anchor_date": "1993-09-28T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 856
+                },
+                "percentage": {
+                    "False": 100.0
+                }
+            },
+            "index": 63,
+            "num_train_rows": 856,
+            "num_entities": 856,
+            "num_targets": 1
+        },
+        {
+            "min_date": "1993-08-29T00:00:00",
+            "max_date": "1993-09-28T00:00:00",
+            "anchor_date": "1993-08-29T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 754
+                },
+                "percentage": {
+                    "False": 100.0
+                }
+            },
+            "index": 64,
+            "num_train_rows": 754,
+            "num_entities": 754,
+            "num_targets": 1
+        },
+        {
+            "min_date": "1993-07-30T00:00:00",
+            "max_date": "1993-08-29T00:00:00",
+            "anchor_date": "1993-07-30T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 652,
+                    "True": 1
+                },
+                "percentage": {
+                    "False": 99.8468606431853,
+                    "True": 0.1531393568147014
+                }
+            },
+            "index": 65,
+            "num_train_rows": 653,
+            "num_entities": 653,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1993-06-30T00:00:00",
+            "max_date": "1993-07-30T00:00:00",
+            "anchor_date": "1993-06-30T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "True": 1,
+                    "False": 553
+                },
+                "percentage": {
+                    "True": 0.18050541516245489,
+                    "False": 99.81949458483754
+                }
+            },
+            "index": 66,
+            "num_train_rows": 554,
+            "num_entities": 554,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1993-05-31T00:00:00",
+            "max_date": "1993-06-30T00:00:00",
+            "anchor_date": "1993-05-31T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 465,
+                    "True": 1
+                },
+                "percentage": {
+                    "False": 99.78540772532189,
+                    "True": 0.2145922746781116
+                }
+            },
+            "index": 67,
+            "num_train_rows": 466,
+            "num_entities": 466,
+            "num_targets": 2
+        },
+        {
+            "min_date": "1993-05-01T00:00:00",
+            "max_date": "1993-05-31T00:00:00",
+            "anchor_date": "1993-05-01T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 376
+                },
+                "percentage": {
+                    "False": 100.0
+                }
+            },
+            "index": 68,
+            "num_train_rows": 376,
+            "num_entities": 376,
+            "num_targets": 1
+        },
+        {
+            "min_date": "1993-04-01T00:00:00",
+            "max_date": "1993-05-01T00:00:00",
+            "anchor_date": "1993-04-01T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 301
+                },
+                "percentage": {
+                    "False": 100.0
+                }
+            },
+            "index": 69,
+            "num_train_rows": 301,
+            "num_entities": 301,
+            "num_targets": 1
+        },
+        {
+            "min_date": "1993-03-02T00:00:00",
+            "max_date": "1993-04-01T00:00:00",
+            "anchor_date": "1993-03-02T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 196
+                },
+                "percentage": {
+                    "False": 100.0
+                }
+            },
+            "index": 70,
+            "num_train_rows": 196,
+            "num_entities": 196,
+            "num_targets": 1
+        },
+        {
+            "min_date": "1993-01-31T00:00:00",
+            "max_date": "1993-03-02T00:00:00",
+            "anchor_date": "1993-01-31T00:00:00",
+            "target_distribution": {
+                "count": {
+                    "False": 96
+                },
+                "percentage": {
+                    "False": 100.0
+                }
+            },
+            "index": 71,
+            "num_train_rows": 96,
+            "num_entities": 96,
+            "num_targets": 1
+        }
+    ]
+}

@@ -1,0 +1,44 @@
+{
+  "data_compute": {
+    "type": "DISKGRAPH",
+    "data_root": "/mnt/localssd",
+    "pool_strategy": "singlehost",
+    "pool_min_ssd_idle_secs": 10,
+    "pool_max_ssd_idle_secs": 60,
+    "pool_max_dataplane_retention_secs": 120
+  },
+  "orchestration": {
+    "type": "custom",
+    "server_address": "localhost:7233"
+  },
+  "secrets": {
+    "backend": "aws_sm"
+  },
+  "storage": {
+    "data_plane_storage_root": "{kumo_home}",
+    "artifact_root": "{kumo_home}/artifacts"
+  },
+  "auth": {
+    "enabled": true,
+    "backend": "direct_connect",
+    "direct_connect": {
+      "login_method": "oidc",
+      "allowed_return_origins": [
+        "http://localhost:10000"
+      ],
+      "admin_emails": ["CHANGE_ME@example.com"],
+      "oidc": {
+        "issuer": "https://login.microsoftonline.com/43083d15-7273-40c1-b7db-39efd9ccc17a/v2.0",
+        "client_id": "4f5ff665-8846-4f84-8007-4847f57c8391",
+        "client_secret_ref": {
+          "secret_name": "devserver-oidc-client-secret",
+          "secret_key": "client_secret"
+        },
+        "groups_claim": "groups"
+      }
+    }
+  },
+  "logging": {
+    "backend": "stdout"
+  }
+}

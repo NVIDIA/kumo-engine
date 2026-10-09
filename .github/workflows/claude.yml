@@ -1,0 +1,389 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Claude Code
+
+"on":
+  repository_dispatch:
+    types: [claude-multi-repo]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  issues:
+    types: [opened, assigned]
+  pull_request_review:
+    types: [submitted]
+  # Automatic UI review: fires once when a PR is *opened* against a UI file
+  # (types is restricted to `opened`, so later commits/`synchronize` do NOT
+  # re-trigger it). Handled by the `auto-review-ui` job below; the review-ui
+  # skill itself filters to the reviewable ui/src and ui/tests paths.
+  # On demand afterwards: comment `/review-ui` on the PR to re-run it (handled
+  # via the `issue_comment` trigger above, also by the `auto-review-ui` job).
+  pull_request:
+    types: [opened]
+    paths:
+      - "ui/**"
+
+# Minimal default token scope for all jobs. Jobs that need more (claude,
+# auto-review-ui, report-status) declare their own `permissions` block, which
+# overrides this default. The detect-multi-repo and dispatch-to-repos jobs only
+# check out code / dispatch via a PAT, so read access to contents is enough.
+permissions:
+  contents: read
+
+jobs:
+  # Step 1: Detect if this is a multi-repo request
+  detect-multi-repo:
+    # Skip on automatic PR runs — those have no @claude request to route and are
+    # handled by the `auto-review-ui` job. The `claude` and `report-status` jobs
+    # `need` this one, so skipping it keeps them out of plain PR commits too.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    outputs:
+      is_multi_repo: ${{ steps.check.outputs.is_multi_repo }}
+      repos: ${{ steps.check.outputs.repos }}
+      original_request: ${{ steps.check.outputs.original_request }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 1
+
+      - name: Check for multi-repo request
+        id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: bash .github/scripts/check-multi-repo.sh
+
+  # Step 2: Dispatch to other repositories if multi-repo detected
+  dispatch-to-repos:
+    needs: detect-multi-repo
+    if: needs.detect-multi-repo.outputs.is_multi_repo == 'true'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        repo: ${{ fromJson(needs.detect-multi-repo.outputs.repos) }}
+    steps:
+      - name: Dispatch to ${{ matrix.repo.owner }}/${{ matrix.repo.name }}
+        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697  # v4.0.1
+        with:
+          token: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+          repository: ${{ matrix.repo.owner }}/${{ matrix.repo.name }}
+          event-type: claude-multi-repo
+          client-payload: |
+            {
+              "issue_number": "${{ github.event.issue.number || github.event.pull_request.number }}",
+              "comment_body": "${{ needs.detect-multi-repo.outputs.original_request }}",
+              "sender": "${{ github.event.sender.login }}",
+              "source_repo": "${{ github.repository }}",
+              "triggered_at": "${{ github.event.created_at }}"
+            }
+
+      - name: Log dispatch
+        run: |
+          echo "Dispatched claude-multi-repo event to ${{ matrix.repo.owner }}/${{ matrix.repo.name }}"
+
+  # Step 3: Run Claude (either for single-repo or as part of multi-repo dispatch)
+  claude:
+    needs: detect-multi-repo
+    # Run Claude if:
+    # 1. This is NOT a multi-repo request in the source repo (to avoid duplicate execution)
+    # 2. This IS a repository_dispatch event (triggered by multi-repo)
+    # 3. This is a normal single-repo trigger
+    # No `/review-ui` exclusion: this job fires on any comment containing
+    # `@claude`, regardless of order or whether `/review-ui` is also present.
+    # A bare `/review-ui` comment has no `@claude`, so it routes only to the
+    # review job; a mixed "@claude do X ... /review-ui" fires both. Neither
+    # request is ever silently dropped.
+    if: |
+      (needs.detect-multi-repo.outputs.is_multi_repo != 'true' && (
+        (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+        (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+        (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+      )) ||
+      github.event_name == 'repository_dispatch'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 1
+
+      - name: Add context for multi-repo execution
+        if: github.event_name == 'repository_dispatch'
+        run: |
+          echo "This is a multi-repo execution triggered from ${{ github.event.client_payload.source_repo }}"
+          echo "Original request: ${{ github.event.client_payload.comment_body }}"
+          echo "Triggered by: ${{ github.event.client_payload.sender }}"
+
+      - name: Run Claude Code
+        id: claude
+        uses: anthropics/claude-code-action@e2f03d97c9a5b5e8f08b144ff1444d3ee6d3fb49 # v1.0.124
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: "--model opus"
+          # For repository_dispatch events, pass the original comment as the prompt
+          prompt: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.comment_body || '' }}
+
+  # UI review. Runs automatically once when a PR is opened, and on demand
+  # whenever someone comments `/review-ui` on the PR. Runs the /review-ui skill
+  # in --dry-run mode, posts findings as a sticky comment, and fails the check
+  # only on [HIGH] violations. [MEDIUM] is advisory.
+  auto-review-ui:
+    # Trigger gating: the automatic path fires once per PR open (already
+    # path-restricted to ui/** and, for fork PRs, the token is read-only).
+    # The on-demand `/review-ui` comment path is the abuse vector — anyone who
+    # can comment could otherwise kick off repeated `--model opus` runs — so
+    # restrict it to trusted authors (OWNER/MEMBER/COLLABORATOR).
+    if: |
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       contains(github.event.comment.body, '/review-ui') &&
+       contains(fromJson('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+    # One in-flight review per PR; a newer trigger cancels the stale run so a
+    # burst of comments cannot stack up N concurrent opus runs.
+    concurrency:
+      group: ui-review-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # Minimal scopes: read to check out, pull-requests:write only to post the
+    # sticky findings comment. This job ingests untrusted PR content (diff,
+    # comments) — keep the grant tight to limit prompt-injection blast radius.
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+      FINDINGS_FILE: ui-review-findings.md
+      COMMENT_FILE: ui-review-comment.md
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+
+      # Resolve the PR head commit being reviewed. The auto path only fires on
+      # `opened`, so the sticky verdict can outlive the commit it graded — stamp
+      # the SHA into every comment so a stale verdict is obvious after new pushes.
+      # `pull_request` events carry head.sha directly; the `/review-ui` comment
+      # path does not, so fall back to querying the PR head via gh.
+      - name: Resolve reviewed commit SHA
+        id: sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          SHA="$EVENT_SHA"
+          if [[ -z "$SHA" ]]; then
+            SHA=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json headRefOid -q .headRefOid)
+          fi
+          echo "head_sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "commit_md=[\`${SHA:0:7}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${SHA})" >> "$GITHUB_OUTPUT"
+
+      # Immediate signal in the PR conversation that the review has started.
+      # Uses the same sticky header as the final result, so the result comment
+      # overwrites this one when the review finishes (~a few minutes).
+      - name: Post "review started" comment
+        uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3.0.2
+        with:
+          header: ui-review
+          number: ${{ env.PR_NUMBER }}
+          message: |
+            ## UI Review (`/review-ui`)
+
+            🔄 Running automated UI review on commit ${{ steps.sha.outputs.commit_md }}… results will replace this comment shortly.
+
+            <sub>[View run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})</sub>
+
+      - name: Run /review-ui (dry-run)
+        id: review
+        uses: anthropics/claude-code-action@e2f03d97c9a5b5e8f08b144ff1444d3ee6d3fb49 # v1.0.124
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ github.token }}
+          claude_args: "--model opus --max-turns 60"
+          prompt: |
+            Run /review-ui ${{ env.PR_NUMBER }} --dry-run
+
+            HEADLESS CI MODE:
+            - This is an automated dry-run. Do NOT post any review or comment to
+              GitHub — this workflow owns the PR comment. Skip Step 4 of the skill.
+            - Execute the skill's analysis (Steps 0-3) and print every finding to
+              stdout in the documented format, one finding per line:
+                [SEVERITY] **Rule Name** (file:line) explanation
+            - ALSO write the exact same findings, one per line, to the file
+              `${{ env.FINDINGS_FILE }}` at the repository root. Each line must
+              begin with `[HIGH]` or `[MEDIUM]` so the workflow can grade them.
+            - If there are zero violations, write the single line
+              `No violations found.` to `${{ env.FINDINGS_FILE }}`.
+            - Do not modify any source files.
+
+      - name: Grade findings and build comment
+        id: grade
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          # Resolve the commit this review actually graded so the sticky comment
+          # is not ambiguous after later pushes (the auto path only fires on
+          # `opened`). On `pull_request` the PR head SHA is on the event; on the
+          # `/review-ui` comment trigger it isn't, so fall back to the PR's
+          # current head via the API, then to github.sha.
+          REVIEWED_SHA="${{ github.event.pull_request.head.sha }}"
+          if [[ -z "$REVIEWED_SHA" ]]; then
+            REVIEWED_SHA="$(gh pr view "$PR_NUMBER" --json headRefOid -q .headRefOid 2>/dev/null || true)"
+          fi
+          REVIEWED_SHA="${REVIEWED_SHA:-${{ github.sha }}}"
+          COMMIT_LINE="<sub>Reviewed commit [\`${REVIEWED_SHA:0:7}\`](${{ github.server_url }}/${{ github.repository }}/commit/${REVIEWED_SHA})</sub>"
+
+          # Fail closed: if the review step itself did not succeed (error,
+          # timeout, cancellation), a missing findings file does NOT mean
+          # "no violations" — we simply have no result to grade. Post an
+          # errored comment and mark the step so the check fails, rather than
+          # silently passing green.
+          REVIEW_OUTCOME="${{ steps.review.outcome }}"
+          if [[ "$REVIEW_OUTCOME" != "success" ]]; then
+            echo "::error::review-ui step did not succeed (outcome=$REVIEW_OUTCOME); cannot grade findings."
+            echo "review_failed=true" >> "$GITHUB_OUTPUT"
+            echo "high_count=0" >> "$GITHUB_OUTPUT"
+            echo "medium_count=0" >> "$GITHUB_OUTPUT"
+            {
+              echo "## UI Review (\`/review-ui\`)"
+              echo ""
+              echo "⚠️ **The review did not complete** (step outcome: \`$REVIEW_OUTCOME\`)."
+              echo ""
+              echo "This is **not** a clean pass — the review-ui step errored, timed out, or was cancelled before producing findings. Re-run by commenting \`/review-ui\` on this PR, or inspect the run for details."
+              echo ""
+              echo "<sub>[View run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})</sub>"
+              echo ""
+              echo "$COMMIT_LINE"
+            } > "$COMMENT_FILE"
+            exit 0
+          fi
+
+          # Step succeeded but produced no findings file. The skill is told to
+          # write `No violations found.` for a clean run, so a missing file here
+          # means the model never emitted its result — we cannot tell "clean"
+          # from "never graded". Fail closed rather than assume no violations.
+          if [[ ! -f "$FINDINGS_FILE" ]]; then
+            echo "::error::review-ui succeeded but wrote no findings file; cannot distinguish a clean pass from a lost result."
+            echo "review_failed=true" >> "$GITHUB_OUTPUT"
+            echo "high_count=0" >> "$GITHUB_OUTPUT"
+            echo "medium_count=0" >> "$GITHUB_OUTPUT"
+            {
+              echo "## UI Review (\`/review-ui\`)"
+              echo ""
+              echo "⚠️ **The review did not produce a findings file** despite completing."
+              echo ""
+              echo "This is **not** a clean pass — no findings were emitted to grade. Re-run by commenting \`/review-ui\` on this PR, or inspect the run for details."
+              echo ""
+              echo "<sub>Reviewed commit: ${{ steps.sha.outputs.commit_md }} · [View run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})</sub>"
+            } > "$COMMENT_FILE"
+            exit 0
+          fi
+
+          HIGH_COUNT=$(grep -cE '^\s*\[HIGH\]' "$FINDINGS_FILE" || true)
+          MEDIUM_COUNT=$(grep -cE '^\s*\[MEDIUM\]' "$FINDINGS_FILE" || true)
+          HIGH_COUNT=${HIGH_COUNT:-0}
+          MEDIUM_COUNT=${MEDIUM_COUNT:-0}
+
+          echo "high_count=$HIGH_COUNT" >> "$GITHUB_OUTPUT"
+          echo "medium_count=$MEDIUM_COUNT" >> "$GITHUB_OUTPUT"
+          echo "Graded review-ui findings: HIGH=$HIGH_COUNT MEDIUM=$MEDIUM_COUNT"
+
+          {
+            echo "## UI Review (\`/review-ui\`)"
+            echo ""
+            if [[ "$HIGH_COUNT" -gt 0 ]]; then
+              echo "❌ **$HIGH_COUNT [HIGH]** violation(s) — must be fixed before merge."
+            else
+              echo "✅ No **[HIGH]** violations."
+            fi
+            if [[ "$MEDIUM_COUNT" -gt 0 ]]; then
+              echo ""
+              echo "ℹ️ **$MEDIUM_COUNT [MEDIUM]** violation(s) — informational, do not block merge."
+            fi
+            echo ""
+            echo "<details><summary>Findings</summary>"
+            echo ""
+            echo '```'
+            cat "$FINDINGS_FILE"
+            echo '```'
+            echo ""
+            echo "</details>"
+            echo ""
+            echo "_[HIGH] fails this check; [MEDIUM] is advisory. Per the UI Catalog + Presentation Migration Plan._"
+            echo ""
+            echo "$COMMIT_LINE"
+          } > "$COMMENT_FILE"
+
+      - name: Post sticky review comment
+        if: always()
+        uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3.0.2
+        with:
+          header: ui-review
+          number: ${{ env.PR_NUMBER }}
+          path: ${{ env.COMMENT_FILE }}
+
+      - name: Fail on review error or HIGH violations
+        if: always() && (steps.grade.outputs.review_failed == 'true' || steps.grade.outputs.high_count != '0')
+        run: |
+          if [[ "${{ steps.grade.outputs.review_failed }}" == "true" ]]; then
+            echo "::error::review-ui step did not complete; failing the check (no findings to grade)."
+          else
+            echo "::error::review-ui found ${{ steps.grade.outputs.high_count }} [HIGH] violation(s). See the PR comment."
+          fi
+          exit 1
+
+  # Step 4: Report multi-repo status back to source issue
+  report-status:
+    needs: [detect-multi-repo, dispatch-to-repos]
+    if: needs.detect-multi-repo.outputs.is_multi_repo == 'true' && always()
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Post status comment
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const repos = JSON.parse('${{ needs.detect-multi-repo.outputs.repos }}');
+            const repoList = repos.map(r => `- [\`${r.owner}/${r.name}\`](https://github.com/${r.owner}/${r.name})`).join('\n');
+
+            const comment = `### Multi-Repo Claude Request Dispatched
+
+            Your request has been dispatched to the following repositories:
+
+            ${repoList}
+
+            Claude will process your request in each repository independently and create separate PRs.
+
+            Check each repository for progress and results.
+
+            **Workflow Run:** [View run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            `;
+
+            const issue_number = ${{ github.event.issue.number || github.event.pull_request.number }};
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue_number,
+              body: comment
+            });

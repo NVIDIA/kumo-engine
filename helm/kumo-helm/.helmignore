@@ -1,0 +1,9 @@
+.git
+.github
+.gitignore
+*.swp
+*.bak
+*.tmp
+.worktrees/
+test/
+__pycache__/

@@ -1,0 +1,20 @@
+{
+    "model_training_job_id": "trainingjob-c69bea55dae94768a3560de5c2235710",
+    "graph_snapshot_id": "graph-3ac39e6f81cf7627df4c27d4d93ab498@aed77cab7e10bfee4904703ba9961333",
+    "explanations": false,
+    "filter_overrides": {
+        "entity_filter": "",
+        "target_filter": ""
+    },
+    "job_tags": {
+        "FINANCIAL_MULTILABEL_PRED_1781333580003": "FINANCIAL_MULTILABEL_PRED_1781333580003"
+    },
+    "predict_options": {
+        "num_workers": 1,
+        "num_classes_to_return": 2
+    },
+    "predictive_query": "PREDICT LIST_DISTINCT(TRANS_1781333580003.K_SYMBOL, 0, 30, days) CLASSIFY TOP 2 FOR EACH ACCOUNT_1781333580003.ACCOUNT_ID",
+    "user": "Momentic Test",
+    "graph_id": "3ac39e6f81cf7627df4c27d4d93ab498",
+    "anchor_time": "inferred"
+}

@@ -1,0 +1,158 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+platform: ""
+
+cluster:
+  context: ""
+  platformNamespace: kumo-system
+  # Labels for CPU workloads. Empty defaults to kumo.ai/node-pool=cpu on EKS/AKS
+  # and no selector on ARO. EKS/AKS stamp overrides onto their CPU pool; ARO
+  # validates them against existing capacity. GPU and universal labels are rejected.
+  cpuNodeSelector: {}
+  providers:
+    eks:
+      clusterName: ""
+      region: us-west-2
+      vpcId: ""
+      karpenterNodeRole: ""
+      karpenterControllerRoleArn: ""
+      ebsCsiRoleArn: ""
+      loadBalancerControllerRoleArn: ""
+      edgeCertificateArn: ""
+      edgeScheme: internet-facing
+      installDevicePlugin: true
+      # Cache nodes only: RAID0 gives local NVMe to kubelet; "" leaves it raw
+      # for a local-volume CSI driver. Quote the empty string.
+      cacheGpuInstanceStorePolicy: RAID0
+      cacheGpuRootVolumeGiB: 200
+      # m7a.2xlarge fits the control plane after system reservations. maxCpu=32
+      # preserves the previous four-node ceiling and leaves room for Karpenter node
+      # replacement; Kumo Deployment rollouts themselves use maxSurge=0.
+      cpuNodePool:
+        instanceTypes: [m7a.2xlarge]
+        maxCpu: "32"
+    aks:
+      clusterName: ""
+      resourceGroup: ""
+      applicationGatewayId: ""
+      cpuPoolName: kumocpu
+      cpuPoolInstanceType: Standard_D8as_v5
+      cachePoolNames:
+        - kgcsmall
+        - kgcmedium
+        - kgclarge
+      ephemeralPoolName: kumogeph
+      installDevicePlugin: true
+    aro:
+      clusterName: ""
+      resourceGroup: ""
+      operatorMode: dedicated
+      cacheMachineSets: []
+      ephemeralMachineSet: ""
+
+cloud:
+  mode: existing
+  postgres:
+    host: ""
+    port: 5432
+    resourceGroup: ""
+    stateDatabase: kumo
+    stateUser: kumo
+    temporalUser: temporal
+    temporalSecretName: temporal-postgres
+    temporalSecretKey: password
+    bootstrapTemporal: true
+    admin:
+      mode: ""
+      username: ""
+      database: postgres
+      # Workload identity the in-cluster Temporal bootstrap Job assumes to log
+      # in as admin.username. Same shape as stateDbIdentity: on EKS set
+      # eks.amazonaws.com/role-arn, on AKS/ARO azure.workload.identity/client-id.
+      annotations: {}
+  objectStorage:
+    uri: ""
+    region: ""
+
+images:
+  kumo:
+    registry: nvcr.io
+    repoPath: 1000161941370113/kumo-3
+    tag: 1.0.0-dev.0
+    pullSecretName: ""
+  temporal:
+    serverRepository: docker.io/temporalio/server
+    adminToolsRepository: docker.io/temporalio/admin-tools
+    tag: "1.31.2"
+    serverDigest: sha256:6b02e5176631c8d28f010735a3a73c69423a9adbcfad7e5dfe23836c904b7e26
+    adminToolsDigest: sha256:7e5820112475b3490f011b28d86ca9fd8348f1640b8dd04c62adb906e6b28cb2
+    pullSecretName: ""
+  # psql for the Temporal database bootstrap Job. No other stack image ships a
+  # PostgreSQL client, and the SQL relies on psql meta-commands.
+  postgresClient:
+    repository: docker.io/postgres
+    tag: 17.10-alpine
+    digest: sha256:af194ccf3e2d7fe367012c7b88ce8b816c5c889b18a5b316799a1f0d7eac746a
+    pullSecretName: ""
+  nvidiaDevicePlugin:
+    repository: nvcr.io/nvidia/k8s-device-plugin
+    tag: v0.19.0
+    digest: sha256:7bf6ab18378be099493c9fe50f9cd2d559e0d81f17742d7ac188365408579d5d
+  karpenter:
+    repository: public.ecr.aws/karpenter/controller
+    tag: "1.12.0"
+    digest: sha256:8128bc8cdd0cc8ca2d2cf68ec61033eceb8cfb24834a08ab278784924013cfd0
+  awsLoadBalancerController:
+    repository: public.ecr.aws/eks/aws-load-balancer-controller
+    tag: v2.14.0@sha256:58d83491b3eb25080e478bdd9a245b773fd9ceb29d9182fa4b198dee5ff31d22
+
+gpu:
+  cacheTiers:
+    - {name: small, instanceType: "", ssdGiB: 256, gpuCount: 1}
+    - {name: medium, instanceType: "", ssdGiB: 512, gpuCount: 1}
+    - {name: large, instanceType: "", ssdGiB: 1024, gpuCount: 1}
+  ephemeral:
+    instanceType: ""
+  maxNodes: 2
+
+storage:
+  # StorageClass used to build and serve DiskGraph indexes; local storage avoids
+  # cloud-disk throughput limits.
+  diskgraph:
+    storageClass:
+      # Empty keeps the class each platform names today: ebs-gp3-xfs on EKS,
+      # managed-csi-xfs on Azure.
+      name: ""
+      # true creates and owns the class; false adopts an existing one. Adopted
+      # classes must bind WaitForFirstConsumer, format xfs, and reclaim Delete.
+      create: true
+    # required consults CSIStorageCapacity and needs a driver that publishes it;
+    # advisory is appropriate for dynamically provisioned cloud disks.
+    capacityTracking: advisory
+
+stateDbIdentity:
+  controlAnnotations: {}
+  workerAnnotations: {}
+  controllerAnnotations: {}
+
+temporal:
+  enabled: true
+  releaseName: temporal
+  namespace: temporal
+  externalAddress: ""
+
+tenant:
+  name: ""
+  releaseName: ""
+  namespace: ""
+  exposureHost: ""
+  edgeTls:
+    secretName: kumo-edge-tls
+    certificateFile: ""
+    privateKeyFile: ""
+  tenantSecret:
+    name: ""
+    key: ""
+  extraValues: {}

@@ -1,0 +1,174 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: "setup"
+description: "Install dependencies"
+inputs:
+  python-version:
+    required: false
+    default: "3.14"
+  cuda-version:
+    description: 'Runtime selector: cpu or cu130 (GPU development requires CUDA 13)'
+    required: false
+    default: "cpu"
+  kumo-install-options:
+    description: 'Space-separated extras to sync for the root `kumo` package, e.g. "full test".'
+    required: false
+    default: "full test"
+  os-version:
+    required: false
+    default: "22.04"
+  github_token:
+    description: 'Token for the checkout. Defaults to the workflow token.'
+    required: false
+    default: ''
+  ref:
+    description: "The branch, tag or SHA to checkout. Defaults to the triggering SHA when used from this repository's own workflows."
+    required: false
+    default: ''
+  diskgraph-wheel-artifact:
+    description: 'Artifact holding a prebuilt diskgraph wheel. Unset: use a cached wheel, else build from source.'
+    required: false
+    default: ''
+  install-graphviz:
+    description: 'Install the graphviz `dot` binary (only test/graph/ renders graphs).'
+    required: false
+    default: 'false'
+
+
+runs:
+  using: "composite"
+
+  steps:
+    - name: Set working directory
+      id: working-directory
+      run: |
+        # This repository's own workflows run the action from their workspace
+        # checkout; other repositories run a copy downloaded outside it.
+        if [[ "$GITHUB_ACTION_PATH" == "$GITHUB_WORKSPACE"/* ]]; then
+          echo working-directory='' >> $GITHUB_OUTPUT
+        else
+          # If called from an external repository, clone it into `src/kumo`,
+          # so that this step doesn't contaminate the checkout of the external
+          # repository.
+          echo working-directory='src/kumo' >> $GITHUB_OUTPUT
+        fi
+      shell: bash
+
+    - name: Checkout Kumo (called from ${{ github.repository }})
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      with:
+        repository: ${{ steps.working-directory.outputs.working-directory == '' && github.repository || 'kumo-ai/kumo' }}
+        path: ${{ steps.working-directory.outputs.working-directory }}
+        token: ${{ inputs.github_token || github.token }}
+        persist-credentials: false
+        ref: ${{ inputs.ref || (steps.working-directory.outputs.working-directory == '' && github.sha) || '' }}
+
+    - name: Set up Python ${{ inputs.python-version }}
+      uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      with:
+        python-version: ${{ inputs.python-version }}
+        activate-environment: true
+        # Persist uv's download cache across runs via the GitHub Actions cache
+        # service (ephemeral runners never reuse local disk). This turns the
+        # cache-hit path into a single tarball fetch instead of hundreds of
+        # requests to pypi.org, which is the main source of the
+        # intermittent connect-timeout install failures. Key on
+        # the files that determine the resolved dependency set.
+        enable-cache: true
+        cache-dependency-glob: |
+          pyproject.toml
+          packages/kumo-api/pyproject.toml
+          packages/kumo-pql/pyproject.toml
+          setup.py
+          uv.lock
+
+    - name: Install graphviz
+      if: inputs.install-graphviz == 'true' && steps.working-directory.outputs.working-directory == ''
+      uses: ./.github/actions/apt-install
+      with:
+        packages: graphviz
+
+    - name: Install graphviz (called from ${{ github.repository }})
+      if: inputs.install-graphviz == 'true' && steps.working-directory.outputs.working-directory != ''
+      uses: ./src/kumo/.github/actions/apt-install
+      with:
+        packages: graphviz
+
+    - name: Download diskgraph wheel
+      if: inputs.diskgraph-wheel-artifact != ''
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      with:
+        name: ${{ inputs.diskgraph-wheel-artifact }}
+        path: /tmp/diskgraph-wheel
+
+    - name: Compute diskgraph wheel cache key
+      id: diskgraph-wheel-key
+      if: inputs.diskgraph-wheel-artifact == '' && steps.working-directory.outputs.working-directory == '' && runner.environment == 'github-hosted'
+      working-directory: ${{ steps.working-directory.outputs.working-directory }}
+      run: echo "key=$(./scripts/diskgraph wheel-key)" >> "$GITHUB_OUTPUT"
+      shell: bash
+
+    - name: Restore diskgraph wheel
+      id: diskgraph-wheel-cache
+      if: steps.diskgraph-wheel-key.outputs.key != ''
+      uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: /tmp/diskgraph-wheel
+        key: ${{ steps.diskgraph-wheel-key.outputs.key }}
+
+    - name: Install diskgraph
+      working-directory: ${{ steps.working-directory.outputs.working-directory }}
+      run: |
+        echo ::group::Install diskgraph
+        ./scripts/diskgraph install --python "$(command -v python)" -f ${DISKGRAPH_WHEEL_DIR:+--wheel "$DISKGRAPH_WHEEL_DIR"}
+        echo ::endgroup::
+      env:
+        DISKGRAPH_WHEEL_DIR: ${{ (inputs.diskgraph-wheel-artifact != '' || steps.diskgraph-wheel-cache.outputs.cache-hit == 'true') && '/tmp/diskgraph-wheel' || '' }}
+      shell: bash
+
+    - name: Install Kumo
+      working-directory: ${{ steps.working-directory.outputs.working-directory }}
+      run: |
+        echo ::group::Install Kumo
+        # diskgraph was already installed above from a prebuilt/cached wheel;
+        # excluded here so `uv sync` doesn't rebuild it from source.
+        EXTRA_ARGS=(--extra "${CUDA}")
+        for extra in ${{ inputs.kumo-install-options }}; do
+          EXTRA_ARGS+=(--extra "$extra")
+        done
+        # --inexact: diskgraph was just installed above from a non-workspace
+        # wheel/sdist via `uv pip install`, not as the lock's editable
+        # workspace entry. Without --inexact, `uv sync`'s default exact-sync
+        # prune removes it as "extraneous" even with --no-install-package,
+        # which only skips (re)installing, not the removal pass.
+        #
+        # Not --all-packages: kumo-api/kumo-core/kumo-gcs/kumo-s3/
+        # kumo-snowflake/kumo-bigquery/kumo-databricks are all real root
+        # dependencies now, so a plain sync already installs them. Pulling
+        # in every workspace member would also install kumo-engine, which
+        # has its own install/build/uninstall isolation test later in the
+        # pytest matrix ("packages" job) that assumes it isn't already
+        # present.
+        uv sync --locked --inexact --no-install-package diskgraph "${EXTRA_ARGS[@]}"
+
+        # kumo-sdk (the public SDK, "kumoai-studio") is a workspace member
+        # but deliberately not a root dependency; install it separately so
+        # test/api_contract/test_sdk_api_source_contract.py can import it.
+        uv pip install -q --no-deps -e packages/kumo-sdk
+        python - <<'PY'
+        import os
+
+        import faiss
+
+        if os.environ['CUDA'] != 'cpu':
+            assert hasattr(faiss, 'StandardGpuResources')
+        print("Faiss matches the selected CUDA runtime")
+        PY
+        echo ::endgroup::
+      env:
+        # Selects both the Torch backend and setup.py's faiss-cpu/faiss-gpu
+        # choice for kumo-core.
+        CUDA: ${{ inputs.cuda-version }}
+      shell: bash

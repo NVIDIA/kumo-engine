@@ -1,0 +1,20 @@
+{
+  "data_compute": {
+    "type": "DISKGRAPH"
+  },
+  "orchestration": {
+    "type": "custom",
+    "server_address": "localhost:7233"
+  },
+  "secrets": {
+    "backend": "k8s_mount",
+    "mount_path": "rest/devserver/secrets"
+  },
+  "storage": {
+    "data_plane_storage_root": "abfss://test-container@kumotestdataplane.dfs.core.windows.net/devserver2",
+    "artifact_root": "abfss://kumopublic@kumopublicdatasets.dfs.core.windows.net/"
+  },
+  "logging": {
+    "backend": "stdout"
+  }
+}

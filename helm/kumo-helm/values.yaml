@@ -1,0 +1,505 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# =============================================================================
+# kumo — thin DiskGraph tenant chart
+# =============================================================================
+# Per-tenant workloads only (controlplane + dataplane). Cluster-wide prerequisites
+# (the independent kumo-temporal release, the StorageClass, object storage,
+# optional Temporal client-mTLS, node pools, workload identity) are NOT
+# installed by this chart. Use the matching kumo-stack installation guide.
+#
+# You MUST set: global.tenant, image.tag, kumoConfig.storage.dataBucket,
+# kumoConfig.diskgraph.nodeTypes/storageClass, temporal.address,
+# postgres.*, and either the control/worker/controller workload-identity
+# annotations or, for GCS when federation is unavailable, kumoConfig.gsaKey.
+# Everything else has working defaults; advanced deploy-config tweaks go in
+# kumoConfig.extra.
+# =============================================================================
+
+# ── Identity ──────────────────────────────────────────────────────────────────
+global:
+  tenant: my-tenant        # REQUIRED (set this) — instance identity, pod/resource
+                           # labels, and the default Temporal namespace. Does NOT name any k8s
+                           # namespace — the chart installs into .Release.Namespace (helm -n).
+  podLabels: {}            # Raw labels added to every workload and hook pod. The Azure profile
+                           # adds its identity opt-in only to identity-bearing workloads.
+                           # These DO reach the pods the pool controller creates at runtime:
+                           # the chart passes them through POOL_WORKER_POD_LABELS_JSON.
+  podAnnotations: {}       # Raw annotations added to every workload and hook pod. Use this for
+                           # mesh opt-in/out or scrape hints; the chart adds none of its own
+                           # beyond a config checksum.
+                           # NOTE: unlike podLabels, these do NOT reach the GPU/CPU pods the
+                           # pool controller creates at runtime — the controller has no
+                           # annotation passthrough. If you need an annotation on those pods
+                           # (a mesh exclusion, say), set it with a cluster-level mutating
+                           # webhook or a namespace default instead.
+  # Baseline hardening, merged onto every pod and container. Lives beside
+  # podLabels/podAnnotations because it is the same kind of knob: raw
+  # passthrough the cluster operator owns. Service-mesh and network policy are
+  # deliberately not owned here — see examples/networkpolicy.yaml, and the
+  # kumo-edge chart for ingress.
+  # Defaults satisfy Pod Security Admission `restricted`, matching what the pool
+  # controller stamps on the pods it creates at runtime, so chart-rendered and
+  # runtime pods clear the same bar.
+  #
+  # runAsNonRoot is an ASSERTION the kubelet verifies against the image's USER,
+  # which must be numeric. Kumo images only became numeric in the change that
+  # added this default — pin an image tag from that commit or later, or drop
+  # runAsNonRoot here. No runAsUser: OpenShift assigns a UID from the
+  # namespace's own range and rejects a pinned one.
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    runAsNonRoot: true
+    capabilities:
+      drop: [ALL]
+
+# ── Image ─────────────────────────────────────────────────────────────────────
+# All Kumo images use <registry>/<repoPath>/<image>:<tag>.
+# Change registry and repoPath only when mirroring; set tag to the Kumo release tag.
+image:
+  registry: nvcr.io
+  repoPath: 1000161941370113/kumo-3
+  tag: replace-me
+  pullPolicy: IfNotPresent
+  pullSecretName: ""        # existing dockerconfigjson Secret; added as imagePullSecrets when set
+
+# ── Kumo deploy config (DEPLOY_ENV_CONFIG_JSON) ──────────────────────────────
+# The structured config consumed by ALL pods via deploy_env(), emitted into the shared
+# `kumo-config` ConfigMap. Baked DiskGraph-mode constants + assembled sections + the `extra`
+# escape hatch is deep-merged over the assembled deploy config.
+kumoConfig:
+  storage:
+    dataBucket: s3://REPLACE_DATA_BUCKET/disk-graph  # REQUIRED — chart appends /<global.tenant>
+    region: ""                                    # AWS_REGION for the S3 client; emitted for s3:// only
+  # ── Ambient S3: S3 *source* connectors via the pod identity (opt-in) ────────
+  # Lets users create S3 connectors that read customer data with the pods' own
+  # workload identity (no per-connector credentials). Opt-in for security:
+  # disabled → creating an S3 connector fails with NoIdentityValidatesTargetError.
+  # With auth disabled, startup assigns the ambient identity to the canonical
+  # Default group. With auth enabled, an admin assigns it to each allowed
+  # project group. In both cases, grant the role read on the source buckets —
+  # Grant the workload role read access to every approved source bucket.
+  ambientS3:
+    enabled: false
+    # The allowlisted role ARN defaults to the serviceAccount
+    # eks.amazonaws.com/role-arn annotation (write the ARN once); set this only
+    # to allowlist different/additional roles.
+    approvedRoleArns: []
+  # ── Static GCP Application Default Credentials (ADC) ───────────────────────
+  # Fallback for GCS installations where workload identity federation is not
+  # available. Create the Secret yourself in the release namespace; Helm never
+  # accepts or renders the service-account JSON. The chart mounts only `key`,
+  # read-only, at /var/run/secrets/kumo/gcp/application-credentials.json and
+  # sets GOOGLE_APPLICATION_CREDENTIALS for all five backend Deployments and
+  # every runtime-created daemon/cache-activity/ephemeral-activity pod. UI and
+  # hook Jobs do not receive it.
+  #
+  # When existingSecret is set, clear GCP workload-identity annotations from
+  # serviceAccounts.control/worker/controller. The chart rejects both identity
+  # mechanisms together so a stale release value cannot re-enable federation.
+  # After enabling or changing this on an existing release, recreate current
+  # runtime pool daemon Deployments so the controller provisions them with the
+  # new mount. Restart consumers after rotating Secret data so already-created
+  # ADC clients reload the credential.
+  gsaKey:
+    existingSecret: ""            # pre-existing Secret; empty preserves workload identity behavior
+    key: credentials.json          # Secret data key containing service-account JSON
+    projectId: ""                  # optional GOOGLE_CLOUD_PROJECT override
+  diskgraph:
+    # Minimum soft open-file limit inherited by runtime pool workers and their
+    # training/prediction children. Helm cannot raise the container runtime's
+    # hard limit; it must be at least this value or the worker exits with an
+    # actionable startup error.
+    poolWorkerNofileSoftLimit: 65535
+    # Optional CPU/memory requests/limits for dynamically created pool pods.
+    # Groups: daemon, activityDefaults, trainingOverrides, predictionOverrides.
+    # activityDefaults applies to all activities; type-specific overrides win per field.
+    # Omitted fields preserve legacy behavior: daemon requests 1 CPU / 2Gi with
+    # no limits; activity CPU/memory unset. GPU allocation is unchanged.
+    # Example: {activityDefaults: {requests: {cpu: "4", memory: "16Gi"}, limits: {memory: "32Gi"}}}
+    # Explicit requests must be >= 1 CPU / 16Gi memory (Helm validation only).
+    # Omitted requests retain legacy behavior. No workload-sizing cap on limits.
+    # See docs/pool-resources.md for inheritance, rollout and capacity guidance.
+    poolResources: {}
+    # Extra Kubernetes tolerations for ALL runtime pool pods (daemon and
+    # cache/ephemeral activities) and their startup canaries. Additive: built-in
+    # dedicated=diskgraph-<global.tenant>:NoSchedule (cache) and
+    # dedicated=diskgraph-eph-<global.tenant>:NoSchedule (ephemeral) remain.
+    # Built-ins have no effect on nodes without matching taints. Omitted, null,
+    # and [] all mean no extras; selectors/affinity and node taints are unchanged.
+    # Example: [{key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}]
+    # Unlike nodeTargeting.tolerations, this configures dynamically created pods.
+    # MAINTENANCE ONLY: stop submissions and finish/cancel jobs before changing.
+    # Changed effective cache extras delete old daemons, their activity Jobs,
+    # and cache PVCs. Ensure snapshots can be restored/rebuilt. See
+    # docs/pool-tolerations.md for rollout and interrupted-cleanup recovery.
+    poolExtraTolerations: []
+    # Maximum time a snapshot remains cached on local SSD after its final lease
+    # is released. Must be at least 300 seconds; shorter windows can evict a
+    # snapshot between workflow stages. The non-Helm application default
+    # remains 24 hours.
+    snapshotCacheTtlSeconds: 3600
+    # REQUIRED — you MUST set nodeTypes to match YOUR cluster. {instance-type: {ssd_gib[, gpu_count]}} —
+    # the pool controller picks the smallest tier that fits a snapshot and schedules the daemon by
+    # labels kumo.ai/diskgraph-ssd-size=<GiB> AND kumo.ai/diskgraph-gpu-count=<n>
+    # (cloud-/autoscaler-neutral). KEYS are opaque platform SKUs; your cache NodePools must carry BOTH
+    # matching labels. Values mirror the app's
+    # DiskgraphNodeType (ssd_gib; gpu_count, app default 1 — set it for multi-GPU SKUs).
+    # Example: g5.8xlarge: { ssd_gib: 800 }
+    # There is NO default tier — Helm deep-merges maps, so a non-empty default would survive even
+    # when you supply your own tiers and create a phantom unsatisfiable cache canary.
+    # The StorageClass driver's node DaemonSet must register the driver in CSINode on every eligible
+    # node in each matching cache pool (conformance check CSI_NODE_COVERAGE).
+    nodeTypes: {}
+    # TT-NG (training-table next-gen) DiskGraph pipeline — the default mode going
+    # forward (env KUMO_DISKGRAPH_TT_NG_ENABLED on every workload incl. runtime
+    # pool pods). Set false to fall back to the
+    # legacy path. NOTE: changing this on a live tenant does NOT
+    # reach already-running pool daemons (env is read at container start) — tear
+    # down the pool daemon Deployment + its PVC so the controller re-provisions.
+    ttNg: true
+    dataRoot: /mnt/localssd          # cache-volume mount the DiskGraph index lives on; also the mount
+                                     # path of the workloads.databackend.ingestScratch staging volume
+    storageClass: REPLACE_STORAGE_CLASS  # POOL_STORAGE_CLASS_NAME — a WFFC CSI class for cache PVCs
+                                         # (controller-only env, not JSON). The stack uses
+                                         # EBS CSI on EKS and Azure Disk CSI on AKS/ARO.
+    # required expects CSIStorageCapacity objects for proactive capacity checks.
+    # advisory permits platforms whose WFFC provisioner has no capacity-tracking
+    # objects; the bind/scheduling canary remains the authoritative validation.
+    storageCapacityTracking: required  # required | advisory
+  # Escape hatch: a partial config (snake_case, mirroring RawDeployConfig — kumo:
+  # service_framework/_raw_deploy_config.py) DEEP-MERGED over everything the chart assembles.
+  # Override a baked default (e.g. {logging: {backend: cloudwatch}}) or add forward fields
+  # (e.g. {data_compute: {pool_ssd_max_utilization: 0.9}}) without editing the chart.
+  # If this overrides data_compute.k8s_pool.pool_diskgraph_node_types, the conformance
+  # cache selectors follow those final effective tiers.
+  extra: {}
+
+# ── Temporal (self-hosted) ────────────────────────────────────────────────────
+# The chart connects to a PRE-EXISTING self-hosted Temporal; it does NOT install one.
+# In encrypted mode, set clientMtlsSecret when the Temporal frontend requires
+# application-level client mTLS; otherwise the explicit in-cluster endpoint must
+# be protected by the verified mesh. Plaintext mode ignores this value. The
+# Secret must contain tls.crt/tls.key/ca.crt.
+# The kumo-stack installer installs the supported Temporal release and sets this
+# address and namespace.
+temporal:
+  address: temporal-frontend.temporal.svc   # REQUIRED — gRPC host; optional port (default 7233)
+  namespace: ""                             # Temporal namespace; defaults to global.tenant
+  clientMtlsSecret: ""                      # optional pre-existing client-mTLS Secret
+  registerNamespace: true                   # pre-install hook Job registers the namespace (BYOC)
+
+# ── Postgres State DB (required) ─────────────────────────────────────────────
+# One cloud workload-identity principal owns the StateDB schema and data. Every
+# service creates or validates the current schema under a Postgres advisory
+# lock before opening its pool. Authenticate with a cloud workload identity
+# (authMode) or a password Secret (dsnSecret) — see below.
+# Set EXACTLY ONE of authMode (passwordless cloud identity) or dsnSecret
+# (password auth). The application accepts exactly one connection source and
+# rejects a config that supplies both.
+postgres:
+  authMode: ""                     # aws_iam | azure_entra — leave empty when using dsnSecret
+  host: REPLACE_POSTGRES_HOST      # REQUIRED for authMode; ignored for dsnSecret
+  port: 5432
+  database: kumo
+  username: kumo                   # one DDL+DML role used by control + worker identities
+  region: ""                       # REQUIRED for aws_iam; unused for azure_entra
+  # Password auth. The Secret is mounted at the chart's secrets mount path and
+  # read by the app's file secret provider; `key` is BOTH the Secret key and the
+  # name the app resolves the connection under, so the two cannot drift.
+  # AWS RDS and publicly-trusted certificates need nothing extra; for any other
+  # CA use caSecret below. The expected payload and the CA recipes are in
+  # kumo-stack/README.md, "StateDB password authentication".
+  dsnSecret:
+    secretName: ""                 # pre-existing Secret in the release namespace
+    key: statedb
+  # CA bundle for tls.sslrootcert when the server's CA is not already trusted by
+  # the image — Google Cloud SQL (per-instance CA), self-hosted, internal PKI.
+  # `key` selects which key of YOUR Secret holds the bundle; the chart always
+  # mounts it at the fixed path below, so set tls.sslrootcert to exactly:
+  #
+  #     /var/run/secrets/kumo/ca/ca.pem
+  #
+  # Kept separate from dsnSecret so the certificate can rotate without rewriting
+  # the credential — Cloud SQL rotates its per-instance CA.
+  caSecret:
+    secretName: ""
+    key: ca.pem                    # e.g. "ca.crt" for a cert-manager Secret
+
+# ── Install preflight (pre-install/pre-upgrade hook) ────────────────────────
+# Enforces the in-cluster subset of the conformance contract BEFORE the release
+# installs, so a missing prerequisite fails with a specific error instead of
+# crash-looping pods. It verifies optional Temporal mTLS material and TCP
+# reachability of Temporal and Postgres. It also verifies that the selected
+# baked AWS RDS bundle or Azure system trust store is readable.
+# It cannot cover operator-side checks (StorageClass, node pools, object storage,
+# workload identity) — run conformance/check.sh prereq for the full probe.
+#
+# Requirements/caveats:
+#   • Namespaced RBAC only (get on the optional Temporal Secret) — but K8s
+#     escalation prevention means the identity RUNNING helm must itself be able
+#     to read those Secrets (or hold escalate/bind) in the release namespace.
+#   • If NetworkPolicies restrict egress for pods that don't carry your app
+#     labels, allow the preflight pod (label via global.podLabels) or disable.
+#   • On cold clusters (scale-from-zero nodes, first image pull) pass
+#     `--timeout 15m` to helm — the hook waits on scheduling + pull.
+# Disable for a degraded install path with --set preflight.enabled=false (or
+# --no-hooks, which also skips the Temporal-namespace hook).
+preflight:
+  enabled: true
+
+# ── Authentication (opt-in) ──────────────────────────────────────────────────
+# Default OFF: the API is open (DISABLE_AUTH) — dev / trusted networks only. The
+# SDK/programmatic API always uses Kumo-owned API keys and is unaffected by this.
+# Set auth.enabled=true to require interactive login. Two methods (auth.method):
+#   • oidc     — BYO OpenID Connect IdP. Server-side auth-code + PKCE; the login page is
+#                YOUR IdP's hosted page (the UI redirects to it).
+#   • password — built-in email + password login (no external IdP); the first admin is
+#                bootstrapped from auth.adminEmails via a temporary-password Secret.
+# Both methods use session cookies. This chart creates NO auth Secrets — you provide them.
+# The platform installation guides use password authentication by default.
+auth:
+  enabled: false                 # false → open API (DISABLE_AUTH); true → require login
+  method: oidc                   # "oidc" (BYO-IDP) | "password" (email + password)
+  adminEmails: []                # admin emails (password: seeded as admins at startup; oidc: one-shot bootstrap of the first to log in while no admin exists)
+  allowedReturnOrigins: []       # extra browser origins allowed as post-login return targets (besides same-origin)
+
+  # method: oidc — required when method=oidc
+  oidc:
+    issuerUrl: ""                # e.g. https://idp.acme.com/realms/acme
+    clientId: ""                 # web client id (must equal the id_token audience)
+    groupsClaim: groups          # id_token claim carrying the user's groups (mapped to Kumo groups at runtime)
+    clientSecret:                # pre-existing Secret (release namespace) holding the OIDC client secret
+      secretName: ""             #   k8s Secret name
+      secretKey: client-secret   #   key within it
+
+  # method: password — required when method=password
+  password:
+    temporaryPassword:           # pre-existing Secret (release namespace) holding the bootstrap admin temp password
+      secretName: ""
+      secretKey: password
+  # (Production session/credential encryption + peppers come from tenantSecretKey below.)
+
+# ── Deployment secret key ────────────────────────────────────────────────────
+# One operator-provided secret that the app derives THREE things from (all default, in-app, to
+# secret kumo-secret-key): the API-key pepper, password-reset token pepper, and Fernet key.
+# REQUIRED in prod. Non-prod stages otherwise use built-in insecure development values.
+# The chart delivers this one value (as env) to both API servers (kumo-rest + kumo-api). An explicit
+# value remains authoritative for API-key verification in every stage so upgrades preserve hashes.
+# Provide a Secret whose value is a VALID FERNET KEY (32-byte url-safe base64 — it's passed to
+# Fernet(); a hex string is rejected) and STABLE (changing it invalidates existing API-key hashes):
+#   python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
+# The chart fails a prod render when this is missing.
+tenantSecretKey:
+  secretName: ""                 # k8s Secret (release namespace) holding the key material
+  secretKey: ""                  # key within that Secret
+
+# ── Node targeting (applied to all workloads and install hooks) ──────────────
+nodeTargeting:
+  # Empty by default so the chart schedules on ordinary worker nodes. Set this
+  # only when Kumo has a dedicated CPU node pool.
+  nodeSelector: {}
+  # For example, if your Kumo nodes carry a dedicated taint:
+  #   - { key: dedicated, operator: Equal, value: kumo-default, effect: NoSchedule }
+  tolerations: []
+
+# ── ServiceAccounts ────────────────────────────────────────────────────────────────────────
+# The register-namespace Helm hook runs as the namespace `default` SA because it
+# needs no cloud identity.
+#
+# Role identities have fixed names kumo-frontend/control/worker/controller.
+#
+# Annotate the roles that need cloud access for your platform:
+#   AWS   eks.amazonaws.com/role-arn: arn:aws:iam::<acct>:role/<role>
+#   GKE   iam.gke.io/gcp-service-account: <gsa>@<project>.iam.gserviceaccount.com
+#   Azure azure.workload.identity/client-id: <client-id>
+# For GCS without federation, leave the GCP annotations empty and configure
+# kumoConfig.gsaKey instead. Static GCP credentials do not replace workload
+# identity for s3:// or abfss:// object storage.
+# The worker identity is also used by pool-controller-created daemon/activity
+# pods. Token policy is fixed by role: worker/controller retain Kubernetes API
+# access for the namespaced workload-manager Role; frontend/control do not.
+serviceAccounts:
+  control:
+    annotations: {}
+    podLabels: {}
+  worker:
+    annotations: {}
+    podLabels: {}
+  controller:
+    annotations: {}
+    podLabels: {}
+
+# ── Workloads ────────────────────────────────────────────────────────────────
+workloads:
+  rest:
+    replicas: 1
+    resources:
+      requests: { cpu: "1", memory: 4Gi }
+      limits:   { cpu: "2", memory: 8Gi }
+    # Extra env vars injected into the kumo-rest container (rendered into the
+    # kumo-config ConfigMap). Escape hatch for tunables without a dedicated value.
+    # The fixed UI frontend contract sets FORWARDED_ALLOW_IPS on REST/API,
+    # overriding this escape hatch, and disables the REST-only source-IP password
+    # limiter because customer edges may collapse all browsers onto one peer.
+    # The per-email limiter remains.
+    # Connector source-column and sample-row workflows share one Temporal
+    # execution deadline, including asynchronous sample-row reads. Its default
+    # is 120s. The workflow execution deadline returns structured, nonretryable
+    # guidance; activity, transport, and unrelated failures remain generic.
+    # Keep the fronting proxy read timeout above this deadline for synchronous
+    # routes.
+    # Example - use a 50s connector deadline behind a 60s proxy timeout:
+    #   extraEnv:
+    #     INTERACTIVE_CONNECTOR_READ_TIMEOUT_SECONDS: "50"
+    extraEnv: {}
+  api:
+    replicas: 1
+    resources:
+      requests: { cpu: "1", memory: 1G }
+      limits:   { cpu: "1", memory: 2Gi }
+  ui:
+    replicas: 1
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits:   { cpu: 100m, memory: 128Mi }
+  databackend:
+    replicas: 1
+    resources:
+      requests: { cpu: "1", memory: 4Gi, ephemeral-storage: 10Gi }
+      limits:   { cpu: 1500m, memory: 5Gi }
+    # Ingest staging scratch volume (kumo-ai/kumo#30091). During ingest the databackend
+    # stages bulk source data in Python's tempdir (/tmp by default; with this volume
+    # enabled the chart routes TMPDIR to {kumoConfig.diskgraph.dataRoot}/tmp on it) and
+    # under DiskGraph's local ingest root ({dataRoot}/local-ingest); staged bytes scale
+    # with source parquet size x data_compute.ingest_space_multiplier. The authoritative
+    # default is defined by DiskgraphConfig in service_framework/_raw_deploy_config.py.
+    # Without a backing volume those writes land on the container overlay, i.e. the
+    # NODE's root disk (~20 GiB on stock EKS), and one large ingest gets the
+    # tenant-shared worker evicted for ephemeral-storage mid-job; the UI masks that as
+    # "Your job became unresponsive during execution. Please retry", which cannot help.
+    ingestScratch:
+      enabled: true
+      # emptyDir (default): pod-lifetime scratch, still on the node root disk but
+      # scheduler-accounted together with resources.requests.ephemeral-storage above;
+      # set sizeLimit to cap it so overuse evicts only this pod at a known bound.
+      # ephemeral: a generic ephemeral PVC (requires storageClass + size). Use a
+      # WFFC CSI provisioner so staging lives on a PVC instead of the root disk.
+      # A provider-managed CSI class keeps this off the root disk; the cloud
+      # profiles use EBS or Azure Disk
+      # (often the same class as kumoConfig.diskgraph.storageClass). With ephemeral,
+      # staging moves to the PVC, so resources.requests.ephemeral-storage above can
+      # be lowered from its 10Gi default.
+      type: emptyDir     # emptyDir | ephemeral
+      sizeLimit: ""      # emptyDir only, e.g. 50Gi; empty = no cap
+      storageClass: ""   # ephemeral only, e.g. ebs-gp3-xfs; required for ephemeral
+      size: ""           # ephemeral only, the PVC request, e.g. 200Gi; required for ephemeral
+      fsGroup: 999       # ephemeral only: stock images use gid 999 and CSI volumes are
+                         # commonly root-owned. Set explicit null to let OpenShift or
+                         # another arbitrary-UID platform select the group.
+                         # emptyDir does not need it.
+  mlworkflow:
+    replicas: 1
+    resources:
+      requests: { cpu: "1", memory: 4Gi }
+      limits:   { cpu: 1500m, memory: 5Gi }
+    # One Parquet-to-CSV activity can peak near 3.7GiB. Keep the stock 5Gi
+    # worker to one such activity; larger measured pods may override this.
+    maxConcurrentParquetIO: 1
+  poolcontroller:
+    replicas: 1
+    resources:
+      requests: { cpu: 500m, memory: 1G }
+      limits:   { cpu: "1", memory: 3Gi }
+    # Stock Kumo images use gid 999 for root-owned runtime PVCs. Set explicit
+    # null on OpenShift so its SCC assigns a namespace-valid supplemental group.
+    runtimeFsGroup: 999
+    # Controller-only tuning env. Prefer dedicated values for
+    # stable settings and do not duplicate the explicit env keys above.
+    extraEnv: {}
+  # Liveness probe for the Temporal workers (databackend / mlworkflow).
+  # The exec check is heavyweight: a fresh python interpreter that runs a Temporal
+  # workflow round-trip on the worker's own task queue (~21s wall on an idle pod),
+  # so sustained CPU load from the compute activities the worker exists to run
+  # (e.g. large ingests) can starve it past its budget; kubelet then SIGKILLs a
+  # healthy worker mid-activity, and each kill burns one of the ingest activity's
+  # two Temporal attempts (kumo-ai/kumo#30174). The defaults tolerate ~10 minutes
+  # of CPU saturation before declaring the worker dead.
+  temporalWorkerLivenessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 120
+    timeoutSeconds: 110
+    failureThreshold: 5
+
+# ── External HTTPS edge ──────────────────────────────────────────────────────
+# Direct leaf-chart installs default to a customer-owned edge. The composed
+# kumo-stack installer selects the provider implementation and creates the
+# in-cluster Gateway/Route objects; DNS and cloud certificate ownership remain
+# outside the application release.
+exposure:
+  host: ""        # external DNS name the tenant is reached at (drives the UI→API base URL and,
+                  # via external_host in the deploy config, app-generated absolute URLs such as
+                  # the training-job tracking_url). Empty →
+                  # relative "/internal" (same-origin / port-forward only).
+                  # Helm and the UI image validate this as a lowercase DNS-1123 hostname.
+                  # External URLs always use HTTPS.
+
+# ── Observability ─────────────────────────────────────────────────────────────
+# Defaults are EMPTY so a stock install emits no Kumo-internal endpoints; those
+# hostnames resolve only inside Kumo-managed clusters. The OTLP and pushGateway
+# clients do not enforce TLS, so leave them empty unless the endpoint is reachable
+# over a trusted path; a configured Slack webhook must use HTTPS.
+observability:
+  otlpHostname: ""   # JAEGER_HOSTNAME; "" disables OTLP traces
+  otlpPort: 4317
+  slackUrl: ""
+  pushGateway:
+    address: ""      # KUMO_PUSH_GATEWAY_ADDRESS; "" disables the Prometheus pushgateway
+
+# =============================================================================
+# Pre-existing prerequisites (this chart creates NO Secrets and NO cluster-wide
+# resources). The supported kumo-stack platform guide creates or verifies them.
+# Summary of what direct leaf-chart use must already provide:
+#
+#   Namespace        : the release namespace (helm -n). YOU create it via
+#                      --create-namespace or a prior kubectl create ns.
+#   Secrets          : (1) optional temporal.clientMtlsSecret (kubernetes.io/tls) in the release
+#                      namespace, mounted at the chart-owned Temporal certificate path.
+#                      Postgres authentication uses either a cloud workload identity
+#                      (postgres.authMode) or the Secrets named by postgres.dsnSecret
+#                      and, for a CA the image does not trust, postgres.caSecret.
+#                      Auth-disabled installs need no login Secret. When auth.enabled=true,
+#                      provide the Direct Connect login Secret(s) and tenantSecretKey described
+#                      above; the chart still creates none of them.
+#   StorageClass     : kumoConfig.diskgraph.storageClass (env POOL_STORAGE_CLASS_NAME) —
+#                      the CSI StorageClass used for DiskGraph cache PVCs.
+#   Temporal         : self-hosted Temporal reachable at temporal.address in the shared
+#                      `temporal` namespace, with a namespace = temporal.namespace
+#                      (default global.tenant).
+#   Object storage   : bucket/prefix kumoConfig.storage.dataBucket/<global.tenant> must exist and be
+#                      writable by the workload identity below.
+#   Workload identity: grant the least privilege required by each role through
+#                      serviceAccounts.<role>.annotations. Pool-controller-spawned daemon and
+#                      activity pods use the worker identity.
+#                      (AWS eks.amazonaws.com/role-arn · GKE iam.gke.io/gcp-service-account ·
+#                      Azure azure.workload.identity/client-id). The Azure profile adds the
+#                      required `azure.workload.identity/use: "true"` pod label automatically.
+#   Node pools       : sufficient CPU worker capacity, matching nodeTargeting.nodeSelector when
+#                      set; and, for graph materialization, GPU cache NodePools labeled
+#                      kumo.ai/diskgraph-ssd-size=<GiB> +
+#                      kumo.ai/diskgraph-gpu-count=<n> (matching the effective runtime
+#                      tiers, normally assembled from kumoConfig.diskgraph.nodeTypes) + an
+#                      ephemeral pool
+#                      labeled kumo.ai/diskgraph-pool-type.
+#   Cluster RBAC     : none. The pool controller (running under its controller SA) protects
+#                      cache-daemon nodes with a namespaced PodDisruptionBudget — the former
+#                      cluster-scoped node/PV grant was removed. This chart creates only the
+#                      namespaced workload-manager Role/RoleBinding; no cluster-wide binding needed.
+
+# =============================================================================

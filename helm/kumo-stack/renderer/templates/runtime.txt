@@ -1,0 +1,108 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- define "stack.runtime" -}}
+{{- $tenantRelease := default .Values.tenant.name .Values.tenant.releaseName -}}
+{{- $tenantNamespace := default (printf "kumo-%s" .Values.tenant.name) .Values.tenant.namespace -}}
+PLATFORM={{ .Values.platform }}
+CONTEXT={{ .Values.cluster.context }}
+PLATFORM_NAMESPACE={{ .Values.cluster.platformNamespace }}
+CPU_NODE_SELECTOR={{- $selector := fromYaml (include "stack.cpuNodeSelector" .) }}{{- range $index, $key := (keys $selector | sortAlpha) }}{{ if $index }} {{ end }}{{ $key }}={{ index $selector $key }}{{ end }}
+TENANT={{ .Values.tenant.name }}
+TENANT_RELEASE={{ $tenantRelease }}
+TENANT_NAMESPACE={{ $tenantNamespace }}
+TEMPORAL_ENABLED={{ .Values.temporal.enabled }}
+TEMPORAL_RELEASE={{ .Values.temporal.releaseName }}
+TEMPORAL_NAMESPACE={{ .Values.temporal.namespace }}
+TEMPORAL_ADDRESS={{ if .Values.temporal.enabled }}{{ printf "temporal-frontend.%s.svc:7233" .Values.temporal.namespace }}{{ else }}{{ .Values.temporal.externalAddress }}{{ end }}
+POSTGRES_HOST={{ .Values.cloud.postgres.host }}
+POSTGRES_PORT={{ .Values.cloud.postgres.port }}
+POSTGRES_RESOURCE_GROUP={{ .Values.cloud.postgres.resourceGroup }}
+POSTGRES_STATE_DATABASE={{ .Values.cloud.postgres.stateDatabase }}
+POSTGRES_STATE_USER={{ .Values.cloud.postgres.stateUser }}
+POSTGRES_STATE_AUTH_MODE={{ if eq .Values.platform "eks" }}aws_iam{{ else }}azure_entra{{ end }}
+POSTGRES_ADMIN_MODE={{ .Values.cloud.postgres.admin.mode }}
+POSTGRES_ADMIN_USER={{ .Values.cloud.postgres.admin.username }}
+POSTGRES_ADMIN_DATABASE={{ .Values.cloud.postgres.admin.database }}
+POSTGRES_ADMIN_ANNOTATION_KEY={{ if eq .Values.platform "eks" }}eks.amazonaws.com/role-arn{{ else }}azure.workload.identity/client-id{{ end }}
+POSTGRES_ADMIN_ANNOTATION_VALUE={{ if eq .Values.platform "eks" }}{{ index .Values.cloud.postgres.admin.annotations "eks.amazonaws.com/role-arn" }}{{ else }}{{ index .Values.cloud.postgres.admin.annotations "azure.workload.identity/client-id" }}{{ end }}
+POSTGRES_TEMPORAL_USER={{ .Values.cloud.postgres.temporalUser }}
+POSTGRES_SECRET={{ .Values.cloud.postgres.temporalSecretName }}
+POSTGRES_SECRET_KEY={{ .Values.cloud.postgres.temporalSecretKey }}
+POSTGRES_BOOTSTRAP={{ .Values.cloud.postgres.bootstrapTemporal }}
+OBJECT_STORAGE_URI={{ .Values.cloud.objectStorage.uri }}
+STORAGE_CLASS={{ include "stack.storageClassName" . }}
+STORAGE_CLASS_CREATE={{ .Values.storage.diskgraph.storageClass.create }}
+STORAGE_CAPACITY_TRACKING={{ .Values.storage.diskgraph.capacityTracking }}
+KUMO_CPU_IMAGE={{ .Values.images.kumo.registry }}{{ if .Values.images.kumo.repoPath }}/{{ .Values.images.kumo.repoPath }}{{ end }}/kumo-backend-cpu:{{ .Values.images.kumo.tag }}
+KUMO_GPU_IMAGE={{ .Values.images.kumo.registry }}{{ if .Values.images.kumo.repoPath }}/{{ .Values.images.kumo.repoPath }}{{ end }}/kumo-backend-gpu:{{ .Values.images.kumo.tag }}
+KUMO_UI_IMAGE={{ .Values.images.kumo.registry }}{{ if .Values.images.kumo.repoPath }}/{{ .Values.images.kumo.repoPath }}{{ end }}/kumo-ui:{{ .Values.images.kumo.tag }}
+KUMO_IMAGE_TAG={{ .Values.images.kumo.tag }}
+KUMO_PULL_SECRET={{ .Values.images.kumo.pullSecretName }}
+TENANT_SECRET={{ .Values.tenant.tenantSecret.name }}
+TENANT_SECRET_KEY={{ .Values.tenant.tenantSecret.key }}
+AUTH_ENABLED={{ dig "auth" "enabled" false .Values.tenant.extraValues }}
+AUTH_METHOD={{ dig "auth" "method" "oidc" .Values.tenant.extraValues }}
+AUTH_SECRET={{ if eq (dig "auth" "method" "oidc" .Values.tenant.extraValues) "password" }}{{ dig "auth" "password" "temporaryPassword" "secretName" "" .Values.tenant.extraValues }}{{ else }}{{ dig "auth" "oidc" "clientSecret" "secretName" "" .Values.tenant.extraValues }}{{ end }}
+STATE_CONTROL_CLIENT_ID={{ if has .Values.platform (list "aks" "aro") }}{{ index .Values.stateDbIdentity.controlAnnotations "azure.workload.identity/client-id" }}{{ end }}
+STATE_WORKER_CLIENT_ID={{ if has .Values.platform (list "aks" "aro") }}{{ index .Values.stateDbIdentity.workerAnnotations "azure.workload.identity/client-id" }}{{ end }}
+STATE_CONTROLLER_CLIENT_ID={{ if has .Values.platform (list "aks" "aro") }}{{ index .Values.stateDbIdentity.controllerAnnotations "azure.workload.identity/client-id" }}{{ end }}
+STATE_CONTROL_ANNOTATION_KEY={{ if eq .Values.platform "eks" }}eks.amazonaws.com/role-arn{{ else }}azure.workload.identity/client-id{{ end }}
+STATE_CONTROL_ANNOTATION_VALUE={{ if eq .Values.platform "eks" }}{{ index .Values.stateDbIdentity.controlAnnotations "eks.amazonaws.com/role-arn" }}{{ else }}{{ index .Values.stateDbIdentity.controlAnnotations "azure.workload.identity/client-id" }}{{ end }}
+TEMPORAL_SERVER_IMAGE={{ .Values.images.temporal.serverRepository }}:{{ .Values.images.temporal.tag }}@{{ .Values.images.temporal.serverDigest }}
+TEMPORAL_ADMIN_TOOLS_IMAGE={{ .Values.images.temporal.adminToolsRepository }}:{{ .Values.images.temporal.tag }}@{{ .Values.images.temporal.adminToolsDigest }}
+POSTGRES_CLIENT_IMAGE={{ .Values.images.postgresClient.repository }}:{{ .Values.images.postgresClient.tag }}@{{ .Values.images.postgresClient.digest }}
+POSTGRES_CLIENT_PULL_SECRET={{ .Values.images.postgresClient.pullSecretName }}
+NVIDIA_DEVICE_PLUGIN_IMAGE={{ .Values.images.nvidiaDevicePlugin.repository }}:{{ .Values.images.nvidiaDevicePlugin.tag }}@{{ .Values.images.nvidiaDevicePlugin.digest }}
+{{- if eq .Values.platform "eks" }}
+KARPENTER_IMAGE={{ .Values.images.karpenter.repository }}:{{ .Values.images.karpenter.tag }}{{ with .Values.images.karpenter.digest }}@{{ . }}{{ end }}
+KARPENTER_IMAGE_REPOSITORY={{ .Values.images.karpenter.repository }}
+KARPENTER_IMAGE_TAG={{ .Values.images.karpenter.tag }}
+KARPENTER_IMAGE_DIGEST={{ .Values.images.karpenter.digest }}
+AWS_LOAD_BALANCER_CONTROLLER_IMAGE={{ .Values.images.awsLoadBalancerController.repository }}:{{ .Values.images.awsLoadBalancerController.tag }}
+AWS_LOAD_BALANCER_CONTROLLER_IMAGE_REPOSITORY={{ .Values.images.awsLoadBalancerController.repository }}
+AWS_LOAD_BALANCER_CONTROLLER_IMAGE_TAG={{ .Values.images.awsLoadBalancerController.tag }}
+{{- end }}
+PROVIDER_CLUSTER={{ (index .Values.cluster.providers .Values.platform).clusterName }}
+EDGE_HOST={{ .Values.tenant.exposureHost }}
+EDGE_TLS_SECRET={{ .Values.tenant.edgeTls.secretName }}
+EDGE_TLS_CERTIFICATE_FILE={{ .Values.tenant.edgeTls.certificateFile }}
+EDGE_TLS_PRIVATE_KEY_FILE={{ .Values.tenant.edgeTls.privateKeyFile }}
+GPU_MAX_NODES={{ .Values.gpu.maxNodes }}
+GPU_CACHE_TIERS={{- range $index, $tier := .Values.gpu.cacheTiers }}{{ if $index }};{{ end }}{{ $tier.name }},{{ $tier.instanceType }},{{ $tier.ssdGiB }},{{ $tier.gpuCount }}{{- end }}
+GPU_EPHEMERAL_INSTANCE_TYPE={{ .Values.gpu.ephemeral.instanceType }}
+{{- if eq .Values.platform "eks" }}
+PROVIDER_REGION={{ .Values.cluster.providers.eks.region }}
+EKS_VPC_ID={{ .Values.cluster.providers.eks.vpcId }}
+EKS_KARPENTER_NODE_ROLE={{ .Values.cluster.providers.eks.karpenterNodeRole }}
+EKS_KARPENTER_CONTROLLER_ROLE_ARN={{ .Values.cluster.providers.eks.karpenterControllerRoleArn }}
+EKS_EBS_CSI_ROLE_ARN={{ .Values.cluster.providers.eks.ebsCsiRoleArn }}
+EKS_LOAD_BALANCER_CONTROLLER_ROLE_ARN={{ .Values.cluster.providers.eks.loadBalancerControllerRoleArn }}
+EKS_EDGE_CERTIFICATE_ARN={{ .Values.cluster.providers.eks.edgeCertificateArn }}
+EKS_EDGE_SCHEME={{ .Values.cluster.providers.eks.edgeScheme }}
+{{- else }}
+PROVIDER_RESOURCE_GROUP={{ (index .Values.cluster.providers .Values.platform).resourceGroup }}
+{{- end }}
+{{- if eq .Values.platform "aks" }}
+AKS_CACHE_POOL_NAMES={{ join "," .Values.cluster.providers.aks.cachePoolNames }}
+AKS_EPHEMERAL_POOL_NAME={{ .Values.cluster.providers.aks.ephemeralPoolName }}
+AKS_CPU_POOL_NAME={{ .Values.cluster.providers.aks.cpuPoolName }}
+AKS_CPU_POOL_INSTANCE_TYPE={{ .Values.cluster.providers.aks.cpuPoolInstanceType }}
+AKS_APPLICATION_GATEWAY_ID={{ .Values.cluster.providers.aks.applicationGatewayId }}
+{{- end }}
+{{- if eq .Values.platform "aro" }}
+ARO_OPERATOR_MODE={{ .Values.cluster.providers.aro.operatorMode }}
+ARO_CACHE_MACHINESETS={{ join "," .Values.cluster.providers.aro.cacheMachineSets }}
+ARO_EPHEMERAL_MACHINESET={{ .Values.cluster.providers.aro.ephemeralMachineSet }}
+{{- end }}
+{{- end }}
+{{- include "stack.validate" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kumo-stack-runtime
+data:
+  runtime.txt: |-
+{{ include "stack.runtime" . | indent 4 }}

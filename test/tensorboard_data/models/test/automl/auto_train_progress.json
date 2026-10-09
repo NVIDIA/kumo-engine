@@ -1,0 +1,83 @@
+{
+  "start_time": "2024-02-20T13:17:32.273072+00:00",
+  "total_trials": 2,
+  "completed_trials": 2,
+  "elapsed_training_time": 27018.218156,
+  "estimated_training_time": 27877.850951999997,
+  "trial_progress": {
+    "0": {
+      "start_time": "2024-02-20T13:17:32.123725+00:00",
+      "num_epochs_completed": 4,
+      "elapsed_time": 6483.422038,
+      "estimated_train_time": 14819.250372571429,
+      "metrics": {
+        "0": {
+          "time_taken": 875.436098,
+          "train_metrics": {
+            "train_loss": 42.41317367553711
+          },
+          "validation_metrics": {
+            "val_map@1": 0.018845414742827415
+          }
+        },
+        "1": {
+          "time_taken": 850.421263,
+          "train_metrics": {
+            "train_loss": 38.194583892822266,
+            "train_map@1": 0.022065918892621994
+          },
+          "validation_metrics": {
+            "val_map@1": 0.02030629850924015
+          }
+        },
+        "2": {
+          "time_taken": 852.078888,
+          "train_metrics": {
+            "train_loss": 37.28541946411133,
+            "train_map@1": 0.029421387240290642
+          },
+          "validation_metrics": {
+            "val_map@1": 0.021211236715316772
+          }
+        },
+        "3": {
+          "time_taken": 1076.953325,
+          "train_metrics": {
+            "train_loss": 35.628990173339844,
+            "train_map@1": 0.04124853387475014
+          },
+          "validation_metrics": {
+            "val_map@1": 0.020006006583571434
+          }
+        }
+      }
+    },
+    "1": {
+      "start_time": "2024-02-20T15:09:12.106397+00:00",
+      "num_epochs_completed": 2,
+      "elapsed_time": 3373.995469,
+      "estimated_train_time": 7711.989643428571,
+      "metrics": {
+        "0": {
+          "time_taken": 508.65241,
+          "train_metrics": {
+            "train_loss": 42.04963302612305
+          },
+          "validation_metrics": {
+            "val_map@1": 0.019612379372119904
+          }
+        },
+        "1": {
+          "time_taken": 483.520926,
+          "train_metrics": {
+            "train_loss": 38.59175491333008,
+            "train_map@1": 0.02121289074420929
+          },
+          "validation_metrics": {
+            "val_map@1": 0.01912541687488556
+          }
+        }
+      }
+    }
+  }
+}

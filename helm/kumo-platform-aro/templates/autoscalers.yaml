@@ -1,0 +1,24 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- if .Values.machineAutoscalers.enabled }}
+{{- range $name := concat .Values.machineAutoscalers.cacheMachineSets (list .Values.machineAutoscalers.ephemeralMachineSet) }}
+apiVersion: autoscaling.openshift.io/v1beta1
+kind: MachineAutoscaler
+metadata:
+  name: {{ $name }}
+  namespace: openshift-machine-api
+  labels:
+    {{- include "kumo-platform-aro.labels" $ | nindent 4 }}
+spec:
+  minReplicas: {{ $.Values.machineAutoscalers.minReplicas }}
+  maxReplicas: {{ $.Values.machineAutoscalers.maxReplicas }}
+  scaleTargetRef:
+    apiVersion: machine.openshift.io/v1beta1
+    kind: MachineSet
+    name: {{ $name }}
+---
+{{- end }}
+{{- end }}

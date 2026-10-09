@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+extends: default
+
+ignore: |
+  helm/kumo-edge/templates/
+  helm/kumo-helm/
+  helm/kumo-platform-aks/templates/
+  helm/kumo-platform-aro/templates/
+  helm/kumo-platform-eks/templates/
+  helm/kumo-stack/renderer/templates/
+  helm/kumo-temporal/charts/temporal/
+  helm/kumo-temporal/templates/
+  packages/diskgraph/
+
+rules:
+  line-length: disable
+  document-start: disable
+  truthy:
+    level: error
+  braces:
+    max-spaces-inside: 1

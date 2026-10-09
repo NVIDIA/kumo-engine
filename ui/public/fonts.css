@@ -1,0 +1,302 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+ * All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
+ * NVIDIA Sans is proprietary, so its font files are intentionally NOT bundled.
+ * On a licensed machine the browser uses a locally-installed "NVIDIA Sans";
+ * everywhere else (including air-gapped) it falls through to the metric-matched
+ * "NVIDIA Sans Fallback" below, which is local()-only and ships no font file.
+ * JetBrains Mono (open-source, SIL OFL 1.1) IS embedded — see its OFL.txt.
+ */
+@font-face {
+    font-family: NVIDIA Sans Fallback;
+    font-style: normal;
+    font-weight: 300;
+    ascent-override: 93.59%;
+    descent-override: 26.74%;
+    line-gap-override: 0%;
+    size-adjust: 104.71%;
+    src:
+        local(Arial), local(Inter), local(Helvetica), local(DejaVu Sans),
+        local(Liberation Sans), local(Noto Sans), local(Ubuntu),
+        local(FreeSans), local("sans-serif");
+}
+@font-face {
+    font-family: NVIDIA Sans Fallback;
+    font-style: italic;
+    font-weight: 300;
+    ascent-override: 97.18%;
+    descent-override: 27.77%;
+    line-gap-override: 0%;
+    size-adjust: 100.84%;
+    src:
+        local(Arial Italic), local(Inter Italic), local(Helvetica Oblique),
+        local(DejaVu Sans Oblique), local(Liberation Sans Italic),
+        local(Noto Sans Italic), local(Ubuntu Italic), local(FreeSans Oblique),
+        local("sans-serif");
+}
+@font-face {
+    font-family: NVIDIA Sans Fallback;
+    font-style: normal;
+    font-weight: 400;
+    ascent-override: 92.7%;
+    descent-override: 26.49%;
+    line-gap-override: 0%;
+    size-adjust: 105.71%;
+    src:
+        local(Arial), local(Inter), local(Helvetica), local(DejaVu Sans),
+        local(Liberation Sans), local(Noto Sans), local(Ubuntu),
+        local(FreeSans), local("sans-serif");
+}
+@font-face {
+    font-family: NVIDIA Sans Fallback;
+    font-style: italic;
+    font-weight: 400;
+    ascent-override: 96.18%;
+    descent-override: 27.48%;
+    line-gap-override: 0%;
+    size-adjust: 101.89%;
+    src:
+        local(Arial Italic), local(Inter Italic), local(Helvetica Oblique),
+        local(DejaVu Sans Oblique), local(Liberation Sans Italic),
+        local(Noto Sans Italic), local(Ubuntu Italic), local(FreeSans Oblique),
+        local("sans-serif");
+}
+@font-face {
+    font-family: NVIDIA Sans Fallback;
+    font-style: normal;
+    font-weight: 500;
+    ascent-override: 91.53%;
+    descent-override: 26.15%;
+    line-gap-override: 0%;
+    size-adjust: 107.07%;
+    src:
+        local(Arial), local(Inter), local(Helvetica), local(DejaVu Sans),
+        local(Liberation Sans), local(Noto Sans), local(Ubuntu),
+        local(FreeSans), local("sans-serif");
+}
+@font-face {
+    font-family: NVIDIA Sans Fallback;
+    font-style: italic;
+    font-weight: 500;
+    ascent-override: 94.81%;
+    descent-override: 27.09%;
+    line-gap-override: 0%;
+    size-adjust: 103.36%;
+    src:
+        local(Arial Italic), local(Inter Italic), local(Helvetica Oblique),
+        local(DejaVu Sans Oblique), local(Liberation Sans Italic),
+        local(Noto Sans Italic), local(Ubuntu Italic), local(FreeSans Oblique),
+        local("sans-serif");
+}
+@font-face {
+    font-family: NVIDIA Sans Fallback;
+    font-style: normal;
+    font-weight: 700;
+    ascent-override: 97.74%;
+    descent-override: 27.93%;
+    line-gap-override: 0%;
+    size-adjust: 100.26%;
+    src:
+        local(Arial Bold), local(Inter Bold), local(Helvetica Bold),
+        local(DejaVu Sans Bold), local(Liberation Sans Bold),
+        local(Noto Sans Bold), local(Ubuntu Bold), local(FreeSans Bold),
+        local("sans-serif");
+}
+@font-face {
+    font-family: NVIDIA Sans Fallback;
+    font-style: italic;
+    font-weight: 700;
+    ascent-override: 101.13%;
+    descent-override: 28.9%;
+    line-gap-override: 0%;
+    size-adjust: 96.9%;
+    src:
+        local(Arial Bold Italic), local(Inter Bold Italic),
+        local(Helvetica Bold Oblique), local(DejaVu Sans Bold Oblique),
+        local(Liberation Sans Bold Italic), local(Noto Sans Bold Italic),
+        local(Ubuntu Bold Italic), local(FreeSans Bold Oblique),
+        local("sans-serif");
+}
+@font-face {
+    font-family: JetBrains Mono;
+    font-style: normal;
+    font-weight: 300;
+    font-display: swap;
+    src: url(/fonts/jetbrains-mono/1.0.0/JetBrainsMono-Light.woff2)
+        format("woff2");
+}
+@font-face {
+    font-family: JetBrains Mono;
+    font-style: italic;
+    font-weight: 300;
+    font-display: swap;
+    src: url(/fonts/jetbrains-mono/1.0.0/JetBrainsMono-LightItalic.woff2)
+        format("woff2");
+}
+@font-face {
+    font-family: JetBrains Mono;
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url(/fonts/jetbrains-mono/1.0.0/JetBrainsMono-Regular.woff2)
+        format("woff2");
+}
+@font-face {
+    font-family: JetBrains Mono;
+    font-style: italic;
+    font-weight: 400;
+    font-display: swap;
+    src: url(/fonts/jetbrains-mono/1.0.0/JetBrainsMono-Italic.woff2)
+        format("woff2");
+}
+@font-face {
+    font-family: JetBrains Mono;
+    font-style: normal;
+    font-weight: 500;
+    font-display: swap;
+    src: url(/fonts/jetbrains-mono/1.0.0/JetBrainsMono-Medium.woff2)
+        format("woff2");
+}
+@font-face {
+    font-family: JetBrains Mono;
+    font-style: italic;
+    font-weight: 500;
+    font-display: swap;
+    src: url(/fonts/jetbrains-mono/1.0.0/JetBrainsMono-MediumItalic.woff2)
+        format("woff2");
+}
+@font-face {
+    font-family: JetBrains Mono;
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    src: url(/fonts/jetbrains-mono/1.0.0/JetBrainsMono-Bold.woff2)
+        format("woff2");
+}
+@font-face {
+    font-family: JetBrains Mono;
+    font-style: italic;
+    font-weight: 700;
+    font-display: swap;
+    src: url(/fonts/jetbrains-mono/1.0.0/JetBrainsMono-BoldItalic.woff2)
+        format("woff2");
+}
+@font-face {
+    font-family: JetBrains Mono Fallback;
+    font-style: normal;
+    font-weight: 300;
+    ascent-override: 102.02%;
+    descent-override: 30%;
+    line-gap-override: 0%;
+    size-adjust: 99.98%;
+    src:
+        local(Courier New), local(Consolas), local(DejaVu Sans Mono),
+        local(Liberation Mono), local(Noto Sans Mono), local(Ubuntu Mono),
+        local(FreeMono), local("monospace");
+}
+@font-face {
+    font-family: JetBrains Mono Fallback;
+    font-style: italic;
+    font-weight: 300;
+    ascent-override: 102.02%;
+    descent-override: 30%;
+    line-gap-override: 0%;
+    size-adjust: 99.98%;
+    src:
+        local(Courier New Italic), local(Consolas Italic),
+        local(DejaVu Sans Mono Oblique), local(Liberation Mono Italic),
+        local(Noto Sans Mono Italic), local(Ubuntu Mono Italic),
+        local(FreeMono Oblique), local("monospace");
+}
+@font-face {
+    font-family: JetBrains Mono Fallback;
+    font-style: normal;
+    font-weight: 400;
+    ascent-override: 102.02%;
+    descent-override: 30%;
+    line-gap-override: 0%;
+    size-adjust: 99.98%;
+    src:
+        local(Courier New), local(Consolas), local(DejaVu Sans Mono),
+        local(Liberation Mono), local(Noto Sans Mono), local(Ubuntu Mono),
+        local(FreeMono), local("monospace");
+}
+@font-face {
+    font-family: JetBrains Mono Fallback;
+    font-style: italic;
+    font-weight: 400;
+    ascent-override: 102.02%;
+    descent-override: 30%;
+    line-gap-override: 0%;
+    size-adjust: 99.98%;
+    src:
+        local(Courier New Italic), local(Consolas Italic),
+        local(DejaVu Sans Mono Oblique), local(Liberation Mono Italic),
+        local(Noto Sans Mono Italic), local(Ubuntu Mono Italic),
+        local(FreeMono Oblique), local("monospace");
+}
+@font-face {
+    font-family: JetBrains Mono Fallback;
+    font-style: normal;
+    font-weight: 500;
+    ascent-override: 102.02%;
+    descent-override: 30%;
+    line-gap-override: 0%;
+    size-adjust: 99.98%;
+    src:
+        local(Courier New), local(Consolas), local(DejaVu Sans Mono),
+        local(Liberation Mono), local(Noto Sans Mono), local(Ubuntu Mono),
+        local(FreeMono), local("monospace");
+}
+@font-face {
+    font-family: JetBrains Mono Fallback;
+    font-style: italic;
+    font-weight: 500;
+    ascent-override: 102.02%;
+    descent-override: 30%;
+    line-gap-override: 0%;
+    size-adjust: 99.98%;
+    src:
+        local(Courier New Italic), local(Consolas Italic),
+        local(DejaVu Sans Mono Oblique), local(Liberation Mono Italic),
+        local(Noto Sans Mono Italic), local(Ubuntu Mono Italic),
+        local(FreeMono Oblique), local("monospace");
+}
+@font-face {
+    font-family: JetBrains Mono Fallback;
+    font-style: normal;
+    font-weight: 700;
+    ascent-override: 102.02%;
+    descent-override: 30%;
+    line-gap-override: 0%;
+    size-adjust: 99.98%;
+    src:
+        local(Courier New Bold), local(Consolas Bold),
+        local(DejaVu Sans Mono Bold), local(Liberation Mono Bold),
+        local(Noto Sans Mono Bold), local(Ubuntu Mono Bold),
+        local(FreeMono Bold), local("monospace");
+}
+@font-face {
+    font-family: JetBrains Mono Fallback;
+    font-style: italic;
+    font-weight: 700;
+    ascent-override: 102.02%;
+    descent-override: 30%;
+    line-gap-override: 0%;
+    size-adjust: 99.98%;
+    src:
+        local(Courier New Bold Italic), local(Consolas Bold Italic),
+        local(DejaVu Sans Mono Bold Oblique),
+        local(Liberation Mono Bold Italic), local(Noto Sans Mono Bold Italic),
+        local(Ubuntu Mono Bold Italic), local(FreeMono Bold Oblique),
+        local("monospace");
+}
+@font-face {
+    font-family: missing-ligature-font;
+    src: local(Arial), local(Verdana), local(Tahoma), local(Trebuchet MS);
+    size-adjust: 0%;
+}

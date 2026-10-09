@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Dispatch Kumo mirror sync
+
+on:
+  push:
+    branches: [main]
+
+# The cross-repo dispatch authenticates with KUMO_GITHUB_BOT_TOKEN; the job
+# never uses GITHUB_TOKEN and does not check out the repo.
+permissions: {}
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Request Kumo mirror synchronization
+        env:
+          GH_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
+        run: |
+          gh api --method POST repos/kumo-ai/kumo/dispatches \
+            -f event_type=sync-diskgraph \
+            -f client_payload[sha]="$GITHUB_SHA"

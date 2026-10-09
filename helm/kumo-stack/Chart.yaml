@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: v2
+name: kumo-helm
+description: Editable Kumo installation bundle
+type: library
+version: 1.0.0-dev.0
+appVersion: "1.0.0-dev.0"

@@ -1,0 +1,30 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- include "kumoEdge.validate" . -}}
+{{- if eq .Values.mode "openshift" }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ include "kumoEdge.name" . }}
+  labels:
+    {{- include "kumoEdge.labels" . | nindent 4 }}
+  {{- with .Values.extraAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  host: {{ .Values.host | quote }}
+  port:
+    targetPort: {{ .Values.target.portName }}
+  to:
+    kind: Service
+    name: {{ .Values.target.service }}
+    weight: 100
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None
+{{- end }}

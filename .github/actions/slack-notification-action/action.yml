@@ -1,0 +1,64 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: "Send Slack notification on failure"
+description: 'Send a Slack notification on job failure'
+inputs:
+  channel-id:
+    description: 'Slack Channel ID'
+    required: true
+  job-status:
+    description: 'Status of the Job'
+    required: true
+  repository:
+    description: 'GitHub Repository'
+    required: true
+  run-id:
+    description: 'GitHub Run ID'
+    required: true
+  slack-bot-token:
+    description: 'Slack Bot Token'
+    required: true
+  message:
+    description: 'Custom message body (mrkdwn). When empty, the default build-result message is used.'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+
+  steps:
+    - id: compose
+      shell: bash
+      env:
+        CUSTOM_MESSAGE: ${{ inputs.message }}
+        DEFAULT_MESSAGE: "<!subteam^S03TRE3SE67> GitHub Action build result: ${{ inputs.job-status }}\n https://github.com/${{ inputs.repository }}/actions/runs/${{ inputs.run-id }}"
+      run: |
+        text="${CUSTOM_MESSAGE:-$DEFAULT_MESSAGE}"
+        {
+          echo "text<<__SLACK_MSG_EOF__"
+          echo "$text"
+          echo "__SLACK_MSG_EOF__"
+        } >> "$GITHUB_OUTPUT"
+
+    - uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a   #  v2.1.1
+      with:
+        method: chat.postMessage
+        token: ${{ inputs.slack-bot-token }}
+        # toJSON quotes + escapes the message, so arbitrary multiline/mrkdwn
+        # bodies stay valid JSON.
+        payload: |
+          {
+            "channel": "${{ inputs.channel-id }}",
+            "text": ${{ toJSON(steps.compose.outputs.text) }},
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": ${{ toJSON(steps.compose.outputs.text) }}
+                }
+              }
+            ]
+          }

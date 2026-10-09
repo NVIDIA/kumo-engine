@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[tools]
+# Python is managed by uv, not mise -- see .python-version and
+# scripts/install_venv.sh (`uv python install` / `uv venv`). uv creates and
+# owns .venv directly; mise's only remaining Python-adjacent job is
+# auto-activating it (see `_.python.venv` below).
+node = "22"
+
+# Local/dev workflow tools.
+awscli = "2.31.17"
+# dev-uw2 is currently 1.33 in kumo-iac outputs; this also stays within
+# supported skew for 1.34 clusters.
+kubectl = "v1.33.10"
+minikube = "v1.38.1"
+stern = "1.33.1"
+gh = "2.89.0"
+jq = "1.8.1"
+# Pinned to match astral-sh/setup-uv's installed version in CI (no `version:`
+# input is set there, so it installs its own current default).
+uv = "0.12.23"
+gitleaks = "8.30.1"
+
+[env]
+_.python.venv = { path = ".venv" }

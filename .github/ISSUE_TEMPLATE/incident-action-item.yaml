@@ -1,0 +1,84 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Incident Post-Mortem Action Item
+description: Create a GitHub issue for an action item derived from an incident post-mortem.
+title: '[Incident Action Item]: '
+labels: 'incident'
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to create an action item from a post-mortem!
+  - type: input
+    id: incident-id
+    attributes:
+      label: Incident ID
+      description: Enter the ID/Number of the incident.
+    validations:
+      required: true
+  - type: input
+    id: release-version
+    attributes:
+      label: Release Version of incident
+      description: What version of Kumo software was customer running when incident was reported?
+    validations:
+      required: true
+  - type: input
+    id: incident-date
+    attributes:
+      label: Incident Date
+      description: Enter the date of the incident.
+    validations:
+      required: true
+  - type: input
+    id: customers-affected
+    attributes:
+      label: Customers affected
+      description: Enter the list of customers affected.
+    validations:
+      required: true
+  - type: input
+    id: post-mortem-doc
+    attributes:
+      label: Post-Mortem Document Link
+      description: Paste the link to the post-mortem document.
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Action Item Description
+      description: Provide a brief description of the action item identified in the post-mortem. What needs to be done? Why does it need to be done?
+    validations:
+      required: true
+  - type: textarea
+    id: suggested-implementation
+    attributes:
+      label: Suggested Implementation
+      description: Describe any ideas for how this action item could be implemented, if any.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Describe the impact of this action item. What benefits will it bring? How will it help prevent similar incidents in the future?
+    validations:
+      required: true
+  - type: input
+    id: assignee
+    attributes:
+      label: Assignee
+      description: Did you add a assignee? If you do not know who this should be assigned, please assign to Hema for initial triage.
+    validations:
+      required: true
+  - type: input
+    id: milestone
+    attributes:
+      label: Milestone
+      description: Did you add a milestone?
+    validations:
+      required: true

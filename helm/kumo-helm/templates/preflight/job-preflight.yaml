@@ -1,0 +1,94 @@
+{{- /*
+SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+*/ -}}
+{{- if .Values.preflight.enabled }}
+# Install preflight: enforces the in-cluster subset of the conformance contract
+# BEFORE the release installs, so a missing customer prerequisite fails the
+# install fast — with a report naming the contract id and the fix — instead of
+# surfacing later as crash-looping pods. This matters for operators who install
+# straight from the packaged chart URL and never see conformance/ in the .tgz.
+# What is and isn't covered: see the preflight comment in values.yaml and
+# conformance/preflight.py (the script itself).
+#
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-preflight
+  labels:
+    {{- include "kumo.commonLabels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-15"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  # No pod retry: the checks are deterministic and the script retries transient
+  # API/dial errors internally so the hook reports one result.
+  backoffLimit: 0
+  # Must absorb scale-from-zero node provisioning + a cold multi-GB image pull
+  # before the script (<60s) even starts. On cold clusters also raise helm's
+  # own wait timeout: `helm install --timeout 15m`.
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      {{- with (include "kumo.podAnnotations" .) }}
+      annotations:
+        {{- . | nindent 8 }}
+      {{- end }}
+      labels:
+        app: kumo-preflight
+        {{- include "kumo.commonLabels" . | nindent 8 }}
+        {{- include "kumo.podLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ .Release.Name }}-preflight
+      securityContext:
+        {{- include "kumo.podSecurityContext" (dict "root" . "extra" dict) | nindent 8 }}
+      {{- include "kumo.nodeTargeting" . | nindent 6 }}
+      {{- include "kumo.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: preflight
+          image: {{ include "kumo.dataplaneImage" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "kumo.containerSecurityContext" (dict "root" . "extra" dict) | nindent 12 }}
+          command: ["python3", "/opt/kumo/preflight/preflight.py"]
+          env:
+            {{- /* POD_NAMESPACE: the release namespace, where all prerequisite
+                   Secrets live — same downward-API source as the workloads. */}}
+            {{- include "kumo.downwardApiEnv" . | nindent 12 }}
+            - name: TEMPORAL_CLIENT_MTLS_SECRET
+              value: {{ .Values.temporal.clientMtlsSecret | quote }}
+            - name: TEMPORAL_HOST
+              value: {{ include "kumo.temporalAddress" . | quote }}
+            - name: PG_HOST
+              value: {{ .Values.postgres.host | quote }}
+            - name: PG_PORT
+              value: {{ .Values.postgres.port | quote }}
+            - name: PG_CA_PATH
+              value: {{ include "kumo.postgresCaPath" . | quote }}
+            {{- with (.Values.postgres.dsnSecret | default dict) }}
+            {{- if .secretName }}
+            - name: PG_DSN_SECRET_PATH
+              value: {{ printf "%s/%s" (include "kumo.secretsMountPath" $) .key | quote }}
+            {{- end }}
+            {{- end }}
+          volumeMounts:
+            - mountPath: /opt/kumo/preflight
+              name: preflight-script
+              readOnly: true
+            {{- include "kumo.secretsVolumeMount" . | nindent 12 }}
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: preflight-script
+          configMap:
+            name: {{ .Release.Name }}-preflight-script
+        {{- include "kumo.secretsVolume" . | nindent 8 }}
+{{- end }}

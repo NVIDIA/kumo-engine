@@ -1,0 +1,34 @@
+{
+    "connector": {
+        "name": "",
+        "id": ""
+    },
+    "id": "",
+    "name_alias": "",
+    "stats": {
+        "size_bytes": 0,
+        "num_rows": 0
+    },
+    "table": {
+        "cols": [],
+        "pkey": null,
+        "end_time_col": null,
+        "source_table": {
+            "s3_path": "",
+            "connector_id": "",
+            "data_source_type": "",
+            "file_type": null,
+            "source_table_name": ""
+        }
+    },
+    "time_col": "",
+    "time_range": {
+        "min": "",
+        "max": "",
+        "approx": false
+    },
+    "timestamps": {
+        "created_at": "",
+        "updated_at": ""
+    }
+}

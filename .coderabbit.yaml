@@ -1,0 +1,163 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+language: en-US
+early_access: false
+
+reviews:
+  profile: quiet
+
+  tone_instructions: |
+    Be direct, technical, brief. No praise, emojis, or headings.
+    Prefix every comment with one of: critical (correctness, security,
+    data loss), important (must fix), suggestion (optional).
+    Do not comment on style or formatting.
+
+  high_level_summary: false
+  high_level_summary_in_walkthrough: false
+  changed_files_summary: false
+  sequence_diagrams: true
+  estimate_code_review_effort: false
+  assess_linked_issues: false
+  related_issues: false
+  related_prs: false
+  suggested_labels: false
+  suggested_reviewers: false
+  poem: false
+  in_progress_fortune: false
+  collapse_walkthrough: true
+
+  # ---------------------------------------------------------------------
+  # Boilerplate.
+  # ---------------------------------------------------------------------
+  # Strips the "Prompt for AI Agents" block appended to every inline comment.
+  enable_prompt_for_ai_agents: false
+  review_details: false
+  review_status: true
+  review_progress: true
+
+  request_changes_workflow: false
+
+  # ---------------------------------------------------------------------
+  # Tools. Match the actual toolchain: flake8 + isort + yapf + pyright.
+  # ---------------------------------------------------------------------
+  tools:
+    ruff:
+      enabled: false
+    pylint:
+      enabled: false
+    flake8:
+      enabled: true
+    # OSS Readiness CI owns Gitleaks enforcement and release-history scans.
+    gitleaks:
+      enabled: false
+    # Keep a different credential scanner as secondary review feedback.
+    trufflehog:
+      enabled: true
+    # Enable this after the repository contains a Semgrep ruleset.
+    semgrep:
+      enabled: false
+    languagetool:
+      enabled: false
+    markdownlint:
+      enabled: false
+
+  path_filters:
+    - "!**/*.lock"
+    - "!**/generated/**"
+    - "!**/*_pb2.py"
+    - "!**/*_pb2.pyi"
+
+  path_instructions:
+    - path: "kumo/**/*.py"
+      instructions: |
+        For dead-code findings, consider only code added by this pull request,
+        or code made unused or unreachable by this pull request. Report it only
+        with concrete repository evidence. Before reporting, check direct
+        callers, imports and exports, decorators, registries, configuration
+        and string references, framework discovery, serialization hooks, and
+        public compatibility or API roles. Do not report pre-existing unused
+        code. State the exact symbol and location, plus the evidence showing
+        that no reachable use remains.
+
+  auto_review:
+    enabled: true
+    drafts: false
+    ignore_usernames:
+      - "dependabot[bot]"
+      - "github-actions[bot]"
+
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    simplify:
+      enabled: false
+
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    title:
+      mode: "off"
+    description:
+      mode: "off"
+    issue_assessment:
+      mode: "off"
+    custom_checks:
+      - name: "Change map design review"
+        mode: "warning"
+        instructions: |
+          Read the PR conversation comment starting with the marker
+          <!-- kumo-pr-change-map -->. Review its Change map as a proposed
+          design, using the linked
+          problem and repository code as evidence. Assess whether each change
+          is necessary, belongs at the right abstraction layer, and preserves
+          relevant behavior. Look for the observed failure or explicitly requested
+          release requirement, inspected existing behavior, smallest sufficient
+          change, focused verification and stopping condition in that same
+          comment. Keep optional refinements separate; file coverage and nonempty
+          prose do not establish necessity. Challenge the implementation when the proposed
+          design is wrong; do not merely ask to rewrite the table to match it.
+          Also identify misleading explanations or omitted material behavior.
+          At <=1000 additions plus deletions, expect function or non-function
+          scope descriptions; larger PRs may use file-level descriptions.
+          The deterministic PR change table check handles file coverage. Do
+          not enumerate every symbol or repeat its formatting findings. Give
+          concrete evidence and a suggested correction for substantive issues;
+          distinguish uncertain design questions from proven defects. Do not
+          assume that agreement between the table and code proves correctness.
+      - name: "PR size"
+        mode: "warning"
+        instructions: |
+          Count the files changed in this pull request.
+          Fail if the count exceeds 40. In the failure message, state the
+          file count and recommend splitting the PR into reviewable units.
+          Pass in all other cases. Ignore line counts entirely.
+      - name: "Public resource access"
+        mode: "error"
+        instructions: |
+          Inspect only external resource references whose reference text is
+          added or modified by this pull request. Ignore unchanged lines, diff
+          context, references that exist only on the base branch, pre-existing
+          references elsewhere in the repository, and unchanged references in
+          changed files. If the pull request adds or changes no external
+          resource reference, pass.
+
+          For each added or modified URL, repository location, or package
+          source location required to understand, build, test, use, or
+          contribute to the changed code, verify that an anonymous public user
+          can access it. CodeRabbit app or organization access is not proof.
+          Exclude illustrative or example references and local test fixtures.
+
+          Fail only when an added or modified reference is confirmed
+          inaccessible. If access cannot be tested reliably, report
+          Inconclusive and do not fail. On failure, report the changed file and
+          line, the inaccessible reference, and how to replace it with a public
+          resource or include the required information in this repository.
+
+knowledge_base:
+  learnings:
+    scope: local
+    approval_delay: 0

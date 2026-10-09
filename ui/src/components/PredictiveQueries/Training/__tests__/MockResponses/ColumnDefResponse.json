@@ -1,0 +1,27 @@
+[
+    {
+        "id": "anchor_date",
+        "header": "Anchor Date",
+        "accessorKey": "anchor_date"
+    },
+    {
+        "id": "min_date",
+        "header": "Prediction window",
+        "accessorKey": "min_date"
+    },
+    {
+        "id": "num_entities",
+        "header": "Unique entities",
+        "accessorKey": "num_entities"
+    },
+    {
+        "id": "target_distribution.count.True",
+        "header": "Positive samples",
+        "accessorKey": "target_distribution.count.True"
+    },
+    {
+        "id": "target_distribution.count.False",
+        "header": "Negative samples",
+        "accessorKey": "target_distribution.count.False"
+    }
+]

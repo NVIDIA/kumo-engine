@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "sources": [
+    {
+      "path": "diskgraph-ptrhash/**",
+      "upstream": "https://github.com/RagnarGrootKoerkamp/PtrHash",
+      "upstream_ref": "f4bd0a3c4abdf5ca1ba0072441898bb75f655eff",
+      "upstream_archive": "https://crates.io/api/v1/crates/ptr_hash/1.1.0/download",
+      "upstream_archive_sha256": "4b4e4fb9c4c2ba3e5b060f53ef46afd3de37345b08e3ec0f2c65e0ca1d57ccbd",
+      "license_expression": "MIT",
+      "license_file": "diskgraph-ptrhash/LICENSE",
+      "modified": true,
+      "apache_4b_notice_required": false,
+      "header_policy": "retain-upstream"
+    }
+  ]
+}

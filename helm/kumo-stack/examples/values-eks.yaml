@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+platform: eks
+cluster:
+  context: test-eks
+  providers:
+    eks:
+      clusterName: test-eks
+      region: us-west-2
+      vpcId: vpc-0123456789abcdef0
+      karpenterNodeRole: KarpenterNodeRole-test-eks
+      karpenterControllerRoleArn: arn:aws:iam::000000000000:role/KarpenterController-test-eks
+      ebsCsiRoleArn: arn:aws:iam::000000000000:role/AmazonEKS_EBS_CSI_DriverRole-test-eks
+      loadBalancerControllerRoleArn: arn:aws:iam::000000000000:role/AmazonEKSLoadBalancerControllerRole-test-eks
+      edgeCertificateArn: arn:aws:acm:us-west-2:000000000000:certificate/00000000-0000-0000-0000-000000000000
+      edgeScheme: internal
+cloud:
+  postgres:
+    host: state.example.us-west-2.rds.amazonaws.com
+    stateDatabase: kumo
+    stateUser: kumo_state
+    temporalUser: temporal_runtime
+    admin:
+      mode: aws_iam
+      username: postgres_admin
+      database: postgres
+      annotations:
+        eks.amazonaws.com/role-arn: "arn:aws:iam::000000000000:role/kumo-postgres-admin"
+  objectStorage: {uri: s3://example-kumo/disk-graph, region: us-west-2}
+images:
+  kumo:
+    registry: nvcr.io
+    repoPath: 1000161941370113/kumo-3
+    pullSecretName: kumo-registry
+  temporal:
+    serverRepository: docker.io/temporalio/server
+    adminToolsRepository: docker.io/temporalio/admin-tools
+gpu:
+  maxNodes: 1
+  cacheTiers:
+    - {name: small, instanceType: g4dn.xlarge, ssdGiB: 256, gpuCount: 1}
+    - {name: medium, instanceType: g4dn.2xlarge, ssdGiB: 512, gpuCount: 1}
+    - {name: large, instanceType: g4dn.8xlarge, ssdGiB: 1024, gpuCount: 1}
+  ephemeral: {instanceType: g4dn.xlarge}
+stateDbIdentity:
+  controlAnnotations: {eks.amazonaws.com/role-arn: "arn:aws:iam::000000000000:role/kumo-control"}
+  workerAnnotations: {eks.amazonaws.com/role-arn: "arn:aws:iam::000000000000:role/kumo-worker"}
+  controllerAnnotations: {eks.amazonaws.com/role-arn: "arn:aws:iam::000000000000:role/kumo-controller"}
+tenant:
+  name: acme
+  releaseName: acme
+  namespace: kumo-acme
+  exposureHost: kumo.example.com
+  tenantSecret: {name: kumo-acme-secret-key, key: key}
+  extraValues:
+    auth:
+      enabled: true
+      method: password
+      adminEmails: [admin@example.com]
+      password:
+        temporaryPassword:
+          secretName: kumo-bootstrap-password
+          secretKey: password

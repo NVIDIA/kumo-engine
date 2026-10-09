@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+]
+all-features = true
+
+# CI runs only `cargo deny check licenses`, so this section is not enforced.
+# It records the advisories accepted on purpose. cargo-deny's default
+# `unsound = "workspace"` scope reports unsound advisories only for direct
+# dependencies, so `cargo deny check advisories` warns `advisory-not-detected`
+# for the transitive maligned entry below. Keep it: cargo-audit and
+# Dependabot do report it.
+#
+# lru (RUSTSEC-2026-0002, RUSTSEC-2026-0253) is not ignored here. It arrives
+# only through ratatui behind the off-by-default TUI features, so it is absent
+# from the shipped artifacts' dependency graphs
+# (third_party/artifact-manifest.json), but it is still in Cargo.lock.
+[advisories]
+ignore = [
+    # maligned 0.2.1 comes in through epserde 0.8 and mem_dbg 0.3, under
+    # diskgraph-ptrhash's MPHF index serialization.
+    { id = "RUSTSEC-2023-0017", reason = "maligned::align_first is never called; removing maligned needs an epserde major bump that changes the on-disk index format" },
+]
+
+[licenses]
+confidence-threshold = 0.93
+unused-allowed-license = "allow"
+allow = [
+    "MIT",
+    "MIT-0",
+    "MIT-CMU",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "ISC",
+    "Zlib",
+    "BSL-1.0",
+    "Unlicense",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "PSF-2.0",
+    "Python-2.0",
+    "OLDAP-2.8",
+]
+private = { ignore = true }
+
+# Weak-copyleft, data-license, and proprietary licenses are intentionally not
+# blanket-allowed. OSRB-6649311 covers option-ext 0.2.0 in the broader
+# all-features policy graph. It is unmodified, its MPL-2.0 file must be
+# retained, and the corresponding source must remain available. The crate is
+# reachable only through the optional ingest TUI and is absent from the two
+# redistributed artifact manifests.
+exceptions = [
+    { allow = ["MPL-2.0"], name = "option-ext", version = "=0.2.0" },
+]

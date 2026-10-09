@@ -1,0 +1,1384 @@
+{
+  "tables": [
+    {
+      "cols": [
+        {
+          "name": "AMOUNT",
+          "stype": "numerical",
+          "dtype": "int",
+          "timestamp_format": null
+        },
+        {
+          "name": "DURATION",
+          "stype": "categorical",
+          "dtype": "int",
+          "timestamp_format": null
+        },
+        {
+          "name": "PAYMENTS",
+          "stype": "numerical",
+          "dtype": "float",
+          "timestamp_format": null
+        },
+        {
+          "name": "STATUS",
+          "stype": "categorical",
+          "dtype": "string",
+          "timestamp_format": null
+        },
+        {
+          "name": "ACCOUNT_ID",
+          "stype": "ID",
+          "dtype": "int",
+          "timestamp_format": null
+        },
+        {
+          "name": "LOAN_ID",
+          "stype": "ID",
+          "dtype": "int",
+          "timestamp_format": null
+        },
+        {
+          "name": "DATE",
+          "stype": "timestamp",
+          "dtype": "date",
+          "timestamp_format": null
+        }
+      ],
+      "source_table": {
+        "connector_id": "financial_e2e_csv_local_connector",
+        "source": {"path": "LOAN", "mode": "relative"},
+        "file_type": "CSV",
+        "data_source_type": "S3"
+      },
+      "pkey": "LOAN_ID",
+      "time_col": "DATE",
+      "end_time_col": null
+    },
+    {
+      "cols": [
+        {
+          "name": "DISP_ID",
+          "stype": "ID",
+          "dtype": "int",
+          "timestamp_format": null
+        },
+        {
+          "name": "CLIENT_ID",
+          "stype": "ID",
+          "dtype": "int",
+          "timestamp_format": null
+        },
+        {
+          "name": "ACCOUNT_ID",
+          "stype": "ID",
+          "dtype": "int",
+          "timestamp_format": null
+        },
+        {
+          "name": "TYPE",
+          "stype": "categorical",
+          "dtype": "string",
+          "timestamp_format": null
+        }
+      ],
+      "source_table": {
+        "connector_id": "financial_csv_local_connector",
+        "source": {"path": "DISP", "mode": "relative"},
+        "file_type": "CSV",
+        "data_source_type": "S3"
+      },
+      "pkey": "DISP_ID",
+      "time_col": null,
+      "end_time_col": null
+    },
+    {
+      "cols": [
+        {
+          "name": "CLIENT_ID",
+          "stype": "ID",
+          "dtype": "int",
+          "timestamp_format": null
+        },
+        {
+          "name": "GENDER",
+          "stype": "categorical",
+          "dtype": "string",
+          "timestamp_format": null
+        },
+        {
+          "name": "DISTRICT_ID",
+          "stype": "ID",
+          "dtype": "int",
+          "timestamp_format": null
+        }
+      ],
+      "source_table": {
+        "connector_id": "financial_csv_local_connector",
+        "source": {"path": "CLIENT", "mode": "relative"},
+        "file_type": "CSV",
+        "data_source_type": "S3"
+      },
+      "pkey": "CLIENT_ID",
+      "time_col": null,
+      "end_time_col": null
+    },
+    {
+      "cols": [
+        {
+          "name": "TYPE",
+          "stype": "categorical",
+          "dtype": "string",
+          "timestamp_format": null
+        },
+        {
+          "name": "OPERATION",
+          "stype": "categorical",
+          "dtype": "string",
+          "timestamp_format": null
+        },
+        {
+          "name": "AMOUNT",
+          "stype": "numerical",
+          "dtype": "float",
+          "timestamp_format": null
+        },
+        {
+          "name": "BALANCE",
+          "stype": "numerical",
+          "dtype": "float",
+          "timestamp_format": null
+        },
+        {
+          "name": "K_SYMBOL",
+          "stype": "categorical",
+          "dtype": "string",
+          "timestamp_format": null
+        },
+        {
+          "name": "ACCOUNT_ID",
+          "stype": "ID",
+          "dtype": "int",
+          "timestamp_format": null
+        },
+        {
+          "name": "TRANS_ID",
+          "stype": "ID",
+          "dtype": "int",
+          "timestamp_format": null
+        },
+        {
+          "name": "DATE",
+          "stype": "timestamp",
+          "dtype": "date",
+          "timestamp_format": null
+        }
+      ],
+      "source_table": {
+        "connector_id": "financial_csv_local_connector",
+        "source": {"path": "TRANS", "mode": "relative"},
+        "file_type": "CSV",
+        "data_source_type": "S3"
+      },
+      "pkey": "TRANS_ID",
+      "time_col": "DATE",
+      "end_time_col": null
+    },
+    {
+      "cols": [
+        {
+          "name": "FREQUENCY",
+          "stype": "categorical",
+          "dtype": "string",
+          "timestamp_format": null
+        },
+        {
+          "name": "DATE",
+          "stype": "timestamp",
+          "dtype": "date",
+          "timestamp_format": null
+        },
+        {
+          "name": "DISTRICT_ID",
+          "stype": "ID",
+          "dtype": "int",
+          "timestamp_format": null
+        },
+        {
+          "name": "ACCOUNT_ID",
+          "stype": "ID",
+          "dtype": "int",
+          "timestamp_format": null
+        }
+      ],
+      "source_table": {
+        "connector_id": "financial_csv_local_connector",
+        "source": {"path": "ACCOUNT", "mode": "relative"},
+        "file_type": "CSV",
+        "data_source_type": "S3"
+      },
+      "pkey": "ACCOUNT_ID",
+      "time_col": null,
+      "end_time_col": null
+    },
+    {
+      "cols": [
+        {
+          "name": "TYPE",
+          "stype": "categorical",
+          "dtype": "string",
+          "timestamp_format": null
+        },
+        {
+          "name": "OPERATION",
+          "stype": "categorical",
+          "dtype": "string",
+          "timestamp_format": null
+        },
+        {
+          "name": "AMOUNT",
+          "stype": "numerical",
+          "dtype": "float",
+          "timestamp_format": null
+        },
+        {
+          "name": "BALANCE",
+          "stype": "numerical",
+          "dtype": "float",
+          "timestamp_format": null
+        },
+        {
+          "name": "K_SYMBOL",
+          "stype": "categorical",
+          "dtype": "string",
+          "timestamp_format": null
+        },
+        {
+          "name": "ACCOUNT_ID",
+          "stype": "ID",
+          "dtype": "int",
+          "timestamp_format": null
+        },
+        {
+          "name": "TRANS_ID",
+          "stype": "ID",
+          "dtype": "int",
+          "timestamp_format": null
+        },
+        {
+          "name": "DATE",
+          "stype": "timestamp",
+          "dtype": "time",
+          "timestamp_format": null
+        }
+      ],
+      "source_table": {
+        "connector_id": "financial_csv_local_connector",
+        "source": {"path": "TRANS2", "mode": "relative"},
+        "file_type": "CSV",
+        "data_source_type": "S3"
+      },
+      "pkey": "TRANS_ID",
+      "time_col": "DATE",
+      "end_time_col": null
+    },
+    {
+      "cols": [
+        {
+          "name": "PRICE_RATE",
+          "stype": "numerical",
+          "dtype": "int",
+          "timestamp_format": null
+        },
+        {
+          "name": "CATALOG_PRICE",
+          "stype": "numerical",
+          "dtype": "int",
+          "timestamp_format": null
+        },
+        {
+          "name": "DISCOUNT_PRICE",
+          "stype": "numerical",
+          "dtype": "int",
+          "timestamp_format": null
+        },
+        {
+          "name": "DISPFROM",
+          "stype": "timestamp",
+          "dtype": "date",
+          "timestamp_format": null
+        },
+        {
+          "name": "DISPEND",
+          "stype": "timestamp",
+          "dtype": "date",
+          "timestamp_format": null
+        },
+        {
+          "name": "COUPON_ID_HASH",
+          "stype": "ID",
+          "dtype": "string",
+          "timestamp_format": null
+        }
+      ],
+      "source_table": {
+        "connector_id": "coupon_purchase_prediction_csv_local_connector",
+        "source": {"path": "COUPON_LIST", "mode": "relative"},
+        "file_type": "CSV",
+        "data_source_type": "S3"
+      },
+      "pkey": "COUPON_ID_HASH",
+      "time_col": "DISPFROM",
+      "end_time_col": "DISPEND"
+    },
+    {
+      "cols": [
+        {
+          "name": "ITEM_COUNT",
+          "stype": "numerical",
+          "dtype": "int",
+          "timestamp_format": null
+        },
+        {
+          "name": "I_DATE",
+          "stype": "timestamp",
+          "dtype": "date",
+          "timestamp_format": null
+        },
+        {
+          "name": "USER_ID_HASH",
+          "stype": "ID",
+          "dtype": "string",
+          "timestamp_format": null
+        },
+        {
+          "name": "COUPON_ID_HASH",
+          "stype": "ID",
+          "dtype": "string",
+          "timestamp_format": null
+        },
+        {
+          "name": "PURCHASEID_HASH",
+          "stype": "ID",
+          "dtype": "string",
+          "timestamp_format": null
+        }
+      ],
+      "source_table": {
+        "connector_id": "coupon_purchase_prediction_csv_local_connector",
+        "source": {"path": "COUPON_DETAIL", "mode": "relative"},
+        "file_type": "CSV",
+        "data_source_type": "S3"
+      },
+      "pkey": "PURCHASEID_HASH",
+      "time_col": "I_DATE",
+      "end_time_col": null
+    },
+    {
+      "cols": [
+        {
+          "name": "REG_DATE",
+          "stype": "timestamp",
+          "dtype": "date",
+          "timestamp_format": null
+        },
+        {
+          "name": "WITHDRAW_DATE",
+          "stype": "timestamp",
+          "dtype": "date",
+          "timestamp_format": null
+        },
+        {
+          "name": "AGE",
+          "stype": "numerical",
+          "dtype": "int",
+          "timestamp_format": null
+        },
+        {
+          "name": "SEX_ID",
+          "stype": "categorical",
+          "dtype": "string",
+          "timestamp_format": null
+        },
+        {
+          "name": "PREF_NAME",
+          "stype": "categorical",
+          "dtype": "string",
+          "timestamp_format": null
+        },
+        {
+          "name": "USER_ID_HASH",
+          "stype": "ID",
+          "dtype": "string",
+          "timestamp_format": null
+        }
+      ],
+      "source_table": {
+        "connector_id": "coupon_purchase_prediction_csv_local_connector",
+        "source": {"path": "USER_LIST", "mode": "relative"},
+        "file_type": "CSV",
+        "data_source_type": "S3"
+      },
+      "pkey": "USER_ID_HASH",
+      "time_col": "REG_DATE",
+      "end_time_col": "WITHDRAW_DATE"
+    }
+  ],
+  "graphs": [
+    {
+      "tables": {
+        "ACCOUNT": {
+          "cols": [
+            {
+              "name": "FREQUENCY",
+              "stype": "categorical",
+              "dtype": "string",
+              "timestamp_format": null
+            },
+            {
+              "name": "DATE",
+              "stype": "timestamp",
+              "dtype": "date",
+              "timestamp_format": null
+            },
+            {
+              "name": "DISTRICT_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "ACCOUNT_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            }
+          ],
+          "source_table": {
+            "connector_id": "financial_csv_local_connector",
+            "source": {"path": "ACCOUNT", "mode": "relative"},
+            "file_type": "CSV",
+            "data_source_type": "S3"
+          },
+          "pkey": "ACCOUNT_ID",
+          "time_col": null,
+          "end_time_col": null
+        },
+        "LOAN": {
+          "cols": [
+            {
+              "name": "AMOUNT",
+              "stype": "numerical",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "DURATION",
+              "stype": "categorical",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "PAYMENTS",
+              "stype": "numerical",
+              "dtype": "float",
+              "timestamp_format": null
+            },
+            {
+              "name": "STATUS",
+              "stype": "categorical",
+              "dtype": "string",
+              "timestamp_format": null
+            },
+            {
+              "name": "ACCOUNT_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "LOAN_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "DATE",
+              "stype": "timestamp",
+              "dtype": "date",
+              "timestamp_format": null
+            }
+          ],
+          "source_table": {
+            "connector_id": "financial_e2e_csv_local_connector",
+            "source": {"path": "LOAN", "mode": "relative"},
+            "file_type": "CSV",
+            "data_source_type": "S3"
+          },
+          "pkey": "LOAN_ID",
+          "time_col": "DATE",
+          "end_time_col": null
+        },
+        "TRANS": {
+          "cols": [
+            {
+              "name": "TYPE",
+              "stype": "categorical",
+              "dtype": "string",
+              "timestamp_format": null
+            },
+            {
+              "name": "OPERATION",
+              "stype": "categorical",
+              "dtype": "string",
+              "timestamp_format": null
+            },
+            {
+              "name": "AMOUNT",
+              "stype": "numerical",
+              "dtype": "float",
+              "timestamp_format": null
+            },
+            {
+              "name": "BALANCE",
+              "stype": "numerical",
+              "dtype": "float",
+              "timestamp_format": null
+            },
+            {
+              "name": "K_SYMBOL",
+              "stype": "categorical",
+              "dtype": "string",
+              "timestamp_format": null
+            },
+            {
+              "name": "ACCOUNT_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "TRANS_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "DATE",
+              "stype": "timestamp",
+              "dtype": "date",
+              "timestamp_format": null
+            }
+          ],
+          "source_table": {
+            "connector_id": "financial_csv_local_connector",
+            "source": {"path": "TRANS", "mode": "relative"},
+            "file_type": "CSV",
+            "data_source_type": "S3"
+          },
+          "pkey": "TRANS_ID",
+          "time_col": "DATE",
+          "end_time_col": null
+        }
+      },
+      "col_groups": [
+        {
+          "columns": [
+            {
+              "table_name": "ACCOUNT",
+              "col_name": "ACCOUNT_ID"
+            },
+            {
+              "table_name": "LOAN",
+              "col_name": "ACCOUNT_ID"
+            },
+            {
+              "table_name": "TRANS",
+              "col_name": "ACCOUNT_ID"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tables": {
+        "ACCOUNT": {
+          "cols": [
+            {
+              "name": "FREQUENCY",
+              "stype": "categorical",
+              "dtype": "string",
+              "timestamp_format": null
+            },
+            {
+              "name": "DATE",
+              "stype": "timestamp",
+              "dtype": "date",
+              "timestamp_format": null
+            },
+            {
+              "name": "DISTRICT_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "ACCOUNT_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            }
+          ],
+          "source_table": {
+            "connector_id": "financial_csv_local_connector",
+            "source": {"path": "ACCOUNT", "mode": "relative"},
+            "file_type": "CSV",
+            "data_source_type": "S3"
+          },
+          "pkey": "ACCOUNT_ID",
+          "time_col": null,
+          "end_time_col": null
+        },
+        "LOAN": {
+          "cols": [
+            {
+              "name": "AMOUNT",
+              "stype": "numerical",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "DURATION",
+              "stype": "categorical",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "PAYMENTS",
+              "stype": "numerical",
+              "dtype": "float",
+              "timestamp_format": null
+            },
+            {
+              "name": "STATUS",
+              "stype": "categorical",
+              "dtype": "string",
+              "timestamp_format": null
+            },
+            {
+              "name": "ACCOUNT_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "LOAN_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "DATE",
+              "stype": "timestamp",
+              "dtype": "date",
+              "timestamp_format": null
+            }
+          ],
+          "source_table": {
+            "connector_id": "financial_e2e_csv_local_connector",
+            "source": {"path": "LOAN", "mode": "relative"},
+            "file_type": "CSV",
+            "data_source_type": "S3"
+          },
+          "pkey": "LOAN_ID",
+          "time_col": "DATE",
+          "end_time_col": null
+        },
+        "TRANS2": {
+          "cols": [
+            {
+              "name": "TYPE",
+              "stype": "categorical",
+              "dtype": "string",
+              "timestamp_format": null
+            },
+            {
+              "name": "OPERATION",
+              "stype": "categorical",
+              "dtype": "string",
+              "timestamp_format": null
+            },
+            {
+              "name": "AMOUNT",
+              "stype": "numerical",
+              "dtype": "float",
+              "timestamp_format": null
+            },
+            {
+              "name": "BALANCE",
+              "stype": "numerical",
+              "dtype": "float",
+              "timestamp_format": null
+            },
+            {
+              "name": "K_SYMBOL",
+              "stype": "categorical",
+              "dtype": "string",
+              "timestamp_format": null
+            },
+            {
+              "name": "ACCOUNT_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "TRANS_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "DATE",
+              "stype": "timestamp",
+              "dtype": "time",
+              "timestamp_format": null
+            }
+          ],
+          "source_table": {
+            "connector_id": "financial_csv_local_connector",
+            "source": {"path": "TRANS2", "mode": "relative"},
+            "file_type": "CSV",
+            "data_source_type": "S3"
+          },
+          "pkey": "TRANS_ID",
+          "time_col": "DATE",
+          "end_time_col": null
+        }
+      },
+      "col_groups": [
+        {
+          "columns": [
+            {
+              "table_name": "ACCOUNT",
+              "col_name": "ACCOUNT_ID"
+            },
+            {
+              "table_name": "LOAN",
+              "col_name": "ACCOUNT_ID"
+            },
+            {
+              "table_name": "TRANS2",
+              "col_name": "ACCOUNT_ID"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tables": {
+        "ACCOUNT": {
+          "cols": [
+            {
+              "name": "FREQUENCY",
+              "stype": "categorical",
+              "dtype": "string",
+              "timestamp_format": null
+            },
+            {
+              "name": "DATE",
+              "stype": "timestamp",
+              "dtype": "date",
+              "timestamp_format": null
+            },
+            {
+              "name": "DISTRICT_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "ACCOUNT_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            }
+          ],
+          "source_table": {
+            "connector_id": "financial_csv_local_connector",
+            "source": {"path": "ACCOUNT", "mode": "relative"},
+            "file_type": "CSV",
+            "data_source_type": "S3"
+          },
+          "pkey": "ACCOUNT_ID",
+          "time_col": null,
+          "end_time_col": null
+        },
+        "TRANS": {
+          "cols": [
+            {
+              "name": "TYPE",
+              "stype": "categorical",
+              "dtype": "string",
+              "timestamp_format": null
+            },
+            {
+              "name": "OPERATION",
+              "stype": "categorical",
+              "dtype": "string",
+              "timestamp_format": null
+            },
+            {
+              "name": "AMOUNT",
+              "stype": "numerical",
+              "dtype": "float",
+              "timestamp_format": null
+            },
+            {
+              "name": "BALANCE",
+              "stype": "numerical",
+              "dtype": "float",
+              "timestamp_format": null
+            },
+            {
+              "name": "K_SYMBOL",
+              "stype": "categorical",
+              "dtype": "string",
+              "timestamp_format": null
+            },
+            {
+              "name": "ACCOUNT_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "TRANS_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "DATE",
+              "stype": "timestamp",
+              "dtype": "date",
+              "timestamp_format": null
+            }
+          ],
+          "source_table": {
+            "connector_id": "financial_csv_local_connector",
+            "source": {"path": "TRANS", "mode": "relative"},
+            "file_type": "CSV",
+            "data_source_type": "S3"
+          },
+          "pkey": "TRANS_ID",
+          "time_col": "DATE",
+          "end_time_col": null
+        }
+      },
+      "col_groups": [
+        {
+          "columns": [
+            {
+              "table_name": "ACCOUNT",
+              "col_name": "ACCOUNT_ID"
+            },
+            {
+              "table_name": "TRANS",
+              "col_name": "ACCOUNT_ID"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tables": {
+        "ACCOUNT": {
+          "cols": [
+            {
+              "name": "FREQUENCY",
+              "stype": "categorical",
+              "dtype": "string",
+              "timestamp_format": null
+            },
+            {
+              "name": "DATE",
+              "stype": "timestamp",
+              "dtype": "date",
+              "timestamp_format": null
+            },
+            {
+              "name": "DISTRICT_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "ACCOUNT_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            }
+          ],
+          "source_table": {
+            "connector_id": "financial_csv_local_connector",
+            "source": {"path": "ACCOUNT", "mode": "relative"},
+            "file_type": "CSV",
+            "data_source_type": "S3"
+          },
+          "pkey": "ACCOUNT_ID",
+          "time_col": null,
+          "end_time_col": null
+        },
+        "DISP": {
+          "cols": [
+            {
+              "name": "DISP_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "CLIENT_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "ACCOUNT_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "TYPE",
+              "stype": "categorical",
+              "dtype": "string",
+              "timestamp_format": null
+            }
+          ],
+          "source_table": {
+            "connector_id": "financial_csv_local_connector",
+            "source": {"path": "DISP", "mode": "relative"},
+            "file_type": "CSV",
+            "data_source_type": "S3"
+          },
+          "pkey": "DISP_ID",
+          "time_col": null,
+          "end_time_col": null
+        },
+        "CLIENT": {
+          "cols": [
+            {
+              "name": "CLIENT_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "GENDER",
+              "stype": "categorical",
+              "dtype": "string",
+              "timestamp_format": null
+            },
+            {
+              "name": "DISTRICT_ID",
+              "stype": "ID",
+              "dtype": "int",
+              "timestamp_format": null
+            }
+          ],
+          "source_table": {
+            "connector_id": "financial_csv_local_connector",
+            "source": {"path": "CLIENT", "mode": "relative"},
+            "file_type": "CSV",
+            "data_source_type": "S3"
+          },
+          "pkey": "CLIENT_ID",
+          "time_col": null,
+          "end_time_col": null
+        }
+      },
+      "col_groups": [
+        {
+          "columns": [
+            {
+              "table_name": "DISP",
+              "col_name": "CLIENT_ID"
+            },
+            {
+              "table_name": "CLIENT",
+              "col_name": "CLIENT_ID"
+            }
+          ]
+        },
+        {
+          "columns": [
+            {
+              "table_name": "DISP",
+              "col_name": "ACCOUNT_ID"
+            },
+            {
+              "table_name": "ACCOUNT",
+              "col_name": "ACCOUNT_ID"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tables": {
+        "COUPON_LIST": {
+          "cols": [
+            {
+              "name": "PRICE_RATE",
+              "stype": "numerical",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "CATALOG_PRICE",
+              "stype": "numerical",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "DISCOUNT_PRICE",
+              "stype": "numerical",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "DISPFROM",
+              "stype": "timestamp",
+              "dtype": "date",
+              "timestamp_format": null
+            },
+            {
+              "name": "DISPEND",
+              "stype": "timestamp",
+              "dtype": "date",
+              "timestamp_format": null
+            },
+            {
+              "name": "COUPON_ID_HASH",
+              "stype": "ID",
+              "dtype": "string",
+              "timestamp_format": null
+            }
+          ],
+          "source_table": {
+            "connector_id": "coupon_purchase_prediction_csv_local_connector",
+            "source": {"path": "COUPON_LIST", "mode": "relative"},
+            "file_type": "CSV",
+            "data_source_type": "S3"
+          },
+          "pkey": "COUPON_ID_HASH",
+          "time_col": "DISPFROM",
+          "end_time_col": "DISPEND"
+        },
+        "COUPON_DETAIL": {
+          "cols": [
+            {
+              "name": "ITEM_COUNT",
+              "stype": "numerical",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "I_DATE",
+              "stype": "timestamp",
+              "dtype": "date",
+              "timestamp_format": null
+            },
+            {
+              "name": "USER_ID_HASH",
+              "stype": "ID",
+              "dtype": "string",
+              "timestamp_format": null
+            },
+            {
+              "name": "COUPON_ID_HASH",
+              "stype": "ID",
+              "dtype": "string",
+              "timestamp_format": null
+            },
+            {
+              "name": "PURCHASEID_HASH",
+              "stype": "ID",
+              "dtype": "string",
+              "timestamp_format": null
+            }
+          ],
+          "source_table": {
+            "connector_id": "coupon_purchase_prediction_csv_local_connector",
+            "source": {"path": "COUPON_DETAIL", "mode": "relative"},
+            "file_type": "CSV",
+            "data_source_type": "S3"
+          },
+          "pkey": "PURCHASEID_HASH",
+          "time_col": "I_DATE",
+          "end_time_col": null
+        },
+        "USER_LIST": {
+          "cols": [
+            {
+              "name": "REG_DATE",
+              "stype": "timestamp",
+              "dtype": "date",
+              "timestamp_format": null
+            },
+            {
+              "name": "WITHDRAW_DATE",
+              "stype": "timestamp",
+              "dtype": "date",
+              "timestamp_format": null
+            },
+            {
+              "name": "AGE",
+              "stype": "numerical",
+              "dtype": "int",
+              "timestamp_format": null
+            },
+            {
+              "name": "SEX_ID",
+              "stype": "categorical",
+              "dtype": "string",
+              "timestamp_format": null
+            },
+            {
+              "name": "PREF_NAME",
+              "stype": "categorical",
+              "dtype": "string",
+              "timestamp_format": null
+            },
+            {
+              "name": "USER_ID_HASH",
+              "stype": "ID",
+              "dtype": "string",
+              "timestamp_format": null
+            }
+          ],
+          "source_table": {
+            "connector_id": "coupon_purchase_prediction_csv_local_connector",
+            "source": {"path": "USER_LIST", "mode": "relative"},
+            "file_type": "CSV",
+            "data_source_type": "S3"
+          },
+          "pkey": "USER_ID_HASH",
+          "time_col": "REG_DATE",
+          "end_time_col": "WITHDRAW_DATE"
+        }
+      },
+      "col_groups": [
+        {
+          "columns": [
+            {
+              "table_name": "COUPON_DETAIL",
+              "col_name": "COUPON_ID_HASH"
+            },
+            {
+              "table_name": "COUPON_LIST",
+              "col_name": "COUPON_ID_HASH"
+            }
+          ]
+        },
+        {
+          "columns": [
+            {
+              "table_name": "COUPON_DETAIL",
+              "col_name": "USER_ID_HASH"
+            },
+            {
+              "table_name": "USER_LIST",
+              "col_name": "USER_ID_HASH"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "queries": [
+    {
+      "query_str": "PREDICT TRANS.K_SYMBOL FOR EACH TRANS.TRANS_ID",
+      "graph_fpid": "89d338eb5847386ad56945c689834655",
+      "pquery_name": "saas_static_multiclassclassification_base",
+      "description": "",
+      "model_planner_yaml": "",
+      "run_mode": "debug",
+      "task_type": null,
+      "query_type": null,
+      "list_distinct_target_is_array": false,
+      "enable_baselines": false
+    },
+    {
+      "query_str": "PREDICT SUM(LOAN.AMOUNT, 0, 360, days) FOR EACH ACCOUNT.ACCOUNT_ID",
+      "graph_fpid": "89d338eb5847386ad56945c689834655",
+      "pquery_name": "saas_temporal_regression_base",
+      "description": "",
+      "model_planner_yaml": "",
+      "run_mode": "debug",
+      "task_type": null,
+      "query_type": null,
+      "list_distinct_target_is_array": false,
+      "enable_baselines": false
+    },
+    {
+      "query_str": "PREDICT (TRANS.K_SYMBOL = 'DUCHOD') OR (TRANS.K_SYMBOL = 'SLUZBY') FOR EACH TRANS.TRANS_ID",
+      "graph_fpid": "89d338eb5847386ad56945c689834655",
+      "pquery_name": "saas_static_binaryclassification_base",
+      "description": "",
+      "model_planner_yaml": "",
+      "run_mode": "debug",
+      "task_type": null,
+      "query_type": null,
+      "list_distinct_target_is_array": false,
+      "enable_baselines": false
+    },
+    {
+      "query_str": "PREDICT LOAN.AMOUNT FOR EACH LOAN.LOAN_ID",
+      "graph_fpid": "89d338eb5847386ad56945c689834655",
+      "pquery_name": "saas_static_regression_base",
+      "description": "",
+      "model_planner_yaml": "",
+      "run_mode": "debug",
+      "task_type": null,
+      "query_type": null,
+      "list_distinct_target_is_array": false,
+      "enable_baselines": false
+    },
+    {
+      "query_str": "PREDICT LIST_DISTINCT(LOAN.DURATION, 0, 1) RANK TOP 1 FOR EACH ACCOUNT.ACCOUNT_ID",
+      "graph_fpid": "89d338eb5847386ad56945c689834655",
+      "pquery_name": "saas_temporal_multilabelranking_base",
+      "description": "",
+      "model_planner_yaml": "",
+      "run_mode": "debug",
+      "task_type": null,
+      "query_type": null,
+      "list_distinct_target_is_array": false,
+      "enable_baselines": false
+    },
+    {
+      "query_str": "PREDICT LIST_DISTINCT(LOAN.DURATION, 0, 360) CLASSIFY TOP 1 FOR EACH ACCOUNT.ACCOUNT_ID",
+      "graph_fpid": "89d338eb5847386ad56945c689834655",
+      "pquery_name": "saas_temporal_multilabelclassification_base",
+      "description": "",
+      "model_planner_yaml": "",
+      "run_mode": "debug",
+      "task_type": null,
+      "query_type": null,
+      "list_distinct_target_is_array": false,
+      "enable_baselines": false
+    },
+    {
+      "query_str": "PREDICT LAST(LOAN.STATUS, 0, 30) = 'A' FOR EACH ACCOUNT.ACCOUNT_ID",
+      "graph_fpid": "89d338eb5847386ad56945c689834655",
+      "pquery_name": "saas_temporal_binaryclassification_base",
+      "description": "",
+      "model_planner_yaml": "",
+      "run_mode": "debug",
+      "task_type": null,
+      "query_type": null,
+      "list_distinct_target_is_array": false,
+      "enable_baselines": false
+    },
+    {
+      "query_str": "PREDICT FIRST(LOAN.DURATION, 0, 1) FOR EACH ACCOUNT.ACCOUNT_ID",
+      "graph_fpid": "89d338eb5847386ad56945c689834655",
+      "pquery_name": "saas_temporal_multiclassclassification_base",
+      "description": "",
+      "model_planner_yaml": "training_table_generation:\n  split: TimeRangeSplit([('1993-07-05T000000', '1996-01-01T235959'), ('1996-01-02T000000', '1997-06-21T235959'), ('1997-07-01T000000', '1998-12-08T235959')])",
+      "run_mode": "debug",
+      "task_type": null,
+      "query_type": null,
+      "list_distinct_target_is_array": false,
+      "enable_baselines": false
+    },
+    {
+      "query_str": "PREDICT LIST_DISTINCT(DISP.CLIENT_ID) RANK TOP 1 FOR EACH ACCOUNT.ACCOUNT_ID",
+      "graph_fpid": "38c713d1a62ff9a2f7a2f8c031c4e4f6",
+      "pquery_name": "saas_static_linkprediction_base",
+      "description": "",
+      "model_planner_yaml": "model_architecture:\n  module: embedding",
+      "run_mode": "debug",
+      "task_type": null,
+      "query_type": null,
+      "list_distinct_target_is_array": false,
+      "enable_baselines": false
+    },
+    {
+      "query_str": "PREDICT LIST_DISTINCT(COUPON_DETAIL.COUPON_ID_HASH, 0, 15, days) RANK TOP 5 FOR EACH USER_LIST.USER_ID_HASH",
+      "graph_fpid": "a9b591e538fa9480a2efd01eab316105",
+      "pquery_name": "saas_temporal_linkprediction_base",
+      "description": "",
+      "model_planner_yaml": "",
+      "run_mode": "debug",
+      "task_type": null,
+      "query_type": null,
+      "list_distinct_target_is_array": false,
+      "enable_baselines": false
+    },
+    {
+      "query_str": "PREDICT TRANS.K_SYMBOL FOR EACH TRANS.TRANS_ID",
+      "graph_fpid": "89d338eb5847386ad56945c689834655",
+      "pquery_name": "saas_static_multiclassclassification_modelplan",
+      "description": "",
+      "model_planner_yaml": "training_table_generation:\n  split: TemporalSplit([0.8, 0.1, 0.1])\n  task_path_override:\n  train_table_path_override:\ntraining_job:\n  num_experiments: 1\n  metrics:\n  - acc\n  tune_metric: acc\n  refit_trainval: false\n  refit_full: false\n  disable_explain: false\n  manual_seed:\ncolumn_processing:\n  encoder_overrides:\nneighbor_sampling:\n  num_neighbors:\n  - [12, 12]\n  sample_from_entity_table: true\noptimization:\n  max_epochs: 2\n  min_steps_per_epoch: 1\n  max_steps_per_epoch: 100\n  max_val_steps: 100\n  max_test_steps: 200\n  loss:\n  - cross_entropy\n  base_lr:\n  - 0.0001\n  - 0.0005\n  - 0.001\n  - 0.005\n  - 0.01\n  - 0.05\n  weight_decay:\n  - 0.0\n  - 5.0e-08\n  - 5.0e-07\n  - 5.0e-06\n  batch_size:\n  - 512\n  - 1024\n  early_stopping:\n  - min_delta: 0.0\n    patience: 3\n  lr_scheduler:\n  - name: cosine_with_warmup_restarts\n    interval: step\n    kwargs:\n      warmup_ratio_or_steps: 0.1\n  - name: constant_with_warmup\n    interval: step\n    kwargs:\n      warmup_ratio_or_steps: 0.1\n  - name: linear_with_warmup\n    interval: step\n    kwargs:\n      warmup_ratio_or_steps: 0.1\n  - name: cosine_with_warmup\n    interval: step\n    kwargs:\n      warmup_ratio_or_steps: 0.1\nmodel_architecture:\n  channels:\n  - 64\n  - 128\n  - 256\n  num_pre_message_passing_layers:\n  - 0\n  - 1\n  - 2\n  num_post_message_passing_layers:\n  - 1\n  - 2\n  aggregation:\n  - [sum, mean, max]\n  - [sum, mean, min, max, std]\n  activation:\n  - relu\n  - leaky_relu\n  - elu\n  - gelu\n  normalization:\n  - layer_norm\n  use_seq_id:\n  - false",
+      "run_mode": "debug",
+      "task_type": null,
+      "query_type": null,
+      "list_distinct_target_is_array": false,
+      "enable_baselines": false
+    },
+    {
+      "query_str": "PREDICT SUM(LOAN.AMOUNT, 0, 360, days) FOR EACH ACCOUNT.ACCOUNT_ID",
+      "graph_fpid": "89d338eb5847386ad56945c689834655",
+      "pquery_name": "databricks_temporal_regression_base",
+      "description": "",
+      "model_planner_yaml": "",
+      "run_mode": "debug",
+      "task_type": null,
+      "query_type": null,
+      "list_distinct_target_is_array": false,
+      "enable_baselines": false
+    },
+    {
+      "query_str": "PREDICT SUM(LOAN.AMOUNT, 0, 360, days) FOR EACH ACCOUNT.ACCOUNT_ID",
+      "graph_fpid": "25633a69872c33f24aa604e4d9c387e3",
+      "pquery_name": "databricks_temporal_regression_base_timestamp",
+      "description": "",
+      "model_planner_yaml": "",
+      "run_mode": "debug",
+      "task_type": null,
+      "query_type": null,
+      "list_distinct_target_is_array": false,
+      "enable_baselines": false
+    },
+    {
+      "query_str": "PREDICT SUM(LOAN.AMOUNT, 0, 7, days)\nFORECAST 5 TIMEFRAMES\nFOR EACH ACCOUNT.ACCOUNT_ID",
+      "graph_fpid": "89d338eb5847386ad56945c689834655",
+      "pquery_name": "saas_temporal_forecasting_base",
+      "description": "",
+      "model_planner_yaml": "training_table_generation:\n  lag_timesteps: 3",
+      "run_mode": "debug",
+      "task_type": null,
+      "query_type": null,
+      "list_distinct_target_is_array": false,
+      "enable_baselines": false
+    },
+    {
+      "query_str": "PREDICT SUM(LOAN.AMOUNT, 0, 360, days)\nFOR EACH ACCOUNT.ACCOUNT_ID",
+      "graph_fpid": "89d338eb5847386ad56945c689834655",
+      "pquery_name": "saas_temporal_regression_nobpoutputs",
+      "description": "",
+      "model_planner_yaml": "",
+      "run_mode": "debug",
+      "task_type": null,
+      "query_type": null,
+      "list_distinct_target_is_array": false,
+      "enable_baselines": false
+    }
+  ],
+  "predictions": null
+}
