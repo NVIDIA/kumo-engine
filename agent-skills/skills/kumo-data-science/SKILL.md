@@ -1,6 +1,6 @@
 ---
 name: kumo-data-science
-description: "Use for any work with KumoAI predictive models on Snowflake data: train a model, score data with a trained one, or answer questions about an existing model or run — explain its predictions, diagnose its training, publish, reload or retain it, train or score on custom labels or rows, or tune it. Covers churn, propensity, fraud, recommendation, forecasting and link prediction; feature attribution and column cohorts; metrics, trials and learning curves; registry publishing and artifact retention; caller-supplied labels, weights and splits; encoders, run mode and experiments. For a new model it checks that the request names the data, the outcome and the time window, confirms the inferred tables and the task, then generates one notebook or script; it runs the job only when asked. Triggers: kumo, predict, churn, recommend, forecast, fraud, train a model, run inference, explain a prediction, feature importance, model metrics, publish or load a model, tune a model."
+description: "Use for any work with KumoAI predictive models on Snowflake data: train a model, score data with a trained one, or answer questions about an existing model or run — explain its predictions, diagnose its training, publish, reload or retain it, train or score on custom labels or rows, or tune it. Covers churn, propensity, fraud, recommendation, forecasting and link prediction; feature attribution and column cohorts; metrics, trials and learning curves; registry publishing and artifact retention; caller-supplied labels, weights and splits; encoders, run mode and experiments. For a new model it checks that the request names the data (a schema, connector, or semantic view), the outcome and the time window, confirms the inferred tables and the task, then generates one notebook or script; it runs the job only when asked. Triggers: kumo, predict, churn, recommend, forecast, fraud, train a model, run inference, explain a prediction, feature importance, model metrics, publish or load a model, tune a model, semantic view."
 ---
 
 # Data Science Agent — Router Skill
@@ -92,7 +92,7 @@ Reference: `accept/intake_contract.md`
 First decide the operation: `train` or `batch_inference`.
 
 **`train` — required (ask if missing):**
-- `source_scope` — connector, or database + schema
+- `source_scope` — connector, database + schema, or a semantic view
 - `prediction_entity` — what gets one prediction
 - `prediction_target` — the outcome or interaction, with the positive-label condition
 - `time_window` — `specified` / `not_critical` (static task) / `missing` → ask only when `missing`.
@@ -134,7 +134,7 @@ implements a field they already named** — infer the mapping and show it `[infe
 | Condition | Transition |
 |---|---|
 | Any required field missing | ASK BACK — list exactly the missing fields |
-| `source_scope` given but does not resolve (schema not found / unreadable) | ASK BACK — ask for a valid source; do not guess a similar name |
+| `source_scope` given but does not resolve (schema or semantic view not found / unreadable) | ASK BACK — ask for a valid source; do not guess a similar name |
 | `batch_inference`: `model_address` does not resolve, or the user calls it rejected | ASK BACK — name it as unusable, ask for a corrected identifier; do not guess |
 | `batch_inference`: `output_location` is not a Snowflake table (`s3://`, file path) | ASK BACK — name it as unusable, ask for a Snowflake destination; do not substitute |
 | All required present | proceed to Node 1b |
@@ -156,8 +156,10 @@ Run read-only preflight inside `source_scope`.
 
 Present the graph proposal — seeds, tables,
 primary keys, time columns, links, `table_mode: all-connected [default]` — each line tagged
-`[supplied]` / `[inferred]` / `[inferred, unverified]` / `[default]`. **Stop and wait for
-confirmation.** User-supplied values take precedence over inferred ones.
+`[supplied]` / `[declared]` / `[inferred]` / `[inferred, unverified]` / `[default]`. A semantic
+view is resolved to its base tables, keys and relationships (`accept/preflight.md` §1a); its base
+tables must share one schema. **Stop and wait for confirmation.** User-supplied values take
+precedence over inferred ones.
 
 **Mandatory column-availability pass.** Before presenting the graph, decide the selected columns
 for every included table and add an `Excluded columns` section to the proposal.
@@ -212,6 +214,7 @@ than scoring silently.
 | Condition | Transition |
 |---|---|
 | Seeds cannot be connected without transforming data | REJECT — explain; generate nothing |
+| Semantic view's base tables span more than one schema; a relationship uses a multi-column key, declares a non-equality match, or two relationships reference two different columns of one table; a logical table is defined by a query rather than a base table | ASK BACK — name what was found; do not pick a schema, drop tables, or substitute a link (`accept/preflight.md` §1a) |
 | User corrects a line | re-present the proposal with the correction `[supplied]` |
 | Confirmed proposal still lacks metadata the task requires (entity key, target time column) | remain at Node 1c — explain the correction needed; generate nothing |
 | `batch_inference` and no column selection is recorded with the model | remain at Node 1c — say the training-time selection is unavailable; generate nothing |

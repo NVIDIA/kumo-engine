@@ -223,7 +223,13 @@ WHERE TABLE_SCHEMA ILIKE '<schema>' ORDER BY TABLE_NAME, ORDINAL_POSITION;
 -- declared keys, if any
 SHOW PRIMARY KEYS IN SCHEMA <DB>.<schema>;
 SHOW IMPORTED KEYS IN SCHEMA <DB>.<schema>;
+-- when source_scope is a semantic view: base tables, primary keys, relationships
+DESCRIBE SEMANTIC VIEW <DB>.<schema>.<view>;
 ```
+
+A semantic view is never queried and is not visible to the connector — `connector.table_names()`
+lists only tables and views. Its base tables are what Kumo reads, so the principal needs `SELECT`
+on those tables; access to the view alone is not enough.
 
 Database identifiers written with a hyphen in chat (`synthetic-datasets`) are the same object as
 their underscore form (`SYNTHETIC_DATASETS`) — resolve, do not ask.

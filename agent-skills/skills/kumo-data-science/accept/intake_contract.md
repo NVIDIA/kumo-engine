@@ -53,7 +53,7 @@ Ask only if the request genuinely reads both ways.
 
 | Field | What it must include |
 |---|---|
-| **`source_scope`** | A connector name, **or** a Snowflake database + schema (warehouse optional). This is where tables are enumerated. Credentials are never requested in chat. |
+| **`source_scope`** | A connector name, **or** a Snowflake database + schema (warehouse optional), **or** a fully qualified semantic view (`DB.SCHEMA.VIEW`). This is where tables are enumerated; a semantic view contributes exactly its base tables, which must share one schema (`preflight.md` §1a). Credentials are never requested in chat. |
 | **`prediction_entity`** | What receives one prediction — "each account", "each customer". A physical table/key is welcome but not required; preflight resolves it. |
 | **`prediction_target`** | The observable outcome (classification/regression) or the positive interaction (link prediction), **stated by the user**. For classification this includes the positive-label condition — "at least one fraud event"; "predict fraud" alone leaves it missing. For link prediction and ranking it includes the **item** being recommended and the **interaction** that counts as positive — "spare-part families the customer ordered"; "recommend to customers" alone leaves both missing. |
 | **`time_window`** | Tri-state. `specified` ("next 30 days") → pass. `not_critical` → the task is static (no temporal component: static link prediction, static regression/classification) → pass, do not ask. `missing` → the task is temporal and no window was given → ASK BACK. Decide static vs. temporal with the test below. |
@@ -76,7 +76,7 @@ If the task is static, restate `Window: static` at the task gate and do not ask.
 may still be used as the graph's time column — that is structure, not a window.
 
 A request that names the dataset ("the e-commerce fraud dataset", a schema name) has supplied
-`source_scope` if that name resolves to a database and schema. Do not ask the user to restate a
+`source_scope` if that name resolves to a database and schema, or to a semantic view. Do not ask the user to restate a
 location they have already given in an earlier turn.
 
 ## `train` — inferred, then confirmed (never ask)
@@ -84,8 +84,8 @@ location they have already given in an earlier turn.
 | Field | How it is obtained |
 |---|---|
 | **seed tables** | The physical tables behind the entity and the target, found by preflight inside `source_scope` |
-| **primary keys, time columns** | Preflight; each shown as `[inferred]` unless the user stated it (`[supplied]`). A key that preflight could only fail to disqualify is shown `[inferred, unverified]` and must be confirmed before the table can be an entity or an edge destination |
-| **links** | Preflight; shown as `[inferred]` |
+| **primary keys, time columns** | Preflight; each shown as `[inferred]` unless the user stated it (`[supplied]`) or a semantic view declares it (`[declared]`). A key that preflight could only fail to disqualify is shown `[inferred, unverified]` and must be confirmed before the table can be an entity or an edge destination |
+| **links** | Preflight; shown as `[inferred]`, or `[declared]` when read from a semantic view |
 | **`table_mode`** | Default `all-connected` — every table reachable from the seeds. Shown as `[default]` in the graph proposal; the user may switch to `named-table` there. |
 
 User-supplied values always win over inferred ones.

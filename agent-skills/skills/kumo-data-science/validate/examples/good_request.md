@@ -105,6 +105,34 @@ agent asks for exactly those two, nothing about schema or output.
 
 ---
 
+## Variant: the source is a semantic view
+
+> "Train a churn model on the semantic view `SALES_DB.ML.CHURN_SV`. Entity: each customer.
+> Outcome: no order in the next 60 days."
+
+Node 1a: `source_scope` is the semantic view ✓ — nothing else is asked. At Node 1c the agent runs
+`DESCRIBE SEMANTIC VIEW`, finds three base tables, all in `SALES_DB.ML`, and replies — then stops:
+
+> Source scope: semantic view `SALES_DB.ML.CHURN_SV` [supplied] — 3 base tables in `SALES_DB.ML`
+> Table mode: all-connected [default] — 3 of 3 tables reachable from the seeds
+>
+> **Metadata**
+> - customer_profile: primary key customer_id [declared]
+> - orders: primary key order_id [declared]; time column ordered_at [inferred]
+> - support_tickets: primary key ticket_id [declared]; time column opened_at [inferred]
+>
+> **Links**
+> - orders.customer_id -> customer_profile.customer_id [declared]
+> - support_tickets.customer_id -> customer_profile.customer_id [declared]
+>
+> Confirm, or correct any line — your values take precedence.
+
+The proposal uses the physical names (`customer_profile`, not the view's logical `CUSTOMERS`),
+lists only the view's three tables even if `SALES_DB.ML` holds more, and the connector is built on
+`SALES_DB` / `ML`. The view's metrics play no part — the outcome is still the user's words.
+
+---
+
 ## Variant: batch inference with a saved model
 
 > "Load trained model `trainingjob-benchmark-001` and write current batch predictions through

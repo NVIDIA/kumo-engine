@@ -47,6 +47,22 @@ Preflight: schema not found in `USER_DATA`.
 
 ---
 
+## 3b. Semantic view spans more than one schema → ASK BACK
+
+> "Predict 30-day churn for each customer using the semantic view `SALES_DB.ML.CHURN_SV`.
+> Churn means no order in the window."
+
+Preflight: `DESCRIBE SEMANTIC VIEW` finds base tables in two schemas — `customer_profile` in
+`SALES_DB.CRM`, `orders` in `SALES_DB.ML`.
+
+> "`CHURN_SV` reads from two schemas — `SALES_DB.CRM` (customer_profile) and `SALES_DB.ML`
+> (orders). I can only build a graph from tables in a single schema. Could you point me to a
+> semantic view or a schema where these tables sit together?"
+
+Not done: picking one schema, dropping a table, or copying data across schemas.
+
+---
+
 ## 4. Batch inference missing its destination → ASK BACK
 
 > "Use trained model `trainingjob-abc123` to score current accounts."
