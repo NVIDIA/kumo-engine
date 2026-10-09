@@ -1,9 +1,9 @@
 {
   "source_repository": "kumo-ai/kumo-diskgraph",
-  "source_sha": "16fbd46a25b6cded0be00c18ffdbbb74ebf4c29d",
-  "source_reachable_commit_count": 1096,
+  "source_sha": "1e8460dc78ee32e9d07cc8236e1cb250d5f5f0bf",
+  "source_reachable_commit_count": 1097,
   "import_prefix": "packages/diskgraph",
-  "file_count": 386,
+  "file_count": 388,
   "entries": [
     {
       "source_path": ".cargo/config.toml",
@@ -1816,7 +1816,7 @@
       "destination_path": "packages/diskgraph/diskgraph-pybind/python/diskgraph/tt_artifacts.py",
       "mode": "100644",
       "type": "blob",
-      "blob": "f28ab7ead350e0a4663a7e0767d6b9663fdb7918"
+      "blob": "9fc993ee8442439d1dd86c25e7c83be98b1c66bc"
     },
     {
       "source_path": "diskgraph-pybind/python/tests/bench_runtime_batch_iterator.py",
@@ -1907,7 +1907,7 @@
       "destination_path": "packages/diskgraph/diskgraph-pybind/python/tests/test_runtime_batch_iterator_e2e.py",
       "mode": "100644",
       "type": "blob",
-      "blob": "8b5cdb3afaf00e7b355a12976475cc103c65aebd"
+      "blob": "64273532e8697a12dec22c7c67fae1cf3ba038cd"
     },
     {
       "source_path": "diskgraph-pybind/python/tests/test_sampling.py",
@@ -1936,6 +1936,13 @@
       "mode": "100644",
       "type": "blob",
       "blob": "e77c324e4b2ff6fbfa6c9fe83c707e25a5a1aae8"
+    },
+    {
+      "source_path": "diskgraph-pybind/python/tests/test_tt_artifacts_row_warnings.py",
+      "destination_path": "packages/diskgraph/diskgraph-pybind/python/tests/test_tt_artifacts_row_warnings.py",
+      "mode": "100644",
+      "type": "blob",
+      "blob": "b5d4761a12f15435114a4a382727e975abd255d8"
     },
     {
       "source_path": "diskgraph-pybind/python/tests/test_tt_artifacts_split_marshalling.py",
@@ -1984,7 +1991,7 @@
       "destination_path": "packages/diskgraph/diskgraph-pybind/src/custom_tt_entry.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "ab3435a97030399c5253482ffa875c4dd4fe6aba"
+      "blob": "423473e9228815c9570a2bfa0d02a2f7b24bb734"
     },
     {
       "source_path": "diskgraph-pybind/src/index_metadata.rs",
@@ -2047,21 +2054,21 @@
       "destination_path": "packages/diskgraph/diskgraph-pybind/src/tt_executor/pseudo_time_cutoff_tests.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "62e71cb7f2f957ac2cc99dec43e67b3c2aa68282"
+      "blob": "8c61ccc9af3a419311ac8c5571267db0db0ccedf"
     },
     {
       "source_path": "diskgraph-pybind/src/tt_executor/pseudo_time_tests.rs",
       "destination_path": "packages/diskgraph/diskgraph-pybind/src/tt_executor/pseudo_time_tests.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "111c0a8215ef5090ef83907cd1a7969c35bbd985"
+      "blob": "d455d39b207538c70cb67ade6cfc3fa50d0aa0cd"
     },
     {
       "source_path": "diskgraph-pybind/src/tt_executor/tests.rs",
       "destination_path": "packages/diskgraph/diskgraph-pybind/src/tt_executor/tests.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "ee44af35a954c26ab3c114191dd24755f6319ae6"
+      "blob": "5248f27b0ab52ef2244459428b8669da747720ac"
     },
     {
       "source_path": "diskgraph-rowpack/Cargo.toml",
@@ -2201,7 +2208,14 @@
       "destination_path": "packages/diskgraph/diskgraph-train-table/src/custom_tt_chunk_processor.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "d055cae4f695d1130d54e2a5b41cb830a6669bee"
+      "blob": "2ce3c1e0ea4674dd09884c136b2f50609a5c68f6"
+    },
+    {
+      "source_path": "diskgraph-train-table/src/custom_tt_row_errors.rs",
+      "destination_path": "packages/diskgraph/diskgraph-train-table/src/custom_tt_row_errors.rs",
+      "mode": "100644",
+      "type": "blob",
+      "blob": "a144ddd13d4cc506899cf70fa73df1551eafda94"
     },
     {
       "source_path": "diskgraph-train-table/src/errors.rs",
@@ -2215,21 +2229,21 @@
       "destination_path": "packages/diskgraph/diskgraph-train-table/src/kumo_contract_bridge.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "f75d376729f78ed0438bbe629a172f053f8b9561"
+      "blob": "4a4255e534dbbf6dea42073c9c7b06c156fbfcb9"
     },
     {
       "source_path": "diskgraph-train-table/src/lib.rs",
       "destination_path": "packages/diskgraph/diskgraph-train-table/src/lib.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "d3f0a85e2e474d8aba608eb41f99edb4ef314c88"
+      "blob": "95b59db7fe4a3857deae15442c05006bea93e3f0"
     },
     {
       "source_path": "diskgraph-train-table/src/manifest.rs",
       "destination_path": "packages/diskgraph/diskgraph-train-table/src/manifest.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "12bd164f14095274ade276536ac8a2b6e3e807c5"
+      "blob": "346819b99cb380b2ce9780f3e63240bbd8899e8a"
     },
     {
       "source_path": "diskgraph-train-table/src/parquet_dataset.rs",
@@ -2271,7 +2285,7 @@
       "destination_path": "packages/diskgraph/diskgraph-train-table/src/split_decider.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "2471c7d7fb04f3c32ab4ab4462f0c19bc0f425c4"
+      "blob": "1ee00a15d72981f750f24002c2177f858ee1065c"
     },
     {
       "source_path": "diskgraph-train-table/src/split_stats.rs",
@@ -2299,7 +2313,7 @@
       "destination_path": "packages/diskgraph/diskgraph-train-table/src/ttgen_executor.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "2b51b745681178ea632f6104169eb365f377ac43"
+      "blob": "1c2b09b0490922066d6fa34e952120e22d623836"
     },
     {
       "source_path": "diskgraph-train-table/src/ttgen_filter.rs",
@@ -2320,14 +2334,14 @@
       "destination_path": "packages/diskgraph/diskgraph-train-table/src/ttgen_resolve.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "5b787f1abe5adf54b65ae316123fc1cd5940fde3"
+      "blob": "1cfd93064ba14c964fbe748f0f467dc3133a7528"
     },
     {
       "source_path": "diskgraph-train-table/src/ttgen_stats.rs",
       "destination_path": "packages/diskgraph/diskgraph-train-table/src/ttgen_stats.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "73367444809225ca76941e2e9cd248fa2ad6a9bc"
+      "blob": "d5eda42b0f1ed52fcd66f8492a66449fe320f465"
     },
     {
       "source_path": "diskgraph-train-table/src/ttgen_traversal.rs",
@@ -2341,14 +2355,14 @@
       "destination_path": "packages/diskgraph/diskgraph-train-table/tests/custom_tt_integration.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "05a36856e18642cc65966ef02a42cb559e7cf9d4"
+      "blob": "b7a5190a6d01da9eb7b08e5ed2428e12a96b80fd"
     },
     {
       "source_path": "diskgraph-train-table/tests/ttgen_e2e.rs",
       "destination_path": "packages/diskgraph/diskgraph-train-table/tests/ttgen_e2e.rs",
       "mode": "100644",
       "type": "blob",
-      "blob": "0c3668123fc10cc321036aa55296583da4a712c9"
+      "blob": "25c25448b8e25a5d225376336be1ad121c10688a"
     },
     {
       "source_path": "diskgraph-train-table/tests/ttgen_integration.rs",

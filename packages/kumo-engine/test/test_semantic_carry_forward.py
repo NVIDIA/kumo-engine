@@ -63,8 +63,8 @@ def _write_prediction_shard(options, frame):
     )
     with writer:
         writer.write(frame)
-    options['artifact_stats_collector'].add_partition(
-        worker, {kind: writer.stats})
+    options['artifact_stats_collector'].add_partition(worker,
+                                                      {kind: writer.stats})
 
 
 @pytest.mark.parametrize('connector_type',
@@ -108,7 +108,8 @@ def test_compile_rejects_invalid_prediction_time(snapshot, tmp_path, value,
                                                  message, monkeypatch):
     generate = Mock(side_effect=AssertionError('must not generate'))
     monkeypatch.setattr(
-        'kumo.engine.pquery.prediction_table.generate_prediction_table', generate)
+        'kumo.engine.pquery.prediction_table.generate_prediction_table',
+        generate)
     parsed = parse_and_validate_query('PREDICT users.label FOR EACH users.id',
                                       normalize_graph(snapshot.graph_config))
     with pytest.raises(ValueError, match=message):
@@ -136,7 +137,8 @@ def test_prediction_admission_before_materialization(snapshot, tmp_path, query,
                         materialize)
     table = PredictionTable(query, tmp_path, tmp_path, 0, 'tt-1', (), ())
     with pytest.raises(ValueError, match=message):
-        trainer.predict(table, snapshot=snapshot, output_config=SimpleNamespace(),
+        trainer.predict(table, snapshot=snapshot,
+                        output_config=SimpleNamespace(),
                         binary_classification_threshold=threshold)
     materialize.assert_not_called()
 
@@ -233,14 +235,14 @@ def test_predict_reuses_generated_table_without_recompiling(
     selected_config['tables'][0]['source_table_name'] = (
         'other.schema.selected_users')
     selected_config['tables'][0]['cols'][0]['encoder'] = {'name': 'Index'}
-    selected_config['tables'][0]['cols'][1]['encoder'] = {
-        'name': 'Numerical'
-    }
+    selected_config['tables'][0]['cols'][1]['encoder'] = {'name': 'Numerical'}
     selected_config['tables'][0]['cols'].append({
         'name': 'income',
         'dtype': 'float64',
         'stype': 'numerical',
-        'encoder': {'name': 'Numerical'},
+        'encoder': {
+            'name': 'Numerical'
+        },
     })
     from kumo.engine.graph import GraphSnapshot
     selected = GraphSnapshot(
@@ -319,8 +321,8 @@ def test_predict_reuses_generated_table_without_recompiling(
     assert request.tt_id == generated.tt_id
     assert request.index_path == str(selected.index_path)
     assert graph_index_id == selected.id
-    selected_features = request.task_dataset.feature_schema[
-        'node_types']['users']['feature_columns']
+    selected_features = request.task_dataset.feature_schema['node_types'][
+        'users']['feature_columns']
     assert selected_features == ['age', 'income']
     assert generated.staging_dir == str(table.staging_dir)
     assert generated.table_path == str(table.table_path)
@@ -348,7 +350,7 @@ def test_predict_requires_an_explicit_snapshot(tmp_path) -> None:
 
 
 def test_fit_consumes_generated_rows_with_fresh_task_metadata(
-        snapshot, tmp_path, monkeypatch) -> None:
+        snapshot, tmp_path, staged_seed_dir, monkeypatch) -> None:
     r"""Fit reuses generated rows and settings but builds task metadata fresh."""
     from kumo_core.model_plan import ModelPlan as CoreModelPlan
     from kumo_core.model_plan import TrainingTableGenerationPlan
@@ -357,12 +359,17 @@ def test_fit_consumes_generated_rows_with_fresh_task_metadata(
 
     from kumo.engine.pquery.training_table import TrainingTable
 
+    # Keep the sentinel lag setting: this adapter test mocks materialization
+    # and checks metadata forwarding, not static-task model-plan admission.
+    monkeypatch.setattr('kumo_core.training.workflow.resolve_model_plan',
+                        lambda *args, **kwargs: None)
+
     generation_plan = TrainingTableGenerationPlan(lag_timesteps=3)
     train_table = TrainingTable(
         query='PREDICT users.label FOR EACH users.id',
         train_table_path=tmp_path / 'train.parquet',
         manifest_path=tmp_path / 'manifest.json',
-        staging_dir=tmp_path / 'staging',
+        staging_dir=staged_seed_dir,
         required_stages=('train', 'val', 'test'),
         generation_plan=generation_plan,
     )
@@ -377,8 +384,9 @@ def test_fit_consumes_generated_rows_with_fresh_task_metadata(
 
     def fake_build(**kwargs):
         built.append(kwargs)
-        return _TaskDataset(job_id=kwargs['run_id'], artifact_root=str(
-            Path(kwargs['artifact_dir']) / 'task_dataset'))
+        return _TaskDataset(
+            job_id=kwargs['run_id'],
+            artifact_root=str(Path(kwargs['artifact_dir']) / 'task_dataset'))
 
     def fake_materialize(request, task_dataset, generated, **kwargs):
         calls.append((request, task_dataset, generated, kwargs.get('tt_id')))
@@ -395,8 +403,11 @@ def test_fit_consumes_generated_rows_with_fresh_task_metadata(
     monkeypatch.setattr(
         'kumo_core.training.orchestration.run_callable_training',
         lambda training_input, **kwargs: SimpleNamespace(
-            metrics={}, artifact_paths={}, explain_disabled=True,
-            best_trainer=SimpleNamespace(log_dir=str(tmp_path))))
+            metrics={},
+            artifact_paths={},
+            explain_disabled=True,
+            best_trainer=SimpleNamespace(log_dir=str(tmp_path)),
+        ))
     monkeypatch.setattr('kumo.engine.trainer.trainer.write_training_spec',
                         lambda *args, **kwargs: None)
 
@@ -429,8 +440,8 @@ def test_fit_consumes_generated_rows_with_fresh_task_metadata(
         ('other-graph@new-data', True, ['label', 'age', 'income']),
     ])
 def test_fit_materializes_existing_rows_against_explicit_snapshot(
-        snapshot, tmp_path, monkeypatch, updated_snapshot_id, add_feature,
-        expected_features) -> None:
+        snapshot, tmp_path, staged_seed_dir, monkeypatch, updated_snapshot_id,
+        add_feature, expected_features) -> None:
     r"""An explicit snapshot supplies graph features, not train-table rows."""
     from kumo_core.model_plan import ModelPlan as CoreModelPlan
     from kumo_core.model_plan import TrainingTableGenerationPlan
@@ -442,12 +453,12 @@ def test_fit_materializes_existing_rows_against_explicit_snapshot(
 
     original_config = copy.deepcopy(snapshot.graph_config)
     original_config['tables'][0]['cols'][0]['encoder'] = {'name': 'Index'}
-    original_config['tables'][0]['cols'][1]['encoder'] = {
-        'name': 'Numerical'
-    }
+    original_config['tables'][0]['cols'][1]['encoder'] = {'name': 'Numerical'}
     original_config['tables'].append({
-        'table_name': 'orders',
-        'source_table_name': 'db.schema.orders',
+        'table_name':
+        'orders',
+        'source_table_name':
+        'db.schema.orders',
         'pkey': {
             'name': 'order_id',
             'dtype': 'int64',
@@ -473,10 +484,12 @@ def test_fit_materializes_existing_rows_against_explicit_snapshot(
             'name': 'income',
             'dtype': 'float64',
             'stype': 'numerical',
-            'encoder': {'name': 'Numerical'},
+            'encoder': {
+                'name': 'Numerical'
+            },
         })
-    updated_snapshot = GraphSnapshot(
-        updated_snapshot_id, tmp_path / 'updated-index', updated_config)
+    updated_snapshot = GraphSnapshot(updated_snapshot_id,
+                                     tmp_path / 'updated-index', updated_config)
 
     def stats(index_path, table_name, mode):
         assert mode == 'full'
@@ -498,7 +511,7 @@ def test_fit_materializes_existing_rows_against_explicit_snapshot(
         query='PREDICT COUNT(orders.*, 0, 1, days) FOR EACH users.id',
         train_table_path=tmp_path / 'rows.parquet',
         manifest_path=tmp_path / 'rows-manifest.json',
-        staging_dir=tmp_path / 'row-staging',
+        staging_dir=staged_seed_dir,
         required_stages=('train', 'val', 'test'),
         generation_plan=generation_plan,
     )
@@ -518,8 +531,11 @@ def test_fit_materializes_existing_rows_against_explicit_snapshot(
     monkeypatch.setattr(
         'kumo_core.training.orchestration.run_callable_training',
         lambda training_input, **kwargs: SimpleNamespace(
-            metrics={}, artifact_paths={}, explain_disabled=True,
-            best_trainer=SimpleNamespace(log_dir=str(tmp_path))))
+            metrics={},
+            artifact_paths={},
+            explain_disabled=True,
+            best_trainer=SimpleNamespace(log_dir=str(tmp_path)),
+        ))
     monkeypatch.setattr('kumo.engine.trainer.trainer.write_training_spec',
                         lambda *args, **kwargs: None)
     monkeypatch.setattr(Trainer, 'scratch_dir',
@@ -545,7 +561,7 @@ def test_fit_materializes_existing_rows_against_explicit_snapshot(
 
 
 def test_fit_uses_selected_graph_task_semantics_without_regenerating_rows(
-        snapshot, tmp_path, monkeypatch) -> None:
+        snapshot, tmp_path, staged_seed_dir, monkeypatch) -> None:
     from kumo_core.model_plan import ModelPlan as CoreModelPlan
     from kumo_core.model_plan import TrainingTableGenerationPlan
     from kumo_core.resolved_task import ResolvedNumericalTask
@@ -557,16 +573,14 @@ def test_fit_uses_selected_graph_task_semantics_without_regenerating_rows(
     monkeypatch.setattr('kumo_core.pquery.read_col_stats',
                         lambda *args: '{"age__MEAN": 42}')
     original_config = copy.deepcopy(snapshot.graph_config)
-    original_config['tables'][0]['cols'][1]['encoder'] = {
-        'name': 'Numerical'
-    }
+    original_config['tables'][0]['cols'][1]['encoder'] = {'name': 'Numerical'}
     original_snapshot = GraphSnapshot(snapshot.id, snapshot.index_path,
                                       original_config)
     train_table = TrainingTable(
         query='PREDICT users.label FOR EACH users.id',
         train_table_path=tmp_path / 'rows.parquet',
         manifest_path=tmp_path / 'rows-manifest.json',
-        staging_dir=tmp_path / 'row-staging',
+        staging_dir=staged_seed_dir,
         required_stages=('train', 'val', 'test'),
         generation_plan=TrainingTableGenerationPlan(),
     )
@@ -593,8 +607,11 @@ def test_fit_uses_selected_graph_task_semantics_without_regenerating_rows(
     monkeypatch.setattr(
         'kumo_core.training.orchestration.run_callable_training',
         lambda training_input, **kwargs: SimpleNamespace(
-            metrics={}, artifact_paths={}, explain_disabled=True,
-            best_trainer=SimpleNamespace(log_dir=str(tmp_path))))
+            metrics={},
+            artifact_paths={},
+            explain_disabled=True,
+            best_trainer=SimpleNamespace(log_dir=str(tmp_path)),
+        ))
     monkeypatch.setattr('kumo.engine.trainer.trainer.write_training_spec',
                         lambda *args, **kwargs: None)
     monkeypatch.setattr(Trainer, 'scratch_dir',
@@ -707,19 +724,20 @@ def test_repeated_predict_calls_get_distinct_ingest_targets(
     assert len(set(tt_ids)) == 3, f"collided ingest targets: {tt_ids}"
     assert 'tt-fixed' not in tt_ids
     assert len({item.job_id for item in task_datasets}) == 3
-    assert all(len(item.job_id.rsplit('-', 1)[-1]) == 32
-               for item in task_datasets)
+    assert all(
+        len(item.job_id.rsplit('-', 1)[-1]) == 32 for item in task_datasets)
     assert len({item.artifact_root for item in task_datasets}) == 3
     assert len(set(model_dirs)) == 3
     for tt_id, task_dataset, model_dir in zip(tt_ids, task_datasets,
                                               model_dirs):
         assert task_dataset.job_id in tt_id
-        assert Path(task_dataset.artifact_root).parent.name == (
-            task_dataset.job_id)
+        assert Path(
+            task_dataset.artifact_root).parent.name == (task_dataset.job_id)
         assert model_dir.parent.name == task_dataset.job_id
 
 
 def test_repeated_fit_calls_get_distinct_ingest_targets(snapshot, tmp_path,
+                                                        staged_seed_dir,
                                                         monkeypatch) -> None:
     r"""Every fit call owns its ingest and task-dataset coordinates."""
     from kumo_core.model_plan import ModelPlan as CoreModelPlan
@@ -729,11 +747,16 @@ def test_repeated_fit_calls_get_distinct_ingest_targets(snapshot, tmp_path,
 
     from kumo.engine.pquery.training_table import TrainingTable
 
+    # Keep the sentinel lag setting: this adapter test mocks materialization
+    # and checks metadata forwarding, not static-task model-plan admission.
+    monkeypatch.setattr('kumo_core.training.workflow.resolve_model_plan',
+                        lambda *args, **kwargs: None)
+
     train_table = TrainingTable(
         query='PREDICT users.label FOR EACH users.id',
         train_table_path=tmp_path / 'train.parquet',
         manifest_path=tmp_path / 'manifest.json',
-        staging_dir=tmp_path / 'staging',
+        staging_dir=staged_seed_dir,
         required_stages=('train', 'val', 'test'),
         generation_plan=TrainingTableGenerationPlan(lag_timesteps=3),
     )
@@ -743,8 +766,9 @@ def test_repeated_fit_calls_get_distinct_ingest_targets(snapshot, tmp_path,
     task_datasets = []
 
     def fake_build(**kwargs):
-        return _TaskDataset(job_id=kwargs['run_id'], artifact_root=str(
-            Path(kwargs['artifact_dir']) / 'task_dataset'))
+        return _TaskDataset(
+            job_id=kwargs['run_id'],
+            artifact_root=str(Path(kwargs['artifact_dir']) / 'task_dataset'))
 
     def fake_materialize(request, task_dataset, generated, **kwargs):
         tt_ids.append(kwargs.get('tt_id'))
@@ -762,8 +786,11 @@ def test_repeated_fit_calls_get_distinct_ingest_targets(snapshot, tmp_path,
     monkeypatch.setattr(
         'kumo_core.training.orchestration.run_callable_training',
         lambda training_input, **kwargs: SimpleNamespace(
-            metrics={}, artifact_paths={}, explain_disabled=True,
-            best_trainer=SimpleNamespace(log_dir=str(tmp_path))))
+            metrics={},
+            artifact_paths={},
+            explain_disabled=True,
+            best_trainer=SimpleNamespace(log_dir=str(tmp_path)),
+        ))
     monkeypatch.setattr('kumo.engine.trainer.trainer.write_training_spec',
                         lambda *args, **kwargs: None)
 
@@ -786,19 +813,19 @@ def test_repeated_fit_calls_get_distinct_ingest_targets(snapshot, tmp_path,
     assert tt_ids[2] not in tt_ids[:2]
     assert 'tt-1' not in tt_ids
     assert len({item.job_id for item in task_datasets}) == 3
-    assert all(len(item.job_id.rsplit('-', 1)[-1]) == 32
-               for item in task_datasets)
+    assert all(
+        len(item.job_id.rsplit('-', 1)[-1]) == 32 for item in task_datasets)
     assert len({item.artifact_root for item in task_datasets}) == 3
     for tt_id, task_dataset in zip(tt_ids, task_datasets):
         assert task_dataset.job_id in tt_id
-        assert Path(task_dataset.artifact_root).parent.name == (
-            task_dataset.job_id)
+        assert Path(
+            task_dataset.artifact_root).parent.name == (task_dataset.job_id)
     assert train_table == original
     assert not hasattr(train_table, 'plan')
 
 
 def test_concurrent_to_thread_fits_keep_loop_live_and_propagate_results(
-        snapshot, tmp_path, monkeypatch) -> None:
+        snapshot, tmp_path, staged_seed_dir, monkeypatch) -> None:
     from kumo_core.model_plan import ModelPlan as CoreModelPlan
     from kumo_core.model_plan import TrainingTableGenerationPlan
     from kumo_core.resolved_task import ResolvedNumericalTask
@@ -806,11 +833,16 @@ def test_concurrent_to_thread_fits_keep_loop_live_and_propagate_results(
 
     from kumo.engine.pquery.training_table import TrainingTable
 
+    # Keep the sentinel lag setting: this adapter test mocks materialization
+    # and checks metadata forwarding, not static-task model-plan admission.
+    monkeypatch.setattr('kumo_core.training.workflow.resolve_model_plan',
+                        lambda *args, **kwargs: None)
+
     train_table = TrainingTable(
         query='PREDICT users.label FOR EACH users.id',
         train_table_path=tmp_path / 'train.parquet',
         manifest_path=tmp_path / 'manifest.json',
-        staging_dir=tmp_path / 'staging',
+        staging_dir=staged_seed_dir,
         required_stages=('train', 'val', 'test'),
         generation_plan=TrainingTableGenerationPlan(lag_timesteps=3),
     )
@@ -818,13 +850,13 @@ def test_concurrent_to_thread_fits_keep_loop_live_and_propagate_results(
     records_lock = threading.Lock()
 
     def fake_build(**kwargs):
-        return _TaskDataset(job_id=kwargs['run_id'], artifact_root=str(
-            Path(kwargs['artifact_dir']) / 'task_dataset'))
+        return _TaskDataset(
+            job_id=kwargs['run_id'],
+            artifact_root=str(Path(kwargs['artifact_dir']) / 'task_dataset'))
 
     def fake_materialize(request, task_dataset, generated, **kwargs):
         with records_lock:
-            records.append((kwargs['tt_id'], task_dataset,
-                            request.run_id))
+            records.append((kwargs['tt_id'], task_dataset, request.run_id))
         return SimpleNamespace(task=Mock(spec=ResolvedNumericalTask),
                                model_plan=CoreModelPlan(),
                                bundle_dir=str(tmp_path))
@@ -835,10 +867,10 @@ def test_concurrent_to_thread_fits_keep_loop_live_and_propagate_results(
         both_workers.wait(timeout=5)
         time.sleep(.05)
         run_name = Path(training_input.home_dir).name
-        return SimpleNamespace(metrics={'run_name': run_name},
-                               artifact_paths={}, explain_disabled=True,
-                               best_trainer=SimpleNamespace(
-                                   log_dir=str(tmp_path)))
+        return SimpleNamespace(
+            metrics={'run_name':
+                     run_name}, artifact_paths={}, explain_disabled=True,
+            best_trainer=SimpleNamespace(log_dir=str(tmp_path)))
 
     monkeypatch.setattr(
         'kumo.engine.trainer.trainer.build_generated_training_task_dataset',
@@ -850,8 +882,7 @@ def test_concurrent_to_thread_fits_keep_loop_live_and_propagate_results(
         'kumo_core.training.orchestration.run_callable_training', fake_train)
     monkeypatch.setattr('kumo.engine.trainer.trainer.write_training_spec',
                         lambda *args, **kwargs: None)
-    monkeypatch.setattr(Trainer, 'scratch_dir',
-                        property(lambda _: tmp_path))
+    monkeypatch.setattr(Trainer, 'scratch_dir', property(lambda _: tmp_path))
     trainers = [Trainer(ModelPlan()), Trainer(ModelPlan())]
 
     async def exercise():
@@ -866,9 +897,9 @@ def test_concurrent_to_thread_fits_keep_loop_live_and_propagate_results(
 
         pulse = asyncio.create_task(heartbeat())
         try:
-            results = await asyncio.gather(*(
-                asyncio.to_thread(trainer.fit, train_table, snapshot=snapshot)
-                for trainer in trainers))
+            results = await asyncio.gather(
+                *(asyncio.to_thread(trainer.fit, train_table, snapshot=snapshot)
+                  for trainer in trainers))
         finally:
             finished.set()
             await pulse

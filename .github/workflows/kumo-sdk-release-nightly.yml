@@ -19,7 +19,7 @@ defaults:
 
 jobs:
   config:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version_today: ${{ steps.set-version.outputs.version_today }}
     steps:

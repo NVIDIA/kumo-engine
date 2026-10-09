@@ -292,6 +292,7 @@ def test_materialize_writes_all_expected_files(tmp_path) -> None:
         'manifest.json',
         'metadata.json',
         'feature_schema.json',
+        'column_stats.json',
         'graph_runtime_metadata.json',
         'split_info.json',
         'stats.json',

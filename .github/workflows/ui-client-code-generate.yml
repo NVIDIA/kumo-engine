@@ -43,7 +43,7 @@ jobs:
   check-openapi-changes:
     environment: gha-kumo-workflow-tests
     name: Check OpenAPI Changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request'
     permissions:
       id-token: write # Required for configure-aws-credentials OIDC.
@@ -177,7 +177,7 @@ jobs:
   trigger-codegen:
     environment: gha-kumo-workflow-tests
     name: Trigger UI Codegen
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       id-token: write # Required for configure-aws-credentials OIDC.
       contents: write
@@ -374,7 +374,7 @@ jobs:
   codegen:
     environment: gha-kumo-workflow-tests
     name: Manual Codegen (workflow_dispatch)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       id-token: write # Required for configure-aws-credentials OIDC.
       contents: write

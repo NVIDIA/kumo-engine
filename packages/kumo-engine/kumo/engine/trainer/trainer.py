@@ -169,8 +169,9 @@ def _find_holdout(log_dir: str) -> tuple[Optional[Path], Optional[bool]]:
     try:
         truncated = bool(json.loads(meta.read_text())['truncated'])
     except (OSError, ValueError, KeyError, TypeError):
-        logger.warning('Holdout size record %s is missing or unreadable; '
-                       'truncation is unknown.', meta)
+        logger.warning(
+            'Holdout size record %s is missing or unreadable; '
+            'truncation is unknown.', meta)
         truncated = None
     return path, truncated
 
@@ -290,6 +291,7 @@ class Trainer:
         from kumo_core.training.workflow import (
             PreparedGraph,
             materialize_generated_training_task,
+            resolve_model_plan,
         )
         from kumo_core.types import TaskType
 
@@ -342,6 +344,39 @@ class Trainer:
                 TaskType(workflow.query.task_type),
                 TaskType(source_schema['task_type']),
             )
+        from kumo_core.pquery import (
+            query_is_temporal,
+            target_to_entity_paths,
+            to_plan_graph,
+        )
+        from kumo_core.training.custom_table import contract
+        from kumo_core.training.export import read_spec, stage_parts
+        from kumoapi.pquery import QueryType
+        from pyarrow import parquet
+
+        parts = stage_parts(read_spec(str(train_table.staging_dir)))
+        seed_part = next(part for paths in parts.values() for part in paths)
+        seed_schema = parquet.read_schema(train_table.staging_dir / seed_part)
+        entity_tables = [workflow.query.entity_table]
+        if (workflow.query.rhs_node_type is not None
+                and workflow.query.rhs_node_type not in entity_tables):
+            entity_tables.append(workflow.query.rhs_node_type)
+        # Validate a copy with query/schema facts before extending the index.
+        # Materialization still resolves defaults and data-derived fanouts.
+        resolve_model_plan(
+            model_plan,
+            workflow.search,
+            task_type=TaskType(workflow.query.task_type),
+            query_type=QueryType(workflow.query.query_type),
+            has_train_table_time_col=query_is_temporal(workflow.query,
+                                                       workflow.graph),
+            entity_table_names=entity_tables,
+            target_to_entity_paths=target_to_entity_paths(
+                workflow.query, workflow.graph),
+            has_train_table_weight_col=contract()['weight_output_column']
+            in seed_schema.names,
+            graph=to_plan_graph(workflow.graph),
+        )
         ingest_tt_id = f'tt-{run_id}'
         lag_timesteps = inferred_or_missing_type_to_none(
             train_table.generation_plan.lag_timesteps)
@@ -373,6 +408,7 @@ class Trainer:
             ),
             tt_id=ingest_tt_id,
         )
+        del task_dataset
         training_input = ResolvedTrainingInput(
             task=materialized.task,
             model_plan=materialized.model_plan,
@@ -574,9 +610,8 @@ class Trainer:
 
         # Loaded once: the embedding check and the in-process scorer share it.
         encoders_path = self._training_result.artifact_paths.get('encoders')
-        encoders = (load_json(encoders_path, EncodersConfig)
-                    if encoders_path and Path(encoders_path).is_file() else
-                    None)
+        encoders = (load_json(encoders_path, EncodersConfig) if encoders_path
+                    and Path(encoders_path).is_file() else None)
         require_trained_embedding_models(self._embedding_models, encoders)
 
         from kumo_core.prediction import (

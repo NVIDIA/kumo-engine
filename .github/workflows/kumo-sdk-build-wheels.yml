@@ -72,7 +72,7 @@ defaults:
 
 jobs:
   wheel:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: ${{ inputs.continue-on-error }}
 
     steps:

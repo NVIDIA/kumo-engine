@@ -22,7 +22,7 @@ class ResolvedEncoderInput:
     dtype: str
     stype: str
     encoder: dict[str, object]
-    stats: dict[str, object]
+    stats: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -243,7 +243,10 @@ class ResolvedNumericalTask:
         unix_step_size: int | None = None,
         sampling: ResolvedTaskSampling | None = None,
         exclude_cols_dict: Mapping[str, Sequence[str]] | None = None,
+        column_stats: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> "ResolvedNumericalTask":
+        """``column_stats`` (``manifest.load_column_stats()``) is required
+        only to fit encoders; without it the inputs carry no statistics."""
         task_type = TaskType(manifest.task_type)
         edges = _manifest_edge_types(manifest)
         target_paths = _manifest_target_to_entity_paths(manifest, edges)
@@ -251,8 +254,12 @@ class ResolvedNumericalTask:
         node_schema = manifest.feature_schema.get("node_types", {})
         encoder_inputs = {
             str(table): [
-                ResolvedEncoderInput(**dict(value))
-                for value in config.get("column_specs", ())
+                ResolvedEncoderInput(
+                    **{k: v
+                       for k, v in value.items() if k != "stats"},
+                    stats=(None if column_stats is None else
+                           column_stats[str(table)][value["column_name"]]),
+                ) for value in config.get("column_specs", ())
             ]
             for table, config in node_schema.items()
         }

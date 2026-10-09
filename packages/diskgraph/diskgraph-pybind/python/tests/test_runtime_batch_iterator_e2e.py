@@ -1856,6 +1856,7 @@ def test_custom_tt_weight_column_reaches_runtime_iterator(tmp_path):
                 input_timestamp_unit="seconds",
                 split_spec_json=None,
                 weight_col="WEIGHT",
+                ingest_on_error="abort",
             )
 
     stage_index_path = parent_root / "train_tables" / tt_id

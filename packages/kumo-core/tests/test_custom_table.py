@@ -5,10 +5,7 @@
 
 from __future__ import annotations
 
-import numpy as np
-import pandas as pd
 import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
 from kumo_core.training import custom_table
 from kumo_core.types import TaskType
@@ -70,39 +67,6 @@ def test_the_anchor_decision_uses_only_resolved_query_facts(
         entity_has_time_column=entity_has_time_column,
         list_distinct_target_is_array=list_distinct_target_is_array,
     ) is expected
-
-
-def test_timestamp_span_folds_every_file_and_row_group(tmp_path) -> None:
-    paths = [tmp_path / 'first.parquet', tmp_path / 'second.parquet']
-    pq.write_table(
-        pa.table({'anchor': pa.array(pd.to_datetime([
-            '2026-01-03', '2026-01-04', '2026-01-05'
-        ]))}), paths[0], row_group_size=1)
-    pq.write_table(
-        pa.table({'anchor': pa.array(pd.to_datetime([
-            '2026-01-01', '2026-01-06'
-        ]))}), paths[1], row_group_size=1)
-    metadata = [pq.ParquetFile(path).metadata for path in paths]
-
-    assert custom_table.timestamp_span_ns(metadata, 'anchor') == (
-        float(pd.Timestamp('2026-01-01').value),
-        float(pd.Timestamp('2026-01-06').value),
-    )
-
-
-def test_timestamp_span_is_unknown_without_complete_statistics(tmp_path) -> None:
-    path = tmp_path / 'no-statistics.parquet'
-    pq.write_table(pa.table({'anchor': [1, 2]}), path,
-                   write_statistics=False)
-    missing = tmp_path / 'no-anchor.parquet'
-    pq.write_table(pa.table({'entity': [1, 2]}), missing)
-
-    assert custom_table.timestamp_span_ns([], 'anchor') is None
-    assert custom_table.timestamp_span_ns([None], 'anchor') is None
-    assert custom_table.timestamp_span_ns(
-        [pq.ParquetFile(path).metadata], 'anchor') is None
-    assert custom_table.timestamp_span_ns(
-        [pq.ParquetFile(missing).metadata], 'anchor') is None
 
 
 def test_every_token_the_contract_names_can_be_decoded() -> None:
@@ -296,176 +260,6 @@ def test_a_list_weight_beside_a_list_target_agrees() -> None:
                                             _rules()) == []
 
 
-# Contents ###################################################################
-
-
-def _fed(table: pa.Table, rules=None):
-    rules = rules or _rules()
-    tally = custom_table.Tally(table.schema, rules)
-    for batch in table.to_batches():
-        tally.feed(batch)
-    return tally
-
-
-def test_an_empty_table_is_refused() -> None:
-    table = pa.table({name: pa.array([], type=dtype)
-                      for name, dtype in _BASE.items()})
-
-    errors = custom_table.content_errors(_fed(table), _rules())
-
-    assert 'Supplied table is empty' in _titles(errors)
-
-
-def test_a_null_entity_key_is_refused_rather_than_skipped() -> None:
-    table = pa.table({
-        'ENTITY1': pa.array([1, None], pa.int64()),
-        'TARGET1': pa.array([0.1, 0.2], pa.float64()),
-        'TIMESTAMP': pa.array([0, 0], pa.int64()),
-        'w': pa.array([1.0, 1.0], pa.float64()),
-    })
-
-    errors = custom_table.content_errors(_fed(table), _rules())
-
-    assert 'ENTITY1 contains N/A' in _titles(errors)
-
-
-def test_a_null_target_is_refused_rather_than_relabelled() -> None:
-    table = pa.table({
-        'ENTITY1': pa.array([1, 2], pa.int64()),
-        'TARGET1': pa.array([0.1, None], pa.float64()),
-        'TIMESTAMP': pa.array([0, 0], pa.int64()),
-        'w': pa.array([1.0, 1.0], pa.float64()),
-    })
-
-    errors = custom_table.content_errors(_fed(table), _rules())
-
-    assert 'TARGET1 contains N/A' in _titles(errors)
-
-
-@pytest.mark.parametrize(('weights', 'title'), [
-    ([1.0, None], 'Weight column contains N/A'),
-    ([1.0, float('nan')], 'Weight column contains N/A'),
-    ([1.0, float('inf')], 'Weight column contains infinite values'),
-    ([0.0, -1.0], 'Weight column contains no positive values'),
-    ([1.0, -1.0], 'Weight column contains negative values'),
-])
-def test_a_weight_that_would_break_the_loss_is_refused(weights,
-                                                       title) -> None:
-    table = pa.table({
-        'ENTITY1': pa.array([1, 2], pa.int64()),
-        'TARGET1': pa.array([0.1, 0.2], pa.float64()),
-        'TIMESTAMP': pa.array([0, 0], pa.int64()),
-        'w': pa.array(weights, pa.float64()),
-    })
-
-    errors = custom_table.content_errors(_fed(table), _rules())
-
-    assert title in _titles(errors)
-
-
-def test_a_temporal_link_task_keeps_its_negative_weights() -> None:
-    rules = _rules(task_type=TaskType.TEMPORAL_LINK_PREDICTION)
-    table = pa.table({
-        'ENTITY1': pa.array([1, 2], pa.int64()),
-        'TARGET1': pa.array([[0.1], [0.2]], pa.list_(pa.float64())),
-        'TIMESTAMP': pa.array([0, 0], pa.int64()),
-        'w': pa.array([[1.0], [-1.0]], pa.list_(pa.float64())),
-    })
-
-    errors = custom_table.content_errors(_fed(table, rules), rules)
-
-    assert not any('negative' in title for title in _titles(errors))
-
-
-def _list_target_table(targets):
-    return pa.table({
-        'ENTITY1': pa.array(range(len(targets)), pa.int64()),
-        'TARGET1': pa.array(targets, pa.list_(pa.float64())),
-        'TIMESTAMP': pa.array([0] * len(targets), pa.int64()),
-        'w': pa.array([[1.0]] * len(targets), pa.list_(pa.float64())),
-    })
-
-
-def test_a_list_target_all_empty_is_refused() -> None:
-    """Every row routes to UNUSED_STAGE, so the run trains on nothing and
-    still reports success -- the whole-job refusal is warranted here."""
-    rules = _rules(task_type=TaskType.TEMPORAL_LINK_PREDICTION)
-    table = _list_target_table([[], []])
-
-    errors = custom_table.content_errors(_fed(table, rules), rules)
-
-    assert 'TARGET1 contains empty lists' in _titles(errors)
-
-
-def test_a_list_target_partially_empty_only_warns() -> None:
-    """DiskGraph routes an empty-list row to UNUSED_STAGE and trains on the
-    rest, so a partially empty column is not a whole-job refusal."""
-    rules = _rules(task_type=TaskType.TEMPORAL_LINK_PREDICTION)
-    table = _list_target_table([[0.1], []])
-    tally = _fed(table, rules)
-
-    errors = custom_table.content_errors(tally, rules)
-    warnings = custom_table.content_warnings(tally)
-
-    assert 'TARGET1 contains empty lists' not in _titles(errors)
-    assert [w.title for w in warnings] == ['TARGET1 contains empty lists']
-    assert '1 of 2 rows' in warnings[0].message
-
-
-def test_a_list_target_with_a_null_element_is_refused() -> None:
-    """A null inside a list is substituted rather than dropped, which is the
-    same silent-corruption class as the null-TARGET1 refusal."""
-    rules = _rules(task_type=TaskType.TEMPORAL_LINK_PREDICTION)
-    table = _list_target_table([[0.1], [None]])
-
-    errors = custom_table.content_errors(_fed(table, rules), rules)
-
-    assert 'TARGET1 contains N/A inside its lists' in _titles(errors)
-
-
-def test_a_per_element_weight_is_as_long_as_its_target() -> None:
-    rules = _rules(task_type=TaskType.TEMPORAL_LINK_PREDICTION)
-    table = pa.table({
-        'ENTITY1': pa.array([1, 2], pa.int64()),
-        'TARGET1': pa.array([[0.1, 0.2], [0.3]], pa.list_(pa.float64())),
-        'TIMESTAMP': pa.array([0, 0], pa.int64()),
-        'w': pa.array([[1.0], [1.0]], pa.list_(pa.float64())),
-    })
-
-    errors = custom_table.content_errors(_fed(table, rules), rules)
-
-    assert 'Weight column length does not match TARGET1' in _titles(errors)
-
-
-def test_only_the_columns_a_rows_fate_turns_on_are_read() -> None:
-    schema = _schema(**dict(_BASE, feature=pa.string()))
-
-    assert custom_table.scanned_columns(schema, _rules()) == [
-        'ENTITY1', 'TARGET1', 'TIMESTAMP', 'w'
-    ]
-
-
-def test_a_stale_entity_key_is_counted_before_the_run_loses_it() -> None:
-    rules = _rules()
-    schema = _schema(**_BASE)
-    tally = custom_table.Tally(schema, rules, known_keys=np.array([1, 2]))
-    tally.feed(
-        pa.record_batch(
-            {
-                'ENTITY1': pa.array([1, 9], pa.int64()),
-                'TARGET1': pa.array([0.1, 0.2], pa.float64()),
-                'TIMESTAMP': pa.array([0, 0], pa.int64()),
-                'w': pa.array([1.0, 1.0], pa.float64()),
-            }, schema=schema))
-
-    warnings = custom_table.stale_key_warnings(tally)
-
-    assert [warning.title
-            for warning in warnings] == ['Entity keys that are not in the '
-                                         'graph']
-    assert '1 of 2 rows' in warnings[0].message
-
-
 # Correspondence #############################################################
 
 
@@ -482,7 +276,7 @@ def test_a_row_count_that_does_not_correspond_is_refused() -> None:
         'w': pa.array([1.0], pa.float64()),
     })
     errors, warnings = custom_table.correspondence_errors(
-        table.schema, _fed(table), _generated(rows=2), _rules())
+        table.schema, table.num_rows, _generated(rows=2), _rules())
 
     assert _titles(errors) == ['Row count mismatch']
     assert warnings == []
@@ -498,7 +292,7 @@ def test_the_deployments_escape_hatch_downgrades_it_to_a_warning() -> None:
     })
 
     errors, warnings = custom_table.correspondence_errors(
-        table.schema, _fed(table, rules), _generated(rows=2), rules)
+        table.schema, table.num_rows, _generated(rows=2), rules)
 
     assert errors == []
     assert [warning.title for warning in warnings
@@ -514,7 +308,7 @@ def test_only_additions_are_supported() -> None:
     })
     generated = _generated(**dict(_BASE, extra=pa.string()))
 
-    errors, _ = custom_table.correspondence_errors(table.schema, _fed(table),
+    errors, _ = custom_table.correspondence_errors(table.schema, table.num_rows,
                                                    generated, _rules())
 
     assert _titles(errors) == ['Column missing in the supplied table']
@@ -528,7 +322,7 @@ def test_a_generated_column_keeps_its_type() -> None:
         'w': pa.array([1.0, 1.0], pa.float64()),
     })
 
-    errors, _ = custom_table.correspondence_errors(table.schema, _fed(table),
+    errors, _ = custom_table.correspondence_errors(table.schema, table.num_rows,
                                                    _generated(), _rules())
 
     assert _titles(errors) == ['Column type mismatch']
@@ -545,130 +339,10 @@ def test_the_anchor_is_the_one_column_compared_against_the_contract() -> None:
     })
     generated = _generated(**dict(_BASE, TIMESTAMP=pa.timestamp('ns')))
 
-    errors, _ = custom_table.correspondence_errors(table.schema, _fed(table),
+    errors, _ = custom_table.correspondence_errors(table.schema, table.num_rows,
                                                    generated, _rules())
 
     assert errors == []
-
-
-def test_an_integer_anchor_in_the_wrong_unit_is_caught_by_its_span() -> None:
-    seconds = 1_700_000_000
-    table = pa.table({
-        'ENTITY1': pa.array([1, 2], pa.int64()),
-        'TARGET1': pa.array([0.1, 0.2], pa.float64()),
-        'TIMESTAMP': pa.array([seconds, seconds], pa.int64()),
-        'w': pa.array([1.0, 1.0], pa.float64()),
-    })
-    generated = custom_table.GeneratedTable(
-        schema=_schema(**dict(_BASE, TIMESTAMP=pa.timestamp('ns'))), rows=2,
-        anchor_span_ns=(0.0, float(seconds) * 1e9))
-
-    errors, _ = custom_table.correspondence_errors(table.schema, _fed(table),
-                                                   generated, _rules())
-
-    assert _titles(errors) == ['TIMESTAMP looks like seconds, not nanoseconds']
-
-
-def test_an_anchor_that_merely_differs_is_not_called_wrong() -> None:
-    table = pa.table({
-        'ENTITY1': pa.array([1, 2], pa.int64()),
-        'TARGET1': pa.array([0.1, 0.2], pa.float64()),
-        'TIMESTAMP': pa.array([7, 7], pa.int64()),
-        'w': pa.array([1.0, 1.0], pa.float64()),
-    })
-    generated = custom_table.GeneratedTable(
-        schema=_schema(**dict(_BASE, TIMESTAMP=pa.timestamp('ns'))), rows=2,
-        anchor_span_ns=(0.0, 21.0))
-
-    errors, _ = custom_table.correspondence_errors(table.schema, _fed(table),
-                                                   generated, _rules())
-
-    assert errors == []
-
-
-# The split column ###########################################################
-
-
-def _split_table(values) -> pa.Table:
-    return pa.table({
-        'ENTITY1': pa.array([1, 2], pa.int64()),
-        'TARGET1': pa.array([0.1, 0.2], pa.float64()),
-        'TIMESTAMP': pa.array([0, 0], pa.int64()),
-        'w': pa.array([1.0, 1.0], pa.float64()),
-        'feature': pa.array(['a', 'b'], pa.string()),
-        'SPLIT': values,
-    })
-
-
-def _projected(table: pa.Table, rules):
-    """Feed the tally what a backend projects off disk, and nothing else."""
-    return _fed(table.select(custom_table.scanned_columns(table.schema,
-                                                          rules)), rules)
-
-
-@pytest.mark.parametrize(('value', 'rendered'), [
-    (0, '0'),
-    ('1', '1'),
-    (2.0, '2'),
-    ('train', 'train'),
-    (3, '3'),
-    (0.5, '0.5'),
-    (True, 'true'),
-])
-def test_a_split_cell_renders_as_the_decider_renders_it(value,
-                                                        rendered) -> None:
-    """``value_to_string_key`` then ``ColumnDeciderManual.decide_str``: the
-    plan's values cross as strings and the cell is rendered to one, so ``0``,
-    ``'0'`` and ``0.0`` are one value to it. ``true`` rather than Python's
-    ``True``, and Rust prints a whole float without its fraction."""
-    assert custom_table.split_key(value) == rendered
-
-
-@pytest.mark.parametrize('values', [
-    pytest.param(pa.array(['train', 'val'], pa.string()), id='word-labels'),
-    pytest.param(pa.array([0, 3], pa.int64()), id='out-of-range'),
-    pytest.param(pa.array([0.5, 1.5], pa.float64()), id='fractional-float'),
-])
-def test_a_split_outside_the_encoding_is_refused_off_what_is_projected(
-        values) -> None:
-    """Read, not merely gated on its type: the column has to be among the
-    ones a backend projects, or every rule below is inert on the path that
-    projects at all. A dtype-legal column valued 'train'/'val' matches none of
-    the three sets, lands every row in no split, and reports success."""
-    rules = _rules(split_col='SPLIT')
-
-    errors = custom_table.content_errors(
-        _projected(_split_table(values), rules), rules)
-
-    assert _titles(errors) == ['Split column is not the encoding that is read']
-    assert '0=train, 1=validation, 2=test' in errors[0].message
-
-
-@pytest.mark.parametrize('values', [
-    pytest.param(pa.array([0, 1], pa.int64()), id='int'),
-    pytest.param(pa.array(['0', '1'], pa.string()), id='string'),
-    pytest.param(pa.array([0.0, 1.0], pa.float64()), id='whole-float'),
-])
-def test_a_split_carrying_the_encoding_is_accepted(values) -> None:
-    rules = _rules(split_col='SPLIT')
-
-    assert custom_table.content_errors(_projected(_split_table(values),
-                                                  rules), rules) == []
-
-
-def test_a_null_split_is_refused_rather_than_routed_on_nothing() -> None:
-    rules = _rules(split_col='SPLIT')
-    table = _split_table(pa.array([0, None], pa.int64()))
-
-    errors = custom_table.content_errors(_projected(table, rules), rules)
-
-    assert _titles(errors) == ['Split column contains N/A']
-
-
-def test_a_table_naming_no_split_is_not_asked_about_one() -> None:
-    table = _split_table(pa.array(['whatever', 'at all'], pa.string()))
-
-    assert custom_table.content_errors(_fed(table), _rules()) == []
 
 
 # The graph's primary key ####################################################
@@ -777,4 +451,3 @@ def test_a_task_type_that_crossed_a_wire_is_still_a_task_type():
 
     assert rules.task_type is TaskType.TEMPORAL_LINK_PREDICTION
     assert rules.list_target is True
-    assert rules.allow_negative_weight is True

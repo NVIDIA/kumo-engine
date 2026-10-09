@@ -14,6 +14,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::custom_tt_row_errors::{RowFailuresReport, SourceRowStats};
 use crate::errors::{TTGenError, TTGenResult};
 use arrow_schema::DataType;
 use crossbeam_channel::{bounded, Receiver, Sender};
@@ -369,6 +370,9 @@ pub struct TTPassOutput {
     pub stage_gen_infos: Option<Vec<StageGenInfo>>,
     /// Path to `output_dir/manifest.json`. Always written.
     pub manifest_path: PathBuf,
+    /// Custom-TT only: the rows skipped by row validation, per condition.
+    /// `None` on the PQL path.
+    pub row_failures: Option<RowFailuresReport>,
 }
 
 /// Orchestrator-level dispatch for the split strategy.
@@ -402,10 +406,18 @@ pub enum SplitMode {
 /// unit and ignore this field. Kumo's rehydration bridge sets this to
 /// `Nanoseconds` because kumo's canonical TIMESTAMP representation is
 /// int64 nanoseconds (Spark `LongType`).
+///
+/// `on_error` decides what a row that fails validation does -- see
+/// [`crate::custom_tt_row_errors`]. `allow_negative_weight` admits negative
+/// weights (temporal link prediction); every other task refuses them.
 #[derive(Debug, Clone)]
 pub struct CustomTtSource {
     pub parquet_path: PathBuf,
     pub input_timestamp_unit: TimeUnit,
+    pub on_error: crate::custom_tt_row_errors::IngestOnError,
+    pub allow_negative_weight: bool,
+    /// Trusted generated-table footers for integer timestamp unit validation.
+    pub timestamp_reference: Option<crate::custom_tt_row_errors::TimestampReference>,
 }
 
 /// Determine which `SplitMode` applies to `plan` based on its split family.
@@ -1067,7 +1079,12 @@ where
         }
     };
 
-    let (mut total_rows, stats, per_anchor_parts) = pass_outputs?;
+    let (mut total_rows, mut stats, per_anchor_parts) = pass_outputs?;
+    let row_failures: Option<RowFailuresReport> = custom_tt_source_ref.map(|source| {
+        let report = stats.take_source_rows().failures.report(source.on_error);
+        report.warn_if_any(total_rows);
+        report
+    });
     // `total_rows` = the dataset row count pass A wrote. SPLIT plans fold the
     // array-LP empty-target drop into the route kernels (empty rows route to no
     // stage), leaving it immutable.
@@ -1252,6 +1269,7 @@ where
         // "disabled bundle".
         train_table_edges: None,
         arange_sidecar: None,
+        row_failures: row_failures.clone(),
         // Weight rides as the reserved `WEIGHT` column now; sidecar field kept None.
         weight_sidecar: None,
         fact_pseudo_time: None,
@@ -1323,6 +1341,7 @@ where
         stats: Some(finalized_stats),
         stage_gen_infos,
         manifest_path,
+        row_failures,
     })
 }
 
@@ -1357,8 +1376,7 @@ fn run_pass_a_then_pass_b<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
             &sender,
             shared_target_counts,
             &decider_template,
-            &source.parquet_path,
-            source.input_timestamp_unit,
+            source,
         )
     } else {
         run_pass_a::<U, D>(
@@ -1549,6 +1567,16 @@ fn run_pass_a<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
     Ok((total_rows, stats, decider_merger))
 }
 
+fn empty_source_error(source_rows: &SourceRowStats) -> TTGenError {
+    let failures = &source_rows.failures;
+    TTGenError::SchemaError(format!(
+        "custom-TT source kept no rows ({} read, {} skipped), so the run would \
+         train on nothing",
+        failures.rows_read(),
+        failures.skipped_rows()
+    ))
+}
+
 /// Enumerate the parquet part(s) backing a custom-TT source.
 ///
 /// kumo passes the train-table **directory** (containing one or more
@@ -1601,8 +1629,7 @@ fn run_pass_a_custom_tt<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
     sender: &Sender<BatchMessage>,
     shared_target_counts: Option<&Arc<SharedColumnCounts>>,
     decider_template: &D,
-    custom_tt_parquet: &Path,
-    input_timestamp_unit: TimeUnit,
+    source: &CustomTtSource,
 ) -> TTGenResult<(u64, StatsMerger<U>, D)> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
@@ -1610,6 +1637,7 @@ fn run_pass_a_custom_tt<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
     // row-group count. Build a flat `(part_path, rg_idx)` work list so every
     // (part, row group) is its own rayon task — mirrors the PQL multi-part stage
     // read, where each `StageSpec.parquet_paths` entry contributes its own parts.
+    let custom_tt_parquet = source.parquet_path.as_path();
     let parts = enumerate_custom_tt_parts(custom_tt_parquet)?;
     let mut work: Vec<(PathBuf, usize)> = Vec::new();
     for part in &parts {
@@ -1625,11 +1653,7 @@ fn run_pass_a_custom_tt<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
     if work.is_empty() {
         // No row groups across any part — produce zero rows. Still merge a
         // default decider.
-        let stats = StatsMerger::<U>::default();
-        let mut decider = decider_template.clone();
-        decider.derive_cutoffs();
-        decider.validate_derived_cutoffs()?;
-        return Ok((0, stats, decider));
+        return Err(empty_source_error(&SourceRowStats::default()));
     }
 
     let results: Vec<TTGenResult<(u64, RowProcessor<U, D>)>> = work
@@ -1642,7 +1666,7 @@ fn run_pass_a_custom_tt<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
                 sender,
                 decider_template,
                 shared_target_counts.cloned(),
-                input_timestamp_unit,
+                source,
             )
         })
         .collect();
@@ -1665,6 +1689,25 @@ fn run_pass_a_custom_tt<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
                 return Err(e.with_context(format!("custom-TT row-group worker {i} failed")));
             }
         }
+    }
+    // A source that keeps nothing trains on nothing and would report success.
+    // Both modes refuse it; the skip counts say why.
+    if total_rows == 0 {
+        stats.source_rows.failures.report(source.on_error).warn_if_any(0);
+        return Err(empty_source_error(&stats.source_rows));
+    }
+    if let Some(reference) = &source.timestamp_reference {
+        reference.validate(&stats.source_rows, source.input_timestamp_unit)?;
+    }
+    if resolved.weight_col.is_some()
+        && stats.source_rows.weight_values > 0
+        && stats.source_rows.weight_max <= 0.0
+    {
+        return Err(TTGenError::SchemaError(format!(
+            "custom-TT source: weight column {:?} has no positive value, which leaves \
+             the loss unbounded or undefined",
+            resolved.weight_col.as_deref().unwrap_or_default()
+        )));
     }
     decider_merger.derive_cutoffs();
     decider_merger.validate_derived_cutoffs()?;

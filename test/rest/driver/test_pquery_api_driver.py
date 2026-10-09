@@ -1036,12 +1036,14 @@ async def test_custom_train_table_conversion_uses_project_execution_ref(
                 },
                 file_type=FileType.PARQUET,
             ),
-            table_mod_spec=TrainingTableSpec(weight_col="weight"),
+            table_mod_spec=TrainingTableSpec(
+                weight_col="weight", timestamp_unit="milliseconds"),
             validated=True,
         ),
     )
 
     assert result is not None
+    assert result.timestamp_unit == "milliseconds"
     assert result.connector_spec == ConnectorExecutionRef(
         project_id=_TEST_PROJECT_ID,
         connector_id=connector_id,

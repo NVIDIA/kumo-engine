@@ -4,7 +4,7 @@
 """Offline BigQuery export-path regressions; no Temporal/REST server needed."""
 
 from pathlib import Path
-from test.connector.test_bigquery_connector import FakeGcsClient
+from test.connector.local.test_bigquery_connector import FakeGcsClient
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 

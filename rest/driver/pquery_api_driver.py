@@ -839,6 +839,7 @@ class PQueryApiDriver:
             source_table=source_table,
             weight_col_name=weight_col,
             split_col_name=split_col,
+            timestamp_unit=custom_train_table.table_mod_spec.timestamp_unit,
             validated=custom_train_table.validated,
         )
 

@@ -24,7 +24,7 @@ GROUPS = {
     **SUITES,
     'hosted-sdk': ('packages/kumo-sdk/test/connector/local',),
     'local-sdk': ('packages/kumo-engine/test/connector',),
-    'mixed-files': ('test/connector/local',),
+    'mixed-files': ('test/connector/local', 'test/io_utils/fsutil/local'),
     'pandas': ('test/graph/local',),
     'minio': ('test/io_utils/fsutil/minio',),
     'shared-sql': ('packages/kumo-core/tests/sources/sql',

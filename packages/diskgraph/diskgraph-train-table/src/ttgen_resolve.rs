@@ -107,6 +107,11 @@ pub struct ResolvedPlan<U: UnitSystem> {
     /// Today only the chunk processor consumes this field; the PQ path
     /// has no source column and always passes `None`.
     pub weight_col: Option<String>,
+    /// Custom-TT only: the strings a manual split column may carry -- the
+    /// union of the plan's `manual_{train,val,test}_values` -- when the plan
+    /// routes by a split column. A value outside it puts its row in no split.
+    /// `None` when the split is not a manual column split.
+    pub manual_split_keys: Option<Arc<std::collections::HashSet<String>>>,
 
     /// Custom-TT LP path only: the RHS target entity table whose PK map
     /// must be consulted to drop orphan TARGET1 values read straight from
@@ -560,6 +565,7 @@ pub fn resolve_plan<U: UnitSystem>(
         .and_then(|t| t.lag_timesteps)
         .unwrap_or(0);
     let split_projection = resolve_split_projection(plan, &entity_ctx, split_request.as_ref())?;
+    let manual_split_keys = manual_split_keys(plan, split_projection.is_some());
 
     // Custom-TT LP RHS-target orphan filter: resolve the target entity table
     // from the plan's `fkey_mapping` `TARGET1 → dst_table` entry. Mirrors the
@@ -630,6 +636,7 @@ pub fn resolve_plan<U: UnitSystem>(
         })?,
         split_projection,
         weight_col: plan.weight_col.clone(),
+        manual_split_keys,
         custom_target_pk_table,
         custom_target_temporal_create_col_idx,
         custom_target_temporal_end_col_idx,
@@ -665,6 +672,32 @@ impl<U: UnitSystem> ResolvedPlan<U> {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+fn manual_split_keys<U: UnitSystem>(
+    plan: &DiskGraphTTPlan<U>,
+    has_split_column: bool,
+) -> Option<Arc<std::collections::HashSet<String>>> {
+    let split = plan.split.as_ref()?;
+    if !has_split_column
+        || !matches!(
+            split.kind.as_deref(),
+            Some("ManualSplit") | Some("CustomSplit") | Some("CustomLinkSplit")
+        )
+    {
+        return None;
+    }
+    let keys: std::collections::HashSet<String> = [
+        &split.manual_train_values,
+        &split.manual_val_values,
+        &split.manual_test_values,
+    ]
+    .into_iter()
+    .flatten()
+    .flatten()
+    .cloned()
+    .collect();
+    (!keys.is_empty()).then(|| Arc::new(keys))
+}
 
 fn split_projection_request<U: UnitSystem>(
     plan: &DiskGraphTTPlan<U>,

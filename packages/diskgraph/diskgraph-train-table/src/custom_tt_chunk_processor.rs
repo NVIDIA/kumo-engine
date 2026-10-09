@@ -41,8 +41,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::{
-    Array, Decimal128Array, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array,
-    Int64Array, LargeListArray, ListArray, RecordBatch, StringArray, TimestampMicrosecondArray,
+    Array, Decimal128Array, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array,
+    Int8Array, LargeListArray, ListArray, RecordBatch, StringArray, TimestampMicrosecondArray,
     TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray,
 };
 use arrow_schema::DataType;
@@ -56,9 +56,11 @@ use diskgraph_index::pkmap;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ProjectionMask;
 
+use crate::custom_tt_row_errors::{RowFailureKind, RowLocation};
 use crate::errors::{TTGenError, TTGenResult};
-use crate::split_decider::SplitDecider;
+use crate::split_decider::{value_to_string_key, SplitDecider};
 use crate::ttgen_accumulator::hash_value;
+use crate::ttgen_executor::CustomTtSource;
 use crate::ttgen_output::{ChannelBatchWriter, ExtraColumnOutput, ExtraValueRef, OutputMode};
 use crate::ttgen_resolve::{
     ResolvedPlan, AUTOREGRESSION_OUTPUT_ALIAS, FUTURE_LABELS_OUTPUT_ALIAS, YOY_OUTPUT_ALIAS,
@@ -145,10 +147,36 @@ pub const WEIGHT_TYPES: &[&str] = &[
 /// Containers accepted by the per-element weight reader.
 pub const WEIGHT_LIST_CONTAINERS: &[&str] = &["list", "large_list"];
 
-/// What may be inside a per-element weight, per `weight_slice_f64`. Narrower
+/// What may be inside a per-element weight, per `read_row_weight`. Narrower
 /// than [`WEIGHT_TYPES`]: there is no `decimal128` arm in the list path.
 pub const WEIGHT_LIST_ITEM_TYPES: &[&str] =
     &["int8", "int16", "int32", "int64", "float32", "float64"];
+
+/// Why a weight could not be read. `Null` and `NonFinite` are row-level
+/// conditions the caller applies its `on_error` policy to; `Unsupported` is
+/// a column that can never be read and always fails the run.
+#[derive(Debug)]
+enum WeightFault {
+    Null,
+    NonFinite,
+    Unsupported(String),
+}
+
+impl std::fmt::Display for WeightFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Null => write!(f, "custom-TT weight is null"),
+            Self::NonFinite => write!(f, "custom-TT weight is not finite"),
+            Self::Unsupported(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+impl WeightFault {
+    fn into_error(self) -> TTGenError {
+        TTGenError::SchemaError(self.to_string())
+    }
+}
 
 /// Read a declared custom-training weight without narrowing precision.
 ///
@@ -156,11 +184,9 @@ pub const WEIGHT_LIST_ITEM_TYPES: &[&str] =
 /// signed integer, floating-point, or Decimal128 arrays. A declared weight is
 /// required to be present, non-null, finite, and scalar; silently replacing a
 /// bad value with `1.0` would change training semantics.
-fn read_weight_f64(arr: &dyn Array, idx: usize) -> TTGenResult<f64> {
+fn read_weight_f64(arr: &dyn Array, idx: usize) -> Result<f64, WeightFault> {
     if arr.is_null(idx) {
-        return Err(TTGenError::SchemaError(format!(
-            "custom-TT weight is null at source row {idx}"
-        )));
+        return Err(WeightFault::Null);
     }
 
     let weight = if let Some(a) = arr.as_any().downcast_ref::<Float64Array>() {
@@ -181,16 +207,14 @@ fn read_weight_f64(arr: &dyn Array, idx: usize) -> TTGenResult<f64> {
         };
         (a.value(idx) as f64) / 10_f64.powi(i32::from(*scale))
     } else {
-        return Err(TTGenError::SchemaError(format!(
+        return Err(WeightFault::Unsupported(format!(
             "custom-TT weight must be a scalar numeric value; found Arrow type {}",
             arr.data_type()
         )));
     };
 
     if !weight.is_finite() {
-        return Err(TTGenError::SchemaError(format!(
-            "custom-TT weight is not finite at source row {idx}"
-        )));
+        return Err(WeightFault::NonFinite);
     }
     Ok(weight)
 }
@@ -227,7 +251,11 @@ fn output_mode_for_custom_tt<U: UnitSystem>(
             let future_labels_dtype =
                 lookup(FUTURE_LABELS_OUTPUT_ALIAS).map(|f| f.data_type().clone());
             Ok(OutputMode::Forecasting {
-                target_dtypes: if !plan.is_prediction { plan.target_dtypes.clone() } else { Vec::new() },
+                target_dtypes: if !plan.is_prediction {
+                    plan.target_dtypes.clone()
+                } else {
+                    Vec::new()
+                },
                 autoregression_dtype: ar_dtype,
                 future_labels_dtype,
                 yoy_dtype,
@@ -321,9 +349,7 @@ fn max_opt_i64(current: Option<i64>, value: i64) -> Option<i64> {
 pub(crate) fn value_to_pk_key(value: &Value, key_type: pkmap::KeyType) -> Option<pkmap::Key> {
     match (value, key_type) {
         (Value::Int(i), pkmap::KeyType::Int64) => Some(pkmap::Key::Int(*i as u64)),
-        (Value::Str(s), pkmap::KeyType::VarBytes) => {
-            Some(pkmap::Key::Bytes(s.as_bytes().to_vec()))
-        }
+        (Value::Str(s), pkmap::KeyType::VarBytes) => Some(pkmap::Key::Bytes(s.as_bytes().to_vec())),
         (Value::Float(f), pkmap::KeyType::Int64) => Some(pkmap::Key::Int(*f as u64)),
         _ => None,
     }
@@ -332,10 +358,7 @@ pub(crate) fn value_to_pk_key(value: &Value, key_type: pkmap::KeyType) -> Option
 /// Resolve a customer-supplied entity PK value to an `entity_node` id.
 /// Returns `None` if the PK is not in the index — the caller must skip
 /// that row.
-fn lookup_entity_node<U: UnitSystem>(
-    plan: &ResolvedPlan<U>,
-    pk_value: &Value,
-) -> Option<u64> {
+fn lookup_entity_node<U: UnitSystem>(plan: &ResolvedPlan<U>, pk_value: &Value) -> Option<u64> {
     let pk_map = plan.entity_table.pk_map()?;
     let key = value_to_pk_key(pk_value, pk_map.key_type())?;
     plan.entity_table.node_id_from_pk(&key).ok().flatten()
@@ -498,66 +521,6 @@ fn read_link_targets(arr: &dyn Array, row: usize) -> TTGenResult<Vec<Option<Valu
         .collect())
 }
 
-fn weight_slice_f64(
-    values: &dyn Array,
-    start: usize,
-    end: usize,
-    row: usize,
-) -> TTGenResult<Vec<f64>> {
-    macro_rules! typed {
-        ($ty:ty) => {
-            if let Some(a) = values.as_any().downcast_ref::<$ty>() {
-                return (start..end)
-                    .map(|j| {
-                        if a.is_null(j) {
-                            return Err(TTGenError::SchemaError(format!(
-                                "custom-TT weight has a null element at source row {row}"
-                            )));
-                        }
-                        let w = a.value(j) as f64;
-                        if !w.is_finite() {
-                            return Err(TTGenError::SchemaError(format!(
-                                "custom-TT weight is not finite at source row {row}"
-                            )));
-                        }
-                        Ok(w)
-                    })
-                    .collect();
-            }
-        };
-    }
-    typed!(Float64Array);
-    typed!(Float32Array);
-    typed!(Int64Array);
-    typed!(Int32Array);
-    typed!(Int16Array);
-    typed!(Int8Array);
-    Err(TTGenError::SchemaError(format!(
-        "custom-TT weight elements must be numeric; found Arrow type {}",
-        values.data_type()
-    )))
-}
-
-fn read_weight_list_f64(arr: &dyn Array, idx: usize) -> TTGenResult<Vec<f64>> {
-    if arr.is_null(idx) {
-        return Err(TTGenError::SchemaError(format!(
-            "custom-TT weight is null at source row {idx}"
-        )));
-    }
-    if let Some(l) = arr.as_any().downcast_ref::<ListArray>() {
-        let o = l.value_offsets();
-        return weight_slice_f64(l.values().as_ref(), o[idx] as usize, o[idx + 1] as usize, idx);
-    }
-    if let Some(l) = arr.as_any().downcast_ref::<LargeListArray>() {
-        let o = l.value_offsets();
-        return weight_slice_f64(l.values().as_ref(), o[idx] as usize, o[idx + 1] as usize, idx);
-    }
-    Err(TTGenError::SchemaError(format!(
-        "custom-TT weight must be a list beside an array target; found Arrow type {}",
-        arr.data_type()
-    )))
-}
-
 fn read_i64_list_values(arr: &dyn Array, idx: usize) -> Option<Vec<i64>> {
     let values = read_list_values(arr, idx).or_else(|| {
         arr.as_any()
@@ -647,7 +610,7 @@ pub(crate) fn custom_tt_chunk_processor<U: UnitSystem, D: SplitDecider<U> + Clon
     sender: &Sender<crate::ttgen_output::BatchMessage>,
     decider_template: &D,
     shared_target_counts: Option<Arc<SharedColumnCounts>>,
-    input_timestamp_unit: TimeUnit,
+    source: &CustomTtSource,
 ) -> TTGenResult<(u64, RowProcessor<U, D>)> {
     // Build OutputMode from the customer parquet's *schema* (not the
     // plan's). The plan declares the prediction kind; the parquet
@@ -748,8 +711,7 @@ pub(crate) fn custom_tt_chunk_processor<U: UnitSystem, D: SplitDecider<U> + Clon
     stats.timestamp_tdigest = Some(TDigestEstimator::new(200));
     stats.timestamp_hll = Some(HyperLogLog::new());
 
-    let mut processor: RowProcessor<U, D> =
-        RowProcessor::new(stats, decider_template.clone());
+    let mut processor: RowProcessor<U, D> = RowProcessor::new(stats, decider_template.clone());
     // Only allocate the per-worker target map when there is a shared accumulator
     // to flush into (mirrors `execute_chunk`): LP targets have no exact-vocabulary
     // consumer (`shared_target_counts` is None), so collecting them is dead work.
@@ -792,9 +754,14 @@ pub(crate) fn custom_tt_chunk_processor<U: UnitSystem, D: SplitDecider<U> + Clon
                 })?;
         }
 
+        let part_name = custom_tt_parquet
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| custom_tt_parquet.display().to_string());
+        let mut row_base = 0u64;
         for batch_res in reader {
-            let batch =
-                batch_res.map_err(|e| TTGenError::Parquet(format!("{e}")))?;
+            let batch = batch_res.map_err(|e| TTGenError::Parquet(format!("{e}")))?;
+            let batch_rows = batch.num_rows() as u64;
             process_batch(
                 plan,
                 &batch,
@@ -806,8 +773,12 @@ pub(crate) fn custom_tt_chunk_processor<U: UnitSystem, D: SplitDecider<U> + Clon
                 &mut local_target_counts,
                 &mut writer,
                 &mut processor,
-                input_timestamp_unit,
+                source,
+                &part_name,
+                row_groups[0],
+                row_base,
             )?;
+            row_base += batch_rows;
         }
     }
 
@@ -821,6 +792,196 @@ pub(crate) fn custom_tt_chunk_processor<U: UnitSystem, D: SplitDecider<U> + Clon
     let rows = writer.finish()?;
     processor.stats.num_total_rows = rows;
     Ok((rows, processor))
+}
+
+/// One row's declared weight: a scalar, or one per target element.
+enum RowWeight {
+    None,
+    Scalar(f64),
+    List(Vec<f64>),
+}
+
+/// Read every weight element, collecting all content conditions for the row.
+fn read_row_weight(
+    arr: &dyn Array,
+    idx: usize,
+    per_element: bool,
+    allow_negative: bool,
+    column: &str,
+    failures: &mut Vec<(RowFailureKind, String)>,
+) -> TTGenResult<RowWeight> {
+    let mut record = |kind| {
+        if !failures
+            .iter()
+            .any(|(existing, name)| *existing == kind && name == column)
+        {
+            failures.push((kind, column.to_string()));
+        }
+    };
+    let mut read = |values: &dyn Array, i: usize| -> TTGenResult<f64> {
+        match read_weight_f64(values, i) {
+            Ok(weight) => {
+                if !allow_negative && weight < 0.0 {
+                    record(RowFailureKind::NegativeWeight);
+                }
+                Ok(weight)
+            }
+            Err(WeightFault::Null) => {
+                record(RowFailureKind::NullWeight);
+                Ok(0.0)
+            }
+            Err(WeightFault::NonFinite) => {
+                record(RowFailureKind::NonFiniteWeight);
+                Ok(0.0)
+            }
+            Err(fault) => Err(fault.into_error()),
+        }
+    };
+    if !per_element || arr.is_null(idx) {
+        return read(arr, idx).map(RowWeight::Scalar);
+    }
+    let items = arr
+        .as_any()
+        .downcast_ref::<ListArray>()
+        .map(|l| l.value(idx))
+        .or_else(|| {
+            arr.as_any()
+                .downcast_ref::<LargeListArray>()
+                .map(|l| l.value(idx))
+        })
+        .ok_or_else(|| {
+            TTGenError::SchemaError(format!(
+                "custom-TT weight must be a list beside an array target; found Arrow type {}",
+                arr.data_type()
+            ))
+        })?;
+    if !matches!(
+        items.data_type(),
+        DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::Float32
+            | DataType::Float64
+    ) {
+        return Err(TTGenError::SchemaError(format!(
+            "custom-TT weight elements must be numeric; found Arrow type {}",
+            items.data_type()
+        )));
+    }
+    (0..items.len())
+        .map(|i| read(items.as_ref(), i))
+        .collect::<TTGenResult<Vec<_>>>()
+        .map(RowWeight::List)
+}
+
+/// The length of the list at `idx`, or `None` for a null slot or a column that
+/// is not a list.
+fn list_len(arr: &dyn Array, idx: usize) -> Option<usize> {
+    if arr.is_null(idx) {
+        return None;
+    }
+    if let Some(l) = arr.as_any().downcast_ref::<ListArray>() {
+        let o = l.value_offsets();
+        return Some((o[idx + 1] - o[idx]) as usize);
+    }
+    if let Some(l) = arr.as_any().downcast_ref::<LargeListArray>() {
+        let o = l.value_offsets();
+        return Some((o[idx + 1] - o[idx]) as usize);
+    }
+    None
+}
+
+/// Check every target used by the plan. Prediction rows carry no targets.
+fn target_failures<U: UnitSystem>(
+    batch: &RecordBatch,
+    plan: &ResolvedPlan<U>,
+    target_col_indices: &[Option<usize>],
+    row_idx: usize,
+    failures: &mut Vec<(RowFailureKind, String)>,
+) {
+    if plan.is_prediction || matches!(plan.prediction_type, PredictionType::PassThrough) {
+        return;
+    }
+    let target_count = if matches!(plan.prediction_type, PredictionType::Node) {
+        target_col_indices.len()
+    } else {
+        1
+    };
+    for (slot, column) in target_col_indices.iter().take(target_count).enumerate() {
+        let Some(column) = column else {
+            continue;
+        };
+        let arr = batch.column(*column);
+        if arr.is_null(row_idx) {
+            failures.push((RowFailureKind::NullTarget, target_column(slot)));
+        } else if matches!(plan.prediction_type, PredictionType::Link { .. }) {
+            let items = arr
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .map(|l| l.value(row_idx))
+                .or_else(|| {
+                    arr.as_any()
+                        .downcast_ref::<LargeListArray>()
+                        .map(|l| l.value(row_idx))
+                });
+            if let Some(items) = items {
+                if items.null_count() > 0 {
+                    failures.push((RowFailureKind::NullTargetItem, target_column(slot)));
+                }
+                if items.is_empty() {
+                    failures.push((RowFailureKind::EmptyTargetList, target_column(slot)));
+                }
+            }
+        }
+    }
+}
+
+/// Whether the split cell at `row_idx` is one the split decider can route:
+/// non-null, and -- when the plan names its split values -- one of them, as
+/// `ColumnDeciderManual` renders it. A list cell (per-link split) is checked
+/// per element.
+fn split_failures(
+    column: &dyn Array,
+    row_idx: usize,
+    allowed: Option<&std::collections::HashSet<String>>,
+) -> Vec<RowFailureKind> {
+    if column.is_null(row_idx) {
+        return vec![RowFailureKind::NullSplit];
+    }
+    let items = column
+        .as_any()
+        .downcast_ref::<ListArray>()
+        .map(|l| l.value(row_idx))
+        .or_else(|| {
+            column
+                .as_any()
+                .downcast_ref::<LargeListArray>()
+                .map(|l| l.value(row_idx))
+        });
+    let unmatched = |arr: &dyn Array, idx: usize| {
+        allowed.is_some_and(|keys| match cell_to_value(arr, idx) {
+            Some(value) => !keys.contains(&value_to_string_key(&value)),
+            None => true,
+        })
+    };
+    let mut failures = Vec::new();
+    match items {
+        Some(items) => {
+            if items.null_count() > 0 {
+                failures.push(RowFailureKind::NullSplit);
+            }
+            if (0..items.len()).any(|i| !items.is_null(i) && unmatched(items.as_ref(), i)) {
+                failures.push(RowFailureKind::InvalidSplit);
+            }
+        }
+        None => {
+            if unmatched(column, row_idx) {
+                failures.push(RowFailureKind::InvalidSplit);
+            }
+        }
+    }
+    failures
 }
 
 /// Process one `RecordBatch` of customer-supplied rows. Per-row body:
@@ -843,9 +1004,19 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
     local_target_counts: &mut Option<LocalColumnCounts>,
     writer: &mut ChannelBatchWriter<U>,
     processor: &mut RowProcessor<U, D>,
-    input_timestamp_unit: TimeUnit,
+    source: &CustomTtSource,
+    part_name: &str,
+    row_group: usize,
+    row_base: u64,
 ) -> TTGenResult<()> {
+    let input_timestamp_unit = source.input_timestamp_unit;
+    let on_error = source.on_error;
     let schema = batch.schema();
+    processor
+        .stats
+        .source_rows
+        .failures
+        .add_rows_read(batch.num_rows() as u64);
     // Resolve one parquet column index per ENTITYk slot the plan declares.
     // Missing columns are a hard error: the plan asked for k entities but the
     // parquet doesn't carry them.
@@ -890,14 +1061,14 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                 name,
                 "__kumo_internal_frequency_column__" | "ENTITY_INCLUDE_BIT"
             ) && name != ENTITY_COLUMN_PREFIX
-              && name != TARGET_COLUMN_PREFIX
-              && !name.starts_with(ENTITY_COLUMN_PREFIX)
-              && !name.starts_with(TARGET_COLUMN_PREFIX)
-              && name != TIMESTAMP_COLUMN
-              && name != AUTOREGRESSION_OUTPUT_ALIAS
-              && name != FUTURE_LABELS_OUTPUT_ALIAS
-              && name != YOY_OUTPUT_ALIAS
-              && matches!(field.data_type(), arrow_schema::DataType::List(_))
+                && name != TARGET_COLUMN_PREFIX
+                && !name.starts_with(ENTITY_COLUMN_PREFIX)
+                && !name.starts_with(TARGET_COLUMN_PREFIX)
+                && name != TIMESTAMP_COLUMN
+                && name != AUTOREGRESSION_OUTPUT_ALIAS
+                && name != FUTURE_LABELS_OUTPUT_ALIAS
+                && name != YOY_OUTPUT_ALIAS
+                && matches!(field.data_type(), arrow_schema::DataType::List(_))
         })
         .map(|(idx, field)| (idx, field.name().clone()))
         .collect();
@@ -982,7 +1153,27 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
         Ok(Some(Value::List(values)))
     };
 
+    let per_element_weight = writer.weight_is_per_element();
+    let split_name: &str = plan
+        .split_projection
+        .as_ref()
+        .map(|p| p.output_name.as_str())
+        .unwrap_or_default();
+    let weight_name: &str = plan.weight_col.as_deref().unwrap_or_default();
+
     for row_idx in 0..batch.num_rows() {
+        // Include all source rows, even those skipped later, in the reference comparison.
+        if let Some(arr) = ts_arr
+            .as_ref()
+            .and_then(|a| a.as_any().downcast_ref::<Int64Array>())
+        {
+            if !arr.is_null(row_idx) {
+                processor
+                    .stats
+                    .source_rows
+                    .observe_integer_timestamp(arr.value(row_idx));
+            }
+        }
         // Reset alias slots for this row (paranoia — keeps the alias array
         // in a clean state for any future plan that might run
         // execute_stages on the custom-TT path).
@@ -991,60 +1182,114 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
         // Read all ENTITYk PKs from the parquet. ENTITY1 (slot 0) is the
         // primary key used to look up the entity node in the index; ENTITY2+
         // are auxiliary join keys carried through to the output unchanged.
+        let mut failures = Vec::new();
         let mut entity_pks: Vec<Value> = Vec::with_capacity(entity_col_indices.len());
-        let mut all_present = true;
-        for &col in &entity_col_indices {
+        for (slot, &col) in entity_col_indices.iter().enumerate() {
             match cell_to_value(batch.column(col).as_ref(), row_idx) {
-                Some(v) => entity_pks.push(v),
+                Some(value) => entity_pks.push(value),
+                None if batch.column(col).is_null(row_idx) => {
+                    failures.push((RowFailureKind::NullEntity, entity_column(slot)));
+                }
                 None => {
-                    all_present = false;
-                    break;
+                    return Err(TTGenError::SchemaError(format!(
+                        "custom-TT entity column {:?} cannot be read",
+                        entity_column(slot)
+                    )))
                 }
             }
         }
-        if !all_present {
-            continue;
-        }
-        let entity_pk = entity_pks[0].clone();
-
-        // Resolve to entity_node via the index. Skip if unknown (documented
-        // behavior — handles stale-customer-data without failing the job).
-        // Multi-entity behavior: lookup uses ENTITY1 (slot 0); ENTITY2+ are
-        // treated as auxiliary keys carried through unchanged. If ENTITY1
-        // is unknown the row is skipped.
-        let entity_node = match lookup_entity_node(plan, &entity_pk) {
-            Some(n) => n,
-            None => continue,
-        };
-
-        // Confirm the resolved node is canonical (paranoia: matches PQ
-        // path's is_canonical_node guard).
-        if !plan.entity_table.is_canonical_node(entity_node, &entity_pk) {
-            continue;
-        }
-
-        for (col_idx, name) in &sequence_feature_indices {
-            let entry = processor.stats.sequence_feature_stats
-                .entry(name.clone())
-                .or_default();
-            entry.observe(batch.column(*col_idx).as_ref(), row_idx);
-        }
-
-        // Read anchor timestamp. Absent TIMESTAMP column (static task) ⟹ use
-        // the synthesized native-static sentinel. A present column that is NULL
-        // for this row is dropped (matches native `drop_na_rows(TIMESTAMP)`).
         let ts = match &ts_arr {
+            Some(arr) if arr.is_null(row_idx) => {
+                failures.push((RowFailureKind::NullTimestamp, TIMESTAMP_COLUMN.to_string()));
+                sentinel_ts
+            }
             Some(arr) => {
-                let Some(ts_secs) = read_timestamp_secs(arr.as_ref(), row_idx, input_timestamp_unit)
-                else {
-                    continue;
-                };
+                let ts_secs = read_timestamp_secs(arr.as_ref(), row_idx, input_timestamp_unit)
+                    .ok_or_else(|| {
+                        TTGenError::SchemaError("custom-TT timestamp cannot be read".to_string())
+                    })?;
                 Abs::<U>::from_secs(ts_secs)
             }
             None => sentinel_ts,
         };
-        // Epoch seconds for the LP RHS-target temporal-validity filter below.
+        target_failures(batch, plan, &target_col_indices, row_idx, &mut failures);
+        let mut row_weight = RowWeight::None;
+        if let Some(c) = weight_col_idx {
+            row_weight = read_row_weight(
+                batch.column(c).as_ref(),
+                row_idx,
+                matches!(plan.prediction_type, PredictionType::Link { .. }) && per_element_weight,
+                source.allow_negative_weight,
+                weight_name,
+                &mut failures,
+            )?;
+            if let RowWeight::List(weights) = &row_weight {
+                let targets_len = target_col_indices
+                    .first()
+                    .copied()
+                    .flatten()
+                    .and_then(|t| list_len(batch.column(t).as_ref(), row_idx));
+                if targets_len.is_some_and(|len| weights.len() != len) {
+                    failures.push((
+                        RowFailureKind::WeightLengthMismatch,
+                        weight_name.to_string(),
+                    ));
+                }
+            }
+        }
+        if let Some(c) = split_col_idx {
+            for kind in split_failures(
+                batch.column(c).as_ref(),
+                row_idx,
+                plan.manual_split_keys.as_deref(),
+            ) {
+                failures.push((kind, split_name.to_string()));
+            }
+        }
+        if !failures.is_empty() {
+            processor.stats.source_rows.failures.reject_row(
+                on_error,
+                &failures,
+                RowLocation {
+                    part: part_name,
+                    row_group,
+                    row: row_base + row_idx as u64,
+                },
+            )?;
+            continue;
+        }
+
+        // Graph lookup is a filter, applied only after content validation.
+        let mut record_filter = |kind, column: String| {
+            processor.stats.source_rows.failures.reject_row(
+                on_error,
+                &[(kind, column)],
+                RowLocation {
+                    part: part_name,
+                    row_group,
+                    row: row_base + row_idx as u64,
+                },
+            )
+        };
+        let entity_pk = entity_pks[0].clone();
+        let Some(entity_node) = lookup_entity_node(plan, &entity_pk) else {
+            record_filter(RowFailureKind::UnknownEntity, entity_column(0))?;
+            continue;
+        };
+        if !plan.entity_table.is_canonical_node(entity_node, &entity_pk) {
+            record_filter(RowFailureKind::NonCanonicalEntity, entity_column(0))?;
+            continue;
+        }
         let ts_secs = ts.to_secs();
+
+        for (col_idx, name) in &sequence_feature_indices {
+            let entry = processor
+                .stats
+                .sequence_feature_stats
+                .entry(name.clone())
+                .or_default();
+            entry.observe(batch.column(*col_idx).as_ref(), row_idx);
+        }
 
         // Per-prediction-type direct read + write.
         match &plan.prediction_type {
@@ -1054,11 +1299,9 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                 // write_row when BATCH_SIZE is reached) sees a weight
                 // buffer whose length matches the about-to-be-flushed
                 // batch's row count.
-                if let Some(c) = weight_col_idx {
-                    writer.push_weight(read_weight_f64(
-                        batch.column(c).as_ref(),
-                        row_idx,
-                    )?);
+                if let RowWeight::Scalar(weight) = row_weight {
+                    processor.stats.source_rows.observe_weight(weight);
+                    writer.push_weight(weight);
                 }
                 let split_value = read_split_value(row_idx)?;
                 writer.write_row_pass_through_wide(
@@ -1137,11 +1380,9 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                     None
                 };
 
-                if let Some(c) = weight_col_idx {
-                    writer.push_weight(read_weight_f64(
-                        batch.column(c).as_ref(),
-                        row_idx,
-                    )?);
+                if let RowWeight::Scalar(weight) = row_weight {
+                    processor.stats.source_rows.observe_weight(weight);
+                    writer.push_weight(weight);
                 }
                 let split_value = read_split_value(row_idx)?;
                 writer.write_row_forecasting_wide(
@@ -1218,16 +1459,23 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                             pk_table.contains_pk_value(primary)
                         };
                         if !keep {
+                            processor.stats.source_rows.failures.reject_row(
+                                on_error,
+                                &[(RowFailureKind::UnavailableTarget, target_column(0))],
+                                RowLocation {
+                                    part: part_name,
+                                    row_group,
+                                    row: row_base + row_idx as u64,
+                                },
+                            )?;
                             continue;
                         }
                     }
                 }
 
-                if let Some(c) = weight_col_idx {
-                    writer.push_weight(read_weight_f64(
-                        batch.column(c).as_ref(),
-                        row_idx,
-                    )?);
+                if let RowWeight::Scalar(weight) = row_weight {
+                    processor.stats.source_rows.observe_weight(weight);
+                    writer.push_weight(weight);
                 }
                 let split_value = read_split_value(row_idx)?;
                 writer.write_row_wide(
@@ -1283,9 +1531,11 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                     let mut freqs: Vec<i64> = if *include_frequency {
                         match frequency_col_idx {
                             Some(c) => read_i64_list_values(batch.column(c).as_ref(), row_idx)
-                                .ok_or_else(|| TTGenError::SchemaError(format!(
-                                    "cannot read custom-TT frequencies at source row {row_idx}"
-                                )))?,
+                                .ok_or_else(|| {
+                                    TTGenError::SchemaError(format!(
+                                        "cannot read custom-TT frequencies at source row {row_idx}"
+                                    ))
+                                })?,
                             None => vec![1; targets.len()],
                         }
                     } else {
@@ -1306,20 +1556,8 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                         )));
                     }
                 }
-                let per_element_weight = writer.weight_is_per_element();
-                let mut weights: Vec<f64> = match weight_col_idx {
-                    Some(c) if per_element_weight => {
-                        let w = read_weight_list_f64(batch.column(c).as_ref(), row_idx)?;
-                        if w.len() != targets.len() {
-                            return Err(TTGenError::SchemaError(format!(
-                                "custom-TT weight list has {} entries but the target \
-                                 has {} at source row {row_idx}",
-                                w.len(),
-                                targets.len()
-                            )));
-                        }
-                        w
-                    }
+                let mut weights: Vec<f64> = match &mut row_weight {
+                    RowWeight::List(weights) => std::mem::take(weights),
                     _ => Vec::new(),
                 };
 
@@ -1368,15 +1606,28 @@ fn process_batch<U: UnitSystem, D: SplitDecider<U>>(
                 let targets = filtered_targets;
                 freqs = filtered_freqs;
                 weights = filtered_weights;
+                if !plan.is_prediction && targets.is_empty() {
+                    processor.stats.source_rows.failures.reject_row(
+                        on_error,
+                        &[(RowFailureKind::UnavailableTarget, target_column(0))],
+                        RowLocation {
+                            part: part_name,
+                            row_group,
+                            row: row_base + row_idx as u64,
+                        },
+                    )?;
+                    continue;
+                }
 
-                if let Some(c) = weight_col_idx {
+                if weight_col_idx.is_some() {
                     if per_element_weight {
+                        for &weight in &weights {
+                            processor.stats.source_rows.observe_weight(weight);
+                        }
                         writer.push_weight_list(weights);
-                    } else {
-                        writer.push_weight(read_weight_f64(
-                            batch.column(c).as_ref(),
-                            row_idx,
-                        )?);
+                    } else if let RowWeight::Scalar(weight) = row_weight {
+                        processor.stats.source_rows.observe_weight(weight);
+                        writer.push_weight(weight);
                     }
                 }
                 writer.write_row_array(
@@ -1506,11 +1757,15 @@ mod contract_tests {
             ),
             (
                 Some("timestamp"),
-                Arc::new(TimestampNanosecondArray::from(vec![1_700_000_000_000_000_000i64])),
+                Arc::new(TimestampNanosecondArray::from(vec![
+                    1_700_000_000_000_000_000i64,
+                ])),
             ),
             (
                 Some("timestamp"),
-                Arc::new(TimestampMicrosecondArray::from(vec![1_700_000_000_000_000i64])),
+                Arc::new(TimestampMicrosecondArray::from(vec![
+                    1_700_000_000_000_000i64,
+                ])),
             ),
             (
                 Some("timestamp"),
@@ -1539,11 +1794,13 @@ mod contract_tests {
             (None, Arc::new(BinaryArray::from(vec![&b"k"[..]]))),
             (
                 None,
-                Arc::new(DictionaryArray::<arrow_array::types::Int32Type>::try_new(
-                    dict_keys,
-                    dict_values,
-                )
-                .unwrap()),
+                Arc::new(
+                    DictionaryArray::<arrow_array::types::Int32Type>::try_new(
+                        dict_keys,
+                        dict_values,
+                    )
+                    .unwrap(),
+                ),
             ),
         ]
     }
@@ -1600,7 +1857,8 @@ mod contract_tests {
                     .any(|(_, kt)| value_to_pk_key(&value, *kt).is_some())
             });
             assert_eq!(
-                resolves, listed,
+                resolves,
+                listed,
                 "ENTITY_TYPES disagrees with value_to_pk_key for {}",
                 array.data_type()
             );
@@ -1734,9 +1992,9 @@ mod contract_tests {
             let listed = WEIGHT_LIST_CONTAINERS.contains(&container)
                 && token.is_some_and(|t| WEIGHT_LIST_ITEM_TYPES.contains(&t));
             assert_eq!(
-                read_weight_list_f64(array.as_ref(), 0).is_ok(),
+                read_row_weight(array.as_ref(), 0, true, false, "WEIGHT", &mut Vec::new()).is_ok(),
                 listed,
-                "WEIGHT_LIST_* disagrees with read_weight_list_f64 for {}",
+                "WEIGHT_LIST_* disagrees with read_row_weight for {}",
                 array.data_type()
             );
         }
@@ -1785,7 +2043,10 @@ mod tests {
         assert_eq!(read_timestamp_secs(&ms_arr, 0, wrong), Some(secs));
 
         let s_arr = TimestampSecondArray::from(vec![Some(secs)]);
-        assert_eq!(read_timestamp_secs(&s_arr, 0, TimeUnit::Nanoseconds), Some(secs));
+        assert_eq!(
+            read_timestamp_secs(&s_arr, 0, TimeUnit::Nanoseconds),
+            Some(secs)
+        );
     }
 
     /// `Int64` arrays carry no inherent unit; the bridge declares it via
@@ -1799,13 +2060,22 @@ mod tests {
         let millis: i64 = secs * 1_000;
 
         let ns = Int64Array::from(vec![Some(nanos)]);
-        assert_eq!(read_timestamp_secs(&ns, 0, TimeUnit::Nanoseconds), Some(secs));
+        assert_eq!(
+            read_timestamp_secs(&ns, 0, TimeUnit::Nanoseconds),
+            Some(secs)
+        );
 
         let us = Int64Array::from(vec![Some(micros)]);
-        assert_eq!(read_timestamp_secs(&us, 0, TimeUnit::Microseconds), Some(secs));
+        assert_eq!(
+            read_timestamp_secs(&us, 0, TimeUnit::Microseconds),
+            Some(secs)
+        );
 
         let ms = Int64Array::from(vec![Some(millis)]);
-        assert_eq!(read_timestamp_secs(&ms, 0, TimeUnit::Milliseconds), Some(secs));
+        assert_eq!(
+            read_timestamp_secs(&ms, 0, TimeUnit::Milliseconds),
+            Some(secs)
+        );
 
         let s = Int64Array::from(vec![Some(secs)]);
         assert_eq!(read_timestamp_secs(&s, 0, TimeUnit::Seconds), Some(secs));

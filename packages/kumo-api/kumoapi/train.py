@@ -2,12 +2,15 @@
 # All rights reserved.
 # SPDX-License-Identifier: MIT
 
-from typing import List, Optional, Tuple
+from typing import List, Literal, Optional, Tuple
 
 from pydantic.dataclasses import dataclass
 
 from kumoapi.common import StrEnum
 from kumoapi.typing import _FORBID_EXTRA_CONFIG
+
+TimestampUnit = Literal['seconds', 'milliseconds', 'microseconds',
+                        'nanoseconds']
 
 
 class TrainingStage(StrEnum):
@@ -35,6 +38,8 @@ class TrainingTableSpec:
     to a training table generated from a predictive query.
 
     Args:
+        timestamp_unit: Unit of integer TIMESTAMP values; defaults to
+            nanoseconds. Typed Arrow timestamps use their encoded unit.
         weight_col: Weight column used for loss computation.
         split_col: Column holding each row's split assignment, valued
             ``0`` for train, ``1`` for validation and ``2`` for test. The
@@ -44,3 +49,4 @@ class TrainingTableSpec:
     """
     weight_col: Optional[str] = None
     split_col: Optional[str] = None
+    timestamp_unit: TimestampUnit = 'nanoseconds'

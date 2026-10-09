@@ -342,6 +342,7 @@ def test_materialize_prediction_writes_predict_only_bundle(
 
     assert result.bundle_dir == str(tmp_path / "bundle")
     assert calls["thin"]["stage_counts"] == {"predict": 7}
+    assert calls["thin"]["column_stats"] is False
     assert set(calls["thin"]["stage_table_refs"]) == {"predict"}
 
 

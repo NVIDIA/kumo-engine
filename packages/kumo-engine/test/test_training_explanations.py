@@ -23,7 +23,8 @@ from kumo.engine import Trainer, TrainingTable
 ])
 def test_fit_runs_shared_explanations_after_training(tmp_path, snapshot,
                                                      monkeypatch, caplog,
-                                                     disabled, explain_fails,
+                                                     staged_seed_dir, disabled,
+                                                     explain_fails,
                                                      aggregate_fails):
     plan = ModelPlan()
     plan.training_job.disable_explain = disabled
@@ -34,7 +35,7 @@ def test_fit_runs_shared_explanations_after_training(tmp_path, snapshot,
         query='PREDICT users.label FOR EACH users.id',
         train_table_path=tmp_path / 'train.parquet',
         manifest_path=tmp_path / 'manifest.json',
-        staging_dir=tmp_path / 'staging',
+        staging_dir=staged_seed_dir,
         required_stages=('train', 'val', 'test'),
         generation_plan=TrainingTableGenerationPlan(),
     )
@@ -57,8 +58,8 @@ def test_fit_runs_shared_explanations_after_training(tmp_path, snapshot,
             raise RuntimeError('aggregation failure')
 
     aggregate = Mock(side_effect=aggregate_features)
-    monkeypatch.setattr('kumo.engine.trainer.trainer.aggregate_subgraph_features',
-                        aggregate)
+    monkeypatch.setattr(
+        'kumo.engine.trainer.trainer.aggregate_subgraph_features', aggregate)
 
     def train(training_input, **kwargs):
         events.append('train')

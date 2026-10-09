@@ -1084,19 +1084,28 @@ def test_custom_training_unsupported_connector_still_closes(monkeypatch):
 
 @pytest.mark.parametrize('export_fails', [False, True])
 def test_custom_training_warehouse_connector_closes_on_every_path(
-        monkeypatch, export_fails):
+        monkeypatch, tmp_path, export_fails):
     connector = MagicMock()
     # A bare MagicMock synthesizes every attribute on access. Remove the
     # higher-priority read-only export explicitly so this exercises the blob
     # export path configured below, matching a real connector class.
     del connector.export_table_read_only
-    connector.export_table_to_blob_storage.side_effect = (
-        RuntimeError('sanitized-provider-failure') if export_fails else None)
+
+    def export(table_name, destination):
+        assert table_name == 'deep/events.parquet'
+        if export_fails:
+            raise RuntimeError('sanitized-provider-failure')
+        os.makedirs(destination, exist_ok=True)
+        pq.write_table(pa.table({'ENTITY1': [1], 'TARGET1': [0]}),
+                       os.path.join(destination, 'part-0.parquet'))
+
+    connector.export_table_to_blob_storage.side_effect = export
     monkeypatch.setattr(custom_train_table, 'get_connector_from_spec',
                         lambda _ref: connector)
     monkeypatch.setattr(custom_train_table.fsutil, 'rm', lambda *_a, **_k: None)
 
-    _, response = _ingest(_custom_spec(), '/internal/custom')
+    destination = tmp_path / 'custom'
+    _, response = _ingest(_custom_spec(), str(destination))
 
     assert response.ok is not export_fails
     connector.close.assert_called_once_with()

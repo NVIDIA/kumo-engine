@@ -152,11 +152,19 @@ class CustomTrainingTable:
 
 @dataclass(frozen=True)
 class PreparedCustomTrainingTable:
-    """Connector-staged custom training table ready for DiskGraph."""
+    """Connector-staged rows; ingestion aborts or skips invalid rows.
+
+    ``ingest_on_error`` accepts ``abort`` or ``skip_row_on_error``. DiskGraph
+    validates the option and reports skipped rows in the staging manifest.
+    ``timestamp_unit`` declares integer timestamp units. Typed Arrow timestamps
+    use their encoded unit.
+    """
 
     parquet_path: str
     weight_column: str | None = None
     time_column: str = "TIMESTAMP"
+    ingest_on_error: str = "skip_row_on_error"
+    timestamp_unit: str = "nanoseconds"
 
     def __post_init__(self) -> None:
         if not self.parquet_path:
@@ -586,11 +594,14 @@ def generate_custom_train_table(
             } if custom_table.weight_column else {}),
         },
         index_path=request.index_path,
-        input_timestamp_unit=request.input_timestamp_unit,
+        input_timestamp_unit=custom_table.timestamp_unit,
         target_entity_table=request.rhs_node_type,
         task_type=request.task_type,
         lp_rhs_is_temporal=request.rhs_is_temporal,
         fact_pseudo_time=_fact_pseudo_time(request),
+        ingest_on_error=custom_table.ingest_on_error,
+        allow_negative_weight=(
+            request.task_type.lower() == "temporal_link_prediction"),
     )
     if not isinstance(result, Mapping):
         raise RuntimeError(
@@ -599,9 +610,13 @@ def generate_custom_train_table(
     if not isinstance(staging_dir, str) or not staging_dir:
         raise RuntimeError(
             "custom train-table builder result missing staging_dir")
+    table_path = result.get("tt_parquet_path")
+    if not isinstance(table_path, str) or not table_path:
+        raise RuntimeError(
+            "custom train-table builder result missing tt_parquet_path")
     _validate_classification_targets(request, staging_dir)
     return GeneratedTrainTableResult(
-        train_table_path=custom_table.parquet_path,
+        train_table_path=table_path,
         manifest_path=os.path.join(staging_dir, "manifest.json"),
         staging_dir=staging_dir,
     )

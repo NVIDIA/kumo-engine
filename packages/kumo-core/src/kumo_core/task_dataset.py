@@ -119,6 +119,34 @@ class DiskgraphTaskManifest:
             stats=optional_sidecar("stats_path"),
         )
 
+    def load_column_stats(self) -> dict[str, dict[str, Mapping[str, Any]]]:
+        """Per-column encoder statistics keyed by node type and column, read
+        only to fit encoders. Bundles written before the sidecar existed
+        carry them inline in the feature schema."""
+        relative_path = self.manifest.get("column_stats_path")
+        if relative_path:
+            artifact_root = self.manifest.get(
+                "artifact_root") or os.path.dirname(
+                    os.path.abspath(self.manifest_path))
+            return {
+                str(name): dict(columns)
+                for name, columns in _load_manifest_json(
+                    os.path.join(artifact_root, str(relative_path))).items()
+            }
+        nodes = self.feature_schema.get("node_types", {})
+        columns = [(name, column) for name, node in nodes.items()
+                   for column in node.get("column_specs", ())]
+        if any("stats" not in column for _, column in columns):
+            raise ValueError(
+                f"task-dataset bundle {self.manifest_path} has no column "
+                "statistics; encoders can only be fitted from a training "
+                "bundle")
+        result: dict[str, dict[str, Mapping[str, Any]]] = {}
+        for name, column in columns:
+            result.setdefault(str(name), {})[column["column_name"]] = (
+                column["stats"])
+        return result
+
     @property
     def train_table_name(self) -> str:
         name = self.metadata.get("train_table_name")
@@ -588,7 +616,11 @@ def write_thin_manifest(
     has_time: bool,
     has_weight: bool,
     stage_seed_times: dict[str, tuple[int, int]] | None = None,
+    column_stats: bool = True,
 ) -> str:
+    """Write the bundle sidecars. ``column_stats`` writes the per-column
+    encoder statistics, which only encoder fitting reads, to their own
+    sidecar; prediction bundles omit them."""
     metadata = {
         "schema_version": "v1",
         "task_family": spec.task_family,
@@ -626,8 +658,19 @@ def write_thin_manifest(
         metadata["target_to_entity_paths"] = [[list(edge) for edge in path]
                                               for path in
                                               spec.target_to_entity_paths]
+    node_types = spec.feature_schema["node_types"]
     feature_schema = {
         **spec.feature_schema,
+        "node_types": {
+            name: {
+                **node,
+                "column_specs": [{
+                    key: value
+                    for key, value in column.items() if key != "stats"
+                } for column in node["column_specs"]],
+            }
+            for name, node in node_types.items()
+        },
         "raw_feature_format": "arrow_columnar_v1",
         "provenance_mode": "node_id_time_keyed_v1",
     }
@@ -681,6 +724,15 @@ def write_thin_manifest(
             "split_info.json": split_info,
             "stats.json": stats,
         }
+        if column_stats:
+            sidecars["column_stats.json"] = {
+                name: {
+                    column["column_name"]: column["stats"]
+                    for column in node["column_specs"]
+                }
+                for name, node in node_types.items()
+            }
+            manifest["column_stats_path"] = "column_stats.json"
         checksums = {}
         for name, value in sidecars.items():
             path = os.path.join(staging, name)

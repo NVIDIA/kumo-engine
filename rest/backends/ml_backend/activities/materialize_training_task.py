@@ -606,6 +606,8 @@ def _build_ttng_custom_train_table_artifacts(
     ttng_tt_id: str,
     time_col_name: str,
     weight_col_name: Optional[str],
+    ingest_on_error: str = "skip_row_on_error",
+    timestamp_unit: str = "nanoseconds",
 ) -> str:
     from diskgraph import (
         DiskgraphDataError,
@@ -688,11 +690,14 @@ def _build_ttng_custom_train_table_artifacts(
                 },
                 train_table_col_stats_config=col_stats_config,
                 index_path=diskgraph_index_path,
-                input_timestamp_unit='nanoseconds',
+                input_timestamp_unit=timestamp_unit,
                 target_entity_table=target_entity_table,
                 task_type=task_type_value,
                 lp_rhs_is_temporal=lp_rhs_is_temporal,
                 fact_pseudo_time=fact_pseudo_time,
+                ingest_on_error=ingest_on_error,
+                allow_negative_weight=(
+                    task_type_value.lower() == "temporal_link_prediction"),
             )
         except DiskgraphDataError as error:
             raise TrainingDataMaterializationError(
@@ -769,6 +774,9 @@ def build_ttng_custom_train_table_bundle(
     ttng_tt_id = str(job_input.id)
     time_col_name = getattr(train_table, 'time_col_name', None) or 'TIMESTAMP'
 
+    custom_spec = getattr(job_input.spec, 'custom_train_table', None)
+    timestamp_unit = getattr(custom_spec, 'timestamp_unit', 'nanoseconds')
+
     with kumo_timing("training_materialize.ttng_custom_tt_source"):
         published_train_table_path = _build_ttng_custom_train_table_artifacts(
             train_table_path=train_table_path,
@@ -780,6 +788,7 @@ def build_ttng_custom_train_table_bundle(
             ttng_tt_id=ttng_tt_id,
             time_col_name=time_col_name,
             weight_col_name=weight_col_name,
+            timestamp_unit=timestamp_unit,
         )
 
     # Mirror DiskGraph's native split stats for split-bearing custom tables.

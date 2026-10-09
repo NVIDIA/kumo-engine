@@ -335,13 +335,17 @@ def test_custom_tt_split_column_still_reaches_dg_builder(monkeypatch, tmp_path):
         ttng_tt_id='gen-traintable-1',
         time_col_name='TIMESTAMP',
         weight_col_name=None,
+        timestamp_unit='milliseconds',
     )
 
     split_spec = calls['build']['split_config']
     assert calls['build']['output_path'] == train_table_path
     assert calls['build']['tt_id'] == 'gen-traintable-1'
     assert calls['build']['split_family_hint'] == 'ManualSplit'
-    assert calls['build']['input_timestamp_unit'] == 'nanoseconds'
+    assert calls['build']['input_timestamp_unit'] == 'milliseconds'
+    assert calls['build']['ingest_on_error'] == 'skip_row_on_error'
+    assert 'timestamp_reference' not in calls['build']
+    assert calls['build']['allow_negative_weight'] is False
     assert calls['build']['lp_rhs_is_temporal'] is False
     assert split_spec.kind == 'ManualSplit'
     assert split_spec.split_column == '__kumo_precomputed_split'
@@ -1216,6 +1220,7 @@ def test_temporal_link_prediction_manual_split_reaches_the_dg_builder(
 
     assert calls['build']['split_family_hint'] == 'ManualSplit'
     assert calls['build']['lp_rhs_is_temporal'] is True
+    assert calls['build']['allow_negative_weight'] is True
     split_spec = calls['build']['split_config']
     assert split_spec.kind == 'ManualSplit'
     assert split_spec.split_column == '__kumo_precomputed_split'

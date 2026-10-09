@@ -219,6 +219,10 @@ pub struct TTManifest {
     /// absent.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub train_table_edges: Option<JsonValue>,
+    /// Custom-TT only: rows the source reader skipped as invalid, per
+    /// condition. Absent on the PQL path and from older bundles.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub row_failures: Option<crate::custom_tt_row_errors::RowFailuresReport>,
     /// Transitional sidecar for the legacy ML consumer
     /// (`arange.bin`). No longer written on the TT-NG path (set to
     /// `None`); the field stays for the kumo JSON contract.
@@ -468,6 +472,7 @@ mod tests {
             stage_seed_times: None,
             train_table_col_stats: None,
             train_table_edges: None,
+            row_failures: None,
             arange_sidecar: Some(SidecarRef {
                 path: "arange.bin".into(),
             }),
@@ -547,6 +552,7 @@ mod tests {
             stage_seed_times: None,
             train_table_col_stats: None,
             train_table_edges: None,
+            row_failures: None,
             arange_sidecar: None,
             weight_sidecar: None,
             fact_pseudo_time: None,

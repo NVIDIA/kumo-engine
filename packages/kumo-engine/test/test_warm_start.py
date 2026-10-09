@@ -121,10 +121,18 @@ def test_bundle_warm_start_fit_reload_and_predict(tmp_path, monkeypatch, refit,
         wrong_query = PredictiveQuery(graph,
                                       'PREDICT users.value FOR EACH users.id')
         wrong_table = wrong_query.generate_training_table(snapshot)
-        with pytest.raises(ValueError,
-                           match='different from the current task type'):
-            Trainer(_small_plan(False)).fit(wrong_table, snapshot=snapshot,
-                                            warm_start=source)
+        wrong_plan = _small_plan(False)
+        wrong_plan.training_job.metrics = ['auroc']
+        import kumo_core.training.workflow as workflow
+
+        with monkeypatch.context() as patch:
+            resolve = Mock(wraps=workflow.resolve_model_plan)
+            patch.setattr(workflow, 'resolve_model_plan', resolve)
+            with pytest.raises(ValueError,
+                               match='different from the current task type'):
+                Trainer(wrong_plan).fit(wrong_table, snapshot=snapshot,
+                                        warm_start=source)
+            resolve.assert_not_called()
     source_bundle = source._training_result.bundle_dir
     original_hashes = _hash_bundle(source_bundle)
     # Public property mutations must not change the persisted fitted structure.

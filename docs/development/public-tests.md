@@ -62,6 +62,13 @@ Put each new `test_*.py` file in its group's directory from the
 folders there. Docker copies those test trees. New test files need no runner,
 Docker, or CI registration. Put local fixtures in that directory's `conftest.py`.
 
+The `mixed-files` group discovers `test/connector/local` and
+`test/io_utils/fsutil/local`. Keep real provider tests outside these folders.
+Local connector tests share cache cleanup and data fixtures without loading the
+hosted test setup. The shared filesystem contract runs locally here and against
+real providers through `test/io_utils/fsutil/test_all.py`. Its two existing
+large-file skips remain visible in the results.
+
 The public runner excludes each test directory's `live/` folder before import.
 Live provider tests keep their explicit opt-in checks when run directly.
 Reader groups also exclude `native/`; the `shared-sql` group runs Snowflake's

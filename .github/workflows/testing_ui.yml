@@ -197,7 +197,7 @@ jobs:
   publish-coverage:
     needs: vitest
     if: ${{ always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.vitest.outputs.coverage_artifact != '' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     timeout-minutes: 5
@@ -219,7 +219,7 @@ jobs:
   comment-coverage:
     needs: vitest
     if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.vitest.outputs.ui_changed == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       pull-requests: write
     steps:

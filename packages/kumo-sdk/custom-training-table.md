@@ -595,3 +595,16 @@ cloud and a wasted bundle locally, so both entry points exist.
 **A local file is a source table.** Rather than a special case in the training
 path, because the same gap blocks local graph ingest from parquet, and one
 union member closes both.
+
+### Integer timestamp units
+
+Declare the unit of integer `TIMESTAMP` values in the table specification:
+
+```python
+TrainingTableSpec(weight_col="weight", timestamp_unit="milliseconds")
+```
+
+Accepted units are `seconds`, `milliseconds`, `microseconds`, and `nanoseconds`.
+The default is `nanoseconds`. Arrow timestamp columns use their encoded unit.
+DiskGraph converts timestamps during ingestion; no generated-table timestamp
+reference is needed. Hosted schema and row-count correspondence checks remain.

@@ -40,7 +40,7 @@ jobs:
     # handled by the `auto-review-ui` job. The `claude` and `report-status` jobs
     # `need` this one, so skipping it keeps them out of plain PR commits too.
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       is_multi_repo: ${{ steps.check.outputs.is_multi_repo }}
       repos: ${{ steps.check.outputs.repos }}
@@ -61,7 +61,7 @@ jobs:
   dispatch-to-repos:
     needs: detect-multi-repo
     if: needs.detect-multi-repo.outputs.is_multi_repo == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -106,7 +106,7 @@ jobs:
         (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
       )) ||
       github.event_name == 'repository_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       pull-requests: write
@@ -156,7 +156,7 @@ jobs:
     concurrency:
       group: ui-review-${{ github.event.pull_request.number || github.event.issue.number }}
       cancel-in-progress: true
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     # Minimal scopes: read to check out, pull-requests:write only to post the
     # sticky findings comment. This job ingests untrusted PR content (diff,
@@ -354,7 +354,7 @@ jobs:
   report-status:
     needs: [detect-multi-repo, dispatch-to-repos]
     if: needs.detect-multi-repo.outputs.is_multi_repo == 'true' && always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       issues: write
       pull-requests: write

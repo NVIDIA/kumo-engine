@@ -2,6 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import copy
 import functools
 import gc
 import inspect
@@ -11,7 +12,7 @@ import warnings
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import fields, is_dataclass
 from typing import Any, Literal
 
 import kumo_core.modeling.context as modeling_context
@@ -45,6 +46,24 @@ _KUMO_BATCH_DUMP_DIR = os.getenv("KUMO_BATCH_DUMP_DIR", "")
 _SPARSE_OPTIMIZER_REMAP_CHUNK_SIZE = 65_536
 
 logger = logging.getLogger(__name__)
+
+
+def _config_hparams(value: Any) -> Any:
+    r"""``dataclasses.asdict`` without encoder statistics, which are large and
+    never read back from checkpoints."""
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            f.name: _config_hparams(getattr(value, f.name))
+            for f in fields(value) if f.name != '_stats'
+        }
+    if isinstance(value, tuple) and hasattr(value, '_fields'):
+        return type(value)(*[_config_hparams(v) for v in value])
+    if isinstance(value, (list, tuple)):
+        return type(value)(_config_hparams(v) for v in value)
+    if isinstance(value, dict):
+        return type(value)(
+            (_config_hparams(k), _config_hparams(v)) for k, v in value.items())
+    return copy.deepcopy(value)
 
 
 class BaseLightningModule(pl.LightningModule, ABC):
@@ -217,9 +236,6 @@ class BaseLightningModule(pl.LightningModule, ABC):
     def __post_init__(self):
         # Save all hyperparameters for PyTorch Lightning. Since we cannot save
         # any `torch.nn.Module` here, we save the config of the model parts.
-        # In order to then load a model from checkpoint, we override the
-        # PyTorch Lightning `load_from_checkpoint` functionality below that
-        # reconstructs the model parts from configuration.
 
         # Receive arguments passed to the constructor from the current frame:
         frame = inspect.currentframe().f_back
@@ -231,7 +247,7 @@ class BaseLightningModule(pl.LightningModule, ABC):
 
         for key, value in hparams.items():  # Convert modules to their config:
             if isinstance(value, torch.nn.Module) and hasattr(value, 'config'):
-                hparams[key] = asdict(value.config())
+                hparams[key] = _config_hparams(value.config())
 
         self._set_hparams(hparams)
 

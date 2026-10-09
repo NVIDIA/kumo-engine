@@ -11,7 +11,7 @@ from kumo_core.model_plan import ModelPlan
 from kumo_core.types import TaskType
 from kumo_core.types.schema import FPID
 from kumoapi.source_table import SourceTableType
-from kumoapi.train import TrainingStage
+from kumoapi.train import TimestampUnit, TrainingStage
 from pydantic import field_validator, model_validator
 from temporalio.client import WorkflowExecutionStatus
 
@@ -71,6 +71,7 @@ class CustomTrainingTable:
             ``split_contract.py`` takes a ``split_column`` parameter rather
             than matching a literal, so unlike ``ENTITY1`` there is no fixed
             name to assume.
+        timestamp_unit: Unit of integer TIMESTAMP values in the supplied table.
         validated: Whether the custom training table has been validated.
     """
     connector_spec: ConnectorExecutionRef
@@ -78,6 +79,7 @@ class CustomTrainingTable:
     weight_col_name: Optional[str] = None
     split_col_name: Optional[str] = None
     validated: bool = False
+    timestamp_unit: TimestampUnit = 'nanoseconds'
 
 
 @kumo_dataclass

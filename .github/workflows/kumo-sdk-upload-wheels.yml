@@ -60,7 +60,7 @@ defaults:
 jobs:
   wheel:
     if: ${{ vars.KUMO_SDK_PUBLICATION_ENABLED == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: kumo-sdk-release
 
     steps:

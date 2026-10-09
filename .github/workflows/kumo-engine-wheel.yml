@@ -112,7 +112,7 @@ jobs:
   attach-to-release:
     needs: [build]
     if: ${{ github.event_name == 'release' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
@@ -135,7 +135,7 @@ jobs:
     # and its trusted publisher exist (one-time setup: see docs/development/releasing-kumo-engine.md).
     if: >-
       ${{ github.event_name == 'release' && vars.KUMO_ENGINE_PUBLICATION_ENABLED == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: kumo-engine-release
     permissions:
       contents: read

@@ -377,8 +377,10 @@ def test_temporal_link_never_resolves_past_visits(tmp_path) -> None:
 
 
 @pytest.mark.parametrize('target_stype', ['categorical', 'ID', 'boolean'])
+@pytest.mark.parametrize('ingest_on_error', ['abort', 'skip_row_on_error'])
+@pytest.mark.parametrize('task_type', ['binary_classification', 'temporal_link_prediction'])
 def test_generate_custom_table_builds_standard_artifact_bundle(
-        tmp_path, target_stype) -> None:
+        tmp_path, target_stype, ingest_on_error, task_type) -> None:
     parquet = tmp_path / "custom.parquet"
     parquet.mkdir()
     staging = tmp_path / "custom.parquet.artifacts"
@@ -393,18 +395,23 @@ def test_generate_custom_table_builds_standard_artifact_bundle(
             write_valid_class_stats(
                 staging,
                 [[10, 400], [20, 400]] if target_stype == 'ID' else None)
-            return {"staging_dir": str(staging)}
+            return {"staging_dir": str(staging),
+                    "tt_parquet_path": str(staging / "tt.parquet")}
 
     result = generate_custom_train_table(
-        request(tmp_path, target_stype=target_stype),
+        request(tmp_path, target_stype=target_stype, task_type=task_type),
         PreparedCustomTrainingTable(
             str(parquet),
             weight_column="WEIGHT",
+            ingest_on_error=ingest_on_error,
         ),
         runtime=Runtime,
     )
 
-    assert result.train_table_path == str(parquet)
+    assert calls[0]["ingest_on_error"] == ingest_on_error
+    assert calls[0]["allow_negative_weight"] == (
+        task_type == "temporal_link_prediction")
+    assert result.train_table_path == str(staging / "tt.parquet")
     assert result.staging_dir == str(staging)
     assert calls[0]["output_path"] == str(parquet)
     assert calls[0]["split_stats_config"] == {
@@ -790,7 +797,8 @@ def test_rejected_custom_labels_preserve_customer_parquet(
             stats['stats']['TARGET1__kumo.categorical__CATEGORY_COUNTS__False'][
                 'value'] = [[False, 800]]
             stats_path.write_text(json.dumps(stats))
-            return {'staging_dir': str(staging)}
+            return {'staging_dir': str(staging),
+                    'tt_parquet_path': str(staging / 'tt.parquet')}
 
     with pytest.raises(GenerationValidationError, match='Too few classes'):
         generate_custom_train_table(

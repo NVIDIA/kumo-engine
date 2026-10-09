@@ -10,6 +10,8 @@ from pathlib import Path
 from test.data.generic.ttng_v3_test_bundle import write_v3_bundle
 from types import SimpleNamespace
 
+import pytest
+
 mtt = import_module(
     'rest.backends.ml_backend.activities.materialize_training_task')
 
@@ -82,9 +84,9 @@ def test_custom_gen_activity_builds_bundle_and_does_not_ingest(
     train_table_path = '/tmp/jobs/gen-traintable-j1/train_table'
 
     build_calls = []
-    monkeypatch.setattr(mtt, '_build_ttng_custom_train_table_artifacts',
-                        lambda **kw: (build_calls.append(kw) or
-                                      '/published/bundle/tt.parquet'))
+    monkeypatch.setattr(
+        mtt, '_build_ttng_custom_train_table_artifacts', lambda **kw:
+        (build_calls.append(kw) or '/published/bundle/tt.parquet'))
 
     # No split_stats.json -> C3 sub-step is a no-op (assert no crash).
     monkeypatch.setattr(mtt.fsutil, 'exists', lambda _p: False)
@@ -130,9 +132,9 @@ def test_custom_gen_activity_builds_even_when_pre_split_stats_present(
     monkeypatch.setattr(mtt.fsutil, 'exists', lambda _p: False)
 
     build_calls = []
-    monkeypatch.setattr(mtt, '_build_ttng_custom_train_table_artifacts',
-                        lambda **kw: (build_calls.append(kw) or
-                                      '/published/bundle/tt.parquet'))
+    monkeypatch.setattr(
+        mtt, '_build_ttng_custom_train_table_artifacts', lambda **kw:
+        (build_calls.append(kw) or '/published/bundle/tt.parquet'))
 
     mtt.build_ttng_custom_train_table_bundle(
         job_input=_job_input(model_plan_cls),
@@ -246,8 +248,8 @@ def _install_fake_dg_builder(monkeypatch):
 
     def _build_artifacts(**kwargs):
         build_calls.append(kwargs)
-        staging_dir = write_v3_bundle(
-            os.path.dirname(kwargs['output_path']), kwargs['tt_id'])
+        staging_dir = write_v3_bundle(os.path.dirname(kwargs['output_path']),
+                                      kwargs['tt_id'])
         return {'manifest_path': '/tmp/m.json', 'staging_dir': staging_dir}
 
     monkeypatch.setitem(
@@ -334,9 +336,8 @@ def test_custom_gen_local_train_table_passes_path_through(
     (Path(local_train_table_path) / 'part-00000.parquet').write_bytes(b'PAR1d')
 
     build_calls = _install_fake_dg_builder(monkeypatch)
-    monkeypatch.setattr(
-        mtt, '_ttng_custom_tt_entity_metadata',
-        lambda _task: ('Customer', 'customer_id'))
+    monkeypatch.setattr(mtt, '_ttng_custom_tt_entity_metadata', lambda _task:
+                        ('Customer', 'customer_id'))
     monkeypatch.setattr(mtt, '_ttng_custom_tt_target_stype',
                         lambda _pq: 'numerical')
 
@@ -354,3 +355,22 @@ def test_custom_gen_local_train_table_passes_path_through(
 
     assert len(build_calls) == 1
     assert build_calls[0]['output_path'] == local_train_table_path
+
+
+@pytest.mark.parametrize(
+    'unit', ['seconds', 'milliseconds', 'microseconds', 'nanoseconds'])
+def test_custom_gen_forwards_declared_timestamp_unit(monkeypatch, unit):
+    model_plan_cls, _, _ = _install_common_fakes(monkeypatch)
+    job_input = _job_input(model_plan_cls)
+    job_input.spec.custom_train_table = SimpleNamespace(timestamp_unit=unit)
+    calls = []
+    monkeypatch.setattr(
+        mtt, '_build_ttng_custom_train_table_artifacts', lambda **kw:
+        (calls.append(kw) or '/published/bundle/tt.parquet'))
+    monkeypatch.setattr(mtt, '_mirror_ttng_split_stats_to_job_dir',
+                        lambda **kw: None)
+    mtt.build_ttng_custom_train_table_bundle(
+        job_input=job_input, settings=SimpleNamespace(),
+        train_table_path='/tmp/custom.parquet')
+    assert calls[0]['timestamp_unit'] == unit
+    assert 'timestamp_reference' not in calls[0]

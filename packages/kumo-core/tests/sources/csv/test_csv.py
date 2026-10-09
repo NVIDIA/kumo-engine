@@ -152,7 +152,7 @@ def test_a_value_below_the_sample_refuses_the_read_rather_than_widening(
     """Past the sample nothing can see the conflict, so both sides type the
     column an integer and then meet the value at read time. The platform's
     export refuses it -- measured, in
-    ``test/connector/test_csv_hosted_core_parity.py`` -- and nulling it here
+    ``test/connector/local/test_csv_hosted_core_parity.py`` -- and nulling it here
     would stage a graph over data the cloud will not ingest, with the key on
     that row silently gone.
     """

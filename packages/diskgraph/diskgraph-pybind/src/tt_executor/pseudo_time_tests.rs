@@ -412,6 +412,9 @@ fn custom_weighted_artifacts(
             false,
             false,
             Some(&spec_json),
+            "abort",
+            false,
+            None,
         )?;
         let staging: String = out
             .bind(py)
@@ -722,36 +725,35 @@ fn custom_string_labels_do_not_match_integer_facts() {
             ("SPLIT", Arc::new(StringArray::from(vec!["0"]))),
         ],
     );
-    let staging = custom_artifacts(&path, &index, "mismatch", manual_split()).unwrap();
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(staging.join("manifest.json")).unwrap()).unwrap();
-    assert_eq!(manifest["row_count"], 1);
-    assert!(label_stages(&staging).0.is_empty());
-    let bytes = std::fs::read(staging.join("fact_pseudo_time.bin")).unwrap();
-    let times = diskgraph_train_table::pseudo_time::fact_pseudo_time_payload(&bytes).unwrap();
-    assert!(!times.is_empty());
-    assert!(times.iter().all(|&time| time == 0));
+    let error = custom_artifacts(&path, &index, "mismatch", manual_split()).unwrap_err();
+    assert!(error.to_string().contains("kept no rows"), "{error}");
 }
 
 #[test]
-fn custom_nullable_targets_preserve_split_frequency_and_weight_alignment() {
+fn custom_target_validation_preserves_filtered_link_alignment() {
     pyo3::Python::initialize();
     for large in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let (index, orders) = build_index(dir.path());
         let path = dir.path().join("nullable.parquet");
-        let targets: ArrayRef = if large {
-            let mut builder = LargeListBuilder::new(Int64Builder::new());
-            builder.values().append_option(None);
-            builder.values().append_slice(&[0, 2]);
-            builder.append(true);
-            Arc::new(builder.finish())
-        } else {
-            let mut builder = ListBuilder::new(Int64Builder::new());
-            builder.values().append_option(None);
-            builder.values().append_slice(&[0, 2]);
-            builder.append(true);
-            Arc::new(builder.finish())
+        let targets = |nullable: bool| -> ArrayRef {
+            if large {
+                let mut builder = LargeListBuilder::new(Int64Builder::new());
+                builder
+                    .values()
+                    .append_option(if nullable { None } else { Some(ITEMS + 100) });
+                builder.values().append_slice(&[0, 2]);
+                builder.append(true);
+                Arc::new(builder.finish())
+            } else {
+                let mut builder = ListBuilder::new(Int64Builder::new());
+                builder
+                    .values()
+                    .append_option(if nullable { None } else { Some(ITEMS + 100) });
+                builder.values().append_slice(&[0, 2]);
+                builder.append(true);
+                Arc::new(builder.finish())
+            }
         };
         let ints = |values: &[i64]| -> ArrayRef {
             let mut builder = ListBuilder::new(Int64Builder::new());
@@ -770,20 +772,41 @@ fn custom_nullable_targets_preserve_split_frequency_and_weight_alignment() {
         let mut weights = ListBuilder::new(Float64Builder::new());
         weights.values().append_slice(&[999.0, 1.5, 2.5]);
         weights.append(true);
-        write_parquet(
+        let mut columns = vec![
+            ("ENTITY1", Arc::new(Int64Array::from(vec![0])) as ArrayRef),
+            (
+                "TIMESTAMP",
+                Arc::new(TimestampNanosecondArray::from(vec![0])) as ArrayRef,
+            ),
+            ("TARGET1", targets(true)),
+            ("SPLIT", ints(&[2, 0, 1])),
+            ("__kumo_internal_frequency_column__", frequencies),
+            ("weight", Arc::new(weights.finish()) as ArrayRef),
+        ];
+        write_parquet(&path, columns.clone());
+        let error = custom_weighted_artifacts(
             &path,
-            vec![
-                ("ENTITY1", Arc::new(Int64Array::from(vec![0]))),
-                (
-                    "TIMESTAMP",
-                    Arc::new(TimestampNanosecondArray::from(vec![0])),
-                ),
-                ("TARGET1", targets),
-                ("SPLIT", ints(&[2, 0, 1])),
-                ("__kumo_internal_frequency_column__", frequencies),
-                ("weight", Arc::new(weights.finish())),
-            ],
+            &index,
+            "tt",
+            SplitSpec {
+                kind: Some("CustomLinkSplit".to_string()),
+                ..manual_split()
+            },
+            Some("weight"),
+        )
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("target list contains a null element"),
+            "{message}"
         );
+        assert!(message.contains("TARGET1"), "{message}");
+        assert!(message.contains("row 0"), "{message}");
+
+        // Null items reject the row; unknown graph targets are filtered while
+        // retaining the corresponding split, frequency and weight positions.
+        columns[2].1 = targets(false);
+        write_parquet(&path, columns);
         let staging = custom_weighted_artifacts(
             &path,
             &index,
@@ -903,7 +926,9 @@ fn custom_link_split_rejects_null_stage_values() {
     )
     .unwrap_err();
     assert!(
-        error.to_string().contains("split list contains null"),
+        error
+            .to_string()
+            .contains("split value is null in column \"SPLIT\""),
         "{error}"
     );
 }

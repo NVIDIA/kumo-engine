@@ -478,6 +478,7 @@ export const getGentraintableJobsByIdResponseResourceConfigCustomTrainTableOneSo
 export const getGentraintableJobsByIdResponseResourceConfigCustomTrainTableOneSourceTableEightDataSourceTypeDefault = `UNAVAILABLE`;
 export const getGentraintableJobsByIdResponseResourceConfigCustomTrainTableOneSourceTableNineFileTypeDefault = `PARQUET`;
 export const getGentraintableJobsByIdResponseResourceConfigCustomTrainTableOneSourceTableNineDataSourceTypeDefault = `LOCAL_FILE`;
+export const getGentraintableJobsByIdResponseResourceConfigCustomTrainTableOneTableModSpecTimestampUnitDefault = `nanoseconds`;
 export const getGentraintableJobsByIdResponseResourceConfigCustomTrainTableOneValidatedDefault = false;
 export const getGentraintableJobsByIdResponseResourceCustomTrainTableUsedDefault = false;
 
@@ -1001,10 +1002,20 @@ export const GetGentraintableJobsByIdResponse = zod.object({
                                             .optional(),
                                         "split_col": zod
                                             .union([zod.string(), zod.null()])
-                                            .optional()
+                                            .optional(),
+                                        "timestamp_unit": zod
+                                            .enum([
+                                                "seconds",
+                                                "milliseconds",
+                                                "microseconds",
+                                                "nanoseconds"
+                                            ])
+                                            .default(
+                                                getGentraintableJobsByIdResponseResourceConfigCustomTrainTableOneTableModSpecTimestampUnitDefault
+                                            )
                                     })
                                     .describe(
-                                        "Specifies the modifications made to a training table generated from a predictive query.  Args:     weight_col: Weight column used for loss computation.     split_col: Column holding each row's split assignment, valued         ``0`` for train, ``1`` for validation and ``2`` for test. The         column is read out of the supplied table by name, routes the row,         and is dropped from the seed output. ``None`` leaves the split to         the generation plan."
+                                        "Specifies the modifications made to a training table generated from a predictive query.  Args:     timestamp_unit: Unit of integer TIMESTAMP values; defaults to         nanoseconds. Typed Arrow timestamps use their encoded unit.     weight_col: Weight column used for loss computation.     split_col: Column holding each row's split assignment, valued         ``0`` for train, ``1`` for validation and ``2`` for test. The         column is read out of the supplied table by name, routes the row,         and is dropped from the seed output. ``None`` leaves the split to         the generation plan."
                                     ),
                                 "validated": zod
                                     .boolean()

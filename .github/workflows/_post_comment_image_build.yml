@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   post-comment:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Post Comment when Images are Building
         uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9

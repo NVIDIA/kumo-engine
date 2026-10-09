@@ -24,7 +24,7 @@ permissions:
 jobs:
   import:
     environment: gha-kumo-workflow-tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       AWS_TEST_ROLE_ARN: arn:aws:iam::926922431314:role/gha-kumo-preprod-test-s3
 

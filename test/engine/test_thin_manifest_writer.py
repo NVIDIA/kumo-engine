@@ -17,6 +17,7 @@ import os
 
 import pytest
 from kumo_core.task_dataset import (
+    DiskgraphTaskManifest,
     TaskDatasetMaterializeSpec,
     write_thin_manifest,
 )
@@ -120,7 +121,7 @@ def _write_manifest(workdir: str, **spec_overrides) -> str:
 
 
 def test_manifest_creates_expected_files(workdir: str) -> None:
-    """Writer produces all 7 expected files."""
+    """Writer produces all 8 expected files."""
     manifest_path = _write_manifest(workdir)
     bundle_dir = os.path.dirname(manifest_path)
 
@@ -128,6 +129,7 @@ def test_manifest_creates_expected_files(workdir: str) -> None:
         'manifest.json',
         'metadata.json',
         'feature_schema.json',
+        'column_stats.json',
         'graph_runtime_metadata.json',
         'split_info.json',
         'stats.json',
@@ -293,6 +295,7 @@ def test_checksums_computed_for_all_sidecars(workdir: str) -> None:
     expected_keys = {
         'metadata.json_sha256',
         'feature_schema.json_sha256',
+        'column_stats.json_sha256',
         'graph_runtime_metadata.json_sha256',
         'split_info.json_sha256',
         'stats.json_sha256',
@@ -368,3 +371,77 @@ def test_no_partial_state_on_failure(workdir: str) -> None:
         has_weight=False,
     )
     assert os.path.isfile(manifest_path)
+
+
+def _bundle(workdir: str, **kwargs) -> str:
+    manifest_path = write_thin_manifest(
+        _make_spec(workdir),
+        graph_index_id='test_graph/v1',
+        graph_index_path='/data/test_graph/v1',
+        stats=_MOCK_STATS,
+        stage_counts=_MOCK_STAGE_COUNTS,
+        stage_table_refs=_MOCK_STAGE_TABLE_REFS,
+        has_time=False,
+        has_weight=False,
+        **kwargs,
+    )
+    with open(os.path.join(os.path.dirname(manifest_path),
+                           'runtime_manifest.json'), 'w') as f:
+        json.dump({}, f)
+    return manifest_path
+
+
+def test_column_stats_live_in_their_own_sidecar(workdir, monkeypatch):
+    import kumo_core.task_dataset as task_dataset
+
+    manifest_path = _bundle(workdir)
+    read = []
+    original = task_dataset._load_manifest_json
+    monkeypatch.setattr(task_dataset, '_load_manifest_json',
+                        lambda path: read.append(path) or original(path))
+
+    manifest = DiskgraphTaskManifest.load(manifest_path)
+
+    column = manifest.feature_schema['node_types']['USERS']['column_specs'][0]
+    assert 'stats' not in column
+    assert not any(path.endswith('column_stats.json') for path in read)
+    assert manifest.load_column_stats() == {'USERS': {'AGE': {'MEAN': 0.0}}}
+    assert read[-1].endswith('column_stats.json')
+
+
+def test_prediction_bundles_carry_no_column_stats(workdir):
+    manifest_path = _bundle(workdir, column_stats=False)
+    bundle_dir = os.path.dirname(manifest_path)
+
+    assert 'column_stats.json' not in os.listdir(bundle_dir)
+    manifest = DiskgraphTaskManifest.load(manifest_path)
+    assert 'column_stats_path' not in manifest.manifest
+    with pytest.raises(ValueError, match='no column statistics'):
+        manifest.load_column_stats()
+
+
+def test_bundles_with_inline_column_stats_still_fit(workdir):
+    from kumo_core.automl.runtime import collect_resolved_encoders
+    from kumo_core.resolved_task import ResolvedNumericalTask
+
+    manifest_path = _bundle(workdir)
+    bundle_dir = os.path.dirname(manifest_path)
+    with open(manifest_path) as f:
+        payload = json.load(f)
+    del payload['column_stats_path']
+    with open(manifest_path, 'w') as f:
+        json.dump(payload, f)
+    os.remove(os.path.join(bundle_dir, 'column_stats.json'))
+    with open(os.path.join(bundle_dir, 'feature_schema.json'), 'w') as f:
+        json.dump(_make_spec(workdir).feature_schema, f)
+
+    manifest = DiskgraphTaskManifest.load(manifest_path)
+    fitted = ResolvedNumericalTask.from_manifest(
+        manifest, name='job', column_stats=manifest.load_column_stats())
+    layout = ResolvedNumericalTask.from_manifest(manifest, name='job')
+
+    encoders = collect_resolved_encoders(fitted)
+    assert encoders['USERS']['AGE']._stats
+    assert layout.encoder_inputs['USERS'][0].stats is None
+    with pytest.raises(ValueError, match='load_column_stats'):
+        collect_resolved_encoders(layout)

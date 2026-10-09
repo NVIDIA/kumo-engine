@@ -791,6 +791,7 @@ export * from "./trainingJobResultsValMetrics";
 export * from "./trainingStage";
 export * from "./trainingTableSpec";
 export * from "./trainingTableSpecSplitCol";
+export * from "./trainingTableSpecTimestampUnit";
 export * from "./trainingTableSpecWeightCol";
 export * from "./trainingWorkflowResponse";
 export * from "./trainingWorkflowResponseGenerationJob";

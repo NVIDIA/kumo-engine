@@ -17,13 +17,16 @@ import os.path as osp  # noqa: E402
 import pathlib  # noqa: E402
 import shutil  # noqa: E402
 import socket  # noqa: E402
-import tempfile  # noqa: E402
 import time  # noqa: E402
 import uuid  # noqa: E402
 from collections.abc import Callable  # noqa: E402
 from test.fixtures.backend_cache import (  # noqa: E402, F401
     auto_setup_kumo_backend,
     backend_cache,
+)
+from test.fixtures.local import (  # noqa: E402, F401
+    tempdir,
+    valid_fake_private_key,
 )
 from typing import Dict  # noqa: E402
 from typing import Generator  # noqa: E402
@@ -1495,19 +1498,6 @@ def _snowflake_connector(schema: str) -> snowflake_connector.SnowflakeConnector:
     )
 
 
-@pytest.fixture(scope='session')
-def valid_fake_private_key():
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-
-    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    return private_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    ).decode()
-
-
 # Dataclass for indexing tasks by description to persist across tests
 @kumo_dataclass(frozen=True)
 class SyntheticTaskDescriptor:
@@ -1579,16 +1569,6 @@ def get_task() -> Callable:
 @pytest.fixture()
 def generate_graph() -> Callable:
     return _generate_graph
-
-
-@pytest.fixture
-def tempdir(request):
-    with tempfile.NamedTemporaryFile(delete=False) as tempdir:
-        os.unlink(tempdir.name)
-
-        request.addfinalizer(
-            lambda: shutil.rmtree(tempdir.name, ignore_errors=True))
-        return tempdir
 
 
 @pytest.fixture(autouse=True)

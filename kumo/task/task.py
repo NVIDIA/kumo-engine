@@ -5,7 +5,7 @@
 import copy
 import os.path as osp
 from io import BytesIO
-from typing import Any
+from typing import Any, Mapping
 
 import pandas as pd
 from kumo_core.encoder_selection import select_target_encoder
@@ -1232,11 +1232,13 @@ class Task(ConfigMixin, _HasData):
         manifest: DiskgraphTaskManifest,
         *,
         sampling: ResolvedTaskSampling | None = None,
+        column_stats: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> ResolvedNumericalTask:
         """Drop authoring/services and retain the numerical training task."""
 
         resolved = ResolvedNumericalTask.from_manifest(
             manifest,
+            column_stats=column_stats,
             name=self.name,
             metrics=list(self.metrics),
             forecast_length=self.forecast_length,

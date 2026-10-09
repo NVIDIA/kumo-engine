@@ -135,7 +135,15 @@ describe("ConnectTables - Custom SQL create wiring (flag on)", () => {
 
     const enterTableName = async (name: string) => {
         const nameInput = await screen.findByPlaceholderText("Use default");
-        fireEvent.change(nameInput, { target: { value: name } });
+        vi.useFakeTimers();
+        try {
+            fireEvent.change(nameInput, { target: { value: name } });
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(1000);
+            });
+        } finally {
+            vi.useRealTimers();
+        }
         // The name-uniqueness check gates Add while it runs; wait for it to fire
         // (and settle) so the create path isn't blocked as "validating".
         await waitFor(() =>

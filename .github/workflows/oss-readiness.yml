@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   repository-checks:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       # A blob-less clone without persisted credentials cannot fetch file
       # contents later, so check out the commit the scans read (the PR head,
@@ -69,7 +69,7 @@ jobs:
 
   gitleaks:
     name: Gitleaks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       # Keep the version aligned with .mise.toml. The checksum is the
       # linux_x64 entry in the release's gitleaks_<version>_checksums.txt.

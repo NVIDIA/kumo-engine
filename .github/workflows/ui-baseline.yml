@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   ratchet:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       regressed: ${{ steps.ratchet.conclusion == 'failure' }}
     defaults:
@@ -86,7 +86,7 @@ jobs:
   comment-regression:
     needs: ratchet
     if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.ratchet.outputs.regressed == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       pull-requests: write
     steps:

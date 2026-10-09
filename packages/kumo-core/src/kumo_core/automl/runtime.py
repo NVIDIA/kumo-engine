@@ -27,6 +27,10 @@ def _with_encoder_stats(
     encoder: EncoderType,
     value: ResolvedEncoderInput,
 ) -> EncoderType:
+    if value.stats is None:
+        raise ValueError(
+            f"encoder stats were not loaded for {value.column_name!r}; "
+            "build the task with manifest.load_column_stats()")
     encoder = copy.deepcopy(encoder)
     encoder._stats = {
         ColStatType(name): stat_value

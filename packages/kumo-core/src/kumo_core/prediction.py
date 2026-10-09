@@ -351,6 +351,7 @@ def materialize_prediction_task(
         stage_table_refs=stage_table_refs,
         has_time=True,
         has_weight=False,
+        column_stats=False,
     )
     bundle_dir = os.path.dirname(manifest_path)
     runtime_manifest_path = write_flat_manifest(

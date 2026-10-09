@@ -33,7 +33,7 @@ concurrency:
 
 jobs:
   schema-compat:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository and submodules
@@ -66,7 +66,7 @@ jobs:
       #     AWS_DEFAULT_REGION: us-west-2
 
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository and submodules
@@ -93,7 +93,7 @@ jobs:
           path: packages/kumo-api/dist/*.whl
 
   pytest-matrix:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: build
     strategy:
       fail-fast: false
@@ -139,7 +139,7 @@ jobs:
   # when every Python version passes (and red/error if any leg fails or is
   # skipped/cancelled).
   pytest:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: pytest-matrix
     if: ${{ always() }}
     steps:

@@ -44,7 +44,7 @@ jobs:
       # This job uses environment-scoped OIDC; it does not deploy an application.
       deployment: false
     name: gcs-e2e-tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: true
     permissions:
       contents: read

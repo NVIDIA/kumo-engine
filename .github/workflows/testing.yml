@@ -78,7 +78,7 @@ jobs:
   pytest:
     needs: [diskgraph-wheel]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: true
     environment:
       name: azure-adls-tests
@@ -506,7 +506,7 @@ jobs:
     # consumer check. The separately-built fat wheel targets Python 3.12.
     needs: [diskgraph-wheel]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -645,7 +645,7 @@ jobs:
             -W "ignore:You have an incompatible version of 'pyarrow' installed:UserWarning"
 
   durations-aggregate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [pytest]
     if: always() && needs.pytest.result != 'skipped' && needs.pytest.result != 'cancelled' && inputs.store_durations == true
     steps:
@@ -708,7 +708,7 @@ jobs:
           include-hidden-files: true
 
   coverage:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write  # peaceiris/actions-gh-pages pushes to gh-pages
     # Set the same group across commits in main to avoid pushing to gh-pages
@@ -787,7 +787,7 @@ jobs:
       GITHUB_REPOSITORY: ${{ github.repository }}
       GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
       GITHUB_RUN_ID: ${{ github.run_id }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
       fail-fast: false

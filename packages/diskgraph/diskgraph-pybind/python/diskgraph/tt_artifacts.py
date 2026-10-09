@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 from typing import Optional
 
 from ._c import (  # type: ignore[import]
@@ -25,6 +26,19 @@ from ._c import (  # type: ignore[import]
     build_train_table_artifacts_for_existing_table as _native_build,
 )
 from .split_contract import SplitSpec
+
+
+def _warn_skipped_rows(result: dict) -> None:
+    report = result.get('row_failures') or {}
+    if not report.get('skipped_rows'):
+        return
+    reasons = '; '.join(
+        f"{entry['condition'].replace('_', ' ')}[{entry['column']}]="
+        f"{entry['count']}" for entry in report['by_condition'])
+    logging.getLogger(__name__).warning(
+        'custom-TT source: %s of %s rows were skipped; training on %s rows. '
+        'Reasons: %s', report['skipped_rows'], report['rows_read'],
+        result['row_count'], reasons)
 
 
 def _split_spec_to_plan_json(
@@ -143,6 +157,9 @@ def build_train_table_artifacts_for_existing_table(
     lp_rhs_is_temporal: bool = False,
     allow_new_target_entities: bool = False,
     fact_pseudo_time: Optional[dict] = None,
+    ingest_on_error: str = 'skip_row_on_error',
+    allow_negative_weight: bool = False,
+    timestamp_reference: Optional[dict] = None,
 ) -> dict:
     """Rebuild TT artifacts (manifest + sidecars) for an existing
     training-table parquet.
@@ -185,6 +202,20 @@ def build_train_table_artifacts_for_existing_table(
             downstream LP resolution still validates every target PK.
         fact_pseudo_time: Static LP fact table
             (``{table, entity_col, target_col}``).
+        ingest_on_error: What a source row that fails validation does:
+            ``"abort"`` raises ``DiskgraphDataError`` naming the
+            conditions, columns and source location of the first offending row;
+            ``"skip_row_on_error"`` (default) drops it and counts it under
+            ``row_failures``. An empty target list is counted and skipped in
+            both modes. Skipped rows are logged with source/accepted row counts
+            and reasons. A source that keeps no rows fails in both. Anything
+            else raises ``DiskgraphConfigError``.
+        timestamp_reference: Optional generated-table footer metadata
+            (``{rows, max_ns}``). Equal-sized integer timestamp sources are
+            checked for whole-unit mismatches during ingestion. Both policies
+            fail on a mismatch; typed timestamps are self-describing.
+        allow_negative_weight: Admit negative weights (temporal link
+            prediction); every other task refuses them.
 
     Returns:
         dict describing the durable GEN-ONLY bundle (mirrors
@@ -192,7 +223,10 @@ def build_train_table_artifacts_for_existing_table(
         persists + re-ingests via the normal ``execute_tt_ingest``),
         ``tt_parquet_path``, ``ingest_spec_path``, ``row_count``,
         ``output_path``, ``artifacts_dir``, ``split_counts``,
-        ``split_meta``. No extension is published here.
+        ``split_meta``, and ``row_failures`` (``{on_error, rows_read,
+        skipped_rows, by_condition: [{condition, column, count, samples}]}``;
+        each skipped row is counted once, and all failed conditions are reported).
+        No extension is published here.
     """
     # Entity-table metadata is required because the Rust executor needs to
     # validate the customer parquet's ENTITY1 PKs against the index. The
@@ -216,7 +250,7 @@ def build_train_table_artifacts_for_existing_table(
     _ = producer_summary_json
     _ = train_table_edges_config
 
-    return _native_build(
+    result = _native_build(
         output_path=output_path,
         index_path=index_path,
         tt_id=tt_id,
@@ -232,7 +266,13 @@ def build_train_table_artifacts_for_existing_table(
         allow_new_target_entities=bool(allow_new_target_entities),
         fact_pseudo_time_json=(json.dumps(fact_pseudo_time)
                                if fact_pseudo_time is not None else None),
+        ingest_on_error=ingest_on_error,
+        allow_negative_weight=bool(allow_negative_weight),
+        timestamp_reference_json=(json.dumps(timestamp_reference)
+                                  if timestamp_reference is not None else None),
     )
+    _warn_skipped_rows(result)
+    return result
 
 
 def build_prediction_table_artifacts_for_existing_table(
@@ -247,6 +287,7 @@ def build_prediction_table_artifacts_for_existing_table(
     producer_summary_json: Optional[str] = None,
     target_entity_table: Optional[str] = None,
     task_type: Optional[str] = None,
+    ingest_on_error: str = 'skip_row_on_error',
 ) -> dict:
     """Rebuild TT artifacts (manifest + sidecars) for a customer PREDICTION
     parquet (ENTITY + TIMESTAMP, NO target).
@@ -271,12 +312,14 @@ def build_prediction_table_artifacts_for_existing_table(
         train_table_col_stats_config: consumed for ``target_stype`` (REQUIRED)
             and optional ``weight_col``.
         index_path: REQUIRED — path to the diskgraph index dir.
+        ingest_on_error: ``"skip_row_on_error"`` (default) or ``"abort"``; see
+            the train entry.
 
     Returns:
         The SAME durable GEN-ONLY bundle dict shape as the train entry
         (``staging_dir``/``tt_parquet_path``/``ingest_spec_path``/
         ``row_count``/``output_path``/``artifacts_dir``/``split_counts``/
-        ``split_meta``), with a single ``predict`` stage.
+        ``split_meta``/``row_failures``), with a single ``predict`` stage.
     """
     (target_stype, weight_col, entity_table_name,
      entity_pk_column) = _resolve_common_config(
@@ -292,7 +335,7 @@ def build_prediction_table_artifacts_for_existing_table(
     _ = producer_summary_json
     _ = train_table_edges_config
 
-    return _native_build_predict(
+    result = _native_build_predict(
         output_path=output_path,
         index_path=index_path,
         tt_id=tt_id,
@@ -303,7 +346,10 @@ def build_prediction_table_artifacts_for_existing_table(
         weight_col=weight_col,
         target_entity_table=target_entity_table,
         task_type=task_type,
+        ingest_on_error=ingest_on_error,
     )
+    _warn_skipped_rows(result)
+    return result
 
 
 __all__ = [

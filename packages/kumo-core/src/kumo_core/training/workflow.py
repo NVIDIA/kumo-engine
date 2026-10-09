@@ -596,6 +596,7 @@ def materialize_generated_training_task(
     )
     task = ResolvedNumericalTask.from_manifest(
         manifest,
+        column_stats=manifest.load_column_stats(),
         **_resolved_task_options(request, model_plan,
                                  inferred_max_target_neighbors),
     )

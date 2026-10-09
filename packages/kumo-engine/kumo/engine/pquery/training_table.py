@@ -169,6 +169,7 @@ class TrainingTable:
             PreparedCustomTrainingTable(
                 parquet_path=str(rows_path),
                 weight_column=spec.weight_col,
+                timestamp_unit=spec.timestamp_unit,
             ),
         )
         if workflow.query.query_type == "temporal":

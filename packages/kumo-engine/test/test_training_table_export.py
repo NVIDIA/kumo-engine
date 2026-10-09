@@ -212,6 +212,8 @@ def test_custom_link_table_ingests_multiple_weighted_parts(
         graph, monkeypatch, prediction):
     from kumo_core.sources import object_store
 
+    from kumo.engine.pquery import _custom_source
+
     _, snapshot, connector, out = graph
     query = ('PREDICT LIST_DISTINCT(events.ITEM_ID, 0, 7, days) '
              'RANK TOP 3 FOR EACH ents.ID')
@@ -220,6 +222,15 @@ def test_custom_link_table_ingests_multiple_weighted_parts(
     monkeypatch.setattr(
         object_store, 'materialize_arrow_streams',
         partial(object_store.materialize_arrow_streams, max_rows_per_shard=20))
+    stage_source_table = _custom_source.stage_source_table
+
+    def stage_multipart_source(*args, **kwargs):
+        path = stage_source_table(*args, **kwargs)
+        assert len(list(path.glob('*.parquet'))) > 1
+        return path
+
+    monkeypatch.setattr(_custom_source, 'stage_source_table',
+                        stage_multipart_source)
     if prediction:
         source = exported.select(['ENTITY1', 'TIMESTAMP'])
         # Two files force multipart staging for prediction too.
@@ -241,8 +252,6 @@ def test_custom_link_table_ingests_multiple_weighted_parts(
             connector['multipart_weighted.parquet'],
             TrainingTableSpec(weight_col='WEIGHT', split_col='SPLIT'),
             pq=pquery, snapshot=snapshot)
-        assert reimported.train_table_path.is_dir()
-        assert len(list(reimported.train_table_path.glob('*.parquet'))) > 1
         seeds, counts = _seeds(reimported)
         original, original_counts = _seeds(table)
         assert counts == original_counts
@@ -257,3 +266,29 @@ def test_custom_link_table_ingests_multiple_weighted_parts(
             assert _rows(seeds[key],
                          columns + ['WEIGHT']) == _rows(expected,
                                                         columns + ['WEIGHT'])
+
+
+@pytest.mark.parametrize('unit,divisor', [
+    ('seconds', 10**9), ('milliseconds', 10**6), ('microseconds', 10**3),
+    ('nanoseconds', 1),
+])
+def test_custom_training_table_declares_integer_timestamp_unit(graph, unit,
+                                                               divisor):
+    _, snapshot, connector, out = graph
+    query = 'PREDICT COUNT(events.*, 0, 7, days) > 0 FOR EACH ents.ID'
+    pquery, original, exported = _export(graph, query, f'unit_base_{unit}')
+    timestamps = exported['TIMESTAMP'].cast(pa.int64()).to_pylist()
+    source = exported.set_column(
+        exported.schema.get_field_index('TIMESTAMP'), 'TIMESTAMP',
+        pa.array([value // divisor for value in timestamps], pa.int64()))
+    name = f'unit_{unit}.parquet'
+    pq.write_table(source, out / name)
+    imported = kumo.TrainingTable.from_source_table(
+        connector[name], TrainingTableSpec(split_col='SPLIT', timestamp_unit=unit),
+        pq=pquery, snapshot=snapshot)
+    seeds, counts = _seeds(imported)
+    original_seeds, original_counts = _seeds(original)
+    assert counts == original_counts
+    for stage in seeds:
+        columns = ['ENTITY1', 'TIMESTAMP', 'TARGET1']
+        assert _rows(seeds[stage], columns) == _rows(original_seeds[stage], columns)

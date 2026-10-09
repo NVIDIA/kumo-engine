@@ -51,7 +51,7 @@ The runner builds it from this checkout for every group except `hosted-sdk`.
 | --- | --- | --- | --- |
 | `hosted-sdk` | [`packages/kumo-sdk/test/connector/local`](../packages/kumo-sdk/test/connector/local) | Upload, delete, connector configuration, and SQL API requests | API models and fake HTTP responses. No Kumo server. |
 | `local-sdk` | [`packages/kumo-engine/test/connector`](../packages/kumo-engine/test/connector) | File and custom sources, including graph snapshots | CPU core packages and native DiskGraph. |
-| `mixed-files` | [`test/connector/local`](../test/connector/local) | File connectors, cloud storage addresses, and credential boundaries | Hosted Python modules, local files, and fake cloud operations. |
+| `mixed-files` | [`test/connector/local`](../test/connector/local), [`test/io_utils/fsutil/local`](../test/io_utils/fsutil/local) | File and warehouse connectors, filesystem operations, timestamps, and credential boundaries | Hosted Python modules, bundled files, generated data, and fake cloud operations. |
 | `pandas` | [`test/graph/local`](../test/graph/local) | Table and column behavior, encoders, and graph metadata | Hosted Python modules, local statistics, and bundled data. |
 | `minio` | [`test/io_utils/fsutil/minio`](../test/io_utils/fsutil/minio) | S3-compatible storage, permissions, and TLS failures | Local MinIO with fake accounts. The runner creates and removes it. |
 | `shared-sql` | [`packages/kumo-core/tests/sources/sql`](../packages/kumo-core/tests/sources/sql) | Common SQL helpers, API types, and native Snowflake type precision | Core and API packages plus DiskGraph. Also discovers [`tests/native`](../packages/kumo-snowflake/tests/native) in the Snowflake package. |

@@ -10020,12 +10020,23 @@
                             }
                         ],
                         "title": "Split Col"
+                    },
+                    "timestamp_unit": {
+                        "type": "string",
+                        "enum": [
+                            "seconds",
+                            "milliseconds",
+                            "microseconds",
+                            "nanoseconds"
+                        ],
+                        "title": "Timestamp Unit",
+                        "default": "nanoseconds"
                     }
                 },
                 "additionalProperties": false,
                 "type": "object",
                 "title": "TrainingTableSpec",
-                "description": "Specifies the modifications made\nto a training table generated from a predictive query.\n\nArgs:\n    weight_col: Weight column used for loss computation.\n    split_col: Column holding each row's split assignment, valued\n        ``0`` for train, ``1`` for validation and ``2`` for test. The\n        column is read out of the supplied table by name, routes the row,\n        and is dropped from the seed output. ``None`` leaves the split to\n        the generation plan."
+                "description": "Specifies the modifications made\nto a training table generated from a predictive query.\n\nArgs:\n    timestamp_unit: Unit of integer TIMESTAMP values; defaults to\n        nanoseconds. Typed Arrow timestamps use their encoded unit.\n    weight_col: Weight column used for loss computation.\n    split_col: Column holding each row's split assignment, valued\n        ``0`` for train, ``1`` for validation and ``2`` for test. The\n        column is read out of the supplied table by name, routes the row,\n        and is dropped from the seed output. ``None`` leaves the split to\n        the generation plan."
             },
             "UnavailableSourceTable": {
                 "properties": {

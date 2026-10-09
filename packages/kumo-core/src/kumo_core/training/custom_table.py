@@ -11,10 +11,11 @@ an arriving table by name and by type. It declares no column names and no
 accepted types of its own -- a second spelling of the spec, free to drift from
 the first, is the thing this exists to remove.
 
-Both backends call it. The hosted validation activity
+Row contents are validated by DiskGraph during ingestion. Both backends call
+this module for schema checks. The hosted validation activity
 (``rest/backends/data_backend/activities/custom_train_table.py``) runs it on
 the parquet a connector produced; the in-process one
-(:mod:`kumoai_studio.backend.local.train_table`) runs it on the parquet a caller
+(:mod:`kumo.engine.pquery._custom_source`) runs it on the parquet a caller
 named. A table the cloud refuses is refused locally, in the same words.
 
 Nothing here renames or casts a column. A table naming ``ENTITY`` where the
@@ -27,11 +28,9 @@ from __future__ import annotations
 import base64
 import functools
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterable, Mapping, Optional, Sequence
 
-import numpy as np
-import pandas as pd
 import pyarrow as pa
 from kumo_core.types.conversions import pyarrow_to_dtype
 from kumoapi.common import KumoValidationError, ValidationWarning
@@ -126,30 +125,6 @@ def anchor_is_sentinel(
     return task_type.is_link_pred and list_distinct_target_is_array
 
 
-def timestamp_span_ns(
-    metadata: Iterable[Optional[Any]],
-    column: str,
-) -> Optional[tuple[float, float]]:
-    """Fold one timestamp column's footer bounds without reading its rows."""
-    low: Any = None
-    high: Any = None
-    for footer in metadata:
-        if footer is None:
-            return None
-        if column not in footer.schema.names:
-            return None
-        index = footer.schema.names.index(column)
-        for group in range(footer.num_row_groups):
-            stats = footer.row_group(group).column(index).statistics
-            if stats is None or not stats.has_min_max:
-                return None
-            low = stats.min if low is None else min(low, stats.min)
-            high = stats.max if high is None else max(high, stats.max)
-    if low is None:
-        return None
-    return float(pd.Timestamp(low).value), float(pd.Timestamp(high).value)
-
-
 @functools.lru_cache(maxsize=1)
 def _positional() -> re.Pattern:
     """Matches the numbered columns and nothing else: ``ENTITY1``, not
@@ -195,7 +170,7 @@ class SuppliedTableRules:
 
     Args:
         task_type: Decides whether a target is one value or a list of them,
-            and whether a negative weight is meaningful.
+            and which target schema is required.
         weight_col: The column carrying per-row weights, if the specification
             names one. A specification naming none describes the table as it
             stands, which DiskGraph reads with every row weighing one.
@@ -225,12 +200,6 @@ class SuppliedTableRules:
     @property
     def list_target(self) -> bool:
         return bool(self.task_type.is_link_pred)
-
-    @property
-    def allow_negative_weight(self) -> bool:
-        from kumo_core.types import TaskType
-
-        return self.task_type is TaskType.TEMPORAL_LINK_PREDICTION
 
 
 def _error(title: str, message: str) -> KumoValidationError:
@@ -577,339 +546,6 @@ def entity_key_errors(
     ]
 
 
-# Contents ##################################################################
-
-#: The roles :class:`Tally` reads, in the order it names them. A feature
-#: column is copied through and never decoded.
-_SCANNED_ROLES = ('entity', 'target', 'timestamp', 'weight', 'split')
-
-
-def scanned_columns(
-    schema: pa.Schema,
-    rules: SuppliedTableRules,
-) -> list[str]:
-    r"""The columns :class:`Tally` reads, and so the only ones a caller has to
-    project off disk. A supplied table may carry any number of feature columns
-    beside these, and none of them is read here.
-    """
-    by_role: dict[str, list[str]] = {role: [] for role in _SCANNED_ROLES}
-    for name in schema.names:
-        role = column_role(name, weight_col=rules.weight_col,
-                           split_col=rules.split_col)
-        if role in by_role:
-            by_role[role].append(name)
-    names = [name for role in _SCANNED_ROLES for name in by_role[role]]
-    return names or schema.names[:1]
-
-
-@dataclass
-class Tally:
-    r"""Every check that needs rows, folded batch by batch.
-
-    One pass, bounded by the batch: a supplied table is the size of the
-    generated one and neither backend may hold it whole.
-    """
-    schema: pa.Schema
-    rules: SuppliedTableRules
-    known_keys: Optional[Any] = None
-
-    rows: int = 0
-    null_entities: list[str] = field(default_factory=list)
-    null_targets: list[str] = field(default_factory=list)
-    null_target_items: list[str] = field(default_factory=list)
-    empty_target_counts: dict = field(default_factory=dict)
-    list_target_null_counts: dict = field(default_factory=dict)
-    null_timestamp: bool = False
-    weight_nulls: bool = False
-    weight_nan: bool = False
-    weight_inf: bool = False
-    weight_negative: bool = False
-    weight_values: int = 0
-    weight_max: float = float('-inf')
-    lengths_differ: bool = False
-    anchor_max: Optional[float] = None
-    stale: int = 0
-    stale_sample: list[Any] = field(default_factory=list)
-    split_nulls: bool = False
-    split_values: set = field(default_factory=set)
-
-    SAMPLE = 5
-
-    #: What a manual split column means. Required rather than compared
-    #: against the plan: every producer of one on this path hardcodes these
-    #: three, and `ColumnDeciderManual` reads nothing else as a split.
-    SPLIT_VALUES = {0: 'train', 1: 'validation', 2: 'test'}
-
-    def __post_init__(self) -> None:
-        names = self.schema.names
-        self._entities = [
-            name for name in names
-            if column_role(name, weight_col=self.rules.weight_col,
-                           split_col=self.rules.split_col) == 'entity'
-        ]
-        self._targets = [
-            name for name in names
-            if column_role(name, weight_col=self.rules.weight_col,
-                           split_col=self.rules.split_col) == 'target'
-        ]
-        self._anchor = timestamp_column() if timestamp_column() in names \
-            else None
-        self._int_anchor = (self._anchor is not None
-                            and pa.types.is_int64(self.schema.field(
-                                self._anchor).type))
-        split = self.rules.split_col
-        self._split = split if split in names else None
-        weight = self.rules.weight_col
-        self._weight = weight if weight in names else None
-        self._weight_is_list = (self._weight is not None and _reads(
-            self.schema.field(self._weight).type,
-            contract()['weight_list_containers']))
-        self._list_targets = {
-            name
-            for name in self._targets
-            if is_list_target(self.schema.field(name).type)
-        }
-        target = target_column()
-        self._paired = (self._weight_is_list and target in names
-                        and is_list_target(self.schema.field(target).type))
-        self._primary = entity_column()
-
-    def feed(self, batch: pa.RecordBatch) -> None:
-        self.rows += batch.num_rows
-        names = batch.schema.names
-        if self.known_keys is not None and self._primary in names:
-            keys = batch.column(self._primary).to_numpy(zero_copy_only=False)
-            missing = keys[~np.isin(keys, self.known_keys)]
-            self.stale += len(missing)
-            room = self.SAMPLE - len(self.stale_sample)
-            self.stale_sample.extend(missing[:room].tolist())
-        for name in self._entities:
-            if name in names and batch.column(
-                    name).null_count and name not in self.null_entities:
-                self.null_entities.append(name)
-        for name in self._targets:
-            if name not in names:
-                continue
-            targets = batch.column(name)
-            if targets.null_count and name not in self.null_targets:
-                self.null_targets.append(name)
-            if name not in self._list_targets:
-                continue
-            # A null list *slot* is what `null_count` answers, and neither
-            # thing DiskGraph does quietly is one: a null inside the list is
-            # substituted, and an empty list routes its row to UNUSED_STAGE.
-            if (targets.flatten().null_count
-                    and name not in self.null_target_items):
-                self.null_target_items.append(name)
-            if targets.null_count:
-                self.list_target_null_counts[name] = (
-                    self.list_target_null_counts.get(name, 0)
-                    + targets.null_count)
-            empty = int(np.sum(_lengths(targets) == 0))
-            if empty:
-                self.empty_target_counts[name] = (
-                    self.empty_target_counts.get(name, 0) + empty)
-        if self._anchor is not None and self._anchor in names:
-            anchors = batch.column(self._anchor)
-            self.null_timestamp |= bool(anchors.null_count)
-            if self._int_anchor and len(anchors):
-                span = anchors.to_numpy(zero_copy_only=False)
-                high = float(np.nanmax(span))
-                self.anchor_max = (high if self.anchor_max is None else max(
-                    self.anchor_max, high))
-        if self._split is not None and self._split in names:
-            splits = batch.column(self._split)
-            self.split_nulls |= bool(splits.null_count)
-            if len(splits) and len(self.split_values) <= len(
-                    self.SPLIT_VALUES) + self.SAMPLE:
-                # Bounded: enough distinct values to name what is wrong,
-                # without holding a distinct set over the whole table.
-                self.split_values.update(
-                    splits.drop_null().unique().to_pylist())
-        if self._weight is None or self._weight not in names:
-            return
-        values = batch.column(self._weight)
-        if self._paired and not values.null_count:
-            self.lengths_differ |= not np.array_equal(
-                _lengths(values), _lengths(batch.column(target_column())))
-        flat = (values.flatten() if self._weight_is_list else values).cast(
-            pa.float64())
-        weights = flat.to_numpy(zero_copy_only=False)
-        self.weight_nulls |= bool(values.null_count)
-        self.weight_nan |= bool(np.isnan(weights).any())
-        self.weight_inf |= bool(np.isinf(weights).any())
-        self.weight_negative |= bool((weights < 0).any())
-        self.weight_values += len(weights)
-        if len(weights):
-            self.weight_max = max(self.weight_max, float(weights.max()))
-
-
-def _lengths(values: Any) -> Any:
-    return values.value_lengths().to_numpy(zero_copy_only=False)
-
-
-def content_errors(
-    tally: Tally,
-    rules: SuppliedTableRules,
-) -> list[KumoValidationError]:
-    r"""Refuses what only the rows can say.
-
-    Every rule here names something DiskGraph does *quietly*: an empty table
-    trains on nothing, a null entity key skips its row, a null target is
-    relabelled, a null anchor drops its row. Each reports success.
-    """
-    errors: list[KumoValidationError] = []
-    if not tally.rows:
-        errors.append(
-            _error(
-                'Supplied table is empty',
-                'The supplied training table has no rows, so the run would '
-                'train on nothing and still report success.'))
-    for name in tally.null_entities:
-        errors.append(
-            _error(
-                f'{name} contains N/A',
-                f'Column {name} has null entries, and DiskGraph skips a row '
-                f'whose entity key is null rather than refusing it.'))
-    for name in tally.null_targets:
-        errors.append(
-            _error(
-                f'{name} contains N/A',
-                f'Column {name} has null entries, and DiskGraph keeps such a '
-                f'row with the label substituted rather than refusing it -- a '
-                f'phantom class for a categorical target, a NaN label for a '
-                f'numerical one, and success reported either way.'))
-    for name in tally.null_target_items:
-        errors.append(
-            _error(
-                f'{name} contains N/A inside its lists',
-                f'Column {name} has null elements inside its target lists, '
-                f'and DiskGraph substitutes each of them -- NaN, zero or the '
-                f'empty string -- rather than refusing the row.'))
-    for name, empty in tally.empty_target_counts.items():
-        nulls = tally.list_target_null_counts.get(name, 0)
-        if tally.rows - empty - nulls <= 0:
-            errors.append(
-                _error(
-                    f'{name} contains empty lists',
-                    f'Column {name} has an empty target list on every row, '
-                    f'and DiskGraph puts such a row in no split at all '
-                    f'rather than refusing it, so the run would train on '
-                    f'nothing and report success.'))
-    if tally.null_timestamp:
-        errors.append(
-            _error(
-                f'{timestamp_column()} contains N/A',
-                f'Column {timestamp_column()} has null entries, and DiskGraph '
-                f'drops a row whose anchor is null rather than refusing it.'))
-    if rules.weight_col:
-        errors.extend(_weight_content_errors(tally, rules))
-    if rules.split_col:
-        errors.extend(_split_content_errors(tally, rules))
-    return errors
-
-
-def split_key(value: Any) -> str:
-    r"""How DiskGraph renders a split cell before it matches one.
-
-    ``value_to_string_key`` and then ``ColumnDeciderManual.decide_str``
-    (``split_decider.rs``): the plan's split values cross as strings and the
-    cell is rendered to one, so ``0`` and ``'0'`` are the same value to it,
-    and so is a whole float -- Rust prints ``0f64`` as ``0``, not ``0.0``. A
-    bool renders ``true``/``false`` and a list renders empty, so neither ever
-    matches.
-    """
-    if isinstance(value, bool):  # before int: a bool is an int in Python
-        return 'true' if value else 'false'
-    if isinstance(value, float):
-        return str(int(value)) if value.is_integer() else repr(value)
-    return str(value)
-
-
-def _split_content_errors(
-    tally: Tally,
-    rules: SuppliedTableRules,
-) -> list[KumoValidationError]:
-    r"""Refuses a split column that is not the 0/1/2 encoding that is read.
-
-    Nothing downstream checks these. A column valued ``'train'``/``'val'``/
-    ``'test'`` is dtype-legal and reads fine, and :func:`split_key` renders it
-    to something the decider matches against none of the three sets -- so
-    every row lands in ``UNUSED_STAGE``, outside every split, and the run
-    trains on what is left and reports success.
-    """
-    split = rules.split_col
-    encoding = ', '.join(f'{value}={name}'
-                         for value, name in sorted(Tally.SPLIT_VALUES.items()))
-    if tally.split_nulls:
-        return [
-            _error(
-                'Split column contains N/A',
-                f'Column {split!r} has null entries, which the decider reads '
-                f'as no split at all. A split column assigns every row, and '
-                f'is read as {encoding}.')
-        ]
-    expected = {str(value) for value in Tally.SPLIT_VALUES}
-    unexpected = sorted(
-        {repr(value)
-         for value in tally.split_values if split_key(value) not in expected})
-    if not unexpected:
-        return []
-    return [
-        _error(
-            'Split column is not the encoding that is read',
-            f'Column {split!r} carries {", ".join(unexpected)}, which is not '
-            f'how a split is read: {encoding}. A value outside those three '
-            f'puts its row in no split at all, so the run would train on what '
-            f'is left and report success. The value may be a number or the '
-            f'digit as a string; both are read the same way.')
-    ]
-
-
-def _weight_content_errors(
-    tally: Tally,
-    rules: SuppliedTableRules,
-) -> list[KumoValidationError]:
-    weight = rules.weight_col
-    if tally.weight_nulls or tally.weight_nan:
-        return [
-            _error(
-                'Weight column contains N/A',
-                f'Weight column {weight!r} contains null or NaN entries. '
-                f'Replace them with valid weights.')
-        ]
-    if tally.lengths_differ:
-        return [
-            _error(
-                f'Weight column length does not match {target_column()}',
-                f'Weight column {weight!r} has rows whose list length differs '
-                f'from {target_column()}\'s. DiskGraph weights each target '
-                f'element, so the two lists must be the same length.')
-        ]
-    if tally.weight_inf:
-        return [
-            _error(
-                'Weight column contains infinite values',
-                f'Weight column {weight!r} contains infinite entries, which '
-                f'DiskGraph refuses row by row.')
-        ]
-    errors = []
-    if tally.weight_values and tally.weight_max <= 0:
-        errors.append(
-            _error(
-                'Weight column contains no positive values',
-                f'Weight column {weight!r} is non-positive throughout, which '
-                f'leaves the loss unbounded or undefined.'))
-    if tally.weight_negative and not rules.allow_negative_weight:
-        errors.append(
-            _error(
-                'Weight column contains negative values',
-                f'Weight column {weight!r} contains negative entries; a '
-                f'weight scales a loss and must be non-negative for this '
-                f'task.'))
-    return errors
-
-
 def weight_arity_errors(
     schema: pa.Schema,
     rules: SuppliedTableRules,
@@ -939,39 +575,6 @@ def weight_arity_errors(
     ]
 
 
-def stale_key_warnings(tally: Tally) -> list[ValidationWarning]:
-    if not tally.stale:
-        return []
-    sample = ', '.join(repr(key) for key in tally.stale_sample)
-    return [
-        ValidationWarning(
-            title='Entity keys that are not in the graph',
-            message=(f'{tally.stale} of {tally.rows} rows name an '
-                     f'{entity_column()} the graph snapshot does not have, '
-                     f'and DiskGraph skips such a row without counting it -- '
-                     f'the run would train on {tally.rows - tally.stale} rows '
-                     f'and report success. Missing keys include: {sample}.'))
-    ]
-
-
-def content_warnings(tally: Tally) -> list[ValidationWarning]:
-    warnings = []
-    for name, empty in tally.empty_target_counts.items():
-        nulls = tally.list_target_null_counts.get(name, 0)
-        if tally.rows - empty - nulls <= 0:
-            continue
-        warnings.append(
-            ValidationWarning(
-                title=f'{name} contains empty lists',
-                message=(f'{empty} of {tally.rows} rows in column {name} '
-                         f'have an empty target list, and DiskGraph puts '
-                         f'each in no split at all rather than refusing it '
-                         f'-- the run would train on '
-                         f'{tally.rows - empty - nulls} rows and report '
-                         f'success.')))
-    return warnings
-
-
 # Correspondence with the generated table ###################################
 
 
@@ -980,22 +583,11 @@ class GeneratedTable:
     r"""What generation produced, which a supplied table stands in for."""
     schema: pa.Schema
     rows: int
-    #: The anchor's range in nanoseconds, off the footers, where generation
-    #: wrote a typed one. Used only to catch a supplied integer anchor in the
-    #: wrong unit.
-    anchor_span_ns: Optional[tuple[float, float]] = None
-
-
-_WRONG_UNIT = {
-    1_000_000_000: 'seconds',
-    1_000_000: 'milliseconds',
-    1_000: 'microseconds',
-}
 
 
 def correspondence_errors(
     schema: pa.Schema,
-    tally: Tally,
+    supplied_rows: int,
     generated: GeneratedTable,
     rules: SuppliedTableRules,
 ) -> tuple[list[KumoValidationError], list[ValidationWarning]]:
@@ -1007,9 +599,9 @@ def correspondence_errors(
     """
     errors: list[KumoValidationError] = []
     warnings: list[ValidationWarning] = []
-    corresponds = tally.rows == generated.rows
+    corresponds = supplied_rows == generated.rows
     if not corresponds:
-        message = (f'The supplied table has {tally.rows} rows against the '
+        message = (f'The supplied table has {supplied_rows} rows against the '
                    f"generated table's {generated.rows}. Each supplied row "
                    f'corresponds to exactly one generated row.')
         if not rules.allow_row_count_mismatch:
@@ -1037,8 +629,6 @@ def correspondence_errors(
                     'Column type mismatch',
                     f'Column {field_.name!r} is {actual} here and '
                     f'{field_.type} in the generated training table.'))
-    if corresponds:
-        errors += _anchor_unit_errors(tally, generated)
     return errors, warnings
 
 
@@ -1055,31 +645,3 @@ def _corresponds(name: str, generated: pa.DataType,
     if name != timestamp_column() or not pa.types.is_timestamp(generated):
         return False
     return _reads(supplied, contract()['timestamp_types'])
-
-
-def _anchor_unit_errors(
-    tally: Tally,
-    generated: GeneratedTable,
-) -> list[KumoValidationError]:
-    r"""An integer anchor carries no unit and is read as nanoseconds, so one
-    written in any other unit dates every row wrongly without failing. Only a
-    whole-unit discrepancy against the generated anchor is reported.
-    """
-    span = generated.anchor_span_ns
-    if not tally.anchor_max or span is None or not span[1]:
-        return []
-    ratio = span[1] / tally.anchor_max
-    unit = next((name for factor, name in _WRONG_UNIT.items()
-                 if abs(ratio - factor) <= factor * 0.01), None)
-    if unit is None:
-        return []
-    return [
-        _error(
-            f'{timestamp_column()} looks like {unit}, not nanoseconds',
-            f'Column {timestamp_column()} is {tally.anchor_max:.0f} at its '
-            f"largest against the generated table's {span[1]:.0f} "
-            f'nanoseconds -- a factor of {ratio:.0f}, which is {unit}. An '
-            f'integer anchor is read as nanoseconds and carries no unit of '
-            f'its own, so one in any other unit dates every row wrongly '
-            f'without failing.')
-    ]

@@ -35,7 +35,7 @@ jobs:
     secrets: inherit
 
   open-pr:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [run-tests]
     if: github.ref_name == 'main'
     permissions:

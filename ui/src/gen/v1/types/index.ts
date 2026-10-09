@@ -567,6 +567,7 @@ export * from "./trainingTableGenerationPlanWeightCol";
 export * from "./trainingTableGenerationPlanYearOverYear";
 export * from "./trainingTableSpec";
 export * from "./trainingTableSpecSplitCol";
+export * from "./trainingTableSpecTimestampUnit";
 export * from "./trainingTableSpecWeightCol";
 export * from "./unavailableSourceTable";
 export * from "./validateNameResponse";

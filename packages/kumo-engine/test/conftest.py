@@ -3,9 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import hashlib
+import json
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from kumoapi.graph import Edge
 from kumoapi.model_plan import ModelPlan
@@ -14,6 +17,27 @@ from kumoapi.typing import Stype
 import kumo.engine as kumo
 from kumo.engine._scratch import get_scratch_dir
 from kumo.engine.graph import GraphSnapshot
+
+
+@pytest.fixture
+def staged_seed_dir(tmp_path):
+    """Supply seed metadata for adapter tests that mock materialization."""
+    from kumo_core.training.export import INGEST_SPEC
+
+    staging_dir = tmp_path / 'staging'
+    staging_dir.mkdir()
+    seed_part = 'seed.parquet'
+    # Preflight needs the normalized schema; these tests mock row ingestion.
+    schema = pa.schema([('ENTITY', pa.int64()), ('TARGET', pa.float64())])
+    pq.write_table(schema.empty_table(), staging_dir / seed_part)
+    (staging_dir / INGEST_SPEC).write_text(
+        json.dumps({
+            'split_stages': [{
+                'key': 'train',
+                'parts': [seed_part]
+            }],
+        }))
+    return staging_dir
 
 
 @pytest.fixture

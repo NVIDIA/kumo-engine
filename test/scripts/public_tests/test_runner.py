@@ -353,22 +353,26 @@ class PublicRunnerTest(unittest.TestCase):
                                  'container:minio-id')
 
     def test_plain_tests_have_no_network_or_host_credentials(self):
-        with tempfile.TemporaryDirectory() as directory:
-            with patch.object(runner.subprocess, 'run',
-                              return_value=subprocess.CompletedProcess([], 0)) as run, \
-                    contextlib.redirect_stdout(io.StringIO()):
-                row = runner.run_group('csv', 'image', Path(directory), [], '',
-                                       'test-owned')
-            command = run.call_args_list[0].args[0]
-            self.assertEqual(command[command.index('--network') + 1], 'none')
-            self.assertNotIn('-e', command)
-            self.assertNotIn('--env-file', command)
-            self.assertEqual(command.count('-v'), 1)
-            mount = command[command.index('-v') + 1]
-            self.assertTrue(mount.endswith(':/reports'))
-            self.assertNotEqual(mount, f'{directory}:/reports')
-            # A successful Docker exit without results must not count as a pass.
-            self.assertFalse(row.get('passed'))
+        for group in ('csv', 'mixed-files'):
+            with tempfile.TemporaryDirectory() as directory:
+                with patch.object(runner.subprocess, 'run',
+                                  return_value=subprocess.CompletedProcess([], 0)) as run, \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    row = runner.run_group(group, 'image', Path(directory), [], '',
+                                           'test-owned')
+                command = run.call_args_list[0].args[0]
+                self.assertEqual(command[command.index('--network') + 1], 'none')
+                self.assertNotIn('-e', command)
+                self.assertNotIn('--env-file', command)
+                self.assertEqual(command.count('-v'), 1)
+                mount = command[command.index('-v') + 1]
+                self.assertTrue(mount.endswith(':/reports'))
+                self.assertNotEqual(mount, f'{directory}:/reports')
+                # A successful Docker exit without results must not count as a pass.
+                self.assertFalse(row.get('passed'))
+            if group == 'mixed-files':
+                self.assertIn('test/io_utils/fsutil/local', command)
+                self.assertIn('--ignore=test/io_utils/fsutil/local/live', command)
 
 
 if __name__ == '__main__':

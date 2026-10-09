@@ -67,7 +67,7 @@ def stage_source_table(source_table: SourceTable, destination: Path) -> Path:
 
 def _validate_source(path, query, graph, *, weight_col, split_col,
                      prediction) -> None:
-    """Apply shared supplied-table rules before DiskGraph can drop rows."""
+    """Check source schema; DiskGraph validates rows during ingestion."""
     from kumo_core.pquery import query_is_temporal
     from kumo_core.training import custom_table
     from kumo_core.types.enums import TaskType
@@ -132,9 +132,7 @@ def _validate_source(path, query, graph, *, weight_col, split_col,
                              f"remove {targets!r}."),
                 ))
     if not errors:
-        tally = custom_table.Tally(schema, rules)
-        columns = custom_table.scanned_columns(schema, rules)
-        for part in parts:
+        for part in parts[1:]:
             with pq.ParquetFile(part) as part_file:
                 part_schema = custom_table.stored_schema(
                     part_file.schema_arrow, part_file.metadata.metadata)
@@ -142,9 +140,6 @@ def _validate_source(path, query, graph, *, weight_col, split_col,
                     raise ValueError(
                         f"Custom-table parquet parts must have matching "
                         f"schemas; {part} differs from {parts[0]}.")
-                for batch in part_file.iter_batches(columns=columns):
-                    tally.feed(batch)
-        errors += custom_table.content_errors(tally, rules)
     if errors:
         raise ValueError(ValidationResponse(errors=errors).error_message())
 

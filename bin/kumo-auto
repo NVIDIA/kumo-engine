@@ -110,6 +110,7 @@ def main(args):
                          "manifest.json"))
             resolved_task = authoring_task.to_resolved_numerical_task(
                 task_manifest,
+                column_stats=task_manifest.load_column_stats(),
                 sampling=ResolvedTaskSampling(
                     max_target_neighbors_per_entity=(
                         infer_authoring_max_target_neighbors_per_entity(

@@ -1656,7 +1656,7 @@ impl<'a> NumericColumnBatchView<'a> {
 ///   - `Value::Bool(b)` → `"true"` / `"false"` (matches Rust's `Display`)
 ///   - `Value::List(_)` → empty string (lists aren't valid split-column
 ///     values; treated as no-match)
-fn value_to_string_key(v: &Value) -> String {
+pub(crate) fn value_to_string_key(v: &Value) -> String {
     match v {
         Value::Str(s) => s.clone(),
         Value::Int(i) => i.to_string(),

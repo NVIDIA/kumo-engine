@@ -458,6 +458,7 @@ def test_materialized_task_takes_its_metric_list_from_the_resolved_plan(
     # which knows the task type and nothing else. Materialization resolves
     # the caller's plan against the same manifest and builds the task with
     # the list that plan named, so the task computes what training tunes on.
+    loaded = []
     manifest = SimpleNamespace(
         task_type="binary_classification",
         train_table_name="train_table",
@@ -470,6 +471,7 @@ def test_materialized_task_takes_its_metric_list_from_the_resolved_plan(
             "edge_types": (),
         },
         feature_schema={},
+        load_column_stats=lambda: loaded.append(True) or {},
         seed_node_type="users",
         target_node_type="users",
         target_to_entity_paths=None,
@@ -515,6 +517,7 @@ def test_materialized_task_takes_its_metric_list_from_the_resolved_plan(
         SimpleNamespace(staging_dir="staging"),
         tt_id="tt-1",
     )
+    assert loaded == [True]
 
     assert result.model_plan.training_job.metrics == ["ap"]
     assert result.task.metrics == ["ap"]
@@ -540,6 +543,7 @@ def test_materialize_generated_training_task_with_a_tt_id_override_reads_the_new
             "edge_types": (),
         },
         feature_schema={},
+        load_column_stats=lambda: {},
         seed_node_type="users",
         target_node_type="users",
         target_to_entity_paths=None,
@@ -1051,6 +1055,7 @@ def test_static_link_fit_accepts_the_link_split_over_a_physical_timestamp(
             "edge_types": (),
         },
         feature_schema={},
+        load_column_stats=lambda: {},
         seed_node_type="users",
         target_node_type="products",
         target_to_entity_paths=TWO_TARGET_PATHS,

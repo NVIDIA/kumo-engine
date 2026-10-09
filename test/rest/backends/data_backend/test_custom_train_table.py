@@ -294,7 +294,7 @@ def test_a_boolean_entity_is_refused_where_a_boolean_target_is_not(tmp_path):
 # Weights ####################################################################
 
 
-def test_nulls_in_weights_error(tmp_path):
+def test_null_weights_deferred_to_ingestion(tmp_path):
     generated = _generated(tmp_path)
     supplied = _supplied(tmp_path, w=pa.array([1.0, None, 2.0],
                                               type=pa.float64()))
@@ -302,11 +302,10 @@ def test_nulls_in_weights_error(tmp_path):
     resp = _validate_supplied_train_table(generated, supplied, "w",
                                           TaskType.REGRESSION)
 
-    assert not resp.ok
-    assert "Weight column contains N/A" in _titles(resp)
+    assert resp.ok
 
 
-def test_inf_in_weights_error(tmp_path):
+def test_infinite_weights_deferred_to_ingestion(tmp_path):
     generated = _generated(tmp_path)
     supplied = _supplied(tmp_path, w=pa.array([1.0, math.inf, 2.0],
                                               type=pa.float64()))
@@ -314,11 +313,10 @@ def test_inf_in_weights_error(tmp_path):
     resp = _validate_supplied_train_table(generated, supplied, "w",
                                           TaskType.REGRESSION)
 
-    assert not resp.ok
-    assert "Weight column contains infinite values" in _titles(resp)
+    assert resp.ok
 
 
-def test_all_non_positive_error(tmp_path):
+def test_non_positive_weights_deferred_to_ingestion(tmp_path):
     generated = _generated(tmp_path)
     supplied = _supplied(tmp_path, w=pa.array([0.0, -1.0, -2.0],
                                               type=pa.float64()))
@@ -326,11 +324,10 @@ def test_all_non_positive_error(tmp_path):
     resp = _validate_supplied_train_table(generated, supplied, "w",
                                           TaskType.REGRESSION)
 
-    assert not resp.ok
-    assert "Weight column contains no positive values" in _titles(resp)
+    assert resp.ok
 
 
-def test_negative_weights_non_temporal_lp_error(tmp_path):
+def test_negative_weights_deferred_to_ingestion(tmp_path):
     generated = _generated(tmp_path)
     supplied = _supplied(tmp_path, w=pa.array([1.0, -1.0, 2.0],
                                               type=pa.float64()))
@@ -338,8 +335,7 @@ def test_negative_weights_non_temporal_lp_error(tmp_path):
     resp = _validate_supplied_train_table(generated, supplied, "w",
                                           TaskType.REGRESSION)
 
-    assert not resp.ok
-    assert "Weight column contains negative values" in _titles(resp)
+    assert resp.ok
 
 
 def test_negative_weights_temporal_lp_no_error(tmp_path):
@@ -422,8 +418,8 @@ def test_array_target_array_weight_happy_path(tmp_path):
     assert resp.ok, f"unexpected errors: {resp.errors}"
 
 
-def test_array_weight_explodes_for_inf_check(tmp_path):
-    """Inf inside an exploded list weight is still found."""
+def test_infinite_list_weights_deferred_to_ingestion(tmp_path):
+    """DiskGraph applies the row policy to infinite list weights."""
     list_t = pa.list_(pa.float64())
     targets = pa.array([[0.1], [0.2, 0.3], [0.4]], type=list_t)
     generated = _generated(tmp_path, TARGET1=targets)
@@ -434,11 +430,10 @@ def test_array_weight_explodes_for_inf_check(tmp_path):
     resp = _validate_supplied_train_table(generated, supplied, "w",
                                           TaskType.TEMPORAL_LINK_PREDICTION)
 
-    assert not resp.ok
-    assert "Weight column contains infinite values" in _titles(resp)
+    assert resp.ok
 
 
-def test_a_per_element_weight_must_be_as_long_as_its_target(tmp_path):
+def test_weight_list_lengths_deferred_to_ingestion(tmp_path):
     list_t = pa.list_(pa.float64())
     targets = pa.array([[0.1], [0.2, 0.3], [0.4]], type=list_t)
     generated = _generated(tmp_path, TARGET1=targets)
@@ -448,15 +443,14 @@ def test_a_per_element_weight_must_be_as_long_as_its_target(tmp_path):
     resp = _validate_supplied_train_table(generated, supplied, "w",
                                           TaskType.TEMPORAL_LINK_PREDICTION)
 
-    assert not resp.ok
-    assert "Weight column length does not match TARGET1" in _titles(resp)
+    assert resp.ok
 
 
 # Contents ###################################################################
 
 
-def test_a_null_entity_key_is_refused_rather_than_skipped(tmp_path):
-    """DiskGraph skips such a row and reports success."""
+def test_null_entity_keys_deferred_to_ingestion(tmp_path):
+    """DiskGraph applies the row policy to null keys."""
     generated = _generated(tmp_path)
     supplied = _supplied(tmp_path, ENTITY1=pa.array([1, None, 3],
                                                     type=pa.int64()))
@@ -464,11 +458,10 @@ def test_a_null_entity_key_is_refused_rather_than_skipped(tmp_path):
     resp = _validate_supplied_train_table(generated, supplied, None,
                                           TaskType.REGRESSION)
 
-    assert not resp.ok
-    assert "ENTITY1 contains N/A" in _titles(resp)
+    assert resp.ok
 
 
-def test_a_null_target_is_refused_rather_than_relabelled(tmp_path):
+def test_null_targets_deferred_to_ingestion(tmp_path):
     generated = _generated(tmp_path)
     supplied = _supplied(tmp_path, TARGET1=pa.array([0.1, None, 0.3],
                                                     type=pa.float64()))
@@ -476,8 +469,7 @@ def test_a_null_target_is_refused_rather_than_relabelled(tmp_path):
     resp = _validate_supplied_train_table(generated, supplied, None,
                                           TaskType.REGRESSION)
 
-    assert not resp.ok
-    assert "TARGET1 contains N/A" in _titles(resp)
+    assert resp.ok
 
 
 def test_an_empty_table_is_refused(tmp_path):
@@ -489,7 +481,7 @@ def test_an_empty_table_is_refused(tmp_path):
                                           TaskType.REGRESSION)
 
     assert not resp.ok
-    assert "Supplied table is empty" in _titles(resp)
+    assert "Row count mismatch" in _titles(resp)
 
 
 # Correspondence #############################################################
@@ -576,7 +568,7 @@ def test_row_count_mismatch_can_be_explicitly_allowed(tmp_path, monkeypatch):
             for warning in resp.warnings] == ['Row count mismatch allowed']
 
 
-def test_an_integer_anchor_in_the_wrong_unit_is_caught_by_its_span(tmp_path):
+def test_timestamp_values_deferred_to_ingestion(tmp_path):
     """An integer anchor carries no unit and is read as nanoseconds, so one
     written in seconds dates every row wrongly without failing."""
     nanos = [
@@ -593,23 +585,14 @@ def test_an_integer_anchor_in_the_wrong_unit_is_caught_by_its_span(tmp_path):
     resp = _validate_supplied_train_table(generated, supplied, None,
                                           TaskType.REGRESSION)
 
-    assert not resp.ok
-    assert any('looks like seconds' in title for title in _titles(resp))
+    assert resp.ok
 
 
 # Cost #######################################################################
 
 
-def test_validate_streams_only_the_columns_the_rules_read(tmp_path):
-    """OOM regression guard: the validator must never materialize the full
-    supplied parquet via ``ParquetDataset.read()`` / ``pq.read_table()``.
-    Pins that a footer-only ``ParquetFile`` open and a *projected*
-    ``ParquetFile.iter_batches`` are used, and ``ParquetDataset`` is not.
-
-    The projection is the columns a row's fate turns on, and no other: a
-    supplied table may carry any number of feature columns beside them and
-    none is decoded here.
-    """
+def test_validate_reads_only_footers(tmp_path):
+    """Schema validation must not decode rows before DiskGraph ingestion."""
     from rest.backends.data_backend.activities import custom_train_table as m
 
     generated = _generated(tmp_path)
@@ -647,13 +630,7 @@ def test_validate_streams_only_the_columns_the_rules_read(tmp_path):
     # Footer-only opens happened (once per table = 2 opens min).
     assert len(opens) >= 2, (
         f"expected footer-only ParquetFile opens, got {len(opens)}")
-    assert iter_batches_calls, (
-        "expected ParquetFile.iter_batches to be used for streaming")
-    for args, kwargs in iter_batches_calls:
-        assert kwargs.get('columns') == [
-            'ENTITY1', 'TARGET1', 'w'
-        ], (f"iter_batches must project only the columns the rules read, "
-            f"got columns={kwargs.get('columns')}")
+    assert iter_batches_calls == []
 
 
 # Sanity: silence unused-import warnings for helpers referenced via
@@ -1594,6 +1571,10 @@ def test_an_empty_custom_training_table_is_named_not_mismatched(
             list_distinct_target_is_array=False,
         )
 
+    if has_file:
+        assert response.ok
+        return
+
     assert not response.ok
     assert response.errors[0].title == 'Custom training table is empty'
     assert 'CUSTOM_TT' in response.errors[0].message
@@ -1618,17 +1599,15 @@ def test_a_split_column_the_supplied_table_lacks_is_refused_here_too(tmp_path):
     assert "'SPLIT'" in resp.errors[0].message
 
 
-def test_a_split_column_outside_the_encoding_is_refused_here_too(tmp_path):
-    """The values, not only the name and the type: the hosted side read no
-    split column at all, so a column of 'train'/'val' put every row in no
-    split and the run reported success."""
+def test_split_values_deferred_to_ingestion(tmp_path):
+    """DiskGraph applies the row policy to unmatched split values."""
     supplied = _supplied(
         tmp_path, SPLIT=pa.array(['train', 'val', 'test'], type=pa.string()))
 
     resp = _validate_supplied_train_table(_generated(tmp_path), supplied, None,
                                           TaskType.REGRESSION, 'SPLIT')
 
-    assert _titles(resp) == ['Split column is not the encoding that is read']
+    assert resp.ok
 
 
 def test_a_dictionary_encoded_column_is_gated_on_what_the_file_stores(tmp_path):
@@ -1647,26 +1626,6 @@ def test_a_dictionary_encoded_column_is_gated_on_what_the_file_stores(tmp_path):
 
     assert _titles(resp) == ['Column type cannot be read']
     assert 'ENTITY1' in resp.errors[0].message
-
-
-def test_the_generated_anchor_is_only_read_when_there_is_one_to_compare(
-        tmp_path, monkeypatch):
-    """Only an integer anchor is compared against it, so a table without one
-    does not walk every row-group footer of the generated table over the
-    object store."""
-    from rest.backends.data_backend.activities import custom_train_table as ctt
-
-    def boom(files):
-        raise AssertionError('the generated anchor was read with nothing to '
-                             'compare it against')
-
-    monkeypatch.setattr(ctt, '_anchor_span_ns', boom)
-
-    resp = _validate_supplied_train_table(_generated(tmp_path),
-                                          _supplied(tmp_path), None,
-                                          TaskType.REGRESSION)
-
-    assert resp.ok, f'unexpected errors: {resp.errors}'
 
 
 def test_generated_parts_with_no_anchor_have_an_unknown_span(tmp_path):

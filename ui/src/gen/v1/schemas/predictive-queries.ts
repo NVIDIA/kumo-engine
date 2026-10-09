@@ -509,6 +509,7 @@ export const GetV1PredictiveQueriesModelPlanQueryParams = zod.object({
     "project_id": zod.string()
 });
 
+export const getV1PredictiveQueriesModelPlanBodyTrainTableSpecOneTimestampUnitDefault = `nanoseconds`;
 export const getV1PredictiveQueriesModelPlanBodyGraphDefinitionOneTablesSourceTableOneSourceOneModeDefault = `relative`;
 export const getV1PredictiveQueriesModelPlanBodyGraphDefinitionOneTablesSourceTableOneSourceTwoModeDefault = `uri`;
 export const getV1PredictiveQueriesModelPlanBodyGraphDefinitionOneTablesSourceTableOneDataSourceTypeDefault = `S3`;
@@ -547,10 +548,20 @@ export const GetV1PredictiveQueriesModelPlanBody = zod
                             .optional(),
                         "split_col": zod
                             .union([zod.string(), zod.null()])
-                            .optional()
+                            .optional(),
+                        "timestamp_unit": zod
+                            .enum([
+                                "seconds",
+                                "milliseconds",
+                                "microseconds",
+                                "nanoseconds"
+                            ])
+                            .default(
+                                getV1PredictiveQueriesModelPlanBodyTrainTableSpecOneTimestampUnitDefault
+                            )
                     })
                     .describe(
-                        "Specifies the modifications made to a training table generated from a predictive query.  Args:     weight_col: Weight column used for loss computation.     split_col: Column holding each row's split assignment, valued         ``0`` for train, ``1`` for validation and ``2`` for test. The         column is read out of the supplied table by name, routes the row,         and is dropped from the seed output. ``None`` leaves the split to         the generation plan."
+                        "Specifies the modifications made to a training table generated from a predictive query.  Args:     timestamp_unit: Unit of integer TIMESTAMP values; defaults to         nanoseconds. Typed Arrow timestamps use their encoded unit.     weight_col: Weight column used for loss computation.     split_col: Column holding each row's split assignment, valued         ``0`` for train, ``1`` for validation and ``2`` for test. The         column is read out of the supplied table by name, routes the row,         and is dropped from the seed output. ``None`` leaves the split to         the generation plan."
                     ),
                 zod.null()
             ])

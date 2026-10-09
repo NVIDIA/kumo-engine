@@ -7,7 +7,7 @@ import json
 import os
 import os.path as osp
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Iterator, List, Optional, Tuple
+from typing import Iterator, List, Optional, Tuple
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -18,7 +18,7 @@ from kumoapi.pquery import QueryType
 from pyarrow.fs import FileSystem
 from temporalio import activity
 
-from io_utils import fsutil, logging, parquet_util
+from io_utils import fsutil, logging
 from io_utils.errors import restricted_diagnostic_boundary
 from io_utils.pyarrow import arrow_cloud_filesystem
 from kumo.connector.file_connector import FileConnector
@@ -247,31 +247,6 @@ def require_custom_sql_support(source_table, connector) -> None:
         f'connectors; {type(connector).__name__} cannot export a query.')
 
 
-def empty_custom_source_error(
-        path: str, source_name, *,
-        num_rows: Optional[int] = None) -> Optional[ValidationError]:
-    """A custom training table with no rows, named as such.
-
-    The twin of the prediction path's `EmptyPredictionTableError`. Without
-    it an empty source reaches `_validate_weighted_tt_pyarrow`, which reports
-    it as a row-count mismatch -- and says nothing at all when
-    `CUSTOM_TT_ALLOW_ROW_COUNT_MISMATCH` is set, leaving a job to train on no
-    rows. A zero-row read is not an ingest failure, so it is not sanitized:
-    the user supplied a table or query that returned nothing, and that is
-    what they need told.
-
-    An attested zero-row export may produce no files at all.
-    """
-    if num_rows != 0 and (not fsutil.exists(path)
-                          or not parquet_util.is_empty(path)):
-        return None
-    return ValidationError(
-        title="Custom training table is empty",
-        message=(f"The custom training table {source_name!r} returned no "
-                 "rows. Check the source table or query."),
-    )
-
-
 @connector_authorized_activity
 @auto_heartbeater
 def ingest_custom_train_table(
@@ -370,13 +345,13 @@ def ingest_custom_train_table(
                 } if getattr(source_table, 'sql', None) else {})
                 fsutil.rm(custom_train_table_path, ignore_errors=True)
                 connector.open()
-                metrics = export(table_name, custom_train_table_path,
-                                 **optional)
-                empty = empty_custom_source_error(
-                    custom_train_table_path, table_name,
-                    num_rows=getattr(metrics, 'num_rows', None))
-                if empty is not None:
-                    response.errors.append(empty)
+                export(table_name, custom_train_table_path, **optional)
+                if not _list_parquet_files(custom_train_table_path):
+                    response.errors.append(
+                        ValidationError(
+                            title="Custom training table is empty",
+                            message=(f"The custom training table {table_name!r} "
+                                     "produced no parquet files.")))
                     return custom_train_table_path, response
                 _synthesize_sentinel_timestamp(
                     custom_train_table_path,
@@ -623,40 +598,6 @@ def missing_source_column_errors(
     )
 
 
-# 64K rows matches PyArrow's iter_batches default.
-_SCAN_BATCH_SIZE = 65536
-
-
-def _iter_batches(
-    parquet_files: List[str],
-    columns: List[str],
-) -> Iterator[pa.RecordBatch]:
-    """Yield one row group's worth of ``columns`` at a time.
-
-    Projected and streamed: a supplied training table is the size of the
-    generated one, and only the columns the contract reads are ever decoded.
-    """
-    for f in parquet_files:
-        pf = _open_parquet_file(f)
-        yield from pf.iter_batches(batch_size=_SCAN_BATCH_SIZE, columns=columns,
-                                   use_threads=True)
-
-
-def _anchor_span_ns(parquet_files: List[str]) -> Optional[Tuple[float, float]]:
-    """The generated anchor's range in nanoseconds, off the footers.
-
-    ``None`` where the column is absent or a row group carries no statistics,
-    which turns the wrong-unit check off rather than guessing.
-    """
-    anchor = custom_table.timestamp_column()
-
-    def metadata() -> Iterator[Optional[Any]]:
-        for path in parquet_files:
-            yield _open_parquet_file(path).metadata
-
-    return custom_table.timestamp_span_ns(metadata(), anchor)
-
-
 def _count_parquet_rows(parquet_files: List[str]) -> int:
     """Sum ``num_rows`` across the footer metadata of every parquet
     part. Footer-only — no data is read."""
@@ -674,29 +615,10 @@ def _validate_supplied_train_table(
     split_col_name: Optional[str] = None,
     anchored: bool = True,
 ) -> ValidationResponse:
-    r"""Validate a supplied training table against the contract and against
-    the generated table it stands in for.
+    """Check schema and generated-table correspondence from parquet footers.
 
-    Every rule is :mod:`kumo_core.training.custom_table`'s, which the
-    in-process backend runs as well, so a table refused here is refused there
-    in the same words. The column names and Arrow types those rules enforce
-    come from DiskGraph itself (``diskgraph.CUSTOM_TT_CONTRACT``); nothing in
-    Kumo declares a second spelling of them.
-
-    Footer reads and a projected row-group scan throughout: peak memory is
-    bounded by ``_SCAN_BATCH_SIZE`` rows of the columns the rules read, never
-    by the table.
-
-    A ``weight_col_name`` of ``None`` names a table supplied as it stands.
-    Only the weight rules are skipped. ``split_col_name`` is the column the
-    *specification* names, per table, as it is on the in-process backend --
-    DiskGraph names its split column per table too.
-
-    A ``generated_table_path`` of ``None`` is a registration: the rows are the
-    caller's and nothing was generated for them to stand in for, so the
-    correspondence rules are skipped and :obj:`anchored` says what a generated
-    schema would otherwise have said. It cannot be read off the supplied table
-    -- that is what it decides.
+    DiskGraph validates row contents during ingestion and applies its
+    ``ingest_on_error`` policy there.
     """
     response = ValidationResponse()
 
@@ -761,33 +683,21 @@ def _validate_supplied_train_table(
             response.errors.extend(errors)
             return response
 
-        tally = custom_table.Tally(schema, rules)
-        for batch in _iter_batches(supplied_files,
-                                   custom_table.scanned_columns(schema, rules)):
-            tally.feed(batch)
-
-        errors = custom_table.content_errors(tally, rules)
-        response.warnings.extend(custom_table.content_warnings(tally))
-        if errors or generated_schema is None:
-            response.errors.extend(errors)
+        if generated_schema is None:
             return response
 
+        supplied_rows = _count_parquet_rows(supplied_files)
         generated = custom_table.GeneratedTable(
             schema=generated_schema,
             rows=_count_parquet_rows(gen_files),
-            # Only an integer anchor is compared against the generated one, so
-            # a table without one does not pay for every row-group footer of
-            # the generated table over the object store.
-            anchor_span_ns=(None if tally.anchor_max is None else
-                            _anchor_span_ns(gen_files)),
         )
         errors, warnings = custom_table.correspondence_errors(
-            schema, tally, generated, rules)
-        if rules.allow_row_count_mismatch and tally.rows != generated.rows:
+            schema, supplied_rows, generated, rules)
+        if rules.allow_row_count_mismatch and supplied_rows != generated.rows:
             log.warning(
                 "Custom training table row count mismatch allowed by %s: "
                 "supplied table has %d rows, generated table has %d rows.",
-                CUSTOM_TT_ALLOW_ROW_COUNT_MISMATCH.name, tally.rows,
+                CUSTOM_TT_ALLOW_ROW_COUNT_MISMATCH.name, supplied_rows,
                 generated.rows)
         response.errors.extend(errors)
         response.warnings.extend(warnings)
