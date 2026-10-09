@@ -9,7 +9,7 @@ pytest==9.1.1
 pytest-socket==0.8.1
 torch==2.12.0
 boto3==1.42.90
-fsspec==2025.5.1
+fsspec==2026.6.0
 google-auth[requests]==2.58.1
 google-cloud-storage==3.1.0
 sqlglot==30.17.0
@@ -21,7 +21,7 @@ thrift==0.24.0
 # The driver has Python 3.14 ARM64 wheels. Snowpark supports backend tests.
 snowflake-connector-python==4.7.5
 snowflake-snowpark-python==1.55.0
-requests==2.32.5
+requests==2.33.1
 azure-storage-file-datalake==12.22.0
 azure-identity==1.25.1
 asgiref==3.5.2

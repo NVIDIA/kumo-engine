@@ -140,6 +140,7 @@
     },
     "form-data": "4.0.6",
     "ws": "8.21.0",
+    "handlebars": "4.7.10",
     "orval": {
       "js-yaml": "4.3.2"
     }
