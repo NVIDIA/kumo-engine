@@ -1123,7 +1123,7 @@ fn write_minimal_shard(shard_dir: &std::path::Path) {
 
 #[test]
 fn test_empty_shard_sentinel_filtered_at_construction() {
-    // Reproduces the doordash bug: when a small node type (e.g. 500 nodes)
+    // When a small node type (e.g. 500 nodes)
     // gets 3 shards, empty shards get the sentinel (min_id=1, max_id=0).
     // These must be filtered out so find_shard's binary search works.
     //

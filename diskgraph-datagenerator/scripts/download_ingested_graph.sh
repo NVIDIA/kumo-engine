@@ -8,10 +8,11 @@ set -euo pipefail
 # Wrapper for the Rust downloader.
 #
 # Usage:
-#   ./diskgraph-datagenerator/scripts/download_ingested_graph.sh <customer_name> <job_id>
-#   ./diskgraph-datagenerator/scripts/download_ingested_graph.sh <job_url>
+#   ./diskgraph-datagenerator/scripts/download_ingested_graph.sh --bucket <name> <customer_name> <job_id>
+#   ./diskgraph-datagenerator/scripts/download_ingested_graph.sh --bucket <name> <job_url>
 #
 # Optional flags (passed through):
+#   --customer-prefix <name> (if different from the customer name)
 #   --out-root /mnt/localssd/datasets
 #   DISKGRAPH_DATA_ROOT=/custom/root (overrides /mnt/localssd when --out-root not set)
 #   --dry-run
@@ -34,6 +35,10 @@ while [[ $# -gt 0 ]]; do
     --out-root)
       out_root="$2"
       out_root_set=1
+      extra_args+=("$1" "$2")
+      shift 2
+      ;;
+    --bucket|--customer-prefix)
       extra_args+=("$1" "$2")
       shift 2
       ;;

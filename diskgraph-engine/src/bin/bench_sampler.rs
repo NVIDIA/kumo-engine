@@ -2,7 +2,8 @@
 // All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use clap::Parser;
 use diskgraph_core::metadata::DatasetMetadata;
 use diskgraph_core::sampling::*;
 use diskgraph_engine::engine::DiskGraphEngine;
@@ -14,10 +15,20 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+#[derive(Parser)]
+#[command(about = "Benchmark sampling on a local graph with a JSON sampling plan")]
+struct Args {
+    #[arg(long)]
+    index: PathBuf,
+    #[arg(long)]
+    seed_type: String,
+    #[arg(long)]
+    plan: PathBuf,
+}
+
 fn main() -> Result<()> {
-    // 1. Setup Environment
-    let data_path =
-        PathBuf::from("/mnt/data/data/index/ifood_bp-job-8dd9d07e93bf4dbf8fe2845687bd96ef_index");
+    let args = Args::parse();
+    let data_path = args.index;
     let index_path = data_path.join("index_metadata.json");
     let metadata_bytes = fs::read(&index_path)?;
     let metadata: DatasetMetadata = serde_json::from_slice(&metadata_bytes)?;
@@ -28,53 +39,27 @@ fn main() -> Result<()> {
     let pool = StatePool::new();
 
     // 2. Define Request
-    let seed_type = "orders_parquet";
+    let seed_type = args.seed_type;
     let max_id = metadata
         .node_types
         .iter()
         .find(|n| n.name == seed_type)
-        .unwrap()
+        .with_context(|| format!("Unknown seed type: {seed_type}"))?
         .max_id;
 
     let batch_size = 100;
     let mut rng = rand::thread_rng();
     let seeds: Vec<u64> = (0..batch_size).map(|_| rng.gen_range(0..=max_id)).collect();
 
-    // Plan: orders_parquet -> merchants -> reviews_reverse
-    let plan = SamplingPlan {
-        layers: vec![
-            LayerSpec {
-                fanouts: [(
-                    "orders_parquet_merchant_id_numerical_to_merchants_merchant_id_numerical"
-                        .to_string(),
-                    FanoutSpec {
-                        fanout: 10,
-                        mode: SamplingMode::TemporalMostRecent,
-                        absent_key_policy: AbsentKeyPolicy::UniformFallback,
-                    },
-                )]
-                .into(),
-                default_fanout: None,
-            },
-            LayerSpec {
-                fanouts: [(
-                    "reviews_merchant_id_numerical_to_merchants_merchant_id_numerical_reverse"
-                        .to_string(),
-                    FanoutSpec {
-                        fanout: 10,
-                        mode: SamplingMode::TemporalMostRecent,
-                        absent_key_policy: AbsentKeyPolicy::UniformFallback,
-                    },
-                )]
-                .into(),
-                default_fanout: None,
-            },
-        ],
-    };
+    let plan: SamplingPlan = serde_json::from_slice(&fs::read(args.plan)?)?;
 
+    println!(
+        "Starting sampling (Batch={batch_size}, Hops={})...",
+        plan.layers.len()
+    );
     let request = BatchSamplingRequest {
         dataset_id: diskgraph_core::dataset::DatasetId::nil(),
-        seed_nodes: [(seed_type.to_string(), seeds)].into(),
+        seed_nodes: [(seed_type, seeds)].into(),
         seed_timestamps: None,
         seed_timestamp_unit: diskgraph_core::time::TimeUnit::Seconds,
         plan,
@@ -90,7 +75,6 @@ fn main() -> Result<()> {
     };
 
     // 3. Run
-    println!("Starting sampling (Batch=100, Hops=2)...");
     let start = Instant::now();
     let mut pooled_state = pool.acquire();
     let mut output = InMemoryOutput::new();

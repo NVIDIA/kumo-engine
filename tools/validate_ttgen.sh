@@ -13,7 +13,7 @@
 #   ./tools/validate_ttgen.sh <customer> <job_id> [options]
 #
 # Options:
-#   --bucket <name>       S3 bucket (default: kumo-prod-dataplane-bucket)
+#   --bucket <name>       Required S3 bucket
 #   --index-path <path>   Reuse existing DiskGraph index instead of building one
 #   --keep                Keep downloaded data after validation
 #   --skip-download       Skip S3 downloads (reuse existing WORK_DIR)
@@ -21,14 +21,14 @@
 #
 # Examples:
 #   # Full E2E from S3:
-#   ./tools/validate_ttgen.sh akihironitta-staging trainingjob-32611f77... --keep
+#   ./tools/validate_ttgen.sh example trainingjob-example --bucket example-bucket --keep
 #
 #   # Reuse existing index:
-#   ./tools/validate_ttgen.sh faire trainingjob-026fd28d... \
-#       --index-path /mnt/localssd/faire_data/index --keep
+#   ./tools/validate_ttgen.sh example trainingjob-example --bucket example-bucket \
+#       --index-path /mnt/localssd/example_data/index --keep
 #
 # Prerequisites:
-#   - AWS credentials configured (aws sso login --profile normal-profile)
+#   - AWS credentials configured for the chosen bucket
 #   - diskgraph pybind wheel installed (scripts/build_python_wheel.sh + pip install)
 #   - kumoapi on PYTHONPATH
 
@@ -39,7 +39,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ─── Defaults ────────────────────────────────────────────────────────────────
 
-BUCKET="kumo-prod-dataplane-bucket"
+BUCKET=""
 INDEX_PATH=""
 KEEP=false
 SKIP_DOWNLOAD=false
@@ -52,7 +52,7 @@ if [ $# -lt 2 ]; then
 Usage: validate_ttgen.sh <customer> <job_id> [options]
 
 Options:
-  --bucket <name>       S3 bucket (default: kumo-prod-dataplane-bucket)
+  --bucket <name>       Required S3 bucket
   --index-path <path>   Reuse existing DiskGraph index
   --keep                Keep downloaded data after validation
   --skip-download       Skip S3 downloads
@@ -75,6 +75,11 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+if [ -z "$BUCKET" ]; then
+    echo "Error: --bucket is required" >&2
+    exit 1
+fi
+
 # ─── Setup ───────────────────────────────────────────────────────────────────
 
 JOB_SHORT="${JOB_ID:0:20}"
@@ -82,21 +87,17 @@ WORK_DIR="/mnt/localssd/ttgen_validate/${CUSTOMER}_${JOB_SHORT}"
 S3_PREFIX="s3://${BUCKET}/${CUSTOMER}/prod"
 S3_JOB="${S3_PREFIX}/jobs/${JOB_ID}"
 
-export AWS_PROFILE="${AWS_PROFILE:-normal-profile}"
-export S3_PROFILE="${S3_PROFILE:-$AWS_PROFILE}"
+PROFILE_ARGS=()
+if [ -n "${AWS_PROFILE:-}" ]; then
+    PROFILE_ARGS=(--profile "$AWS_PROFILE")
+    export S3_PROFILE="${S3_PROFILE:-$AWS_PROFILE}"
+fi
 
 TOTAL_START=$(date +%s%N)
 
-# Map bucket to region for convert_kumo_config
-if [ "$BUCKET" = "kumo-prod-ue1-dataplane-bucket" ]; then
-    REGION="ue1"
-else
-    REGION="uw2"
-fi
-
 echo "═══════════════════════════════════════════════════════════════"
 echo "  TT-gen Validation: ${CUSTOMER} / ${JOB_SHORT}"
-echo "  Bucket: ${BUCKET} (region: ${REGION})"
+echo "  Bucket: ${BUCKET}"
 echo "  Work dir: ${WORK_DIR}"
 echo "═══════════════════════════════════════════════════════════════"
 
@@ -172,8 +173,7 @@ else
     cargo run --release -p diskgraph-ingest --bin convert_kumo_config -- \
         --customer "$CUSTOMER" \
         --job "$JOB_ID" \
-        --region "$REGION" \
-        --profile "$AWS_PROFILE" \
+        --bucket "$BUCKET" "${PROFILE_ARGS[@]}" \
         --output "$DISKGRAPH_CONFIG"
 
     echo "  ⏱  $(elapsed_ms $STEP_START) ms"
@@ -215,7 +215,6 @@ fi
 echo ""
 echo "▶ Step 5: Running TT-gen comparison..."
 STEP_START=$(date +%s%N)
-PYTHONPATH="/home/vedaant/kumo-api:${PYTHONPATH:-}" \
 python3 "$SCRIPT_DIR/ttgen_compare.py" \
     --job-config "$JOB_CONFIG" \
     --index-path "$INDEX_PATH" \

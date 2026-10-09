@@ -37,12 +37,12 @@ def _append_portable_rustflags(env):
 
 
 @pytest.fixture(scope="session")
-def ifood_graph(tmp_path_factory):
+def orders_graph(tmp_path_factory):
     """
-    Generates a portable mock index that mimics the ifood graph structure
-    required by the sampling tests, removing the dependency on external data.
+    Generate three small tables for string-key, temporal, and two-hop tests.
+    All rows are made up here; this fixture reads no external dataset.
     """
-    root = tmp_path_factory.mktemp("mock_ifood")
+    root = tmp_path_factory.mktemp("synthetic_orders")
     data_dir = root / "data"
     data_dir.mkdir()
     index_dir = root / "index"
@@ -79,9 +79,9 @@ def ifood_graph(tmp_path_factory):
     merchants_path = str(data_dir / "merchants.parquet")
     pq.write_table(merchants_table, merchants_path)
 
-    # 2. Create DiskGraph Config mimicking ifood schema
+    # 2. Link orders to users and merchants, with reverse edges and timestamps
     config = {
-        "dataset_name": "mock_ifood",
+        "dataset_name": "synthetic_orders",
         "num_shards": 1,
         "tables": [
             {

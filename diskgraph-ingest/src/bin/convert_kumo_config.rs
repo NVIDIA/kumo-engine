@@ -5,8 +5,7 @@
 //! CLI tool to convert Kumo GraphConfig to DiskGraph GraphConfig.
 //!
 //! Usage:
-//!   convert-kumo-config --customer allstate --job trainingjob-abc123 --region ue1
-//!   convert-kumo-config --customer allstate --job trainingjob-abc123 --region uw2 --output config.json
+//!   convert-kumo-config --customer example --job trainingjob-example --bucket example-bucket
 
 use std::fs;
 use std::io::{self, Write};
@@ -14,34 +13,17 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 
 use diskgraph_ingest::config_converter::{
     convert_kumo_to_diskgraph, ConvertOptions, KumoGraphConfig,
 };
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum Region {
-    /// US East 1 (kumo-prod-ue1-dataplane-bucket)
-    Ue1,
-    /// US West 2 (kumo-prod-dataplane-bucket)
-    Uw2,
-}
-
-impl Region {
-    fn bucket(&self) -> &'static str {
-        match self {
-            Region::Ue1 => "kumo-prod-ue1-dataplane-bucket",
-            Region::Uw2 => "kumo-prod-dataplane-bucket",
-        }
-    }
-}
-
 #[derive(Parser, Debug)]
 #[command(name = "convert-kumo-config")]
 #[command(about = "Convert Kumo GraphConfig to DiskGraph GraphConfig")]
 struct Args {
-    /// Customer name (e.g., allstate, blend360)
+    /// Customer directory within the bucket.
     #[arg(short, long)]
     customer: String,
 
@@ -49,9 +31,9 @@ struct Args {
     #[arg(short, long)]
     job: String,
 
-    /// AWS region / S3 bucket
-    #[arg(short, long, value_enum)]
-    region: Region,
+    /// S3 bucket containing the job and its source data.
+    #[arg(short, long)]
+    bucket: String,
 
     /// Output DiskGraph config JSON file (writes to stdout if not specified)
     #[arg(short, long)]
@@ -114,7 +96,7 @@ fn s3_list_first(bucket: &str, prefix: &str, profile: Option<&str>) -> Result<St
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let bucket = args.region.bucket();
+    let bucket = &args.bucket;
     let customer = &args.customer;
     let job_id = &args.job;
 
@@ -180,4 +162,25 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Args;
+    use clap::Parser;
+
+    #[test]
+    fn storage_is_chosen_explicitly() {
+        let job = [
+            "convert-kumo-config",
+            "--customer",
+            "example",
+            "--job",
+            "trainingjob-example",
+        ];
+        assert!(Args::try_parse_from(job).is_err());
+        assert!(
+            Args::try_parse_from(job.into_iter().chain(["--bucket", "example-bucket"])).is_ok()
+        );
+    }
 }

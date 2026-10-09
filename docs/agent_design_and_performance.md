@@ -210,13 +210,7 @@ Category counting uses `u64` gxhash of values instead of original strings. Benef
 
 ## Profiling Insights
 
-From profiling config 34 (Faire, 127GB, L40S GPU):
-
-| Component | % CUDA Time | Notes |
-|-----------|------------|-------|
-| CPU→GPU memcpy (pageable) | 40% | `pin_memory=True` is the #1 optimization opportunity |
-| RHS embedding (10.5M products) | 32% | Large embedding table dominates |
-| GPU utilization | 55-60% avg | Sawtooth pattern — CPU-bound data loading |
+Profile host-to-device copies, embedding lookup, and data loading separately. Record the dataset generation recipe, hardware, and command with each result.
 
 ### Key Optimization Opportunities
 
@@ -238,12 +232,8 @@ From profiling config 34 (Faire, 127GB, L40S GPU):
 
 ## Measuring Performance
 
-Always measure **wall time of the full pipeline**, not just the stage you changed. Encode is only 26-40% of ingest — a 50% encode regression might be invisible if pk_map dominates.
+Always measure **wall time of the full pipeline**, not just the stage you changed. An encoding regression can be hidden when primary-key or edge-map construction dominates.
 
-Key benchmarks:
-- alt_detection (2.2TB, 34B rows): Stress test for hot-path efficiency
-- discord-safety (648GB, 10B rows, 179 cat cols): Stress test for column count scaling
-- databricks (31GB, high cardinality): Stress test for category counting with many medium-cardinality columns
-- faire (127GB, edge-dominated): Real production profile
+Use generated workloads that cover large row counts, wide tables, high-cardinality columns, and many edges. Keep the generation settings with the results.
 
 Profile with `cargo flamegraph` or the built-in `pprof` support. Focus on the innermost loops — the entity processing function and the per-row encode callback.
