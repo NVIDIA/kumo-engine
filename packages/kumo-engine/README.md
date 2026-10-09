@@ -45,6 +45,9 @@ connector objects rather than the connector IDs used by service requests.
 
 ## Installation
 
+The instructions below are for Linux x86_64. For ARM64 on DGX Spark, follow
+the [DGX Spark installation guide](dgx-spark.md).
+
 ```
 pip install kumo-engine
 ```

@@ -2,7 +2,7 @@
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Builds the single `kumo-engine` wheel (packages/kumo-engine/scripts/
+# Builds x86_64 and ARM64 `kumo-engine` wheels (packages/kumo-engine/scripts/
 # build_wheel.sh).
 #
 # Release flow:
@@ -44,7 +44,15 @@ jobs:
     if: >-
       ${{ github.event_name == 'workflow_dispatch'
       || startsWith(github.event.release.tag_name, 'kumo-engine-v') }}
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - name: Checkout repository
@@ -90,8 +98,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.KUMO_GITHUB_BOT_TOKEN }}
           IS_RELEASE: ${{ github.event_name == 'release' }}
           EXTRA_COMPONENTS_INPUT: ${{ inputs.extra_components }}
+          WHEEL_ARCH: ${{ matrix.arch }}
         run: |
-          args=()
+          test "$(uname -m)" = "${WHEEL_ARCH}"
+          args=(--platform-tag "manylinux_2_34_${WHEEL_ARCH}")
           if [ "${IS_RELEASE}" = "true" ]; then
             args+=(--release)
           fi
@@ -104,7 +114,7 @@ jobs:
       - name: Upload wheel
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: kumo-engine-wheel-${{ github.sha }}
+          name: kumo-engine-wheel-${{ matrix.arch }}-${{ github.sha }}
           path: packages/kumo-engine/dist/*.whl
           retention-days: ${{ inputs.retention_days || 30 }}
           if-no-files-found: error
@@ -119,7 +129,8 @@ jobs:
       - name: Download wheel
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: kumo-engine-wheel-${{ github.sha }}
+          pattern: kumo-engine-wheel-*-${{ github.sha }}
+          merge-multiple: true
           path: dist
 
       - name: Attach wheel to the GitHub release
@@ -144,7 +155,7 @@ jobs:
       - name: Download wheel
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: kumo-engine-wheel-${{ github.sha }}
+          name: kumo-engine-wheel-x86_64-${{ github.sha }}
           path: dist
 
       - name: Upload wheel to PyPI
