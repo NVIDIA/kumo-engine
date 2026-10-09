@@ -1,7 +1,7 @@
 "use client";
+// SPDX-FileCopyrightText: Copyright (c) 2023 shadcn
 // SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 // All rights reserved.
-// SPDX-FileCopyrightText: Copyright (c) 2023 shadcn
 // SPDX-License-Identifier: Apache-2.0 AND MIT
 
 import * as React from "react";

@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 r"""The in-process contract a warehouse plugin implements.
 
 Everything else in :mod:`kumoapi` describes the wire: what a client sends to a

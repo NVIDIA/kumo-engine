@@ -366,10 +366,8 @@ RUN set -- \
  && python3 /opt/app/src/scripts/gen_third_party.py "$@" \
         --output /usr/share/licenses/kumo/THIRD-PARTY.txt \
  && install -D -m 0644 /opt/app/src/LICENSE /usr/share/licenses/kumo/LICENSE \
- && install -D -m 0644 /opt/app/src/packages/kumo-api/LICENSE /usr/share/licenses/kumo/KUMO-API-LICENSE \
  && test -s /usr/share/licenses/kumo/LICENSE \
  && test -s /usr/share/licenses/kumo/THIRD-PARTY.txt \
- && test -s /usr/share/licenses/kumo/KUMO-API-LICENSE \
  && test -s /usr/share/common-licenses/GPL-3 \
  && if [ "${TARGETARCH}" = "amd64" ]; then test -s /usr/share/common-licenses/LGPL-2.1; fi \
  && mv /opt/app/src/rest /opt/app/ \

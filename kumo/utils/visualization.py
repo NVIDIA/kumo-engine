@@ -1,6 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2007-2021 The scikit-learn developers.
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
-# SPDX-FileCopyrightText: Copyright (c) 2007-2021 The scikit-learn developers.
 # SPDX-License-Identifier: Apache-2.0 AND BSD-3-Clause
 
 import math

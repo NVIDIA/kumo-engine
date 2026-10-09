@@ -40,7 +40,6 @@ def test_fat_wheel_builds_first_party_packages_from_monorepo(
     (diskgraph / 'diskgraph-pybind').mkdir()
     (diskgraph / 'diskgraph-pybind/Cargo.toml').touch()
     (repo / 'LICENSE').touch()
-    (repo / 'packages/kumo-api/LICENSE').touch()
     (repo / 'THIRD-PARTY.txt').touch()
     glove = repo / 'tools/glove-6b-50d/build_wheel.sh'
     glove.parent.mkdir(parents=True)
@@ -137,8 +136,6 @@ def test_selected_components_requirements_reach_wheel_metadata(
     notice.write_text('Test notice\n')
     license_file = tmp_path / 'LICENSE'
     license_file.write_text('Test license\n')
-    kumo_api_license = tmp_path / 'KUMO-API-LICENSE'
-    kumo_api_license.write_text('Test API license\n')
     subprocess.run([
         sys.executable,
         str(merger),
@@ -153,7 +150,6 @@ def test_selected_components_requirements_reach_wheel_metadata(
         '0',
         str(notice),
         str(license_file),
-        str(kumo_api_license),
         'Apache-2.0 AND MIT',
     ], check=True, capture_output=True, text=True)
     with zipfile.ZipFile(next((tmp_path / 'dist').glob('*.whl'))) as archive:
@@ -240,9 +236,6 @@ def test_fat_wheel_uses_torch_fallbacks_without_native_extensions(tmp_path):
     (repo / 'packages/diskgraph/diskgraph-pybind').mkdir()
     (repo / 'packages/diskgraph/diskgraph-pybind/Cargo.toml').touch()
     (repo / 'LICENSE').write_text('Apache-2.0\n')
-    api = repo / 'packages/kumo-api'
-    api.mkdir()
-    (api / 'LICENSE').write_text('MIT\n')
     (repo / 'THIRD-PARTY.txt').touch()
     generator = repo / 'scripts/gen_third_party.py'
     generator.parent.mkdir()

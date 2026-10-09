@@ -42,11 +42,9 @@ def test_finished_wheel_contains_exact_legal_payloads(tmp_path: Path) -> None:
                           encoding='utf-8')
     license_path = tmp_path / 'LICENSE'
     notice_path = tmp_path / 'THIRD-PARTY.txt'
-    kumo_api_license_path = tmp_path / 'KUMO-API-LICENSE'
     license_expression = 'Apache-2.0 AND MIT'
     license_path.write_bytes(b'first-party license\n')
     notice_path.write_bytes(b'third-party notices\n')
-    kumo_api_license_path.write_bytes(b'kumo-api MIT license\n')
     merger = tmp_path / 'merge.py'
     merger.write_text(_merge_source(), encoding='utf-8')
 
@@ -65,7 +63,6 @@ def test_finished_wheel_contains_exact_legal_payloads(tmp_path: Path) -> None:
             '0',
             str(notice_path),
             str(license_path),
-            str(kumo_api_license_path),
             license_expression,
         ],
         check=True,
@@ -83,13 +80,13 @@ def test_finished_wheel_contains_exact_legal_payloads(tmp_path: Path) -> None:
         assert metadata['Metadata-Version'] == '2.4'
         assert metadata['License-Expression'] == license_expression
         assert metadata.get_all('License-File') == [
-            'LICENSE', 'THIRD-PARTY.txt', 'KUMO-API-LICENSE'
+            'LICENSE', 'THIRD-PARTY.txt'
         ]
         assert archive.read(
             f'{dist_info}/licenses/LICENSE') == license_path.read_bytes()
         assert archive.read(f'{dist_info}/licenses/THIRD-PARTY.txt'
                             ) == notice_path.read_bytes()
-        assert archive.read(f'{dist_info}/licenses/KUMO-API-LICENSE'
-                            ) == kumo_api_license_path.read_bytes()
+        assert f'{dist_info}/licenses/KUMO-API-LICENSE' not in archive.namelist(
+        )
         bundle = json.loads(archive.read('kumo_bundle_manifest.json'))
         assert bundle['components'][0]['classification'] == 'kumo-first-party'

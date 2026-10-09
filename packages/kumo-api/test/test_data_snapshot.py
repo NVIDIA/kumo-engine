@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 
 from kumoapi.data_snapshot import TableSnapshotResource, TableSnapshotStage
 from kumoapi.json_serde import from_json, to_json_dict

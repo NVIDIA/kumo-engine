@@ -140,6 +140,4 @@ Publication is off until the repository variable
    `kumo-engine-release`.
 3. Create the `kumo-engine-release` environment in the repository settings
    (add required reviewers if releases should need approval).
-4. Review the license metadata: the wheel carries the `License-Expression`
-   derived by `scripts/gen_third_party.py` and ships `LICENSE`,
-   `THIRD-PARTY.txt` and `KUMO-API-LICENSE`.
+4. Review the license metadata: the wheel carries the `License-Expression` derived by `scripts/gen_third_party.py` and ships `LICENSE` and `THIRD-PARTY.txt`.

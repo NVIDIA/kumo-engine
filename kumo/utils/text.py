@@ -1,7 +1,7 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
-# All rights reserved.
 # SPDX-FileCopyrightText: Copyright (c) James Bradbury and Soumith Chintala 2016
 # SPDX-FileCopyrightText: Copyright (C) 2016-2024 ExplosionAI GmbH, 2016 spaCy GmbH, 2015 Matthew Honnibal
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
 # SPDX-License-Identifier: Apache-2.0 AND BSD-3-Clause AND MIT
 
 import re
