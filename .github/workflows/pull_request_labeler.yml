@@ -43,6 +43,6 @@ jobs:
     runs-on: ubuntu-24.04
     if: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' }}
     steps:
-      - uses: samspills/assign-pr-to-author@223a87a821f7e7447cfb5221bc53ceeb633341c2
+      - uses: samspills/assign-pr-to-author@b313feb250ff414d3aff26525b986f080ee7bd7a
         with:
           repo-token: '${{ secrets.GITHUB_TOKEN }}'
