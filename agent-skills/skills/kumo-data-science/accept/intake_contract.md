@@ -53,7 +53,7 @@ Ask only if the request genuinely reads both ways.
 
 | Field | What it must include |
 |---|---|
-| **`source_scope`** | A connector name, **or** a Snowflake database + schema (warehouse optional), **or** a fully qualified semantic view (`DB.SCHEMA.VIEW`). This is where tables are enumerated; a semantic view contributes exactly its base tables, which must share one schema (`preflight.md` §1a). Credentials are never requested in chat. |
+| **`source_scope`** | A connector name, **or** a Snowflake database + schema (warehouse optional), **or** a fully qualified semantic view (`DB.SCHEMA.VIEW`). This is where tables are enumerated; a semantic view contributes exactly its base tables, which must share one schema (`semantic_view.md`). Credentials are never requested in chat. |
 | **`prediction_entity`** | What receives one prediction — "each account", "each customer". A physical table/key is welcome but not required; preflight resolves it. |
 | **`prediction_target`** | The observable outcome (classification/regression) or the positive interaction (link prediction), **stated by the user**. For classification this includes the positive-label condition — "at least one fraud event"; "predict fraud" alone leaves it missing. For link prediction and ranking it includes the **item** being recommended and the **interaction** that counts as positive — "spare-part families the customer ordered"; "recommend to customers" alone leaves both missing. |
 | **`time_window`** | Tri-state. `specified` ("next 30 days") → pass. `not_critical` → the task is static (no temporal component: static link prediction, static regression/classification) → pass, do not ask. `missing` → the task is temporal and no window was given → ASK BACK. Decide static vs. temporal with the test below. |
@@ -104,55 +104,15 @@ confirmed **before** any PQL is written.
 If the user supplies an `output_location`, carry it verbatim into the task interpretation gate
 and the generated artifact — the notebook's predict call writes there. If none is supplied,
 predictions stay local and the notebook shows how to add a destination. **The table is written with exactly the name passed** — no suffix,
-no case change (`hosts/snowflake-coco/adapter.md` §7, `kumoai-reference/references/kumo_finetuning_sdk.md`
+no case change (`hosts/snowflake-coco/runtime.md` §7, `kumoai-reference/references/kumo_finetuning_sdk.md`
 §9.1). Older SDK builds appended `_predictions`; the current one does not.
 
 ---
 
-## `batch_inference` — required fields (ask if missing)
+## `batch_inference`
 
-Two fields are the user's to give. Everything else is reused from the model, resolved from what
-the user already said, or defaulted — and shown at the gates for confirmation.
-
-| Field | What it must include |
-|---|---|
-| **`model_address`** | The model the user names, in their words: a model name or ID ("trainingjob-benchmark-001", "the benchmark model"), a registry location with a version, or a retained local bundle directory |
-| **`output_location`** | Where scores are written: a Snowflake table. A connector plus a table name ("connector `benchmark_sf`, table `MODEL_SCORES`") is complete, because the connector supplies the database and schema. A fully qualified `DB.SCHEMA.TABLE` is also complete. |
-
-Both pass the quote test through earlier turns too. "Run the benchmark model again and put the
-preds in the scores table", after a turn that named the model and the table, supplies both.
-
-## `batch_inference` — resolved, defaulted, or inferred (never ask)
-
-| Field | How it is obtained | Shown as |
-|---|---|---|
-| **task** — entity, outcome, window, task type | Reused from the model unchanged. Never reopened. | restated at 1d |
-| **`source_scope`** | In order: a source the user named → the connector the user named for this request (one Snowflake connector reads the source and writes the scores unless the user separates them) → the source scope recorded with the model at publication. Ask only if none of the three exists. | `[supplied]` / `[inferred]` at 1c |
-| **graph** | Rebuilt from the model's recorded graph definition inside `source_scope`, then confirmed | `[inferred]` at 1c |
-| **`scoring_population`** | Default: every entity of the trained entity table, anchored at the latest timestamp in the rebuilt snapshot ("current predictions"). A static task has no anchor. If the user names a subset or an anchor date, use theirs. | `[default]` / `[supplied]` at 1d |
-| **model version** | The version the user named. If the address resolves to more than one version and none was named, ask which one. Never pick the latest yourself. | `[supplied]` at 1d |
-| **embeddings** | Only when the user explicitly asks ("export the entity and target-item embeddings") | restated at 1d |
-
-**The saved bundle does not carry the graph.** It restores trainer state; `predict` takes an
-explicit `snapshot`, so the source data must be available and the graph rebuilt and confirmed at
-Node 1c exactly as for `train`. "Reuse the model" needs reading precisely here: the *task* is
-reused unchanged and must not be reopened. The *graph* is rebuilt, but from the recorded definition, not re-asked.
-
-**When the request has a model and a destination, it goes to the gates. It does not get an
-ask-back.** Do not ask for the source schema, the scoring population, the anchor date, or a fully
-qualified output path when the rules above resolve them. Put each resolved value in the proposal,
-tagged, so the user can correct it at confirmation.
-
-## `batch_inference` — invalid values (ask back, do not substitute)
-
-| Condition | Response |
-|---|---|
-| `model_address` does not resolve in the registry or as a bundle directory, or the user calls it rejected/invalid | Name it as unusable and ask for a corrected model identifier. Do not guess a similarly named model. |
-| `output_location` is not a Snowflake table (an `s3://`, `gs://` or file path) | Name it as unusable here, since scores are written to Snowflake tables, and ask for a Snowflake destination. Do not silently swap in another one. |
-
-When one field is invalid and the other is valid, ask only about the invalid one. When one is
-missing and the other is present, ask only for the missing one. Do not also list the resolved
-fields as questions.
+Required, resolved and invalid fields for scoring with a saved model are in
+`batch_inference.md`. Read it only when the operation is `batch_inference`.
 
 ---
 
@@ -164,8 +124,9 @@ never ask back for this, and never infer it from the task being recommendation-s
 Recognise: "we need shopper and item embeddings", "learn customer and product embeddings from
 completed orders", "export the entity and target-item embeddings from that model".
 
-When embeddings are requested, say so explicitly in the task interpretation gate — the user must
-see that embeddings are part of the output. Carry it into codegen as
+When embeddings are requested, say so explicitly in every reply that restates the request — the
+graph proposal and the task interpretation gate — the user must see that embeddings are part of
+the output. Carry it into codegen as
 `PredictionOutputConfig(artifact_type=...)`; see `kumoai-reference/references/kumo_finetuning_sdk.md` §9.
 
 ---
