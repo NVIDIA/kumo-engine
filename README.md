@@ -50,13 +50,13 @@ This project is currently not accepting contributions.
 
 ## License
 
-Kumo-owned source is licensed under [Apache-2.0](LICENSE), except `kumo-api`, which remains MIT-licensed. Vendored and incorporated third-party code retains its applicable licenses and attribution.
+Kumo-owned source is licensed under [Apache-2.0](LICENSE). Vendored and incorporated third-party code retains its applicable licenses and attribution.
 
 Apache-licensed Python subprojects retain a copy of the root license at each package build root so it accompanies independently built wheels and source distributions. The nested component license files are:
 
 | Component | License | License file |
 | --- | --- | --- |
-| `kumo-api` | MIT | [packages/kumo-api/LICENSE](packages/kumo-api/LICENSE) |
+| `kumo-api` | Apache-2.0 | [packages/kumo-api/LICENSE](packages/kumo-api/LICENSE) |
 | `kumo-bigquery` | Apache-2.0 | [packages/kumo-bigquery/LICENSE](packages/kumo-bigquery/LICENSE) |
 | `kumo-core` | Apache-2.0 AND MIT | [packages/kumo-core/LICENSE](packages/kumo-core/LICENSE), [third-party notice](packages/kumo-core/THIRD-PARTY.txt) |
 | `kumo-databricks` | Apache-2.0 | [packages/kumo-databricks/LICENSE](packages/kumo-databricks/LICENSE) |
@@ -69,5 +69,19 @@ Apache-licensed Python subprojects retain a copy of the root license at each pac
 | `kumo-snowflake` | Apache-2.0 | [packages/kumo-snowflake/LICENSE](packages/kumo-snowflake/LICENSE) |
 | Vendored Temporal Helm chart | MIT | [helm/kumo-temporal/charts/temporal/LICENSE](helm/kumo-temporal/charts/temporal/LICENSE) |
 | Vendored PtrHash | MIT | [packages/diskgraph/diskgraph-ptrhash/LICENSE](packages/diskgraph/diskgraph-ptrhash/LICENSE) |
+| Fabric Toolbox | MIT | [3rdparty/notices/fabric-toolbox-LICENSE](3rdparty/notices/fabric-toolbox-LICENSE) |
+| PyTorch Forecasting | MIT | [3rdparty/notices/pytorch-forecasting-LICENSE](3rdparty/notices/pytorch-forecasting-LICENSE) |
+| scikit-learn | BSD-3-Clause | [3rdparty/notices/scikit-learn-LICENSE](3rdparty/notices/scikit-learn-LICENSE) |
+| spaCy | MIT | [3rdparty/notices/spacy-LICENSE](3rdparty/notices/spacy-LICENSE) |
+| Starlette | BSD-3-Clause | [3rdparty/notices/starlette-LICENSE.md](3rdparty/notices/starlette-LICENSE.md) |
+| Temporal Python samples | MIT | [3rdparty/notices/temporal-samples-python-LICENSE](3rdparty/notices/temporal-samples-python-LICENSE) |
+| torchtext | BSD-3-Clause | [3rdparty/notices/torchtext-LICENSE](3rdparty/notices/torchtext-LICENSE) |
+| react-codemirror | MIT | [ui/third_party/npm-licenses/react-codemirror-4.25.10.LICENSE](ui/third_party/npm-licenses/react-codemirror-4.25.10.LICENSE) |
+| react-spacer | MIT | [ui/third_party/npm-licenses/react-spacer-1.3.0.LICENSE](ui/third_party/npm-licenses/react-spacer-1.3.0.LICENSE) |
+| format | MIT | [packages/kumo-ui-catalog/third_party/npm-licenses/format-0.2.2.LICENSE](packages/kumo-ui-catalog/third_party/npm-licenses/format-0.2.2.LICENSE) |
+| heap | PSF-2.0 | [packages/kumo-ui-catalog/third_party/npm-licenses/heap-0.2.5.LICENSE](packages/kumo-ui-catalog/third_party/npm-licenses/heap-0.2.5.LICENSE) |
+| pathfinding | MIT | [packages/kumo-ui-catalog/third_party/npm-licenses/pathfinding-0.4.18.LICENSE](packages/kumo-ui-catalog/third_party/npm-licenses/pathfinding-0.4.18.LICENSE) |
+| size-sensor | ISC | [packages/kumo-ui-catalog/third_party/npm-licenses/size-sensor-1.0.3.LICENSE](packages/kumo-ui-catalog/third_party/npm-licenses/size-sensor-1.0.3.LICENSE) |
+| toggle-selection | MIT | [packages/kumo-ui-catalog/third_party/npm-licenses/toggle-selection-1.0.6.LICENSE](packages/kumo-ui-catalog/third_party/npm-licenses/toggle-selection-1.0.6.LICENSE) |
 
 Third-party attribution is recorded in the [repository notice](THIRD-PARTY.txt), [Python distribution notice](KUMO-THIRD-PARTY.txt), [UI catalog notice](packages/kumo-ui-catalog/THIRD-PARTY.txt), and [Helm stack notice](helm/kumo-stack/THIRD-PARTY.txt).

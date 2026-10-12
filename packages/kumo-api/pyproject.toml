@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 
 [build-system]
 requires = [
@@ -16,7 +16,7 @@ version = "3.0.0"
 authors=[
     {name="Kumo.AI", email="hello@kumo.ai"},
 ]
-license="MIT"
+license="Apache-2.0"
 license-files=["LICENSE"]
 description = "RESTful datamodels for Kumo AI"
 readme = "README.md"

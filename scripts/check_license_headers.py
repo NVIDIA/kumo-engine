@@ -144,6 +144,8 @@ def delimited_comment_body(lines: Sequence[str], start: int, limit: int,
     delimiters = {
         "block": (re.compile(r"^\s*/\*+\s?"), re.compile(r"\*/\s*$")),
         "html": (re.compile(r"^\s*<!--\s?"), None),
+        "handlebars":
+        (re.compile(r"^\s*\{\{!--\s?"), re.compile(r"--\}\}\s*$")),
         "helm":
         (re.compile(r"^\s*\{\{-?\s*/\*+\s?"), re.compile(r"\*/\s*-?\}\}\s*$")),
     }
@@ -229,22 +231,24 @@ def validate_body(body: Sequence[str], policy: dict[str, Any],
     logical_lines = [line for line in body if line]
     if not logical_lines:
         return "header comment is empty"
-    copyright_re = re.compile(
-        rf"^{re.escape(COPYRIGHT_PREFIX)}\d{{4}}(?:-\d{{4}})?,? "
-        rf"{re.escape(policy['copyright_holder'])}$")
-    if copyright_re.fullmatch(logical_lines[0]) is None:
-        return "header has a missing or malformed NVIDIA SPDX copyright line"
-    position = 1
-    if len(logical_lines) <= position or logical_lines[position] != policy[
-            "rights_statement"]:
-        return "header is missing the separate rights statement"
-    position += 1
+    position = 0
     if derived_source is not None:
         for required_line in derived_source["required_copyright_lines"]:
             if (len(logical_lines) <= position
                     or logical_lines[position] != required_line):
-                return f"derived-source header must retain {required_line}"
+                return f"derived-source header must begin with upstream attribution: {required_line}"
             position += 1
+    copyright_re = re.compile(
+        rf"^{re.escape(COPYRIGHT_PREFIX)}\d{{4}}(?:-\d{{4}})?,? "
+        rf"{re.escape(policy['copyright_holder'])}$")
+    if (len(logical_lines) <= position
+            or copyright_re.fullmatch(logical_lines[position]) is None):
+        return "header has a missing or malformed NVIDIA SPDX copyright line"
+    position += 1
+    if len(logical_lines) <= position or logical_lines[position] != policy[
+            "rights_statement"]:
+        return "header is missing the separate rights statement"
+    position += 1
     expected_license = LICENSE_PREFIX + license_identifier
     if len(logical_lines
            ) <= position or logical_lines[position] != expected_license:
@@ -284,12 +288,12 @@ def validate_text(path: str, text: str, policy: dict[str, Any]) -> str | None:
         body, _ = parsed
         error = validate_body(body, policy, derived_source, license_identifier)
         if error is None:
-            expected_spdx = [
-                next(line for line in body
-                     if line.startswith(SPDX_COPYRIGHT_PREFIX))
-            ]
+            expected_spdx = []
             if derived_source is not None:
                 expected_spdx.extend(derived_source["required_copyright_lines"])
+            expected_spdx.append(
+                next(line for line in body if line.startswith(COPYRIGHT_PREFIX)
+                     and policy["copyright_holder"] in line))
             expected_spdx.append(LICENSE_PREFIX + license_identifier)
             actual_spdx = spdx_lines(
                 leading_comment_bodies(lines, start, styles))

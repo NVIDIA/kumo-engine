@@ -1,6 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2024 Gerhard Brueckl
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
-# SPDX-FileCopyrightText: Copyright (c) 2024 Gerhard Brueckl
 # SPDX-License-Identifier: Apache-2.0 AND MIT
 
 # Adapted from https://github.com/gbrueckl/Fabric.Toolbox/blob/58212be03380d45c9798ee610d61f2808776941b/DataEngineering/Library/VisualizeExecutionPlan.py

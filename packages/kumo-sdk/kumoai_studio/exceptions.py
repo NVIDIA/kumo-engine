@@ -1,6 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2018, Encode OSS Ltd.
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
-# SPDX-FileCopyrightText: Copyright (c) 2018, Encode OSS Ltd.
 # SPDX-License-Identifier: Apache-2.0 AND BSD-3-Clause
 
 import http

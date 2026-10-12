@@ -1,6 +1,6 @@
 # Licensing source and packages
 
-Kumo-owned source covered by `scripts/license_header_policy.json` must use the NVIDIA SPDX header defined there. Apache-2.0 is the default; `packages/kumo-api/**` remains MIT-licensed. Generators must emit the applicable header. Do not add NVIDIA headers to unmodified third-party source; instead, record its scope and provenance in the policy.
+Kumo-owned source covered by `scripts/license_header_policy.json` must use the NVIDIA SPDX header defined there. Apache-2.0 is the default. Generators must emit the applicable header. Do not add NVIDIA headers to unmodified third-party source; instead, record its scope and provenance in the policy.
 
 Rust headers belong before inner crate attributes and module documentation. Shebangs, Docker parser directives, and required `"use client"` directives may precede a header.
 

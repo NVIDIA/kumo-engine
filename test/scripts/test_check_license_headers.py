@@ -16,9 +16,9 @@ HASH_HEADER = """# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATIO
 """
 SLASH_HEADER = HASH_HEADER.replace("#", "//")
 MIT_HASH_HEADER = HASH_HEADER.replace("Apache-2.0", "MIT")
-SHADCN_HEADER = """// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+SHADCN_HEADER = """// SPDX-FileCopyrightText: Copyright (c) 2023 shadcn
+// SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 // All rights reserved.
-// SPDX-FileCopyrightText: Copyright (c) 2023 shadcn
 // SPDX-License-Identifier: Apache-2.0 AND MIT
 """
 
@@ -59,6 +59,8 @@ SPDX-License-Identifier: Apache-2.0
 -->
 <html></html>
 """,
+        "example.hbs":
+        "{{!--\n" + HASH_HEADER.replace("# ", "") + "--}}\n{{name}}\n",
         "script.sh":
         "#!/usr/bin/env bash\n" + HASH_HEADER + "set -eu\n",
         "component.tsx":
@@ -85,6 +87,8 @@ SPDX-License-Identifier: Apache-2.0
         HASH_HEADER + HASH_HEADER + "print('body')\n",
         "malformed.html":
         valid["example.html"].replace("-->", "--!>"),
+        "malformed.hbs":
+        valid["example.hbs"].replace("--}}", "}}"),
         "build.rs":
         "#![allow(dead_code)]\n" + SLASH_HEADER,
         "doc.rs":
@@ -103,9 +107,9 @@ def test_scoped_and_derived_sources_require_their_actual_licenses() -> None:
     api = "packages/kumo-api/kumoapi/example.py"
     assert check_license_headers.validate_text(api,
                                                MIT_HASH_HEADER + "value = 1\n",
-                                               POLICY) is None
-    assert check_license_headers.validate_text(api, HASH_HEADER + "value = 1\n",
                                                POLICY) is not None
+    assert check_license_headers.validate_text(api, HASH_HEADER + "value = 1\n",
+                                               POLICY) is None
     assert check_license_headers.validate_text("example.py",
                                                MIT_HASH_HEADER + "value = 1\n",
                                                POLICY) is not None
@@ -120,6 +124,30 @@ def test_scoped_and_derived_sources_require_their_actual_licenses() -> None:
     assert check_license_headers.validate_text("example.ts",
                                                SHADCN_HEADER + "export {};\n",
                                                POLICY) is not None
+
+    nvidia_first = SHADCN_HEADER.splitlines(keepends=True)
+    nvidia_first = nvidia_first[1:3] + nvidia_first[:1] + nvidia_first[3:]
+    assert check_license_headers.validate_text(shadcn, "".join(nvidia_first),
+                                               POLICY) is not None
+    assert check_license_headers.validate_text(shadcn,
+                                               SHADCN_HEADER + SHADCN_HEADER,
+                                               POLICY) is not None
+    assert check_license_headers.validate_text(
+        shadcn, SHADCN_HEADER.replace("Apache-2.0 AND MIT", "Apache-2.0"),
+        POLICY) is not None
+
+    tokenizer = next(source for source in POLICY["derived_sources"]
+                     if "kumo/utils/text.py" in source["paths"])
+    upstream_lines = tokenizer["required_copyright_lines"]
+    tokenizer_header = "".join(f"# {line}\n" for line in upstream_lines)
+    tokenizer_header += HASH_HEADER.replace("Apache-2.0",
+                                            tokenizer["license_identifier"])
+    assert check_license_headers.validate_text("kumo/utils/text.py",
+                                               tokenizer_header, POLICY) is None
+    assert check_license_headers.validate_text(
+        "kumo/utils/text.py",
+        tokenizer_header.replace(f"# {upstream_lines[1]}\n", ""),
+        POLICY) is not None
 
     upstream = """# SPDX-FileCopyrightText: Copyright (c) 2019, Example Project.
 # All rights reserved.

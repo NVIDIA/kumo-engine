@@ -1,6 +1,6 @@
+# SPDX-FileCopyrightText: Copyright 2020 Jan Beitner
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
-# SPDX-FileCopyrightText: Copyright 2020 Jan Beitner
 # SPDX-License-Identifier: Apache-2.0 AND MIT
 import inspect
 import warnings

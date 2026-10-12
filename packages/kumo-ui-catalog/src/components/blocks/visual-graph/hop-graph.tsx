@@ -1,6 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2019-2025 webkid GmbH
 // SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 // All rights reserved.
-// SPDX-FileCopyrightText: Copyright (c) 2019-2025 webkid GmbH
 // SPDX-License-Identifier: Apache-2.0 AND MIT
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";

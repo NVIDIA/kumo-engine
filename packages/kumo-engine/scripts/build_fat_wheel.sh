@@ -176,9 +176,6 @@ esac
 FIRST_PARTY_LICENSE="${KUMO_REPO}/LICENSE"
 [ -f "${FIRST_PARTY_LICENSE}" ] \
     || die "no first-party license at ${FIRST_PARTY_LICENSE}"
-KUMO_API_LICENSE="${KUMO_REPO}/packages/kumo-api/LICENSE"
-[ -f "${KUMO_API_LICENSE}" ] \
-    || die "no kumo-api license at ${KUMO_API_LICENSE}"
 if [ -z "${THIRD_PARTY_NOTICE}" ]; then
     THIRD_PARTY_NOTICE="${KUMO_REPO}/THIRD-PARTY.txt"
     GENERATE_THIRD_PARTY_NOTICE=1
@@ -398,7 +395,6 @@ FAT_WHEEL_LICENSE_EXPRESSION="$(
     "${PYTHON}" "${NOTICE_GENERATOR}" \
         "${NOTICE_ARTIFACT_ARGS[@]}" \
         --base-license Apache-2.0 \
-        --base-license MIT \
         --license-expression
 )" || die "could not derive the fat-wheel license expression"
 
@@ -424,7 +420,7 @@ from pathlib import Path
 
 (wheels_dir, components_tsv, out_dir, name, version, tag, python_tag,
  target_py, offline_report, notice_path, license_path,
- kumo_api_license_path, license_expression) = sys.argv[1:]
+ license_expression) = sys.argv[1:]
 
 wheels_dir = Path(wheels_dir)
 components = []
@@ -623,7 +619,6 @@ metadata = [
     f'License-Expression: {license_expression}',
     'License-File: LICENSE',
     'License-File: THIRD-PARTY.txt',
-    'License-File: KUMO-API-LICENSE',
     *(f'Requires-Dist: {requirement}' for requirement in requirements),
     '',
     '\n'.join(description),
@@ -632,22 +627,15 @@ metadata = [
                                     encoding='utf-8')
 notice = Path(notice_path)
 license = Path(license_path)
-kumo_api_license = Path(kumo_api_license_path)
 if not license.is_file():
     raise SystemExit(f'[fat-wheel] ERROR: no first-party license at {license}')
-if not kumo_api_license.is_file():
-    raise SystemExit(
-        f'[fat-wheel] ERROR: no kumo-api license at {kumo_api_license}')
 if not notice.is_file():
     raise SystemExit(f'[fat-wheel] ERROR: no third-party notice at {notice}')
 (dist_info / 'licenses').mkdir(parents=True, exist_ok=True)
 (dist_info / 'licenses' / 'LICENSE').write_bytes(license.read_bytes())
 (dist_info / 'licenses' / 'THIRD-PARTY.txt').write_bytes(notice.read_bytes())
-(dist_info / 'licenses' / 'KUMO-API-LICENSE').write_bytes(
-    kumo_api_license.read_bytes())
 log(f'included first-party license ({license.stat().st_size // 1024} KiB)')
 log(f'included third-party notice ({notice.stat().st_size // 1024} KiB)')
-log(f'included kumo-api MIT license ({kumo_api_license.stat().st_size // 1024} KiB)')
 
 (dist_info / 'WHEEL').write_text(
     'Wheel-Version: 1.0\n'
@@ -702,7 +690,7 @@ PYEOF
 WHEEL_PATH="$("${PYTHON}" "${MERGE_PY}" "${WHEELS}" "${COMPONENTS}" \
     "${OUTPUT_DIR}" "${BUNDLE_NAME}" "${BUNDLE_VERSION}" "${WHEEL_TAG}" \
     "${PYTHON_TAG}" "${TARGET_PY}" "${OFFLINE_REPORT}" \
-    "${THIRD_PARTY_NOTICE}" "${FIRST_PARTY_LICENSE}" "${KUMO_API_LICENSE}" \
+    "${THIRD_PARTY_NOTICE}" "${FIRST_PARTY_LICENSE}" \
     "${FAT_WHEEL_LICENSE_EXPRESSION}")"
 
 SIZE_MIB="$(( $(stat -c %s "${WHEEL_PATH}") / 1024 / 1024 ))"

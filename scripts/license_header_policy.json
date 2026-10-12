@@ -11,6 +11,7 @@
       ".conf": ["hash"],
       ".css": ["block"],
       ".g4": ["slash"],
+      ".hbs": ["handlebars"],
       ".hcl": ["hash"],
       ".html": ["html"],
       ".js": ["slash", "block"],
@@ -69,13 +70,7 @@
       "reason": "Release automation requires the version assignment on line 1."
     }
   ],
-  "license_scopes": [
-    {
-      "pattern": "packages/kumo-api/**",
-      "license_identifier": "MIT",
-      "reason": "The kumo-api distribution remains MIT licensed."
-    }
-  ],
+  "license_scopes": [],
   "derived_sources": [
     {
       "name": "torchtext tokenizer and spaCy stop words",

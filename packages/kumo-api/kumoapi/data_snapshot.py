@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 r"""A snapshot resource represents a Table or a Graph associated with a fixed
 data version. This resource is associated with a long-running stateful
 workflow execution, which may succeed or fail to produce the data. A client
