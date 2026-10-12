@@ -518,7 +518,12 @@ PredictionResult.export(output_config)
 - **`snapshot=` is required.** `output_config` is optional — omit it to keep results local.
 - `predict` requires a trainer holding fitted state — from `fit` on that same `Trainer`, or from
   `Trainer.load` / `Trainer.load_from_connector`; there is no job registry to look a model up in.
-- `num_classes_to_return` must match `RANK TOP N` for a ranking query.
+- `num_classes_to_return` is the number of results returned per entity, and it is independent
+  of the query's `RANK TOP K`: a `RANK TOP 10` model can return 50 results. Link prediction
+  requires it whenever predictions are written, as an integer from 1 to 500
+  (`kumo_core.prediction_options.MAX_LINKS_TO_PREDICT`); for more than 500 per entity, export
+  embeddings instead. Multiclass and multilabel accept it optionally and fall back to the
+  query's `RANK TOP K` when it has one. Regression and binary classification reject it.
 - Binary classification requires an explicit `binary_classification_threshold`.
 - `PredictionResult` exposes `.num_rows`, `.files`, `.frame`, `.selection`, `.artifact_type`.
   Prefer `.num_rows` and `.files` — `.frame` collects every row into pandas.
@@ -703,7 +708,7 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
 | `Edge(src_table=, fkey=, dst_table=)` | Relationships from the intake contract |
 | PQL `query=` | Generated per `kumoai-reference/references/pql_writing.md` |
 | `prediction_time=` | A known in-range **naive** `datetime`; **cannot be computed** |
-| `num_classes_to_return=N` | Must match `RANK TOP N` |
+| `num_classes_to_return=N` | Results per entity the user asked for, 1–500; defaults to `RANK TOP K` but may differ. Required for link prediction (§9) |
 | `binary_classification_threshold=` | Required for binary classification |
 | Population table (static task, rows that already have a target) | Confirmed at Node 1d (§7.1) |
 | `PredictionOutputConfig(table_name=)` + output connector `database`/`schema_name` | Output destination; report back as `DB.SCHEMA.TABLE`, unchanged |
