@@ -25,13 +25,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential libxml2-dev libxslt1-dev && rm -rf /var/lib/apt/lists/*
 # Only test source from this checkout. This is not a release artifact.
 ENV SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0
-COPY 3rdparty/kumo-wheels/torch_geometric-*.whl 3rdparty/kumo-wheels/
 COPY --from=wheel / /wheels/
 RUN uv export --frozen --no-dev --no-emit-workspace --no-hashes \
     --package kumo --package kumo-engine --group public-tests --extra full --extra test \
     --output-file /tmp/requirements.txt \
     && uv pip install --system --no-deps --torch-backend cpu \
-    --find-links ./3rdparty/kumo-wheels \
     -r /tmp/requirements.txt /wheels/diskgraph-*.whl
 COPY --chown=65534:65534 . .
 RUN uv pip install --system --no-deps ./packages/kumo-api ./packages/kumo-sdk \

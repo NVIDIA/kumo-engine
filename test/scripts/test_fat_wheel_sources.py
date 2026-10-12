@@ -108,7 +108,7 @@ def test_selected_components_requirements_reach_wheel_metadata(
     wheels.mkdir()
     dependencies = {
         'kumo-core': [
-            'requests>=2.31', 'torch>=2.7.0,<3',
+            'requests>=2.31', 'torch>=2.7.0,<3', 'torch-geometric>=2.8.1,<3',
             'faiss-gpu==1.14.3; extra == "faiss-gpu"'
         ],
         'kumo-engine': [
@@ -159,7 +159,7 @@ def test_selected_components_requirements_reach_wheel_metadata(
     requirements = set(metadata.get_all('Requires-Dist'))
     expected = {
         'torch>=2.7.0,<3', 'faiss-gpu==1.14.3', 'requests>=2.31',
-        'databricks-sdk'
+        'databricks-sdk', 'torch-geometric>=2.8.1,<3'
     }
     if 'kumo-s3' in providers:
         expected.add('boto3')
@@ -260,6 +260,7 @@ for source in (args[-1:] if args[2] == 'wheel' else args[-2:]):
         metadata = 'Metadata-Version: 2.1\\nName: ' + name + '\\nVersion: 1\\n'
         if name == 'kumo_core':
             metadata += 'Requires-Dist: torch>=2.7,<3\\n'
+            metadata += 'Requires-Dist: torch-geometric>=2.8.1,<3\\n'
         archive.writestr(name + '-1.dist-info/METADATA', metadata)
         archive.writestr(name + '/__init__.py', '')
 ''')
@@ -296,11 +297,13 @@ mkdir -p "$1"
     ]
     assert not downloads
     with ZipFile(next(output.glob('*.whl'))) as archive:
+        assert 'torch_geometric/__init__.py' not in archive.namelist()
         assert 'pyg_lib/__init__.py' not in archive.namelist()
         assert 'torch_scatter/__init__.py' not in archive.namelist()
         metadata_name = next(name for name in archive.namelist()
                              if name.endswith('.dist-info/METADATA'))
         metadata = archive.read(metadata_name).decode()
         assert 'Requires-Dist: torch>=2.7,<3' in metadata
+        assert 'Requires-Dist: torch-geometric>=2.8.1,<3' in metadata
         assert 'Requires-Dist: pyg-lib' not in metadata
         assert 'Requires-Dist: torch-scatter' not in metadata

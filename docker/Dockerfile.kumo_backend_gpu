@@ -252,8 +252,7 @@ RUN UV_LINK_MODE=copy python3 -m uv pip install --system --no-deps \
 #
 # `--torch-backend=${CUDA}` points torch at the matching PyTorch index so the
 # lock's +${CUDA} wheel is found without fanning unrelated packages out to
-# download.pytorch.org. The 3rdparty wheels (torch-geometric, whose lock entry
-# has no registry hash) come from --find-links.
+# download.pytorch.org. Custom Faiss wheels come from --find-links.
 #
 # diskgraph is already installed above from the prebuilt wheel.
 #

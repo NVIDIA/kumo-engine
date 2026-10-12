@@ -1,7 +1,8 @@
 # Releasing kumo-engine
 
-`kumo-engine` is published as one wheel that bundles `kumo-core`, `kumo-pql`,
-DiskGraph and every provider package (`kumo-snowflake`, `kumo-databricks`, ...).
+`kumo-engine` is published as one wheel that bundles `kumo-api`, `kumo-pql`,
+`kumo-core`, DiskGraph and every provider package (`kumo-snowflake`,
+`kumo-databricks`, ...).
 Provider *code* ships in every install; their third-party dependencies come
 with the matching extra:
 
@@ -19,12 +20,20 @@ Provider code must be imported at the point of use, never at module top level,
 so a bare install can still `import kumo.engine`
 (`packages/kumo-engine/test/test_optional_imports.py` enforces this).
 
-`kumo-api` and `kumo-glove-6b-50d` are published separately and are ordinary
-PyPI dependencies (`kumo-glove-6b-50d` through the `text` extra). The wheel never
-bundles them, and `merge_wheels.py` refuses to.
+`kumo-api`, `kumo-pql`, `kumo-core` and every provider are always bundled.
+Kumo-owned source uses Apache-2.0; bundled third-party source and native
+components retain their obligations in `THIRD-PARTY.txt`.
+`kumo-glove-6b-50d` stays a separate PyPI dependency through the `text` extra;
+`merge_wheels.py` refuses to bundle it.
+`torch-geometric>=2.8.1,<3` is also resolved separately at install time.
 
 The wheel is `cp311-abi3-manylinux_2_34_x86_64`: Linux x86_64, glibc >= 2.34,
-CPython >= 3.11 (DiskGraph's stable-ABI floor).
+CPython >= 3.11 (DiskGraph's stable-ABI floor). The merger reads every bundled
+wheel's `Requires-Python` and writes their intersection into the final wheel.
+Stricter minimums, upper bounds, and exclusions are retained; incompatible
+constraints fail the build. Constraints are also recorded in
+`kumo_bundle_manifest.json`. Native ABI tags are checked against the resulting
+Python minimum.
 
 `scripts/build_fat_wheel.sh` and its manual workflow, *Kumo SDK - Build fat
 wheel*, are unchanged: they still build the date-stamped `kumo-fat-bundle`
@@ -69,8 +78,7 @@ platform's `release-version`.
 ## Cut a release
 
 1. **Check the dependencies are on PyPI.** The wheel requires
-   `kumo-api==<packages/kumo-api version>` and, for `[text]`,
-   `kumo-glove-6b-50d==1.0.0`. Release them first if they are new.
+   `kumo-glove-6b-50d==1.0.0` for `[text]`. Release it first if it is new.
 2. **Set the version** (`VERSION` plus `scripts/stamp_version.py`) on a branch
    and merge it. The tag must point at a commit that contains it.
 3. **Publish a GitHub release** tagged `kumo-engine-v<version>` (for example
@@ -111,10 +119,7 @@ this workflow.
 Running the workflow by hand (Actions, *Run workflow*) builds the wheel as
 `<version>+<commit>` and keeps it as a workflow artifact for 30 days. It never
 publishes: the publish job only runs for release events, and PyPI rejects local
-versions anyway. Inputs:
-
-- `extra_components`: restrict the optional providers (an extra whose provider
-  is left out disappears from that wheel);
+versions anyway.
 
 ## Build locally
 
@@ -125,8 +130,8 @@ packages/kumo-engine/scripts/build_wheel.sh --offline-report   # <version>+<sha>
 
 Needs `cargo` (and `cargo-zigbuild`, installed on demand), a current committed
 `THIRD-PARTY.txt` (checked with `scripts/gen_third_party.py`), and network
-access for the torch-geometric wheel. `--verify-image IMAGE` installs the wheel
-into a Docker image and checks that the closure imports and that provider
+access for component build dependencies. `--verify-image IMAGE` installs the
+wheel into a Docker image and checks that the closure imports and that provider
 dependencies are absent from a bare install.
 
 ## One-time PyPI setup

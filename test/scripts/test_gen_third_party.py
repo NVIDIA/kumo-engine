@@ -109,7 +109,28 @@ class ThirdPartyNoticeTest(unittest.TestCase):
                 for component in self.inventory["components"]
                 if component["id"] in fat_wheel
                 and component["ecosystem"] == "python"
-            }, {"torch-geometric"})
+            }, set())
+
+    def test_wheel_validation_uses_selected_artifact_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(notice.validate_wheels(
+                self.inventory, root,
+                artifact_ids=["fat-wheel-bundled-python"]), [])
+            rendered = notice.render(
+                self.inventory, self.policy, wheels_dir=root,
+                artifact_ids=["fat-wheel-bundled-python"])
+            self.assertNotIn(b"torch-geometric", rendered)
+            inventory = {"components": [{
+                "name": "sample", "version": "1.0", "ecosystem": "python",
+                "artifact_ids": ["fat-wheel-bundled-python"],
+            }]}
+            self.assertEqual(notice.validate_wheels(
+                inventory, root, artifact_ids=["diskgraph-extension"]), [])
+            errors = notice.validate_wheels(
+                inventory, root, artifact_ids=["fat-wheel-bundled-python"])
+            self.assertTrue(any("bundled wheel missing for sample"
+                                in error for error in errors), errors)
 
     def test_fat_wheel_license_expression_covers_selected_components(
             self) -> None:

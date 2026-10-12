@@ -41,9 +41,9 @@
 #                      standalone `ingest` binary
 #     glove.6B 50d     Stanford GloVe data in the first-party
 #                      kumo-glove-6b-50d wrapper
-#     torch-geometric  released pure-Python wheel from PyPI
 #
-# Other Python dependencies remain Requires-Dist entries; --offline-report lists them.
+# Python dependencies, including torch-geometric, remain Requires-Dist entries.
+# --offline-report lists them.
 #
 # Adapted from kumo's scripts/build_kumo_fat_wheel.py: this bundles
 # kumo-engine (the local-only SDK) as well as every reader package under
@@ -64,7 +64,6 @@ BUNDLE_VERSION="${BUNDLE_VERSION:-}"
 PYTHON_TAG="${PYTHON_TAG:-cp312}"
 # Conservative Linux tag covering the bundled DiskGraph binaries.
 PLATFORM_TAG="${PLATFORM_TAG:-linux_x86_64}"
-TORCH_GEOMETRIC_VERSION="${TORCH_GEOMETRIC_VERSION:-2.8.0.post1}"
 EXTRA_COMPONENTS="${EXTRA_COMPONENTS:-}"
 # Build DiskGraph through cargo-zigbuild so the extension and the ingest binary
 # link against a manylinux2014 glibc rather than this host's. A native build
@@ -96,7 +95,6 @@ Options:
   --extra-components LIST Optional packages, comma-separated. [all]
                         E.g. kumo-databricks,kumo-s3; engine is always included.
   --platform-tag TAG    Target platform tag.              [linux_x86_64]
-  --torch-geometric VER torch-geometric version.          [2.8.0.post1]
   --kumo-repo PATH      kumo monorepo checkout.           [this repo]
   --no-zig              Build DiskGraph natively instead of through
                         cargo-zigbuild. Only safe when this host's glibc is no
@@ -122,7 +120,6 @@ while [ $# -gt 0 ]; do
         --python-tag) PYTHON_TAG="$2"; shift 2 ;;
         --extra-components) EXTRA_COMPONENTS="$2"; shift 2 ;;
         --platform-tag) PLATFORM_TAG="$2"; shift 2 ;;
-        --torch-geometric) TORCH_GEOMETRIC_VERSION="$2"; shift 2 ;;
         --kumo-repo) KUMO_REPO="$2"; shift 2 ;;
         --no-zig) USE_ZIG=0; shift ;;
         --verify-image) VERIFY_IMAGE="$2"; shift 2 ;;
@@ -357,18 +354,7 @@ check_glibc_floor() {
 check_glibc_floor
 
 # --------------------------------------------------------------------------
-# 3) torch-geometric (pure Python), bundled from its released PyPI wheel. The
-#    fat-wheel target is Python 3.12, where the released config-store behavior
-#    is valid; the Python 3.14 monorepo separately pins an upstream fix.
-# --------------------------------------------------------------------------
-log "building torch-geometric ${TORCH_GEOMETRIC_VERSION}"
-"${PYTHON}" -m pip wheel --no-deps -q -w "${WHEELS}" \
-    "torch-geometric==${TORCH_GEOMETRIC_VERSION}"
-record 'torch_geometric-*.whl' third-party \
-    "torch-geometric==${TORCH_GEOMETRIC_VERSION} (PyPI)"
-
-# --------------------------------------------------------------------------
-# 4) Generate the legal payload and combined license expression.
+# 3) Generate the legal payload and combined license expression.
 # --------------------------------------------------------------------------
 NOTICE_GENERATOR="${KUMO_REPO}/scripts/gen_third_party.py"
 [ -f "${NOTICE_GENERATOR}" ] || die "no notice generator at ${NOTICE_GENERATOR}"
@@ -399,7 +385,7 @@ FAT_WHEEL_LICENSE_EXPRESSION="$(
 )" || die "could not derive the fat-wheel license expression"
 
 # --------------------------------------------------------------------------
-# 5) Merge everything into one wheel.
+# 4) Merge everything into one wheel.
 # --------------------------------------------------------------------------
 MERGE_PY="${WORK}/merge.py"
 cat > "${MERGE_PY}" <<'PYEOF'
@@ -697,7 +683,7 @@ SIZE_MIB="$(( $(stat -c %s "${WHEEL_PATH}") / 1024 / 1024 ))"
 log "wrote ${WHEEL_PATH} (${SIZE_MIB} MiB)"
 
 # --------------------------------------------------------------------------
-# 6) Optional smoke test: install the finished wheel into a real base image and
+# 5) Optional smoke test: install the finished wheel into a real base image and
 #    import the closure.
 # --------------------------------------------------------------------------
 if [ -n "${VERIFY_IMAGE}" ]; then

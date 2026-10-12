@@ -237,15 +237,17 @@ def validate_wheels(
     inventory: dict[str, Any],
     wheels_dir: Path,
     components_path: Path | None = None,
+    artifact_ids: Sequence[str] = (),
 ) -> list[str]:
     """Compare committed bundled-Python evidence with actual merge inputs."""
     errors: list[str] = []
+    selected_artifacts = set(artifact_ids) or {"fat-wheel-bundled-python"}
     expected = {
         (canonical_name(component["name"]), public_version(component["version"])):
         component
         for component in inventory["components"]
         if component["ecosystem"] == "python"
-        and "fat-wheel-bundled-python" in component.get("artifact_ids", [])
+        and selected_artifacts.intersection(component.get("artifact_ids", []))
     }
     wheels = sorted(wheels_dir.glob("*.whl"))
     if components_path is None:
@@ -971,6 +973,7 @@ def validate(
     root: Path = REPO_ROOT,
     wheels_dir: Path | None = None,
     components_path: Path | None = None,
+    artifact_ids: Sequence[str] = (),
 ) -> list[str]:
     errors: list[str] = []
     allowed = set(policy.get("allowed_licenses", []))
@@ -1224,13 +1227,13 @@ def validate(
     if stale_exceptions:
         errors.append(f"stale policy exceptions: {stale_exceptions}")
 
-    artifact_ids: set[str] = set()
+    known_artifact_ids: set[str] = set()
     recorded_scopes: dict[str, set[str]] = {}
     for artifact in artifacts:
         artifact_id = artifact.get("id", "")
-        if not artifact_id or artifact_id in artifact_ids:
+        if not artifact_id or artifact_id in known_artifact_ids:
             errors.append(f"duplicate or missing artifact id: {artifact_id!r}")
-        artifact_ids.add(artifact_id)
+        known_artifact_ids.add(artifact_id)
         artifact_components = artifact.get("components", [])
         if len(artifact_components) != len(set(artifact_components)):
             errors.append(f"{artifact_id}: duplicate component ids")
@@ -1248,7 +1251,7 @@ def validate(
             errors.append(
                 f"{identity}: component artifact_ids disagree with artifact inventories"
             )
-        unknown_scopes = sorted(declared_scopes - artifact_ids)
+        unknown_scopes = sorted(declared_scopes - known_artifact_ids)
         if unknown_scopes:
             errors.append(
                 f"{identity}: unknown artifact_ids: {unknown_scopes[:5]}")
@@ -1264,7 +1267,8 @@ def validate(
             f"components outside every artifact/source scope: {unused_components[:5]}"
         )
     if wheels_dir is not None:
-        errors.extend(validate_wheels(inventory, wheels_dir, components_path))
+        errors.extend(validate_wheels(inventory, wheels_dir, components_path,
+                                      artifact_ids))
     elif components_path is not None:
         errors.append("a component manifest requires a wheel directory")
     return errors
@@ -1344,7 +1348,7 @@ def render(
         artifact_ids: Sequence[str] = (),
 ) -> bytes:
     errors = validate(inventory, policy, wheels_dir=wheels_dir,
-                      components_path=components_path)
+                      components_path=components_path, artifact_ids=artifact_ids)
     if errors:
         raise NoticeError("\n".join(errors))
     components, artifact_labels = _components_for_artifacts(
