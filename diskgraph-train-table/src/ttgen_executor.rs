@@ -298,15 +298,11 @@ fn schema_without_column(schema: &arrow_schema::SchemaRef, col: &str) -> arrow_s
 #[derive(Debug, Clone)]
 enum PassBMode {
     /// Run the per-anchor fused pass-B with the merged decider.
-    /// `is_array_lp` folds in the array-LP empty-target drop.
     /// `drop_split_column` is `Some(col)` for the custom-TT split-column path
     /// (`ManualSplit`/`ColumnSplit` on a customer-provided column): that column
     /// is the split signal and must be projected OUT of the per-stage seed
     /// parquets so it never reaches the seed rowpack / features.
-    PerAnchor {
-        is_array_lp: bool,
-        drop_split_column: Option<String>,
-    },
+    PerAnchor { drop_split_column: Option<String> },
     /// No pass-B here (executor body handles per-link / no-split).
     Deferred,
 }
@@ -458,9 +454,8 @@ fn determine_split_mode<U: UnitSystem>(plan: &DiskGraphTTPlan<U>) -> SplitMode {
         | Some("ColumnSplit") => SplitMode::Compute,
         // CustomLinkSplit on the LP+array path. Pass A runs with
         // `NoSplitDecider` and emits the per-link split projection column;
-        // a regroup step assigns each link to a stage by membership in
-        // train/val/test value sets, then pass B reads the inline stage
-        // column. The non-array CustomSplit ("ManualSplit on entity")
+        // pass B's `route_per_link` assigns each link to a stage by membership
+        // in train/val/test value sets. The non-array CustomSplit ("ManualSplit on entity")
         // already lives elsewhere — see `ManualDecider`.
         Some("CustomLinkSplit") => SplitMode::Compute,
         _ => SplitMode::None,
@@ -756,7 +751,6 @@ where
                     &tt_parquet_path,
                     writer_thread,
                     PassBMode::PerAnchor {
-                        is_array_lp,
                         drop_split_column: None,
                     },
                     custom_tt_source_ref,
@@ -780,7 +774,6 @@ where
                     &tt_parquet_path,
                     writer_thread,
                     PassBMode::PerAnchor {
-                        is_array_lp,
                         drop_split_column: None,
                     },
                     custom_tt_source_ref,
@@ -823,7 +816,6 @@ where
                     &tt_parquet_path,
                     writer_thread,
                     PassBMode::PerAnchor {
-                        is_array_lp,
                         drop_split_column: None,
                     },
                     custom_tt_source_ref,
@@ -845,7 +837,6 @@ where
                     &tt_parquet_path,
                     writer_thread,
                     PassBMode::PerAnchor {
-                        is_array_lp,
                         drop_split_column: None,
                     },
                     custom_tt_source_ref,
@@ -866,7 +857,6 @@ where
                     &tt_parquet_path,
                     writer_thread,
                     PassBMode::PerAnchor {
-                        is_array_lp,
                         drop_split_column: None,
                     },
                     custom_tt_source_ref,
@@ -886,7 +876,6 @@ where
                     &tt_parquet_path,
                     writer_thread,
                     PassBMode::PerAnchor {
-                        is_array_lp,
                         drop_split_column: None,
                     },
                     custom_tt_source_ref,
@@ -906,7 +895,6 @@ where
                     &tt_parquet_path,
                     writer_thread,
                     PassBMode::PerAnchor {
-                        is_array_lp,
                         drop_split_column: None,
                     },
                     custom_tt_source_ref,
@@ -938,7 +926,6 @@ where
                     &tt_parquet_path,
                     writer_thread,
                     PassBMode::PerAnchor {
-                        is_array_lp,
                         drop_split_column: None,
                     },
                     custom_tt_source_ref,
@@ -958,7 +945,6 @@ where
                     &tt_parquet_path,
                     writer_thread,
                     PassBMode::PerAnchor {
-                        is_array_lp,
                         drop_split_column: None,
                     },
                     custom_tt_source_ref,
@@ -1026,7 +1012,6 @@ where
                         &tt_parquet_path,
                         writer_thread,
                         PassBMode::PerAnchor {
-                            is_array_lp,
                             drop_split_column: Some(drop_col),
                         },
                         custom_tt_source_ref,
@@ -1050,7 +1035,6 @@ where
                         &tt_parquet_path,
                         writer_thread,
                         PassBMode::PerAnchor {
-                            is_array_lp,
                             drop_split_column: Some(drop_col),
                         },
                         custom_tt_source_ref,
@@ -1079,39 +1063,12 @@ where
         }
     };
 
-    let (mut total_rows, mut stats, per_anchor_parts) = pass_outputs?;
+    let (total_rows, mut stats, per_anchor_parts) = pass_outputs?;
     let row_failures: Option<RowFailuresReport> = custom_tt_source_ref.map(|source| {
         let report = stats.take_source_rows().failures.report(source.on_error);
         report.warn_if_any(total_rows);
         report
     });
-    // `total_rows` = the dataset row count pass A wrote. SPLIT plans fold the
-    // array-LP empty-target drop into the route kernels (empty rows route to no
-    // stage), leaving it immutable.
-
-    // No-split (prediction) array-LP empty-target drop: the dataset IS the
-    // single ingest input, so drop empty rows in place here. Gated to array LP,
-    // no split of any kind, and a non-empty dataset; non-LP array tasks may
-    // legitimately carry empty lists.
-    // Predict LP bundles carry no TARGET1 column (entities + time only), so
-    // there is nothing to drop — skip the empty-target filter for predict.
-    let is_no_split = per_anchor_parts.is_none() && !is_per_link_split;
-    if is_array_lp && is_no_split && total_rows > 0 && !plan.is_prediction {
-        let keep = crate::regroup::drop_empty_target_rows_in_place(&tt_parquet_path)?;
-        debug_assert_eq!(
-            keep.len() as u64,
-            total_rows,
-            "empty-target drop keep-mask must be row-aligned to tt.parquet"
-        );
-        let kept = keep.iter().filter(|k| **k).count() as u64;
-        if kept != total_rows {
-            // Weight rides as a column now, so it is dropped in place with
-            // the row by `drop_empty_target_rows_in_place` — no separate
-            // sidecar realign needed.
-            total_rows = kept;
-        }
-    }
-
     // Node-task categorical targets require exact CATEGORY_COUNTS for encoder
     // inference. LP deliberately has no accumulator, so this returns None.
     let target_category_counts =
@@ -1225,7 +1182,6 @@ where
         "pquery"
     };
 
-    // The parquet writer and any in-place regroup/drop pass have completed.
     // Freeze the exact closed-file size without an additional full-file read.
     let (train_table_size_bytes, train_table_parts) =
         train_table_parts(&tt_parquet_path, total_rows)?;
@@ -1428,10 +1384,7 @@ fn run_pass_a_then_pass_b<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
     // decider); deferred modes (per-link / use-bin / no-split) run it in the
     // executor body.
     let stage_parts = match pass_b_mode {
-        PassBMode::PerAnchor {
-            is_array_lp,
-            drop_split_column,
-        } => {
+        PassBMode::PerAnchor { drop_split_column } => {
             // Output schema = tt.parquet schema minus the split column (when the
             // custom-TT split-column path asked to drop it). Used both for the
             // per-stage sub-batch projection and for empty-stage 0-row parts.
@@ -1449,7 +1402,6 @@ fn run_pass_a_then_pass_b<U: UnitSystem, D: SplitDecider<U> + Clone + Sync>(
                 &merged_decider,
                 output_dir_of(tt_parquet_path)?,
                 total_rows,
-                is_array_lp,
                 drop_split_column.as_deref(),
                 &out_schema,
                 forecasting_horizon,
@@ -2202,15 +2154,17 @@ fn write_target<U: UnitSystem, D: SplitDecider<U>>(
                         } else {
                             Vec::new()
                         };
-                        writer.write_row_array(
-                            entity_pk.clone(),
-                            ts,
-                            targets.clone(),
-                            &[],
-                            &freqs,
-                            extra_value,
-                            entity_include_bit,
-                        )?;
+                        if plan.is_prediction || !targets.is_empty() {
+                            writer.write_row_array(
+                                entity_pk.clone(),
+                                ts,
+                                targets.clone(),
+                                &[],
+                                &freqs,
+                                extra_value,
+                                entity_include_bit,
+                            )?;
+                        }
 
                         if let Some(first_target) = targets.first() {
                             let first_freq = if *include_frequency {
@@ -2228,8 +2182,7 @@ fn write_target<U: UnitSystem, D: SplitDecider<U>>(
                                     target_is_categorical,
                                     target_stype,
                                     // Array-LP uses the entity-level split value
-                                    // for the representative row; the regroup
-                                    // path doesn't go through here.
+                                    // for the representative row.
                                     split_column_value: split_value,
                                 };
                                 processor.observe(&row, local_target_counts);
