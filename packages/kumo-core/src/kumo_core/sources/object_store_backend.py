@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from abc import ABC, abstractmethod
-from typing import Any, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from kumoapi.plugin import PrepareIngestResult, SourceConnector
 from kumoapi.source_table import (
@@ -81,6 +81,14 @@ class ObjectStoreSourceBackend(ABC):
         reader, name = self._reader(connector, table_name)
         columns = source_columns(reader.dtypes(name).items())
         return SourceTableDataResponse(table_name=table_name, cols=columns)
+
+    def source_types(self, connector: SourceConnector,
+                     table_name: str) -> Dict[str, str]:
+        reader, name = self._reader(connector, table_name)
+        return {
+            column: str(dtype)
+            for column, dtype in reader.source_types(name).items()
+        }
 
     def get_sample(
         self,

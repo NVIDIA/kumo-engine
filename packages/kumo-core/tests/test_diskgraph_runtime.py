@@ -254,6 +254,52 @@ def test_real_ingest_logs_progress_and_graph_counts(
             "7 nodes, 8 edges") in messages
 
 
+def test_real_ingest_nulls_uint64_values_a_declared_int64_cannot_hold(
+        tmp_path: Path) -> None:
+    _require_ingest_binary()
+    (tmp_path / "t").mkdir()
+    pq.write_table(
+        pa.table({
+            "id": range(4),
+            "big": pa.array([5, 2**63 - 1, 2**63, 2**64 - 1], pa.uint64()),
+        }), tmp_path / "t" / "part.parquet")
+
+    execute_diskgraph_ingest(
+        {
+            "name":
+            "g",
+            "tables": [{
+                "table_name": "t",
+                "source_table_name": "t",
+                "connector_id": "native",
+                "pkey": {
+                    "name": "id",
+                    "dtype": "int64",
+                    "stype": "ID"
+                },
+                "cols": [{
+                    "name": "big",
+                    "dtype": "int64",
+                    "stype": "categorical"
+                }],
+                "fkeys": [],
+            }],
+        },
+        DiskgraphIngestSpec(
+            data_persist_dir=str(tmp_path / "persist"),
+            table_data_versions={"t": "1"},
+            source_paths={"t": str(tmp_path / "t")},
+            output_dir=str(tmp_path / "index"),
+        ),
+    )
+
+    stats = json.loads(
+        (tmp_path / "index" / "col_stats.json").read_text())["t"]["big"]
+    assert dict(stats["category_counts"]) == {5: 1, 2**63 - 1: 1}
+    assert stats["null_count"] == 2
+    assert stats["parse_fail_count"] == 2
+
+
 def test_failed_real_ingest_keeps_diagnostic_out_of_progress_log(
         caplog: pytest.LogCaptureFixture, tmp_path: Path) -> None:
     _require_ingest_binary()

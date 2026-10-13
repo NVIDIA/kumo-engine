@@ -197,6 +197,13 @@ class ObjectStoreSourceReader:
             }
         return column_dtypes(self.dataset(table).schema)
 
+    def source_types(self, table: str) -> dict[str, pa.DataType]:
+        path, kind = self.resolve(table)
+        if kind == layout.CSV:
+            return self._csv_catalog(table, path)
+        schema = self.dataset(table).schema
+        return dict(zip(schema.names, schema.types))
+
     def _csv_catalog(self, table: str, path: str) -> dict[str, pa.DataType]:
         from . import csv_format
         parts = self._csv_parts(table, self._objects(table, path))

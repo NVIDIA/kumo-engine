@@ -1646,7 +1646,8 @@ def _validate_table_metadata_v2(
     input_dtype_dict = {col.name: col.dtype for col in input_cols}
     unsupported_cols = [
         col.name for col in definition.cols
-        if input_dtype_dict.get(col.name) == Dtype.unsupported
+        if input_dtype_dict.get(col.name) == Dtype.unsupported and (
+            col.dtype is None or _coerce_dtype(col.dtype) == Dtype.unsupported)
     ]
     if unsupported_cols:
         formatted_cols = ', '.join(f"'{name}'" for name in unsupported_cols)
@@ -1655,8 +1656,8 @@ def _validate_table_metadata_v2(
             title='Unsupported column type',
             message=f"{noun} {formatted_cols} in table {label} "
             "have unsupported source data types. Exclude them from the Kumo "
-            "table definition or cast them to supported output types in a "
-            "Custom SQL query.")
+            "table definition, declare a data type for them, or cast them "
+            "to supported output types in a Custom SQL query.")
 
     for col in definition.cols:
         if col.dtype is None:
@@ -1672,7 +1673,8 @@ def _validate_table_metadata_v2(
         table_name = (source_table_metadata.table_name
                       if table.table_name == "NA" else table.table_name)
         col_dtype = _coerce_dtype(col.dtype)
-        if not can_cast_safely(col_dtype, input_dtype_dict[col.name]):
+        if (input_dtype_dict[col.name] != Dtype.unsupported
+                and not can_cast_safely(col_dtype, input_dtype_dict[col.name])):
             if (col_dtype == Dtype.string.value
                     and input_dtype_dict[col.name] == Dtype.stringlist):
                 continue

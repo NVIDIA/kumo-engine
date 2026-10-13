@@ -592,6 +592,17 @@ def test_pandas_index_columns_are_dropped_from_the_reported_schema():
     assert column_dtypes(schema) == {"id": Dtype.int64}
 
 
+def test_unsigned_integers_get_a_signed_dtype_that_holds_every_value():
+    schema = pa.schema([("u8", pa.uint8()), ("u16", pa.uint16()),
+                        ("u32", pa.uint32()), ("u64", pa.uint64())])
+    assert column_dtypes(schema) == {
+        "u8": Dtype.int32,
+        "u16": Dtype.int32,
+        "u32": Dtype.int64,
+        "u64": Dtype.unsupported,
+    }
+
+
 def test_the_scan_of_a_part_does_not_start_before_it_is_reached(
         tmp_path, monkeypatch):
     """Building every scanner up front starts every one of them, and the

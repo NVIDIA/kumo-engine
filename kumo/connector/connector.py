@@ -129,7 +129,15 @@ def _compute_col_stats_from_sample(
         ser = coerce_decimal_series_for_stats(ser, col_cfg)
         # Dual-dtype gating: realized series dtype may differ from configured
         # ``col_cfg.dtype``, so filter to stats supported on both.
-        ser_dtype = to_dtype(ser.dtype, ser=ser)
+        try:
+            ser_dtype = to_dtype(ser.dtype, ser=ser)
+        except KeyError:
+            # A declared dtype over a source type Kumo has no dtype for, such
+            # as uint64 or float16, is read raw here.
+            if not pd.api.types.is_numeric_dtype(ser.dtype):
+                raise
+            ser = ser.astype('float64')
+            ser_dtype = Dtype.float64
         supported = [s for s in stats if s.supports(ser_dtype)]
         if not supported:
             out[col_cfg] = {}

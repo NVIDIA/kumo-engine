@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import re
 from pathlib import Path
 
 import pyarrow as pa
@@ -314,3 +315,95 @@ def test_omitted_self_relation_preserves_native_type_and_query_task(tmp_path):
     stats = json.loads((snapshot.index_path / 'ingest_stats.json').read_text())
     assert stats['stats']['total_nodes'] == 100
     assert stats['stats']['total_edges'] == 0
+
+
+def test_unsigned_parquet_columns_snapshot_with_exact_values(tmp_path):
+    from kumo.engine import FileConnector, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    data = pa.table({
+        'pk': range(4),
+        'u8': pa.array([0, 255, None, 7], pa.uint8()),
+        'u16': pa.array([65535, None, 0, 3], pa.uint16()),
+        'u32': pa.array([None, 4294967295, 2147483648, 0], pa.uint32()),
+    })
+    pq.write_table(data, root / 'events.parquet')
+    table = Table.from_source_table(
+        FileConnector(root_dir=str(root))['events'], primary_key='pk')
+    assert {col.name: col.dtype for col in table.definition.cols} == {
+        'pk': Dtype.int64,
+        'u8': Dtype.int32,
+        'u16': Dtype.int32,
+        'u32': Dtype.int64,
+    }
+    for name in ('u8', 'u16', 'u32'):
+        table = table.with_column(name, stype=Stype.categorical)
+    snapshot = Graph({'events': table}).snapshot()
+    stats = json.loads(
+        (snapshot.index_path / 'col_stats.json').read_text())['events']
+    for name in ('u8', 'u16', 'u32'):
+        values = [value for value in data[name].to_pylist() if value is not None]
+        assert dict(stats[name]['category_counts']) == {
+            value: 1 for value in values
+        }
+        assert stats[name]['null_count'] == 1
+
+
+@pytest.mark.parametrize('column, source_type', [
+    (pa.nulls(3), 'null'),
+    (pa.array([1, 2, 2**64 - 1], pa.uint64()), 'uint64'),
+    (pa.array([[True], [False], []]), 'list<element: bool>'),
+])
+def test_an_undeclared_unreadable_column_is_refused_before_ingest(
+        column, source_type, tmp_path):
+    from kumo.engine import FileConnector, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(pa.table({'pk': range(3), 'bad': column}),
+                   root / 'events.parquet')
+    table = Table.from_source_table(
+        FileConnector(root_dir=str(root))['events'], primary_key='pk')
+    with pytest.raises(
+            ValueError,
+            match=re.escape(f"Table 'events' has columns whose source type "
+                            f"Kumo cannot read: 'bad' ({source_type})")):
+        Graph({'events': table}).snapshot()
+    assert not (tmp_path / 'scratch' / 'snapshots').exists()
+
+
+def test_a_declared_dtype_resolves_an_unreadable_column(tmp_path):
+    from kumo.engine import FileConnector, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    pq.write_table(
+        pa.table({
+            'pk': pa.array(range(3), pa.uint64()),
+            'big': pa.array([0, 2**63 - 1, None], pa.uint64()),
+        }), root / 'events.parquet')
+    source = FileConnector(root_dir=str(root))['events']
+    declared = Table.from_source_table(source, primary_key='pk',
+                                       dtypes={
+                                           'pk': Dtype.int64,
+                                           'big': Dtype.int64
+                                       })
+    chained = Table.from_source_table(source, primary_key='pk').with_column(
+        'pk', dtype=Dtype.int64).with_column('big', dtype=Dtype.int64)
+    assert declared.definition.cols == chained.definition.cols
+    columns = {col.name: col for col in declared.definition.cols}
+    assert columns['pk'].stype == Stype.ID
+    assert columns['big'].dtype == Dtype.int64
+    assert columns['big'].stype not in (None, Stype.unsupported)
+
+    snapshot = Graph({
+        'events': declared.with_column('big', stype=Stype.categorical)
+    }).snapshot()
+    stats = json.loads(
+        (snapshot.index_path / 'col_stats.json').read_text())['events']['big']
+    assert dict(stats['category_counts']) == {0: 1, 2**63 - 1: 1}
+    assert stats['null_count'] == 1
