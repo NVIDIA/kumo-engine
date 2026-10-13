@@ -76,16 +76,6 @@ remains zero. Do not renormalize a
 top-20 subset and present it as a full-graph percentage. Bar charts should label values “gradient
 score”, include table and column, and identify the run/stage.
 
-### Plot from the file, not from memory
-
-Plot code reads the selected run's file when it runs. Do not type values copied from an earlier
-output, a printed table or a retained summary: those may belong to another run. `scores.csv` is
-not necessarily sorted, so sort descending before taking the top N. Label each bar `table.column`;
-the same column name (for example `created_at`) can appear in two tables, and a bare column name
-merges them. Plot the recorded scores unchanged, with no rescaling, then state the run and stage.
-A cohort chart keeps the producer's cohort order and keeps `N/A` and `OTHER(*)` as bars of their
-own.
-
 ## Read column cohorts
 
 The JSON contains `task_type` and a `cohorts` list. Each entry identifies `table_name`, `hop`,
@@ -156,84 +146,6 @@ producer. `COUNT(*)` is a relationship-count cohort; `OTHER(*)` groups remaining
 Do not derive exact counts from population shares without the correct denominator. Scores are
 weighted standard deviations before normalization, not measures of predictive accuracy.
 
-## Sampled subgraphs
-
-The same post-training step writes per-entity subgraphs to `subgraph_collector/test/` in the
-selected trainer directory: `strategy_mappings.json` plus `subgraph_json/<ordinal>.json`, one file
-per sampled test entity. Take the trainer name from `best_trainer.json` (the last component of its
-`best_trainer` path) and use its `_refit_trainval` sibling when that directory exists. Do not glob
-every `version_*` directory or every run: only the selected trainer's files describe this model. The
-folder also holds other collector formats (`nested_json/`, `output/`, `rfm/`) and
-`global_aggr_feature/`; read `subgraph_json/` only.
-
-The files cover a bounded sample, not the test set. For each selection strategy (for binary
-classification: `random`, `unsure`, true/false positive/negative, `old_entity`, `recent_entity`)
-up to 50 entities are drawn from the processed test batches. `strategy_mappings.json` holds
-`mappings` (strategy to ordinals, the file stems, as strings) and `orig_mappings` (strategy to
-entity primary keys). An entity can appear under several strategies.
-
-Each file is a `kumoapi.explain.Subgraph`:
-
-- `subgraph_store`: `root_id` (the entity's node), `task_type`, `seed_time`, `nodes`, `edges`,
-  `tables`. `nodes` maps node id to `{id, pkey_name, pkey}`. `edges` maps a source node id to
-  `{relation: [destination node ids]}`; `tables` maps table name to node ids.
-- `feature_store.features`: node id to `{column: {table_name, name, value, stype, score}}`.
-- At most 16 neighbours are kept per relation. The rest become one aggregated node with a negative
-  id, `count`, `start_time`, `end_time` and `pkey_name`; its features have `value` null and
-  summed scores.
-- `score` is a gradient magnitude divided by the largest one in that subgraph, so it is
-  comparable within one file, not across files or with `scores.csv`. It may be null.
-
-JSON object keys are strings: index `nodes`, `edges` and `features` with `str(node_id)`; ids inside
-`edges` and `tables` lists are integers.
-
-```python
-from pathlib import PurePosixPath
-
-def selected_trainer_dir(run_dir):
-    metadata = sorted(Path(run_dir).rglob("best_trainer.json"))
-    if len(metadata) != 1:
-        raise ValueError(f"Expected one best_trainer.json under {run_dir}: {metadata}")
-    name = PurePosixPath(json.loads(metadata[0].read_text())["best_trainer"]).name
-    for wanted in (f"{name}_refit_trainval", name):
-        found = [p for p in metadata[0].parent.rglob(wanted) if p.is_dir()]
-        if len(found) == 1:
-            return found[0]
-    raise FileNotFoundError(f"Trainer {name} is not under {metadata[0].parent}")
-
-def subgraph_tables(subgraph):
-    store = subgraph["subgraph_store"]
-    table_of = {node_id: table for table, ids in store["tables"].items() for node_id in ids}
-    nodes = pd.DataFrame([dict(node, table=table_of.get(int(key)))
-                          for key, node in store["nodes"].items()])
-    edges = pd.DataFrame([{"src": int(src), "relation": relation, "dst": dst}
-                          for src, relations in store["edges"].items()
-                          for relation, dsts in relations.items() for dst in dsts])
-    by_node = (subgraph.get("feature_store") or {}).get("features") or {}
-    features = pd.DataFrame([dict(feature, node_id=int(key))
-                             for key, columns in by_node.items() for feature in columns.values()])
-    return store["nodes"][str(store["root_id"])], nodes, edges, features
-
-subgraph_dir = selected_trainer_dir(run_dir) / "subgraph_collector" / "test"
-paths = sorted((subgraph_dir / "subgraph_json").glob("*.json"), key=lambda p: int(p.stem))
-if not paths:
-    print(f"No sampled subgraphs in {subgraph_dir}. Check disable_explain in this run's plan "
-          "and the fit log for a post-training explanation error.")
-else:
-    mappings = json.loads((subgraph_dir / "strategy_mappings.json").read_text())
-    subgraphs = {int(p.stem): json.loads(p.read_text()) for p in paths}
-    print(len(subgraphs), "subgraphs; strategies:", sorted(mappings["mappings"]))
-    root, nodes, edges, features = subgraph_tables(subgraphs[min(subgraphs)])
-    print("root entity:", root["pkey_name"], "=", root["pkey"])
-    display(nodes, edges, features.sort_values("score", ascending=False, na_position="last"))
-```
-
-Absent or empty `subgraph_json/` is not "no neighbourhood": report the path and check the items
-in *If artifacts are missing*. The collector skips forecasting, multilabel ranking, and
-link-prediction models other than the hybrid, ID and shallow-RHS modules. These files carry
-entity primary keys and raw feature values of real rows. Review them before sharing, and keep
-them out of shared locations unless the user asks.
-
 ## If artifacts are missing
 
 Check, in order: the selected run/path and retained files; runtime generation support;
@@ -266,11 +178,6 @@ Source: Kumo modules, as shipped in the runtime:
   roots.
 - `kumoapi.explain.gradient`: CSV schema and normalization.
 - `kumoapi.explain.column_analysis`: cohort schema and separate score normalization.
-- `kumo_core.explain.subgraph_collector.SubgraphCollector.format_subgraph_json` and
-  `kumoapi.explain.Subgraph`: `subgraph_json/` layout, fields, the 16-neighbour cap
-  (`kumo_core.training.runtime.LocalExplainRuntime`) and score normalization.
-- `kumo_core.training.explain_selection.select_input_nodes`: selection strategies, the 50-entity
-  cap and `strategy_mappings.json`.
 
 Source: Kumo ML producer modules:
 
