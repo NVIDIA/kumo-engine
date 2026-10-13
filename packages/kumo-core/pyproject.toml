@@ -70,7 +70,7 @@ documentation = "https://kumo.ai/docs"
 # in faiss-cpu alongside whatever faiss build root's own install chose.
 faiss-cpu = ["faiss-cpu==1.14.2"]
 faiss-gpu = ["faiss-gpu==1.14.3"]
-text = ["kumo-glove-6b-50d==1.0.0"]
+text = ["kumo-glove-6b-50d>=1.0.0,<2"]
 test = [
   "faiss-gpu==1.14.3",
   "packaging>=24",

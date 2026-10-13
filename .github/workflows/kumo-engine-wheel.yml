@@ -8,11 +8,16 @@
 # Release flow:
 #   1. Change the root VERSION file and run scripts/stamp_version.py, merge it.
 #   2. Create and publish a GitHub release tagged `kumo-engine-v<version>`.
-#   3. This workflow builds the wheel at that tag, attaches it to the release
-#      and uploads it to PyPI.
+#   3. This workflow builds the wheels at that tag and attaches them to the
+#      release once `check-requirements` shows the x86_64 wheel installs from
+#      PyPI, alone and with each extra, on every Python version it claims.
+#   4. Once the `kumo-engine-release` environment approves it, `kitmaker`
+#      publishes the attached x86_64 wheel to PyPI and pypi.nvidia.com through
+#      Kitmaker (scripts/kitmaker_release.py). The ARM64 wheel stays on the
+#      release.
 # A manual run only builds the wheel (as `<version>+<commit>`) and stores it as
-# a workflow artifact; it never publishes. The wheel bundles kumo-api,
-# kumo-pql, kumo-core and every provider. kumo-glove-6b-50d stays on PyPI.
+# a workflow artifact. The wheel bundles kumo-api, kumo-pql, kumo-core and
+# every provider; kumo-glove-6b-50d stays on PyPI.
 
 name: Kumo Engine - Build and publish wheel
 
@@ -29,6 +34,12 @@ on:  # yamllint disable-line rule:truthy
 
 permissions:
   contents: read
+
+# One run per release at a time: a second run could replace an attachment
+# while the first is publishing it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.release.tag_name || github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -108,8 +119,33 @@ jobs:
           retention-days: ${{ inputs.retention_days || 30 }}
           if-no-files-found: error
 
-  attach-to-release:
+  check-requirements:
     needs: [build]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Download wheel
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: kumo-engine-wheel-x86_64-${{ github.sha }}
+          path: dist
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: false
+
+      - name: Resolve the wheel and each extra from PyPI
+        run: >-
+          python3 packages/kumo-engine/scripts/check_pypi_requirements.py
+          dist/kumo_engine-*.whl --platform x86_64-manylinux_2_34
+
+  attach-to-release:
+    needs: [build, check-requirements]
     if: ${{ github.event_name == 'release' }}
     runs-on: ubuntu-24.04
     permissions:
@@ -129,26 +165,34 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: gh release upload "${RELEASE_TAG}" dist/*.whl --clobber
 
-  publish-pypi:
-    needs: [build]
-    # Release events only, never workflow_dispatch. Off until the PyPI project
-    # and its trusted publisher exist (one-time setup: see docs/development/releasing-kumo-engine.md).
-    if: >-
-      ${{ github.event_name == 'release' && vars.KUMO_ENGINE_PUBLICATION_ENABLED == 'true' }}
+  kitmaker:
+    needs: [attach-to-release]
+    if: ${{ github.event_name == 'release' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 180
     environment: kumo-engine-release
     permissions:
       contents: read
-      id-token: write  # PyPI trusted publishing
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
       - name: Download wheel
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: kumo-engine-wheel-x86_64-${{ github.sha }}
           path: dist
 
-      - name: Upload wheel to PyPI
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
-        with:
-          packages-dir: dist
-          verbose: true
+      - name: Publish through Kitmaker
+        env:
+          KITMAKER_API_TOKEN: ${{ secrets.KITMAKER_API_TOKEN }}
+          KITMAKER_PIC: ${{ vars.KITMAKER_PIC }}
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: >-
+          python3 scripts/kitmaker_release.py --project-id 6903
+          --project kumo-engine --platform manylinux_2_34_x86_64
+          --repo "${REPO}" --tag "${RELEASE_TAG}" dist/kumo_engine-*.whl
