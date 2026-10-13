@@ -375,7 +375,7 @@ RUN set -- \
  && rm -rf /opt/app/src \
  && chown -R ${USERNAME}:${GROUPNAME} /opt/app \
  && chgrp -R 0 /home/${USERNAME} \
- && chmod -R g=u /home/${USERNAME}
+ && chmod -R g=u,o+rX /home/${USERNAME}
 
 # Numeric UID:GID so the kubelet can verify `runAsNonRoot: true` (set by
 # pool/worker_manager/k8s.py); a name here yields "cannot verify user is
@@ -390,6 +390,10 @@ ENV USER=${USERNAME}
 ENV LOGNAME=${USERNAME}
 ENV KUMO_HOME=/tmp/kumo
 ENV KUMO_GLOVE_PATH=/opt/app/artifacts/glove
+# Keep library caches on the writable cache volume without hiding HOME/.local.
+ENV XDG_CACHE_HOME=/home/${USERNAME}/.cache
+ENV CUDA_CACHE_PATH=/home/${USERNAME}/.cache/nv/ComputeCache
+ENV TRITON_CACHE_DIR=/home/${USERNAME}/.cache/triton
 
 EXPOSE 8000 8001
 

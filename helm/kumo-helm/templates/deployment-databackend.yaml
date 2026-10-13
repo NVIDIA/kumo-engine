@@ -65,8 +65,8 @@ spec:
         {{- with .Values.workloads.databackend.ingestScratch }}
         {{- if .enabled }}
         # Bulk connector staging (FileConnector._stage_external_source) writes to Python's
-        # tempdir, /tmp by default, i.e. the container overlay. /tmp itself cannot be
-        # overmounted because the image bakes content there (diskgraph-wheel), so route
+        # tempdir. Keep ingest spill on the separately sized scratch volume rather
+        # than the general /tmp volume, and route
         # the tempdir into the scratch volume instead (kumo-ai/kumo#30091).
         - name: TMPDIR
           value: {{ printf "%s/tmp" $.Values.kumoConfig.diskgraph.dataRoot | quote }}
@@ -86,6 +86,10 @@ spec:
         resources:
           {{- toYaml .Values.workloads.databackend.resources | nindent 10 }}
         volumeMounts:
+        - name: runtime-tmp
+          mountPath: /tmp
+        - name: runtime-cache
+          mountPath: /home/kumouser/.cache
         {{- include "kumo.temporalVolumeMount" . | nindent 8 }}
         {{- include "kumo.secretsVolumeMount" . | nindent 8 }}
         {{- include "kumo.gcpApplicationCredentialsVolumeMount" . | nindent 8 }}
@@ -99,6 +103,10 @@ spec:
         {{- end }}
         {{- end }}
       volumes:
+      - name: runtime-tmp
+        emptyDir: {}
+      - name: runtime-cache
+        emptyDir: {}
       {{- include "kumo.temporalVolume" . | nindent 6 }}
       {{- include "kumo.secretsVolume" . | nindent 6 }}
       {{- include "kumo.gcpApplicationCredentialsVolume" . | nindent 6 }}

@@ -7,9 +7,11 @@ import random
 from dataclasses import fields
 from unittest.mock import Mock
 
+import fsspec
 import pytest
 from kumo_core.automl.optuna_searcher import NSGAIISearcher, TPESearcher
 from kumo_core.automl.random_searcher import RandomSearcher
+from kumo_core.io import filesystem
 from kumo_core.io.json import to_json_dict
 from kumo_core.model_plan import (
     GNNModelPlan,
@@ -117,7 +119,9 @@ def test_analyze_single_trial_skips_parameter_importance(tmp_path):
     assert not (tmp_path / "param_importances.png").exists()
 
 
-def test_analyze_with_unhashable_categorical_value(tmp_path):
+@pytest.mark.parametrize('scheme', ['local', 'memory', 'abfss'])
+def test_analyze_with_unhashable_categorical_value(tmp_path, monkeypatch,
+                                                   scheme):
     # `NumNeighborsConfig` instances are unhashable, so Optuna's plotting
     # code (which uses trial params as dict keys) must be given a
     # hashable stand-in rather than the raw config objects.
@@ -146,10 +150,27 @@ def test_analyze_with_unhashable_categorical_value(tmp_path):
     distribution = searcher.study.trials[0].distributions["num_neighbors"]
     assert distribution.choices == choice_labels
 
-    searcher.analyze(str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    path = str(tmp_path) if scheme == 'local' else f'{scheme}://{tmp_path.name}'
+    if scheme == 'abfss':
+        original = fsspec.get_filesystem_class
 
-    assert (tmp_path / "optimization_history.png").is_file()
-    assert (tmp_path / "slice" / "num_neighbors.png").is_file()
+        def get_filesystem_class(protocol):
+            if protocol == 'abfss':
+                raise ValueError('Protocol not known: abfss')
+            return original(protocol)
+
+        monkeypatch.setattr(fsspec, 'get_filesystem_class',
+                            get_filesystem_class)
+        monkeypatch.setattr(filesystem, '_fsspec_fallback',
+                            lambda uri: uri.replace('abfss://', 'memory://', 1))
+
+    searcher.analyze(path)
+
+    for artifact in ('optimization_history.png', 'slice/num_neighbors.png'):
+        with filesystem.open_file(f'{path}/{artifact}', 'rb') as source:
+            assert source.read(8) == b'\x89PNG\r\n\x1a\n'
+    assert not (tmp_path / f'{scheme}:').exists()
 
 
 def test_sample_value_with_later_unhashable_choice():

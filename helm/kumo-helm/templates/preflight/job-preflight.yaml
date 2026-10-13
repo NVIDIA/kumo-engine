@@ -75,6 +75,10 @@ spec:
             {{- end }}
             {{- end }}
           volumeMounts:
+            - name: runtime-tmp
+              mountPath: /tmp
+            - name: runtime-cache
+              mountPath: /home/kumouser/.cache
             - mountPath: /opt/kumo/preflight
               name: preflight-script
               readOnly: true
@@ -87,6 +91,10 @@ spec:
               cpu: "1"
               memory: 1Gi
       volumes:
+        - name: runtime-tmp
+          emptyDir: {}
+        - name: runtime-cache
+          emptyDir: {}
         - name: preflight-script
           configMap:
             name: {{ .Release.Name }}-preflight-script

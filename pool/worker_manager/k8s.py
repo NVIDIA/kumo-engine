@@ -159,6 +159,9 @@ def _runtime_container_security_context() -> V1SecurityContext:
         allow_privilege_escalation=False,
         privileged=False,
         run_as_non_root=True,
+        read_only_root_filesystem=os.environ.get(
+            'POOL_WORKER_READ_ONLY_ROOT_FILESYSTEM', 'true').strip().lower()
+        not in ('0', 'false', 'no', 'off'),
         capabilities=V1Capabilities(drop=['ALL']),
     )
 
@@ -1449,7 +1452,10 @@ class K8sPoolWorkerManager:
         ]
 
     def _substrate_volumes(self) -> List[V1Volume]:
-        vols: List[V1Volume] = []
+        vols = [
+            V1Volume(name='runtime-tmp', empty_dir=V1EmptyDirVolumeSource()),
+            V1Volume(name='runtime-cache', empty_dir=V1EmptyDirVolumeSource()),
+        ]
         if self._temporal_cert_secret and self._temporal_cert_dir:
             vols.append(
                 V1Volume(
@@ -1502,7 +1508,11 @@ class K8sPoolWorkerManager:
         return vols
 
     def _substrate_volume_mounts(self) -> List[V1VolumeMount]:
-        mounts: List[V1VolumeMount] = []
+        mounts = [
+            V1VolumeMount(name='runtime-tmp', mount_path='/tmp'),
+            V1VolumeMount(name='runtime-cache',
+                          mount_path='/home/kumouser/.cache'),
+        ]
         if self._temporal_cert_secret and self._temporal_cert_dir:
             mounts.append(
                 V1VolumeMount(name='temporal-mtls',
@@ -1531,8 +1541,7 @@ class K8sPoolWorkerManager:
 
     def _apply_substrate_wiring(self, workload: 'V1Deployment | V1Job') -> None:
         """Append the substrate envFrom + volumes/mounts to the pool pod's
-        single container, in place on ``workload``'s pod template. No-op when
-        nothing is configured."""
+        single container, in place on ``workload``'s pod template."""
         spec = workload.spec
         if (spec is None or spec.template is None
                 or spec.template.spec is None):

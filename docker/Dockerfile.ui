@@ -63,7 +63,7 @@ RUN apt-get update -y \
  && rm -rf /var/lib/apt/lists/*
 
 # SPA fallback + no-cache for runtime env-config.js
-COPY nginx.ui.conf /etc/nginx/conf.d/default.conf
+COPY nginx.ui.conf /opt/kumo-ui/nginx.external.conf
 COPY nginx.frontend.conf.template /opt/kumo-ui/nginx.frontend.conf.template
 COPY render-nginx-ui.sh /opt/kumo-ui/bin/render-nginx
 COPY docker-entrypoint-ui.sh /docker-entrypoint-ui.sh
@@ -73,19 +73,8 @@ COPY --from=builder /opt/app/build/ /usr/share/nginx/html/
 COPY --from=builder /opt/app/env.js /opt/app/env.js
 COPY --from=builder /opt/kumo-license-payload/ /usr/share/licenses/kumo/
 
-# Run as the unprivileged www-data user by default. Writable paths also grant
-# the root group the owner's permissions so OpenShift can use an arbitrary UID
-# in group 0. The served bundle remains root-owned read-only.
-RUN touch /var/run/nginx.pid \
-    && chown www-data:0 /var/run/nginx.pid /usr/share/nginx/html \
-       /usr/share/nginx/html/env-config.js \
-       /etc/nginx/conf.d /etc/nginx/conf.d/default.conf \
-    && chown -R www-data:0 /var/lib/nginx \
-    && chmod g=u /var/run/nginx.pid /usr/share/nginx/html \
-       /usr/share/nginx/html/env-config.js \
-       /etc/nginx/conf.d /etc/nginx/conf.d/default.conf \
-    && chmod -R g=u /var/lib/nginx \
-    && chmod 644 /opt/app/env.js
+# Static assets stay read-only. Runtime files use the writable /tmp volume.
+RUN chmod 644 /opt/app/env.js
 # Numeric UID:GID so the kubelet can verify `runAsNonRoot: true`; a name here
 # yields "cannot verify user is non-root" and the container never starts.
 # www-data is statically allocated 33:33 on Debian/Ubuntu; assert both so a

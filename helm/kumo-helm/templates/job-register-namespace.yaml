@@ -56,11 +56,13 @@ spec:
               value: {{ include "kumo.deployStage" . | quote }}
             - name: DEPLOY_ENV_CONFIG_JSON
               value: {{ include "kumo.deployEnvConfigJson" . | quote }}
-          {{- if or .Values.temporal.clientMtlsSecret (.Values.postgres.dsnSecret | default dict).secretName }}
           volumeMounts:
+            - name: runtime-tmp
+              mountPath: /tmp
+            - name: runtime-cache
+              mountPath: /home/kumouser/.cache
           {{- include "kumo.temporalVolumeMount" . | nindent 12 }}
           {{- include "kumo.secretsVolumeMount" . | nindent 12 }}
-          {{- end }}
           resources:
             requests:
               cpu: 100m
@@ -68,9 +70,11 @@ spec:
             limits:
               cpu: "1"
               memory: 1Gi
-      {{- if or .Values.temporal.clientMtlsSecret (.Values.postgres.dsnSecret | default dict).secretName }}
       volumes:
+      - name: runtime-tmp
+        emptyDir: {}
+      - name: runtime-cache
+        emptyDir: {}
       {{- include "kumo.temporalVolume" . | nindent 6 }}
       {{- include "kumo.secretsVolume" . | nindent 6 }}
-      {{- end }}
 {{- end }}

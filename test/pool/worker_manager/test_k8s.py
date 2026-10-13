@@ -197,6 +197,17 @@ def _api_exc(status: int, body: str = "") -> ApiException:
 # ---------------------------------------------------------------------------
 
 
+def _assert_runtime_filesystem(spec, read_only):
+    container = spec.containers[0]
+    assert container.security_context.read_only_root_filesystem is read_only
+    mounts = {m.mount_path: m for m in container.volume_mounts}
+    volumes = {v.name: v for v in spec.volumes}
+    for path in ("/tmp", "/home/kumouser/.cache"):
+        assert not mounts[path].read_only
+        assert volumes[mounts[path].name].empty_dir is not None
+    assert "/home/kumouser" not in mounts
+
+
 def test_derive_pod_status_pending():
     pod = _make_pod("p", phase="Pending", container_ready=False)
     assert _derive_pod_status(pod) == "Pending"
@@ -444,7 +455,10 @@ def test_translate_api_error_keeps_provider_response_restricted(
 # ---------------------------------------------------------------------------
 
 
-def test_provision_pool_worker_creates_pvc_then_deployment():
+@pytest.mark.parametrize('read_only', [True, False])
+def test_provision_pool_worker_creates_pvc_then_deployment(
+        monkeypatch, read_only):
+    monkeypatch.setenv('POOL_WORKER_READ_ONLY_ROOT_FILESYSTEM', str(read_only))
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
     # First poll returns Registered daemon pod.
@@ -480,6 +494,7 @@ def test_provision_pool_worker_creates_pvc_then_deployment():
     assert daemon_spec.security_context.fs_group == 999
     assert daemon_spec.security_context.fs_group_change_policy == "OnRootMismatch"
     assert daemon_spec.security_context.seccomp_profile.type == "RuntimeDefault"
+    _assert_runtime_filesystem(daemon_spec, read_only)
     daemon_security = daemon_spec.containers[0].security_context
     assert daemon_security.privileged is False
     assert daemon_security.allow_privilege_escalation is False
@@ -623,6 +638,7 @@ def test_daemon_deployment_spec_has_required_properties():
     assert pod_spec.affinity.node_affinity is None
     # Container picks up custom command/args from the constructor.
     container = pod_spec.containers[0]
+    assert container.security_context.read_only_root_filesystem is True
     assert container.command == ["/usr/bin/daemon"]
     assert container.args == ["--mode=test"]
     # Daemon container has both NVMe and EBS scratch mounts.
@@ -630,6 +646,8 @@ def test_daemon_deployment_spec_has_required_properties():
     assert mount_paths == {
         "/mnt/localssd": "ssd",
         "/mnt/ebs-scratch": "ebs-scratch",
+        "/tmp": "runtime-tmp",
+        "/home/kumouser/.cache": "runtime-cache",
     }
     # Pod has both volumes: NVMe PVC + EBS-backed emptyDir scratch.
     # The EBS volume itself is attached at the node level via the
@@ -1130,13 +1148,16 @@ def test_provision_activity_pod_raises_not_ready_when_daemon_pending():
     assert not batch.create_namespaced_job.called
 
 
-def test_provision_activity_pod_translates_env_dict_and_stamps_labels():
+@pytest.mark.parametrize('read_only', [True, False])
+def test_provision_activity_pod_translates_env_dict_and_stamps_labels(
+        monkeypatch, read_only):
     """The manager is agnostic to the daemon image's env contract:
     whatever ``env`` dict the caller passes is faithfully translated
     to ``V1EnvVar`` entries on the container, and labels are stamped
     from the dedicated method params (snapshot_id / pool_worker_uid /
     job_id / activity / pool-type).
     """
+    monkeypatch.setenv('POOL_WORKER_READ_ONLY_ROOT_FILESYSTEM', str(read_only))
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
 
@@ -1190,6 +1211,7 @@ def test_provision_activity_pod_translates_env_dict_and_stamps_labels():
     assert template_spec.security_context.fs_group == 999
     assert template_spec.security_context.fs_group_change_policy == "OnRootMismatch"
     container = template_spec.containers[0]
+    _assert_runtime_filesystem(template_spec, read_only)
     assert container.security_context.privileged is False
     assert container.security_context.allow_privilege_escalation is False
     assert container.security_context.run_as_non_root is True
@@ -1245,7 +1267,10 @@ def test_provision_activity_pod_translates_env_dict_and_stamps_labels():
     assert info.job_id == "j7"
 
 
-def test_provision_eph_activity_pod_uses_emptydir_and_eph_storage():
+@pytest.mark.parametrize('read_only', [True, False])
+def test_provision_eph_activity_pod_uses_emptydir_and_eph_storage(
+        monkeypatch, read_only):
+    monkeypatch.setenv('POOL_WORKER_READ_ONLY_ROOT_FILESYSTEM', str(read_only))
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
     activity_pod = _make_pod(
@@ -1291,6 +1316,7 @@ def test_provision_eph_activity_pod_uses_emptydir_and_eph_storage():
     # node's full instance-store instead of being evicted at the request
     # while the node sits empty (backlog #18).
     container = template_spec.containers[0]
+    _assert_runtime_filesystem(template_spec, read_only)
     assert container.security_context.privileged is False
     assert container.security_context.allow_privilege_escalation is False
     assert container.security_context.run_as_non_root is True

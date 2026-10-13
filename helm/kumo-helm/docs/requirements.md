@@ -97,6 +97,19 @@ CUDA/driver, memory, and storage sizing must be validated for the selected
 application release and workload; this document does not infer a production
 support matrix from development fallbacks.
 
+## Read-only filesystem upgrades
+
+`global.containerSecurityContext.readOnlyRootFilesystem` defaults to `true`.
+The setting also reaches new pool workers and initialization canaries.
+Deploy the chart with CPU, GPU, and UI images built with read-only filesystem
+support. Older images can fail when they write to installed files.
+
+Schedule the upgrade for a maintenance window with no active jobs. Roll out
+the chart services and pool controller. For existing daemon Deployments,
+update their pod templates with the rebuilt image, selected security setting,
+and writable `/tmp` and `/home/kumouser/.cache` volumes before rolling them out.
+Restarting Pods alone reuses the old template. Preserve the existing cache PVCs.
+
 ## Validation and compatibility
 
 Installation preflight checks only part of this contract: inspect its
