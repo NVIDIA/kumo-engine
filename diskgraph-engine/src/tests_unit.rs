@@ -1286,6 +1286,18 @@ fn build_temporal_shard(
     edges: &[(u8, i64)],
     max_node: u8,
 ) -> (ShardReader, RelationLayout, diskgraph_rowpack::RowPackContext) {
+    let sk_encoder = SortKeyEncoder::new(&temporal_sortkey_meta());
+    let entries: Vec<(u8, u64)> =
+        edges.iter().map(|&(dst, ts)| (dst, sk_encoder.encode_lower(ts))).collect();
+    build_sort_key_shard(dir, &entries, max_node, 16)
+}
+
+fn build_sort_key_shard(
+    dir: &std::path::Path,
+    entries: &[(u8, u64)],
+    max_node: u8,
+    key_bits: u8,
+) -> (ShardReader, RelationLayout, diskgraph_rowpack::RowPackContext) {
     // Node feature context (one trivial column), mirroring TestGraph.
     let cols = vec![RowPackColumn {
         name: "feat_0".into(),
@@ -1305,31 +1317,28 @@ fn build_temporal_shard(
         .encode_row_into(&row_val, &mut node_data, &mut scratch)
         .unwrap();
 
-    // dst_bits = 8, 16-bit sort key => 24-bit entry => 3 bytes.
+    let entry_bytes = 1 + key_bits as usize / 8;
     let layout = RelationLayout {
         relation_id: 0,
         dst_bits: 8,
-        dest_sort_key_bits: Some(16),
-        entry_bytes: 3,
+        dest_sort_key_bits: Some(key_bits),
+        entry_bytes,
         dst_mask: 0xFF,
-        dest_sort_key_mask: Some(0xFFFF),
+        dest_sort_key_mask: Some(u64::MAX >> (64 - key_bits)),
     };
 
-    let sk_encoder = SortKeyEncoder::new(&temporal_sortkey_meta());
-
-    // edges.bin: node 0 has `edges.len()` timestamped neighbors; nodes
-    // 1..=max_node have zero edges. Each node block: [count u8][len u16][3*count
-    // edge bytes][node_data].
+    // edges.bin: node 0 has `entries.len()` neighbors; nodes 1..=max_node have
+    // zero edges. Each node block: [count u8][len u16][entry_bytes*count edge
+    // bytes][node_data].
     let mut f = File::create(dir.join(EDGES_FILENAME)).unwrap();
-    let node0_edge_bytes: Vec<u8> = edges
+    let node0_edge_bytes: Vec<u8> = entries
         .iter()
-        .flat_map(|&(dst, ts)| {
-            let sort_key = sk_encoder.encode_lower(ts); // 16-bit value
-            let entry = (dst as u64) | (sort_key << 8); // dst_bits = 8
-            entry.to_le_bytes()[..3].to_vec()
+        .flat_map(|&(dst, sort_key)| {
+            let entry = (dst as u128) | ((sort_key as u128) << 8);
+            entry.to_le_bytes()[..entry_bytes].to_vec()
         })
         .collect();
-    f.write_all(&[edges.len() as u8]).unwrap();
+    f.write_all(&[entries.len() as u8]).unwrap();
     f.write_all(&(node_data.len() as u16).to_le_bytes()).unwrap();
     f.write_all(&node0_edge_bytes).unwrap();
     f.write_all(&node_data).unwrap();
@@ -1517,6 +1526,139 @@ fn test_temporal_anchor_uses_own_seed_type() {
             dropped, 0,
             "with rhs anchor 0 < edge ts 50, all rhs neighbors must be filtered out (fused={fused})"
         );
+    }
+}
+
+fn most_recent_neighbors(
+    meta: &EdgeSortKeyMetadata,
+    entries: &[(u8, u64)],
+    anchor: i64,
+    fanout: u32,
+) -> Vec<u64> {
+    let dir = TempDir::new().unwrap();
+    let (reader, _, ctx) = build_sort_key_shard(dir.path(), entries, 255, meta.width_bits);
+    let readers: HashMap<String, Vec<ShardHandle>> = [(
+        "n".to_string(),
+        vec![ShardHandle {
+            reader: Arc::new(reader),
+            min_id: 0,
+            max_id: 255,
+        }],
+    )]
+    .into();
+    let relation_info = [(0, ("E".to_string(), "n".to_string(), "n".to_string()))].into();
+    let decoders = [(0usize, SortKeyDecoder::new(meta))].into();
+    let node_decoders = [("n".to_string(), RowPackDecoder::new(ctx).unwrap())].into();
+    let sampler = DiskGraphEngine::new(
+        readers,
+        relation_info,
+        decoders,
+        node_decoders,
+        None,
+        diskgraph_core::time::TimeUnit::Seconds,
+        Some(42),
+        Some(1),
+    );
+    let req = BatchSamplingRequest {
+        dataset_id: DatasetId::nil(),
+        seed_nodes: [("n".to_string(), vec![0])].into(),
+        seed_timestamps: Some([("n".to_string(), vec![anchor])].into()),
+        seed_timestamp_unit: diskgraph_core::time::TimeUnit::Seconds,
+        plan: SamplingPlan {
+            layers: vec![LayerSpec {
+                fanouts: [(
+                    "E".to_string(),
+                    FanoutSpec {
+                        fanout,
+                        mode: SamplingMode::TemporalMostRecent,
+                        absent_key_policy: AbsentKeyPolicy::UniformFallback,
+                    },
+                )]
+                .into(),
+                default_fanout: None,
+            }],
+        },
+        flags: SamplingFlags {
+            replace: false,
+            directed: true,
+            disjoint: true,
+            return_edge_id: false,
+            adaptive: false,
+            fused_feature_fetching: false,
+            swap_edge_direction: false,
+        },
+    };
+    let mut state = crate::state::StatePool::new().acquire();
+    let mut output = MockOutput {
+        edges: vec![],
+        feature_batches: vec![],
+        schema: None,
+        fused_batches: vec![],
+    };
+    sampler.sample(&req, &mut state, &mut output).unwrap();
+    state.type_states[&0].nodes[1..].iter().map(|n| n.global_id).collect()
+}
+
+#[test]
+fn test_temporal_most_recent_matches_linear_scan() {
+    use diskgraph_core::metadata::{
+        EdgeSortKeyWeightEncoding, EdgeSortKeyWeightKind, EdgeSortKeyWeightMetadata,
+    };
+    use rand::seq::SliceRandom;
+    use rand::{Rng, SeedableRng};
+
+    let meta = |kind, bits, anchor, step, weight: Option<EdgeSortKeyWeightKind>| {
+        EdgeSortKeyMetadata {
+            width_bits: bits,
+            timestamp: Some(EdgeSortKeyTimestampMetadata {
+                table: "t".into(),
+                column: "ts".into(),
+                encoding: EdgeSortKeyTimestampEncoding { kind, anchor, step },
+            }),
+            weight: weight.map(|dtype| EdgeSortKeyWeightMetadata {
+                table: "t".into(),
+                expr: "w".into(),
+                encoding: EdgeSortKeyWeightEncoding { dtype },
+            }),
+        }
+    };
+    use EdgeSortKeyTimestampKind::{Int16, Int32};
+    let cases = [
+        (meta(Int16, 16, 0, 1, None), 0),
+        (meta(Int16, 24, 1_000, 60, Some(EdgeSortKeyWeightKind::Byte)), 8),
+        (meta(Int32, 64, -5, 7, Some(EdgeSortKeyWeightKind::Float32)), 32),
+    ];
+    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(7);
+    for (meta, weight_bits) in &cases {
+        let encoder = SortKeyEncoder::new(meta);
+        let decoder = SortKeyDecoder::new(meta);
+        for _ in 0..200 {
+            let len = rng.gen_range(0..=40);
+            let mut dsts: Vec<u8> = (1..=255).collect();
+            dsts.shuffle(&mut rng);
+            let mut entries: Vec<(u8, u64)> = dsts[..len]
+                .iter()
+                .map(|&dst| {
+                    let ts = if rng.gen_bool(0.2) {
+                        0
+                    } else {
+                        encoder.encode_lower(rng.gen_range(0..2_000)) >> weight_bits
+                    };
+                    let weight = rng.gen::<u64>() & ((1u64 << weight_bits) - 1);
+                    (dst, (ts << weight_bits) | weight)
+                })
+                .collect();
+            entries.sort_by_key(|&(_, key)| std::cmp::Reverse(key));
+            let anchor = rng.gen_range(-100..2_100);
+            let fanout = rng.gen_range(1..=50);
+            let expected: Vec<u64> = entries
+                .iter()
+                .filter(|&&(_, key)| decoder.decode(key).0.is_none_or(|ts| ts <= anchor))
+                .take(fanout as usize)
+                .map(|&(dst, _)| dst as u64)
+                .collect();
+            assert_eq!(most_recent_neighbors(meta, &entries, anchor, fanout), expected);
+        }
     }
 }
 
