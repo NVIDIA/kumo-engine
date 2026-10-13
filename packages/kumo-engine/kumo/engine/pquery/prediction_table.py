@@ -8,7 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Optional, Tuple
 
-from kumo_core.model_plan import ModelPlan as CoreModelPlan
+from kumo_core.model_plan import \
+    TrainingTableGenerationPlan as CoreGenerationPlan
 from kumo_core.pquery import (
     ValidatedNativeQuery,
     build_native_pquery_task_plan,
@@ -164,23 +165,21 @@ def _build_prediction_table_request(
         if parsed.query_type == 'static':
             raise ValueError('prediction_time is not supported for static queries')
 
-    model_plan = CoreModelPlan()
+    options = CoreGenerationPlan()
     if generation_plan is not None:
         from kumo_core.io.json import from_json_dict
         from kumoapi.json_serde import to_json_dict
-        section = from_json_dict(
+        options = from_json_dict(
             to_json_dict(generation_plan),
-            type(model_plan.training_table_generation),
+            CoreGenerationPlan,
         )
-        model_plan = replace(model_plan, training_table_generation=section)
 
-    parsed = resolve_query_forecast(parsed, native_graph,
-                                    model_plan.training_table_generation)
+    parsed = resolve_query_forecast(parsed, native_graph, options)
     with no_encoder_inference_warnings():
         plan = build_native_pquery_task_plan(
             query=parsed,
             graph=native_graph,
-            model_plan=model_plan,
+            training_table_generation_plan=options,
             run_id=run_id,
             graph_index_path=str(snapshot.index_path),
             scratch_dir=str(scratch_dir),
@@ -192,8 +191,7 @@ def _build_prediction_table_request(
     forecast_timeframe_step = None
     if parsed.task_type == 'forecasting' and generation_plan is not None:
         from kumo_core.model_plan import inferred_or_missing_type_to_none
-        value = inferred_or_missing_type_to_none(
-            model_plan.training_table_generation.timeframe_step)
+        value = inferred_or_missing_type_to_none(options.timeframe_step)
         offset = parsed.query.get_combined_date_offset_range()
         forecast_timeframe_step = int(
             value if value is not None else int(offset.end) -

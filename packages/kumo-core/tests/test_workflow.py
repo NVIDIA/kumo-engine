@@ -123,17 +123,89 @@ def test_request_rejects_a_model_plan_mapping(tmp_path):
         replace(value, model_plan={"optimization": {"max_epochs": 1}})
 
 
+@pytest.mark.parametrize("explicit", [False, True])
+def test_request_generation_settings_are_independent_of_model_plan(
+        tmp_path, monkeypatch, explicit):
+    model_plan = ModelPlan()
+    legacy = model_plan.training_table_generation
+    options = TrainingTableGenerationPlan(
+        split="RandomSplit(ratio=[0.7, 0.2, 0.1], seed=5)")
+    kwargs = {"training_table_generation_plan": options} if explicit else {}
+    value = replace(request(tmp_path), model_plan=model_plan, **kwargs)
+    captured = {}
+
+    def build(**kwargs):
+        captured.update(kwargs)
+        return "task-plan"
+
+    monkeypatch.setattr(workflow, "build_native_pquery_task_plan", build)
+    assert workflow.build_training_task_plan(value) == "task-plan"
+    generation = captured["training_table_generation_plan"]
+    if explicit:
+        assert generation is options
+    else:
+        assert generation == TrainingTableGenerationPlan()
+    assert generation is not legacy
+    assert "model_plan" not in captured
+    assert model_plan.training_table_generation is legacy
+
+
+@pytest.mark.parametrize("field, setting", [
+    ("split", "RandomSplit(ratio=[0.5, 0.3, 0.2], seed=99)"),
+    ("weight_col", "users.weight"),
+])
+@pytest.mark.parametrize("explicit", [False, True])
+@pytest.mark.parametrize("entry",
+                         ["request", "resolve", "prepare", "configured"])
+def test_workflows_reject_historical_generation_settings(
+        tmp_path, field, setting, explicit, entry):
+    from unittest.mock import Mock
+
+    caller = ModelPlan(training_table_generation=TrainingTableGenerationPlan(
+        **{field: setting}))
+    original = asdict(caller)
+    kwargs = {
+        "training_table_generation_plan": TrainingTableGenerationPlan()
+    } if explicit else {}
+    connector = Mock()
+    with pytest.raises(ValueError,
+                       match="pass training_table_generation_plan instead"):
+        if entry == "request":
+            replace(request(tmp_path), model_plan=caller, **kwargs)
+        elif entry == "resolve":
+            resolve(caller, **kwargs)
+        elif entry == "prepare":
+            workflow.prepare_training_request(connector=connector, graph={},
+                                              predictive_query="query",
+                                              run_id="run", model_plan=caller,
+                                              **kwargs)
+        else:
+            GNNTrainingWorkflow(connector=connector, graph={},
+                                bindings_factory=Mock(), publisher=Mock(),
+                                model_plan=caller, **kwargs)
+    connector.prepare.assert_not_called()
+    assert asdict(caller) == original
+
+
+def test_request_rejects_an_untyped_generation_plan(tmp_path):
+    with pytest.raises(TypeError, match="TrainingTableGenerationPlan"):
+        replace(request(tmp_path),
+                training_table_generation_plan={"lag_timesteps": 2})
+
+
 def resolved_plan():
     """A plan already through `resolve_model_plan`, as far as metrics go."""
     return ModelPlan(training_job=TrainingJobPlan(metrics=["mae"]))
 
 
 def resolve(model_plan, search=None, *, task_type=TaskType.REGRESSION,
-            query_type=QueryType.TEMPORAL, has_train_table_time_col=True):
+            query_type=QueryType.TEMPORAL, has_train_table_time_col=True,
+            training_table_generation_plan=None):
     """Resolve one plan against a materialized regression task's facts."""
     return workflow.resolve_model_plan(
         model_plan,
         search,
+        training_table_generation_plan=training_table_generation_plan,
         task_type=task_type,
         query_type=query_type,
         has_train_table_time_col=has_train_table_time_col,
@@ -149,21 +221,17 @@ def test_resolve_model_plan_accepts_a_supplied_split_for_temporal_link_pred():
     # refused only here -- after the training table has already been built.
     # A caller who placed every row in a stage has given the temporal-link
     # gate the assurance it asks for, so this must resolve.
-    plan = ModelPlan(training_table_generation=TrainingTableGenerationPlan(
+    plan = TrainingTableGenerationPlan(
         split="ManualSplit(col='SPLIT', train_value=0, val_value=1, "
-        "test_value=2)"))
+        "test_value=2)")
 
-    resolved = resolve(plan, task_type=TaskType.TEMPORAL_LINK_PREDICTION,
+    resolved = resolve(ModelPlan(), training_table_generation_plan=plan,
+                       task_type=TaskType.TEMPORAL_LINK_PREDICTION,
                        query_type=QueryType.TEMPORAL,
                        has_train_table_time_col=True)
 
     assert resolved.training_table_generation.split == (
         "ManualSplit(col='SPLIT', train_value=0, val_value=1, test_value=2)")
-
-
-def test_resolve_model_plan_rejects_a_model_plan_mapping():
-    with pytest.raises(TypeError, match="ModelPlan"):
-        resolve({"optimization": {"max_epochs": 1}})
 
 
 def test_resolve_model_plan_fills_defaults_around_the_caller_options():
@@ -248,13 +316,31 @@ def test_resolve_model_plan_leaves_an_inferred_split_inferred():
 
 
 def test_resolve_model_plan_keeps_a_temporal_split_on_the_plan():
-    caller = ModelPlan(training_table_generation=TrainingTableGenerationPlan(
-        split="DateOffsetSplit(offsets=[-1, 0], unit='days')"))
+    caller = TrainingTableGenerationPlan(
+        split="DateOffsetSplit(offsets=[-1, 0], unit='days')")
 
-    result = resolve(caller)
+    result = resolve(ModelPlan(), training_table_generation_plan=caller)
 
     assert result.training_table_generation.split == (
         "DateOffsetSplit(offsets=[-1, 0], unit='days')")
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_resolution_uses_independent_generation_settings_without_mutation(
+        explicit):
+    caller = ModelPlan()
+    generation = TrainingTableGenerationPlan(
+        split="DateOffsetSplit(offsets=[-1, 0], unit='days')")
+    original_caller = asdict(caller)
+    original_generation = asdict(generation)
+    result = resolve(
+        caller,
+        training_table_generation_plan=(generation if explicit else None))
+
+    assert result.training_table_generation.split == (generation.split if
+                                                      explicit else "inferred")
+    assert asdict(caller) == original_caller
+    assert asdict(generation) == original_generation
 
 
 def test_resolve_model_plan_preserves_per_edge_neighbor_override():
@@ -345,11 +431,10 @@ def test_forecasting_task_options_derive_temporal_training_metadata(tmp_path):
             query_type="temporal",
             forecast_length=2,
         ),
-        model_plan=ModelPlan(
-            training_table_generation=TrainingTableGenerationPlan(
-                timeframe_step=1,
-                lag_timesteps=2,
-            )),
+        training_table_generation_plan=TrainingTableGenerationPlan(
+            timeframe_step=1,
+            lag_timesteps=2,
+        ),
     )
 
     options = workflow._resolved_task_options(
@@ -394,8 +479,11 @@ def test_prepare_training_request_uses_core_connector_contract(
         predictive_query="query",
         run_id="run-1",
         model_plan=value.model_plan,
+        training_table_generation_plan=value.training_table_generation_plan,
     )
 
+    assert (result.training_table_generation_plan
+            is value.training_table_generation_plan)
     assert result.prepared_graph is value.prepared_graph
     assert calls == [{
         "graph": {
@@ -695,6 +783,7 @@ def test_configured_workflow_has_two_argument_training_surface(
         bindings_factory=lambda _input: object(),
         publisher=Publisher(),
         model_plan=value.model_plan,
+        training_table_generation_plan=value.training_table_generation_plan,
     )
     result = configured.train_gnn(
         "PREDICT churn FOR EACH user",
@@ -707,6 +796,8 @@ def test_configured_workflow_has_two_argument_training_surface(
     assert result.val_metric == 0.82
     assert [call[0] for call in calls] == ["prepare", "train", "publish"]
     assert calls[0][1]["run_id"] == "run-1"
+    assert calls[0][1][
+        "training_table_generation_plan"] is value.training_table_generation_plan
     assert calls[1][2]["home_dir"] == value.scratch_dir
 
 
@@ -1073,8 +1164,8 @@ def test_static_link_fit_accepts_the_link_split_over_a_physical_timestamp(
             list_distinct_target_is_array=True,
         ),
         graph=link_pred_graph(),
-        model_plan=ModelPlan(training_table_generation=TrainingTableGenerationPlan(
-            split="RandomLinkSplit([0.8, 0.1, 0.1])")),
+        training_table_generation_plan=TrainingTableGenerationPlan(
+            split="RandomLinkSplit([0.8, 0.1, 0.1])"),
     )
 
     @dataclass(frozen=True)

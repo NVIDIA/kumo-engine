@@ -35,6 +35,7 @@ from ..model_plan import (
     ModelPlan,
     NeighborSamplingPlan,
     NumNeighborsConfig,
+    TrainingTableGenerationPlan,
     _is_inferred,
     inferred_or_missing_type_to_none,
 )
@@ -140,6 +141,13 @@ class TrainingPublisher(Protocol):
         """Register one trained model and return its stable identity."""
 
 
+def _require_separate_generation_plan(model_plan: ModelPlan) -> None:
+    if model_plan.training_table_generation != TrainingTableGenerationPlan():
+        raise ValueError(
+            "model_plan.training_table_generation must use its defaults; "
+            "pass training_table_generation_plan instead")
+
+
 @dataclass(frozen=True)
 class TrainingWorkflowRequest:
     """Portable inputs for materialization and original Kumo AutoML."""
@@ -150,20 +158,10 @@ class TrainingWorkflowRequest:
     run_id: str
     scratch_dir: str
     artifact_dir: str
-    # TODO: `model_plan.training_table_generation` is overloaded to do two
-    # jobs through one field: it drives table generation (`build_training_
-    # task_plan`, elsewhere), and `_resolved_task_options` below reads it
-    # again at materialize time to resolve `lag_timesteps`/`timeframe_step`/
-    # the unix offsets onto the task. It is also internal-only -- absent
-    # from the public `kumoapi.model_plan.ModelPlan` entirely -- so a caller
-    # who already generated the table and only holds a *public* model plan
-    # has no field to carry that section in, and must reach into an
-    # internal `ModelPlan` to splice it back in instead. `model_plan` and
-    # the table's own recorded generation section should become separate
-    # constructor arguments, so a request built from an already-generated
-    # table can pass the section it needs without also owning the rest of
-    # an internal `ModelPlan`.
     model_plan: ModelPlan = field(default_factory=ModelPlan)
+    #: Generation settings, or the effective settings recorded by existing rows.
+    training_table_generation_plan: TrainingTableGenerationPlan = field(
+        default_factory=TrainingTableGenerationPlan)
     search: search_options.AutoMLSearchOptions = field(
         default_factory=search_options.AutoMLSearchOptions)
     custom_training_table: PreparedCustomTrainingTable | None = None
@@ -187,10 +185,15 @@ class TrainingWorkflowRequest:
                 raise ValueError(f"{label} must be non-empty")
         if not isinstance(self.model_plan, ModelPlan):
             raise TypeError("model_plan must be a ModelPlan")
+        _require_separate_generation_plan(self.model_plan)
+        if not isinstance(self.training_table_generation_plan,
+                          TrainingTableGenerationPlan):
+            raise TypeError("training_table_generation_plan must be a "
+                            "TrainingTableGenerationPlan")
         object.__setattr__(
             self, "query",
             resolve_query_forecast(self.query, self.graph,
-                                   self.model_plan.training_table_generation))
+                                   self.training_table_generation_plan))
         if not isinstance(self.search, search_options.AutoMLSearchOptions):
             raise TypeError("search must be AutoMLSearchOptions")
         if (self.custom_training_table is not None and not isinstance(
@@ -213,6 +216,7 @@ class TrainingWorkflowRequest:
             scratch_dir: str,
             artifact_dir: str,
             model_plan: ModelPlan | None = None,
+            training_table_generation_plan: TrainingTableGenerationPlan | None = None,
             search: search_options.AutoMLSearchOptions | None = None,
             custom_training_table: PreparedCustomTrainingTable | None = None,
             timestamps: tuple[int, ...] = (),
@@ -228,6 +232,9 @@ class TrainingWorkflowRequest:
             scratch_dir=scratch_dir,
             artifact_dir=artifact_dir,
             model_plan=ModelPlan() if model_plan is None else model_plan,
+            training_table_generation_plan=(
+                TrainingTableGenerationPlan() if training_table_generation_plan
+                is None else training_table_generation_plan),
             search=search or search_options.AutoMLSearchOptions(),
             custom_training_table=custom_training_table,
             timestamps=timestamps,
@@ -241,6 +248,7 @@ def prepare_training_request(
         predictive_query: str,
         run_id: str,
         model_plan: ModelPlan | None = None,
+        training_table_generation_plan: TrainingTableGenerationPlan | None = None,
         search: search_options.AutoMLSearchOptions | None = None,
         custom_training_table: CustomTrainingTable | None = None,
         timestamps: tuple[int, ...] = (),
@@ -248,6 +256,7 @@ def prepare_training_request(
     """Prepare warehouse data through a connector and enter core training."""
 
     resolved_plan = ModelPlan() if model_plan is None else model_plan
+    _require_separate_generation_plan(resolved_plan)
     prepared = connector.prepare(
         graph=graph,
         predictive_query=predictive_query,
@@ -265,6 +274,7 @@ def prepare_training_request(
         scratch_dir=prepared.scratch_dir,
         artifact_dir=prepared.artifact_dir,
         model_plan=resolved_plan,
+        training_table_generation_plan=training_table_generation_plan,
         search=search,
         custom_training_table=prepared.custom_training_table,
         timestamps=timestamps,
@@ -346,7 +356,7 @@ def build_training_task_plan(
     return build_native_pquery_task_plan(
         query=request.query,
         graph=request.graph,
-        model_plan=request.model_plan,
+        training_table_generation_plan=request.training_table_generation_plan,
         run_id=request.run_id,
         graph_index_path=request.prepared_graph.index_path,
         scratch_dir=request.scratch_dir,
@@ -486,10 +496,7 @@ def _resolved_task_options(
     behaviour too (`bin/kumo-auto` overrides the same way), which is the
     point: the option is a request for inference, not a fanout.
     """
-    # See the TODO on `TrainingWorkflowRequest.model_plan` above: this
-    # reads back the same `training_table_generation` section table
-    # generation already consumed, through the one field that carries both.
-    table_options = request.model_plan.training_table_generation
+    table_options = request.training_table_generation_plan
     sampling_options = request.model_plan.neighbor_sampling
 
     unix_start_offset = unix_end_offset = unix_step_size = None
@@ -586,6 +593,7 @@ def materialize_generated_training_task(
     model_plan = resolve_model_plan(
         request.model_plan,
         request.search,
+        training_table_generation_plan=request.training_table_generation_plan,
         query_type=QueryType(request.query.query_type),
         # The manifest's time column is physical; real time comes from the query.
         has_train_table_time_col=query_is_temporal(request.query,
@@ -642,6 +650,7 @@ def resolve_model_plan(
     model_plan: ModelPlan,
     search: search_options.AutoMLSearchOptions | None = None,
     *,
+    training_table_generation_plan: TrainingTableGenerationPlan | None = None,
     task_type: TaskType,
     query_type: QueryType,
     has_train_table_time_col: bool,
@@ -653,8 +662,10 @@ def resolve_model_plan(
 ) -> ModelPlan:
     """Resolve one caller plan against the materialized task's defaults.
 
-    The task facts arrive as the plain values `ModelPlan.validate` asks for,
-    so this stays a function of a plan rather than of a task.
+    The task facts arrive as the plain values `ModelPlan.validate` asks for.
+    Generation settings are supplied separately; nondefault settings in the
+    historical input model-plan section are rejected. The resolved artifact
+    retains that section for legacy consumers.
 
     ``graph`` is what lets `validate` create the per-target-edge hop-1
     `inferred` entry and read column stypes for metric validation; without
@@ -671,10 +682,13 @@ def resolve_model_plan(
     table's split. The caller's plan is never mutated.
     """
 
-    if not isinstance(model_plan, ModelPlan):
-        raise TypeError("model_plan must be a ModelPlan")
+    _require_separate_generation_plan(model_plan)
     search = search or search_options.AutoMLSearchOptions()
     plan = copy.deepcopy(model_plan)
+    # Legacy validation and resolved-plan artifacts still carry this section.
+    plan.training_table_generation = (
+        TrainingTableGenerationPlan() if training_table_generation_plan is None
+        else copy.deepcopy(training_table_generation_plan))
     # `query_type` and `has_train_table_time_col` are independent, which is
     # why both are asked for. A static query over timestamped rows (fraud on
     # transactions.created_at) yields a train table with a time column, so
@@ -863,6 +877,9 @@ class GNNTrainingWorkflow:
     bindings_factory: TrainingBindingsFactory
     publisher: TrainingPublisher
     model_plan: ModelPlan = field(default_factory=ModelPlan)
+    #: Settings used to generate or prepare the training rows.
+    training_table_generation_plan: TrainingTableGenerationPlan = field(
+        default_factory=TrainingTableGenerationPlan)
     search: search_options.AutoMLSearchOptions = field(
         default_factory=search_options.AutoMLSearchOptions)
     custom_training_table: CustomTrainingTable | None = None
@@ -873,6 +890,11 @@ class GNNTrainingWorkflow:
     def __post_init__(self) -> None:
         if not isinstance(self.model_plan, ModelPlan):
             raise TypeError("model_plan must be a ModelPlan")
+        _require_separate_generation_plan(self.model_plan)
+        if not isinstance(self.training_table_generation_plan,
+                          TrainingTableGenerationPlan):
+            raise TypeError("training_table_generation_plan must be a "
+                            "TrainingTableGenerationPlan")
 
     def train_gnn(
         self,
@@ -890,6 +912,7 @@ class GNNTrainingWorkflow:
             predictive_query=query,
             run_id=resolved_run_id,
             model_plan=self.model_plan,
+            training_table_generation_plan=self.training_table_generation_plan,
             search=self.search,
             custom_training_table=self.custom_training_table,
             timestamps=self.timestamps,

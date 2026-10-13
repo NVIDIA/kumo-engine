@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from kumo_core.model_plan import ModelPlan, TrainingTableGenerationPlan
+from kumo_core.model_plan import TrainingTableGenerationPlan
 from kumo_core.pquery import (
     PredictiveQueryPlanError,
     _column_stats,
@@ -284,7 +284,7 @@ def test_plan_derives_train_and_task_contracts_from_spec_and_ingest(
     plan = build_native_pquery_task_plan(
         query=query,
         graph=graph,
-        model_plan=ModelPlan(),
+        training_table_generation_plan=TrainingTableGenerationPlan(),
         run_id="native-1",
         graph_index_path=str(index),
         scratch_dir=str(tmp_path / "scratch"),
@@ -303,7 +303,7 @@ def test_plan_derives_train_and_task_contracts_from_spec_and_ingest(
     assert plan.train_table.split_config == {"ratio": [0.8, 0.1, 0.1]}
 
 
-def test_plan_split_comes_from_the_model_plan_when_the_caller_sets_one(
+def test_plan_split_comes_from_the_generation_plan_when_the_caller_sets_one(
         tmp_path, monkeypatch):
     index = tmp_path / "index"
     index.mkdir()
@@ -322,9 +322,8 @@ def test_plan_split_comes_from_the_model_plan_when_the_caller_sets_one(
     plan = build_native_pquery_task_plan(
         query=query,
         graph=graph,
-        model_plan=ModelPlan(
-            training_table_generation=TrainingTableGenerationPlan(
-                split="RandomSplit(ratio=[0.7, 0.2, 0.1], seed=5)"), ),
+        training_table_generation_plan=TrainingTableGenerationPlan(
+            split="RandomSplit(ratio=[0.7, 0.2, 0.1], seed=5)"),
         run_id="native-split-1",
         graph_index_path=str(index),
         scratch_dir=str(tmp_path / "scratch"),
@@ -357,10 +356,9 @@ def test_plan_split_converts_range_boundaries_to_epoch_seconds(
     plan = build_native_pquery_task_plan(
         query=query,
         graph=graph,
-        model_plan=ModelPlan(
-            training_table_generation=TrainingTableGenerationPlan(
-                split="TimeRangeSplit(ranges=[['2024-01-01', '2024-02-01'], "
-                "['2024-02-01', '2024-03-01']])"), ),
+        training_table_generation_plan=TrainingTableGenerationPlan(
+            split="TimeRangeSplit(ranges=[['2024-01-01', '2024-02-01'], "
+            "['2024-02-01', '2024-03-01']])"),
         run_id="native-split-3",
         graph_index_path=str(index),
         scratch_dir=str(tmp_path / "scratch"),
@@ -421,10 +419,8 @@ def test_temporal_time_range_split_uses_query_window_and_range_anchors(
     plan = build_native_pquery_task_plan(
         query=query,
         graph=graph,
-        model_plan=ModelPlan(
-            training_table_generation=TrainingTableGenerationPlan(
-                split=f"TimeRangeSplit(ranges={ranges!r})",
-                end_time=end_time), ),
+        training_table_generation_plan=TrainingTableGenerationPlan(
+            split=f"TimeRangeSplit(ranges={ranges!r})", end_time=end_time),
         run_id="native-t02-range",
         graph_index_path=str(index),
         scratch_dir=str(tmp_path / "scratch"),
@@ -483,10 +479,9 @@ def test_temporal_time_range_split_uses_nondefault_query_offsets(
     plan = build_native_pquery_task_plan(
         query=query,
         graph=graph,
-        model_plan=ModelPlan(
-            training_table_generation=TrainingTableGenerationPlan(
-                split="TimeRangeSplit(ranges=[['2026-06-26', "
-                "'2026-06-27'], ['2026-06-27', '2026-06-28']])"), ),
+        training_table_generation_plan=TrainingTableGenerationPlan(
+            split="TimeRangeSplit(ranges=[['2026-06-26', "
+            "'2026-06-27'], ['2026-06-27', '2026-06-28']])"),
         run_id="native-query-window",
         graph_index_path=str(index),
         scratch_dir=str(tmp_path / "scratch"),
@@ -575,7 +570,7 @@ def test_inferred_temporal_split_matches_hosted_legacy_defaults(
     split, family = _split_options(
         query,
         graph,
-        ModelPlan(training_table_generation=options),
+        options,
     )
 
     assert family == expected_family
@@ -637,9 +632,8 @@ def test_temporal_plan_honours_train_start_offset_in_query_units(
     plan = build_native_pquery_task_plan(
         query=query,
         graph=graph,
-        model_plan=ModelPlan(
-            training_table_generation=TrainingTableGenerationPlan(
-                train_start_offset=49), ),
+        training_table_generation_plan=TrainingTableGenerationPlan(
+            train_start_offset=49),
         run_id="native-offset-01",
         graph_index_path=str(index),
         scratch_dir=str(tmp_path / "scratch"),
@@ -662,7 +656,7 @@ def test_plan_rejects_explicit_timestamps_on_a_static_query(tmp_path):
         build_native_pquery_task_plan(
             query=query,
             graph=graph,
-            model_plan=ModelPlan(),
+            training_table_generation_plan=TrainingTableGenerationPlan(),
             run_id="native-static-1",
             graph_index_path=str(tmp_path / "index"),
             scratch_dir=str(tmp_path / "scratch"),
@@ -728,8 +722,8 @@ def test_generation_plan_time_bounds(tmp_path, monkeypatch, options, first_day,
     query = parse_and_validate_query(
         f"PREDICT COUNT(events.*, 0, 1, {unit}) FOR EACH articles.aid", graph)
     plan = build_native_pquery_task_plan(
-        query=query, graph=graph, model_plan=ModelPlan(
-            training_table_generation=TrainingTableGenerationPlan(**options)),
+        query=query, graph=graph,
+        training_table_generation_plan=TrainingTableGenerationPlan(**options),
         run_id="bounds", graph_index_path=str(tmp_path / "index"),
         scratch_dir=str(tmp_path), artifact_dir=str(tmp_path))
     assert plan.train_table.timestamps == tuple(
@@ -808,7 +802,7 @@ def test_generation_plan_keeps_earliest_anchor_needed_for_filter_history(
     plan = build_native_pquery_task_plan(
         query=query,
         graph=graph,
-        model_plan=ModelPlan(),
+        training_table_generation_plan=TrainingTableGenerationPlan(),
         run_id="filtered",
         graph_index_path=str(tmp_path / "index"),
         scratch_dir=str(tmp_path),
@@ -836,7 +830,7 @@ def test_generation_plan_keeps_its_only_complete_anchor(tmp_path, monkeypatch):
     plan = build_native_pquery_task_plan(
         query=query,
         graph=graph,
-        model_plan=ModelPlan(),
+        training_table_generation_plan=TrainingTableGenerationPlan(),
         run_id="single-anchor",
         graph_index_path=str(tmp_path / "index"),
         scratch_dir=str(tmp_path),
@@ -864,12 +858,12 @@ def test_generation_plan_non_aligned_step_anchors_at_end(
     query = parse_and_validate_query(
         f"PREDICT COUNT(events.*, 0, 1, {unit}) FOR EACH articles.aid", graph)
     plan = build_native_pquery_task_plan(
-        query=query, graph=graph, model_plan=ModelPlan(
-            training_table_generation=TrainingTableGenerationPlan(
-                start_time=(origin + 10 * tick).isoformat(),
-                end_time=(origin + 21 * tick).isoformat(),
-                timeframe_step=3,
-            )), run_id="non-aligned", graph_index_path=str(tmp_path / "index"),
+        query=query, graph=graph,
+        training_table_generation_plan=TrainingTableGenerationPlan(
+            start_time=(origin + 10 * tick).isoformat(),
+            end_time=(origin + 21 * tick).isoformat(),
+            timeframe_step=3,
+        ), run_id="non-aligned", graph_index_path=str(tmp_path / "index"),
         scratch_dir=str(tmp_path), artifact_dir=str(tmp_path))
 
     # Hosted generation includes the newest complete window, then moves back.
@@ -895,9 +889,9 @@ def test_forecast_date_offset_split_restarts_step_at_each_boundary(
         "PREDICT COUNT(events.*, 0, 1, days) FORECAST 3 TIMEFRAMES "
         "FOR EACH articles.aid", graph)
     plan = build_native_pquery_task_plan(
-        query=query, graph=graph, model_plan=ModelPlan(
-            training_table_generation=TrainingTableGenerationPlan(
-                timeframe_step=2)), run_id="forecast-date-offset-phase",
+        query=query, graph=graph,
+        training_table_generation_plan=TrainingTableGenerationPlan(
+            timeframe_step=2), run_id="forecast-date-offset-phase",
         graph_index_path=str(tmp_path / "index"), scratch_dir=str(tmp_path),
         artifact_dir=str(tmp_path))
 
@@ -924,11 +918,11 @@ def test_date_offset_split_uses_bounded_range_for_each_phase(
         "PREDICT COUNT(events.*, 0, 1, days) FORECAST 3 TIMEFRAMES "
         "FOR EACH articles.aid", graph)
     plan = build_native_pquery_task_plan(
-        query=query, graph=graph, model_plan=ModelPlan(
-            training_table_generation=TrainingTableGenerationPlan(
-                start_time=(origin + day).isoformat(),
-                end_time=(origin + 10 * day).isoformat(), timeframe_step=2)),
-        run_id="bounded-date-offset-phase",
+        query=query, graph=graph,
+        training_table_generation_plan=TrainingTableGenerationPlan(
+            start_time=(origin + day).isoformat(),
+            end_time=(origin + 10 * day).isoformat(),
+            timeframe_step=2), run_id="bounded-date-offset-phase",
         graph_index_path=str(tmp_path / "index"), scratch_dir=str(tmp_path),
         artifact_dir=str(tmp_path))
 
@@ -957,9 +951,9 @@ def test_nonzero_target_offset_restarts_step_at_each_split_boundary(
     query = parse_and_validate_query(
         "PREDICT COUNT(orders.*, 2, 7, days) FOR EACH users.id", graph)
     plan = build_native_pquery_task_plan(
-        query=query, graph=graph, model_plan=ModelPlan(
-            training_table_generation=TrainingTableGenerationPlan(
-                timeframe_step=2)), run_id="target-offset-phase",
+        query=query, graph=graph,
+        training_table_generation_plan=TrainingTableGenerationPlan(
+            timeframe_step=2), run_id="target-offset-phase",
         graph_index_path=str(tmp_path / "index"), scratch_dir=str(tmp_path),
         artifact_dir=str(tmp_path))
 
@@ -991,17 +985,16 @@ def test_generation_plan_forecast_horizon(tmp_path, monkeypatch, pql_horizon,
     request = TrainingWorkflowRequest.from_spec(
         graph=forecasting_graph_config(), predictive_query=pql,
         prepared_graph=PreparedGraph("graph", str(tmp_path / "index")),
-        model_plan=ModelPlan(
-            training_table_generation=TrainingTableGenerationPlan(
-                forecast_length=plan_horizon, lag_timesteps=3,
-                year_over_year=True)), run_id="forecast",
-        scratch_dir=str(tmp_path), artifact_dir=str(tmp_path),
-        timestamps=(1_704_067_200_000_000_000, ))
+        training_table_generation_plan=TrainingTableGenerationPlan(
+            forecast_length=plan_horizon, lag_timesteps=3,
+            year_over_year=True), run_id="forecast", scratch_dir=str(tmp_path),
+        artifact_dir=str(tmp_path), timestamps=(1_704_067_200_000_000_000, ))
     assert request.query.task_type == "forecasting"
     assert request.query.forecast_length == expected
     plan = build_native_pquery_task_plan(
         query=parse_and_validate_query(pql, request.graph), graph=request.graph,
-        model_plan=request.model_plan, run_id=request.run_id,
+        training_table_generation_plan=request.training_table_generation_plan,
+        run_id=request.run_id,
         graph_index_path=request.prepared_graph.index_path,
         scratch_dir=request.scratch_dir, artifact_dir=request.artifact_dir,
         timestamps=request.timestamps)
@@ -1024,29 +1017,9 @@ def test_plan_rejects_a_split_family_portable_training_cannot_run(tmp_path):
         build_native_pquery_task_plan(
             query=query,
             graph=graph,
-            model_plan=ModelPlan(
-                training_table_generation=TrainingTableGenerationPlan(
-                    split="TimeSplit(fractions=[0.8, 0.1, 0.1])"), ),
+            training_table_generation_plan=TrainingTableGenerationPlan(
+                split="TimeSplit(fractions=[0.8, 0.1, 0.1])"),
             run_id="native-split-2",
-            graph_index_path=str(tmp_path / "index"),
-            scratch_dir=str(tmp_path / "scratch"),
-            artifact_dir=str(tmp_path / "artifacts"),
-        )
-
-
-def test_plan_rejects_an_untyped_model_plan_mapping(tmp_path):
-    graph = normalize_graph(graph_config())
-    query = parse_and_validate_query("PREDICT users.label FOR EACH users.id",
-                                     graph)
-
-    with pytest.raises(TypeError, match="ModelPlan"):
-        build_native_pquery_task_plan(
-            query=query,
-            graph=graph,
-            model_plan={"training_table_generation": {
-                "lag_timesteps": 2
-            }},
-            run_id="native-1",
             graph_index_path=str(tmp_path / "index"),
             scratch_dir=str(tmp_path / "scratch"),
             artifact_dir=str(tmp_path / "artifacts"),
@@ -1077,9 +1050,8 @@ def test_forecasting_plan_carries_lag_window_and_diskgraph_offsets(
     plan = build_native_pquery_task_plan(
         query=query,
         graph=graph,
-        model_plan=ModelPlan(
-            training_table_generation=TrainingTableGenerationPlan(
-                lag_timesteps=2), ),
+        training_table_generation_plan=TrainingTableGenerationPlan(
+            lag_timesteps=2),
         run_id="native-forecast-1",
         graph_index_path=str(index),
         scratch_dir=str(tmp_path / "scratch"),
@@ -1150,7 +1122,7 @@ def test_explicit_timestamps_replace_the_column_stat_derived_window(
     plan = build_native_pquery_task_plan(
         query=query,
         graph=graph,
-        model_plan=ModelPlan(),
+        training_table_generation_plan=TrainingTableGenerationPlan(),
         run_id="native-forecast-2",
         graph_index_path=str(index),
         scratch_dir=str(tmp_path / "scratch"),
@@ -1183,11 +1155,10 @@ def test_existing_forecast_rows_build_selected_graph_task_without_planning(
     plan = build_native_pquery_task_plan(
         query=query,
         graph=graph,
-        model_plan=ModelPlan(
-            training_table_generation=TrainingTableGenerationPlan(
-                lag_timesteps=3,
-                year_over_year=True,
-            ), ),
+        training_table_generation_plan=TrainingTableGenerationPlan(
+            lag_timesteps=3,
+            year_over_year=True,
+        ),
         run_id="generated",
         graph_index_path=str(tmp_path / "old-index"),
         scratch_dir=str(tmp_path / "scratch"),
@@ -1202,11 +1173,10 @@ def test_existing_forecast_rows_build_selected_graph_task_without_planning(
     supplied = build_native_pquery_task_plan(
         query=query,
         graph=graph,
-        model_plan=ModelPlan(
-            training_table_generation=TrainingTableGenerationPlan(
-                lag_timesteps=3,
-                year_over_year=True,
-            ), ),
+        training_table_generation_plan=TrainingTableGenerationPlan(
+            lag_timesteps=3,
+            year_over_year=True,
+        ),
         run_id="supplied",
         graph_index_path=str(tmp_path / "selected-index"),
         scratch_dir=str(tmp_path / "supplied-scratch"),
@@ -1268,7 +1238,7 @@ def test_link_plan_carries_fk_free_entity_and_rhs_resolution(
     plan = build_native_pquery_task_plan(
         query=query,
         graph=graph,
-        model_plan=ModelPlan(),
+        training_table_generation_plan=TrainingTableGenerationPlan(),
         run_id="native-link-1",
         graph_index_path=str(index),
         scratch_dir=str(tmp_path / "scratch"),
@@ -1279,19 +1249,6 @@ def test_link_plan_carries_fk_free_entity_and_rhs_resolution(
     assert plan.train_table.rhs_node_type == "products"
     assert plan.task_dataset.seed_node_type == "users"
     assert plan.task_dataset.rhs_node_type == "products"
-
-
-def test_plan_rejects_unresolved_query_and_graph_inputs(tmp_path):
-    with pytest.raises(TypeError, match="resolved"):
-        build_native_pquery_task_plan(
-            query="PREDICT users.label FOR EACH users.id",
-            graph=graph_config(),
-            model_plan=ModelPlan(),
-            run_id="native-1",
-            graph_index_path=str(tmp_path / "index"),
-            scratch_dir=str(tmp_path),
-            artifact_dir=str(tmp_path),
-        )
 
 
 @pytest.mark.parametrize(
@@ -1524,7 +1481,7 @@ def test_plan_records_the_target_to_entity_paths_for_materialization(
     plan = build_native_pquery_task_plan(
         query=query,
         graph=graph,
-        model_plan=ModelPlan(),
+        training_table_generation_plan=TrainingTableGenerationPlan(),
         run_id="native-paths-1",
         graph_index_path=str(index),
         scratch_dir=str(tmp_path / "scratch"),
@@ -1572,10 +1529,9 @@ def test_temporal_link_prediction_plans_a_supplied_split_column(
     plan = build_native_pquery_task_plan(
         query=query,
         graph=graph,
-        model_plan=ModelPlan(
-            training_table_generation=TrainingTableGenerationPlan(
-                split="ManualSplit(col='SPLIT', train_value=0, val_value=1, "
-                "test_value=2)"), ),
+        training_table_generation_plan=TrainingTableGenerationPlan(
+            split="ManualSplit(col='SPLIT', train_value=0, val_value=1, "
+            "test_value=2)"),
         run_id="native-tlp-manual-1",
         graph_index_path=str(index),
         scratch_dir=str(tmp_path / "scratch"),
@@ -1684,10 +1640,8 @@ def test_explicit_static_link_split_uses_hosted_per_link_policy(
         "PREDICT LIST_DISTINCT(orders.product_id) RANK TOP 3 "
         "FOR EACH users.id", graph)
     query = replace(query, list_distinct_target_is_array=array_mode)
-    config, family = _split_options(
-        query, graph,
-        ModelPlan(training_table_generation=TrainingTableGenerationPlan(
-            split=value)))
+    config, family = _split_options(query, graph,
+                                    TrainingTableGenerationPlan(split=value))
     assert family == ("RandomLinkSplit" if array_mode else value.split("(")[0])
     assert config["ratio"] == [0.6, 0.3, 0.1]
     # Hosted carries the ratio but drops RandomSplit's entity-level seed.
@@ -1756,8 +1710,7 @@ def test_explicit_random_split_preserved_outside_static_link_prediction(pql):
     query = parse_and_validate_query(pql, graph)
     config, family = _split_options(
         query, graph,
-        ModelPlan(training_table_generation=TrainingTableGenerationPlan(
-            split="RandomSplit([0.8, 0.2], seed=9)")))
+        TrainingTableGenerationPlan(split="RandomSplit([0.8, 0.2], seed=9)"))
     assert family == "RandomSplit"
     assert config == {"ratio": [0.8, 0.2], "rnd_seed": 9}
 

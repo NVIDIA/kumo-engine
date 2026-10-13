@@ -306,10 +306,7 @@ class Trainer:
         run_id = f'{self._id}-fit-{new_run_id()}'
         run_dir = self.scratch_dir / 'runs' / run_id
 
-        model_plan = replace(
-            _to_core_model_plan(self._model_plan),
-            training_table_generation=train_table.generation_plan,
-        )
+        model_plan = _to_core_model_plan(self._model_plan)
         warm_start_artifacts = None
         effective_plan = self._model_plan
         if warm_start is not None:
@@ -335,6 +332,7 @@ class Trainer:
             scratch_dir=str(self.scratch_dir),
             artifact_dir=str(run_dir),
             model_plan=model_plan,
+            training_table_generation_plan=train_table.generation_plan,
             search=AutoMLSearchOptions(),
         )
         if warm_start_artifacts is not None:
@@ -366,6 +364,7 @@ class Trainer:
         resolve_model_plan(
             model_plan,
             workflow.search,
+            training_table_generation_plan=train_table.generation_plan,
             task_type=TaskType(workflow.query.task_type),
             query_type=QueryType(workflow.query.query_type),
             has_train_table_time_col=query_is_temporal(workflow.query,

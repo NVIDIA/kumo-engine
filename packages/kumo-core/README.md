@@ -42,6 +42,16 @@ result = workflow.train_gnn(query, "KUMO_GNN_CHURN")
 
 The connector stages warehouse tables and prepares DiskGraph. The publisher registers the vital bundle. A remote runtime may wrap `workflow.train_gnn` so the client receives its native asynchronous job handle while the configured core call remains only `query` plus `output_model_name`.
 
+Pass `training_table_generation_plan` separately from `model_plan` to
+`GNNTrainingWorkflow`, `prepare_training_request()`, or
+`TrainingWorkflowRequest.from_spec()`. The native table planner accepts
+this plan directly. Omission from the workflow uses generation defaults;
+nondefault settings in the historical internal
+`model_plan.training_table_generation` field raise an error directing callers
+to the explicit argument. For existing generated rows, pass the table's
+saved effective generation settings. Resolved model-plan artifacts retain
+the historical section for compatibility.
+
 For a resumable runtime, use `prepare_training_request()`, `build_training_task_plan()`, and `materialize_generated_training_task()` as separate stages. The one-shot and staged forms call the same core functions; adapters must not implement their own task or training behavior.
 
 Materialization accepts the selected graph in `TrainingWorkflowRequest`, a `TaskDatasetMaterializeSpec`, the generated table artifacts, and a per-call `tt_id`. To train existing rows against another graph, build the task-dataset specification with `kumo_core.pquery.build_generated_training_task_dataset()` using that graph and the table's saved generation settings and required split stages. This does not rerun training-table generation or require its original combined plan.

@@ -428,7 +428,9 @@ def test_fit_consumes_generated_rows_with_fresh_task_metadata(
     assert generated.train_table_path == str(train_table.train_table_path)
     assert generated.manifest_path == str(train_table.manifest_path)
     assert generated.staging_dir == str(train_table.staging_dir)
-    assert request.model_plan.training_table_generation is generation_plan
+    assert request.training_table_generation_plan is generation_plan
+    assert request.model_plan.training_table_generation == \
+        CoreModelPlan().training_table_generation
 
     with pytest.raises(TypeError, match='snapshot'):
         trainer.fit(train_table)
