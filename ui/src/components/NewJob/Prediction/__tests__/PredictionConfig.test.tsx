@@ -27,7 +27,7 @@ import PredictionConfig, {
 const jobList = { ...mockJobsListResponse };
 const mockTrainingJob = {
     ...jobList.jobs[0],
-    id: "pquery-629e15c329bb119cbae6de2fc2021165",
+    id: "pquery-0002e000000000000000000000000000",
     queryYaml:
         "PREDICT COUNT(FINANCE_TRANS.*, 0, 30, days) = 0 \nFOR EACH FINANCE_ACCOUNT.ACCOUNT_ID",
     graphName: "financial_graph",
@@ -38,8 +38,8 @@ const mockTrainingJob = {
     taskType: TaskType.BINARY_CLASSIFICATION,
     jobSource: "UI",
     graphSnapshotId:
-        "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460",
-    trainingJobId: "trainingjob-cd40820089504c91825ec0b413e97cbb"
+        "graph-0005b000000000000000000000000000@00033000000000000000000000000000",
+    trainingJobId: "trainingjob-00059000000000000000000000000000"
 } as unknown as GenericJob & PredictiveQueryInfo;
 
 const defaultProps: PredictionConfigProps = {
@@ -97,7 +97,7 @@ describe("PredictionConfig", () => {
         );
         await renderPredictionConfig(defaultProps);
 
-        const trainingJobId = "629e1";
+        const trainingJobId = "0002e";
         expect(screen.getByText(trainingJobId)).toBeInTheDocument();
 
         await userEvent.click(screen.getByText(trainingJobId));

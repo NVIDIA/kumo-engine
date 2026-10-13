@@ -20,7 +20,7 @@ import GraphColumnLevelOverview, {
     GraphColumnLevelOverviewProps
 } from "../GraphColumnLevelOverview/GraphColumnLevelOverview";
 
-const trainingID = "trainingjob-9f8b259b4f764c8f932ad5912a926ec2";
+const trainingID = "trainingjob-00046000000000000000000000000000";
 const setXaiScore = vi.fn();
 const defaultProps: GraphColumnLevelOverviewProps = {
     queryId: "",

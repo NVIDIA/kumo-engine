@@ -31,7 +31,7 @@ import {
 import { setCancelCancelBatchPredictionResponseType } from "./MockFunctions/CancelBatchPrediction.mock";
 import { setPredictiveQueryResoureTestResponseType } from "./MockFunctions/PredictiveQueryResource.mock";
 
-const id = "bp-job-3f5f52a53f01473d8c5123ff7ba4fd15";
+const id = "bp-job-0001e000000000000000000000000000";
 const mockOnClose = vi.fn();
 const mockOnArchive = vi.fn();
 const mockOnRecover = vi.fn();

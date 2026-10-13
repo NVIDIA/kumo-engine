@@ -13,7 +13,7 @@ import { jobStatus } from "utils/Constants";
 
 import ModelPlanner, { ModelPlannerProps } from "../ModelPlanner/ModelPlanner";
 
-const trainId = "trainingjob-4a6b21215a6b42f3854c2abeabe75c26";
+const trainId = "trainingjob-00023000000000000000000000000000";
 const selectedOption = {
     "value": "2",
     "label": "Experiment 3 (BEST)"

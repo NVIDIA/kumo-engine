@@ -19,7 +19,7 @@ import { mockCreateGenericJob } from "./MockFunction/JobsListTable.test.mock";
 
 const mockData: GenericJob[] = [
     mockCreateGenericJob({
-        job_id: "trainingjob-9f8b259b4f764c8f932ad5912a926ec2",
+        job_id: "trainingjob-00046000000000000000000000000000",
         job_type: JobType.TRAINING_JOB
     }),
     mockCreateGenericJob({
@@ -94,7 +94,7 @@ describe("JobsListDataTable", () => {
     it("Should render DataTable with correct data", async () => {
         await renderJobsListDataTable(defaultProps);
 
-        expect(screen.getByText(/9f8b2/i)).toBeInTheDocument();
+        expect(screen.getByText(/00046/i)).toBeInTheDocument();
         expect(screen.getByText(/1a2b3/i)).toBeInTheDocument();
     });
 
@@ -111,7 +111,7 @@ describe("JobsListDataTable", () => {
     it("Should call onRowClick when a row is clicked", async () => {
         await renderJobsListDataTable(defaultProps);
 
-        const firstRow = screen.getByText(/9f8b2/i).closest("tr");
+        const firstRow = screen.getByText(/00046/i).closest("tr");
         expect(firstRow).toBeInTheDocument();
 
         await userEvent.click(firstRow!);

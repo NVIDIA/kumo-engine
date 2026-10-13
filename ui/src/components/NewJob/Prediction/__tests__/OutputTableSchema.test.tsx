@@ -24,8 +24,8 @@ import { setPredictionTableSchemaTestResponseType } from "./MockFunctions/Predic
 import { setSamplesForOutputTestResponseType } from "./MockFunctions/SampleForOutput.mock";
 import mockSamplesResponse from "./MockResponses/SampleOutputSchema.json";
 
-const trainingTableID = "gen-traintable-job-9f8b259b4f764c8f932ad5912a926ec2";
-const queryId = "pquery-558e58967ac7fadf2a9a408fa4a8b52d";
+const trainingTableID = "gen-traintable-job-00046000000000000000000000000000";
+const queryId = "pquery-00027000000000000000000000000000";
 const taskType = TaskType.BINARY_CLASSIFICATION;
 const queryType = QueryType.TEMPORAL;
 const defaultProps: OutputTableSchemaProps = {

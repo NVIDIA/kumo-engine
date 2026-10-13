@@ -40,7 +40,7 @@ import {
 } from "./MockFunctions/TrainingTableGeneration.mock";
 import { doneResponse } from "./MockResponses/TrainingTableStatusTypes";
 
-const id = "gen-traintable-job-1db2edcc9f30420898ce79b9161a4c56";
+const id = "gen-traintable-job-00010000000000000000000000000000";
 const mockOnArchive = vi.fn();
 const mockOnRecover = vi.fn();
 

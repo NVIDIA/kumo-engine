@@ -33,7 +33,7 @@ describe("OutputStatistics", () => {
     };
 
     const checkApiCall = async () => {
-        const id = "bp-job-1937b6a194fd47cda79d490860314028";
+        const id = "bp-job-0000e000000000000000000000000000";
         await waitFor(() => {
             expect(mockAxiosInstance.get).toHaveBeenCalledWith(
                 `v1/batch_prediction_jobs/${id}/prediction_stats`,

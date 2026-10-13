@@ -314,7 +314,7 @@ describe("parseTrainingWorkflowResponse", () => {
 
         // Basic structure
         expect(result).toBeDefined();
-        expect(result.id).toBe("trainingjob-9f8b259b4f764c8f932ad5912a926ec2");
+        expect(result.id).toBe("trainingjob-00046000000000000000000000000000");
         expect(result.status).toBe("DONE");
         expect(result.statusKey).toBe("Progress");
         expect(result.queryYaml).toContain("PREDICT");

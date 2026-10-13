@@ -14,8 +14,8 @@
 # Example: Copy the entire demo dataplane to your devserver.
 #
 #   ./tools/fastcopy.py \
-#     s3://kumo-prod-dataplane-bucket/demo/prod \
-#     s3://kumo-dev-dataplane-bucket/test/zack-i-066aafc8bb221defa
+#     s3://example-source-bucket/demo/prod \
+#     s3://example-dev-bucket/test/example-instance
 #
 
 import argparse

@@ -214,7 +214,7 @@ describe("TrainingJobSelectList", () => {
         await renderTrainingJobSelectList();
 
         const searchInput = await screen.findByPlaceholderText("Search");
-        const input = "9f8b2";
+        const input = "00046";
         await userEvent.type(searchInput, input);
 
         await waitFor(

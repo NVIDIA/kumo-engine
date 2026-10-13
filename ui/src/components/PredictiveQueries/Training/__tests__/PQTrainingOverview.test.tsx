@@ -30,7 +30,7 @@ import PQTrainingOverview, {
     PQTrainingOverviewProps
 } from "../Overview/PQTrainingOverview";
 
-const id = "trainingjob-ba19d6bdf1c5406fbb00525b221a8adf";
+const id = "trainingjob-00053000000000000000000000000000";
 const expectedWorkflow = { ...mockWorkflowResponse };
 expectedWorkflow.training_job.id = id;
 const queryInfo = parseTrainingWorkflowResponse(

@@ -34,7 +34,7 @@ const mockDefaultResponse = (
 ): Promise<AxiosResponse<unknown>> => {
     let metricsResponse = null;
 
-    if (jobId === "trainingjob-9ff325f68c8f4d64b2463ac5f5b41c5c") {
+    if (jobId === "trainingjob-00047000000000000000000000000000") {
         metricsResponse = eval_metrics_res_link_pred;
     }
 

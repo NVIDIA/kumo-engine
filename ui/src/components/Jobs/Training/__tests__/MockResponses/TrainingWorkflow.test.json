@@ -189,7 +189,7 @@
         "desc": ""
     },
     "training_job": {
-        "id": "trainingjob-9f8b259b4f764c8f932ad5912a926ec2",
+        "id": "trainingjob-00046000000000000000000000000000",
         "execution": {
             "status": "DONE",
             "log": {
@@ -291,7 +291,7 @@
                     }
                 ],
                 "test_explain": null,
-                "_test_explain_file_path": "s3://example-bucket/ui-test/prod/jobs/trainingjob-9f8b259b4f764c8f932ad5912a926ec2/models/NA/automl/version_0/test_explain.json.gz",
+                "_test_explain_file_path": "s3://example-bucket/ui-test/prod/jobs/trainingjob-00046000000000000000000000000000/models/NA/automl/version_0/test_explain.json.gz",
                 "test_eval": {
                     "confusion_matrix": {
                         "true_positives": [
@@ -523,20 +523,20 @@
             }
         },
         "pquery_id": null,
-        "pquery_def_fpid": "629e15c329bb119cbae6de2fc2021165",
-        "graph_data_version": "6f0ae33ac31edb0c321fbe182e39e460",
-        "generate_train_table_job_id": "gen-traintable-job-9f8b259b4f764c8f932ad5912a926ec2",
+        "pquery_def_fpid": "0002e000000000000000000000000000",
+        "graph_data_version": "00033000000000000000000000000000",
+        "generate_train_table_job_id": "gen-traintable-job-00046000000000000000000000000000",
         "job_source": "UI",
         "tags": {
             "test_new_tag": "test_new_tag",
-            "pquery_id": "pquery-629e15c329bb119cbae6de2fc2021165"
+            "pquery_id": "pquery-0002e000000000000000000000000000"
         },
         "enable_baselines": false
     },
     "task_type": "binary_classification",
     "query_type": "temporal",
     "generation_job": {
-        "job_id": "gen-traintable-job-9f8b259b4f764c8f932ad5912a926ec2",
+        "job_id": "gen-traintable-job-00046000000000000000000000000000",
         "job_status_report": {
             "status": "DONE",
             "tracking_url": "n/a (under development)",
@@ -555,7 +555,7 @@
         "tags": {},
         "config": {
             "job_tags": {},
-            "pquery_id": "pquery-629e15c329bb119cbae6de2fc2021165",
+            "pquery_id": "pquery-0002e000000000000000000000000000",
             "plan": {
                 "split": "ApproxDateOffsetSplit(ratio=[0.8, 0.1, 0.1])",
                 "train_start_offset": "inferred",
@@ -569,11 +569,11 @@
                 "task_path_override": null,
                 "train_table_path_override": null
             },
-            "graph_snapshot_id": "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460"
+            "graph_snapshot_id": "graph-0005b000000000000000000000000000@00033000000000000000000000000000"
         },
         "source": "UI"
     },
     "legacy_graph_id": null,
     "job_source": "UI",
-    "graph_snapshot_id": "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460"
+    "graph_snapshot_id": "graph-0005b000000000000000000000000000@00033000000000000000000000000000"
 }

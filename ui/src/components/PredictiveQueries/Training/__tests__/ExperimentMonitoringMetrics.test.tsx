@@ -27,7 +27,7 @@ import { setManyScalarsResponseType } from "./MockFunctions/ManyScalar.mock";
 import { setTrialTagsResponseType } from "./MockFunctions/TrialTags.mock";
 import { manyScalarPostPayload } from "./MockResponses/ManyScalar";
 
-const trainingjobId = "trainingjob-9f8b259b4f764c8f932ad5912a926ec2";
+const trainingjobId = "trainingjob-00046000000000000000000000000000";
 const defaultProps: ExperimentMonitoringMetricsProps = {
     jobId: trainingjobId,
     trainingStatus: jobStatus.Done

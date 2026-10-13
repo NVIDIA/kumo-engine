@@ -37,14 +37,14 @@ class DatabricksConnector(IdentityBackedConnector):
             name="features",
             catalog="main",
             schema_name="features",
-            warehouse_id="4b9b953939869799",
+            warehouse_id="0123456789abcdef",
         )
 
         features = kumoai_studio.DatabricksConnector(
             name="features",
             catalog="main",
             schema_name="features",
-            warehouse_id="4b9b953939869799",
+            warehouse_id="0123456789abcdef",
             identity=kumoai_studio.get_identity("Production Databricks"),
         )
 

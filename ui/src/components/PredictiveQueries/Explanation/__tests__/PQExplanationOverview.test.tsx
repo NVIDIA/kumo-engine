@@ -22,7 +22,7 @@ import binaryQueryInfo from "./MockResponses/QueryInfo.json";
 
 vi.mock("hooks/utils/featureFlags");
 
-const id = "trainingjob-9f8b259b4f764c8f932ad5912a926ec2";
+const id = "trainingjob-00046000000000000000000000000000";
 const defaultProps: PQExplanationProps = {
     queryInfo: binaryQueryInfo as unknown as PredictiveQueryInfo,
     show: true

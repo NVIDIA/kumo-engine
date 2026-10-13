@@ -29,8 +29,8 @@ import {
     TimeframeStats_Headers_Reg
 } from "./MockResponses/StatsHeader";
 
-const genTableId = "gen-traintable-job-bed43f8f2fc54ea985439b026dbe0865";
-const JobId = "trainingjob-bed43f8f2fc54ea985439b026dbe0865";
+const genTableId = "gen-traintable-job-00055000000000000000000000000000";
+const JobId = "trainingjob-00055000000000000000000000000000";
 
 const defaultProps: DataStatisticsProps = {
     id: genTableId,

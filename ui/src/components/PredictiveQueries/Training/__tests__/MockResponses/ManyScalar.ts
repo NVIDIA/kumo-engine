@@ -378,7 +378,7 @@ export const many_scalar = {
 // manyScalarPayload.ts
 
 export const manyScalarPostPayload = {
-    job_id: "trainingjob-9f8b259b4f764c8f932ad5912a926ec2",
+    job_id: "trainingjob-00046000000000000000000000000000",
     tags: [
         "train_ap",
         "train_auprc",

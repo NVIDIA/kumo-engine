@@ -25,7 +25,7 @@ export const retrainQueryInfo = {
                     ]
                 }
             ],
-            "id": "graph-d445eeb8b2aa1b79a142406239fa74e8",
+            "id": "graph-0005b000000000000000000000000000",
             "isActive": true,
             "name": "",
             "tables": {
@@ -192,7 +192,7 @@ export const retrainQueryInfo = {
             "totalLinks": 0,
             "totalTables": 3
         },
-        "graph_id": "graph-d445eeb8b2aa1b79a142406239fa74e8",
+        "graph_id": "graph-0005b000000000000000000000000000",
         "graph_name": "",
         "model_planner_yaml": `training_table_generation:
   split: ApproxDateOffsetSplit(ratio=[0.8, 0.1, 0.1])
@@ -323,7 +323,7 @@ model_architecture:
   handle_new_entities: '???'
   forecast_type: '???'
 `,
-        "name": "trainingjob-cd40820089504c91825ec0b413e97cbb_copy",
+        "name": "trainingjob-00059000000000000000000000000000_copy",
         "query_dialect":
             "PREDICT COUNT(FINANCE_TRANS.*, 0, 30,days)=0\nFOR EACH FINANCE_ACCOUNT.ACCOUNT_ID",
         "query_yaml":

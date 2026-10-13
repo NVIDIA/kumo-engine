@@ -9,7 +9,7 @@ import {
 
 export const doneResponse: GenerateTrainTableResponse = {
     "resource": {
-        "job_id": "gen-traintable-job-9f8b259b4f764c8f932ad5912a926ec2",
+        "job_id": "gen-traintable-job-00046000000000000000000000000000",
         "project_id": "project_00000000000000000000000000000001",
         "job_status_report": {
             "status": "DONE" as KumoapiCommonJobStatus,
@@ -28,12 +28,12 @@ export const doneResponse: GenerateTrainTableResponse = {
         "created_at": "2025-03-12T14:55:39.208629+00:00",
         "tags": {
             "new_train_tag": "new_train_tag",
-            "pquery_id": "pquery-629e15c329bb119cbae6de2fc2021165",
-            "parent_job": "trainingjob-9f8b259b4f764c8f932ad5912a926ec2"
+            "pquery_id": "pquery-0002e000000000000000000000000000",
+            "parent_job": "trainingjob-00046000000000000000000000000000"
         },
         "config": {
             "job_tags": {},
-            "pquery_id": "pquery-629e15c329bb119cbae6de2fc2021165",
+            "pquery_id": "pquery-0002e000000000000000000000000000",
             "plan": {
                 "split": "ApproxDateOffsetSplit(ratio=[0.8, 0.1, 0.1])",
                 "train_start_offset": "inferred",
@@ -50,7 +50,7 @@ export const doneResponse: GenerateTrainTableResponse = {
                 "train_table_path_override": undefined
             },
             "graph_snapshot_id":
-                "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460"
+                "graph-0005b000000000000000000000000000@00033000000000000000000000000000"
         },
         "source": "UI",
         "user": "test-user@example.com"
@@ -59,7 +59,7 @@ export const doneResponse: GenerateTrainTableResponse = {
 
 export const doneResponseWithoutParentJob: GenerateTrainTableResponse = {
     "resource": {
-        "job_id": "gen-traintable-job-9f8b259b4f764c8f932ad5912a926ec2",
+        "job_id": "gen-traintable-job-00046000000000000000000000000000",
         "project_id": "project_00000000000000000000000000000001",
         "job_status_report": {
             "status": "DONE" as KumoapiCommonJobStatus,
@@ -78,11 +78,11 @@ export const doneResponseWithoutParentJob: GenerateTrainTableResponse = {
         "created_at": "2025-03-12T14:55:39.208629+00:00",
         "tags": {
             "new_train_tag": "new_train_tag",
-            "pquery_id": "pquery-629e15c329bb119cbae6de2fc2021165"
+            "pquery_id": "pquery-0002e000000000000000000000000000"
         },
         "config": {
             "job_tags": {},
-            "pquery_id": "pquery-629e15c329bb119cbae6de2fc2021165",
+            "pquery_id": "pquery-0002e000000000000000000000000000",
             "plan": {
                 "split": "ApproxDateOffsetSplit(ratio=[0.8, 0.1, 0.1])",
                 "train_start_offset": "inferred",
@@ -99,7 +99,7 @@ export const doneResponseWithoutParentJob: GenerateTrainTableResponse = {
                 "train_table_path_override": undefined
             },
             "graph_snapshot_id":
-                "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460"
+                "graph-0005b000000000000000000000000000@00033000000000000000000000000000"
         },
         "source": "UI"
     }

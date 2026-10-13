@@ -29,7 +29,7 @@ export const setGraphCreateResponseType = (responseType: string = "") => {
 const mockCreateGraphDefaultResponse = (): Promise<AxiosResponse<unknown>> => {
     return Promise.resolve(
         createMockResponse({
-            id: "graph-4973156df602a3f4346186713bd6782d"
+            id: "graph-00022000000000000000000000000000"
         }) as unknown as AxiosResponse<unknown>
     );
 };

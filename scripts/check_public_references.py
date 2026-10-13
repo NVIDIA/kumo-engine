@@ -37,6 +37,7 @@ PRIVATE_HOSTS = {
     "rfm2-uat.staging-rfm.kumorfm.ai": "company staging service",
     "dbc-117b701d-939a.cloud.databricks.com": "company Databricks workspace",
     "app.slack.com": "company chat workspace",
+    "team-kumo.1password.com": "private password-manager workspace",
 }
 
 PRIVATE_HOST_SUFFIXES = {
@@ -46,6 +47,8 @@ PRIVATE_HOST_SUFFIXES = {
 }
 
 PRIVATE_TEXT_PATTERNS = (
+    (re.compile(r"https://start\.1password\.com/open/i\?", re.IGNORECASE),
+     "private password-manager item"),
     (re.compile(r"(?<![\w-])@global-oncall\b"), "company chat mention"),
     (re.compile(r"(?<![\w-])#ask-infra(?:-devops)?\b"), "company chat channel"),
     (re.compile(r"\borg-[0-9]+@github\.com\b"), "company GitHub login alias"),
@@ -174,11 +177,6 @@ IDENTIFIER_RULE_EXEMPT_PREFIXES = (
     "packages/kumo-bigquery/tests/live/test_live_conformance.py",
     "packages/kumo-databricks/tests/live/test_live_conformance.py",
     "packages/kumo-snowflake/tests/live/test_live_conformance.py",
-    # Sample text in these stories appears in committed screenshot baselines,
-    # which must be regenerated in the CI Playwright image before it changes.
-    "packages/kumo-ui-catalog/src/stories/components/ui/Alert.stories.tsx",
-    "packages/kumo-ui-catalog/src/stories/components/ui/CopyToClipboard.stories.tsx",
-    "packages/kumo-ui-catalog/src/stories/components/ui/OutputCard.stories.tsx",
     "rest/devserver/",
     "scripts/",
     "service_framework/deploy_env.py",

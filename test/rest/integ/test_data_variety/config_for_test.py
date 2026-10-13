@@ -21,7 +21,6 @@ class FailStage(Enum):
 
 
 # SNOWFLAKE
-# https://app.snowflake.com/lfwgwbp/zxa66432/#/data/databases/KUMO/schemas/DATA_TYPE_TEST/table/ALL_DATA_TYPES
 snow_table_name = 'snow_table'
 snow_pkey_cols = ['ID']
 snow_default_stypes = {

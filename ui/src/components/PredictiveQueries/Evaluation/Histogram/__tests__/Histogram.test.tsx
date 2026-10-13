@@ -25,7 +25,7 @@ const query_info = query_info_raw as unknown as PredictiveQueryInfo;
 const DISTRIBUTION_TITLE = "Distribution of Predictions";
 const SUMMARY_STATS_LABEL = "Summary stats for:";
 
-const trainingJobId = "trainingjob-bed43f8f2fc54ea985439b026dbe0865";
+const trainingJobId = "trainingjob-00055000000000000000000000000000";
 
 const defaultProps: HistogramProps = {
     queryId: "",

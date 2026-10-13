@@ -38,14 +38,14 @@ const mockDefaultResponse = (
     trainingJobId: string
 ): Promise<AxiosResponse<unknown>> => {
     let regressionHeatMap = RegressionHeatMapResponse;
-    if (trainingJobId === "trainingjob-0c4623b61d0643d6a29b32c90c62f39c") {
+    if (trainingJobId === "trainingjob-00006000000000000000000000000000") {
         regressionHeatMap = SmallerPredictionValue;
     } else if (
-        trainingJobId === "trainingjob-6f8321a97ace4897b30eb4a0600e41bd"
+        trainingJobId === "trainingjob-00034000000000000000000000000000"
     ) {
         regressionHeatMap = SmallerActualValue;
     } else if (
-        trainingJobId === "trainingjob-afbc69bc7e60441ab732d6ad95f4c687"
+        trainingJobId === "trainingjob-0004a000000000000000000000000000"
     ) {
         regressionHeatMap = NoMatchingValue;
     }

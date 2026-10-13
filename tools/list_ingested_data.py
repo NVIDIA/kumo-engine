@@ -8,8 +8,9 @@ Note that use this tool with the version similar to training job.
 
 Example usage:
     ./tools/list_ingested_data.py \
-        --customer demo \
-        --job trainingjob-d1576fa360df47b7be873b6033b14575
+        --customer example \
+        --dataplane s3://example-bucket \
+        --job trainingjob-example
 """
 import argparse
 import asyncio

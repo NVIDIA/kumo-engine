@@ -19,7 +19,7 @@
 #
 # Usage:
 # python tools/cleanup_s3_persist.py --s3_path <s3 path> --dry_run
-# where s3 path can be s3://kumo-dev-dataplane-bucket/test/kiriti-i-0e7e948954ab7f809/jobs/ # noqa: E501
+# Example path: s3://example-bucket/test/example-worker/jobs/
 # Use the --dry_run flag to check how much space will be freed up without
 # actually deleting anything.
 #
@@ -27,7 +27,7 @@
 # all the subdirectories for 'jobs' directories and delete the persist
 # directories of older jobs.
 # E.g.
-# python tools/cleanup_s3_persist.py --s3_path s3://kumo-dev-dataplane-bucket --dry_run # noqa: E501
+# python tools/cleanup_s3_persist.py --s3_path s3://example-bucket --dry_run
 #
 # Delete persist directories older than 60 days:
 # python tools/cleanup_s3_persist.py --s3_path <s3 path> --num_days_older 60 # noqa: E501

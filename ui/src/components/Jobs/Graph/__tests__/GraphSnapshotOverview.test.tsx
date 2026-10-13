@@ -27,7 +27,7 @@ import GraphSnapshotOverview, {
 } from "../GraphSnapshotOverview";
 
 const graphSnapshotId =
-    "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460";
+    "graph-0005b000000000000000000000000000@00033000000000000000000000000000";
 
 const defaultProps: GraphSnapshotOverviewProps = {
     id: "",

@@ -1,37 +1,37 @@
 {
-    "trainingjob-14700887d1c9429faec0c29337c942f5": [
+    "trainingjob-0000b000000000000000000000000000": [
         "PREDICT COUNT(FINANCE_TRANS.*, 0, 30,days)=0\nFOR EACH FINANCE_ACCOUNT.ACCOUNT_ID",
         "binary_classification"
     ],
-    "trainingjob-32ba1043c4b540efbba95aa6a5cea9b2": [
+    "trainingjob-00019000000000000000000000000000": [
         "PREDICT COUNT(FINANCE_TRANS.*, 0, 30,days)=0\nFOR EACH FINANCE_ACCOUNT.ACCOUNT_ID",
         "binary_classification"
     ],
-    "trainingjob-4e5532af1a3a40f28abd9dbf4f135f5d": [
+    "trainingjob-00026000000000000000000000000000": [
         "PREDICT COUNT(FINANCE_TRANS.*, 0, 30,days)=0\nFOR EACH FINANCE_ACCOUNT.ACCOUNT_ID",
         "binary_classification"
     ],
-    "trainingjob-5a4fda6db71947ff92db9741e7aefdb0": [
+    "trainingjob-0002b000000000000000000000000000": [
         "PREDICT COUNT(FINANCE_TRANS.*, 0, 30,days)=0\nFOR EACH FINANCE_ACCOUNT.ACCOUNT_ID",
         "binary_classification"
     ],
-    "trainingjob-7b4d879a6db44dee91f8e1f203830fb4": [
+    "trainingjob-0003a000000000000000000000000000": [
         "PREDICT COUNT(FINANCE_TRANS.*, 0, 30,days)=0\nFOR EACH FINANCE_ACCOUNT.ACCOUNT_ID",
         "binary_classification"
     ],
-    "trainingjob-6bf8a39e9da347f08fd0b2f7c6439b49": [
+    "trainingjob-00031000000000000000000000000000": [
         "PREDICT COUNT(FINANCE_TRANS.*, 0, 30,days)=0\nFOR EACH FINANCE_ACCOUNT.ACCOUNT_ID",
         "binary_classification"
     ],
-    "trainingjob-9f8b259b4f764c8f932ad5912a926ec2": [
+    "trainingjob-00046000000000000000000000000000": [
         "PREDICT customers.age\nFOR EACH customers.customer_id",
         "regression"
     ],
-    "trainingjob-b5341b2d8f4748429769b89e95591ec8": [
+    "trainingjob-0004e000000000000000000000000000": [
         "PREDICT COUNT(FINANCE_TRANS.*, 0, 30, days) = 0\nFOR EACH FINANCE_ACCOUNT.ACCOUNT_ID",
         "binary_classification"
     ],
-    "trainingjob-cd40820089504c91825ec0b413e97cbb": [
+    "trainingjob-00059000000000000000000000000000": [
         "PREDICT COUNT(transaction_table.Quantity\nWHERE transaction_table.Description STARTS WITH \"CARD\", 0, 90,days)\nFOR EACH customer_table.CustomerID",
         "regression"
     ]

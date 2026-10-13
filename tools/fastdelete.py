@@ -14,7 +14,7 @@
 # Example: Delete your devserver dataplane
 #
 #   ./tools/fastdelete.py \
-#     s3://kumo-dev-dataplane-bucket/test/zack-i-066aafc8bb221defa
+#     s3://example-dev-bucket/test/example-instance
 #
 
 import argparse

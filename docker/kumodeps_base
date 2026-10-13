@@ -120,7 +120,7 @@ sudo python3 -m pip install --upgrade "setuptools==81.0.0" pip
 # pkg_resources/tests/data/, including a dummy `my_test_package-1.0-py3.7.egg`
 # whose EGG-INFO/PKG-INFO makes Syft's installed-package cataloger report a
 # phantom pip package `my-test-package 1.0` (UNKNOWN license, no provenance)
-# in the shipped backend images (Santander OSRB finding #5). The fixtures have
+# in the shipped backend images. The fixtures have
 # no runtime role; remove every bundled test tree, then assert the phantom is
 # gone so a future setuptools that relocates it fails the build here.
 SITE_PACKAGES="$(python3 -c 'import setuptools, os; print(os.path.dirname(os.path.dirname(setuptools.__file__)))')"

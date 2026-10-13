@@ -27,7 +27,7 @@ const items: OutputCardContent[] = [
     },
     {
         icon: <FolderOpen className="size-4.5 fill-black" />,
-        text: "s3://kumo-dataset/folder"
+        text: "s3://example-bucket/folder"
     }
 ];
 export const Output_Card_Default: Story = {
