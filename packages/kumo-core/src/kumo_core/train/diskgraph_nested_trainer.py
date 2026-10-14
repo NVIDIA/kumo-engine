@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
 # All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""DiskgraphNestedTrainer — TT-in-DG variant of NestedTrainer.
+"""DiskGraph trainer driven by a task-dataset bundle.
 
 Dispatched by ``AutoTrainer._train`` when
 ``JobConfig.diskgraph_task_dataset_bundle_dir`` is set. Bypasses the legacy
@@ -35,10 +35,10 @@ from kumo_core.train.mapping import (
     NODE_INDEX_COLUMN,
     TTNG_RHS_PRIMARY_KEY_INDEX_NAME,
 )
-from kumo_core.train.nested_trainer import NestedTrainer
 from kumo_core.train.output import ArrowPredOutput
 from kumo_core.train.trainer import (
     _MAX_EVAL_TOP_K,
+    Trainer,
     create_multiclass_prediction_output,
     create_multilabel_classification_prediction_output,
     create_multilabel_ranking_prediction_output,
@@ -720,8 +720,8 @@ _DEFAULT_TTNG_SAMPLING_PLAN: dict[str, Any] = {
 # @register required: ConfigMixin.config() needs data_cls when AutoTrainer
 # serializes at a trial boundary, else the first checkpoint raises ValueError.
 @register(data_cls=DiskgraphNestedTrainerConfig)
-class DiskgraphNestedTrainer(NestedTrainer):
-    """TT-NG NestedTrainer subclass driven by a task-dataset bundle.
+class DiskgraphNestedTrainer(Trainer):
+    """TT-NG trainer with logs nested directly below an AutoTrainer trial.
 
     Adds a keyword-only ``diskgraph_task_dataset_bundle_dir`` (consumed here,
     not forwarded to the parent).
@@ -735,6 +735,10 @@ class DiskgraphNestedTrainer(NestedTrainer):
         self.diskgraph_task_dataset_bundle_dir: str = bundle_dir
         self._runtime_num_workers = 1
         self._runtime_worker_id = 0
+
+    @property
+    def name(self) -> str | None:
+        return None
 
     def set_runtime_worker_shard(
         self,
@@ -2202,22 +2206,15 @@ class DiskgraphNestedTrainer(NestedTrainer):
     ) -> "DiskgraphNestedTrainer":
         """Load a trainer from a saved AutoML version directory.
 
-        ``from_config`` reassigns ``cls`` to the parent, so let the parent's
-        ``load`` run, then rebind ``__class__`` and stamp on the bundle dir.
+        Load the saved configuration through ``Trainer``, then rebind the
+        instance to this subclass and attach the task-dataset bundle.
         """
-        if diskgraph_task_dataset_bundle_dir is None:
-            raise ValueError('DiskgraphNestedTrainer.load requires '
-                             'diskgraph_task_dataset_bundle_dir; got None')
-        # TT-NG doesn't use feature_store / graph_store; drop them if passed.
-        kwargs.pop('feature_store', None)
-        kwargs.pop('graph_store', None)
-
-        base = NestedTrainer.load(
+        assert diskgraph_task_dataset_bundle_dir is not None, (
+            "DiskgraphNestedTrainer.load requires a task-dataset bundle")
+        base = Trainer.load(
             task,
             root_dir,
             version=version,
-            feature_store=None,
-            graph_store=None,
             encoders=encoders,
             **kwargs,
         )

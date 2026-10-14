@@ -46,7 +46,6 @@ from kumo_core.job_config import JobConfig, TrainStatus
 from kumo_core.model_plan import ModelPlan, _is_inferred, _parse_hop_key
 from kumo_core.resolved_task import ResolvedNumericalTask, ResolvedTaskGraph
 from kumo_core.train.diskgraph_nested_trainer import DiskgraphNestedTrainer
-from kumo_core.train.nested_trainer import NestedTrainer
 from kumo_core.train.shallow_rhs_link_gnn_module import MAX_RHS_SAMPLE_SIZE
 from kumo_core.train.trainer import Trainer, load_encoders, save_encoders
 from kumo_core.training.config import LinkPredModuleKwargs, LinkPredModuleType
@@ -620,9 +619,7 @@ class AutoTrainer:
         # Create Trainer instance:
         # NOTE The output directory structure will look as follows:
         # {self.root_dir}/{self.task.name}/automl/{version_*}
-        # NOTE The usage of `NestedTrainer` is currently necessary.
-        # Otherwise, an additional task.name will be included in the Trainer,
-        # making the logging 1 level deeper and being redundant with task.name.
+        # DiskgraphNestedTrainer omits the redundant task-name directory.
         module_kwargs = None
         if self.task.task_type.is_link_pred:
             module_kwargs = LinkPredModuleKwargs(
@@ -654,22 +651,17 @@ class AutoTrainer:
         head = self._get_head(unified_cfg)
         past_encoder = self._get_past_encoder(unified_cfg)
 
-        # On TT-NG, dispatch to ``DiskgraphNestedTrainer`` (init()
-        # builds a DLDM over the bundle instead of the legacy
-        # graphengine datamodule).
-        nested_trainer_cls: type[NestedTrainer]
         extra_trainer_kwargs: dict[str, Any] = {
             'random_state_seed': self.random_state_seed,
         }
         assert self.diskgraph_task_dataset_bundle_dir is not None, (
             "TT-NG requires a diskgraph task-dataset bundle")
-        nested_trainer_cls = DiskgraphNestedTrainer
         extra_trainer_kwargs['diskgraph_task_dataset_bundle_dir'] = (
             self.diskgraph_task_dataset_bundle_dir)
 
         with self.instrumentation.timing(
                 "auto_trainer.train.construct_trainer"):
-            trainer = nested_trainer_cls(
+            trainer = DiskgraphNestedTrainer(
                 self.task.to_task_config(),
                 # Instance-specific arguments:
                 encoder=encoder,
