@@ -66,11 +66,11 @@ class SourceReader(Protocol):
         An implementation must: clear ``dest`` and any staging prefix before
         writing and drop the prefix afterwards, so a retry cannot mix a
         half-finished attempt in; project exactly ``columns``, casting by
-        dtype and naming the result back through ``aliases``; stamp the source
-        *before* the read, since a version taken afterwards describes rows the
-        read never saw; reconcile ``expected_rows`` where a cheap count
-        exists; and refuse a mode outside :meth:`read_modes` rather than
-        substituting another.
+        dtype unless ingest converts to it, and naming the result back through
+        ``aliases``; stamp the source *before* the read, since a version taken
+        afterwards describes rows the read never saw; reconcile
+        ``expected_rows`` where a cheap count exists; and refuse a mode
+        outside :meth:`read_modes` rather than substituting another.
         """
 
 

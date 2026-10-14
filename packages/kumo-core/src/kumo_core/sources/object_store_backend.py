@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from abc import ABC, abstractmethod
+from dataclasses import replace
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from kumoapi.plugin import PrepareIngestResult, SourceConnector
@@ -150,6 +151,7 @@ class ObjectStoreSourceBackend(ABC):
         from kumo_core.sources.prepare import read_table
 
         reader, name = self._reader(connector, table_name)
+        reader = replace(reader, ingest_converts=dtypes is not None)
         # One directory per table: a read empties what it is handed.
         destination = staging_dir(dest_dir, name)
         columns = select_columns(name, reader.dtypes(name), dtypes)

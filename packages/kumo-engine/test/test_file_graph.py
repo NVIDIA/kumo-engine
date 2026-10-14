@@ -4,8 +4,11 @@
 
 import json
 import re
+from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.csv as csv
 import pyarrow.parquet as pq
@@ -243,6 +246,203 @@ def test_numerical_names_survive_real_snapshot_ingestion(tmp_path):
     assert native_columns['num_users_id'] == 'id'
     stats = json.loads((snapshot.index_path / 'ingest_stats.json').read_text())
     assert stats['stats']['total_nodes'] == 100
+
+
+_PAIRS = {
+    'i8': (pa.array([-128, 127, None], pa.int8()), Dtype.int32, Stype.numerical,
+           [-128, 127, None], pa.int8()),
+    'i16': (pa.array([-32768, 32767, None], pa.int16()), Dtype.int32,
+            Stype.numerical, [-32768, 32767, None], pa.int16()),
+    'u8': (pa.array([0, 255, None], pa.uint8()), Dtype.int32,
+           Stype.categorical, [0, 255, None], pa.uint8()),
+    'u16': (pa.array([0, 65535, None], pa.uint16()), Dtype.int32,
+            Stype.categorical, [0, 65535, None], pa.uint16()),
+    'u32': (pa.array([0, 2**32 - 1, None], pa.uint32()), Dtype.int64,
+            Stype.categorical, [0, 2**32 - 1, None], pa.uint32()),
+    'u64': (pa.array([5, 2**64 - 1, None], pa.uint64()), Dtype.int64,
+            Stype.categorical, [5, None, None], pa.uint64()),
+    'decimal': (pa.array([Decimal(-7), Decimal(2**62), None],
+                         pa.decimal128(38, 0)), Dtype.int64,
+                Stype.categorical, [-7, 2**62, None], pa.decimal128(38, 0)),
+    'fraction': (pa.array([Decimal('1.25'), Decimal('-2.50'), None],
+                          pa.decimal128(10, 2)), Dtype.float32,
+                 Stype.numerical, [1.25, -2.5, None], pa.decimal128(10, 2)),
+    'dictionary': (pa.array(['a', 'b', None]).dictionary_encode(),
+                   Dtype.string, Stype.categorical, ['a', 'b', None],
+                   pa.dictionary(pa.int32(), pa.string())),
+    'large_string': (pa.array(['a', 'b', None], pa.large_string()),
+                     Dtype.string, Stype.categorical, ['a', 'b', None],
+                     pa.large_string()),
+    'text': (pa.array(['7', 'x', None]), Dtype.int64, Stype.categorical,
+             [7, None, None], pa.string()),
+    'list': (pa.array([[1, 2], [], None], pa.large_list(pa.int32())),
+             Dtype.intlist, Stype.multicategorical, [[1, 2], [], None],
+             pa.large_list(pa.field('element', pa.int32()))),
+    'timestamp': (pa.array([1_000, 86_400_000, None],
+                           pa.timestamp('ms', tz='America/New_York')),
+                  Dtype.date, Stype.timestamp, [
+                      datetime(1970, 1, 1, 0, 0, 1),
+                      datetime(1970, 1, 2), None
+                  ], pa.timestamp('ms', tz='America/New_York')),
+    'dictionary_int8': (pa.DictionaryArray.from_arrays(
+        pa.array([0, 1, None], pa.int8()), pa.array(['a b', 'c'])),
+                        Dtype.string, Stype.text, ['a b', 'c', None],
+                        pa.dictionary(pa.int8(), pa.string())),
+    'i64_int32': (pa.array([-5, 2**31, None]), Dtype.int32, Stype.numerical,
+                  [-5, None, None], pa.int64()),
+    'u32_int32': (pa.array([7, 2**32 - 1, None], pa.uint32()), Dtype.int32,
+                  Stype.categorical, [7, None, None], pa.uint32()),
+    'u64_int32': (pa.array([7, 2**63, None], pa.uint64()), Dtype.int32,
+                  Stype.categorical, [7, None, None], pa.uint64()),
+    'f64_int64': (pa.array([2.0, 1.5, float('nan')]), Dtype.int64,
+                  Stype.numerical, [2, None, None], pa.float64()),
+    'f64_int64_big': (pa.array([float('inf'), 1e30, -3.0]), Dtype.int64,
+                      Stype.numerical, [None, None, -3], pa.float64()),
+    'f32_int32': (pa.array([7.0, 3e9, None], pa.float32()), Dtype.int32,
+                  Stype.numerical, [7, None, None], pa.float32()),
+    'dec_int64': (pa.array([Decimal('12.91'), Decimal('7.00'), None],
+                           pa.decimal128(10, 2)), Dtype.int64, Stype.numerical,
+                  [None, 7, None], pa.decimal128(10, 2)),
+    'f16': (pa.array(np.array([1.5, -2.0, 65504.0], np.float16)),
+            Dtype.float32, Stype.numerical, [1.5, -2.0, 65504.0],
+            pa.float16()),
+    'list_u32': (pa.array([[1, 2**32 - 1], [], None], pa.list_(pa.uint32())),
+                 Dtype.intlist, Stype.multicategorical, [[1, 2**32 - 1], [],
+                                                         None],
+                 pa.list_(pa.field('element', pa.uint32()))),
+    'list_i64_floatlist': (pa.array([[1, -2], [], None], pa.list_(pa.int64())),
+                           Dtype.floatlist, Stype.sequence, [[1.0, -2.0], [],
+                                                             None],
+                           pa.list_(pa.field('element', pa.int64()))),
+    'list_f32_intlist': (pa.array([[1.0, 2.0], [1.5], None],
+                                  pa.list_(pa.float32())), Dtype.intlist,
+                         Stype.multicategorical, [[1, 2], None, None],
+                         pa.list_(pa.field('element', pa.float32()))),
+    'f64_string': (pa.array([1e70, 1.5, None]), Dtype.string,
+                   Stype.categorical, ['1e70', '1.5', None], pa.float64()),
+    'i64_multicat': (pa.array([1, 22, None]), Dtype.string,
+                     Stype.multicategorical, [['1'], ['22'], None],
+                     pa.int64()),
+    'bin_multicat': (pa.array([b'a|b', b'c', None]), Dtype.string,
+                     Stype.multicategorical, [['a', 'b'], ['c'], None],
+                     pa.binary()),
+    'ts_string': (pa.array([1_000, 86_400_007, None],
+                           pa.timestamp('ms', tz='UTC')), Dtype.string,
+                  Stype.categorical, ['1', '86401', None],
+                  pa.timestamp('ms', tz='UTC')),
+    'str_bool': (pa.array(['true', 'x', 'maybe']), Dtype.bool,
+                 Stype.categorical, [True, True, None], pa.string()),
+}
+
+
+def test_staged_source_types_ingest_as_their_declared_dtypes(
+        tmp_path, monkeypatch):
+    """Staging hands DiskGraph the source's own types, as the hosted path's
+    verbatim copy does; DiskGraph converts them to the declared dtypes and
+    nulls, with a warning, a value the dtype cannot hold."""
+    import kumo_core.diskgraph.ingest as dg_ingest
+    from diskgraph import SamplerEngine
+
+    from kumo.engine import FileConnector, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    root.mkdir()
+    tables = {}
+    for name, (column, dtype, stype, _, _) in _PAIRS.items():
+        pq.write_table(
+            pa.table({
+                'id': range(3),
+                'c': column,
+                'unused': range(3)
+            }), root / f'{name}.parquet')
+        tables[name] = Table.from_source_table(
+            FileConnector(root_dir=str(root))[name], ['c', 'id'],
+            primary_key='id').with_column(
+                'c', dtype=dtype, stype=stype,
+                multicategorical_delimiter='|' if stype
+                == Stype.multicategorical and dtype == Dtype.string else None)
+    staged = {}
+    ingest = dg_ingest.execute_diskgraph_ingest
+
+    def capture(config, spec, **kwargs):
+        for name, path in spec.source_paths.items():
+            staged[name] = {
+                pq.read_schema(part).field('c').type
+                for part in Path(path).rglob('*.parquet')
+            }
+        return ingest(config, spec, **kwargs)
+
+    monkeypatch.setattr(dg_ingest, 'execute_diskgraph_ingest', capture)
+    with pytest.warns(UserWarning) as caught:
+        snapshot = Graph(tables).snapshot()
+    invalid = {
+        str(warning.message).split(' in ')[1].split('.')[0]
+        for warning in caught if 'invalid values found' in str(warning.message)
+    }
+    assert invalid == {
+        'u64', 'text', 'i64_int32', 'u32_int32', 'u64_int32', 'f64_int64',
+        'f64_int64_big', 'f32_int32', 'dec_int64', 'list_f32_intlist',
+        'str_bool'
+    }
+
+    engine = SamplerEngine(str(snapshot.index_path))
+    for name, (_, _, _, expected, stored) in _PAIRS.items():
+        assert staged[name] == {stored}, name
+        batches = [
+            event['batch'] for event in engine.fetch_features([{
+                'node_type': name,
+                'node_ids': [0, 1, 2],
+                'feature_names': ['id', 'c'],
+            }]) if event['type'] == 'feature'
+        ]
+        fetched = pa.Table.from_batches(batches).sort_by('id')
+        assert fetched.column('c').to_pylist() == expected, name
+
+
+def test_parts_of_different_types_ingest_as_their_declared_dtypes(tmp_path):
+    from diskgraph import SamplerEngine
+
+    from kumo.engine import FileConnector, configure
+
+    configure(scratch_dir=str(tmp_path / 'scratch'))
+    root = tmp_path / 'source'
+    parts = {
+        'dates': ([
+            pa.array([0], pa.date32()),
+            pa.array([86_400_000 + 3_723_000], pa.timestamp('ms'))
+        ], Dtype.date, Stype.timestamp,
+                  [datetime(1970, 1, 1),
+                   datetime(1970, 1, 2, 1, 2, 3)]),
+        'ints': ([pa.array([2**31 - 1], pa.int32()),
+                  pa.array([-2], pa.int16())], Dtype.int32,
+                 Stype.numerical, [2**31 - 1, -2]),
+    }
+    tables = {}
+    for name, (arrays, dtype, stype, _) in parts.items():
+        (root / name).mkdir(parents=True)
+        for index, array in enumerate(arrays):
+            pq.write_table(
+                pa.table({
+                    'id': [index],
+                    'c': array,
+                    'unused': ['x']
+                }), root / name / f'part-{index}.parquet')
+        tables[name] = Table.from_source_table(
+            FileConnector(root_dir=str(root))[name],
+            ['c', 'id'] if name == 'dates' else None,
+            primary_key='id').with_column('c', dtype=dtype, stype=stype)
+    engine = SamplerEngine(str(Graph(tables).snapshot().index_path))
+    for name, (_, _, _, expected) in parts.items():
+        batches = [
+            event['batch'] for event in engine.fetch_features([{
+                'node_type': name,
+                'node_ids': [0, 1],
+                'feature_names': ['id', 'c'],
+            }]) if event['type'] == 'feature'
+        ]
+        fetched = pa.Table.from_batches(batches).sort_by('id')
+        assert fetched.column('c').to_pylist() == expected, name
 
 
 def test_declared_foreign_key_type_survives_real_snapshot(

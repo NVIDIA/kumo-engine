@@ -57,8 +57,9 @@ def frame(rows: int = ROWS) -> pa.Table:
     })
 
 
-def reader_over(root) -> ObjectStoreSourceReader:
-    return ObjectStoreSourceReader(LocalFileSystem(), root=str(root))
+def reader_over(root, converts: bool = False) -> ObjectStoreSourceReader:
+    return ObjectStoreSourceReader(LocalFileSystem(), root=str(root),
+                                   ingest_converts=converts)
 
 
 @pytest.mark.parametrize("sql", ["SELECT id FROM events", ""])
@@ -468,20 +469,150 @@ def test_a_decimal_is_rewritten_rather_than_passed_through_as_it_lies(tmp_path):
     assert written.column("id").to_pylist() == [7, 7, 7]
 
 
+@pytest.mark.parametrize("stored,values,declared", [
+    (pa.int16(), [1, -2], Dtype.int32),
+    (pa.uint32(), [1, 2**32 - 1], Dtype.int64),
+    (pa.uint64(), [1, 2**64 - 1], Dtype.int64),
+    (pa.decimal128(38, 0), [Decimal(7), Decimal(-8)], Dtype.int64),
+    (pa.decimal128(10, 2), [Decimal("1.25"), None], Dtype.float32),
+    (pa.large_string(), ["a", None], Dtype.string),
+    (pa.timestamp("ms", tz="UTC"), [1, 2], Dtype.date),
+    (pa.list_(pa.float64()), [[1.5], []], Dtype.floatlist),
+    (pa.dictionary(pa.int32(), pa.string()), ["a", None], Dtype.string),
+    (pa.int64(), [1, 2**40], Dtype.int32),
+    (pa.float64(), [1.5, float("nan")], Dtype.int64),
+    (pa.decimal128(10, 2), [Decimal("12.91"), None], Dtype.int64),
+    (pa.float16(), [np.float16(1.5), None], Dtype.float32),
+    (pa.list_(pa.uint32()), [[1], []], Dtype.intlist),
+    (pa.list_(pa.int64()), [[1], []], Dtype.floatlist),
+    (pa.float64(), [1e70, None], Dtype.string),
+    (pa.timestamp("ms", tz="UTC"), [1, 2], Dtype.string),
+    (pa.binary(), [b"a|b", None], Dtype.string),
+    (pa.string(), ["true", "x"], Dtype.bool),
+])
+def test_a_type_ingest_converts_is_copied_verbatim(stored, values, declared,
+                                                   tmp_path):
+    source = write_parts(
+        tmp_path / "t",
+        pa.table({
+            "id": pa.array([1, 2], pa.int64()),
+            "c": pa.array(values, stored)
+        }))
+    staged = reader_over(tmp_path, converts=True).prepare(
+        "t", str(tmp_path / "out"), columns={
+            "id": Dtype.int64,
+            "c": declared
+        }, mode=ReadMode.STREAMED)
+    assert [Path(path).read_bytes() for path in staged.paths
+            ] == [(source / "part-0.parquet").read_bytes()]
+
+
+def test_a_projection_ingest_converts_keeps_source_types(tmp_path):
+    write_parts(
+        tmp_path / "t",
+        pa.table({
+            "id": pa.array([1, 2], pa.int64()),
+            "c": pa.array([3, 4], pa.int16()),
+            "d": pa.array(["a", "b"]).dictionary_encode(),
+            "unused": pa.array(["x", "y"]),
+        }))
+    staged = reader_over(tmp_path, converts=True).prepare(
+        "t", str(tmp_path / "out"), columns={
+            "c": Dtype.int32,
+            "d": Dtype.string,
+            "id": Dtype.int64
+        }, aliases={"c": "renamed"}, mode=ReadMode.STREAMED)
+    written = staged_frame(staged)
+    assert written.schema == pa.schema([
+        ("renamed", pa.int16()),
+        ("d", pa.dictionary(pa.int32(), pa.string())),
+        ("id", pa.int64()),
+    ])
+    assert written.to_pydict() == {
+        "renamed": [3, 4],
+        "d": ["a", "b"],
+        "id": [1, 2]
+    }
+
+
+_MIXED_PARTS = {
+    "date_then_ms": ([
+        pa.array([0], pa.date32()),
+        pa.array([86_400_000 + 3_723_000], pa.timestamp("ms"))
+    ], Dtype.date),
+    "us_then_ns": ([
+        pa.array([1_000_001], pa.timestamp("us")),
+        pa.array([1_000_000_001], pa.timestamp("ns"))
+    ], Dtype.date),
+    "int16_then_int32": ([
+        pa.array([-2], pa.int16()),
+        pa.array([2**31 - 1], pa.int32())
+    ], Dtype.int32),
+}
+
+
+@pytest.mark.parametrize("name", list(_MIXED_PARTS))
+def test_parts_of_different_types_ingest_converts_are_copied_verbatim(
+        name, tmp_path):
+    arrays, declared = _MIXED_PARTS[name]
+    source = write_parts(
+        tmp_path / "t", *[
+            pa.table({
+                "id": pa.array([index], pa.int64()),
+                "c": array
+            }) for index, array in enumerate(arrays)
+        ])
+    staged = reader_over(tmp_path, converts=True).prepare(
+        "t", str(tmp_path / "out"), columns={
+            "id": Dtype.int64,
+            "c": declared
+        }, mode=ReadMode.STREAMED)
+    assert sorted(Path(path).read_bytes() for path in staged.paths) == sorted(
+        part.read_bytes() for part in source.glob("*.parquet"))
+
+
+@pytest.mark.parametrize("name", list(_MIXED_PARTS))
+def test_a_projection_ingest_converts_keeps_each_parts_types(name, tmp_path):
+    arrays, declared = _MIXED_PARTS[name]
+    write_parts(
+        tmp_path / "t", *[
+            pa.table({
+                "id": pa.array([index], pa.int64()),
+                "c": array,
+                "unused": pa.array(["x"])
+            }) for index, array in enumerate(arrays)
+        ])
+    staged = reader_over(tmp_path, converts=True).prepare(
+        "t", str(tmp_path / "out"), columns={
+            "c": declared,
+            "id": Dtype.int64
+        }, aliases={"c": "renamed"}, mode=ReadMode.STREAMED)
+    parts = sorted((pq.read_table(path) for path in staged.paths),
+                   key=lambda part: part["id"][0].as_py())
+    assert [part.column_names for part in parts] == [["renamed", "id"]] * 2
+    assert [part.schema.field("renamed").type
+            for part in parts] == [array.type for array in arrays]
+    assert [part["renamed"] for part in parts
+            ] == [pa.chunked_array([array]) for array in arrays]
+
+
 # Formats and failures #####################################################
 
 
-def test_a_hive_partition_key_becomes_a_real_string_column(root, tmp_path):
+@pytest.mark.parametrize("converts", [False, True])
+def test_a_hive_partition_key_becomes_a_real_string_column(
+        root, tmp_path, converts):
     """The hosted connector reads a partitioned table through
     ``pq.ParquetDataset``, which dictionary-encodes the keys, so ``dt`` is a
     string in the cloud and has to be one here."""
-    reader = reader_over(root)
+    reader = reader_over(root, converts)
     assert reader.dtypes("hive")["dt"] is Dtype.string
     table = reader.prepare("hive", str(tmp_path / "out"), columns={
         "id": Dtype.int64,
         "dt": Dtype.string
     }, mode=ReadMode.STREAMED)
     written = staged_frame(table)
+    assert written.schema.field("dt").type == pa.string()
     assert written.column_names == ["id", "dt"]
     assert sorted(set(
         written.column("dt").to_pylist())) == ["2026-01-01", "2026-01-02"]
@@ -538,6 +669,37 @@ def test_a_head_reports_the_same_columns_the_catalog_does(tmp_path):
     reader = reader_over(tmp_path)
     assert reader.head("indexed",
                        2).column_names == list(reader.dtypes("indexed"))
+
+
+def test_a_head_widens_a_later_part_rather_than_casting_it_down(tmp_path):
+    write_parts(tmp_path / "events",
+                pa.table({"id": pa.array([1], pa.int16())}),
+                pa.table({"id": pa.array([2**31 - 1], pa.int32())}))
+    head = reader_over(tmp_path).head("events", 10)
+    assert head.schema.field("id").type == pa.int32()
+    assert head.column("id").to_pylist() == [1, 2**31 - 1]
+
+
+def test_a_head_keeps_sub_microsecond_timestamps_of_a_later_part(tmp_path):
+    write_parts(
+        tmp_path / "events",
+        pa.table({"at": pa.array([1_000], pa.timestamp("us"))}),
+        pa.table({"at": pa.array([1_000_000_001], pa.timestamp("ns"))}))
+    head = reader_over(tmp_path).head("events", 10)
+    assert head.column("at").type == pa.timestamp("ns")
+    assert head.column("at").cast(pa.int64()).to_pylist() == [
+        1_000_000, 1_000_000_001
+    ]
+
+
+def test_a_head_stops_at_a_part_whose_type_cannot_be_merged(tmp_path):
+    write_parts(
+        tmp_path / "events",
+        pa.table({"day": pa.array([1, 2], pa.date32())}),
+        pa.table({"day": pa.array([3], pa.timestamp("us"))}))
+    head = reader_over(tmp_path).head("events", 10)
+    assert head.column("day").type == pa.date32()
+    assert head.num_rows == 2
 
 
 def test_a_column_type_kumo_cannot_read_is_refused_rather_than_copied(tmp_path):

@@ -92,6 +92,7 @@ def materialize_arrow_streams(
     max_rows_per_shard: int = DEFAULT_MAX_ROWS_PER_SHARD,
     max_uncompressed_bytes_per_shard: int = (
         DEFAULT_MAX_UNCOMPRESSED_BYTES_PER_SHARD),
+    uniform: bool = True,
 ) -> WriteResult:
     """``destination`` is emptied by the caller that owns it, not here. One
     shared writer serialises every producer behind a single encode and
@@ -116,7 +117,7 @@ def materialize_arrow_streams(
                 workers=min(encode_workers(worker_ceiling), len(streams)),
                 stop=stop,
             )
-        result = _combine(drained, directory)
+        result = _combine(drained, directory, uniform)
         completed = True
         return result
     finally:
@@ -184,9 +185,10 @@ def _drain(
                     empty)
 
 
-def _combine(drained: Sequence[_Drained], directory: Path) -> WriteResult:
+def _combine(drained: Sequence[_Drained], directory: Path,
+             uniform: bool) -> WriteResult:
     schemas = [d.schema for d in drained if d.schema is not None]
-    for schema in schemas[1:]:
+    for schema in schemas[1:] if uniform else []:
         if not schema.equals(schemas[0]):
             raise SchemaChangedError(
                 f"sources disagreed on schema: {schemas[0]} beside {schema}")
@@ -333,7 +335,8 @@ def read_bounded_dataset(
     ], metadata=dataset.schema.metadata)
     requested_columns = schema.names
     remaining = max(num_rows, 0)
-    batches: list[pa.RecordBatch] = []
+    tables: list[pa.Table] = []
+    merged = schema
     for fragment in fragments:
         if not remaining:
             break
@@ -342,6 +345,7 @@ def read_bounded_dataset(
             if column in fragment.physical_schema.names
         ]
         partition_keys = ds.get_partition_keys(fragment.partition_expression)
+        part: list[pa.RecordBatch] = []
         with fragment.open() as source:
             parquet_file = pq.ParquetFile(
                 source,
@@ -352,21 +356,33 @@ def read_bounded_dataset(
                                                    columns=physical_columns,
                                                    use_threads=False):
                 batch = batch.slice(0, remaining)
-                arrays = []
-                for field in schema:
-                    if field.name in batch.schema.names:
-                        values = batch.column(field.name)
-                    else:
-                        values = pa.repeat(
-                            pa.scalar(partition_keys.get(field.name)),
-                            batch.num_rows,
-                        )
-                    arrays.append(values.cast(field.type))
-                batches.append(
-                    pa.RecordBatch.from_arrays(arrays, schema=schema
+                arrays = [
+                    batch.column(field.name)
+                    if field.name in batch.schema.names else pa.repeat(
+                        pa.scalar(partition_keys.get(field.name)),
+                        batch.num_rows,
+                    ).cast(field.type) for field in schema
+                ]
+                part.append(
+                    pa.RecordBatch.from_arrays(arrays, names=schema.names
                                                ) if arrays else batch)
                 remaining -= batch.num_rows
                 if not remaining:
                     break
-    return (pa.Table.from_batches(batches, schema=schema)
-            if batches else schema.empty_table())
+        if not part:
+            continue
+        table = pa.Table.from_batches(part)
+        try:
+            merged = pa.unify_schemas(
+                [merged, table.schema],
+                promote_options="permissive") if tables else table.schema
+        except (pa.ArrowInvalid, pa.ArrowTypeError):
+            break
+        tables.append(table)
+    if not tables:
+        return schema.empty_table()
+    return pa.Table.from_batches([
+        batch for table in tables for batch in (
+            table if table.schema.equals(merged) else table.cast(merged)
+        ).to_batches()
+    ], merged.with_metadata(schema.metadata))
