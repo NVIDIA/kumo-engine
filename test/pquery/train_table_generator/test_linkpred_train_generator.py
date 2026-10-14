@@ -861,10 +861,10 @@ def test_static_link_pred_with_dangling_rhs(dg_indexed_static_link_pred_graph,
     train_table_path, job_id, _ = generate_train_table_dg(
         pquery, diskgraph_index_path=index_path, destination=str(tmp_path))
     train_df = pd.read_parquet(train_table_path)
-    # The DG-native RANK LP train table is the dense (entity x timeframe) grid,
-    # so all 8 entities get a row (dangling/zero-transaction users carry an
-    # empty TARGET1 array) -> 8 train rows.
-    assert train_df.shape[0] == 8
+    # Only the 3 entities with a target get a row; the stats below still count
+    # all 8 anchors.
+    assert train_df.shape[0] == 3
+    assert all(len(targets) > 0 for targets in train_df['TARGET1'])
 
     task = materialize_selected_task_dg(pquery, train_table_path, job_id)
     assert task.train_table is not None
@@ -1251,23 +1251,23 @@ def test_temporal_link_pred_target_nonzero_offset_table_stats(
     assert (split_stats.train_table_stats.min_date == pd.Timestamp(
         '2023-01-04T00:00:00', tz='UTC'))
     assert (split_stats.train_table_stats.max_date == pd.Timestamp(
-        '2023-01-10T00:00:00', tz='UTC'))
+        '2023-02-27T00:00:00', tz='UTC'))
 
     assert split_stats.val_table_stats is not None
     assert (split_stats.val_table_stats.anchor_date == pd.Timestamp(
-        '2023-01-13T00:00:00', tz='UTC'))
+        '2023-03-05T00:00:00', tz='UTC'))
     assert (split_stats.val_table_stats.min_date == pd.Timestamp(
-        '2023-01-13T00:00:00', tz='UTC'))
+        '2023-03-05T00:00:00', tz='UTC'))
     assert (split_stats.val_table_stats.max_date == pd.Timestamp(
-        '2023-01-16T00:00:00', tz='UTC'))
+        '2023-03-29T00:00:00', tz='UTC'))
 
     assert split_stats.test_table_stats is not None
     assert (split_stats.test_table_stats.anchor_date == pd.Timestamp(
-        '2023-01-19T00:00:00', tz='UTC'))
+        '2023-04-04T00:00:00', tz='UTC'))
     assert (split_stats.test_table_stats.min_date == pd.Timestamp(
-        '2023-01-19T00:00:00', tz='UTC'))
+        '2023-04-04T00:00:00', tz='UTC'))
     assert (split_stats.test_table_stats.max_date == pd.Timestamp(
-        '2023-01-19T00:00:00', tz='UTC'))
+        '2023-04-04T00:00:00', tz='UTC'))
 
 
 @patch('kumo.pquery.AST.ast_node.ALLOW_ARRAY_TARGETS', new=False)
@@ -1369,23 +1369,23 @@ def test_temporal_link_pred_target_nonzero_offset_table_stats_array(
     assert (split_stats.train_table_stats.min_date == pd.Timestamp(
         '2023-01-04T00:00:00', tz='UTC'))
     assert (split_stats.train_table_stats.max_date == pd.Timestamp(
-        '2023-01-10T00:00:00', tz='UTC'))
+        '2023-02-27T00:00:00', tz='UTC'))
 
     assert split_stats.val_table_stats is not None
     assert (split_stats.val_table_stats.anchor_date == pd.Timestamp(
-        '2023-01-13T00:00:00', tz='UTC'))
+        '2023-03-05T00:00:00', tz='UTC'))
     assert (split_stats.val_table_stats.min_date == pd.Timestamp(
-        '2023-01-13T00:00:00', tz='UTC'))
+        '2023-03-05T00:00:00', tz='UTC'))
     assert (split_stats.val_table_stats.max_date == pd.Timestamp(
-        '2023-01-16T00:00:00', tz='UTC'))
+        '2023-03-29T00:00:00', tz='UTC'))
 
     assert split_stats.test_table_stats is not None
     assert (split_stats.test_table_stats.anchor_date == pd.Timestamp(
-        '2023-01-19T00:00:00', tz='UTC'))
+        '2023-04-04T00:00:00', tz='UTC'))
     assert (split_stats.test_table_stats.min_date == pd.Timestamp(
-        '2023-01-19T00:00:00', tz='UTC'))
+        '2023-04-04T00:00:00', tz='UTC'))
     assert (split_stats.test_table_stats.max_date == pd.Timestamp(
-        '2023-01-19T00:00:00', tz='UTC'))
+        '2023-04-04T00:00:00', tz='UTC'))
 
 
 @patch('kumo.pquery.AST.ast_node.ALLOW_ARRAY_TARGETS', new=True)
