@@ -1847,6 +1847,7 @@ dependencies = [
  "anyhow",
  "arrow-array",
  "arrow-buffer",
+ "arrow-cast",
  "arrow-schema",
  "base64 0.22.1",
  "bincode",
