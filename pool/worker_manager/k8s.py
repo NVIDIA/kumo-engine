@@ -153,12 +153,15 @@ def _runtime_container_security_context() -> V1SecurityContext:
     # declare it. The kubelet then verifies it at container start, which
     # requires a numeric USER (see docker/Dockerfile.kumo_backend_{cpu,gpu}).
     #
-    # Deliberately no run_as_user: pinning one would be rejected by OpenShift,
-    # whose SCC assigns a UID from the namespace's own range.
+    # Leave IDs unset unless configured; OpenShift assigns a namespace UID.
+    run_as_user = os.environ.get('POOL_WORKER_RUN_AS_USER')
+    run_as_group = os.environ.get('POOL_WORKER_RUN_AS_GROUP')
     return V1SecurityContext(
         allow_privilege_escalation=False,
         privileged=False,
         run_as_non_root=True,
+        run_as_user=int(run_as_user) if run_as_user else None,
+        run_as_group=int(run_as_group) if run_as_group else None,
         read_only_root_filesystem=os.environ.get(
             'POOL_WORKER_READ_ONLY_ROOT_FILESYSTEM', 'true').strip().lower()
         not in ('0', 'false', 'no', 'off'),

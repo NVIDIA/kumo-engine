@@ -75,6 +75,15 @@ spec:
           value: {{ include "kumo.serviceAccountName" (dict "root" . "role" "worker") | quote }}
         - name: POOL_WORKER_FS_GROUP
           value: {{ .Values.workloads.poolcontroller.runtimeFsGroup | default "" | quote }}
+        {{- $podSecurity := include "kumo.podSecurityContext" (dict "root" . "extra" dict) | fromYaml | default dict }}
+        {{- $containerSecurity := include "kumo.containerSecurityContext" (dict "root" . "extra" dict) | fromYaml }}
+        {{- $workerSecurity := mergeOverwrite $podSecurity $containerSecurity }}
+        {{- range $field, $env := dict "runAsUser" "POOL_WORKER_RUN_AS_USER" "runAsGroup" "POOL_WORKER_RUN_AS_GROUP" }}
+        {{- if hasKey $workerSecurity $field }}
+        - name: {{ $env }}
+          value: {{ index $workerSecurity $field | int64 | quote }}
+        {{- end }}
+        {{- end }}
         - name: POOL_WORKER_READ_ONLY_ROOT_FILESYSTEM
           value: {{ (include "kumo.containerSecurityContext" (dict "root" . "extra" dict) | fromYaml).readOnlyRootFilesystem | default false | quote }}
         {{- with .Values.tenantSecretKey }}

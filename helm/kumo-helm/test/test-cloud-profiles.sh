@@ -194,6 +194,21 @@ render_profile() {
     "${TMP_DIR}/${provider}-poolcontroller.yaml"
   assert_env_pair "${TMP_DIR}/${provider}-poolcontroller.yaml" \
     POOL_WORKER_READ_ONLY_ROOT_FILESYSTEM true
+  assert_absent "${TMP_DIR}/${provider}-poolcontroller.yaml" POOL_WORKER_RUN_AS_USER
+  assert_absent "${TMP_DIR}/${provider}-poolcontroller.yaml" POOL_WORKER_RUN_AS_GROUP
+  local identity_manifest="${TMP_DIR}/${provider}-identity.yaml"
+  "$HELM_BIN" template profile-test "$ROOT" -f "$profile" -f "$fixture" \
+    --set global.podSecurityContext.runAsUser=1000 \
+    --set global.podSecurityContext.runAsGroup=1000 >"$identity_manifest"
+  assert_env_pair "$identity_manifest" POOL_WORKER_RUN_AS_USER 1000
+  assert_env_pair "$identity_manifest" POOL_WORKER_RUN_AS_GROUP 1000
+  "$HELM_BIN" template profile-test "$ROOT" -f "$profile" -f "$fixture" \
+    --set global.podSecurityContext.runAsUser=1000 \
+    --set global.podSecurityContext.runAsGroup=1000 \
+    --set global.containerSecurityContext.runAsUser=1000710000 \
+    --set global.containerSecurityContext.runAsGroup=0 >"$identity_manifest"
+  assert_env_pair "$identity_manifest" POOL_WORKER_RUN_AS_USER 1000710000
+  assert_env_pair "$identity_manifest" POOL_WORKER_RUN_AS_GROUP 0
   for read_only in false null; do
     local readonly_manifest="${TMP_DIR}/${provider}-readonly-${read_only}.yaml"
     "$HELM_BIN" template profile-test "$ROOT" -f "$profile" -f "$fixture" \
@@ -470,6 +485,8 @@ for provider in aws azure; do
   assert_absent "$OPENSHIFT_MANIFEST" "supplementalGroups:"
   assert_absent "$OPENSHIFT_MANIFEST" "runAsUser:"
   assert_absent "$OPENSHIFT_MANIFEST" "runAsGroup:"
+  assert_absent "$OPENSHIFT_MANIFEST" POOL_WORKER_RUN_AS_USER
+  assert_absent "$OPENSHIFT_MANIFEST" POOL_WORKER_RUN_AS_GROUP
   assert_absent "$OPENSHIFT_MANIFEST" "asm-1-29"
   assert_contains "$OPENSHIFT_MANIFEST" "runAsNonRoot: true"
   resource_doc "$OPENSHIFT_MANIFEST" Deployment kumo-poolcontroller \

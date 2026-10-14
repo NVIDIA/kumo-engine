@@ -457,7 +457,7 @@ def test_translate_api_error_keeps_provider_response_restricted(
 
 @pytest.mark.parametrize('read_only', [True, False])
 def test_provision_pool_worker_creates_pvc_then_deployment(
-        monkeypatch, read_only):
+        monkeypatch, read_only, worker_identity):
     monkeypatch.setenv('POOL_WORKER_READ_ONLY_ROOT_FILESYSTEM', str(read_only))
     core = MagicMock(spec=k8s_client.CoreV1Api)
     apps = MagicMock(spec=k8s_client.AppsV1Api)
@@ -496,6 +496,8 @@ def test_provision_pool_worker_creates_pvc_then_deployment(
     assert daemon_spec.security_context.seccomp_profile.type == "RuntimeDefault"
     _assert_runtime_filesystem(daemon_spec, read_only)
     daemon_security = daemon_spec.containers[0].security_context
+    assert (daemon_security.run_as_user,
+            daemon_security.run_as_group) == worker_identity
     assert daemon_security.privileged is False
     assert daemon_security.allow_privilege_escalation is False
     assert daemon_security.run_as_non_root is True
@@ -1150,7 +1152,7 @@ def test_provision_activity_pod_raises_not_ready_when_daemon_pending():
 
 @pytest.mark.parametrize('read_only', [True, False])
 def test_provision_activity_pod_translates_env_dict_and_stamps_labels(
-        monkeypatch, read_only):
+        monkeypatch, read_only, worker_identity):
     """The manager is agnostic to the daemon image's env contract:
     whatever ``env`` dict the caller passes is faithfully translated
     to ``V1EnvVar`` entries on the container, and labels are stamped
@@ -1212,6 +1214,8 @@ def test_provision_activity_pod_translates_env_dict_and_stamps_labels(
     assert template_spec.security_context.fs_group_change_policy == "OnRootMismatch"
     container = template_spec.containers[0]
     _assert_runtime_filesystem(template_spec, read_only)
+    assert (container.security_context.run_as_user,
+            container.security_context.run_as_group) == worker_identity
     assert container.security_context.privileged is False
     assert container.security_context.allow_privilege_escalation is False
     assert container.security_context.run_as_non_root is True
@@ -1269,7 +1273,7 @@ def test_provision_activity_pod_translates_env_dict_and_stamps_labels(
 
 @pytest.mark.parametrize('read_only', [True, False])
 def test_provision_eph_activity_pod_uses_emptydir_and_eph_storage(
-        monkeypatch, read_only):
+        monkeypatch, read_only, worker_identity):
     monkeypatch.setenv('POOL_WORKER_READ_ONLY_ROOT_FILESYSTEM', str(read_only))
     core = MagicMock(spec=k8s_client.CoreV1Api)
     batch = MagicMock(spec=k8s_client.BatchV1Api)
@@ -1317,6 +1321,8 @@ def test_provision_eph_activity_pod_uses_emptydir_and_eph_storage(
     # while the node sits empty (backlog #18).
     container = template_spec.containers[0]
     _assert_runtime_filesystem(template_spec, read_only)
+    assert (container.security_context.run_as_user,
+            container.security_context.run_as_group) == worker_identity
     assert container.security_context.privileged is False
     assert container.security_context.allow_privilege_escalation is False
     assert container.security_context.run_as_non_root is True
