@@ -278,7 +278,7 @@ When modifying the entity loop, stage execution, or target writing:
 
 3. **Test multiple query types.** Regression, binary classification, link prediction (exploded), multiclass — each takes a different path through `write_target()` and has different edge cases.
 
-4. **Test with production-like data.** Synthetic benchmarks often have clean data (no orphaned FKs, no NULL columns, no empty target lists). Production datasets have all of these. HnM (31M transactions, orphaned article FKs), Faire (564M engagements, high-cardinality retailers), and Intuit (fraud detection, temporal with create_time) are good coverage.
+4. **Include difficult inputs.** Generate cases with orphaned foreign keys, null columns, empty target lists, high-cardinality values, and temporal relationships using `create_time`. Clean, fully connected data alone misses these behaviors.
 
 ### Adding a New Aggregation Function
 

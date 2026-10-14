@@ -369,6 +369,9 @@ fn expected_result(arrow_name: &str, target: IngestedTarget) -> ExpectedResult {
     use IngestedTarget::*;
 
     match (arrow_name, target) {
+        // The UInt32 and UInt64 values below do not fit in an i32.
+        ("UInt32" | "UInt64", Int32) => Error,
+
         // =====================================================================
         // Integer Arrow types (Int8, Int16, Int32, Int64, UInt8-64)
         // Can convert to: all numerics, bool, string, date, timestamp, decimal128, decimal256
@@ -392,9 +395,11 @@ fn expected_result(arrow_name: &str, target: IngestedTarget) -> ExpectedResult {
         // =====================================================================
         (
             "Float32" | "Float64",
-            Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | String | Decimal128
-            | Decimal256,
+            UInt64 | UInt32 | Float64 | Float32 | Bool | String | Decimal128 | Decimal256,
         ) => Success,
+
+        // The float values below are fractional.
+        ("Float32" | "Float64", Int64 | Int32) => Error,
 
         ("Float32" | "Float64", Bytes | Uuid | Uuid256 | Ip | Date | Timestamp) => Error,
 
@@ -517,11 +522,11 @@ fn expected_result(arrow_name: &str, target: IngestedTarget) -> ExpectedResult {
         // =====================================================================
         (
             "Decimal128",
-            Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | String | Date | Timestamp
-            | Decimal128,
+            UInt64 | UInt32 | Float64 | Float32 | String | Date | Timestamp | Decimal128,
         ) => Success,
 
-        ("Decimal128", Bool | Bytes | Uuid | Uuid256 | Ip | Decimal256) => Error,
+        // The decimal value below is fractional.
+        ("Decimal128", Int64 | Int32 | Bool | Bytes | Uuid | Uuid256 | Ip | Decimal256) => Error,
 
         // =====================================================================
         // Decimal256 Arrow type
@@ -532,23 +537,22 @@ fn expected_result(arrow_name: &str, target: IngestedTarget) -> ExpectedResult {
         // =====================================================================
         (
             "Decimal256",
-            Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | String | Date | Timestamp
-            | Decimal256,
+            UInt64 | UInt32 | Float64 | Float32 | String | Date | Timestamp | Decimal256,
         ) => Success,
 
-        ("Decimal256", Bool | Bytes | Uuid | Uuid256 | Ip | Decimal128) => Error,
+        ("Decimal256", Int64 | Int32 | Bool | Bytes | Uuid | Uuid256 | Ip | Decimal128) => Error,
 
         // =====================================================================
-        // List<Float32> Arrow type (for Float32Array/Float16Array)
-        // Can only convert to: Float32Array, Float16Array
+        // List<Float32> Arrow type
+        // Can only convert to: Float32Array, Float16Array, Float64Array
         // Cannot convert to: anything else
         // =====================================================================
-        ("ListFloat32", Float32Array | Float16Array) => Success,
+        ("ListFloat32", Float32Array | Float16Array | Float64Array) => Success,
 
         (
             "ListFloat32",
             Int64 | Int32 | UInt64 | UInt32 | Float64 | Float32 | Bool | String | Bytes | Uuid
-            | Uuid256 | Ip | Date | Timestamp | Decimal128 | Decimal256 | Float64Array,
+            | Uuid256 | Ip | Date | Timestamp | Decimal128 | Decimal256,
         ) => Error,
 
         // =====================================================================
@@ -797,7 +801,7 @@ fn test_decimal_conversions() {
     access.set_cols(&arrays);
     access.set_row(0);
     assert!(access.get_float64(0).is_ok(), "Decimal128 → Float64");
-    assert!(access.get_int64(0).is_ok(), "Decimal128 → Int64");
+    assert!(access.get_int64(0).is_err(), "fractional Decimal128 → Int64");
     assert!(
         access.with_string(0, |_| Ok(())).is_ok(),
         "Decimal128 → String"
@@ -1502,33 +1506,13 @@ fn test_integer_value_verification() {
 }
 
 #[test]
-fn test_float_to_int_truncation() {
-    // Test that Float → Int truncates toward zero (like SQL CAST)
-    let test_cases: Vec<(f64, i64)> = vec![
-        (3.14, 3),
-        (3.99, 3), // Truncate, not round
-        (-3.14, -3),
-        (-3.99, -3), // Truncate toward zero
-        (0.0, 0),
-        (-0.0, 0),
-        (100.001, 100),
-    ];
-
-    for (float_val, expected_int) in test_cases {
-        let array: ArrayRef = Arc::new(Float64Array::from(vec![float_val]));
+fn test_float_to_int_requires_a_whole_value() {
+    for (value, expected) in [(3.0, Some(3)), (-0.0, Some(0)), (3.14, None), (-3.99, None)] {
+        let array: ArrayRef = Arc::new(Float64Array::from(vec![value]));
         let (mut access, arrays) = make_access(&array, default_hints());
         access.set_cols(&arrays);
         access.set_row(0);
-
-        let actual = access
-            .get_int64(0)
-            .expect("should succeed")
-            .expect("should not be null");
-        assert_eq!(
-            actual, expected_int,
-            "Float {} should truncate to {}",
-            float_val, expected_int
-        );
+        assert_eq!(access.get_int64(0).ok().flatten(), expected, "{value}");
     }
 }
 

@@ -1159,8 +1159,8 @@ fn uuid_json_hex() {
 }
 
 #[test]
-fn decimal128_truncates_to_int() {
-    let array = arrow_array::Decimal128Array::from_iter_values([12345i128])
+fn decimal128_converts_only_whole_values_to_int() {
+    let array = arrow_array::Decimal128Array::from_iter_values([12300i128, 12345])
         .with_precision_and_scale(10, 2)
         .unwrap();
     let cols: Vec<arrow_array::ArrayRef> = vec![std::sync::Arc::new(array)];
@@ -1174,8 +1174,9 @@ fn decimal128_truncates_to_int() {
     let mut access = RowAccess::new(hints, stats);
     access.set_cols(&cols);
     access.set_row(0);
-    let value = access.get_int64(0).unwrap().unwrap();
-    assert_eq!(value, 123);
+    assert_eq!(access.get_int64(0).unwrap(), Some(123));
+    access.set_row(1);
+    assert!(access.get_int64(0).is_err());
 }
 
 #[test]

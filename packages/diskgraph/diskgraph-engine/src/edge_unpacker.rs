@@ -82,6 +82,45 @@ impl<'a> EdgeUnpacker<'a> {
         n
     }
 
+    /// Number of leading entries whose sort key satisfies `pred`, which must be
+    /// true on a prefix and false after it. Entry 0 is checked first, so an empty
+    /// prefix only touches the front of the segment.
+    pub fn partition_point(&self, mut pred: impl FnMut(u64) -> bool) -> usize {
+        if self.entry_bytes == 0 {
+            return 0;
+        }
+        let len = (self.end as usize - self.ptr as usize) / self.entry_bytes;
+        if len == 0 || !pred(self.key_at(0)) {
+            return 0;
+        }
+        let (mut lo, mut hi) = (1, len);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if pred(self.key_at(mid)) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    }
+
+    #[inline]
+    fn key_at(&self, index: usize) -> u64 {
+        unsafe {
+            let ptr = self.ptr.add(index * self.entry_bytes);
+            if self.entry_bytes <= 8 {
+                if self.dst_bits >= 64 {
+                    return 0;
+                }
+                (read_u64_partial(ptr, self.entry_bytes) >> self.dst_bits) & self.sort_key_mask
+            } else {
+                ((read_u128_partial(ptr, self.entry_bytes) >> self.dst_bits)
+                    & self.sort_key_mask as u128) as u64
+            }
+        }
+    }
+
     /// Skip N items (advancing pointer)
     #[inline]
     pub fn advance(&mut self, n: usize) {
@@ -221,6 +260,26 @@ mod tests {
         let n = unpacker.unpack_batch(&mut dsts, &mut keys);
         assert_eq!(n, 1);
         assert_eq!(dsts[0], 4);
+    }
+
+    #[test]
+    fn test_partition_point_matches_linear_count() {
+        let layout = RelationLayout {
+            relation_id: 0,
+            dst_bits: 8,
+            dst_mask: 0xFF,
+            dest_sort_key_bits: Some(8),
+            dest_sort_key_mask: Some(0xFF),
+            entry_bytes: 2,
+        };
+        for len in 0..70u64 {
+            let data: Vec<u8> = (0..len).flat_map(|i| [0, (len - i) as u8]).collect();
+            for cut in 0..=len + 1 {
+                let unpacker = EdgeUnpacker::new(&data, &layout);
+                let expected = (1..=len).filter(|&key| key >= cut).count();
+                assert_eq!(unpacker.partition_point(|key| key >= cut), expected);
+            }
+        }
     }
 
     #[test]

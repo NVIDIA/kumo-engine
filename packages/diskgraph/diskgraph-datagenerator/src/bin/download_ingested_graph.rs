@@ -15,6 +15,12 @@ struct Args {
     /// Inputs: <customer_name> <job_id> or <job_url>.
     #[arg(value_name = "INPUT")]
     inputs: Vec<String>,
+    /// S3 bucket containing the job and its source data.
+    #[arg(long)]
+    bucket: String,
+    /// Directory within the bucket, if different from the customer in the job spec.
+    #[arg(long)]
+    customer_prefix: Option<String>,
     /// Output root directory (defaults to /mnt/localssd/datasets or DISKGRAPH_DATA_ROOT/datasets).
     #[arg(long, default_value = DEFAULT_OUT_ROOT)]
     out_root: PathBuf,
@@ -33,7 +39,7 @@ async fn main() -> Result<()> {
         [customer, job] => format!("{} {}", customer, job),
         _ => {
             return Err(anyhow!(
-                "usage: download-ingested-graph <customer_name> <job_id> | <job_url>"
+                "usage: download-ingested-graph --bucket <name> <customer_name> <job_id> | <job_url>"
             ));
         }
     };
@@ -47,7 +53,7 @@ fn parse_args() -> Result<ResolvedArgs> {
     let raw = Args::parse();
     if raw.inputs.is_empty() {
         return Err(anyhow!(
-            "usage: download-ingested-graph <customer_name> <job_id> | <job_url>"
+            "usage: download-ingested-graph --bucket <name> <customer_name> <job_id> | <job_url>"
         ));
     }
 
@@ -57,7 +63,8 @@ fn parse_args() -> Result<ResolvedArgs> {
             out_root: resolve_out_root(raw.out_root),
             dry_run: raw.dry_run,
             clean: true,
-            bucket: None,
+            bucket: raw.bucket,
+            customer_prefix: raw.customer_prefix,
         },
     })
 }
@@ -78,4 +85,19 @@ fn resolve_out_root(out_root: PathBuf) -> PathBuf {
 struct ResolvedArgs {
     inputs: Vec<String>,
     options: DownloadOptions,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Args;
+    use clap::Parser;
+
+    #[test]
+    fn storage_is_chosen_explicitly() {
+        let job = ["download-ingested-graph", "example", "trainingjob-example"];
+        assert!(Args::try_parse_from(job).is_err());
+        assert!(
+            Args::try_parse_from(job.into_iter().chain(["--bucket", "example-bucket"])).is_ok()
+        );
+    }
 }

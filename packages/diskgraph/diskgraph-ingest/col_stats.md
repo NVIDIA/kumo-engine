@@ -11,7 +11,7 @@ DiskGraph ingest has four phases:
 
 Col stats runs during phase 2. Output: `col_stats.json` alongside the index.
 
-Encode is 26-40% of total ingest wall time. The rest (pk_map, edges_map, I/O) is unaffected by col stats. On edge-dominated datasets (Faire: 553M edges), encode is a small fraction and col stats overhead is invisible (<2%). On small datasets where encode dominates (ifood, databricks), overhead is measurable (19-22%).
+Column statistics add work during encoding. Their share of total ingest time depends on how much time the dataset spends encoding, building primary-key and edge maps, and reading data.
 
 ## The Observer Architecture
 
@@ -79,7 +79,7 @@ A `--row-subsample` flag enables 30% per-row subsampling — skip 70% of rows ra
 
 ### Why Category Counting Is Hard
 
-Unlike streaming stats (~18KB/column, L1), category counting tracks individual values across 200 threads on billions of rows. Per-row access to any shared structure costs ~40ns. With C categorical columns, the floor is `C × 40ns` against 5-8µs encode. At 18 columns = 11%; at 179 columns approaches 100%.
+Unlike streaming stats (~18KB/column, L1), category counting tracks individual values across 200 threads on billions of rows. Per-row access to any shared structure costs ~40ns. With C categorical columns, the floor is `C × 40ns` against 5-8µs encode. At 18 columns = 11%; across many columns approaches 100%.
 
 Approaches tried:
 
@@ -155,7 +155,7 @@ To add a new per-column statistic (e.g., a new distributional measure, a domain-
 
 1. **Add observer method** to `ColumnValueObserver` trait in `diskgraph-rowpack/src/lib.rs` if the existing typed callbacks (`observe_i64`, `observe_string`, etc.) don't cover your needs. Usually they do — most new stats just need a different accumulator behind the same callbacks.
 
-2. **Add accumulator state** to `FileColStats` in `col_stats.rs`. Keep it small — this lives in the per-row hot path. If your stat needs >1KB per column, it will affect L1 cache pressure across all columns. Benchmark on discord-safety (179 columns) to check.
+2. **Add accumulator state** to `FileColStats` in `col_stats.rs`. Keep it small — this lives in the per-row hot path. If your stat needs >1KB per column, it will affect L1 cache pressure across all columns. Benchmark with a generated wide table to check.
 
 3. **Add merge logic** to `TableColStats`. Your accumulator must support merging partial results from different files/threads. If it doesn't (e.g., requires seeing all values in order), it can't run in the streaming architecture — you'll need a separate pass, which means re-reading data.
 
@@ -163,11 +163,11 @@ To add a new per-column statistic (e.g., a new distributional measure, a domain-
 
 5. **Update Kumo consumption.** New stats that affect encoder inference need to flow through the `_ensure_diskgraph_col_stats_in_cache()` → `StatsManager` path. Test that the stat arrives correctly across the subprocess boundary.
 
-6. **Benchmark.** Measure wall time overhead on at least two datasets: one small where encode dominates (databricks, 31GB) and one large where encode is a fraction (alt_detection, 2.2TB or faire, 127GB). Report overhead as percentage of total ingest wall time, not encode time alone.
+6. **Benchmark.** Measure wall time overhead on at least two datasets: one where encode dominates and one where primary-key or edge-map construction dominates. Report overhead as percentage of total ingest wall time, not encode time alone.
 
 ### Changing Category Counting
 
-Category counting is the most performance-sensitive part. Changes here must be benchmarked on various datasets (179 cat cols, 10B rows). Any change that adds per-row work to the hot path (even a single branch) can add measurable overhead at 179 columns.
+Category counting is the most performance-sensitive part. Changes here must be benchmarked on generated datasets with different row counts, column counts, and cardinalities. Any change that adds per-row work to the hot path (even a single branch) can add measurable overhead across many columns.
 
 The frozen `Arc<HashSet>` pattern for the graduated set is load-bearing — don't replace it with `DashSet` or `RwLock` reads per row without benchmarking. The difference between 3ns (immutable read) and 25ns (atomic read) is 22ns × 179 columns × 10B rows = hours of added runtime.
 

@@ -49,8 +49,7 @@ pub struct RowAccessHints {
 
 pub struct RowAccess<'p> {
     row: usize,
-    cols_ptr: *const ArrayRef,
-    cols_len: usize,
+    cols: Vec<ArrayRef>,
     _stats: RowAccessStats<'p>,
     hints: Vec<RowAccessHints>,
     fast_parsers: Vec<Option<TimestampFormatParser>>,
@@ -494,6 +493,66 @@ impl FloatListView {
     }
 }
 
+fn plain_array(array: &ArrayRef) -> ArrayRef {
+    let plain = match array.data_type() {
+        DataType::Dictionary(_, values) => values.as_ref().clone(),
+        DataType::Float16 => DataType::Float32,
+        _ => return array.clone(),
+    };
+    match arrow_cast::cast(array, &plain) {
+        Ok(cast) => plain_array(&cast),
+        Err(_) => array.clone(),
+    }
+}
+
+fn whole_float(value: f64) -> Result<i64> {
+    let bound = -(i64::MIN as f64);
+    if value.fract() == 0.0 && (-bound..bound).contains(&value) {
+        Ok(value as i64)
+    } else {
+        Err(anyhow!("{value} is not a whole int64"))
+    }
+}
+
+fn whole_decimal_i128(value: i128, scale: i8) -> Result<i128> {
+    if scale > 0 {
+        let pow = 10i128
+            .checked_pow(scale as u32)
+            .ok_or_else(|| anyhow!("decimal scale {scale} out of range"))?;
+        if value % pow != 0 {
+            return Err(anyhow!("decimal value is not whole"));
+        }
+    }
+    Ok(apply_decimal_scale_i128(value, i32::from(scale)))
+}
+
+fn whole_decimal_i256(value: arrow_buffer::i256, scale: i8) -> Result<num_bigint::BigInt> {
+    if scale > 0 {
+        let pow = num_bigint::BigInt::from(10u32).pow(scale as u32);
+        let raw = num_bigint::BigInt::from_signed_bytes_le(&value.to_le_bytes());
+        if !num_traits::Zero::is_zero(&(raw % pow)) {
+            return Err(anyhow!("decimal value is not whole"));
+        }
+    }
+    Ok(apply_decimal_scale_i256(value, i32::from(scale)))
+}
+
+fn list_elements<T>(
+    values: &ArrayRef,
+    start: usize,
+    end: usize,
+    mut get: impl FnMut(&mut RowAccess<'_>) -> Result<Option<T>>,
+) -> Result<Vec<T>> {
+    let mut access = RowAccess::new(vec![RowAccessHints::default()], RowAccessStats::new(None));
+    access.set_cols(&[values.slice(start, end - start)]);
+    let mut out = Vec::with_capacity(end - start);
+    for row in 0..end - start {
+        access.set_row(row);
+        out.extend(get(&mut access)?);
+    }
+    Ok(out)
+}
+
 #[inline]
 fn list_range_has_nulls(arr: &dyn Array, start: usize, end: usize) -> bool {
     if arr.null_count() == 0 {
@@ -714,8 +773,7 @@ impl<'p> RowAccess<'p> {
         let n = hints.len();
         Self {
             row: 0,
-            cols_ptr: std::ptr::null(),
-            cols_len: 0,
+            cols: Vec::new(),
             _stats: stats,
             hints,
             fast_parsers,
@@ -724,8 +782,8 @@ impl<'p> RowAccess<'p> {
     }
 
     pub fn set_cols(&mut self, cols: &[ArrayRef]) {
-        self.cols_ptr = cols.as_ptr();
-        self.cols_len = cols.len();
+        self.cols.clear();
+        self.cols.extend(cols.iter().map(plain_array));
         // Reset and rebuild the per-column pre-tokenized list cache.
         // Any column whose hint declares a `multicategorical_delimiter` and
         // whose source is a parquet `Utf8`/`LargeUtf8` scalar gets its
@@ -740,7 +798,9 @@ impl<'p> RowAccess<'p> {
             let Some(delim) = hint.multicategorical_delimiter.as_deref() else {
                 continue;
             };
-            let Some(arr) = cols.get(idx) else { continue };
+            let Some(arr) = self.cols.get(idx) else {
+                continue;
+            };
             let dt = arr.data_type();
             if !matches!(dt, DataType::Utf8 | DataType::LargeUtf8) {
                 continue;
@@ -762,11 +822,8 @@ impl<'p> RowAccess<'p> {
     }
 
     pub fn array(&self, idx: usize) -> Result<&ArrayRef> {
-        if self.cols_ptr.is_null() {
-            return Err(anyhow!("row access columns not set"));
-        }
-        let cols = unsafe { std::slice::from_raw_parts(self.cols_ptr, self.cols_len) };
-        cols.get(idx)
+        self.cols
+            .get(idx)
             .ok_or_else(|| anyhow!("missing column {}", idx))
     }
 
@@ -891,8 +948,7 @@ impl<'p> RowAccess<'p> {
                     .as_any()
                     .downcast_ref::<arrow_array::Decimal128Array>()
                     .ok_or_else(|| anyhow!("decimal128 cast"))?;
-                let value = arr.value(self.row);
-                let scaled = apply_decimal_scale_i128(value, i32::from(*scale));
+                let scaled = whole_decimal_i128(arr.value(self.row), *scale)?;
                 i64::try_from(scaled)
                     .map_err(|_| anyhow!("decimal128 overflow"))
                     .map(Some)
@@ -902,9 +958,7 @@ impl<'p> RowAccess<'p> {
                     .as_any()
                     .downcast_ref::<arrow_array::Decimal256Array>()
                     .ok_or_else(|| anyhow!("decimal256 cast"))?;
-                let value = arr.value(self.row);
-                let scaled = apply_decimal_scale_i256(value, i32::from(*scale));
-                scaled
+                whole_decimal_i256(arr.value(self.row), *scale)?
                     .to_i64()
                     .ok_or_else(|| anyhow!("decimal256 overflow"))
                     .map(Some)
@@ -914,14 +968,14 @@ impl<'p> RowAccess<'p> {
                     .as_any()
                     .downcast_ref::<arrow_array::Float64Array>()
                     .ok_or_else(|| anyhow!("float64 cast"))?;
-                Ok(Some(arr.value(self.row) as i64))
+                whole_float(arr.value(self.row)).map(Some)
             }
             DataType::Float32 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::Float32Array>()
                     .ok_or_else(|| anyhow!("float32 cast"))?;
-                Ok(Some(arr.value(self.row) as i64))
+                whole_float(f64::from(arr.value(self.row))).map(Some)
             }
             DataType::Boolean => {
                 let arr = array
@@ -945,7 +999,10 @@ impl<'p> RowAccess<'p> {
                     .as_any()
                     .downcast_ref::<arrow_array::Int64Array>()
                     .ok_or_else(|| anyhow!("int64 cast"))?;
-                Ok(Some(arr.value(self.row) as i32))
+                let value = arr.value(self.row);
+                i32::try_from(value)
+                    .map_err(|_| anyhow!("int64 value {value} outside i32 range"))
+                    .map(Some)
             }
             DataType::Int32 => {
                 let arr = array
@@ -973,14 +1030,20 @@ impl<'p> RowAccess<'p> {
                     .as_any()
                     .downcast_ref::<arrow_array::UInt64Array>()
                     .ok_or_else(|| anyhow!("uint64 cast"))?;
-                Ok(Some(arr.value(self.row) as i32))
+                let value = arr.value(self.row);
+                i32::try_from(value)
+                    .map_err(|_| anyhow!("uint64 value {value} outside i32 range"))
+                    .map(Some)
             }
             DataType::UInt32 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::UInt32Array>()
                     .ok_or_else(|| anyhow!("uint32 cast"))?;
-                Ok(Some(arr.value(self.row) as i32))
+                let value = arr.value(self.row);
+                i32::try_from(value)
+                    .map_err(|_| anyhow!("uint32 value {value} outside i32 range"))
+                    .map(Some)
             }
             DataType::UInt16 => {
                 let arr = array
@@ -1046,18 +1109,17 @@ impl<'p> RowAccess<'p> {
                     .as_any()
                     .downcast_ref::<arrow_array::Decimal128Array>()
                     .ok_or_else(|| anyhow!("decimal128 cast"))?;
-                let value = arr.value(self.row);
-                let scaled = apply_decimal_scale_i128(value, i32::from(*scale));
-                Ok(Some(scaled as i32))
+                let scaled = whole_decimal_i128(arr.value(self.row), *scale)?;
+                i32::try_from(scaled)
+                    .map_err(|_| anyhow!("decimal128 overflow"))
+                    .map(Some)
             }
             DataType::Decimal256(_, scale) => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::Decimal256Array>()
                     .ok_or_else(|| anyhow!("decimal256 cast"))?;
-                let value = arr.value(self.row);
-                let scaled = apply_decimal_scale_i256(value, i32::from(*scale));
-                scaled
+                whole_decimal_i256(arr.value(self.row), *scale)?
                     .to_i32()
                     .ok_or_else(|| anyhow!("decimal256 overflow"))
                     .map(Some)
@@ -1067,14 +1129,20 @@ impl<'p> RowAccess<'p> {
                     .as_any()
                     .downcast_ref::<arrow_array::Float64Array>()
                     .ok_or_else(|| anyhow!("float64 cast"))?;
-                Ok(Some(arr.value(self.row) as i32))
+                let value = whole_float(arr.value(self.row))?;
+                i32::try_from(value)
+                    .map_err(|_| anyhow!("float64 value {value} outside i32 range"))
+                    .map(Some)
             }
             DataType::Float32 => {
                 let arr = array
                     .as_any()
                     .downcast_ref::<arrow_array::Float32Array>()
                     .ok_or_else(|| anyhow!("float32 cast"))?;
-                Ok(Some(arr.value(self.row) as i32))
+                let value = whole_float(f64::from(arr.value(self.row)))?;
+                i32::try_from(value)
+                    .map_err(|_| anyhow!("float32 value {value} outside i32 range"))
+                    .map(Some)
             }
             DataType::Boolean => {
                 let arr = array
@@ -1972,7 +2040,7 @@ impl<'p> RowAccess<'p> {
                     .downcast_ref::<arrow_array::Float64Array>()
                     .ok_or_else(|| anyhow!("float64 cast"))?
                     .value(self.row);
-                return Ok(Some(with_stack_str(value, trimmed, f)?));
+                return Ok(Some(with_float_str(value, trimmed, f)?));
             }
             DataType::Float32 => {
                 let value = array
@@ -1980,7 +2048,7 @@ impl<'p> RowAccess<'p> {
                     .downcast_ref::<arrow_array::Float32Array>()
                     .ok_or_else(|| anyhow!("float32 cast"))?
                     .value(self.row);
-                return Ok(Some(with_stack_str(value, trimmed, f)?));
+                return Ok(Some(with_float_str(value, trimmed, f)?));
             }
             DataType::Boolean => {
                 let value = array
@@ -3004,7 +3072,12 @@ impl<'p> RowAccess<'p> {
                 }
                 Ok(Some(f(&vec)?))
             }
-            _ => Err(anyhow!("float32 array type mismatch")),
+            _ => {
+                let parsed = list_elements(values, start, end, |access| {
+                    Ok(Some(access.get_float32(0)?.unwrap_or_default()))
+                })?;
+                Ok(Some(f(&parsed)?))
+            }
         }
     }
 
@@ -3058,7 +3131,16 @@ impl<'p> RowAccess<'p> {
             DataType::Float16 => FloatListValues::F16(values.clone()),
             DataType::Float32 => FloatListValues::F32(values.clone()),
             DataType::Float64 => FloatListValues::F64(values.clone()),
-            _ => return Err(anyhow!("float array type mismatch")),
+            _ => {
+                let parsed = list_elements(values, start, end, |access| {
+                    Ok(Some(access.get_float32(0)?))
+                })?;
+                return Ok(Some(FloatListView {
+                    start: 0,
+                    end: parsed.len(),
+                    values: FloatListValues::F32(Arc::new(arrow_array::Float32Array::from(parsed))),
+                }));
+            }
         };
         Ok(Some(FloatListView { start, end, values }))
     }
@@ -3163,17 +3245,21 @@ impl<'p> RowAccess<'p> {
             DataType::Int16 => IntListValues::I16(values.clone()),
             DataType::Int32 => IntListValues::I32(values.clone()),
             DataType::Int64 => IntListValues::I64(values.clone()),
-            other => {
-                return Err(anyhow!(
-                    "ingest type mismatch: column={} row={} declared=Int*Array \
-                     but parquet list element type is {:?} (need Int8/Int16/Int32/Int64). \
-                     If the elements are stringified ints, change the declared \
-                     dtype to StringArray + add a multicategorical_delimiter, or \
-                     cast the source list elements to a signed int width upstream.",
-                    col_label,
-                    row,
-                    other,
-                ));
+            _ => {
+                let parsed = list_elements(values, start, end, |access| access.get_int64(0))
+                    .map_err(|error| {
+                        anyhow!(
+                            "ingest type mismatch: column={col_label} row={row} \
+                             declared=Int*Array but parquet list element type {:?} \
+                             holds a non-integer: {error}",
+                            values.data_type(),
+                        )
+                    })?;
+                return Ok(Some(IntListView {
+                    start: 0,
+                    end: parsed.len(),
+                    values: IntListValues::Parsed(parsed),
+                }));
             }
         };
         Ok(Some(IntListView {
@@ -3256,6 +3342,14 @@ impl<'p> RowAccess<'p> {
                 offsets[self.row + 1] as usize,
                 list.values(),
             )
+        } else if let Some(delim) = multicat_delim.as_deref() {
+            return Ok(self
+                .with_string(idx, |text| Ok(split_multicat_string(text, delim)))?
+                .map(|parsed| StringListView {
+                    start: 0,
+                    end: parsed.len(),
+                    values: StringListValues::Parsed(parsed),
+                }));
         } else {
             return Err(anyhow!(
                 "ingest type mismatch: column={} row={} declared=StringArray \
@@ -3289,14 +3383,14 @@ impl<'p> RowAccess<'p> {
                 values: StringListValues::LargeUtf8(values.clone()),
             }));
         }
-        Err(anyhow!(
-            "ingest type mismatch: column={} row={} declared=StringArray \
-             but parquet list element type is {:?} (need Utf8 or LargeUtf8). \
-             Cast the source list elements to a string type upstream.",
-            col_label,
-            row,
-            values.data_type(),
-        ))
+        let parsed = list_elements(values, start, end, |access| {
+            access.with_string(0, |text| Ok(text.to_string()))
+        })?;
+        Ok(Some(StringListView {
+            start: 0,
+            end: parsed.len(),
+            values: StringListValues::Parsed(parsed),
+        }))
     }
 
     pub fn with_float64_array<T>(
@@ -3341,10 +3435,12 @@ impl<'p> RowAccess<'p> {
         } else {
             return Err(anyhow!("list cast"));
         };
-        let values_arr = values
-            .as_any()
-            .downcast_ref::<arrow_array::Float64Array>()
-            .ok_or_else(|| anyhow!("float64 list cast"))?;
+        let Some(values_arr) = values.as_any().downcast_ref::<arrow_array::Float64Array>() else {
+            let parsed = list_elements(values, start, end, |access| {
+                Ok(Some(access.get_float64(0)?.unwrap_or_default()))
+            })?;
+            return Ok(Some(f(&parsed)?));
+        };
         if values_arr.null_count() == 0 {
             return Ok(Some(f(&values_arr.values()[start..end])?));
         }
