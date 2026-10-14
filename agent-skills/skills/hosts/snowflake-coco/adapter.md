@@ -2,13 +2,15 @@
 
 Everything Snowflake-specific for running the data science agent inside Snowflake. The portable core (`kumo-data-science/`, `kumoai-reference/`) does not change across hosts.
 
-**Target deployment mode: Kumo running locally, in-process, inside a Snowflake notebook**, with Kumo **already present in the environment** and authenticating through the runtime's mounted SPCS identity. All other Kumo/Snowflake deployment modes are out of scope — see §9.
+**Target deployment mode: Kumo running locally, in-process, inside a Snowflake notebook**, with Kumo **already present in the environment** and authenticating through the runtime's mounted SPCS identity. A Snowflake ML Job that the notebook submits is the same mode on other compute: Kumo still runs locally, in-process, inside the job's container (`ml_job.md`). All other Kumo/Snowflake deployment modes are out of scope — see §9.
 
 **The published Kumo documentation is stale for this version of the local SDK and is not a source here.** Do not cite it, link to it, fetch it, or reconcile against it. Facts marked ``Source: shipped package (`<python.module.path>`)`` or `Source: measured ... runs` are verified against the Kumo package source or by execution and are ground truth; everything else is compiled guidance, flagged where unverified. **Do not invent API names, parameters, env vars, privileges, or SQL.**
 
 Kumo is already present in the environment; never raise environment setup with the user.
 Generating and running the notebook — authentication, setup cell, compute, storage, permissions
 and write-back — is in `runtime.md` in this directory; read it at Step 2.
+Running the artifact as a Snowflake ML Job — when to, the job script, submission, logs,
+schedules and cost — is in `ml_job.md`; read it only when the user asks for a job.
 
 ---
 
@@ -85,13 +87,39 @@ Mentioned only so the agent recognises and refuses them. **Never blend these int
 
 | Mode | Marker to recognise it |
 |---|---|
-| Snowflake Native App on SPCS | `kumo.init(snowflake_application=...)`, Marketplace app, compute pools, app-level GRANTs |
+| Snowflake Native App on SPCS | `kumo.init(snowflake_application=...)`, Marketplace app, a compute pool or GRANTs that belong to a Kumo application |
 | Kumo SaaS / external Kumo cloud | `kumo.init(url=..., api_key=...)`, `KUMO_API_ENDPOINT` / `KUMO_API_KEY` |
 | Secure Data Sharing | UI/EDA-oriented, Kumo creates a database from a share |
 | Self-hosted VPC / Kubernetes / Docker | `POOL_GPU_CONCURRENCY`, `topolvm-vg`, cluster GPU-sizing tables |
 
 Keep the environment-specific local setup; never replace it with cloud-URL or API-key initialization.
 
-If the user is actually on SPCS or SaaS, say so and stop — this adapter does not cover them.
+If the user is actually on the Kumo Native App or Kumo SaaS, say so and stop — this adapter does not cover them.
+
+**A compute pool alone is not a marker.** A Snowflake ML Job (`snowflake.ml.jobs`) takes a
+`compute_pool`, and so does a container notebook. Neither involves a Kumo application: the job
+script imports `kumo.engine` and connects with `from_spcs_env`, exactly as the notebook does.
+Treat a request to score or train on a named compute pool as an ML Job request (`ml_job.md`),
+never as the Native App. Only a pool or GRANT tied to a Kumo application, or `kumo.init(...)`,
+marks the Native App.
+
+---
+## 10. Host-supplied values for Snowflake ML Jobs
+
+A job runs in a fresh container, not in the notebook's environment. The host supplies what that
+container needs for Kumo to be present. The skill refers to these values by name only.
+
+| Name | What it is | On this host |
+|---|---|---|
+| `KUMO_JOB_RUNTIME` | The `runtime_environment` of every job that runs Kumo | `'2.9.0'`. Write this literal into the submission cell. If the host supplies a runtime image with Kumo present, its reference replaces this value here, and nothing else changes |
+| `KUMO_JOB_REQUIREMENTS` | A dict of further submission keyword arguments that make Kumo present in the job container. It may be empty | Supplied by the host in the notebook's namespace. The skill never writes, extends, prints or explains its contents |
+
+When `KUMO_JOB_REQUIREMENTS` is not defined in the notebook, the submission cell stops before
+submitting (`ml_job.md` §6). Tell the user that running Kumo in an ML Job is not enabled in this
+environment and is a matter for their administrator. Do not substitute a value of your own.
+
+If the user asks whether the job has Kumo, or what to add to the job for it: the host's values
+provide Kumo to the job, and the user adds nothing. The default ML Job runtime does not carry Kumo
+by itself.
 
 ---

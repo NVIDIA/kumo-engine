@@ -685,7 +685,8 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
 ### 11.3 Also never
 
 - **Any environment-setup step.** Kumo is already present (§2); begin at `import kumo.engine`.
-- Branching on a job status string or enum — none is documented.
+- Branching on a Kumo job status string or enum — Kumo has none. A Snowflake ML Job's status
+  is Snowflake's, read from `snowflake.ml.jobs`, and only the host's job file uses it.
 - `connector['X'].head(...)` — it does not exist. `connector.sql(query)` exists but returns a
   custom-SQL source table, never rows; do not use it to read data (Source: shipped package
   (`kumo.engine.connector.source_table`)).

@@ -23,6 +23,16 @@ Not answerable from anything on hand. Do not guess.
 - CoCo-level context window, token budget, latency, and rate limits.
 - Long-running training, for the opt-in Run step only: whether a CoCo session stays alive for the whole of a blocking `fit`, which can run for hours. There is no job to poll; if the session cannot outlive training, the Run step is not viable on this host.
 
+**Snowflake ML Jobs (pending decision):**
+
+- **How Kumo reaches an ML Job's container.** A job starts from a fresh runtime image, so the
+  notebook's Kumo is not there. The skill names the delivery `KUMO_JOB_RUNTIME` /
+  `KUMO_JOB_REQUIREMENTS` (`adapter.md` §10) and never describes it. Options under discussion:
+  a host-provided runtime image with Kumo present, passed as `KUMO_JOB_RUNTIME`; or a
+  host-provided `KUMO_JOB_REQUIREMENTS` placed in the notebook's namespace; or no ML Jobs in the
+  skill. Until one is chosen, the submission cell stops before submitting.
+- Whether a task running a registered job definition works end to end (`ml_job.md` §8).
+
 **Needed from Kumo (not CoCo):**
 
 - The GRANT set for this path (`runtime.md` §6).

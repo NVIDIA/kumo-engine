@@ -37,6 +37,9 @@ If that import raises, stop and report that the environment is not ready.
 
 Notebook kernel observed: Python 3.12.
 
+A Snowflake ML Job runs in its own container, not in this one. How Kumo is present there is in
+`ml_job.md` and `adapter.md` §10.
+
 ### 1.2 Execution storage
 
 Scratch and artifacts can live under `/tmp` in a Snowflake Notebook container; training and prediction complete there.
