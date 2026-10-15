@@ -26,7 +26,7 @@ export const setTestTrainResponseType = (responseType: string = "") => {
 const mockDefaultTrainResponse = (): Promise<AxiosResponse<unknown>> => {
     return Promise.resolve(
         createMockResponse({
-            id: "trainingjob-bed43f8f2fc54ea985439b026dbe0865"
+            id: "trainingjob-00055000000000000000000000000000"
         }) as unknown as AxiosResponse<unknown>
     );
 };

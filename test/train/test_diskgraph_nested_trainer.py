@@ -325,9 +325,20 @@ class _StubTrainer:
 # ---------------------------------------------------------------------------
 
 
+def test_logs_are_nested_directly_below_automl_trial(tmp_path: Any) -> None:
+    trainer = DiskgraphNestedTrainer.__new__(DiskgraphNestedTrainer)
+    trainer.task = SimpleNamespace(name="task")
+    trainer.root_dir = str(tmp_path / "task" / "automl")
+    trainer.track_version = True
+    trainer.version = 3
+    trainer.fit_mode = FitMode.fit
+
+    assert trainer.log_dir == str(tmp_path / "task" / "automl" / "version_3")
+
+
 def test_constructor_requires_bundle_dir() -> None:
     """TT-NG: the subclass refuses to be constructed without a bundle."""
-    # We can't easily construct the full NestedTrainer surface here,
+    # We can't easily construct the full Trainer surface here,
     # so just verify the kwarg pop + None check fires before super().
     with pytest.raises(ValueError, match="diskgraph_task_dataset_bundle_dir"):
         # Pass diskgraph_task_dataset_bundle_dir=None explicitly to trip
@@ -356,7 +367,7 @@ def test_set_explainers_keeps_rfm_format_for_ttng(
                                    **kwargs: Any) -> None:
         self.pl_model.explainers.append(collector)
 
-    monkeypatch.setattr(dg_nested_mod.NestedTrainer, "set_explainers",
+    monkeypatch.setattr(dg_nested_mod.Trainer, "set_explainers",
                         fake_parent_set_explainers)
 
     trainer = DiskgraphNestedTrainer.__new__(DiskgraphNestedTrainer)
@@ -869,23 +880,22 @@ def test_init_passes_bundle_manifest_path_through(
 
 
 # ---------------------------------------------------------------------------
-# load() — TT-NG variant that delegates to NestedTrainer.load + rebinds class.
+# load() — TT-NG variant that delegates to Trainer.load + rebinds class.
 # ---------------------------------------------------------------------------
 
 
 def test_load_rebinds_class_and_sets_bundle_dir(
         monkeypatch: pytest.MonkeyPatch) -> None:
     """TT-NG: ``DiskgraphNestedTrainer.load`` delegates to
-    ``NestedTrainer.load`` (which is the only way to thread saved
-    config fields through ``from_config``), then rebinds the returned
+    ``Trainer.load`` to restore saved config fields, then rebinds the returned
     instance's ``__class__`` to the subclass and stamps on the bundle
     dir. This is the mechanism that makes ``trainer.init()`` resolve
     to the TT-NG override on a freshly loaded best trainer."""
     from kumo_core.train.diskgraph_nested_trainer import DiskgraphNestedTrainer
-    # Stand-in for the legacy load result. Plain NestedTrainer instance
+    # Stand-in for the legacy load result. Plain Trainer instance
     # without going through the heavy constructor.
-    from kumo_core.train.nested_trainer import NestedTrainer
-    fake_base = NestedTrainer.__new__(NestedTrainer)
+    from kumo_core.train.trainer import Trainer
+    fake_base = Trainer.__new__(Trainer)
 
     captured: dict[str, Any] = {}
 
@@ -896,7 +906,7 @@ def test_load_rebinds_class_and_sets_bundle_dir(
         return fake_base
 
     monkeypatch.setattr(
-        NestedTrainer, "load",
+        Trainer, "load",
         classmethod(lambda cls, task, root_dir, **kw: _fake_nested_load(
             task, root_dir, **kw)))
 
@@ -914,54 +924,21 @@ def test_load_rebinds_class_and_sets_bundle_dir(
     assert type(out) is DiskgraphNestedTrainer
     # Bundle dir was stamped on.
     assert out.diskgraph_task_dataset_bundle_dir == "/mnt/localssd/foo/bundle"
-    # Parent.load was called with feature_store/graph_store=None — TT-NG
-    # has no graphengine data plane.
-    assert captured["kwargs"]["feature_store"] is None
-    assert captured["kwargs"]["graph_store"] is None
+    # Omitted stores use the None defaults in Trainer.load.
+    assert "feature_store" not in captured["kwargs"]
+    assert "graph_store" not in captured["kwargs"]
     # encoders + version passed through.
     assert captured["kwargs"]["encoders"] == {"e": 1}
     assert captured["kwargs"]["version"] == 3
 
 
 def test_load_rejects_none_bundle_dir() -> None:
-    """TT-NG: ``load`` requires a bundle dir, same as ``__init__``."""
-    with pytest.raises(ValueError, match="diskgraph_task_dataset_bundle_dir"):
+    with pytest.raises(AssertionError, match="requires a task-dataset bundle"):
         DiskgraphNestedTrainer.load(
             task="fake_task_config",
             root_dir="/tmp/log_dir",
             diskgraph_task_dataset_bundle_dir=None,  # type: ignore[arg-type]
         )
-
-
-def test_load_strips_feature_store_and_graph_store_from_kwargs(
-        monkeypatch: pytest.MonkeyPatch) -> None:
-    """TT-NG: even if a caller passes feature_store/graph_store, ``load``
-    forces them to None on the way to ``NestedTrainer.load``."""
-    from kumo_core.train.diskgraph_nested_trainer import DiskgraphNestedTrainer
-    from kumo_core.train.nested_trainer import NestedTrainer
-    fake_base = NestedTrainer.__new__(NestedTrainer)
-
-    captured: dict[str, Any] = {}
-
-    def _fake_nested_load(task: Any, root_dir: str, **kwargs: Any) -> Any:
-        captured["kwargs"] = kwargs
-        return fake_base
-
-    monkeypatch.setattr(
-        NestedTrainer, "load",
-        classmethod(lambda cls, task, root_dir, **kw: _fake_nested_load(
-            task, root_dir, **kw)))
-
-    DiskgraphNestedTrainer.load(
-        task="fake_task_config",
-        root_dir="/tmp/log_dir",
-        diskgraph_task_dataset_bundle_dir="/mnt/localssd/foo/bundle",
-        feature_store="this_should_be_stripped",
-        graph_store="this_should_be_stripped",
-    )
-
-    assert captured["kwargs"]["feature_store"] is None
-    assert captured["kwargs"]["graph_store"] is None
 
 
 # ---------------------------------------------------------------------------

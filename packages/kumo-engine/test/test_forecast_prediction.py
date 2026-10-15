@@ -192,7 +192,7 @@ def test_compile_uses_effective_forecast_generation_plan(monkeypatch, tmp_path):
     captured = {}
 
     def build(**kwargs):
-        generation = kwargs['model_plan'].training_table_generation
+        generation = kwargs['training_table_generation_plan']
         captured['generation'] = generation
         return SimpleNamespace(
             graph_index_id='snapshot',

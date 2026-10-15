@@ -136,50 +136,50 @@ export const Alert_with_Scrollbar: Story = {
                 <AlertTitle>Lengthy Alert</AlertTitle>
                 <AlertDescription>
                     Traceback (most recent call last): File
-                    "/home/dinkar/sandbox/kumo/venv/lib/python3.10/site-packages/anyio/streams/memory.py",
+                    "/home/user/project/venv/lib/python3.10/site-packages/anyio/streams/memory.py",
                     line 98, in receive return self.receive_nowait() File
-                    "/home/dinkar/sandbox/kumo/venv/lib/python3.10/site-packages/anyio/streams/memory.py",
+                    "/home/user/project/venv/lib/python3.10/site-packages/anyio/streams/memory.py",
                     line 93, in receive_nowait raise WouldBlock anyio.WouldBlock
                     During handling of the above exception, another exception
                     occurred: Traceback (most recent call last): File
-                    "/home/dinkar/sandbox/kumo/venv/lib/python3.10/site-packages/starlette/middleware/base.py",
+                    "/home/user/project/venv/lib/python3.10/site-packages/starlette/middleware/base.py",
                     line 43, in call_next message = await recv_stream.receive()
                     File
-                    "/home/dinkar/sandbox/kumo/venv/lib/python3.10/site-packages/anyio/streams/memory.py",
+                    "/home/user/project/venv/lib/python3.10/site-packages/anyio/streams/memory.py",
                     line 118, in receive raise EndOfStream anyio.EndOfStream
                     During handling of the above exception, another exception
                     occurred: Traceback (most recent call last): File
-                    "/home/dinkar/sandbox/kumo/venv/lib/python3.10/site-packages/starlette/middleware/errors.py",
+                    "/home/user/project/venv/lib/python3.10/site-packages/starlette/middleware/errors.py",
                     line 162, in __call__ await self.app(scope, receive, _send)
                     File
-                    "/home/dinkar/sandbox/kumo/venv/lib/python3.10/site-packages/opentelemetry/instrumentation/asgi/__init__.py",
+                    "/home/user/project/venv/lib/python3.10/site-packages/opentelemetry/instrumentation/asgi/__init__.py",
                     line 606, in __call__ await self.app(scope, otel_receive,
                     otel_send) File
-                    "/home/dinkar/sandbox/kumo/venv/lib/python3.10/site-packages/starlette/middleware/base.py",
+                    "/home/user/project/venv/lib/python3.10/site-packages/starlette/middleware/base.py",
                     line 68, in __call__ response = await
                     self.dispatch_func(request, call_next) File
-                    "/home/dinkar/sandbox/kumo/rest/utils/security_header_middleware.py",
+                    "/home/user/project/rest/utils/security_header_middleware.py",
                     line 10, in dispatch response = await call_next(request)
                     File
-                    "/home/dinkar/sandbox/kumo/venv/lib/python3.10/site-packages/starlette/middleware/base.py",
+                    "/home/user/project/venv/lib/python3.10/site-packages/starlette/middleware/base.py",
                     line 46, in call_next raise app_exc File
-                    "/home/dinkar/sandbox/kumo/venv/lib/python3.10/site-packages/starlette/middleware/base.py",
+                    "/home/user/project/venv/lib/python3.10/site-packages/starlette/middleware/base.py",
                     line 36, in coro await self.app(scope, request.receive,
                     send_stream.send) File
-                    "/home/dinkar/sandbox/kumo/rest/utils/profiling_middleware.py",
+                    "/home/user/project/rest/utils/profiling_middleware.py",
                     line 66, in __call__ return await self._app(scope, receive,
                     send) File
-                    "/home/dinkar/sandbox/kumo/rest/utils/strip_header_middleware.py",
+                    "/home/user/project/rest/utils/strip_header_middleware.py",
                     line 43, in __call__ return await self._app(scope, receive,
                     send_wrapper) File
-                    "/home/dinkar/sandbox/kumo/venv/lib/python3.10/site-packages/starlette/middleware/base.py",
+                    "/home/user/project/venv/lib/python3.10/site-packages/starlette/middleware/base.py",
                     line 68, in __call__ response = await
                     self.dispatch_func(request, call_next) File
-                    "/home/dinkar/sandbox/kumo/rest/utils/request_time_middleware.py",
+                    "/home/user/project/rest/utils/request_time_middleware.py",
                     line 56, in dispatch resp = await call_next(request) File
-                    "/home/dinkar/sandbox/kumo/venv/lib/python3.10/site-packages/starlette/middleware/base.py",
+                    "/home/user/project/venv/lib/python3.10/site-packages/starlette/middleware/base.py",
                     line 46, in call_next raise app_exc File
-                    "/home/dinkar/sandbox/kumo/venv/lib/python3.10/site-packages/starlette/middleware/base.py",
+                    "/home/user/project/venv/lib/python3.10/site-packages/starlette/middleware/base.py",
                     line 36, in coro await self.app(scope, request.receive,
                     send_stream.send)
                 </AlertDescription>

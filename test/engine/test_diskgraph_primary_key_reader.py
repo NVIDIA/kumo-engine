@@ -41,6 +41,7 @@ def test_iter_primary_key_batches_is_ordered_and_bounded(
         'load_diskgraph_schema',
         lambda _: SimpleNamespace(pkey_dict={'items': 'ITEM_ID'}),
     )
+    monkeypatch.setattr(stores, '_NODE_COLUMN_READ_BATCH', 2)
     engine = _PrimaryKeyEngine(['a', 'b', 'b', 'd', 'e'], {0, 1, 3, 4})
 
     batches = list(

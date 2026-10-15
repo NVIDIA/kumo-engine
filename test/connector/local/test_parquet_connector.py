@@ -1057,3 +1057,58 @@ def test_parquet_metadata_keeps_duplicate_field_occurrences():
             for column in metadata.cols] == [('same', Dtype.int64),
                                              ('same', Dtype.string)]
     assert column_dtypes(schema) == {'same': Dtype.string}
+
+
+def test_unsigned_parquet_columns_are_typed_read_and_profiled(tmp_path):
+    data = pa.table({
+        'u8': pa.array([0, 255, 1], pa.uint8()),
+        'u16': pa.array([65535, 0, 1], pa.uint16()),
+        'u32': pa.array([4294967295, 2, 0], pa.uint32()),
+    })
+    pq.write_table(data, tmp_path / 'events.parquet')
+    connector = ParquetConnector('parquet', root_dir=str(tmp_path))
+    metadata = connector.get_table_metadata(['events'])[0]
+    assert {col.name: col.dtype for col in metadata.cols} == {
+        'u8': Dtype.int32,
+        'u16': Dtype.int32,
+        'u32': Dtype.int64,
+    }
+    df = connector.read_table('events', None, metadata.cols)
+    for name in data.column_names:
+        assert df[name].tolist() == data[name].to_pylist()
+
+    graph = Graph(name='test_graph')
+    graph.connect(connector)
+    graph.add('events')
+    for col in metadata.cols:
+        graph[metadata.name].add_col(col.name, dtype=col.dtype)
+    graph[metadata.name].infer_stypes()
+    assert all(col.stype is not None for col in graph[metadata.name].cols)
+
+
+def test_a_declared_dtype_over_an_unreadable_column_is_read_and_profiled(
+        tmp_path):
+    from kumo.connector.connector import _compute_col_stats_from_sample
+    from kumo.graph.table import StypeInferralStats
+
+    pq.write_table(
+        pa.table({
+            'big': pa.array([1, 2**63 - 1, 7], pa.uint64()),
+            'half': pa.array([1.5, None, 2.0], pa.float16()),
+        }), tmp_path / 'events.parquet')
+    connector = ParquetConnector('parquet', root_dir=str(tmp_path))
+    metadata = connector.get_table_metadata(['events'])[0]
+    assert {col.dtype for col in metadata.cols} == {Dtype.unsupported}
+    declared = {'big': Dtype.int64, 'half': Dtype.float32}
+    for col in metadata.cols:
+        col.dtype = declared[col.name]
+
+    df = connector.read_table_sample('events', None, metadata.cols,
+                                     num_rows=10)
+    assert df['big'].tolist() == [1, 2**63 - 1, 7]
+    raw = connector.read_table_sample('events', None, metadata.cols,
+                                      num_rows=10, cast_response=False)
+    stats = _compute_col_stats_from_sample(
+        {col: StypeInferralStats.REQUIRED_STATS
+         for col in metadata.cols}, raw, approx=True, data_version=None)
+    assert all(stats[col] for col in metadata.cols)

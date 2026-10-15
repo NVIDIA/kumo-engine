@@ -101,17 +101,17 @@ describe("useGetQueryEncoders", () => {
     it.each([
         {
             description: "with DONE status",
-            trainingJobId: "trainingjob-a50702fc79fe429abe49c63f6e68db1b",
+            trainingJobId: "trainingjob-00048000000000000000000000000000",
             status: "DONE"
         },
         {
             description: "with RUNNING status",
-            trainingJobId: "trainingjob-39e17ff82cbf4cbb857277b9ae70b1e0",
+            trainingJobId: "trainingjob-0001b000000000000000000000000000",
             status: "RUNNING"
         },
         {
             description: "with QUEUED status",
-            trainingJobId: "trainingjob-718bac3df5624ca5831928b932ed88dc",
+            trainingJobId: "trainingjob-00036000000000000000000000000000",
             status: "QUEUED"
         }
     ])(

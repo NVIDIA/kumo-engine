@@ -27,7 +27,7 @@ import { setSDKTableResponseTestType } from "./MockFunctions/SDKTableCodeModal.m
 import { setSDKTrainingResponseTestType } from "./MockFunctions/SDKTrainingCodeModal.mock";
 
 const defaultProps: SDKCodeModalProps = {
-    id: "graph-21e1bb6de4aa29f819bc5ee63a9e805e",
+    id: "graph-00012000000000000000000000000000",
     open: true,
     toggleModel: vi.fn(),
     objectTypeToGenScript: SDKObjectType.Graph
@@ -78,9 +78,9 @@ describe("SDKCodeModal", () => {
     it.each([
         {
             type: SDKObjectType.Graph,
-            id: "graph-21e1bb6de4aa29f819bc5ee63a9e805e",
+            id: "graph-00012000000000000000000000000000",
             description: "graph",
-            apiEndpoint: "v1/graphs/graph-21e1bb6de4aa29f819bc5ee63a9e805e/sdk",
+            apiEndpoint: "v1/graphs/graph-00012000000000000000000000000000/sdk",
             codeSnippet: /graph.validate()/i
         },
         {
@@ -92,18 +92,18 @@ describe("SDKCodeModal", () => {
         },
         {
             type: SDKObjectType.TrainingJob,
-            id: "trainingjob-439dc6723bf34ec6bac09b9bd5b0bd85",
+            id: "trainingjob-00020000000000000000000000000000",
             description: "training job workflow",
             apiEndpoint:
-                "v0/training_jobs/trainingjob-439dc6723bf34ec6bac09b9bd5b0bd85/sdk",
+                "v0/training_jobs/trainingjob-00020000000000000000000000000000/sdk",
             codeSnippet: /train_table=train_table,/i
         },
         {
             type: SDKObjectType.PredictionJob,
-            id: "bp-job-c5ec67d2af234dd5859efc3f5314a03b",
+            id: "bp-job-00057000000000000000000000000000",
             description: "prediction job workflow",
             apiEndpoint:
-                "v1/batch_prediction_jobs/bp-job-c5ec67d2af234dd5859efc3f5314a03b/sdk",
+                "v1/batch_prediction_jobs/bp-job-00057000000000000000000000000000/sdk",
             codeSnippet: /num_workers=batch_prediction_options\[/i
         }
     ])(
@@ -207,9 +207,9 @@ describe("SDKCodeModal", () => {
     it.each([
         {
             type: SDKObjectType.Graph,
-            id: "graph-21e1bb6de4aa29f819bc5ee63a9e805e",
+            id: "graph-00012000000000000000000000000000",
             description: "graph",
-            apiEndpoint: "v1/graphs/graph-21e1bb6de4aa29f819bc5ee63a9e805e/sdk",
+            apiEndpoint: "v1/graphs/graph-00012000000000000000000000000000/sdk",
             codeSnippet: /graph.validate()/i,
             mockSetter: setSDKGraphResponseTestType
         },
@@ -223,19 +223,19 @@ describe("SDKCodeModal", () => {
         },
         {
             type: SDKObjectType.TrainingJob,
-            id: "trainingjob-439dc6723bf34ec6bac09b9bd5b0bd85",
+            id: "trainingjob-00020000000000000000000000000000",
             description: "training job workflow",
             apiEndpoint:
-                "v0/training_jobs/trainingjob-439dc6723bf34ec6bac09b9bd5b0bd85/sdk",
+                "v0/training_jobs/trainingjob-00020000000000000000000000000000/sdk",
             codeSnippet: /train_table=train_table,/i,
             mockSetter: setSDKTrainingResponseTestType
         },
         {
             type: SDKObjectType.PredictionJob,
-            id: "bp-job-c5ec67d2af234dd5859efc3f5314a03b",
+            id: "bp-job-00057000000000000000000000000000",
             description: "prediction job workflow",
             apiEndpoint:
-                "v1/batch_prediction_jobs/bp-job-c5ec67d2af234dd5859efc3f5314a03b/sdk",
+                "v1/batch_prediction_jobs/bp-job-00057000000000000000000000000000/sdk",
             codeSnippet: /num_workers=batch_prediction_options\[/i,
             mockSetter: setSDKPredictionResponseTestType
         }

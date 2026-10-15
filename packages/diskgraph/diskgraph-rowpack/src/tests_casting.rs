@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 #[test]
 fn test_cast_float_to_int() {
-    let array = Float64Array::from(vec![1.2, 3.9, -2.5]);
+    let array = Float64Array::from(vec![1.0, 3.9, -2.0]);
     let arrays: Vec<ArrayRef> = vec![Arc::new(array)];
     let stats = RowAccessStats::default();
     let hints = vec![RowAccessHints {
@@ -24,7 +24,7 @@ fn test_cast_float_to_int() {
     assert_eq!(access.get_int64(0).unwrap(), Some(1));
 
     access.set_row(1);
-    assert_eq!(access.get_int64(0).unwrap(), Some(3)); // Truncate
+    assert!(access.get_int64(0).is_err());
 
     access.set_row(2);
     assert_eq!(access.get_int64(0).unwrap(), Some(-2));

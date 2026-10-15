@@ -8,7 +8,7 @@ import { initializeOutputs } from "utils/batchPredictions";
 import { outputStorage } from "utils/Constants";
 
 describe("initializeOutputs", () => {
-    const jobId = "trainingjob-09ab19cc90784a01a7407ca5081ee652";
+    const jobId = "trainingjob-00003000000000000000000000000000";
     const artifact = "PREDICTIONS";
     const storage = outputStorage.S3;
 
@@ -38,7 +38,7 @@ describe("initializeOutputs", () => {
 
         expect(result[artifact]).toMatchObject({
             artifact_type: artifact,
-            table_name: "09ab1_predictions",
+            table_name: "00003_predictions",
             extension: ".parquet"
         });
     });

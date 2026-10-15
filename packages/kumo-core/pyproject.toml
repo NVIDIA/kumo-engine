@@ -53,7 +53,7 @@ dependencies = [
   "tabulate==0.8.10",
   "tensorboard>=2.16.2,<3",
   "pytorch-frame==0.3.0",
-  "torch-geometric>=2.8.0",
+  "torch-geometric>=2.8.1,<3",
   "torchmetrics==1.8.1",
   "typing-extensions>=4.12.2",
 ]
@@ -70,7 +70,7 @@ documentation = "https://kumo.ai/docs"
 # in faiss-cpu alongside whatever faiss build root's own install chose.
 faiss-cpu = ["faiss-cpu==1.14.2"]
 faiss-gpu = ["faiss-gpu==1.14.3"]
-text = ["kumo-glove-6b-50d==1.0.0"]
+text = ["kumo-glove-6b-50d>=1.0.0,<2"]
 test = [
   "faiss-gpu==1.14.3",
   "packaging>=24",

@@ -80,6 +80,28 @@ reuse `loaded.training_table_generation_plan`. Exact populations use
 `PredictionTable.from_source_table`, not an entity filter silently replacing supplied rows.
 The loader restores model state; scoring still needs explicit population and snapshot.
 
+## Pick the version and rebuild from its record
+
+A registry holds several versions, and the default is not necessarily the newest. Take the
+version the user named. If they said "latest" or "newest", read `SHOW VERSIONS` and use the
+newest `created_on`, say which version that is, and pass it explicitly. If they named none and
+several exist, ask; `version=None` loads the registry default, not the newest. A model that was
+never published has no version to load; say so instead of choosing another.
+
+The registry records only `spec_version`, the predictive query and `snapshot_id` as searchable
+metadata, so the table and column lists come from the team's record, not from `SHOW VERSIONS`.
+Rebuild the graph from the team's training record for that exact version: its tables, keys,
+time columns, edges, query and threshold, not from the live schema and not from another
+version's notebook. A column the live source gained is left out. A recorded column the live
+source no longer has stays in the graph definition: do not drop it quietly. Name it in a
+markdown cell, and before building any table, compare the recorded columns with the live ones
+and raise an error naming each missing column per table. Binary scoring needs an explicit
+threshold even for a loaded model.
+
+A retained local bundle path from the training host may not exist in this session. List the
+filesystem, use the bundle directory the user chose, and prefer the complete one over a stale
+neighbour.
+
 ## What survives publication
 
 | Content | Lifetime and retrieval |

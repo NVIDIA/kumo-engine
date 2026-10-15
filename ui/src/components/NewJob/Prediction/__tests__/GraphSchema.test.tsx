@@ -60,7 +60,7 @@ describe("GraphSchema", () => {
 
     it("Should render `GraphSchema` when `graphSnapshotId` is set", async () => {
         const graphId =
-            "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460";
+            "graph-0005b000000000000000000000000000@00033000000000000000000000000000";
         await renderGraphSchema({
             graphSnapshotId: graphId
         });
@@ -83,7 +83,7 @@ describe("GraphSchema", () => {
 
     it("Should display Graph with and the `View` icon for valid `graphSnapshotId`", async () => {
         const graphId =
-            "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460";
+            "graph-0005b000000000000000000000000000@00033000000000000000000000000000";
         await renderGraphSchema({
             graphSnapshotId: graphId
         });
@@ -111,7 +111,7 @@ describe("GraphSchema", () => {
 
     it("Should display `Column Statistics` table when view is clicked", async () => {
         const graphId =
-            "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460";
+            "graph-0005b000000000000000000000000000@00033000000000000000000000000000";
         await renderGraphSchema({
             graphSnapshotId: graphId
         });

@@ -12,11 +12,11 @@ import { jobStatus } from "utils/Constants";
 
 export const MockUnlinkedBatchPredictionJobData: UnlinkedBatchPredictionJobData =
     {
-        "id": "bp-job-1937b6a194fd47cda79d490860314028",
+        "id": "bp-job-0000e000000000000000000000000000",
         "workflow_id": undefined,
         "description": "",
-        "predictiveQuery": "NA-ebc76ac857a419856408011218b34ab5",
-        "predictiveQueryId": "NA-ebc76ac857a419856408011218b34ab5",
+        "predictiveQuery": "NA-00065000000000000000000000000000",
+        "predictiveQueryId": "NA-00065000000000000000000000000000",
         "predictiveQuery_link": "/jobs/training/null",
         "status": jobStatus.Done,
         "created": "23 days ago",
@@ -61,18 +61,18 @@ export const MockUnlinkedBatchPredictionJobData: UnlinkedBatchPredictionJobData 
                     "s3://kumo-public-datasets/momentic_predictions/predictions/7e115_predictions.parquet/"
             }
         ],
-        "graphId": "NA-44a59331b438072b533f52e33d01835d",
-        "graphName": "NA-44a59331b438072b533f52e33d01835d",
+        "graphId": "NA-00021000000000000000000000000000",
+        "graphName": "NA-00021000000000000000000000000000",
         "explanations": true,
         "graphSnapshotId":
-            "graph-44a59331b438072b533f52e33d01835d@3c7208307485c268cdc9ce1ddd9b151b",
+            "graph-00021000000000000000000000000000@0001d000000000000000000000000000",
         "classes": undefined,
         "isJobUI": false,
-        "trainingJobID": "trainingjob-7e115bdc420046e388899b679d6c3a0b",
+        "trainingJobID": "trainingjob-0003b000000000000000000000000000",
         "tags": {
             "ENABLED_EXPLANATION": "ENABLED_EXPLANATION",
-            "pquery_id": "pquery-ebc76ac857a419856408011218b34ab5",
-            "model_id": "trainingjob-7e115bdc420046e388899b679d6c3a0b"
+            "pquery_id": "pquery-00065000000000000000000000000000",
+            "model_id": "trainingjob-0003b000000000000000000000000000"
         },
         "execution": {
             "status": jobStatus.Done,
@@ -106,7 +106,7 @@ export const MockUnlinkedBatchPredictionJobData: UnlinkedBatchPredictionJobData 
         },
         "source": JobSource.WEB,
         "generatePredTableJobId":
-            "gen-predtable-job-3fc98c362f5649bd992fff32929aec55",
+            "gen-predtable-job-0001f000000000000000000000000000",
         "threshold": 0.5,
         "threshold_lable": true,
         "failureInfo": ""

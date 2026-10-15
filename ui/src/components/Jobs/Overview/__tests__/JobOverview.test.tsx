@@ -29,7 +29,7 @@ import { getIdHash } from "utils/Helpers/stringHelpers";
 
 import JobOverview, { JobOverviewProps } from "../JobOverview";
 
-const trainJobId = "trainingjob-9f8b259b4f764c8f932ad5912a926ec2";
+const trainJobId = "trainingjob-00046000000000000000000000000000";
 const mockOnClose = vi.fn();
 const mockOnArchive = vi.fn();
 const mockOnRecover = vi.fn();
@@ -151,7 +151,7 @@ describe("JobOverview", () => {
     });
 
     it("Should render `TrainingJobOverview` when jobOverviewType is `TRAINING_JOB`", async () => {
-        const id = "trainingjob-9f8b259b4f764c8f932ad5912a926ec2";
+        const id = "trainingjob-00046000000000000000000000000000";
         // Dispatcher test: only verifies the right overview renders + archive/
         // close flows. Minimal workflow keeps the training section mounting (so
         // its warnings call still fires) but skips the eval/explanation cascade.
@@ -183,7 +183,7 @@ describe("JobOverview", () => {
     });
 
     it("Should render `TrainingTableOverview` when jobOverviewType is `TRAIN_TABLE_JOB`", async () => {
-        const id = "gen-traintable-job-9f8b259b4f764c8f932ad5912a926ec2";
+        const id = "gen-traintable-job-00046000000000000000000000000000";
         await renderJobOverview({
             ...defaultProps,
             jobId: id,
@@ -257,7 +257,7 @@ describe("JobOverview", () => {
     });
 
     it("Should render `PredictionJobOverview` when jobOverviewType is `BATCH_PREDICTION_JOB`", async () => {
-        const id = "bp-job-349fee63191149bf85731f7bb7ffcf45";
+        const id = "bp-job-0001a000000000000000000000000000";
         // The BP overview embeds the related training job; a minimal BP
         // response nulls the pred-table/graph/eval cascade while keeping the
         // training link (so its warnings call still fires on close), and the
@@ -296,7 +296,7 @@ describe("JobOverview", () => {
     });
 
     it("Should render `PredictionTableOverview` when jobOverviewType is `PREDICTION_TABLE_JOB`", async () => {
-        const id = "gen-predtable-job-e01e53529bcf443ea47dae482a58d383";
+        const id = "gen-predtable-job-00060000000000000000000000000000";
         // Dispatcher test: a minimal gen-pred-table response nulls the nested
         // graph_snapshot_id/pquery_id so the embedded GraphSnapshotOverview and
         // PQ panels don't mount (skips their graph-viz/metadata cascade). The
@@ -334,7 +334,7 @@ describe("JobOverview", () => {
 
     it("Should render `GraphSnapshotOverview` when jobOverviewType is `GRAPH_SNAPSHOT_JOB`", async () => {
         const id =
-            "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460";
+            "graph-0005b000000000000000000000000000@00033000000000000000000000000000";
         await renderJobOverview({
             ...defaultProps,
             jobId: id,

@@ -41,7 +41,7 @@ else untouched.
 """
 
 from dataclasses import dataclass, replace
-from typing import List, Optional, Union
+from typing import List, Mapping, Optional, Union
 
 from kumo_core.stype_inference import multicategorical_separator
 from kumoapi.source_table import CustomSQLSourceTable
@@ -85,6 +85,7 @@ class Table:
         primary_key: Optional[str] = None,
         time_column: Optional[str] = None,
         end_time_column: Optional[str] = None,
+        dtypes: Optional[Mapping[str, Dtype]] = None,
     ) -> Self:
         r"""Builds a `Table` from a `SourceTable` -- `connector[table_name]`
         or `connector.table(table_name)`. Mirrors the cloud SDK's `Table.
@@ -114,6 +115,10 @@ class Table:
             primary_key: names the primary-key column.
             time_column: names the time column.
             end_time_column: names the end-time column.
+            dtypes: declared dtypes, by column name, that replace the
+                source's. DiskGraph converts the source values to them.
+                This also resolves a column whose source type has no Kumo
+                dtype; `Graph.snapshot()` refuses one left unresolved.
         """
         from kumo.engine._infer import resolve_table_columns
 
@@ -126,6 +131,7 @@ class Table:
             time_column=time_column,
             end_time_column=end_time_column,
             sql=source_table.sql,
+            dtypes=dtypes,
         )
         definition = TableDefinition(
             cols=columns,
@@ -171,7 +177,8 @@ class Table:
         `end_time_col` if already resolved (e.g. to pick up new data, or
         after `with_column` overrides were cleared some other way), or
         every column with no keys if this table was constructed bare
-        (`Table(connector, table_name)`, `definition=None`).
+        (`Table(connector, table_name)`, `definition=None`). A dtype declared
+        for a column whose source type has no Kumo dtype is kept.
         """
         if self.definition is not None:
             column_names = [col.name for col in self.definition.cols]
@@ -183,18 +190,50 @@ class Table:
             primary_key = None
             time_column = None
             end_time_column = None
-        source = (self.definition.source_table
-                  if self.definition is not None else None)
+        source_table = self._source_table()
+        unreadable = {
+            name
+            for name, col in source_table.column_dict.items()
+            if col.dtype == Dtype.unsupported
+        }
         table = self.from_source_table(
-            self.connector.sql(source.sql) if isinstance(
-                source, CustomSQLSourceTable) else
-            self.connector[self.table_name],
+            source_table,
             column_names,
             primary_key=primary_key,
             time_column=time_column,
             end_time_column=end_time_column,
+            dtypes={
+                col.name: col.dtype
+                for col in self.definition.cols if col.name in unreadable
+                and col.dtype != Dtype.unsupported
+            } if self.definition is not None else None,
         )
         return replace(table, table_name=self.table_name)
+
+    def _source_table(self) -> SourceTable:
+        source = (self.definition.source_table
+                  if self.definition is not None else None)
+        return (self.connector.sql(source.sql) if isinstance(
+            source, CustomSQLSourceTable) else self.connector[self.table_name])
+
+    def _inferred_stype(self, name: str, dtype: Dtype) -> Stype:
+        from kumo.engine._infer import resolve_table_columns
+
+        assert self.definition is not None
+        source = self._source_table()
+        stype = resolve_table_columns(
+            source.connector,
+            source.table_name,
+            source.column_dict,
+            column_names=[name],
+            primary_key=None,
+            time_column=None,
+            end_time_column=None,
+            sql=source.sql,
+            dtypes={name: dtype},
+        )[0].stype
+        assert stype is not None
+        return stype
 
     def with_column(
         self,
@@ -232,6 +271,9 @@ class Table:
         for i, column in enumerate(columns):
             if column.name == name:
                 resolved_stype = stype if stype is not None else column.stype
+                if (stype is None and dtype is not None
+                        and resolved_stype == Stype.unsupported):
+                    resolved_stype = self._inferred_stype(name, dtype)
                 resolved_dtype = dtype if dtype is not None else column.dtype
                 delimiter = (multicategorical_delimiter
                              if multicategorical_delimiter is not None else

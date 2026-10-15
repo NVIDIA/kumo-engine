@@ -134,7 +134,7 @@ def portable_graph(pickup_first: bool = True) -> Dict[str, Any]:
         'tables': [
             {
                 'table_name': 'zones',
-                'source_table_name': 'HYU.NYC_FHV.ZONES_RAW',
+                'source_table_name': 'EXAMPLE_DB.NYC_FHV.ZONES_RAW',
                 'pkey': col('ZONE_ID', 'int', 'ID'),
                 'time_col': None,
                 'cols': [col('ZONE_ID', 'int', 'ID')],
@@ -142,7 +142,7 @@ def portable_graph(pickup_first: bool = True) -> Dict[str, Any]:
             },
             {
                 'table_name': 'providers',
-                'source_table_name': 'HYU.NYC_FHV.PROVIDERS_RAW',
+                'source_table_name': 'EXAMPLE_DB.NYC_FHV.PROVIDERS_RAW',
                 'pkey': col('PROVIDER_ID', 'string', 'ID'),
                 'time_col': None,
                 'cols': [col('PROVIDER_ID', 'string', 'ID')],
@@ -152,7 +152,7 @@ def portable_graph(pickup_first: bool = True) -> Dict[str, Any]:
                 'table_name':
                 'trips',
                 'source_table_name':
-                'HYU.NYC_FHV.TRIPS_R9TINY',
+                'EXAMPLE_DB.NYC_FHV.TRIPS_R9TINY',
                 'pkey':
                 col('TRIP_ID', 'string', 'ID'),
                 'time_col':

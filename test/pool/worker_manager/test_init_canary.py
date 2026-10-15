@@ -280,7 +280,10 @@ def test_classify_scheduled_not_running_is_cold_pull_not_misconfig():
 # ---------------------------------------------------------------------------
 
 
-def test_cache_canary_pod_spec_has_selector_toleration_gpu_and_pvc():
+@pytest.mark.parametrize('read_only', [True, False])
+def test_cache_canary_pod_spec_has_selector_toleration_gpu_and_pvc(
+        monkeypatch, read_only, worker_identity):
+    monkeypatch.setenv('POOL_WORKER_READ_ONLY_ROOT_FILESYSTEM', str(read_only))
     core = MagicMock(spec=k8s_client.CoreV1Api)
     mgr = _make_manager(core)
     sched = mgr.cache_canary_scheduling(800)
@@ -297,6 +300,9 @@ def test_cache_canary_pod_spec_has_selector_toleration_gpu_and_pvc():
     assert spec is not None
     assert spec.security_context.seccomp_profile.type == "RuntimeDefault"
     container_security = spec.containers[0].security_context
+    assert (container_security.run_as_user,
+            container_security.run_as_group) == worker_identity
+    assert container_security.read_only_root_filesystem is read_only
     assert container_security.privileged is False
     assert container_security.allow_privilege_escalation is False
     assert container_security.run_as_non_root is True
@@ -352,7 +358,10 @@ def test_cache_canary_pod_spec_can_target_multi_gpu_tier():
     assert resources.limits[_GPU_KEY] == "4"
 
 
-def test_eph_canary_pod_spec_has_selector_toleration_gpu_no_pvc():
+@pytest.mark.parametrize('read_only', [True, False])
+def test_eph_canary_pod_spec_has_selector_toleration_gpu_no_pvc(
+        monkeypatch, read_only, worker_identity):
+    monkeypatch.setenv('POOL_WORKER_READ_ONLY_ROOT_FILESYSTEM', str(read_only))
     core = MagicMock(spec=k8s_client.CoreV1Api)
     mgr = _make_manager(core)
     sched = mgr.eph_canary_scheduling()
@@ -367,6 +376,10 @@ def test_eph_canary_pod_spec_has_selector_toleration_gpu_no_pvc():
     )
     spec = pod.spec
     assert spec is not None
+    security = spec.containers[0].security_context
+    assert (security.run_as_user, security.run_as_group) == worker_identity
+    assert spec.containers[
+        0].security_context.read_only_root_filesystem is read_only
     assert spec.node_selector == {
         DISKGRAPH_POOL_TYPE_LABEL: POOL_TYPE_EPHEMERAL
     }
@@ -401,7 +414,7 @@ def _core_with_no_cache_result() -> MagicMock:
     return core
 
 
-def _expected_config_hash(tiers, *, eph_enabled=False) -> str:
+def _expected_config_hash(tiers, *, eph_enabled=False, read_only=True) -> str:
     return pool_config_hash(
         tiers_gib=tiers,
         tier_specs=[f"{tier}Gi/1gpu" for tier in sorted(set(tiers))],
@@ -414,6 +427,7 @@ def _expected_config_hash(tiers, *, eph_enabled=False) -> str:
         cache_taint=f"dedicated=diskgraph-{TENANT}:NoSchedule",
         eph_taint=f"dedicated=diskgraph-eph-{TENANT}:NoSchedule",
         eph_canary_enabled=eph_enabled,
+        read_only_root_filesystem=read_only,
     )
 
 
@@ -703,6 +717,46 @@ def test_cached_fresh_result_skips_validation():
     assert not core.create_namespaced_persistent_volume_claim.called
     assert result.available_cache_tiers == frozenset({(800, 1)})
     assert result.ephemeral_available is True
+
+
+@pytest.mark.parametrize('read_only', ['true', 'false'])
+def test_read_only_change_revalidates_canary(monkeypatch, read_only):
+    import time
+    previous_hash = _expected_config_hash([800], eph_enabled=True,
+                                          read_only=(read_only == 'false'))
+    apps = _apps_with_annotation(f'{previous_hash}@{time.time() - 5}')
+    core = _core_with_no_cache_result()
+    core.read_namespaced_pod.return_value = _running_pod()
+    core.read_namespaced_persistent_volume_claim.return_value = _bound_pvc()
+    monkeypatch.setenv('POOL_WORKER_READ_ONLY_ROOT_FILESYSTEM', read_only)
+
+    asyncio.run(
+        run_init_canary(_make_manager(core, apps), cache_tiers_gib=[800],
+                        pvc_spec_factory=_pvc_spec_factory))
+
+    assert core.create_namespaced_pod.call_count == 2
+    for call in core.create_namespaced_pod.call_args_list:
+        security = call.kwargs['body'].spec.containers[0].security_context
+        assert security.read_only_root_filesystem is (read_only == 'true')
+
+
+@pytest.mark.parametrize('setting', [
+    'POOL_WORKER_RUN_AS_USER', 'POOL_WORKER_RUN_AS_GROUP'
+])
+def test_identity_change_revalidates_canary(monkeypatch, setting):
+    import time
+    previous_hash = _expected_config_hash([800], eph_enabled=True)
+    apps = _apps_with_annotation(f'{previous_hash}@{time.time() - 5}')
+    core = _core_with_no_cache_result()
+    core.read_namespaced_pod.return_value = _running_pod()
+    core.read_namespaced_persistent_volume_claim.return_value = _bound_pvc()
+    monkeypatch.setenv(setting, '1000')
+
+    asyncio.run(
+        run_init_canary(_make_manager(core, apps), cache_tiers_gib=[800],
+                        pvc_spec_factory=_pvc_spec_factory))
+
+    assert core.create_namespaced_pod.call_count == 2
 
 
 def test_stale_cached_result_revalidates():

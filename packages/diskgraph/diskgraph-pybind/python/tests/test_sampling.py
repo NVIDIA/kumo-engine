@@ -6,6 +6,8 @@ import pytest
 from diskgraph._c import DiskgraphConfigError, DiskgraphDataError, DiskgraphSystemError
 
 import json
+import subprocess
+from pathlib import Path
 import diskgraph as diskgraph_py
 from diskgraph import DiskgraphConfigError
 import pyarrow as pa
@@ -13,15 +15,29 @@ import threading
 import time
 from decimal import Decimal
 
-def test_load(ifood_graph):
-    dg = diskgraph_py.SamplerEngine(ifood_graph)
+def test_load(orders_graph):
+    dg = diskgraph_py.SamplerEngine(orders_graph)
     assert dg is not None
 
 
-def test_canonical_node_mask_uses_typed_primary_keys(ifood_graph,
+def test_benchmark_uses_selected_graph(orders_graph, tmp_path):
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps({"layers": [{"fanouts": {}, "default_fanout": {
+        "fanout": 3, "mode": "uniform", "absent_key_policy": "uniform_fallback",
+    }}]}))
+    result = subprocess.run(
+        ["cargo", "run", "--release", "--bin", "bench_sampler", "--",
+         "--index", orders_graph, "--seed-type", "orders_parquet", "--plan", str(plan)],
+        cwd=Path(__file__).resolve().parents[3], check=True, capture_output=True, text=True,
+    )
+    edges = next(line for line in result.stdout.splitlines() if line.startswith("Total Edges:"))
+    assert int(edges.split(":")[1]) > 0
+
+
+def test_canonical_node_mask_uses_typed_primary_keys(orders_graph,
                                                      list_features_graph,
                                                      typed_primary_key_graph):
-    string_engine = diskgraph_py.SamplerEngine(ifood_graph)
+    string_engine = diskgraph_py.SamplerEngine(orders_graph)
     assert string_engine.canonical_node_mask(
         "users", [0, 1, 0], pa.array(["u1", "u2", "u2"])
     ) == [True, True, False]
@@ -164,16 +180,16 @@ def test_decimal256_pk_table_does_not_block_sampler_initialization(
         "signed_ids", [0], pa.array([-5], type=pa.int64())
     ) == [True]
 
-def test_schema_mapping(ifood_graph):
-    dg = diskgraph_py.SamplerEngine(ifood_graph)
+def test_schema_mapping(orders_graph):
+    dg = diskgraph_py.SamplerEngine(orders_graph)
     mapping_json = dg.get_type_mapping()
     mapping = json.loads(mapping_json)
     assert "node_types" in mapping
     assert "users" in mapping["node_types"]
     assert "orders_parquet" in mapping["node_types"]
 
-def test_fused_sampling_1hop(ifood_graph):
-    dg = diskgraph_py.SamplerEngine(ifood_graph)
+def test_fused_sampling_1hop(orders_graph):
+    dg = diskgraph_py.SamplerEngine(orders_graph)
 
     # User 0 -> Orders
     plan = {
@@ -218,8 +234,8 @@ def test_fused_sampling_1hop(ifood_graph):
     assert isinstance(first_feat, pa.RecordBatch)
     assert first_feat.num_rows > 0
 
-def test_standalone_sampling(ifood_graph):
-    dg = diskgraph_py.SamplerEngine(ifood_graph)
+def test_standalone_sampling(orders_graph):
+    dg = diskgraph_py.SamplerEngine(orders_graph)
 
     # User 0 -> Orders (Topology Only)
     plan = {
@@ -253,8 +269,8 @@ def test_standalone_sampling(ifood_graph):
     node_events = [e for e in events if e["type"] == "node"]
     assert len(node_events) > 0
 
-def test_fetch_features(ifood_graph):
-    dg = diskgraph_py.SamplerEngine(ifood_graph)
+def test_fetch_features(orders_graph):
+    dg = diskgraph_py.SamplerEngine(orders_graph)
 
     # Fetch features for User 0 and Order 0 (if exists)
     # We construct a batch request
@@ -287,8 +303,8 @@ def test_fetch_features(ifood_graph):
     with pytest.raises(DiskgraphConfigError, match="Unknown node type"):
         for _ in iter_bad: pass
 
-def test_fused_sampling_2hop_consistency(ifood_graph):
-    dg = diskgraph_py.SamplerEngine(ifood_graph)
+def test_fused_sampling_2hop_consistency(orders_graph):
+    dg = diskgraph_py.SamplerEngine(orders_graph)
 
     # User -> Orders -> Merchants
     plan = {
@@ -332,8 +348,8 @@ def test_fused_sampling_2hop_consistency(ifood_graph):
         assert tid in feature_counts, f"Missing features for type {tid}"
         assert feature_counts[tid] == count, f"Mismatch for type {tid}: {count} nodes vs {feature_counts[tid]} features"
 
-def test_concurrency_gil(ifood_graph):
-    dg = diskgraph_py.SamplerEngine(ifood_graph)
+def test_concurrency_gil(orders_graph):
+    dg = diskgraph_py.SamplerEngine(orders_graph)
 
     def worker():
         # Simple 1-hop
@@ -363,13 +379,13 @@ def test_concurrency_gil(ifood_graph):
     # Should be fast.
     print(f"Concurrency test took {end - start:.2f}s")
 
-def test_invalid_plan(ifood_graph):
-    dg = diskgraph_py.SamplerEngine(ifood_graph)
+def test_invalid_plan(orders_graph):
+    dg = diskgraph_py.SamplerEngine(orders_graph)
     with pytest.raises(DiskgraphConfigError):
         dg.sample({"users": [0]}, "{invalid_json", fused=True)
 
-def test_temporal_sampling(ifood_graph):
-    dg = diskgraph_py.SamplerEngine(ifood_graph)
+def test_temporal_sampling(orders_graph):
+    dg = diskgraph_py.SamplerEngine(orders_graph)
 
     # Simple 1-hop plan
     plan = {

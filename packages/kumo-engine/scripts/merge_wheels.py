@@ -34,11 +34,19 @@ import zipfile
 from email.parser import Parser
 from pathlib import Path
 
+try:
+    from packaging.specifiers import InvalidSpecifier, SpecifierSet
+    from packaging.version import InvalidVersion, Version
+except ImportError:
+    # pip is already required by the builder and carries packaging.
+    from pip._vendor.packaging.specifiers import InvalidSpecifier, SpecifierSet
+    from pip._vendor.packaging.version import InvalidVersion, Version
+
 ENGINE = 'kumo-engine'
 # Extras that exist for development only and are not part of the release.
 DEV_EXTRAS = {'test'}
 # Published on their own, so they must stay PyPI dependencies, never be merged.
-NEVER_BUNDLED = {'kumo-api', 'kumo-glove-6b-50d'}
+NEVER_BUNDLED = {'kumo-glove-6b-50d'}
 # Headers copied from kumo-engine's own metadata so the bundle's PyPI page is
 # kumo-engine's.
 PASSTHROUGH_HEADERS = ('Summary', 'Keywords', 'Author-email',
@@ -141,6 +149,44 @@ def read_component(wheel, classification, origin):
         'requires': message.get_all('Requires-Dist') or [],
         'extras': message.get_all('Provides-Extra') or [],
     }
+
+
+def resolve_python_requirement(components):
+    """Intersect component constraints and find the first allowed CPython 3 minor."""
+    combined = SpecifierSet()
+    candidates = {Version('3.0.0')}
+    constraints = []
+    for component in components:
+        declared = component['message']['Requires-Python'] or ''
+        log(f"{component['name']} Requires-Python: {declared or '(unspecified)'}")
+        try:
+            specifiers = SpecifierSet(declared)
+        except InvalidSpecifier as error:
+            fail(f"{component['name']} has invalid Requires-Python "
+                 f"{declared!r}: {error}")
+        combined &= specifiers
+        if declared:
+            constraints.append(f"{component['name']}: {declared}")
+        for specifier in specifiers:
+            try:
+                version = Version(specifier.version.removesuffix('.*'))
+            except InvalidVersion:
+                fail(f"{component['name']} has a non-version Requires-Python "
+                     f"constraint: {specifier}")
+            major, minor, patch = (version.release + (0, 0))[:3]
+            # Stable interpreter versions can enter/leave a specifier range
+            # at its boundary, the next patch, or the next minor (wildcards).
+            for release in ((major, minor, patch), (major, minor, patch + 1),
+                            (major, minor + 1, 0)):
+                if release[0] == 3:
+                    candidates.add(Version('.'.join(map(str, release))))
+    compatible = sorted(version for version in candidates
+                        if combined.contains(version, prereleases=False))
+    if not compatible:
+        fail('bundled Requires-Python constraints allow no common stable '
+             'CPython 3 version:\n    ' + '\n    '.join(constraints))
+    log(f'combined Requires-Python: {combined}')
+    return str(combined), compatible[0].release[1]
 
 
 def resolve_requirements(components):
@@ -282,12 +328,9 @@ def main():
         None)
     if engine is None:
         fail(f'no {ENGINE} component')
-    requires_python = engine['message']['Requires-Python'] or ''
-    floor = re.fullmatch(r'>=\s*3\.(\d+)(?:\.\d+)?', requires_python.strip())
-    if floor is None:
-        fail(f'{ENGINE} must declare Requires-Python as >=3.N, '
-             f'got {requires_python!r}')
-    min_minor = int(floor.group(1))
+    if not engine['message']['Requires-Python']:
+        fail(f'{ENGINE} must declare Requires-Python')
+    requires_python, min_minor = resolve_python_requirement(components)
 
     # Refuse to ship a native wheel that cannot load on every interpreter the
     # bundle claims to support: one abi3 wheel built for <= the floor serves
@@ -434,11 +477,13 @@ def main():
                 'bundle': {
                     'name': name,
                     'version': version,
-                    'tag': tag
+                    'tag': tag,
+                    'requires_python': requires_python,
                 },
                 'components': [{
                     'name': c['name'],
                     'version': c['version'],
+                    'requires_python': c['message']['Requires-Python'],
                     'classification': c['classification'],
                     'origin': c['origin'],
                 } for c in components],

@@ -95,7 +95,7 @@ def test_wheel_owns_training_dependency_closure(tmp_path: Path) -> None:
     assert Version("3.10.0") in requirements["matplotlib"].specifier
     assert not {"pyg-lib", "torch-scatter"} & set(requirements)
     assert str(requirements["pytorch-frame"].specifier) == "==0.3.0"
-    assert str(requirements["torch-geometric"].specifier) == ">=2.8.0"
+    assert str(requirements["torch-geometric"].specifier) == "<3,>=2.8.1"
     assert str(requirements["diskgraph"].specifier) == ">=0.1.0"
     assert requirements["diskgraph"].marker is None
     assert not {"bbhash", "lmdb", "safetensors", "xxhash"} & set(requirements)

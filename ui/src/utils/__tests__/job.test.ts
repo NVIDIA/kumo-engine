@@ -230,29 +230,29 @@ describe("getJobsTagsOptions", () => {
         // tags (pquery_name, pquery_id, parent_job, ...) must not bloat the
         // filter dropdown; only user-defined tags are offered.
         const tags = {
-            "gen-traintable-job-0fd23d01f6064a58ac4aa2a6ba142209": {
+            "gen-traintable-job-00007000000000000000000000000000": {
                 "timestamps": {
                     "created_at": "2025-04-24T08:55:38.613327+00:00",
                     "updated_at": "2025-04-24T08:55:38.613327+00:00"
                 },
                 "tags": {
                     "pquery_name": "financial_test",
-                    "pquery_id": "pquery-9a60522917eaab2e7bc7f3c1a4306477",
+                    "pquery_id": "pquery-00044000000000000000000000000000",
                     "parent_job":
-                        "trainingjob-0fd23d01f6064a58ac4aa2a6ba142209",
+                        "trainingjob-00007000000000000000000000000000",
                     "team": "growth"
                 }
             },
-            "gen-traintable-job-1db2edcc9f30420898ce79b9161a4c56": {
+            "gen-traintable-job-00010000000000000000000000000000": {
                 "timestamps": {
                     "created_at": "2025-04-03T05:29:33.349961+00:00",
                     "updated_at": "2025-04-03T05:29:33.349961+00:00"
                 },
                 "tags": {
                     "pquery_name": "churn_model",
-                    "pquery_id": "pquery-5ac1a5d72856a9ba1f0f235ee11df1c1",
+                    "pquery_id": "pquery-0002c000000000000000000000000000",
                     "parent_job":
-                        "trainingjob-1db2edcc9f30420898ce79b9161a4c56",
+                        "trainingjob-00010000000000000000000000000000",
                     "team": "ml"
                 }
             }
@@ -269,9 +269,9 @@ describe("getJobsTagsOptions", () => {
         // System tags (pquery_name, pquery_id, parent_job) are excluded.
         const values = result.map((option) => option.value);
         expect(values).not.toContain("financial_test");
-        expect(values).not.toContain("pquery-9a60522917eaab2e7bc7f3c1a4306477");
+        expect(values).not.toContain("pquery-00044000000000000000000000000000");
         expect(values).not.toContain(
-            "trainingjob-0fd23d01f6064a58ac4aa2a6ba142209"
+            "trainingjob-00007000000000000000000000000000"
         );
         expect(result).toHaveLength(2);
     });

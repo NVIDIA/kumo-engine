@@ -32,7 +32,7 @@ import {
 } from "./MockFunctions/PredictionTableGeneration.mock";
 import { doneResponse } from "./MockResponses/PredictionTableGeneration";
 
-const id = "gen-predtable-job-960dbaace6ef49b8b83d648204f50e27";
+const id = "gen-predtable-job-00041000000000000000000000000000";
 const expectedPredictionTable = doneResponse;
 expectedPredictionTable.resource.job_id = id;
 const mockOnArchive = vi.fn();

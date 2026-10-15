@@ -5,8 +5,8 @@
 //! TT-NG manifest (`manifest.json`) — schema, serialization, and writer.
 //!
 //! Written once at the very end of
-//! `execute_tt_pass_with_source`, after pass A, the optional regroup,
-//! pass B, and the bridge pass have all completed.
+//! `execute_tt_pass_with_source`, after pass A, pass B, and the bridge pass
+//! have all completed.
 //!
 //! ## Schema
 //!
@@ -174,7 +174,7 @@ pub struct ManifestChecksums {
 pub struct TTManifest {
     /// Version 4 requires fact visibility; ordinary artifacts remain version 3.
     pub version: u32,
-    /// Total rows in the `tt.parquet` dataset (after regroup, if applicable).
+    /// Total rows in the `tt.parquet` dataset.
     pub row_count: u64,
     /// `"pquery"` for the standard PQ entity-table walk; `"custom_tt"`
     /// when the executor was driven by a customer-supplied parquet.

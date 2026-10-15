@@ -19,7 +19,7 @@ import RegressionHeatMap, {
 import { setRegressionHeatMapResponseType } from "./MockFunctions/RegressionHeatMap.mock";
 import { expectedXTicks } from "./MockResponses/RegressionHeatMap";
 
-const trainingJobId = "trainingjob-b9a218e7fcaa40a48e823b54732c86f2";
+const trainingJobId = "trainingjob-00051000000000000000000000000000";
 const defaultProps: RegressionHeatMapProps = {
     queryId: trainingJobId,
     trainingJobId: trainingJobId,
@@ -194,11 +194,11 @@ describe("RegressionHeatMap", () => {
 
     it.each([
         {
-            id: "trainingjob-0c4623b61d0643d6a29b32c90c62f39c",
+            id: "trainingjob-00006000000000000000000000000000",
             scenario: "predicted values are lower than actual values"
         },
         {
-            id: "trainingjob-6f8321a97ace4897b30eb4a0600e41bd",
+            id: "trainingjob-00034000000000000000000000000000",
             scenario: "actual values are lower than predicted values"
         }
     ])("Should render correct tick labels when $scenario", async ({ id }) => {
@@ -215,7 +215,7 @@ describe("RegressionHeatMap", () => {
     });
 
     it("Should handle case when no matching points are found for line", async () => {
-        const id = "trainingjob-afbc69bc7e60441ab732d6ad95f4c687";
+        const id = "trainingjob-0004a000000000000000000000000000";
         await renderRegressionHeatMap({
             ...defaultProps,
             trainingJobId: id

@@ -41,6 +41,10 @@ TO_PYARROW_DTYPE = {
 _PYARROW_TO_DTYPE = {
     value: key if key not in (Dtype.byte, Dtype.int16) else Dtype.int32
     for key, value in TO_PYARROW_DTYPE.items() if key is not Dtype.unsupported
+} | {
+    pa.uint8(): Dtype.int32,
+    pa.uint16(): Dtype.int32,
+    pa.uint32(): Dtype.int64,
 }
 
 _TO_DTYPE = {
@@ -49,15 +53,20 @@ _TO_DTYPE = {
     torch.bool: Dtype.bool,
     pa.bool_(): Dtype.bool,
     np.dtype("byte"): Dtype.int32,
+    np.dtype("uint8"): Dtype.int32,
     pd.UInt8Dtype(): Dtype.int32,
     pd.Int8Dtype(): Dtype.int32,
     torch.uint8: Dtype.int32,
     np.dtype("int16"): Dtype.int32,
+    np.dtype("uint16"): Dtype.int32,
     pd.Int16Dtype(): Dtype.int32,
+    pd.UInt16Dtype(): Dtype.int32,
     torch.int16: Dtype.int32,
     np.dtype("int32"): Dtype.int32,
     pd.Int32Dtype(): Dtype.int32,
     torch.int32: Dtype.int32,
+    np.dtype("uint32"): Dtype.int64,
+    pd.UInt32Dtype(): Dtype.int64,
     np.dtype("int64"): Dtype.int64,
     pd.Int64Dtype(): Dtype.int64,
     torch.int64: Dtype.int64,

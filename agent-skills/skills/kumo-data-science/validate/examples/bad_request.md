@@ -47,47 +47,6 @@ Preflight: schema not found in `USER_DATA`.
 
 ---
 
-## 3b. Semantic view spans more than one schema → ASK BACK
-
-> "Predict 30-day churn for each customer using the semantic view `SALES_DB.ML.CHURN_SV`.
-> Churn means no order in the window."
-
-Preflight: `DESCRIBE SEMANTIC VIEW` finds base tables in two schemas — `customer_profile` in
-`SALES_DB.CRM`, `orders` in `SALES_DB.ML`.
-
-> "`CHURN_SV` reads from two schemas — `SALES_DB.CRM` (customer_profile) and `SALES_DB.ML`
-> (orders). I can only build a graph from tables in a single schema. Could you point me to a
-> semantic view or a schema where these tables sit together?"
-
-Not done: picking one schema, dropping a table, or copying data across schemas.
-
----
-
-## 4. Batch inference missing its destination → ASK BACK
-
-> "Use trained model `trainingjob-abc123` to score current accounts."
-
-- `model_address` ✓ · `output_location` ✗
-- Not asked: the source (recorded with the model), the population ("current accounts" means all
-  accounts at the latest snapshot timestamp, the default), and the task. The task is never
-  reopened.
-
-> "Where should the scores be written? A Snowflake table, e.g. a connector plus a table name, or
-> `DB.SCHEMA.TABLE`."
-
-## 4b. Batch inference with an unusable destination → ASK BACK
-
-> "Score with `trainingjob-abc123` and write predictions to `s3://tmp/scores`."
-
-- `model_address` ✓ · `output_location` invalid: not a Snowflake table
-
-> "`s3://tmp/scores` isn't a destination I can write to here, because scores go to a Snowflake
-> table. Which Snowflake table should receive them?"
-
-Only the invalid field is raised. Do not add questions about the source or the population.
-
----
-
 ## 5. Full data-science request → REJECT
 
 > "Here is our Snowflake semantic view. Figure out what we should predict, choose the best target

@@ -38,12 +38,12 @@ We discovered that Kumo's PySpark orchestrator uses a semantic engine called `BP
 ## 4. The PyArrow Streaming HStack
 For Legacy Static Link Prediction, Kumo requires combining the LHS and RHS into a single table via horizontal stacking (`zip_longest` in PySpark), where the shorter dataframe (usually RHS candidates) is padded by repeating its first row.
 
-*   **The Challenge**: Using Pandas `concat` on a 370-million row dataset (`akihironitta`) caused immediate Out-Of-Memory (OOM) failures.
-*   **The Solution**: We implemented a zero-copy PyArrow streaming architecture. We completely materialize the small RHS candidate pool into an in-memory `pa.array`. As the massive LHS stream yields 100k-row chunks, we dynamically slice, tile, and append the RHS `TARGET` column to the `RecordBatch`, writing directly to `.parquet`. This dropped peak memory from ~35GB to less than ~50MB, processing 370M rows in ~6 minutes.
+*   **The Challenge**: Concatenating all prediction rows with Pandas can exhaust memory.
+*   **The Solution**: We implemented a zero-copy PyArrow streaming architecture. We completely materialize the small RHS candidate pool into an in-memory `pa.array`. As the massive LHS stream yields 100k-row chunks, we dynamically slice, tile, and append the RHS `TARGET` column to the `RecordBatch`, writing directly to `.parquet`. This avoids keeping the full LHS table in memory.
 
 ## 5. Forecasting & Parallel Array Materialization
 Forecasting in Kumo requires building a target array spanning multiple historical windows.
-*   **The Solution**: We built `Op::Autoregression` and `OutputMode::Forecasting` directly into the Rust execution engine. DiskGraph recursively evaluates the core target AST across an arbitrary array of `lag_offsets` and `yoy_offsets`, emitting a dense, multi-dimensional ListArray (`AUTOREGRESSION_COL`). This was successfully tested on 370M users, evaluating 11.1 Billion localized graph queries sequentially in a single memory space.
+*   **The Solution**: We built `Op::Autoregression` and `OutputMode::Forecasting` directly into the Rust execution engine. DiskGraph recursively evaluates the core target AST across an arbitrary array of `lag_offsets` and `yoy_offsets`, emitting a dense, multi-dimensional ListArray (`AUTOREGRESSION_COL`).
 
 ## Conclusion
 The DiskGraph BP implementation represents a mathematically rigorous translation of PySpark's distributed relational algebra into localized, memory-mapped graph traversal primitives. By maintaining strict architectural boundaries—where the Python orchestrator handles schema discovery and sanitization, and the Rust engine handles pure canonical execution—we achieved 100% data parity with production output at unprecedented scale.

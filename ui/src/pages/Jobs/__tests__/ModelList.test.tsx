@@ -254,7 +254,7 @@ describe("ModelsListPage", () => {
             page: 1
         });
 
-        const searchKey = `9ff32`;
+        const searchKey = `00047`;
         const searchInput = await screen.findByPlaceholderText("Search");
         await userEvent.type(searchInput, searchKey);
 

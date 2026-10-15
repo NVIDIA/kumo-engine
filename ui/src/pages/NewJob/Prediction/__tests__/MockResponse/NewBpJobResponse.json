@@ -1,6 +1,6 @@
 {
-    "model_training_job_id": "trainingjob-9f8b259b4f764c8f932ad5912a926ec2",
-    "graph_snapshot_id": "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460",
+    "model_training_job_id": "trainingjob-00046000000000000000000000000000",
+    "graph_snapshot_id": "graph-0005b000000000000000000000000000@00033000000000000000000000000000",
     "explanations": false,
     "filter_overrides": {
         "entity_filter": "FINANCE_ACCOUNT.FREQUENCY = 'POPLATEK MESICNE'",
@@ -12,7 +12,7 @@
         "binary_classification_threshold": 0.6
     },
     "predictive_query": "PREDICT COUNT(FINANCE_TRANS.*, 0, 30, days) = 0 FOR EACH FINANCE_ACCOUNT.ACCOUNT_ID WHERE FINANCE_ACCOUNT.FREQUENCY = 'POPLATEK MESICNE'",
-    "graph_id": "d445eeb8b2aa1b79a142406239fa74e8",
+    "graph_id": "0005b000000000000000000000000000",
     "anchor_time": "inferred",
     "outputs": [
         {

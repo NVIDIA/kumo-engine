@@ -1,0 +1,124 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES.
+# All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Builds the `kumo-glove-6b-50d` wheel (tools/glove-6b-50d/build_wheel.sh),
+# which kumo-engine's `text` extra requires from PyPI.
+#
+# Release flow:
+#   1. Set the version in tools/glove-6b-50d/pyproject.toml and merge it.
+#      kumo-engine and kumo-core accept any 1.x; a 2.0 also needs their
+#      `kumo-glove-6b-50d` ranges widened.
+#   2. Create and publish a GitHub release tagged `kumo-glove-6b-50d-v<version>`.
+#   3. This workflow builds the wheel at that tag and attaches it to the release.
+#   4. Once the `kumo-engine-release` environment approves it, `kitmaker`
+#      publishes the attached wheel to PyPI and pypi.nvidia.com through Kitmaker
+#      (scripts/kitmaker_release.py).
+# A manual run only builds the wheel and stores it as a workflow artifact.
+
+name: Kumo GloVe 6B 50d - Build and publish wheel
+
+on:  # yamllint disable-line rule:truthy
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run per release at a time: a second run could replace an attachment
+# while the first is publishing it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.release.tag_name || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch'
+      || startsWith(github.event.release.tag_name, 'kumo-glove-6b-50d-v') }}
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+
+      - name: Check release tag matches the package version
+        if: ${{ github.event_name == 'release' }}
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version=$(python -c 'import tomllib; print(tomllib.load(open("tools/glove-6b-50d/pyproject.toml", "rb"))["project"]["version"])')
+          if [ "${RELEASE_TAG}" != "kumo-glove-6b-50d-v${version}" ]; then
+            echo "Tag ${RELEASE_TAG} does not match tools/glove-6b-50d/pyproject.toml ${version}; expected kumo-glove-6b-50d-v${version}."
+            exit 1
+          fi
+
+      - name: Build wheel
+        run: tools/glove-6b-50d/build_wheel.sh dist
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: kumo-glove-6b-50d-wheel-${{ github.sha }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  attach-to-release:
+    needs: [build]
+    if: ${{ github.event_name == 'release' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download wheel
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: kumo-glove-6b-50d-wheel-${{ github.sha }}
+          path: dist
+
+      - name: Attach wheel to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "${RELEASE_TAG}" dist/*.whl --clobber
+
+  kitmaker:
+    needs: [attach-to-release]
+    if: ${{ github.event_name == 'release' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    environment: kumo-engine-release
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Download wheel
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: kumo-glove-6b-50d-wheel-${{ github.sha }}
+          path: dist
+
+      - name: Publish through Kitmaker
+        env:
+          KITMAKER_API_TOKEN: ${{ secrets.KITMAKER_API_TOKEN }}
+          KITMAKER_PIC: ${{ vars.KITMAKER_PIC }}
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: >-
+          python3 scripts/kitmaker_release.py --project-id 6904
+          --project kumo-glove-6b-50d --platform any
+          --repo "${REPO}" --tag "${RELEASE_TAG}" dist/kumo_glove_6b_50d-*.whl

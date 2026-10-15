@@ -101,7 +101,6 @@ class TrainingTable:
             TrainingWorkflowRequest,
         )
         from kumoapi.json_serde import to_json_dict
-        from kumoapi.model_plan import ModelPlan
 
         from kumo.engine._embeddings import no_encoder_inference_warnings
         from kumo.engine._scratch import new_run_id, train_table_scratch_dir
@@ -110,7 +109,6 @@ class TrainingTable:
             validate_training_source,
         )
         from kumo.engine.pquery.predictive_query import PredictiveQuery
-        from kumo.engine.trainer.trainer import _to_core_model_plan
 
         if not isinstance(pq, PredictiveQuery):
             raise TypeError("pq must be a kumo.engine PredictiveQuery")
@@ -129,14 +127,9 @@ class TrainingTable:
         run_id = new_run_id()
         run_dir = train_table_scratch_dir(run_id)
         rows_path = stage_source_table(source_table, run_dir / "source-table")
-        model_plan = _to_core_model_plan(ModelPlan())
         generation_plan = from_json_dict(
             to_json_dict(public_plan),
-            type(model_plan.training_table_generation),
-        )
-        model_plan = replace(
-            model_plan,
-            training_table_generation=generation_plan,
+            TrainingTableGenerationPlan,
         )
         workflow = TrainingWorkflowRequest.from_spec(
             graph=snapshot.graph_config,
@@ -148,7 +141,7 @@ class TrainingTable:
             run_id=run_id,
             scratch_dir=str(run_dir),
             artifact_dir=str(run_dir),
-            model_plan=model_plan,
+            training_table_generation_plan=generation_plan,
         )
         validate_training_source(rows_path, workflow.query, workflow.graph,
                                  spec)
@@ -156,7 +149,7 @@ class TrainingTable:
             task_plan = build_native_pquery_task_plan(
                 query=workflow.query,
                 graph=workflow.graph,
-                model_plan=workflow.model_plan,
+                training_table_generation_plan=generation_plan,
                 run_id=workflow.run_id,
                 graph_index_path=workflow.prepared_graph.index_path,
                 scratch_dir=workflow.scratch_dir,

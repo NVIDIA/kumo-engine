@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 from kumo_core.encoder_selection import _EncoderStat, select_encoder
-from kumo_core.model_plan import ModelPlan
+from kumo_core.model_plan import TrainingTableGenerationPlan
 from kumo_core.pquery import (
     _column_encoder_stats,
     build_native_pquery_task_plan,
@@ -126,7 +126,7 @@ def test_real_entry_points_share_prepared_snapshot_selection(
     portable = build_native_pquery_task_plan(
         query=query,
         graph=graph,
-        model_plan=ModelPlan(),
+        training_table_generation_plan=TrainingTableGenerationPlan(),
         run_id="prepared-snapshot",
         graph_index_path=str(tmp_path / "index"),
         scratch_dir=str(tmp_path / "scratch"),

@@ -8,7 +8,7 @@ import { DataSourceType, FlowType, JSTable } from "types/tables";
 import { tablesFromGraphResponse } from "utils/Converters/graphsConverter";
 
 export const graphInfo: JSGraph = {
-    "id": "graph-eb2650cd1f7c522fc8d513b7965b3f51",
+    "id": "graph-00064000000000000000000000000000",
     "name": "customer_graph",
     "tables": {
         "stock": {
@@ -151,7 +151,7 @@ export const graphInfo: JSGraph = {
 };
 
 export const invalidGraphInfo: JSGraph = {
-    "id": "graph-eb2650cd1f7c522fc8d513b7965b3f51",
+    "id": "graph-00064000000000000000000000000000",
     "name": "customer_graph",
     "tables": {
         "stock": {
@@ -430,7 +430,7 @@ export const groups: ColumnGroup[] = [
 
 export const mockGfc: GraphFlowInfo = {
     "name": "customer_graph",
-    "id": "graph-eb2650cd1f7c522fc8d513b7965b3f51",
+    "id": "graph-00064000000000000000000000000000",
     "description": "",
     "tables": {
         "stock": {

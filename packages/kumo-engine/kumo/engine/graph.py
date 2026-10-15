@@ -314,8 +314,13 @@ class Graph:
         separately, so `graph.validate()` followed by `graph.snapshot()`
         would otherwise convert the same graph twice.
         """
+        from kumo.engine._infer import refuse_unsupported_columns
         from kumo.engine._portable import portable_graph_config
 
+        for table in self._named_tables.values():
+            if table.definition is not None:
+                refuse_unsupported_columns(table.connector, table.table_name,
+                                           table.definition.cols)
         return portable_graph_config(self._named_tables, self.edges,
                                      name=self.id)
 
@@ -336,7 +341,8 @@ class Graph:
 
         Keys must have matching types or allow lossless integer widening,
         following the shared hosted dtype compatibility rules. Invalid
-        graphs raise before snapshot ingestion starts.
+        graphs raise before snapshot ingestion starts, as do columns whose
+        source type has no Kumo dtype and that no declared dtype resolved.
         """
         self.native_graph
 

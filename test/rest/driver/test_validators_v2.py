@@ -549,6 +549,29 @@ class TestValidatorsRaiseAllowlistedPublicException:
         assert "'payload', 'shape'" in error.message
         assert "Exclude them from the Kumo table definition" in error.message
 
+    def test_metadata_declared_dtype_resolves_unsupported_source_column(self):
+        declared = [
+            _col("id", Stype.ID, Dtype.int64),
+            _col("payload", Stype.numerical, Dtype.int64),
+        ]
+        metadata = _source_metadata_config([
+            _source_col("id", Stype.ID, Dtype.int64),
+            _source_col("payload", Stype.unsupported, Dtype.unsupported),
+            _source_col("shape", Stype.unsupported, Dtype.unsupported),
+        ])
+        connector = MagicMock()
+        connector.name = "fixture"
+
+        undeclared = _make_definition(
+            cols=declared +
+            [_col("shape", Stype.unsupported, Dtype.unsupported)], pkey="id")
+        with pytest.raises(ValidationException) as exc:
+            _validate_table_metadata_v2.sync(undeclared, connector, metadata)
+        assert "Column 'shape' in table" in exc.value.as_error().message
+
+        _validate_table_metadata_v2.sync(
+            _make_definition(cols=declared, pkey="id"), connector, metadata)
+
     def test_metadata_unselected_unsupported_source_column_is_ignored(self):
         d = _make_definition(cols=[_col("id", Stype.ID, Dtype.int64)],
                              pkey="id")

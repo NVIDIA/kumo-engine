@@ -52,6 +52,10 @@ def _run_entrypoint(tmp_path: pathlib.Path, env_js: str,
     script_text = script_text.replace("/usr/share/nginx/html",
                                       html_dir.as_posix())
 
+    script_text = script_text.replace("/tmp/kumo-ui", str(tmp_path / "runtime"))
+    script_text = script_text.replace("/opt/kumo-ui/nginx.external.conf",
+                                      str(REPO_ROOT / "docker/nginx.ui.conf"))
+
     patched_script = tmp_path / "docker-entrypoint-ui.sh"
     patched_script.write_text(script_text)
     patched_script.chmod(0o755)
@@ -69,7 +73,8 @@ def _run_entrypoint(tmp_path: pathlib.Path, env_js: str,
         text=True,
     )
 
-    out_path = html_dir / "env-config.js"
+    out_path = tmp_path / "runtime" / "env-config.js"
+    assert not (html_dir / "env-config.js").exists()
     assert out_path.exists()
     return out_path.read_text()
 

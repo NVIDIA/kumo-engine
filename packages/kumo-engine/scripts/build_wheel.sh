@@ -23,29 +23,28 @@
 #
 # Wheel tag: DiskGraph is the only native component and is a stable-ABI
 # (abi3) extension, so one wheel serves every CPython at or above its floor,
-# currently 3.11. The platform
-# tag is manylinux_<MAX_GLIBC>, backed by a check that the bundled binaries
-# really need no newer glibc (see check_glibc_floor).
+# currently 3.11. The merger intersects every component Requires-Python
+# constraint for the resulting wheel. The platform tag is manylinux_<MAX_GLIBC>,
+# backed by a check that the bundled binaries really need no newer glibc
+# (see check_glibc_floor).
 #
 # Bundled first-party and native components:
 #
 #     every            ${KUMO_REPO}/packages/* -- kumo-engine, kumo-core,
-#     packages/ dist   kumo-pql, kumo-snowflake, kumo-s3, kumo-databricks,
-#                      kumo-bigquery, kumo-gcs, ... every directory with a
-#                      pyproject.toml or setup.py, EXCEPT kumo-api (below) and
-#                      kumo-sdk: it ships the hosted `kumoai_studio` SDK, and
-#                      this wheel is the local-only closure.
+#     packages/ dist   kumo-api, kumo-pql, kumo-snowflake, kumo-s3,
+#                      kumo-databricks, kumo-bigquery, kumo-gcs, ... every
+#                      directory with a pyproject.toml or setup.py, EXCEPT
+#                      kumo-sdk: it ships the hosted `kumoai_studio` SDK,
+#                      and this wheel is the local-only closure.
 #     diskgraph        packages/diskgraph -- native abi3 extension plus the
 #                      standalone `ingest` binary
-#     torch-geometric  released pure-Python wheel from PyPI
 #
-# kumo-api and kumo-glove-6b-50d are never bundled: they are published on their
-# own, so the wheel requires `kumo-api==<version>` and, through the `text`
-# extra, `kumo-glove-6b-50d`, from PyPI.
+# kumo-api, kumo-pql, kumo-core and every provider are always bundled.
+# kumo-glove-6b-50d stays a PyPI dependency of the `text` extra.
 #
-# Everything else (torch, pytorch-frame, pytorch-lightning, tensorboard,
-# optuna, ...) stays a normal Requires-Dist that pip resolves from PyPI at
-# install time; --offline-report lists exactly what that is.
+# Everything else (torch, torch-geometric, pytorch-frame, pytorch-lightning,
+# tensorboard, optuna, ...) stays a normal Requires-Dist that pip resolves
+# from PyPI at install time; --offline-report lists exactly what that is.
 
 set -euo pipefail
 
@@ -60,8 +59,6 @@ OUTPUT_DIR="${OUTPUT_DIR:-}"
 BUNDLE_NAME="kumo-engine"
 BUNDLE_VERSION="${BUNDLE_VERSION:-}"
 RELEASE=0
-TORCH_GEOMETRIC_VERSION="${TORCH_GEOMETRIC_VERSION:-2.8.0.post1}"
-EXTRA_COMPONENTS="${EXTRA_COMPONENTS:-}"
 # Build DiskGraph through cargo-zigbuild so the extension and the ingest binary
 # link against a manylinux2014 glibc rather than this host's. A native build
 # links against the build host's glibc and will not load on the runtime.
@@ -90,12 +87,7 @@ Options:
   --release             Stamp exactly the VERSION file's version, for publishing.
                         Without it: <version>+<short commit>.
   --version VERSION     Override the version entirely (PEP 440).
-  --extra-components LIST Restrict the optional packages, comma-separated.
-                        E.g. kumo-databricks,kumo-s3; engine is always
-                        included. Default: every provider. Extras of
-                        dropped providers are removed.
   --platform-tag TAG    Wheel platform tag.   [manylinux_2_34_x86_64]
-  --torch-geometric VER torch-geometric version.          [2.8.0.post1]
   --kumo-repo PATH      kumo monorepo checkout.           [this repo]
   --no-zig              Build DiskGraph natively instead of through
                         cargo-zigbuild. Only safe when this host's glibc is no
@@ -118,9 +110,7 @@ while [ $# -gt 0 ]; do
         --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
         --release) RELEASE=1; shift ;;
         --version) BUNDLE_VERSION="$2"; shift 2 ;;
-        --extra-components) EXTRA_COMPONENTS="$2"; shift 2 ;;
         --platform-tag) PLATFORM_TAG="$2"; shift 2 ;;
-        --torch-geometric) TORCH_GEOMETRIC_VERSION="$2"; shift 2 ;;
         --kumo-repo) KUMO_REPO="$2"; shift 2 ;;
         --no-zig) USE_ZIG=0; shift ;;
         --verify-image) VERIFY_IMAGE="$2"; shift 2 ;;
@@ -137,19 +127,6 @@ DISKGRAPH_SOURCE="${KUMO_REPO}/packages/diskgraph"
 
 log() { echo "[wheel] $*" >&2; }
 die() { echo "[wheel] ERROR: $*" >&2; exit 1; }
-
-EXTRA_COMPONENTS="${EXTRA_COMPONENTS//[[:space:]]/}"
-if [ -n "${EXTRA_COMPONENTS}" ]; then
-    IFS=',' read -r -a requested_components <<< "${EXTRA_COMPONENTS}"
-    for component in "${requested_components[@]}"; do
-        case "${component}" in
-            kumo-sdk|kumo-api|diskgraph|*/*|.|..|'') die "invalid extra component: ${component}" ;;
-        esac
-        [[ -f "${KUMO_REPO}/packages/${component}/pyproject.toml"
-           || -f "${KUMO_REPO}/packages/${component}/setup.py" ]] \
-            || die "unknown extra component: ${component}"
-    done
-fi
 
 # The build host's interpreter only drives pip and the merge. Every pure-Python
 # component is built with `pip wheel`; DiskGraph's wheel tag comes from its
@@ -234,7 +211,6 @@ record() {
 #    closure) and the native DiskGraph build below. A new provider package
 #    ships the moment it lands under packages/, but merge_wheels.py refuses
 #    to build until kumo-engine declares an extra that reaches it.
-#    --extra-components restricts the optional packages.
 # --------------------------------------------------------------------------
 KUMO_REPO_DIRTY=""
 if [ -n "$(git -C "${KUMO_REPO}" status --porcelain -- packages 2>/dev/null)" ]; then
@@ -243,13 +219,6 @@ fi
 for pkg_dir in "${KUMO_REPO}"/packages/*/; do
     pkg_name="$(basename "${pkg_dir}")"
     case "${pkg_name}" in kumo-sdk|diskgraph) continue ;; esac
-    [ "${pkg_name}" = "kumo-api" ] && continue  # never bundled, see the header
-    if [ -n "${EXTRA_COMPONENTS}" ]; then
-        case "${pkg_name}" in
-            kumo-core|kumo-pql|kumo-engine) ;;
-            *) [[ ",${EXTRA_COMPONENTS}," = *",${pkg_name},"* ]] || continue ;;
-        esac
-    fi
     [ -f "${pkg_dir}pyproject.toml" ] || [ -f "${pkg_dir}setup.py" ] || continue
     dist_glob="${pkg_name//-/_}-*.whl"
     log "building ${pkg_name} from ${pkg_dir}"
@@ -338,23 +307,11 @@ check_glibc_floor() {
 check_glibc_floor
 
 # --------------------------------------------------------------------------
-# 3) torch-geometric (pure Python), bundled from its released PyPI wheel. The
-#    wheel bundles the release the 3.12 config-store behavior is valid for; the
-#    Python 3.14 monorepo separately pins an upstream fix.
-# --------------------------------------------------------------------------
-log "building torch-geometric ${TORCH_GEOMETRIC_VERSION}"
-"${PYTHON}" -m pip wheel --no-deps -q -w "${WHEELS}" \
-    "torch-geometric==${TORCH_GEOMETRIC_VERSION}"
-record 'torch_geometric-*.whl' third-party \
-    "torch-geometric==${TORCH_GEOMETRIC_VERSION} (PyPI)"
-
-# --------------------------------------------------------------------------
-# 4) Generate the legal payload and combined license expression.
+# 3) Generate the legal payload and combined license expression.
 # --------------------------------------------------------------------------
 NOTICE_GENERATOR="${KUMO_REPO}/scripts/gen_third_party.py"
 [ -f "${NOTICE_GENERATOR}" ] || die "no notice generator at ${NOTICE_GENERATOR}"
 NOTICE_ARTIFACT_ARGS=(
-    --artifact fat-wheel-bundled-python
     --artifact diskgraph-extension
     --artifact diskgraph-ingest
     --artifact kumo-core-bundled-source
@@ -380,7 +337,7 @@ LICENSE_EXPRESSION="$(
 )" || die "could not derive the wheel license expression"
 
 # --------------------------------------------------------------------------
-# 5) Merge everything into one wheel.
+# 4) Merge everything into one wheel.
 # --------------------------------------------------------------------------
 merge_args=(--version "${BUNDLE_VERSION}" --platform-tag "${PLATFORM_TAG}"
             --notice "${THIRD_PARTY_NOTICE}"
@@ -396,7 +353,7 @@ SIZE_MIB="$(( $(stat -c %s "${WHEEL_PATH}") / 1024 / 1024 ))"
 log "wrote ${WHEEL_PATH} (${SIZE_MIB} MiB)"
 
 # --------------------------------------------------------------------------
-# 6) Optional smoke test: install the finished wheel into a real base image and
+# 5) Optional smoke test: install the finished wheel into a real base image and
 #    import the closure.
 # --------------------------------------------------------------------------
 if [ -n "${VERIFY_IMAGE}" ]; then

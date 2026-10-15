@@ -56,6 +56,9 @@ global:
   containerSecurityContext:
     allowPrivilegeEscalation: false
     runAsNonRoot: true
+    # Also applies to dynamic workers/canaries. Requires rebuilt images;
+    # see docs/requirements.md#read-only-filesystem-upgrades before upgrading.
+    readOnlyRootFilesystem: true
     capabilities:
       drop: [ALL]
 

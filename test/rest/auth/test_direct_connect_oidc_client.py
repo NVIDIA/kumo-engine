@@ -7,14 +7,27 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
+import cachetools
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import HTTPException
 
+from rest.config.encryption import encrypt_secret_string
 from rest.config.status import RestStatusCode
 from rest.deps import direct_connect_oidc_client as oidc
+from rest.deps.authentication import Permissions, UserAuthorization
+from rest.deps.direct_connect_group_resolver import (
+    _GROUP_CACHE_TTL_SECONDS,
+    DirectConnectGroupResolver,
+)
 from rest.deps.direct_connect_oidc_client import DirectConnectOIDCClient
+from rest.driver.direct_connect_auth_storage import DirectConnectAuthStore
+from rest.utils.driver_common import get_current_timestamps
+from statedb.config.common import UserID
+from statedb.config.direct_connect_auth import DirectConnectAuthConfigRecord
+from statedb.db import StateDB, StateServices
+from statedb.rest.group import KumoGroupCreateSpec
 
 
 class _Response:
@@ -90,58 +103,185 @@ async def test_exchange_code_requires_refresh_token(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_refresh_groups_uses_userinfo_and_rotated_token(monkeypatch):
-    oidc._DISCOVERY_CACHE["https://idp.example.com"] = {
-        "issuer": "https://idp.example.com",
-        "token_endpoint": "https://idp.example.com/token",
-        "userinfo_endpoint": "https://idp.example.com/userinfo",
-    }
-    monkeypatch.setattr(
-        oidc.requests,
-        "post",
-        lambda *_args, **_kwargs: _Response(
-            {
-                "access_token": "access-token",
-                "refresh_token": "rotated-refresh-token",
-            }),
-    )
-    monkeypatch.setattr(
-        oidc.requests,
-        "get",
-        lambda *_args, **_kwargs: _Response({
-            "groups": ["idp-a", "idp-a", "idp-b"],
-        }),
-    )
+@pytest.mark.parametrize(("groups", "expected"), [
+    (["idp-a", "idp-a", "idp-b"], ["idp-a", "idp-b"]),
+    ([], []),
+    (None, []),
+])
+async def test_refresh_groups_uses_userinfo_and_rotated_token(
+        monkeypatch, groups, expected):
+    _mock_group_refresh(monkeypatch, token="must-not-use-this-token",
+                        userinfo={"groups": groups})
 
     result = await _client().refresh_groups.coroutine(
         refresh_token="refresh-token")
 
-    assert result.external_group_ids == ["idp-a", "idp-b"]
+    assert result.external_group_ids == expected
     assert result.refresh_token == "rotated-refresh-token"
 
 
 @pytest.mark.asyncio
-async def test_refresh_groups_falls_back_to_verified_id_token(monkeypatch):
-    token = _signed_id_token(monkeypatch)
-    oidc._DISCOVERY_CACHE["https://idp.example.com"] = {
-        "issuer": "https://idp.example.com",
-        "token_endpoint": "https://idp.example.com/token",
-        "jwks_uri": "https://idp.example.com/jwks",
-    }
-    monkeypatch.setattr(
-        oidc.requests,
-        "post",
-        lambda *_args, **_kwargs: _Response({
-            "id_token": token,
-            "refresh_token": "rotated-refresh-token",
-        }),
-    )
+@pytest.mark.parametrize("userinfo", [None, {}, {"email": "alice@example.com"}])
+@pytest.mark.parametrize(("groups", "expected"), [
+    (["idp-admin", {
+        "name": "idp-user"
+    }], ["idp-admin", "idp-user"]),
+    (["idp-user"], ["idp-user"]),
+    ([], []),
+])
+async def test_refresh_groups_falls_back_to_verified_id_token(
+        monkeypatch, userinfo, groups, expected):
+    token = _signed_id_token(monkeypatch, payload_overrides={"groups": groups})
+    _mock_group_refresh(monkeypatch, token=token, userinfo=userinfo)
 
     result = await _client().refresh_groups.coroutine(
         refresh_token="refresh-token")
 
-    assert result.external_group_ids == ["idp-admin", "idp-user"]
+    assert result.external_group_ids == expected
     assert result.refresh_token == "rotated-refresh-token"
+
+
+def _mock_group_refresh(monkeypatch, *, token, userinfo):
+    oidc._DISCOVERY_CACHE["https://idp.example.com"] = {
+        "issuer": "https://idp.example.com",
+        "token_endpoint": "https://idp.example.com/token",
+        "userinfo_endpoint": "https://idp.example.com/userinfo",
+        "jwks_uri": "https://idp.example.com/jwks",
+    }
+    received_tokens = []
+
+    def post(_url, *, data, **_kwargs):
+        received_tokens.append(data["refresh_token"])
+        access_token = "access-token" if userinfo is not None else None
+        return _Response({
+            "access_token": access_token,
+            "id_token": token,
+            "refresh_token": "rotated-refresh-token",
+        })
+
+    monkeypatch.setattr(oidc.requests, "post", post)
+    monkeypatch.setattr(oidc.requests, "get",
+                        lambda *_args, **_kwargs: _Response(userinfo))
+    return received_tokens
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", [
+    "expired", "audience", "issuer", "signature", "missing-exp", "missing-token"
+])
+async def test_refresh_groups_rejects_invalid_fallback_token(
+        monkeypatch, invalid):
+    overrides = {
+        "expired": {
+            "exp": datetime.now(timezone.utc) - timedelta(minutes=5)
+        },
+        "audience": {
+            "aud": "another-client"
+        },
+        "issuer": {
+            "iss": "https://another-idp.example.com"
+        },
+    }
+    token = _signed_id_token(
+        monkeypatch, payload_overrides=overrides.get(invalid),
+        drop_claims=["exp"] if invalid == "missing-exp" else None)
+    if invalid == "signature":
+        token = token.rsplit(".", 1)[0] + ".AAAA"
+    elif invalid == "missing-token":
+        token = None
+    _mock_group_refresh(monkeypatch, token=token, userinfo={})
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _client().refresh_groups.coroutine(refresh_token="refresh-token")
+
+    assert exc_info.value.status_code == (503 if invalid == "missing-token" else
+                                          401)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("refresh", ["retained", "removed", "invalid"])
+async def test_group_only_project_access_across_cache_expiry(
+        monkeypatch, tmp_path, refresh):
+    token = _signed_id_token(
+        monkeypatch, payload_overrides={
+            "groups": [] if refresh == "removed" else ["idp-user"],
+        })
+    received_tokens = _mock_group_refresh(
+        monkeypatch, token="invalid" if refresh == "invalid" else token,
+        userinfo={"email": "alice@example.com"})
+    db = await StateDB.open_sqlite(str(tmp_path / "group-access.db"))
+    try:
+        services = StateServices(db)
+        store = DirectConnectAuthStore(services.direct_connect_auth)
+        await store.set_config(
+            DirectConnectAuthConfigRecord(
+                timestamps=get_current_timestamps(),
+                issuer="https://idp.example.com",
+                client_id="kumo",
+                encrypted_client_secret=encrypt_secret_string("secret"),
+                groups_claim="groups",
+                admin_emails=[],
+                enabled=True,
+            ))
+        user_id, user = await store.upsert_user_from_idp(
+            issuer="https://idp.example.com",
+            subject="subject-1",
+            email="alice@example.com",
+            display_name="Alice Example",
+            refresh_token="refresh-token",
+        )
+        assert user.role == "user"
+        admin = UserAuthorization(
+            user_id=UserID("admin"),
+            access_token="test",
+            permissions=[Permissions.ADMIN.compose()],
+        )
+        group = (await services.groups.create_kumo_groups(
+            [KumoGroupCreateSpec(display_name="Test group")], admin))[0]
+        await services.groups.create_external_mapping(group.id,
+                                                      "direct_connect",
+                                                      "idp-user",
+                                                      principal=admin)
+        project = await services.projects.create_project(
+            name="Group-only project", group_id=group.id,
+            user_authorization=admin)
+        now = [0.0]
+        resolver = DirectConnectGroupResolver(
+            state_services=services,
+            auth_store=store,
+            cache=cachetools.TTLCache(maxsize=10, ttl=_GROUP_CACHE_TTL_SECONDS,
+                                      timer=lambda: now[0]),
+        )
+        resolver.remember_external_groups(user_id, ["idp-user"])
+
+        async def visible_projects():
+            membership = await resolver.resolve_groups(user_id, {})
+            principal = UserAuthorization(
+                user_id=UserID(user_id),
+                access_token="test",
+                permissions=[Permissions.READ.compose()],
+                kumo_group_ids=membership.group_ids,
+                external_membership_unavailable=membership.
+                external_membership_unavailable,
+            )
+            assert not principal.is_admin
+            return await services.projects.list_visible_project_ids(principal)
+
+        assert await visible_projects() == [str(project.id)]
+        now[0] = _GROUP_CACHE_TTL_SECONDS - 1
+        assert await visible_projects() == [str(project.id)]
+        assert received_tokens == []
+
+        now[0] = _GROUP_CACHE_TTL_SECONDS
+        expected = [str(project.id)] if refresh == "retained" else []
+        assert await visible_projects() == expected
+        assert received_tokens == ["refresh-token"]
+        now[0] = 2 * _GROUP_CACHE_TTL_SECONDS
+        assert await visible_projects() == expected
+        assert received_tokens[-1] == ("refresh-token" if refresh == "invalid"
+                                       else "rotated-refresh-token")
+    finally:
+        await db.close()
 
 
 @pytest.mark.asyncio

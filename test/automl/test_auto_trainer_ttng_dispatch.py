@@ -16,8 +16,8 @@ Covers three pieces of plumbing added for the
      through to the ``AutoTrainer``. ``Task.load`` is config-only
      (TT-NG mode reads everything from the bundle, so ``fkey.pt`` is
      never loaded back into the task).
-  3. ``AutoTrainer._train`` picks ``DiskgraphNestedTrainer`` over
-     ``NestedTrainer`` when the field is set. The class-selection
+  3. ``AutoTrainer._train`` constructs ``DiskgraphNestedTrainer``
+     with the task-dataset bundle. The class-selection
      branch itself is small enough that we test it via direct kwarg
      handling rather than driving the full ``_train`` body.
 """
@@ -157,10 +157,10 @@ def test_from_job_config_threads_bundle_dir(
 def _select_nested_trainer_cls(
     auto_trainer_self: Any, ) -> tuple[type, dict[str, Any]]:
     """Mirror of the class-selection branch in
-    ``AutoTrainer._train`` immediately before ``NestedTrainer(...)``.
+    ``AutoTrainer._train`` immediately before ``DiskgraphNestedTrainer(...)``.
 
     Kept in sync with the production branch in auto_trainer.py
-    (search for ``nested_trainer_cls = DiskgraphNestedTrainer``).
+    (search for ``trainer = DiskgraphNestedTrainer``).
 
     TT-NG only: bundle_dir is always set, so the branch asserts and
     unconditionally picks ``DiskgraphNestedTrainer``.
@@ -212,7 +212,8 @@ def test_get_best_trainer_dispatches_to_diskgraph_nested_trainer_in_ttng_mode(
     ``get_best_trainer`` loads via ``DiskgraphNestedTrainer.load(...)``
     and threads the bundle dir through."""
     import kumo_core.train.diskgraph_nested_trainer as dg_nt_mod
-    from kumo_core.automl.auto_trainer import AutoTrainer, NestedTrainer
+    from kumo_core.automl.auto_trainer import AutoTrainer
+    from kumo_core.train.trainer import Trainer
 
     captured: dict[str, Any] = {}
 
@@ -230,13 +231,13 @@ def test_get_best_trainer_dispatches_to_diskgraph_nested_trainer_in_ttng_mode(
         classmethod(_fake_dg_load),
     )
 
-    # Guard: legacy NestedTrainer.load must NOT be invoked in TT-NG mode.
+    # Guard: base Trainer.load must NOT be invoked in TT-NG mode.
     def _fake_nested_load(*args: Any, **kwargs: Any) -> Any:
         captured["nested_load_called"] = True
         return object()
 
     monkeypatch.setattr(
-        NestedTrainer, "load",
+        Trainer, "load",
         classmethod(lambda cls, *a, **kw: _fake_nested_load(*a, **kw)))
 
     # Build a minimal AutoTrainer stub.
@@ -263,7 +264,7 @@ def test_get_best_trainer_dispatches_to_diskgraph_nested_trainer_in_ttng_mode(
 
     assert captured.get("dg_load_called") is True
     assert "nested_load_called" not in captured, (
-        "TT-NG dispatch must not fall through to legacy NestedTrainer.load")
+        "TT-NG dispatch must not fall through to base Trainer.load")
     assert captured["version"] == 7
     assert captured["root_dir"] == "/tmp/logs"
     assert (captured["kwargs"]["diskgraph_task_dataset_bundle_dir"] ==

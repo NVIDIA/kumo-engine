@@ -29,7 +29,7 @@ export const setGetBpJobWarningTestResponseType = (
 
 const mockDefaultResponse = (): Promise<AxiosResponse<unknown>> => {
     const resp = {
-        "bp-job-3f5f52a53f01473d8c5123ff7ba4fd15": {
+        "bp-job-0001e000000000000000000000000000": {
             "errors": [],
             "warnings": [],
             "info_items": [

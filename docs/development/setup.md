@@ -7,11 +7,10 @@ Run commands from the relevant checkout. Tool declarations are in
 
 ## Setup prerequisites and side effects
 
-The local SDK example requires prepared runtime dependencies, including the
-[repository PyG wheel](../../3rdparty/kumo-wheels/README.md#torch_geometric-290-py3-none-anywhl)
-and a [Faiss selection](#choose-the-core-faiss-dependency). Public PyG delivery
-is tracked in [#31333](https://github.com/kumo-ai/kumo/issues/31333); this guide
-describes development setup, not a verified public-package quickstart.
+The local SDK example requires prepared runtime dependencies, including
+`torch-geometric>=2.8.1,<3` from the public package index and a
+[Faiss selection](#choose-the-core-faiss-dependency). This guide describes
+development setup, not a verified public-package quickstart.
 
 Existing targets have these effects; inspect their scripts before running them:
 

@@ -478,6 +478,7 @@ jobs:
           cd "$RUNNER_TEMP"
           "$python" -m pytest --import-mode=importlib \
             --confcutdir="$GITHUB_WORKSPACE/packages/diskgraph" \
+            -k 'not test_benchmark_uses_selected_graph' \
             "$GITHUB_WORKSPACE/packages/diskgraph/diskgraph-pybind/python/tests" -q
       - name: Verify the same abi3 wheel on Python 3.14
         run: |

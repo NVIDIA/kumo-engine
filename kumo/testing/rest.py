@@ -215,9 +215,9 @@ def invalid_bigquery_key_test_identity_config(
     """Build key-auth metadata for testing invalid private-key rejection."""
     return data_source_api.BigQueryIdentityConfig(
         authentication=data_source_api.GoogleServiceAccountKeyAuthentication(
-            project_id='kumo-engineering',
+            project_id='example-project',
             client_email=('invalid-bigquery-test@'
-                          'kumo-engineering.iam.gserviceaccount.com'),
+                          'example-project.iam.gserviceaccount.com'),
             client_id='0',
             auth_uri='https://accounts.google.com/o/oauth2/auth',
             token_uri='https://oauth2.googleapis.com/token',

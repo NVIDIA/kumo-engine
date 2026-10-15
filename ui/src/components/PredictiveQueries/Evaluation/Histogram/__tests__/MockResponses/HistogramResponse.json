@@ -122,8 +122,8 @@
     "query_info": {
         "query_dialect": "PQLANG_V2",
         "testSplitSize": 0,
-        "id": "trainingjob-bed43f8f2fc54ea985439b026dbe0865",
-        "queryName": "trainingjob-bed43f8f2fc54ea985439b026dbe0865",
+        "id": "trainingjob-00055000000000000000000000000000",
+        "queryName": "trainingjob-00055000000000000000000000000000",
         "queryName_link": "",
         "queryYaml": "PREDICT COUNT(transaction.Quantity\nWHERE transaction.Description STARTS WITH \"CARD\", 0, 90,days)\nFOR EACH customer.CustomerID",
         "trainingConfigYaml": "PREDICT COUNT(transaction.Quantity\nWHERE transaction.Description STARTS WITH \"CARD\", 0, 90,days)\nFOR EACH customer.CustomerID",
@@ -133,15 +133,15 @@
         "generationPlan": "split: ApproxDateOffsetSplit(ratio=[0.8, 0.1, 0.1])\ntrain_start_offset: inferred\ntrain_end_offset: inferred\nstart_time: '???'\nend_time: '???'\ntimeframe_step: inferred\nforecast_length: 1\nlag_timesteps: 0\nyear_over_year: false\nentity_candidate: null\nentity_candidate_aggregation: null\ntask_path_override: null\ntrain_table_path_override: null\n",
         "trainingPlan": "training_table_generation:\n  split: ApproxDateOffsetSplit(ratio=[0.8, 0.1, 0.1])\n  train_start_offset: inferred\n  train_end_offset: inferred\n  start_time: '???'\n  end_time: '???'\n  timeframe_step: inferred\n  forecast_length: 1\n  lag_timesteps: 0\n  year_over_year: false\n  entity_candidate: null\n  entity_candidate_aggregation: null\n  task_path_override: null\n  train_table_path_override: null\ntraining_job:\n  num_experiments: 4\n  metrics:\n    - mae\n    - mse\n    - rmse\n  tune_metric: mae\n  pruning: '???'\n  disable_compilation: true\n  refit_trainval: false\n  refit_full: false\n  disable_explain: false\n  manual_seed: null\n  enable_baselines: false\ncolumn_processing:\n  encoder_overrides: null\nneighbor_sampling:\n  max_target_neighbors_per_entity: '???'\n  num_neighbors:\n    - hop1:\n        default: 12\n        customer.CustomerID->transaction.CustomerID: inferred\n      hop2:\n        default: 12\n      hop3: null\n      hop4: null\n      hop5: null\n      hop6: null\n  sample_from_entity_table: '???'\n  adaptive_sampling: false\noptimization:\n  max_epochs: 8\n  min_steps_per_epoch: 30\n  max_steps_per_epoch: 1000\n  max_val_steps: 1000\n  max_test_steps: 2000\n  loss:\n    - huber\n  base_lr:\n    - 0.0001\n    - 0.0005\n    - 0.001\n    - 0.005\n    - 0.01\n    - 0.05\n  weight_decay:\n    - 0\n    - 5.e-8\n    - 5.e-7\n    - 0.000005\n  batch_size:\n    - 512\n    - 1024\n  early_stopping:\n    - min_delta: 0\n      patience: 3\n  lr_scheduler:\n    - name: cosine_with_warmup_restarts\n      interval: step\n      kwargs:\n        warmup_ratio_or_steps: 0.1\n    - name: constant_with_warmup\n      interval: step\n      kwargs:\n        warmup_ratio_or_steps: 0.1\n    - name: linear_with_warmup\n      interval: step\n      kwargs:\n        warmup_ratio_or_steps: 0.1\n    - name: cosine_with_warmup\n      interval: step\n      kwargs:\n        warmup_ratio_or_steps: 0.1\n  majority_sampling_ratio: '???'\n  weight_mode: '???'\n  target_fraction: '???'\n  overlap_ratio: '???'\nmodel_architecture:\n  model:\n    - name: GNN\n      channels:\n        - 64\n        - 128\n        - 256\n      aggregation:\n        - - sum\n          - mean\n          - max\n        - - sum\n          - mean\n          - min\n          - max\n          - std\n  channels: '???'\n  num_pre_message_passing_layers:\n    - 0\n    - 1\n    - 2\n  num_post_message_passing_layers:\n    - 1\n    - 2\n  aggregation: '???'\n  activation:\n    - relu\n    - leaky_relu\n    - elu\n    - gelu\n  normalization:\n    - layer_norm\n  module: '???'\n  handle_new_target_entities: '???'\n  target_embedding_mode: '???'\n  output_embedding_dim: '???'\n  ranking_embedding_loss_coeff: '???'\n  distance_measure: '???'\n  use_seq_id:\n    - false\n  prediction_time_encodings:\n    - false\n  past_encoder:\n    - decomposed\n  handle_new_entities: true\n  forecast_type: '???'\n",
         "graphName": "GraphName",
-        "graphSnapshotId": "graph-eb2650cd1f7c522fc8d513b7965b3f51@6fb82eb61b0ae592b4d07569cbf2ca9d",
-        "trainTableJobId": "gen-traintable-job-bed43f8f2fc54ea985439b026dbe0865",
+        "graphSnapshotId": "graph-00064000000000000000000000000000@00035000000000000000000000000000",
+        "trainTableJobId": "gen-traintable-job-00055000000000000000000000000000",
         "trainTableJobStatus": "DONE",
         "dateCreated": "Thu Apr 10, 2025, 9:31:55 AM",
         "dateUpdated": "Thu Apr 10, 2025, 9:35:22 AM",
         "created": "2 months ago",
         "updated": "2 months ago",
-        "trainingJobId": "trainingjob-bed43f8f2fc54ea985439b026dbe0865",
-        "latestTrainingJobId": "trainingjob-bed43f8f2fc54ea985439b026dbe0865",
+        "trainingJobId": "trainingjob-00055000000000000000000000000000",
+        "latestTrainingJobId": "trainingjob-00055000000000000000000000000000",
         "trainingStatus": "DONE",
         "statusKey": "Progress",
         "log": {
@@ -149,7 +149,7 @@
             "last_updated_at": "Thu Apr 10 2025",
             "detail": "This job successfully completed!"
         },
-        "queryId": "pquery-24d6823dfe7fdc1c8314b3ca6febfff2",
+        "queryId": "pquery-00013000000000000000000000000000",
         "taskType": "regression",
         "queryType": "temporal",
         "trainingStatusMessage": "This job successfully completed!",
@@ -243,7 +243,7 @@
                     "val": 0.1006811186671257
                 }
             ],
-            "_test_explain_file_path": "./jobs/trainingjob-bed43f8f2fc54ea985439b026dbe0865/test_explain.json.gz",
+            "_test_explain_file_path": "./jobs/trainingjob-00055000000000000000000000000000/test_explain.json.gz",
             "confusion_matrix": {
                 "test_eval": {
                     "description": "Test confusion matrix",
@@ -321,7 +321,7 @@
         "jobSource": "WEB",
         "tags": {
             "unit_test_customer": "unit_test_customer",
-            "pquery_id": "pquery-24d6823dfe7fdc1c8314b3ca6febfff2"
+            "pquery_id": "pquery-00013000000000000000000000000000"
         },
         "trialProgress": {
             "iterations_completed": 4,

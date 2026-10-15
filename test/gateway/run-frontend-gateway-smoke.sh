@@ -45,10 +45,11 @@ if [ -z "${KUMO_UI_IMAGE:-}" ]; then
     [ -f "${ROOT}/${artifact}" ] || fail "missing source artifact: $artifact"
   done
   SOURCE_MOUNTS=(
+    -v "${ROOT}/ui/env.js:/opt/app/env.js:ro"
     -v "${ROOT}/docker/nginx.frontend.conf.template:/opt/kumo-ui/nginx.frontend.conf.template:ro"
     -v "${ROOT}/docker/render-nginx-ui.sh:/opt/kumo-ui/bin/render-nginx:ro"
     -v "${ROOT}/docker/docker-entrypoint-ui.sh:/docker-entrypoint-ui.sh:ro"
-    -v "${ROOT}/docker/nginx.ui.conf:/etc/nginx/conf.d/default.conf:ro"
+    -v "${ROOT}/docker/nginx.ui.conf:/opt/kumo-ui/nginx.external.conf:ro"
   )
 else
   runtime run --rm --entrypoint /bin/sh "$GATEWAY_IMAGE" -c '
@@ -60,11 +61,9 @@ else
 fi
 
 gateway_run() {
-  if [ "$SOURCE_MODE" = true ]; then
-    runtime run "${SOURCE_MOUNTS[@]}" "$@"
-  else
-    runtime run "$@"
-  fi
+  runtime run --read-only --tmpfs /tmp:rw,exec,size=64m \
+    --user "${KUMO_UI_TEST_USER:-33:33}" --cap-drop ALL \
+    --security-opt no-new-privileges "${SOURCE_MOUNTS[@]}" "$@"
 }
 
 smoke_wget() {
@@ -162,6 +161,7 @@ for fixture in "$PRIVATE_CONTAINER" "$PUBLIC_CONTAINER"; do
 done
 
 start_external() {
+  local port=${1:-3000}
   local command=()
   if [ "$SOURCE_MODE" = true ]; then
     command=(--entrypoint /bin/sh "$GATEWAY_IMAGE" \
@@ -171,13 +171,18 @@ start_external() {
   fi
 
   gateway_run -d --name "$EXTERNAL_CONTAINER" --network "$NETWORK" \
+    -e KUMO_UI_PORT="$port" \
+    -e API_BASE_URL=/readonly-smoke/ \
     -v "${TMP_DIR}/config:/tmp/config:ro" \
     "${command[@]}" >/dev/null
   for _ in $(seq 1 50); do
     if smoke_wget "$EXTERNAL_CONTAINER" \
-      http://127.0.0.1:3000/ >/dev/null 2>&1; then
+      "http://127.0.0.1:${port}/" >/dev/null 2>&1; then
+      smoke_wget "$EXTERNAL_CONTAINER" \
+        "http://127.0.0.1:${port}/env-config.js" | grep -Fq /readonly-smoke/ ||
+        fail "external mode did not serve its runtime config"
       if runtime exec "$EXTERNAL_CONTAINER" grep -Fq __GATEWAY_SMOKE__ \
-        /usr/share/nginx/html/env-config.js 2>/dev/null; then
+        /tmp/kumo-ui/env-config.js 2>/dev/null; then
         fail "default external mode consumed frontend-only /tmp/config/env.js"
       fi
       runtime rm -f "$EXTERNAL_CONTAINER" >/dev/null
@@ -417,6 +422,7 @@ assert_backend() {
 }
 
 start_external
+start_external 3080
 expect_startup_failure 'invalid/upstream:8080' customer.example.com https \
   'an invalid upstream'
 expect_startup_failure "${PUBLIC_CONTAINER}:8080" 'bad_host.example' https \

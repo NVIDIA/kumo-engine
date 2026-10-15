@@ -129,7 +129,7 @@ def portable_graph(src_last: bool = True,
         'tables': [
             {
                 'table_name': 'hosts',
-                'source_table_name': 'HYU.BCCC.HOSTS_LP_SMOKE',
+                'source_table_name': 'EXAMPLE_DB.BCCC.HOSTS_LP_SMOKE',
                 'pkey': col('HOST_ID', 'string', 'ID'),
                 'time_col': None,
                 'cols': [col('HOST_ID', 'string', 'ID')],
@@ -137,7 +137,7 @@ def portable_graph(src_last: bool = True,
             },
             {
                 'table_name': 'network_flows',
-                'source_table_name': 'HYU.BCCC.NETWORK_FLOWS_LP_SMOKE',
+                'source_table_name': 'EXAMPLE_DB.BCCC.NETWORK_FLOWS_LP_SMOKE',
                 'pkey': col('FLOW_ID', 'string', 'ID'),
                 'time_col': time_col,
                 'cols': cols,

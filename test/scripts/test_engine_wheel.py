@@ -19,17 +19,9 @@ SCRIPT = SCRIPTS / 'build_wheel.sh'
 MERGE = SCRIPTS / 'merge_wheels.py'
 
 
-@pytest.mark.parametrize(('args', 'valid', 'providers'), [
-    ([], True, None),
-    (['--extra-components', 'kumo-databricks'], True, ['kumo-databricks']),
-    (['--extra-components', ' kumo-databricks, kumo-s3 '
-      ], True, ['kumo-databricks', 'kumo-s3']),
-    (['--extra-components', 'kumo-missing'], False, []),
-    (['--extra-components', 'kumo-sdk'], False, []),
-    (['--extra-components', 'kumo-api'], False, []),
-])
-def test_wheel_builds_first_party_packages_from_monorepo(
-        tmp_path, args, valid, providers):
+@pytest.mark.parametrize('legacy_selection', ['', 'kumo-databricks'])
+def test_wheel_builds_all_first_party_packages_from_monorepo(
+        tmp_path, legacy_selection):
     repo = tmp_path / 'repo'
     for name in [
             'kumo-api', 'kumo-core', 'kumo-pql', 'kumo-engine', 'kumo-sdk',
@@ -66,25 +58,19 @@ wheel_dir = Path(args[args.index('-w') + 1])
 ''')
     python.chmod(0o755)
     result = subprocess.run(
-        ['bash', str(SCRIPT), '--no-zig', '--version', '1', *args],
+        ['bash', str(SCRIPT), '--no-zig', '--version', '1'],
         env=dict(os.environ, KUMO_REPO=str(repo), PYTHON=str(python),
-                 EXTRA_COMPONENTS='', BUILD_CALLS=str(calls),
+                 EXTRA_COMPONENTS=legacy_selection, BUILD_CALLS=str(calls),
                  THIRD_PARTY_NOTICE=str(repo / 'THIRD-PARTY.txt'),
                  TMPDIR=str(tmp_path), PATH=f'{tmp_path}:{os.environ["PATH"]}'),
         capture_output=True,
         text=True,
     )
-    if not valid:
-        assert result.returncode == 1
-        assert 'extra component:' in result.stderr
-        assert not calls.exists()
-        return
     assert result.returncode == 73, result.stderr
     recorded = [json.loads(line) for line in calls.read_text().splitlines()]
     sources = [call[-1] for call in recorded]
-    # kumo-api is a PyPI dependency, never bundled.
-    expected = ['kumo-core', 'kumo-engine', 'kumo-pql']
-    expected += providers if providers is not None else [
+    expected = ['kumo-api', 'kumo-core', 'kumo-engine', 'kumo-pql']
+    expected += [
         'kumo-bigquery', 'kumo-databricks', 'kumo-gcs', 'kumo-s3',
         'kumo-snowflake'
     ]
@@ -93,13 +79,23 @@ wheel_dir = Path(args[args.index('-w') + 1])
     ]
 
 
+def test_removed_component_selection_flag_is_rejected(tmp_path):
+    result = subprocess.run(
+        ['bash', str(SCRIPT), '--extra-components', 'kumo-databricks'],
+        env=dict(os.environ, KUMO_REPO=str(tmp_path)),
+        capture_output=True, text=True)
+    assert result.returncode == 2
+    assert "unknown argument '--extra-components'" in result.stderr
+
+
 def _wheel(directory, name, requires=(), extras=(), tag='py3-none-any',
            python='>=3.11', files=None):
     """Write a component wheel with just enough metadata to merge."""
     stem = name.replace('-', '_')
     path = directory / f'{stem}-1.0-{tag}.whl'
     metadata = f'Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n'
-    metadata += f'Requires-Python: {python}\n'
+    if python is not None:
+        metadata += f'Requires-Python: {python}\n'
     metadata += ''.join(f'Provides-Extra: {e}\n' for e in extras)
     metadata += ''.join(f'Requires-Dist: {r}\n' for r in requires)
     metadata += '\nREADME body\n'
@@ -111,6 +107,8 @@ def _wheel(directory, name, requires=(), extras=(), tag='py3-none-any',
     return path
 
 
+CORE_COMPONENTS = ['kumo-engine', 'kumo-api', 'kumo-pql', 'kumo-core',
+                   'diskgraph']
 ENGINE_EXTRAS = ['snowflake', 'databricks', 's3', 'text', 'test']
 COMPONENTS = {
     'kumo-engine': {
@@ -126,10 +124,19 @@ COMPONENTS = {
     'kumo-core': {
         'requires': [
             'requests>=2.31', 'torch>=2.7.0,<3', 'diskgraph>=0.1.0',
+            'kumo-api>=3', 'kumo-pql>=0.1', 'torch-geometric>=2.8.1,<3',
             'faiss-gpu==1.14.3; extra == "gpu"',
             'faiss-cpu==1.14.2; extra == "cpu"'
         ],
         'extras': ['gpu', 'cpu'],
+    },
+    'kumo-api': {
+        'requires': ['pydantic>=2.7'],
+        'files': {'kumoapi/__init__.py': ''},
+    },
+    'kumo-pql': {
+        'requires': ['kumo-api>=3', 'antlr4-python3-runtime==4.9.3'],
+        'files': {'kumopql/__init__.py': ''},
     },
     'diskgraph': {
         'tag': 'cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64',
@@ -200,13 +207,15 @@ def _read_wheel(tmp_path):
 ])
 def test_provider_dependencies_only_come_with_their_extra(tmp_path, providers):
     result = _merge(tmp_path,
-                    ['kumo-engine', 'kumo-core', 'diskgraph', *providers])
+                    [*CORE_COMPONENTS, *providers])
     assert result.returncode == 0, result.stderr
     metadata, manifest, names = _read_wheel(tmp_path)
     requirements = set(metadata.get_all('Requires-Dist'))
 
     # Base install: engine + core closure, no provider dependency at all.
-    base = {'pandas', 'requests>=2.31', 'torch>=2.7.0,<3', 'faiss-gpu==1.14.3'}
+    base = {'pandas', 'requests>=2.31', 'torch>=2.7.0,<3', 'faiss-gpu==1.14.3',
+            'pydantic>=2.7', 'antlr4-python3-runtime==4.9.3',
+            'torch-geometric>=2.8.1,<3'}
     assert {r for r in requirements if 'extra ==' not in r} == base
     assert set(manifest['requires']) == base
 
@@ -238,8 +247,27 @@ def test_provider_dependencies_only_come_with_their_extra(tmp_path, providers):
     assert metadata['Metadata-Version'] == '2.4'
 
 
+def test_core_packages_and_shared_license_are_bundled(tmp_path):
+    result = _merge(tmp_path, CORE_COMPONENTS)
+    assert result.returncode == 0, result.stderr
+    metadata, manifest, names = _read_wheel(tmp_path)
+    assert {'kumoapi/__init__.py', 'kumopql/__init__.py',
+            'kumo_core/__init__.py'} <= set(names)
+    assert {component['name'] for component in manifest['components']} == set(
+        CORE_COMPONENTS)
+    assert set(metadata.get_all('License-File')) == {'LICENSE', 'THIRD-PARTY.txt'}
+    with ZipFile(next((tmp_path / 'dist').glob('*.whl'))) as archive:
+        assert archive.read('kumo_engine-1.0.dist-info/licenses/LICENSE'
+                            ) == b'Test license\n'
+        assert not any('KUMO-API-LICENSE' in name for name in archive.namelist())
+    requirements = metadata.get_all('Requires-Dist')
+    for name in ['kumo-api', 'kumo-pql', 'kumo-core']:
+        assert not any(requirement.startswith(name)
+                       for requirement in requirements)
+
+
 def test_glove_stays_a_pypi_dependency_of_the_text_extra(tmp_path):
-    result = _merge(tmp_path, ['kumo-engine', 'kumo-core', 'diskgraph'])
+    result = _merge(tmp_path, CORE_COMPONENTS)
     assert result.returncode == 0, result.stderr
     metadata, _, names = _read_wheel(tmp_path)
     assert 'text' in metadata.get_all('Provides-Extra')
@@ -248,9 +276,9 @@ def test_glove_stays_a_pypi_dependency_of_the_text_extra(tmp_path):
     assert 'kumo_glove_6b_50d/__init__.py' not in names
 
 
-@pytest.mark.parametrize('name', ['kumo-api', 'kumo-glove-6b-50d'])
+@pytest.mark.parametrize('name', ['kumo-glove-6b-50d'])
 def test_published_packages_are_never_bundled(tmp_path, name):
-    result = _merge(tmp_path, ['kumo-engine', 'kumo-core', 'diskgraph', name])
+    result = _merge(tmp_path, [*CORE_COMPONENTS, name])
     assert result.returncode != 0
     assert 'must not be bundled' in result.stderr
     assert not (tmp_path / 'dist').exists()
@@ -263,7 +291,7 @@ def test_engine_version_provider_entry_point_reaches_the_wheel(tmp_path):
         COMPONENTS['kumo-engine'],
         files={'kumo_engine-1.0.dist-info/entry_points.txt': entry})
     try:
-        result = _merge(tmp_path, ['kumo-engine', 'kumo-core', 'diskgraph'])
+        result = _merge(tmp_path, CORE_COMPONENTS)
     finally:
         del COMPONENTS['kumo-engine']['files']
     assert result.returncode == 0, result.stderr
@@ -273,11 +301,67 @@ def test_engine_version_provider_entry_point_reaches_the_wheel(tmp_path):
 
 
 def test_wheel_tag_is_one_abi3_wheel_for_all_pythons(tmp_path):
-    result = _merge(tmp_path, ['kumo-engine', 'kumo-core', 'diskgraph'])
+    result = _merge(tmp_path, CORE_COMPONENTS)
     assert result.returncode == 0, result.stderr
     wheel = next((tmp_path / 'dist').glob('*.whl'))
     assert wheel.name == (
         'kumo_engine-1.0-cp311-abi3-manylinux_2_34_x86_64.whl')
+
+
+@pytest.mark.parametrize(('core_python', 'pql_python', 'allowed', 'excluded'), [
+    ('>=3.12', '>=3.11', ['3.12', '3.14'], ['3.11']),
+    ('>=3.11.4,<3.14', '!=3.12.*', ['3.11.4', '3.13'],
+     ['3.11.3', '3.12.1', '3.14']),
+    ('~=3.12.1', '<3.14', ['3.12.1', '3.12.9'], ['3.12', '3.13']),
+    ('==3.13.*', '>=3.11', ['3.13', '3.13.5'], ['3.12', '3.14']),
+    ('>=3.11', None, ['3.11', '3.14'], ['3.10']),
+])
+def test_merged_python_requirement_intersects_all_components(
+        tmp_path, monkeypatch, core_python, pql_python, allowed, excluded):
+    from packaging.specifiers import SpecifierSet
+
+    for name, python in [('kumo-core', core_python), ('kumo-pql', pql_python)]:
+        monkeypatch.setitem(COMPONENTS, name,
+                            dict(COMPONENTS[name], python=python))
+    result = _merge(tmp_path, CORE_COMPONENTS)
+    assert result.returncode == 0, result.stderr
+    metadata, manifest, _ = _read_wheel(tmp_path)
+    requirement = SpecifierSet(metadata['Requires-Python'])
+    assert all(version in requirement for version in allowed)
+    assert all(version not in requirement for version in excluded)
+    assert manifest['bundle']['requires_python'] == str(requirement)
+    recorded = {component['name']: component['requires_python']
+                for component in manifest['components']}
+    assert recorded['kumo-core'] == core_python
+    assert recorded['kumo-pql'] == pql_python
+
+
+@pytest.mark.parametrize(('core_python', 'pql_python', 'error'), [
+    ('>=3.13', '<3.13', 'no common stable CPython 3 version'),
+    ('==3.12.*', '!=3.12.*', 'no common stable CPython 3 version'),
+    ('>=3.11.1', '<3.11.1', 'no common stable CPython 3 version'),
+    ('invalid', '>=3.11', 'kumo-core has invalid Requires-Python'),
+])
+def test_incompatible_python_requirements_fail_before_writing_wheel(
+        tmp_path, monkeypatch, core_python, pql_python, error):
+    for name, python in [('kumo-core', core_python), ('kumo-pql', pql_python)]:
+        monkeypatch.setitem(COMPONENTS, name,
+                            dict(COMPONENTS[name], python=python))
+    result = _merge(tmp_path, CORE_COMPONENTS)
+    assert result.returncode != 0
+    assert error in result.stderr
+    assert not (tmp_path / 'dist').exists()
+
+
+def test_native_abi_floor_uses_combined_python_minimum(tmp_path, monkeypatch):
+    monkeypatch.setitem(COMPONENTS, 'kumo-core',
+                        dict(COMPONENTS['kumo-core'], python='>=3.12'))
+    monkeypatch.setitem(COMPONENTS, 'diskgraph',
+                        {'tag': 'cp312-abi3-manylinux_2_34_x86_64'})
+    result = _merge(tmp_path, CORE_COMPONENTS)
+    assert result.returncode == 0, result.stderr
+    assert next((tmp_path / 'dist').glob('*.whl')).name == (
+        'kumo_engine-1.0-cp312-abi3-manylinux_2_34_x86_64.whl')
 
 
 def test_native_component_for_newer_python_is_refused(tmp_path):
@@ -285,7 +369,7 @@ def test_native_component_for_newer_python_is_refused(tmp_path):
     try:
         result = _merge(
             tmp_path,
-            ['kumo-engine', 'kumo-core', 'diskgraph', 'diskgraph-new'])
+            [*CORE_COMPONENTS, 'diskgraph-new'])
     finally:
         del COMPONENTS['diskgraph-new']
     assert result.returncode != 0
@@ -296,7 +380,7 @@ def test_bundled_package_without_an_extra_is_refused(tmp_path):
     COMPONENTS['kumo-orphan'] = {'requires': ['orphan-dependency']}
     try:
         result = _merge(
-            tmp_path, ['kumo-engine', 'kumo-core', 'diskgraph', 'kumo-orphan'])
+            tmp_path, [*CORE_COMPONENTS, 'kumo-orphan'])
     finally:
         del COMPONENTS['kumo-orphan']
     assert result.returncode != 0
@@ -376,7 +460,7 @@ def test_wheel_uses_torch_fallbacks_without_native_extensions(
         tmp_path, args, version):
     """Run the real assembly script with local stand-ins for component builds."""
     repo = tmp_path / 'repo'
-    for name in ['kumo-core', 'kumo-engine', 'diskgraph']:
+    for name in CORE_COMPONENTS:
         package = repo / 'packages' / name
         package.mkdir(parents=True)
         (package / 'pyproject.toml').touch()
@@ -413,7 +497,11 @@ for source in (args[-1:] if args[2] == 'wheel' else args[-2:]):
         if name == 'kumo_core':
             metadata += ('Requires-Dist: torch>=2.7,<3\\n'
                          'Requires-Dist: diskgraph\\n'
-                         'Requires-Dist: torch-geometric\\n')
+                         'Requires-Dist: torch-geometric>=2.8.1,<3\\n'
+                         'Requires-Dist: kumo-api\\n'
+                         'Requires-Dist: kumo-pql\\n')
+        if name == 'kumo_pql':
+            metadata += 'Requires-Dist: kumo-api\\n'
         archive.writestr(name + '-1.dist-info/METADATA', metadata)
         archive.writestr(name + '/__init__.py', '')
 ''')
@@ -441,16 +529,24 @@ for source in (args[-1:] if args[2] == 'wheel' else args[-2:]):
     ]
     assert not downloads
     with ZipFile(next(output.glob('*.whl'))) as archive:
+        assert not any(name.startswith('torch_geometric/')
+                       for name in archive.namelist())
         assert 'pyg_lib/__init__.py' not in archive.namelist()
         assert 'torch_scatter/__init__.py' not in archive.namelist()
         metadata_name = next(name for name in archive.namelist()
                              if name.endswith('.dist-info/METADATA'))
         metadata = archive.read(metadata_name).decode()
         assert 'Requires-Dist: torch>=2.7,<3' in metadata
+        assert 'Requires-Dist: torch-geometric>=2.8.1,<3' in metadata
         assert 'License-Expression: Apache-2.0 AND MIT' in metadata
         assert (f'kumo_engine-{version}.dist-info/licenses/LICENSE'
                 in archive.namelist())
-        assert not any('KUMO-API' in n for n in archive.namelist())
+        assert not any('KUMO-API-LICENSE' in name
+                       for name in archive.namelist())
+        for component in ['kumo_api', 'kumo_pql', 'kumo_core']:
+            assert component + '/__init__.py' in archive.namelist()
+        for component in ['kumo-api', 'kumo-pql', 'kumo-core']:
+            assert 'Requires-Dist: ' + component not in metadata
         assert 'Requires-Dist: kumo-glove-6b-50d; extra == "text"' in metadata
         assert 'Requires-Dist: pyg-lib' not in metadata
         assert 'Requires-Dist: torch-scatter' not in metadata

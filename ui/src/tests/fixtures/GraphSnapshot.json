@@ -1,6 +1,6 @@
 {
     "snapshot_resource": {
-        "id": "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460",
+        "id": "graph-0005b000000000000000000000000000@00033000000000000000000000000000",
         "table_ids": {
             "FINANCE_TRANS": "table-bc150313117da0324bfe31ca4ff499e5@1664307208",
             "FINANCE_ACCOUNT": "table-002e03c10b6e6d565f546bc50505145e@1659426523",

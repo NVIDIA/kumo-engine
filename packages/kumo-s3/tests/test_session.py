@@ -13,7 +13,7 @@ import pytest
 from fakes import FakeSession
 from kumo_s3 import session as s3
 
-BUCKET = "kumo-test-bucket"
+BUCKET = "example-test-bucket"
 
 
 @pytest.fixture(autouse=True)

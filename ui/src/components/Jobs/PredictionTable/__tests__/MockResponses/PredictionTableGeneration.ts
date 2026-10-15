@@ -9,7 +9,7 @@ import {
 
 export const doneResponse: GeneratePredictionTableResponse = {
     "resource": {
-        "job_id": "gen-predtable-job-960dbaace6ef49b8b83d648204f50e27",
+        "job_id": "gen-predtable-job-00041000000000000000000000000000",
         "project_id": "project_00000000000000000000000000000001",
         "job_status_report": {
             "status": "DONE",
@@ -29,11 +29,11 @@ export const doneResponse: GeneratePredictionTableResponse = {
         "created_at": "2025-07-07T09:45:26.791707+00:00",
         "tags": {
             "test_new_pred_page": "test_new_pred_page",
-            "pquery_id": "pquery-ec2c6db878c42d8fb298581819aab6f6"
+            "pquery_id": "pquery-00066000000000000000000000000000"
         },
         "config": {
             "job_tags": {},
-            "pquery_id": "pquery-ec2c6db878c42d8fb298581819aab6f6",
+            "pquery_id": "pquery-00066000000000000000000000000000",
             "plan": {
                 "anchor_time": "inferred",
                 "lag_timesteps": "???",
@@ -41,7 +41,7 @@ export const doneResponse: GeneratePredictionTableResponse = {
                 "year_over_year": false
             },
             "graph_snapshot_id":
-                "graph-6bb35cc72f3e3fd7e64f772f9e3e82bb@6fb82eb61b0ae592b4d07569cbf2ca9d"
+                "graph-00030000000000000000000000000000@00035000000000000000000000000000"
         },
         "source": "UI"
     }

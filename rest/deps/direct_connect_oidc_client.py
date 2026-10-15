@@ -279,7 +279,7 @@ class DirectConnectOIDCClient:
                         user_email = direct_connect_auth_storage.\
                             normalize_direct_connect_email(
                                 str(userinfo["email"]))
-                else:
+                elif self._groups_claim in userinfo:
                     groups = normalize_idp_groups(
                         userinfo.get(self._groups_claim))
             except requests.RequestException as exc:

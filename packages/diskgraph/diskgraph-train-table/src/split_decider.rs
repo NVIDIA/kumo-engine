@@ -735,9 +735,8 @@ impl<U: UnitSystem> SplitDecider<U> for RandomDecider<U> {
 
 /// Non-array variant of `RandomLinkSplit`. Same semantics as `RandomDecider`
 /// for the per-row case; the array case (where the link target is a list
-/// and each element gets an independent stage) is handled by the
-/// regroup pass and falls back to NoSplitDecider with a warning at
-/// the executor's dispatch site.
+/// and each element gets an independent stage) is handled by pass B's
+/// `route_per_link`.
 #[derive(Debug, Clone)]
 pub(crate) struct RandomLinkDecider<U: UnitSystem> {
     inner: RandomDecider<U>,

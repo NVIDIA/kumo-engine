@@ -38,7 +38,7 @@ import {
     setTrainingGenTestResponseType
 } from "./MockFunctions/TrainingTableGeneration.mock";
 
-const id = "gen-traintable-job-1db2edcc9f30420898ce79b9161a4c56";
+const id = "gen-traintable-job-00010000000000000000000000000000";
 const expectedResponse = expectedTrainingTableGenResponse(id);
 const trainTableDetails = parseTrainTableGenResponse(expectedResponse);
 
@@ -283,7 +283,7 @@ describe("TrainingTableGenOverview", () => {
                 expect(mockAxiosInstance.post).toHaveBeenCalledWith(
                     "v0/jobs/add_tag",
                     {
-                        job_id: "gen-traintable-job-1db2edcc9f30420898ce79b9161a4c56",
+                        job_id: "gen-traintable-job-00010000000000000000000000000000",
                         key: key,
                         project_id: "project-tests",
                         value: value
@@ -310,7 +310,7 @@ describe("TrainingTableGenOverview", () => {
                 expect(mockAxiosInstance.post).toHaveBeenCalledWith(
                     "v0/jobs/delete_tag",
                     {
-                        job_id: "gen-traintable-job-1db2edcc9f30420898ce79b9161a4c56",
+                        job_id: "gen-traintable-job-00010000000000000000000000000000",
                         key: "new_train_tag",
                         project_id: "project-tests",
                         value: null

@@ -101,14 +101,9 @@ def authenticate_snowflake(
     password = os.getenv("SNOWFLAKE_PASSWORD")
 
     if user is None:
-        raise ValueError("SNOWFLAKE_USER is not set. Set export "
-                         "SNOWFLAKE_USER=kumo_snowservices")
+        raise ValueError("Set SNOWFLAKE_USER to the source account user.")
     if password is None:
-        raise ValueError(
-            "SNOWFLAKE_PASSWORD is not set. Set export SNOWFLAKE_PASSWORD="
-            "<from https://start.1password.com/open/i?a=BOTF4QWPWFAUNIAYMWX"
-            "ORJSXYI&v=uxnits3zcd3v4ucjewoatj6lty&i=wh6vhyzwblohzmt6abeodnya"
-            "im&h=team-kumo.1password.com>")
+        raise ValueError("Set SNOWFLAKE_PASSWORD for the source account user.")
 
     print(f"Authenticating with Snowflake with account {account_name}, "
           f"user {user}, app {app_name}, schema {schema_name}, "

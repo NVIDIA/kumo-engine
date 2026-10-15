@@ -5,15 +5,16 @@
 from __future__ import annotations
 
 import logging
+import posixpath
 import warnings
 from io import BytesIO
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import optuna
 from kumo_core.automl.random_searcher import RandomSearcher
 from kumo_core.automl.searcher import PlanT, Searcher
+from kumo_core.train.io import makedirs, write_binary
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +92,7 @@ class OptunaSearcher(Searcher[PlanT]):
         )
 
         matplotlib.use("Agg")
-        output_dir = Path(path)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        makedirs(path)
         complete_trials = [
             trial for trial in self.study.trials
             if trial.state is optuna.trial.TrialState.COMPLETE
@@ -102,7 +102,7 @@ class OptunaSearcher(Searcher[PlanT]):
 
         def axes_savefig(
             axes: matplotlib.axes.Axes | np.ndarray,
-            output_path: Path,
+            output_path: str,
             tight_layout: bool = True,
         ) -> None:
             if isinstance(axes, np.ndarray):
@@ -113,7 +113,7 @@ class OptunaSearcher(Searcher[PlanT]):
             try:
                 buf = BytesIO()
                 fig.savefig(buf, format="png")
-                output_path.write_bytes(buf.getvalue())
+                write_binary(output_path, buf.getvalue())
             except FileNotFoundError:
                 logger.exception("Analysis output path does not exist: %s",
                                  output_path)
@@ -132,7 +132,7 @@ class OptunaSearcher(Searcher[PlanT]):
             return
         axes_savefig(
             optimization_history_axes,
-            output_dir / "optimization_history.png",
+            posixpath.join(path, "optimization_history.png"),
         )
 
         if len(complete_trials) > 1:
@@ -143,15 +143,15 @@ class OptunaSearcher(Searcher[PlanT]):
                     "Optuna search analysis failed (param_importances)")
             else:
                 axes_savefig(param_importances_axes,
-                             output_dir / "param_importances.png")
+                             posixpath.join(path, "param_importances.png"))
 
-            slice_path = output_dir / "slice"
-            slice_path.mkdir(parents=True, exist_ok=True)
+            slice_path = posixpath.join(path, "slice")
+            makedirs(slice_path)
             # A conditional param may not appear until a later trial (e.g.
             # nested search spaces), so union params across all trials
             # rather than reading only complete_trials[0].params.
-            all_params = dict.fromkeys(
-                param for trial in complete_trials for param in trial.params)
+            all_params = dict.fromkeys(param for trial in complete_trials
+                                       for param in trial.params)
             for param in all_params:
                 values = {
                     trial.params[param]
@@ -172,7 +172,7 @@ class OptunaSearcher(Searcher[PlanT]):
                     continue
                 axes_savefig(
                     plot_slice_axes,
-                    slice_path / f"{param}.png",
+                    posixpath.join(slice_path, f"{param}.png"),
                     tight_layout=False,
                 )
 

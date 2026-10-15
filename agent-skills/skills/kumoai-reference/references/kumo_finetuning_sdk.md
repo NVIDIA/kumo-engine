@@ -57,7 +57,7 @@ Top-level names, complete (Source: shipped package (`kumo.engine.__all__`)):
 ```
 configure  Connector  SnowflakeConnector  S3Connector  GCSConnector  BigQueryConnector
 DatabricksConnector  FileConnector  SourceTable  SQLSourceTable  Identity  SnowflakeIdentity
-S3Identity  GCSIdentity  BigQueryIdentity  DatabricksIdentity  Table  Graph  GraphSnapshot
+S3Identity  GCSIdentity  BigQueryIdentity  DatabricksIdentity  Column  Table  Edge  Graph  GraphSnapshot
 PredictiveQuery  TrainingTable  PredictionTable  Trainer  TrainingResult  PredictionResult
 ModelOutputConfig  PredictionOutputConfig  TrainingTableOutputConfig  ModelRegistryLocation
 EmbeddingModelStore  GloVeVectors  TokenEmbeddingModel  __version__
@@ -80,10 +80,11 @@ print('kumo.engine:', kumo.__version__)
 
 If the import raises, the environment is not ready: report that plainly and stop.
 
-Supporting imports come from `kumoapi`, not `kumo.engine`:
+Graph-building types `Column` and `Edge` are available from `kumo.engine`.
+Other supporting imports come from `kumoapi`:
 
 ```python
-from kumoapi.graph import Edge
+from kumo.engine import Column, Edge
 from kumoapi.jobs import PredictionArtifactType, WriteMode
 from kumoapi.model_plan import RunMode
 from kumoapi.typing import Dtype, Stype
@@ -293,7 +294,7 @@ Source: shipped package (`kumo.engine.table`)
 ## 5. Graph
 
 ```python
-from kumoapi.graph import Edge
+from kumo.engine import Edge
 
 graph = kumo.Graph(
     tables=[account_profile, transaction_events, device_profile],
@@ -311,7 +312,7 @@ graph.validate()
   and PQL; the connector still reads the source name. It is valid in a user's notebook — do not
   call it superseded — but emit the list form unless two tables share a source name, which the
   list form rejects with `Duplicate graph table name`.
-- **`edges` are `Edge` objects** from `kumoapi.graph`, not dicts or tuples.
+- **`edges` are `Edge` objects** from `kumo.engine`, not dicts or tuples.
 - Edges point **foreign key -> primary key**: `src_table.fkey` references `dst_table`'s primary key.
 - **`graph.validate()` takes no arguments.** There is no `verbose=`.
 - Emit `validate()` explicitly. It is a structural check needing only schemas — no snapshot yet,
@@ -518,7 +519,12 @@ PredictionResult.export(output_config)
 - **`snapshot=` is required.** `output_config` is optional — omit it to keep results local.
 - `predict` requires a trainer holding fitted state — from `fit` on that same `Trainer`, or from
   `Trainer.load` / `Trainer.load_from_connector`; there is no job registry to look a model up in.
-- `num_classes_to_return` must match `RANK TOP N` for a ranking query.
+- `num_classes_to_return` is the number of results returned per entity, and it is independent
+  of the query's `RANK TOP K`: a `RANK TOP 10` model can return 50 results. Link prediction
+  requires it whenever predictions are written, as an integer from 1 to 500
+  (`kumo_core.prediction_options.MAX_LINKS_TO_PREDICT`); for more than 500 per entity, export
+  embeddings instead. Multiclass and multilabel accept it optionally and fall back to the
+  query's `RANK TOP K` when it has one. Regression and binary classification reject it.
 - Binary classification requires an explicit `binary_classification_threshold`.
 - `PredictionResult` exposes `.num_rows`, `.files`, `.frame`, `.selection`, `.artifact_type`.
   Prefer `.num_rows` and `.files` — `.frame` collects every row into pandas.
@@ -554,7 +560,7 @@ from datetime import datetime
 from pathlib import Path
 
 import kumo.engine as kumo
-from kumoapi.graph import Edge
+from kumo.engine import Edge
 from kumoapi.jobs import PredictionArtifactType, WriteMode
 from kumoapi.model_plan import RunMode
 from kumoapi.typing import Stype
@@ -680,7 +686,8 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
 ### 11.3 Also never
 
 - **Any environment-setup step.** Kumo is already present (§2); begin at `import kumo.engine`.
-- Branching on a job status string or enum — none is documented.
+- Branching on a Kumo job status string or enum — Kumo has none. A Snowflake ML Job's status
+  is Snowflake's, read from `snowflake.ml.jobs`, and only the host's job file uses it.
 - `connector['X'].head(...)` — it does not exist. `connector.sql(query)` exists but returns a
   custom-SQL source table, never rows; do not use it to read data (Source: shipped package
   (`kumo.engine.connector.source_table`)).
@@ -703,7 +710,7 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
 | `Edge(src_table=, fkey=, dst_table=)` | Relationships from the intake contract |
 | PQL `query=` | Generated per `kumoai-reference/references/pql_writing.md` |
 | `prediction_time=` | A known in-range **naive** `datetime`; **cannot be computed** |
-| `num_classes_to_return=N` | Must match `RANK TOP N` |
+| `num_classes_to_return=N` | Results per entity the user asked for, 1–500; defaults to `RANK TOP K` but may differ. Required for link prediction (§9) |
 | `binary_classification_threshold=` | Required for binary classification |
 | Population table (static task, rows that already have a target) | Confirmed at Node 1d (§7.1) |
 | `PredictionOutputConfig(table_name=)` + output connector `database`/`schema_name` | Output destination; report back as `DB.SCHEMA.TABLE`, unchanged |
@@ -716,7 +723,7 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
       (§11.3).
 - [ ] `kumo.init(...)` appears nowhere; no API keys; no `tracking_url`.
 - [ ] No call from §11.1 appears anywhere.
-- [ ] `Stype` / `Dtype` imported from `kumoapi.typing`; `Edge` from `kumoapi.graph`;
+- [ ] `Stype` / `Dtype` imported from `kumoapi.typing`; `Column` / `Edge` from `kumo.engine`;
       `PredictionArtifactType` / `WriteMode` from `kumoapi.jobs`; `RunMode` from
       `kumoapi.model_plan`.
 - [ ] Connection tries `from_spcs_env`, then `from_connection_toml`, then `SnowflakeIdentity` from

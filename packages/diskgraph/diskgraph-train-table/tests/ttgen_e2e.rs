@@ -930,16 +930,13 @@ fn e2e_lp_array_random_link_split_regroup() {
     assert_eq!(tier_sum, stage_rows);
 }
 
-// ─── Test 4b: LP+array+DateOffsetSplit drops empty-target anchor rows ───────
+// ─── Test 4b: array LP skips empty-target anchor rows ───────────────────────
 //
-// Regression for the ttgen empty-target bug: array LP (`explode: false`) with
-// a TEMPORAL split (`DateOffsetSplit`) used to fall to the per-row pass-A/B
-// path (NOT the per-link regroup), so empty `LIST_DISTINCT` anchor rows were
-// written as-is instead of being dropped. This asserts that the emitted
-// tt.parquet has NO row with an empty TARGET1 list, and that the manifest
-// row_count + stage_gen_infos stay row-aligned to the surviving rows.
+// With a temporal split, a positional split and no split, pass A writes no
+// anchor row whose `LIST_DISTINCT` target is empty, stats still count every
+// anchor, and the manifest and stage parts stay row-aligned to the written rows.
 #[test]
-fn e2e_lp_array_date_offset_split_drops_empty_targets() {
+fn e2e_lp_array_skips_empty_targets() {
     use chrono::NaiveDate;
 
     let dir = tempfile::tempdir().unwrap();
@@ -998,7 +995,7 @@ fn e2e_lp_array_date_offset_split_drops_empty_targets() {
         forecast_length: 1,
         lag_timesteps: None,
     });
-    plan.split = Some(SplitSpec::<Seconds> {
+    let date_offset = SplitSpec::<Seconds> {
         ratio: None,
         kind: Some("DateOffsetSplit".to_string()),
         rnd_seed: None,
@@ -1018,67 +1015,56 @@ fn e2e_lp_array_date_offset_split_drops_empty_targets() {
         month_offsets: Some(vec![-2, -1]),
         flexible_boundaries: None,
         timeframe_step: None,
-    });
+    };
+    let fixed = SplitSpec::<Seconds> {
+        ratio: Some(vec![0.5, 0.5]),
+        kind: Some("FixedSplit".to_string()),
+        is_temporal: Some(false),
+        month_offsets: None,
+        ..date_offset.clone()
+    };
 
-    let out_dir = tempfile::tempdir().unwrap();
-    let output = execute_tt_pass(&plan, &index, out_dir.path()).unwrap();
+    for split in [Some(date_offset), Some(fixed), None] {
+        plan.split = split;
+        let out_dir = tempfile::tempdir().unwrap();
+        let output = execute_tt_pass(&plan, &index, out_dir.path()).unwrap();
 
-    // The empty-target drop is folded into the per-anchor route kernel: the
-    // monolith retains its rows, but no seed-part row carries an empty TARGET1
-    // list — empty-target anchors are routed to no stage.
-    let infos = output
-        .stage_gen_infos
-        .as_ref()
-        .expect("split plan must produce stage_gen_infos");
-    let mut seed_rows: u64 = 0;
-    for s in infos {
-        for part in &s.parts {
-            let file = fs::File::open(out_dir.path().join(part)).unwrap();
-            let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-                .unwrap()
-                .build()
+        // The short window leaves most anchors with empty product lists:
+        // stats still count every anchor, but none of the empty ones are
+        // written.
+        let stats: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(out_dir.path().join("stats.json")).unwrap())
                 .unwrap();
-            for batch_res in reader {
-                let batch = batch_res.unwrap();
-                let ti = batch.schema().index_of("TARGET1").unwrap();
-                let tl = batch
-                    .column(ti)
-                    .as_any()
-                    .downcast_ref::<ListArray>()
-                    .unwrap();
-                for i in 0..batch.num_rows() {
-                    let a = tl.value_offsets()[i] as usize;
-                    let b = tl.value_offsets()[i + 1] as usize;
-                    assert!(
-                        !tl.is_null(i) && (b - a) > 0,
-                        "seed part {part} row {i} has an EMPTY TARGET1 list — \
-                         empty-target anchor was not dropped from the stage"
-                    );
-                    seed_rows += 1;
-                }
-            }
+        let anchors = stats["num_train_rows"].as_u64().unwrap();
+        let written = output.rows_written;
+        assert_eq!(non_empty_target_rows(&output.tt_parquet_path), written);
+        assert!(written > 0 && written < anchors, "written={written} anchors={anchors}");
+        assert_eq!(stats["num_total_rows"].as_u64(), Some(written));
+        let manifest = read_manifest(&output.manifest_path).unwrap();
+        assert_eq!(manifest.row_count, written);
+
+        let Some(infos) = output.stage_gen_infos.as_ref() else {
+            assert!(plan.split.is_none());
+            continue;
+        };
+        assert_stage_infos_consistent(&output, out_dir.path());
+        let stage_rows: Vec<u64> = infos
+            .iter()
+            .map(|s| {
+                s.parts
+                    .iter()
+                    .map(|part| non_empty_target_rows(&out_dir.path().join(part)))
+                    .sum()
+            })
+            .collect();
+        assert_eq!(stage_rows, infos.iter().map(|s| s.row_count).collect::<Vec<_>>());
+        if manifest.split_kind.as_deref() == Some("FixedSplit") {
+            // Positions and cutoffs both count only written rows.
+            assert_eq!(stage_rows, vec![written.div_ceil(2), written / 2, 0]);
+        } else {
+            assert!(stage_rows.iter().sum::<u64>() > 0);
         }
     }
-
-    // Empties genuinely produced and dropped: 4 users × 4 anchors = 16
-    // candidates; the short window leaves most with empty product lists, so
-    // seed rows < 16. (`rows_written` is the monolith, which keeps the empties.)
-    assert!(output.rows_written > 0);
-    assert!(
-        seed_rows > 0 && seed_rows < 16,
-        "expected some empty-target anchors to be dropped from stages \
-         (0 < seed_rows < 16), got seed_rows={seed_rows}"
-    );
-
-    // Per-stage seed parquets are internally consistent (parts exist, Σ part
-    // rows == row_count). Tier sum (= seed_rows) <= rows_written.
-    assert_stage_infos_consistent(&output, out_dir.path());
-    let tier_sum: u64 = infos.iter().map(|s| s.row_count).sum();
-    assert_eq!(tier_sum, seed_rows);
-    let manifest = read_manifest(&output.manifest_path).unwrap();
-    assert_eq!(manifest.row_count, output.rows_written);
-    assert_eq!(manifest.split_kind.as_deref(), Some("DateOffsetSplit"));
-    assert!(manifest.stage_counts.is_none());
 }
 
 // ─── Test 5: Manifest round-trip through kumo's reader contract ─────────────
@@ -2072,6 +2058,38 @@ fn read_tt_parquet_columns(path: &Path) -> TTParquetCols {
         column_names,
         include_bits,
     }
+}
+
+fn non_empty_target_rows(path: &Path) -> u64 {
+    let parts = if path.is_dir() {
+        diskgraph_train_table::parquet_dataset::ordered_tt_dataset_parts(path).unwrap()
+    } else {
+        vec![path.to_path_buf()]
+    };
+    let mut rows = 0u64;
+    for part in parts {
+        let reader = ParquetRecordBatchReaderBuilder::try_new(fs::File::open(&part).unwrap())
+            .unwrap()
+            .build()
+            .unwrap();
+        for batch in reader {
+            let batch = batch.unwrap();
+            let targets = batch
+                .column(batch.schema().index_of("TARGET1").unwrap())
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .unwrap();
+            for i in 0..batch.num_rows() {
+                assert!(
+                    !targets.is_null(i) && !targets.value(i).is_empty(),
+                    "{} row {i} has an empty TARGET1 list",
+                    part.display()
+                );
+                rows += 1;
+            }
+        }
+    }
+    rows
 }
 
 fn parquet_row_count(path: &Path) -> u64 {

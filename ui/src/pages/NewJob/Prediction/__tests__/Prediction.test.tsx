@@ -179,7 +179,7 @@ describe("NewPredictionJobPage", () => {
         const tableHeader = screen.getByTestId("table-header");
         expect(tableHeader).toHaveTextContent("Job ID");
 
-        const jobID = "9f8b2";
+        const jobID = "00046";
         const allRows = screen.getAllByRole("row");
         const firstRow = allRows[1];
         const cells = within(firstRow).getAllByRole("cell");
@@ -258,7 +258,7 @@ describe("NewPredictionJobPage", () => {
         {
             createWithFailure = false,
             createWithInvalid = false,
-            bpJobId = "bp-job-349fee63191149bf85731f7bb7ffcf45"
+            bpJobId = "bp-job-0001a000000000000000000000000000"
         }
     ) => {
         if (createWithFailure) {
@@ -388,7 +388,7 @@ describe("NewPredictionJobPage", () => {
     });
 
     it("Should render job IDs and show hover card on the Job List page", async () => {
-        const initialJobId = "9f8b2";
+        const initialJobId = "00046";
 
         await renderNewPredictionJobPage();
         await pageLoadTest({ page: 0 });
@@ -497,14 +497,14 @@ describe("NewPredictionJobPage", () => {
         },
         {
             scenario: "valid",
-            searchTerm: "31e1b",
-            postSearchKeyword: "31e1b",
+            searchTerm: "00018",
+            postSearchKeyword: "00018",
             assertResult: async () => {
                 const firstResultRow = await screen.findAllByRole("row");
                 const idCell = within(firstResultRow[1]).getAllByRole(
                     "cell"
                 )[0];
-                expect(idCell.textContent).toContain("31e1b");
+                expect(idCell.textContent).toContain("00018");
             }
         }
     ])(
@@ -553,7 +553,7 @@ describe("NewPredictionJobPage", () => {
 
         await selectTrainingJob();
 
-        const id = "trainingjob-9f8b259b4f764c8f932ad5912a926ec2";
+        const id = "trainingjob-00046000000000000000000000000000";
         const expectedWorkflow = { ...mockWorkflowResponse };
         expectedWorkflow.training_job.id = id;
         const displayId = id.replace("trainingjob-", "").slice(0, 5);
@@ -598,7 +598,7 @@ describe("NewPredictionJobPage", () => {
         await selectTrainingJob();
 
         // Validation status should not show errors initially
-        const trainingJobId = "trainingjob-9f8b259b4f764c8f932ad5912a926ec2";
+        const trainingJobId = "trainingjob-00046000000000000000000000000000";
         await waitFor(() => {
             expect(mockAxiosInstance.get).toHaveBeenCalledWith(
                 `v1/predictive_queries/${trainingJobId}/get_allowed_bp_query_overrides`
@@ -738,7 +738,7 @@ describe("NewPredictionJobPage", () => {
         expect(enableExplanationButton).not.toBeChecked();
 
         //Entity Filter initial call
-        const trainingJobId = "trainingjob-9f8b259b4f764c8f932ad5912a926ec2";
+        const trainingJobId = "trainingjob-00046000000000000000000000000000";
         const args1 = {
             "entity_filter": "",
             "target_filter": ""
@@ -867,7 +867,7 @@ describe("NewPredictionJobPage", () => {
             last_name: "user"
         });
 
-        const jobID = "9f8b2";
+        const jobID = "00046";
         await renderNewPredictionJobPage();
         await pageLoadTest({ page: 0 });
 
@@ -990,7 +990,7 @@ describe("NewPredictionJobPage", () => {
 
         await selectTrainingJob();
 
-        const trainingJobId = "trainingjob-9f8b259b4f764c8f932ad5912a926ec2";
+        const trainingJobId = "trainingjob-00046000000000000000000000000000";
 
         //Prediction Entity Filter
         const entityFilterTextarea =
@@ -1119,7 +1119,7 @@ describe("NewPredictionJobPage", () => {
             "project_id": "project-tests",
             "job_tags": newBpJob?.job_tags,
             "model_training_job_id":
-                "trainingjob-9f8b259b4f764c8f932ad5912a926ec2",
+                "trainingjob-00046000000000000000000000000000",
             "predict_options": {
                 "binary_classification_threshold": 0.5,
                 "num_workers": 1
@@ -1153,7 +1153,7 @@ describe("NewPredictionJobPage", () => {
     ])(
         "Should display connector dropdown and pre-filled table names when output destination is set to $destination",
         async ({ destination, hasTableSchema }) => {
-            const jobID = "9f8b2";
+            const jobID = "00046";
             await renderNewPredictionJobPage();
             await pageLoadTest({ page: 0 });
 

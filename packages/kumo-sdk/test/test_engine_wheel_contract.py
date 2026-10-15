@@ -14,12 +14,11 @@ def _script() -> str:
     return SCRIPT.read_text(encoding='utf-8')
 
 
-def test_wheel_uses_released_torch_geometric() -> None:
+def test_wheel_leaves_torch_geometric_to_installer() -> None:
     script = _script()
-    assert ('TORCH_GEOMETRIC_VERSION="${TORCH_GEOMETRIC_VERSION:-2.8.0.post1}"'
-            in script)
-    assert 'torch-geometric==${TORCH_GEOMETRIC_VERSION}' in script
-    assert 'KUMO_WHEELS=' not in script
+    assert 'TORCH_GEOMETRIC_VERSION' not in script
+    assert '--torch-geometric' not in script
+    assert "record 'torch_geometric-*.whl'" not in script
 
 
 def test_snowflake_extra_selects_provider_sdk_dependencies() -> None:

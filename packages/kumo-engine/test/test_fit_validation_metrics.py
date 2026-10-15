@@ -13,10 +13,14 @@ import kumo.engine as kumo
 from kumo.engine._scratch import get_scratch_dir
 
 
-def test_invalid_model_plan_fails_before_task_materialization(tmp_path,
-                                                              monkeypatch):
+@pytest.mark.parametrize("invalid", ["metric", "split"])
+def test_invalid_model_plan_fails_before_task_materialization(
+        tmp_path, monkeypatch, invalid):
     from copy import deepcopy
+    from dataclasses import replace
     from unittest.mock import Mock
+
+    from kumo_core.model_plan import TrainingTableGenerationPlan
 
     import kumo.engine.trainer.trainer as trainer_module
 
@@ -35,21 +39,73 @@ def test_invalid_model_plan_fails_before_task_materialization(tmp_path,
         table = query.generate_training_table(snapshot)
         before = set(snapshot.index_path.rglob('*'))
         plan = ModelPlan()
-        plan.training_job.metrics = ['auroc']
-        plan.training_job.tune_metric = 'auroc'
+        if invalid == "metric":
+            plan.training_job.metrics = ['auroc']
+            plan.training_job.tune_metric = 'auroc'
+            error = "Unsupported metric 'auroc'"
+        else:
+            table = replace(
+                table, generation_plan=TrainingTableGenerationPlan(
+                    split="TemporalSplit(ratio=[0.8, 0.1, 0.1])"))
+            error = "temporal.*doesn't have a 'Create Date'"
         original = deepcopy(plan)
         trainer = kumo.Trainer(plan)
         materialize = Mock(side_effect=AssertionError('materialization began'))
         monkeypatch.setattr(trainer_module,
                             'build_generated_training_task_dataset', materialize)
 
-        with pytest.raises(ValueError, match="Unsupported metric 'auroc'"):
+        with pytest.raises(ValueError, match=error):
             trainer.fit(table, snapshot=snapshot)
 
         materialize.assert_not_called()
         assert set(snapshot.index_path.rglob('*')) == before
         assert not list(trainer.scratch_dir.glob('runs/*-fit-*'))
         assert plan == original
+    finally:
+        kumo.configure(scratch_dir=previous)
+
+
+def test_fit_warns_about_random_split_before_task_materialization(
+        tmp_path, monkeypatch, caplog):
+    from unittest.mock import Mock
+
+    from kumoapi.model_plan import TrainingTableGenerationPlan
+
+    import kumo.engine.trainer.trainer as trainer_module
+
+    previous = get_scratch_dir()
+    kumo.configure(scratch_dir=tmp_path / 'scratch')
+    try:
+        data = tmp_path / 'data'
+        data.mkdir()
+        pd.DataFrame({
+            'ID': range(100),
+            'Y': np.arange(100) / 100,
+            'TS': pd.date_range('2024-01-01', periods=100),
+        }).to_parquet(data / 'ents.parquet')
+        connector = kumo.FileConnector(root_dir=str(data))
+        graph = kumo.Graph({
+            'ents':
+            kumo.Table.from_source_table(connector['ents'], primary_key='ID',
+                                         time_column='TS')
+        })
+        snapshot = graph.snapshot()
+        query = kumo.PredictiveQuery(graph, 'PREDICT ents.Y FOR EACH ents.ID')
+        table = query.generate_training_table(
+            snapshot,
+            TrainingTableGenerationPlan(
+                split='RandomSplit(ratio=[0.8, 0.1, 0.1])'))
+        caplog.clear()
+        materialize = Mock(side_effect=RuntimeError('stop after validation'))
+        monkeypatch.setattr(trainer_module,
+                            'build_generated_training_task_dataset',
+                            materialize)
+
+        with pytest.raises(RuntimeError, match='stop after validation'):
+            kumo.Trainer(ModelPlan()).fit(table, snapshot=snapshot)
+
+        materialize.assert_called_once()
+        assert 'Possible Data Leakage: Random Split' in caplog.text
     finally:
         kumo.configure(scratch_dir=previous)
 

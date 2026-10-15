@@ -23,10 +23,10 @@ import PredictionSchema, {
 import { setPredictionTableSchemaTestResponseType } from "./MockFunctions/PredictionTableSchema.mock";
 import mockSamplesResponse from "./MockResponses/SampleOutputSchema.json";
 
-const queryId = "pquery-558e58967ac7fadf2a9a408fa4a8b52d";
+const queryId = "pquery-00027000000000000000000000000000";
 const graphSnapshotId =
-    "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460";
-const trainingTableId = "gen-traintable-job-9f8b259b4f764c8f932ad5912a926ec2";
+    "graph-0005b000000000000000000000000000@00033000000000000000000000000000";
+const trainingTableId = "gen-traintable-job-00046000000000000000000000000000";
 
 const defaultProps: PredictionSchemaProps = {
     queryId,
@@ -157,7 +157,7 @@ describe("PredictionSchema", () => {
             `v1/batch_prediction_jobs/samples_for_output_schema`,
             {
                 train_table_job_id:
-                    "gen-traintable-job-9f8b259b4f764c8f932ad5912a926ec2",
+                    "gen-traintable-job-00046000000000000000000000000000",
                 task_type: `${TaskType.BINARY_CLASSIFICATION}`
             },
             {

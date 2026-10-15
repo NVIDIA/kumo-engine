@@ -75,10 +75,14 @@ spec:
         resources:
           {{- toYaml .Values.workloads.ui.resources | nindent 10 }}
         volumeMounts:
+        - name: runtime-tmp
+          mountPath: /tmp
         - mountPath: /tmp/config
           name: ui-config
           readOnly: true
       volumes:
+      - name: runtime-tmp
+        emptyDir: {}
       - name: ui-config
         configMap:
           name: ui-config

@@ -12,7 +12,6 @@
 !README.md
 !LICENSE
 !KUMO-THIRD-PARTY.txt
-!3rdparty/kumo-wheels/torch_geometric-*.whl
 !bin/kumo-auto
 !bin/kumo-pred
 !packages/diskgraph/pyproject.toml
