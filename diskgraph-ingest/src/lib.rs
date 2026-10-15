@@ -6968,12 +6968,14 @@ mod encode_memory_budget_tests {
 
 impl IngestContext {
     fn make_pool<S: Default + Send + 'static>(&self, threads: Option<usize>) -> TaskPool<S> {
+        TaskPool::new(self.worker_threads(threads))
+    }
+
+    fn worker_threads(&self, threads: Option<usize>) -> usize {
         if !self.parallel {
-            return TaskPool::new(1);
+            return 1;
         }
-        let n = threads.unwrap_or_else(default_worker_threads);
-        let n = n.max(1);
-        TaskPool::new(n)
+        threads.unwrap_or_else(default_worker_threads).max(1)
     }
 
     fn emit_progress(&self, event: ProgressEvent) {
@@ -11319,7 +11321,12 @@ impl IngestContext {
                 crate::ts_grouping::BUCKET_INDEX_FILENAME
             );
             let bucket_abs = root.join(&bucket_rel);
-            let grouping = crate::ts_grouping::merge_stage(&shards, &bucket_abs, bucket_rel)?;
+            let grouping = crate::ts_grouping::merge_stage(
+                &shards,
+                &bucket_abs,
+                bucket_rel,
+                self.worker_threads(self.index_threads),
+            )?;
             out.insert(table.name.clone(), grouping);
         }
         Ok(out)
