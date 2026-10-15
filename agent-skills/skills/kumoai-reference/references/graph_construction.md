@@ -95,7 +95,7 @@ for col in orders_src.columns:
 ```python
 import kumo.engine as kumo
 from kumoapi.typing import Dtype, Stype     # NOT kumo.Stype / kumo.Dtype
-from kumoapi.graph import Edge
+from kumo.engine import Edge
 ```
 
 ### Defining tables
@@ -180,7 +180,7 @@ Rules:
 ## Step 4: build the graph
 
 Emit `tables` as a **list** (a `{alias: table}` mapping is also valid; see
-`kumoai-reference/references/kumo_finetuning_sdk.md` §5). Edges are `Edge` objects from `kumoapi.graph`, in the SDK direction:
+`kumoai-reference/references/kumo_finetuning_sdk.md` §5). Edges are `Edge` objects from `kumo.engine`, in the SDK direction:
 the table holding the foreign key points at the table holding the primary key.
 
 ```python
@@ -346,7 +346,7 @@ Tables and graph only. Connection, training and prediction are in `kumoai-refere
 
 ```python
 import kumo.engine as kumo
-from kumoapi.graph import Edge
+from kumo.engine import Edge
 from kumoapi.typing import Dtype, Stype
 
 # `connector` is the SnowflakeConnector built per Step 1; the table names below are placeholders

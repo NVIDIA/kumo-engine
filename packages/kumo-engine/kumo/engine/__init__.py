@@ -21,7 +21,9 @@ from kumo_core.embedding_models import (
     TokenEmbeddingModel,
 )
 from kumo_core.utils.nofile import ensure_nofile
+from kumoapi.graph import Edge
 from kumoapi.plugin import ModelRegistryLocation
+from kumoapi.table import Column
 
 from kumo.engine._version import __version__
 from kumo.engine.config import configure
@@ -76,7 +78,9 @@ __all__ = [
     "GCSIdentity",
     "BigQueryIdentity",
     "DatabricksIdentity",
+    "Column",
     "Table",
+    "Edge",
     "Graph",
     "GraphSnapshot",
     "PredictiveQuery",

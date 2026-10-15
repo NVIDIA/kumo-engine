@@ -18,6 +18,9 @@ and service-managed training), use the separate `kumo-sdk` package instead.
 Pass connectors, tables, graphs, and trainers directly as Python objects;
 there is no backend selection or hosted project/job registry. A `Table`
 holds its source and schema, and a `Graph` holds tables and edges.
+Import the graph-building types together with
+`from kumo.engine import Column, Edge, Graph, Table`. `Column` and `Edge`
+are re-exports of the shared `kumoapi` schema classes.
 `Table.from_source_table()` reads source metadata and may sample rows to
 infer column types; `Graph.snapshot()` performs graph ingestion.
 
@@ -401,8 +404,7 @@ read-only `SELECT`. The query runs in the warehouse and only its result is
 ingested, through the same reader (and staging options) as a named table:
 
 ```python
-from kumo.engine import Graph, Table
-from kumoapi.graph import Edge
+from kumo.engine import Edge, Graph, Table
 
 active_users = Table.from_sql(
     events,

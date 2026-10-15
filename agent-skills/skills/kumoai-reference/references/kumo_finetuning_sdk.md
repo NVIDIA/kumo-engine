@@ -57,7 +57,7 @@ Top-level names, complete (Source: shipped package (`kumo.engine.__all__`)):
 ```
 configure  Connector  SnowflakeConnector  S3Connector  GCSConnector  BigQueryConnector
 DatabricksConnector  FileConnector  SourceTable  SQLSourceTable  Identity  SnowflakeIdentity
-S3Identity  GCSIdentity  BigQueryIdentity  DatabricksIdentity  Table  Graph  GraphSnapshot
+S3Identity  GCSIdentity  BigQueryIdentity  DatabricksIdentity  Column  Table  Edge  Graph  GraphSnapshot
 PredictiveQuery  TrainingTable  PredictionTable  Trainer  TrainingResult  PredictionResult
 ModelOutputConfig  PredictionOutputConfig  TrainingTableOutputConfig  ModelRegistryLocation
 EmbeddingModelStore  GloVeVectors  TokenEmbeddingModel  __version__
@@ -80,10 +80,11 @@ print('kumo.engine:', kumo.__version__)
 
 If the import raises, the environment is not ready: report that plainly and stop.
 
-Supporting imports come from `kumoapi`, not `kumo.engine`:
+Graph-building types `Column` and `Edge` are available from `kumo.engine`.
+Other supporting imports come from `kumoapi`:
 
 ```python
-from kumoapi.graph import Edge
+from kumo.engine import Column, Edge
 from kumoapi.jobs import PredictionArtifactType, WriteMode
 from kumoapi.model_plan import RunMode
 from kumoapi.typing import Dtype, Stype
@@ -293,7 +294,7 @@ Source: shipped package (`kumo.engine.table`)
 ## 5. Graph
 
 ```python
-from kumoapi.graph import Edge
+from kumo.engine import Edge
 
 graph = kumo.Graph(
     tables=[account_profile, transaction_events, device_profile],
@@ -311,7 +312,7 @@ graph.validate()
   and PQL; the connector still reads the source name. It is valid in a user's notebook — do not
   call it superseded — but emit the list form unless two tables share a source name, which the
   list form rejects with `Duplicate graph table name`.
-- **`edges` are `Edge` objects** from `kumoapi.graph`, not dicts or tuples.
+- **`edges` are `Edge` objects** from `kumo.engine`, not dicts or tuples.
 - Edges point **foreign key -> primary key**: `src_table.fkey` references `dst_table`'s primary key.
 - **`graph.validate()` takes no arguments.** There is no `verbose=`.
 - Emit `validate()` explicitly. It is a structural check needing only schemas — no snapshot yet,
@@ -559,7 +560,7 @@ from datetime import datetime
 from pathlib import Path
 
 import kumo.engine as kumo
-from kumoapi.graph import Edge
+from kumo.engine import Edge
 from kumoapi.jobs import PredictionArtifactType, WriteMode
 from kumoapi.model_plan import RunMode
 from kumoapi.typing import Stype
@@ -722,7 +723,7 @@ targets a superseded build and needs rewriting against §10 — do not copy its 
       (§11.3).
 - [ ] `kumo.init(...)` appears nowhere; no API keys; no `tracking_url`.
 - [ ] No call from §11.1 appears anywhere.
-- [ ] `Stype` / `Dtype` imported from `kumoapi.typing`; `Edge` from `kumoapi.graph`;
+- [ ] `Stype` / `Dtype` imported from `kumoapi.typing`; `Column` / `Edge` from `kumo.engine`;
       `PredictionArtifactType` / `WriteMode` from `kumoapi.jobs`; `RunMode` from
       `kumoapi.model_plan`.
 - [ ] Connection tries `from_spcs_env`, then `from_connection_toml`, then `SnowflakeIdentity` from
