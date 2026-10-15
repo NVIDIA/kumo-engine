@@ -71,10 +71,18 @@ spec:
         resources:
           {{- toYaml .Values.workloads.mlworkflow.resources | nindent 10 }}
         volumeMounts:
+        - name: runtime-tmp
+          mountPath: /tmp
+        - name: runtime-cache
+          mountPath: /home/kumouser/.cache
         {{- include "kumo.temporalVolumeMount" . | nindent 8 }}
         {{- include "kumo.secretsVolumeMount" . | nindent 8 }}
         {{- include "kumo.gcpApplicationCredentialsVolumeMount" . | nindent 8 }}
       volumes:
+      - name: runtime-tmp
+        emptyDir: {}
+      - name: runtime-cache
+        emptyDir: {}
       {{- include "kumo.temporalVolume" . | nindent 6 }}
       {{- include "kumo.secretsVolume" . | nindent 6 }}
       {{- include "kumo.gcpApplicationCredentialsVolume" . | nindent 6 }}

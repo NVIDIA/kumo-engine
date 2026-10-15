@@ -22,10 +22,10 @@ import { DataSourceType } from "types/tables";
 import { jobStatus } from "utils/Constants";
 
 export const bpWfResponse = {
-    id: "bp-job-be74277d3fa8464ca21a4ed3649997e0",
+    id: "bp-job-00054000000000000000000000000000",
     predictive_query_link: {
-        id: "NA-b1f91206e5a05f7210ab409bcb343c46",
-        name: "NA-b1f91206e5a05f7210ab409bcb343c46",
+        id: "NA-0004c000000000000000000000000000",
+        name: "NA-0004c000000000000000000000000000",
         training_job_id: null
     },
     timestamps: {
@@ -34,19 +34,19 @@ export const bpWfResponse = {
     },
     jobs: [
         {
-            id: "bp-job-3f5f52a53f01473d8c5123ff7ba4fd15",
+            id: "bp-job-0001e000000000000000000000000000",
             config: {
-                predictive_query_id: "NA-558e58967ac7fadf2a9a408fa4a8b52d",
-                training_job_id: "trainingjob-9f8b259b4f764c8f932ad5912a926ec2",
+                predictive_query_id: "NA-00027000000000000000000000000000",
+                training_job_id: "trainingjob-00046000000000000000000000000000",
                 task_type: "binary_classification",
                 binary_classification_threshold: 0.6,
                 num_parallel_workers_limit: 2,
                 outputs: [],
                 generate_pred_table_job_id:
-                    "gen-predtable-job-e01e53529bcf443ea47dae482a58d383",
-                graph_id: "NA-d445eeb8b2aa1b79a142406239fa74e8",
-                graph_data_version: "6f0ae33ac31edb0c321fbe182e39e460",
-                pquery_def_fpid: "558e58967ac7fadf2a9a408fa4a8b52d",
+                    "gen-predtable-job-00060000000000000000000000000000",
+                graph_id: "NA-0005b000000000000000000000000000",
+                graph_data_version: "00033000000000000000000000000000",
+                pquery_def_fpid: "00027000000000000000000000000000",
                 explanations: false
             },
             timestamps: {
@@ -54,8 +54,8 @@ export const bpWfResponse = {
                 updated_at: "2025-04-09T05:27:46.421947+00:00"
             },
             predictive_query_link: {
-                id: "NA-558e58967ac7fadf2a9a408fa4a8b52d",
-                name: "NA-558e58967ac7fadf2a9a408fa4a8b52d",
+                id: "NA-00027000000000000000000000000000",
+                name: "NA-00027000000000000000000000000000",
                 training_job_id: null
             },
             execution: {
@@ -86,15 +86,15 @@ export const bpWfResponse = {
                 }
             },
             graph_link: {
-                name: "NA-d445eeb8b2aa1b79a142406239fa74e8",
-                id: "NA-d445eeb8b2aa1b79a142406239fa74e8",
+                name: "NA-0005b000000000000000000000000000",
+                id: "NA-0005b000000000000000000000000000",
                 snapshot_id: null
             },
             description: "",
             batch_prediction_workflow_id: null,
             tags: {
-                pquery_id: "pquery-558e58967ac7fadf2a9a408fa4a8b52d",
-                model_id: "trainingjob-9f8b259b4f764c8f932ad5912a926ec2",
+                pquery_id: "pquery-00027000000000000000000000000000",
+                model_id: "trainingjob-00046000000000000000000000000000",
                 new_prediction_job: "new_prediction_job"
             },
             job_source: "UI"
@@ -162,7 +162,7 @@ export const mockWeakEdgeHealthStats = {
 };
 
 export const mockGraphResponse: GraphResourceResponse = {
-    id: "graph-7388586e29277eb2f5c460b33091ab02",
+    id: "graph-00037000000000000000000000000000",
     name_alias: "HNM_DOWNSAMPLED_DATASET_GRAPH",
     num_links: 2,
     num_tables: 3,
@@ -201,7 +201,7 @@ export const mockGraphResponse: GraphResourceResponse = {
 };
 export const trainTableGenmockResponse: GenerateTrainTableResponse = {
     resource: {
-        job_id: "gen-traintable-job-ee34d8894042497abccadd58da6b1078",
+        job_id: "gen-traintable-job-00068000000000000000000000000000",
         project_id: "project_00000000000000000000000000000001",
         job_status_report: {
             status: jobStatus.Done,
@@ -225,12 +225,12 @@ export const trainTableGenmockResponse: GenerateTrainTableResponse = {
         created_at: "2025-06-04T20:34:29.757558+00:00",
         tags: {
             hnm_integ_binclass_f1: "hnm_integ_binclass_f1",
-            pquery_id: "pquery-1c1c3c2fd27f4118531be91839715890",
-            parent_job: "trainingjob-ee34d8894042497abccadd58da6b1078"
+            pquery_id: "pquery-0000f000000000000000000000000000",
+            parent_job: "trainingjob-00068000000000000000000000000000"
         },
         config: {
             job_tags: {},
-            pquery_id: "pquery-1c1c3c2fd27f4118531be91839715890",
+            pquery_id: "pquery-0000f000000000000000000000000000",
             plan: {
                 split: "ApproxDateOffsetSplit(ratio=[0.8, 0.1, 0.1])",
                 train_start_offset: "inferred",
@@ -238,7 +238,7 @@ export const trainTableGenmockResponse: GenerateTrainTableResponse = {
                 timeframe_step: "inferred"
             },
             graph_snapshot_id:
-                "graph-2c960b71de3ebbdf27e4f2c5406cc82f@2bb1aeac52d334207694b932712038de"
+                "graph-00016000000000000000000000000000@00015000000000000000000000000000"
         },
         source: "UI"
     }
@@ -246,7 +246,7 @@ export const trainTableGenmockResponse: GenerateTrainTableResponse = {
 
 export const predictionTableGenmockResponse: GeneratePredictionTableResponse = {
     resource: {
-        job_id: "gen-predtable-job-83c2bdee549d45aeb9072d26ff98176d",
+        job_id: "gen-predtable-job-0003f000000000000000000000000000",
         project_id: "project_00000000000000000000000000000001",
         job_status_report: {
             status: jobStatus.Done,
@@ -264,11 +264,11 @@ export const predictionTableGenmockResponse: GeneratePredictionTableResponse = {
         },
         created_at: "2025-06-05T04:36:27.551303+00:00",
         tags: {
-            pquery_id: "pquery-b1f91206e5a05f7210ab409bcb343c46"
+            pquery_id: "pquery-0004c000000000000000000000000000"
         },
         config: {
             job_tags: {},
-            pquery_id: "pquery-b1f91206e5a05f7210ab409bcb343c46",
+            pquery_id: "pquery-0004c000000000000000000000000000",
             plan: {
                 anchor_time: "inferred",
                 lag_timesteps: "???",
@@ -276,7 +276,7 @@ export const predictionTableGenmockResponse: GeneratePredictionTableResponse = {
                 year_over_year: false
             },
             graph_snapshot_id:
-                "graph-2c960b71de3ebbdf27e4f2c5406cc82f@2bb1aeac52d334207694b932712038de"
+                "graph-00016000000000000000000000000000@00015000000000000000000000000000"
         },
         source: "UI"
     }

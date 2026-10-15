@@ -12,7 +12,7 @@ import {
 
 const sampleProperties: OverviewProperties[] = [
     { name: "Project ID", value: "proj_8f2a91", copyText: "proj_8f2a91" },
-    { name: "Owner", value: "harshithv@kumo.ai" },
+    { name: "Owner", value: "owner@example.com" },
     { name: "Status", value: "Active" },
     {
         name: "Region",

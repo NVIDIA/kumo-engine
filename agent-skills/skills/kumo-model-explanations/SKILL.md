@@ -1,6 +1,6 @@
 ---
 name: kumo-model-explanations
-description: Inspect and interpret gradient attribution (including requests called radiant attribution) and column analysis from a Kumo model trained in a Snowflake Python notebook. Locate the correct run's explanation artifacts, explain feature scores and cohorts, and identify missing or unsupported explanations without automatically retraining.
+description: Inspect and interpret gradient attribution (including requests called radiant attribution), column analysis and sampled explanation subgraphs from a Kumo model trained in a Snowflake Python notebook. Locate the correct run's explanation artifacts, explain feature scores and cohorts, and identify missing or unsupported explanations without automatically retraining.
 ---
 
 # Kumo model explanations
@@ -28,7 +28,7 @@ present; if importing it fails, report the unavailable runtime and stop that wor
 ## Generation and availability
 
 On supported builds, `Trainer.fit(train_table, snapshot=snapshot)` automatically requests
-gradient scoring and column analysis after successful training when
+gradient scoring, column analysis and sampled subgraphs after successful training when
 `model_plan.training_job.disable_explain` is false. The selected trainer produces test-stage
 artifacts. A failure in this post-training step can leave a usable model with missing or
 partial explanations.
@@ -74,7 +74,8 @@ is a lead to investigate, not proof of leakage or a causal mechanism.
 Give the run, task, stage, selected trainer/refit, and exact file paths used; a bounded ranking
 of table-column gradient scores; and the relevant cohort comparisons with population shares.
 Distinguish observations, hypotheses, and missing evidence. Do not promise individual prediction
-explanations from aggregate files. If only one explanation family is present, analyze that family
+explanations from aggregate files; sampled subgraphs cover only the sampled test entities (see the
+reference's *Sampled subgraphs*). If only one explanation family is present, analyze that family
 and state why the other could not be assessed.
 
 Explain that these files live in local scratch and are excluded from the published model bundle.

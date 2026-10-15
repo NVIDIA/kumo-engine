@@ -4,6 +4,11 @@ Run the benchmark ingest loop under a per-user, repo-local `systemd --user` unit
 
 ## Quickstart
 
+Set `S3_PREFIX` to the S3 location of your benchmark datasets. The checked-in
+configurations use paths relative to this location. For the user service, set
+`Environment=S3_PREFIX=s3://example-bucket/benchmarks` in a service override
+with `systemctl --user edit benchmark_ingest`.
+
 From the repo root:
 
 ```bash
@@ -37,6 +42,19 @@ Stop the service:
 - `scripts/benchmarks/benchmark_ingest_systemd.sh` install/control helper.
 - `scripts/benchmarks/benchmark_ingest_tail.sh` log tail helper.
 - `benchmark/logs/` ingest logs (git-ignored).
+
+## Storage configuration
+
+The GitHub workflow reads `DISKGRAPH_BENCHMARK_S3_PREFIX` from repository
+variables. Set it before enabling the scheduled benchmark. The local loop reads
+`S3_PREFIX` from its environment. Neither path selects an internal bucket.
+
+To prepare a configuration for data already downloaded to a local directory:
+
+```bash
+python3 scripts/benchmarks/rewrite_config.py path/to/config.json \
+  --data-root /path/to/benchmark-data --output /tmp/benchmark-config.json
+```
 
 ## Notes
 

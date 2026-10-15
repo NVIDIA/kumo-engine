@@ -10,30 +10,22 @@
 #   ./scripts/run_validation.sh [OPTIONS] <job1> [job2] ...
 #
 # Options:
-#   --bucket <name>     S3 bucket shortcut or full name
-#                       Shortcuts: "prod-ue1" -> kumo-prod-ue1-dataplane-bucket (us-east-1)
-#                                  "prod-uw2" -> kumo-prod-dataplane-bucket (us-west-2, default)
-#   --region <region>   AWS region (auto-set based on bucket shortcut)
-#   --output <dir>      Output directory for indices (default: temp_data/index)
-#   --clean             Remove validation_report.json before running
-#   --help              Show this help
+#   --bucket <name>           Required S3 bucket
+#   --customer-prefix <name>  Storage prefix, if different from the customer name
+#   --region <region>         AWS region (uses the AWS configuration by default)
+#   --output <dir>            Output directory (default: temp_data/index)
+#   --clean                   Remove validation_report.json before running
+#   --help                    Show this help
 #
-# Examples:
-#   # US-East-1 bucket
-#   ./scripts/run_validation.sh --bucket prod-ue1 "allstate trainingjob-abc123"
-#
-#   # US-West-2 bucket (default)
-#   ./scripts/run_validation.sh --bucket prod-uw2 "allianz trainingjob-xyz789"
-#
-#   # Multiple jobs
-#   ./scripts/run_validation.sh --bucket prod-ue1 \
-#     "allstate trainingjob-abc" \
-#     "expedia bp-job-xyz"
+# Example:
+#   ./scripts/run_validation.sh --bucket example-bucket \
+#     "example trainingjob-abc" "example bp-job-xyz"
 
 set -e
 
 # Defaults
-BUCKET="kumo-prod-dataplane-bucket"
+BUCKET=""
+STORAGE_ARGS=()
 REGION=""
 OUTPUT_ROOT="temp_data/index"
 DOWNLOAD_ROOT="temp_data/raw"
@@ -44,19 +36,11 @@ JOBS=()
 while [[ $# -gt 0 ]]; do
     case $1 in
         --bucket)
-            case $2 in
-                prod-ue1)
-                    BUCKET="kumo-prod-ue1-dataplane-bucket"
-                    REGION="${REGION:-us-east-1}"
-                    ;;
-                prod-uw2)
-                    BUCKET="kumo-prod-dataplane-bucket"
-                    REGION="${REGION:-us-west-2}"
-                    ;;
-                *)
-                    BUCKET="$2"
-                    ;;
-            esac
+            BUCKET="$2"
+            shift 2
+            ;;
+        --customer-prefix)
+            STORAGE_ARGS+=("$1" "$2")
             shift 2
             ;;
         --region)
@@ -72,7 +56,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --help|-h)
-            head -30 "$0" | tail -n +2 | sed 's/^#//' | sed 's/^ //'
+            sed -n '2,/^set -e/{ /^set -e/d; p; }' "$0" | sed 's/^#//' | sed 's/^ //'
             exit 0
             ;;
         *)
@@ -86,6 +70,11 @@ if [ ${#JOBS[@]} -eq 0 ]; then
     echo "Error: No jobs specified"
     echo "Usage: $0 [OPTIONS] <job1> [job2] ..."
     echo "Run '$0 --help' for more information"
+    exit 1
+fi
+
+if [ -z "$BUCKET" ]; then
+    echo "Error: --bucket is required" >&2
     exit 1
 fi
 
@@ -120,7 +109,7 @@ fi
 echo ""
 echo ">>> Running validation..."
 cargo run --release --bin validate-s3-ingest -- \
-    --bucket "$BUCKET" \
+    --bucket "$BUCKET" "${STORAGE_ARGS[@]}" \
     --output-root "$OUTPUT_ROOT" \
     --download-root "$DOWNLOAD_ROOT" \
     --keep --resume \

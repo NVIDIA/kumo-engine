@@ -25,7 +25,7 @@ targetRules = ["private-key"]
 condition = "AND"
 regexTarget = "match"
 regexes = ['''ONbItCYj9KjrReydwgScQPK\+96UsdM1wDwvhtOLY|MIIE6jAcBgoqhkiG9w0BDAEDMA4ECCKQ2/opcFpN|MIIE6TAbBgkqhkiG9w0BBQMwDgQInb4\+n0m93y4C|MIIE6jAcBgoqhkiG9w0BDAEGMA4ECJaiNrqYzGvM''']
-paths = ['''^test/connector/test_legacy_private_key\.py$''']
+paths = ['''^test/connector/local/test_legacy_private_key\.py$''']
 
 [[allowlists]]
 description = "This Storybook example shows the YOUR_API_KEY documentation placeholder."

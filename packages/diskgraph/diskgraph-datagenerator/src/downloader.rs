@@ -14,27 +14,15 @@ use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 use url::Url;
 
-const DEFAULT_BUCKET: &str = "kumo-prod-dataplane-bucket";
-const DOORDASH_BUCKET: &str = "kumo-doordash-cache";
-
 #[derive(Debug, Clone)]
 pub struct DownloadOptions {
     pub out_root: PathBuf,
     pub dry_run: bool,
     pub clean: bool,
-    /// Override bucket (defaults based on customer if None)
-    pub bucket: Option<String>,
-}
-
-impl Default for DownloadOptions {
-    fn default() -> Self {
-        Self {
-            out_root: PathBuf::from("/mnt/localssd/datasets"),
-            dry_run: false,
-            clean: true,
-            bucket: None,
-        }
-    }
+    /// Bucket containing the job and its source data.
+    pub bucket: String,
+    /// Directory within the bucket, if different from the customer in the job spec.
+    pub customer_prefix: Option<String>,
 }
 
 pub async fn download_job(job_spec: &str, options: DownloadOptions) -> Result<PathBuf> {
@@ -54,11 +42,9 @@ pub async fn download_job(job_spec: &str, options: DownloadOptions) -> Result<Pa
         return Ok(out_dir);
     }
 
-    let bucket = options
-        .bucket
-        .as_deref()
-        .unwrap_or_else(|| bucket_for_customer(&customer_name));
-    let customer_path = customer_for_paths(&customer_name);
+    let bucket = &options.bucket;
+    let customer_path = options.customer_prefix.as_deref().unwrap_or(&customer_name);
+    validate_token("customer_prefix", customer_path)?;
     let s3 = build_s3_client_async(S3Config {
         bucket: bucket.to_string(),
         region: None,
@@ -243,22 +229,6 @@ fn parse_job_url(input: &str) -> Result<(String, String)> {
     let job_id =
         extract_job_id(path).ok_or_else(|| anyhow!("unable to parse job id from job_url"))?;
     Ok((customer, job_id))
-}
-
-fn bucket_for_customer(customer: &str) -> &'static str {
-    if customer.eq_ignore_ascii_case("doordash") {
-        DOORDASH_BUCKET
-    } else {
-        DEFAULT_BUCKET
-    }
-}
-
-fn customer_for_paths(customer: &str) -> String {
-    if customer.eq_ignore_ascii_case("doordash") {
-        "kumo".to_string()
-    } else {
-        customer.to_string()
-    }
 }
 
 fn extract_job_id(path: &str) -> Option<String> {

@@ -365,19 +365,14 @@ class TrainerConfig:
 
 
 @kumo_dataclass
-class NestedTrainerConfig(TrainerConfig):
-    pass
-
-
-@kumo_dataclass
-class DiskgraphNestedTrainerConfig(NestedTrainerConfig):
+class DiskgraphNestedTrainerConfig(TrainerConfig):
     """Trainer config for ``DiskgraphNestedTrainer``.
 
     Empty subclass — the bundle dir is threaded via ``JobConfig``, not
     persisted here. Lives in this module (next to its parent) so
     pydantic resolves the inherited annotations' forward references
     against the namespace where the referenced types are defined.
-    Distinct from ``NestedTrainerConfig`` because
+    Distinct from ``TrainerConfig`` because
     ``torch_geometric.config_store`` rejects two classes sharing the
     same data_cls registration.
     """

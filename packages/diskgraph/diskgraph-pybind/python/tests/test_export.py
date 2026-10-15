@@ -11,14 +11,14 @@ import pyarrow.parquet as pq
 import diskgraph as diskgraph_py
 from diskgraph import DiskgraphConfigError
 
-def test_export_tt_artifacts_pybind(tmp_path_factory, ifood_graph):
+def test_export_tt_artifacts_pybind(tmp_path_factory, orders_graph):
     """
     Tests the PyBind exposure of the export_tt_artifacts Rust utility using
-    the standard ifood mock index.
+    the generated orders index.
     """
     root = tmp_path_factory.mktemp("export_test")
 
-    # Create mock train table pointing to users and merchants in the ifood graph
+    # Create mock train table pointing to users and merchants in the generated graph
     tt_dir = root / "train_table"
     tt_dir.mkdir()
     tt_path = str(tt_dir / "part-00000.parquet")
@@ -44,7 +44,7 @@ def test_export_tt_artifacts_pybind(tmp_path_factory, ifood_graph):
 
     config = diskgraph_py.ExportConfig(
         train_table_path=str(tt_dir),
-        index_path=ifood_graph,
+        index_path=orders_graph,
         output_dir=output_dir,
         fkeys=[
             diskgraph_py.FkeyConfig("USER_FKEY", "users"),
@@ -65,7 +65,7 @@ def test_export_tt_artifacts_pybind(tmp_path_factory, ifood_graph):
     assert mask_table.column("__mask__")[2].as_py() == False
 
 
-def test_export_tt_artifacts_pybind_multi_file(tmp_path_factory, ifood_graph):
+def test_export_tt_artifacts_pybind_multi_file(tmp_path_factory, orders_graph):
     """
     Tests the PyBind exposure of the export_tt_artifacts Rust utility using
     multiple parquet files in a directory.
@@ -101,7 +101,7 @@ def test_export_tt_artifacts_pybind_multi_file(tmp_path_factory, ifood_graph):
 
     config = diskgraph_py.ExportConfig(
         train_table_path=str(tt_dir),
-        index_path=ifood_graph,
+        index_path=orders_graph,
         output_dir=output_dir,
         fkeys=[
             diskgraph_py.FkeyConfig("USER_FKEY", "users"),

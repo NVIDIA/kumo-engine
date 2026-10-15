@@ -130,6 +130,8 @@ class ObjectStoreSourceReader:
     file_suffix: str | None = None
     fetch: ObjectFetch | None = None
     object_identity: ObjectIdentity | None = None
+    #: DiskGraph converts the staged columns to their declared dtypes itself.
+    ingest_converts: bool = False
 
     source_type: ConnectorType = ConnectorType.S3
 
@@ -196,6 +198,13 @@ class ObjectStoreSourceReader:
                 for name, arrow_type in self._csv_catalog(table, path).items()
             }
         return column_dtypes(self.dataset(table).schema)
+
+    def source_types(self, table: str) -> dict[str, pa.DataType]:
+        path, kind = self.resolve(table)
+        if kind == layout.CSV:
+            return self._csv_catalog(table, path)
+        schema = self.dataset(table).schema
+        return dict(zip(schema.names, schema.types))
 
     def _csv_catalog(self, table: str, path: str) -> dict[str, pa.DataType]:
         from . import csv_format
@@ -555,8 +564,12 @@ class ObjectStoreSourceReader:
         null_values = (self.csv_options.null_values if self.csv_options
                        and self.csv_options.null_values is not None else
                        ARROW_NA_TOKENS)
+        partitions = (dataset.partitioning.schema.names
+                      if dataset.partitioning is not None else [])
         projection = (_projection(table, dataset.schema, columns, aliases,
-                                  normalize=normalize, null_values=null_values)
+                                  normalize=normalize, null_values=null_values,
+                                  converts=self.ingest_converts,
+                                  partitions=partitions)
                       if columns is not None else {
                           name: pc.field(name)
                           for name in dataset.schema.names
@@ -571,7 +584,8 @@ class ObjectStoreSourceReader:
         sources = dataset.schema.names if columns is None else list(columns)
         fragments = list(dataset.get_fragments())
         streams = [
-            _fragment_batches(fragment, dataset.schema, projection, sources)
+            _fragment_batches(fragment, dataset.schema, projection, sources,
+                              own_types=self.ingest_converts)
             for fragment in fragments
         ]
         prebuffered, largest = _prebuffered_bytes(fragments, sources,
@@ -592,8 +606,9 @@ class ObjectStoreSourceReader:
                     workers if remote else 0):
             logger.info("Staging %s: %d parts, %d at a time, %d MiB each",
                         table, len(streams), workers, per_stream >> 20)
-            return materialize_arrow_streams(streams, dest,
-                                             worker_ceiling=workers)
+            return materialize_arrow_streams(
+                streams, dest, worker_ceiling=workers,
+                uniform=not self.ingest_converts)
 
     def _verbatim(
         self,
@@ -618,7 +633,8 @@ class ObjectStoreSourceReader:
             if list(schema.names) != declared:
                 return False
             for name, dtype in columns.items():
-                if not _uncast(schema.field(name).type, dtype):
+                if not (self.ingest_converts
+                        or _uncast(schema.field(name).type, dtype)):
                     return False
         return True
 
@@ -711,8 +727,8 @@ def require_no_sql(sql: str | None) -> None:
 
 
 def _fragment_batches(fragment: Any, schema: pa.Schema,
-                      projection: Mapping[str, Any],
-                      sources: Sequence[str]) -> Iterator[Any]:
+                      projection: Mapping[str, Any], sources: Sequence[str],
+                      *, own_types: bool = False) -> Iterator[Any]:
     """A generator, so the scan starts when a worker reaches this fragment.
     Building the scanners up front starts every one: 580MB of Arrow buffers at
     60 fragments, before a single row is read.
@@ -724,10 +740,19 @@ def _fragment_batches(fragment: Any, schema: pa.Schema,
         yield from ds.Scanner.from_fragment(
             fragment, schema=schema, columns=dict(projection)).to_batches()
         return
+    fields = [schema.field(name) for name in sources]
+    if own_types:
+        stored = fragment.physical_schema
+        keys = ds.get_partition_keys(fragment.partition_expression)
+        fields = [
+            stored.field(field.name)
+            if field.name in stored.names and field.name not in keys else field
+            for field in fields
+        ]
+        _refuse_unsupported(fragment.path, pa.schema(fields))
     # Projected batch by batch: ``Scanner.from_batches`` reads its source on a
     # background thread that queues ahead of a slow writer, ~1GiB per worker.
-    for batch in _parquet_batches(
-            fragment, pa.schema([schema.field(name) for name in sources])):
+    for batch in _parquet_batches(fragment, pa.schema(fields)):
         yield ds.InMemoryDataset(batch).to_table(columns=dict(projection),
                                                  use_threads=False)
 
@@ -1014,6 +1039,8 @@ def _projection(
     *,
     normalize: bool = False,
     null_values: Sequence[str] = ARROW_NA_TOKENS,
+    converts: bool = False,
+    partitions: Sequence[str] = (),
 ) -> dict[str, Any]:
     missing = [name for name in columns if name not in schema.names]
     if missing:
@@ -1024,12 +1051,14 @@ def _projection(
     for name, dtype in columns.items():
         wanted = None if name in unpinned else _pyarrow_type(dtype)
         expression = pc.field(name)
-        if wanted is not None and not schema.field(name).type.equals(wanted):
+        stored = schema.field(name).type
+        if wanted is not None and not stored.equals(wanted):
             if normalize:
                 from . import csv_format
                 expression = csv_format.convert(expression, wanted,
                                                 null_values=null_values)
-            else:
+            elif not converts or (name in partitions
+                                  and pa.types.is_dictionary(stored)):
                 expression = expression.cast(wanted)
         projection[aliases.get(name, name)] = expression
     return projection

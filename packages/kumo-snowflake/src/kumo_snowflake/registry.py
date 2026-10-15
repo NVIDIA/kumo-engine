@@ -32,13 +32,12 @@ spec the export wrote, rather than at the path the packager stores artifacts
 under today. That path is snowflake-ml's private layout; the marker is ours.
 """
 
+import json
 import shutil
-from collections.abc import Mapping as MappingABC
 from contextlib import contextmanager
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
-    Any,
     ContextManager,
     Dict,
     Iterator,
@@ -75,12 +74,8 @@ _SPEC_FILE = 'training-spec.json'
 #: merely happens to be named alike.
 _MANIFEST_FILE = 'publication-manifest.json'
 
-#: Where the spec's projection is recorded on a version. The registry's metrics
-#: are a free-form JSON mapping and need nothing declared in the account first,
-#: which SQL tags do -- so an export cannot fail here on an account that has
-#: not been prepared for it. Nested under one key so Kumo's projection can
-#: never collide with a metric the model actually scored.
-_PROJECTION_KEY = 'kumo'
+#: Engine-bundle marker stored through the registry metadata API.
+_ENGINE_MARKER = 'kumo_engine'
 
 #: Where a fetched version is unpacked before its bundle is lifted out. Named
 #: rather than a temporary directory so a half-finished import leaves something
@@ -157,22 +152,6 @@ def _carrier_signature() -> Dict[str, "model_signature.ModelSignature"]:
             ],
         )
     }
-
-
-def _version_metrics(
-    metrics: Mapping[str, float],
-    metadata: Mapping[str, str],
-) -> Optional[Dict[str, Any]]:
-    r"""Merges what a run scored with what the spec projects, for discovery.
-
-    One mapping and one call, rather than logging the model and then setting
-    each entry: a projection applied afterwards can fail against a version that
-    already exists, leaving a published model half-described.
-    """
-    recorded: Dict[str, Any] = dict(metrics)
-    if metadata:
-        recorded[_PROJECTION_KEY] = dict(metadata)
-    return recorded or None
 
 
 def _locate_bundle(root: Path) -> Path:
@@ -288,10 +267,10 @@ class SnowflakeModelRegistryMixin:
                 the model, and optionally the version. A version of ``None``
                 lets the registry assign one -- the usual case, and the reason
                 this reports back what it created.
-            metadata: The spec's projection, recorded so a version can be found
-                without being downloaded. Never read back by an import.
-            metrics: What the run scored, recorded natively so versions are
-                comparable in the registry's own UI.
+            metadata: Returned with the publication result. Training metadata
+                remains in the bundle and is not recorded in registry tags.
+            metrics: Returned with the publication result. Training metrics
+                remain in the bundle's metrics.json.
             project_id: Ignored; a local runtime has no projects.
 
         Returns:
@@ -315,7 +294,7 @@ class SnowflakeModelRegistryMixin:
                 model_name=location.model_name,
                 version_name=location.version,
                 comment=location.comment,
-                metrics=_version_metrics(metrics, metadata),
+                metrics={_ENGINE_MARKER: '1'},
                 signatures=_carrier_signature(),
             )
         return _published(connector, version, metadata=metadata,
@@ -329,8 +308,8 @@ class SnowflakeModelRegistryMixin:
     ) -> List[PublishedModel]:
         r"""Lists Kumo model versions visible in the connector's registry.
 
-        A Kumo export records its flat training-spec projection under the
-        ``kumo`` metric. That marker makes discovery both cheap and precise:
+        A Kumo export records only ``kumo_engine=1`` in registry metadata.
+        That marker makes discovery both cheap and precise:
         versions logged by another tool are omitted, and no bundle is
         downloaded merely to decide whether it belongs in this list.
         """
@@ -340,19 +319,9 @@ class SnowflakeModelRegistryMixin:
             for model in registry.models():
                 for version in model.versions():
                     recorded = dict(version.show_metrics() or {})
-                    metadata = recorded.pop(_PROJECTION_KEY, None)
-                    if not isinstance(metadata, MappingABC):
+                    if recorded.get(_ENGINE_MARKER) != '1':
                         continue
-                    found.append(
-                        _published(
-                            connector,
-                            version,
-                            metadata={
-                                str(key): str(value)
-                                for key, value in metadata.items()
-                            },
-                            metrics=recorded,
-                        ))
+                    found.append(_published(connector, version))
         return sorted(found, key=lambda item: (item.name, item.version))
 
     def fetch_model(
@@ -383,7 +352,7 @@ class SnowflakeModelRegistryMixin:
 
         Returns:
             The name, the version actually read -- resolved, when the caller
-            named none -- and where it lives.
+            named none -- where it lives, and metrics read from metrics.json.
         """
         del project_id
         _refuse_path(path, 'fetching')
@@ -402,15 +371,23 @@ class SnowflakeModelRegistryMixin:
 
             destination.parent.mkdir(parents=True, exist_ok=True)
             staged = destination.parent / f'{destination.name}{_EXPORT_DIR}'
-            # `export` refuses a directory that already has anything in it, and
-            # both of these are re-created rather than merged so a second
-            # import cannot read a file the first one left behind.
-            for directory in (staged, destination):
-                if directory.exists():
-                    shutil.rmtree(directory)
+            # Re-create export staging so an import cannot read stale files.
+            if staged.exists():
+                shutil.rmtree(staged)
             staged.mkdir(parents=True)
             version.export(str(staged))
 
-        shutil.move(str(_locate_bundle(staged)), str(destination))
+        bundle = _locate_bundle(staged)
+        metrics_path = bundle / 'metrics.json'
+        metrics = json.loads(
+            metrics_path.read_text()) if metrics_path.is_file() else {}
+        if (not isinstance(metrics, dict) or not all(
+                isinstance(key, str) and isinstance(value, (int, float))
+                for key, value in metrics.items())):
+            raise ValueError('Invalid training metrics in model bundle.')
+        published = _published(connector, version, metrics=metrics)
+        if destination.exists():
+            shutil.rmtree(destination)
+        shutil.move(str(bundle), str(destination))
         shutil.rmtree(staged, ignore_errors=True)
-        return _published(connector, version)
+        return published

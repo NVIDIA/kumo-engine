@@ -2,7 +2,8 @@
 
 `kumo-databricks` is Kumo's Databricks provider package. It contains the
 Databricks source reader, local source/sink backends, identity lifecycle,
-Unity Catalog staging, CloudFetch streaming, and Delta-table output support.
+Unity Catalog staging, CloudFetch streaming, Delta-table output, and Unity
+Catalog model registry support.
 
 It does not define a second Kumo workflow API. End-to-end ingest, training,
 and prediction are owned by `kumo-engine`. The service connector uses
@@ -15,7 +16,7 @@ the service.
 | --- | --- |
 | `DatabricksSourceReader` | Low-level `kumo_core` reader used by the service |
 | `DatabricksSourceBackend` | `kumoapi.plugin.SourceBackend` for local workflows |
-| `DatabricksSinkBackend` | Table and file output to Delta tables |
+| `DatabricksSinkBackend` | Delta-table output and model bundle publish/fetch/list |
 | `kumo_databricks.session` | Identity probing and connection creation |
 
 The local SDK constructs the provider backends directly. The provider imports
@@ -65,6 +66,57 @@ events = Table.from_source_table(
 )
 snapshot = Graph(tables=[events]).snapshot()
 ```
+
+## Model registry
+
+The sink publishes Kumo bundles directly to Unity Catalog using the connector's
+WorkspaceClient. No MLflow installation or tracking experiment is required.
+Like the Snowflake integration, the registered version carries artifacts;
+prediction requires reloading the bundle into Kumo and supplying a graph.
+These bundles do not provide a Databricks Model Serving flavor.
+
+Use the existing local training export API:
+
+```python
+from kumo.engine import ModelOutputConfig, ModelRegistryLocation, Trainer
+
+result = trainer.fit(
+    training_table,
+    snapshot=snapshot,
+    export_config=ModelOutputConfig(
+        databricks, location=ModelRegistryLocation('CHURN_GNN')),
+)
+published = result.published_model
+restored = Trainer.load_from_connector(
+    databricks,
+    location=ModelRegistryLocation(published.name, version=published.version),
+)
+models = databricks.sink_backend.list_models(databricks)
+```
+
+Model names resolve within the connector's catalog and schema; a qualified
+name must match both. Publishing requires an unset `version`: Databricks
+assigns numeric versions, returned in `PublishedModel` with a
+`models:/catalog.schema.model/version` URI. Fetching without a version selects
+the latest ready Kumo version. Listing follows pagination and excludes other
+models and versions that are not ready.
+
+A single `kumo_engine=1` tag identifies engine bundles. Publishing uploads the
+original bundle unchanged. Fetching reads training metadata from
+`training-spec.json` and metrics from `metrics.json`; listing returns model
+identity with empty metadata and metrics. Additional caller-supplied metadata
+is not persisted.
+The connector identity needs the
+[Unity Catalog model privileges](https://docs.databricks.com/aws/en/machine-learning/manage-model-lifecycle/).
+
+Publishing and fetching verify bundle integrity. A failed download or local
+replacement preserves the previous destination. Hosted service registry export
+and import remain unavailable.
+
+This integration requires workspace support for native UC create/finalize
+endpoints and the SDK Files API `/Models` route. There is no legacy endpoint
+fallback. Local HTTP tests cover publish/list/fetch and credential isolation;
+live checks verified these endpoints on one workspace.
 
 From the repository root, run the public tests without cloud credentials:
 

@@ -29,7 +29,7 @@ import {
 } from "./MockFunctions/TrainingJobWorkflow.mock";
 import mockWorkflowResponse from "./MockResponses/TrainingWorkflow.test.json";
 
-const id = "trainingjob-cd40820089504c91825ec0b413e97cbb";
+const id = "trainingjob-00059000000000000000000000000000";
 const mockOnArchive = vi.fn();
 const mockOnRecover = vi.fn();
 

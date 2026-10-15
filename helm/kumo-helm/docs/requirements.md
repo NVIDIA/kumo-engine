@@ -97,6 +97,45 @@ CUDA/driver, memory, and storage sizing must be validated for the selected
 application release and workload; this document does not infer a production
 support matrix from development fallbacks.
 
+## Read-only filesystem upgrades
+
+`global.containerSecurityContext.readOnlyRootFilesystem` defaults to `true`.
+The setting also reaches new pool workers and initialization canaries.
+The same resources inherit `runAsUser` and `runAsGroup` from
+`global.podSecurityContext`. Values in `global.containerSecurityContext` take
+precedence. When both contexts omit an ID, workers leave that ID unset, so the
+image default or cluster admission policy still applies. Group ID `0` is valid;
+workers still require a non-root user. The OpenShift profile clears fixed IDs.
+`workloads.poolcontroller.runtimeFsGroup` separately controls access to cache
+volumes. Changing the process group does not change ownership of stored files.
+
+Deploy the chart with CPU, GPU, and UI images built with read-only filesystem
+support. Older images can fail when they write to installed files.
+
+Use a maintenance window to update existing workers:
+
+1. Stop new job submissions from clients and automation. Pause scheduled jobs.
+2. Let active jobs finish. Make sure that `pool_active_leases_total` is zero
+   and no activity Jobs are running.
+3. Set `workloads.poolcontroller.replicas: 0` in the upgrade values. Roll out
+   the chart and rebuilt images with the selected IDs and filesystem settings.
+   Wait for the old controller to stop before updating workers.
+4. Scale each daemon Deployment to zero and wait for its Pods to stop. Update
+   its pod template with the rebuilt worker image, selected IDs, and filesystem
+   settings. Retain the cache PVC mounts and provide writable `/tmp` and
+   `/home/kumouser/.cache` volumes. Make sure that the new identity can read and
+   write existing files. `fsGroupChangePolicy: OnRootMismatch` can skip permission
+   updates when the volume root already has the configured group. Restore the
+   daemon replica counts and wait for the replacement pods to become ready.
+5. Restore the controller replica count through Helm. Make sure that startup
+   checks pass and workers use the requested IDs. Test reading existing cache
+   files and writing storage before resuming job submissions.
+
+Preserve worker names, labels, metadata, and cache PVCs. Do not retire workers
+to apply these settings; retirement can delete their volumes. Restarting a
+container or Pod alone reuses its Deployment template. Update that template
+first. New activity Jobs use the updated controller settings.
+
 ## Validation and compatibility
 
 Installation preflight checks only part of this contract: inspect its

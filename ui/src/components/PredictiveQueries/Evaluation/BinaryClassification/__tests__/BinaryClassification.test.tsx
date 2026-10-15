@@ -18,8 +18,8 @@ import BinaryClassification, {
 } from "../BinaryClassification";
 
 const defaultProps: BinaryClassificationProps = {
-    queryId: "pquery-558e58967ac7fadf2a9a408fa4a8b52d",
-    trainingJobId: "trainingjob-9f8b259b4f764c8f932ad5912a926ec2",
+    queryId: "pquery-00027000000000000000000000000000",
+    trainingJobId: "trainingjob-00046000000000000000000000000000",
     taskType: TaskType.BINARY_CLASSIFICATION,
     width: 200,
     handleError: vi.fn()
@@ -74,7 +74,7 @@ describe("BinaryClassification", () => {
     it("Should render BinaryClassification when all props are set", async () => {
         await renderBinaryClassification(defaultProps);
 
-        const trainingJobId = "trainingjob-9f8b259b4f764c8f932ad5912a926ec2";
+        const trainingJobId = "trainingjob-00046000000000000000000000000000";
         expect(mockAxiosInstance.get).toHaveBeenCalledWith(
             `v0/training_jobs/${trainingJobId}/eval/binary_classification`
         );

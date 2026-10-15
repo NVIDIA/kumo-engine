@@ -86,7 +86,7 @@ def portable_graph() -> Dict[str, Any]:
         'tables': [
             {
                 'table_name': 'stations',
-                'source_table_name': 'HYU.NOAA.STATIONS_SMOKE',
+                'source_table_name': 'EXAMPLE_DB.NOAA.STATIONS_SMOKE',
                 'pkey': col('STATION_ID', 'string', 'ID'),
                 'time_col': None,
                 'cols': [col('STATION_ID', 'string', 'ID')],
@@ -96,7 +96,7 @@ def portable_graph() -> Dict[str, Any]:
                 'table_name':
                 'observations',
                 'source_table_name':
-                'HYU.NOAA.OBSERVATIONS_SMOKE',
+                'EXAMPLE_DB.NOAA.OBSERVATIONS_SMOKE',
                 'pkey':
                 None,
                 'time_col':

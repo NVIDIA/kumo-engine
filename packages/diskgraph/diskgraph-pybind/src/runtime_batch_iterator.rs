@@ -1394,7 +1394,7 @@ pub struct RuntimeBatchIterator {
 /// different costs and lifetimes:
 ///
 ///   * WHICH INDEX -- mmap every shard, build every row-pack and sort-key
-///     decoder, spawn a rayon pool. ~1.6 s on DoorDash. Depends only on
+///     decoder, spawn a rayon pool. Depends only on
 ///     `(parent_root, tt_id, rnd_seed, num_threads)`.
 ///   * WHICH ROWS -- the epoch and the shard identity. Microseconds.
 ///
@@ -1405,8 +1405,7 @@ pub struct RuntimeBatchIterator {
 /// the processes survive, but `__iter__` rebuilds inside them.
 ///
 /// Holding a `RuntimeIndex` and calling `iter()` per epoch pays the open once.
-/// Measured on DoorDash: 3218.8 ms per construction becomes ~1.55 s for the
-/// first and 0.1 ms for every one after.
+/// Later epochs reuse the mapped files, decoders, and thread pool.
 ///
 /// `rnd_seed` and `num_threads` belong here rather than on `iter()` because the
 /// engine is built from them -- and `num_threads` in particular is not a

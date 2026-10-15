@@ -32,7 +32,7 @@ import mockBatchPredictionQueuedResponse from "./MockResponses/BatchPredictionQu
 import mockBatchPredictionResponse from "./MockResponses/BatchPredictionResponse.json";
 import mockBatchPredictionRunningResponse from "./MockResponses/BatchPredictionRunningResponse.json";
 
-const id = "bp-job-3f5f52a53f01473d8c5123ff7ba4fd15";
+const id = "bp-job-0001e000000000000000000000000000";
 const onClose = vi.fn();
 const toggleSdkModel = vi.fn();
 const onClickArchive = vi.fn();
@@ -208,7 +208,7 @@ describe("PredictionJobOverview", () => {
                 expect(mockAxiosInstance.post).toHaveBeenCalledWith(
                     "v0/jobs/add_tag",
                     {
-                        job_id: "bp-job-3f5f52a53f01473d8c5123ff7ba4fd15",
+                        job_id: "bp-job-0001e000000000000000000000000000",
                         key: "tag_key",
                         project_id: "project-tests",
                         value: "tag_value"
@@ -235,7 +235,7 @@ describe("PredictionJobOverview", () => {
                 expect(mockAxiosInstance.post).toHaveBeenCalledWith(
                     "v0/jobs/delete_tag",
                     {
-                        job_id: "bp-job-3f5f52a53f01473d8c5123ff7ba4fd15",
+                        job_id: "bp-job-0001e000000000000000000000000000",
                         key: "new_prediction_job",
                         project_id: "project-tests",
                         value: null
@@ -434,14 +434,14 @@ describe("PredictionJobOverview", () => {
                 label: "Training Job",
                 props: {
                     trainingJobID:
-                        "trainingjob-9f8b259b4f764c8f932ad5912a926ec2"
+                        "trainingjob-00046000000000000000000000000000"
                 }
             },
             {
                 label: "Graph",
                 props: {
                     graphSnapshotId: undefined,
-                    graphId: "NA-d445eeb8b2aa1b79a142406239fa74e8"
+                    graphId: "NA-0005b000000000000000000000000000"
                 }
             }
         ])("Should display $label when available", async ({ label, props }) => {

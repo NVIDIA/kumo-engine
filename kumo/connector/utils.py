@@ -6,7 +6,7 @@ import datetime
 import decimal
 import json
 import os
-from typing import Callable, Dict, List, Optional, TypeVar
+from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 import numpy as np
 import pandas as pd
@@ -482,6 +482,13 @@ def cast_col_to_str(col: pd.Series) -> pd.Series:
     return col.astype("string")
 
 
+def _known_dtype(dtype: Any) -> Optional[Dtype]:
+    try:
+        return to_dtype(dtype)
+    except KeyError:
+        return None
+
+
 def cast_df_to_dtypes(
     df: pd.DataFrame,
     dtypes: Dict[str, Dtype],
@@ -512,7 +519,7 @@ def cast_df_to_dtypes(
                 if col.dtype == pd.BooleanDtype():
                     continue
 
-            elif dtype == to_dtype(col.dtype) and dtype != Dtype.timedelta:
+            elif dtype != Dtype.timedelta and dtype == _known_dtype(col.dtype):
                 continue
 
             if dtype.is_temporal() and not is_datetime64_any_dtype(col.dtype):

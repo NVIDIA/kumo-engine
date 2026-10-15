@@ -12,9 +12,8 @@
 //! Two stage sources, one per kernel:
 //!
 //! - [`route_per_anchor`] — a [`SplitDecider`] decides each whole row's stage.
-//!   (Array-LP folds in the empty-target drop: anchor rows with an empty
-//!   `TARGET1` list go nowhere. The custom-TT split-column path also projects
-//!   the split column out of the output sub-batches.)
+//!   (The custom-TT split-column path also projects the split column out of
+//!   the output sub-batches.)
 //! - [`route_per_link`] — `RandomLinkSplit` / `CustomLinkSplit` over an array
 //!   `TARGET1`: each link is assigned a stage, links are bucketed into ≤3
 //!   sub-lists, and one output row per non-empty `(anchor, stage)` is emitted.
@@ -79,7 +78,6 @@ impl ForecastingHorizonPolicy {
 ///
 /// Per row, the stage is:
 /// - `UNUSED` if `INCLUDE_MASK_COL` (when present) is `false`;
-/// - `UNUSED` if `is_array_lp` and the `TARGET1` list is empty/null;
 /// - otherwise `decider.decide_for_view(view, row)`.
 ///
 /// Stages outside `{0, 1, 2}` route nowhere. `global_offset` is the global
@@ -94,7 +92,6 @@ pub(crate) fn route_per_anchor<U: UnitSystem, D: SplitDecider<U>>(
     batch: &RecordBatch,
     decider: &D,
     global_offset: u64,
-    is_array_lp: bool,
     horizon_policy: Option<&ForecastingHorizonPolicy>,
     drop_split_column: Option<&str>,
 ) -> TTGenResult<[RecordBatch; 3]> {
@@ -102,7 +99,6 @@ pub(crate) fn route_per_anchor<U: UnitSystem, D: SplitDecider<U>>(
         batch,
         decider,
         global_offset,
-        is_array_lp,
         horizon_policy,
     )?;
     let mut masks: [Vec<bool>; 3] = [
@@ -129,7 +125,6 @@ pub(crate) fn assign_per_anchor_stages<U: UnitSystem, D: SplitDecider<U>>(
     batch: &RecordBatch,
     decider: &D,
     global_offset: u64,
-    is_array_lp: bool,
     horizon_policy: Option<&ForecastingHorizonPolicy>,
 ) -> TTGenResult<Vec<u8>> {
     let nrows = batch.num_rows();
@@ -150,30 +145,6 @@ pub(crate) fn assign_per_anchor_stages<U: UnitSystem, D: SplitDecider<U>>(
                 })?,
         ),
         None => None,
-    };
-
-    // Optional TARGET1 list (only needed for the array-LP empty-target drop).
-    let target_list: Option<&ListArray> = if is_array_lp {
-        match batch.schema_ref().column_with_name(PRIMARY_TARGET_COL) {
-            Some((col_idx, _)) => Some(
-                batch
-                    .column(col_idx)
-                    .as_any()
-                    .downcast_ref::<ListArray>()
-                    .ok_or_else(|| {
-                        TTGenError::SystemError(
-                            "route_per_anchor: TARGET1 must be ListArray for is_array_lp".to_string(),
-                        )
-                    })?,
-            ),
-            None => {
-                return Err(TTGenError::SystemError(
-                    "route_per_anchor: is_array_lp set but TARGET1 column missing".to_string(),
-                ))
-            }
-        }
-    } else {
-        None
     };
 
     let ts_arr: Option<&TimestampNanosecondArray> = if horizon_policy.is_some() {
@@ -203,15 +174,6 @@ pub(crate) fn assign_per_anchor_stages<U: UnitSystem, D: SplitDecider<U>>(
     for r in 0..nrows {
         let mut stage = if mask_arr.map(|m| !m.value(r)).unwrap_or(false) {
             UNUSED_STAGE
-        } else if let Some(list) = target_list {
-            // Array-LP empty-target drop: null or zero-length list → UNUSED.
-            let offsets = list.value_offsets();
-            let non_empty = !list.is_null(r) && (offsets[r + 1] - offsets[r]) > 0;
-            if non_empty {
-                decider.decide_for_view(&view, r)
-            } else {
-                UNUSED_STAGE
-            }
         } else {
             decider.decide_for_view(&view, r)
         };
@@ -470,8 +432,7 @@ impl StageBuffers {
     }
 }
 
-/// Per-batch exploded link data (the per-batch analogue of regroup.rs's
-/// `ExplodedLinkData`). Built once per batch by
+/// Per-batch exploded link data. Built once per batch by
 /// [`collect_link_array_from_batch`], consumed by [`route_per_link`].
 struct BatchExplodedLinkData {
     /// `row_targets[row_idx]` = the list of TARGET cells for that anchor row.
@@ -564,9 +525,7 @@ impl BatchExplodedLinkData {
     }
 }
 
-/// Explode one batch's array TARGET column into per-row link data. Mirrors
-/// regroup.rs's `collect_link_array_from_parquet` but operates on a single
-/// in-memory `RecordBatch`.
+/// Explode one batch's array TARGET column into per-row link data.
 #[allow(clippy::needless_range_loop)]
 fn collect_link_array_from_batch(
     batch: &RecordBatch,
@@ -1303,7 +1262,7 @@ mod tests {
             (Abs::from_secs(201), Abs::from_secs(300)),
         ]);
         let [train, val, test] =
-            route_per_anchor::<Seconds, _>(&batch, &d, 0, false, None, None).unwrap();
+            route_per_anchor::<Seconds, _>(&batch, &d, 0, None, None).unwrap();
         // rows: idx0(ts10)->train, idx1(ts50)->train, idx2(ts150)->val,
         //       idx3(ts250)->test, idx4(ts400)->unused(dropped).
         assert_eq!(entities_of(&train), vec![0, 1]);
@@ -1314,28 +1273,6 @@ mod tests {
             train.num_rows() + val.num_rows() + test.num_rows(),
             4
         );
-    }
-
-    #[test]
-    fn test_per_anchor_array_lp_empty_target_dropped() {
-        // Row 1 has an empty TARGET1 list → must be dropped even though its
-        // ts (50) would otherwise land in train.
-        let batch = lp_array_batch(&[
-            (0, 10, vec![("a", 1)]),       // train
-            (1, 50, vec![]),               // empty target → dropped
-            (2, 150, vec![("b", 1)]),      // val
-        ]);
-        let d: TimeRangeDecider<Seconds> = TimeRangeDecider::new(vec![
-            (Abs::from_secs(0), Abs::from_secs(100)),
-            (Abs::from_secs(101), Abs::from_secs(200)),
-            (Abs::from_secs(201), Abs::from_secs(300)),
-        ]);
-        let [train, val, test] =
-            route_per_anchor::<Seconds, _>(&batch, &d, 0, true, None, None).unwrap();
-        assert_eq!(entities_of(&train), vec![0]);
-        assert_eq!(entities_of(&val), vec![2]);
-        assert_eq!(test.num_rows(), 0);
-        assert_eq!(train.num_rows() + val.num_rows() + test.num_rows(), 2);
     }
 
     #[test]
@@ -1363,7 +1300,7 @@ mod tests {
             (Abs::from_secs(201), Abs::from_secs(300)),
         ]);
         let [train, val, test] =
-            route_per_anchor::<Seconds, _>(&batch, &d, 0, false, None, None).unwrap();
+            route_per_anchor::<Seconds, _>(&batch, &d, 0, None, None).unwrap();
         assert_eq!(entities_of(&train), vec![0, 2]);
         assert_eq!(val.num_rows(), 0);
         assert_eq!(test.num_rows(), 0);
@@ -1374,7 +1311,7 @@ mod tests {
         let batch = ts_batch(&[10, 50, 150]);
         let d = NoSplitDecider;
         let [train, val, test] =
-            route_per_anchor::<Seconds, _>(&batch, &d, 0, false, None, None).unwrap();
+            route_per_anchor::<Seconds, _>(&batch, &d, 0, None, None).unwrap();
         assert_eq!(train.num_rows() + val.num_rows() + test.num_rows(), 0);
     }
 
@@ -1410,7 +1347,7 @@ mod tests {
             vec!["2".to_string()],
         );
         let [train, val, test] =
-            route_per_anchor::<Seconds, _>(&batch, &d, 0, false, None, Some("split_col")).unwrap();
+            route_per_anchor::<Seconds, _>(&batch, &d, 0, None, Some("split_col")).unwrap();
         assert_eq!(entities_of(&train), vec![0, 3]);
         assert_eq!(entities_of(&val), vec![1]);
         assert_eq!(entities_of(&test), vec![2]);

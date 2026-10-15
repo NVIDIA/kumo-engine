@@ -4,7 +4,7 @@
 
 export const failed_res = {
     "snapshot_resource": {
-        "id": "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460",
+        "id": "graph-0005b000000000000000000000000000@00033000000000000000000000000000",
         "stages": {
             "INGEST": {
                 "start_time": "2025-05-13T05:54:17.523669+00:00",
@@ -238,7 +238,7 @@ export const failed_res = {
 
 export const queued_res = {
     "snapshot_resource": {
-        "id": "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460",
+        "id": "graph-0005b000000000000000000000000000@00033000000000000000000000000000",
         "stages": {
             "INGEST": {
                 "start_time": "2025-05-13T05:54:17.523669+00:00",
@@ -467,7 +467,7 @@ export const queued_res = {
 
 export const cancelled_res = {
     "snapshot_resource": {
-        "id": "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460",
+        "id": "graph-0005b000000000000000000000000000@00033000000000000000000000000000",
         "stages": {
             "INGEST": {
                 "start_time": "2025-05-13T05:54:17.523669+00:00",
@@ -696,7 +696,7 @@ export const cancelled_res = {
 
 export const running_res = {
     "snapshot_resource": {
-        "id": "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460",
+        "id": "graph-0005b000000000000000000000000000@00033000000000000000000000000000",
         "stages": {
             "INGEST": {
                 "start_time": "2025-05-13T05:54:17.523669+00:00",

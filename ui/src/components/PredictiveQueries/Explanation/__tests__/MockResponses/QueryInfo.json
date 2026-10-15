@@ -1,6 +1,6 @@
 {
-    "id": "trainingjob-9f8b259b4f764c8f932ad5912a926ec2",
-    "queryName": "trainingjob-9f8b259b4f764c8f932ad5912a926ec2",
+    "id": "trainingjob-00046000000000000000000000000000",
+    "queryName": "trainingjob-00046000000000000000000000000000",
     "queryName_link": "",
     "queryYaml": "PREDICT COUNT(FINANCE_TRANS.*, 0, 30,days)=0\nFOR EACH FINANCE_ACCOUNT.ACCOUNT_ID",
     "trainingConfigYaml": "PREDICT COUNT(FINANCE_TRANS.*, 0, 30,days)=0\nFOR EACH FINANCE_ACCOUNT.ACCOUNT_ID",
@@ -10,15 +10,15 @@
     "generationPlan": "split: ApproxDateOffsetSplit(ratio=[0.8, 0.1, 0.1])\ntrain_start_offset: inferred\ntrain_end_offset: inferred\nstart_time: '???'\nend_time: '???'\ntimeframe_step: inferred\nforecast_length: '???'\nlag_timesteps: '???'\nyear_over_year: '???'\nentity_candidate: null\nentity_candidate_aggregation: null\ntask_path_override: null\ntrain_table_path_override: null\n",
     "trainingPlan": "training_table_generation:\n  split: ApproxDateOffsetSplit(ratio=[0.8, 0.1, 0.1])\n  train_start_offset: inferred\n  train_end_offset: inferred\n  start_time: '???'\n  end_time: '???'\n  timeframe_step: inferred\n  forecast_length: '???'\n  lag_timesteps: '???'\n  year_over_year: '???'\n  entity_candidate: null\n  entity_candidate_aggregation: null\n  task_path_override: null\n  train_table_path_override: null\ntraining_job:\n  num_experiments: 2\n  metrics:\n    - auroc\n    - ap\n    - auprc\n  tune_metric: auroc\n  pruning:\n    min_epochs: 2\n    k: 3\n    min_delta: 0\n    patience: 1\n  disable_compilation: true\n  refit_trainval: false\n  refit_full: false\n  disable_explain: false\n  manual_seed: null\n  enable_baselines: false\ncolumn_processing:\n  encoder_overrides: null\nneighbor_sampling:\n  max_target_neighbors_per_entity: '???'\n  num_neighbors:\n    - hop1:\n        default: 12\n        FINANCE_ACCOUNT.ACCOUNT_ID->FINANCE_TRANS.ACCOUNT_ID: inferred\n      hop2:\n        default: 12\n      hop3: null\n      hop4: null\n      hop5: null\n      hop6: null\n  sample_from_entity_table: '???'\n  adaptive_sampling: false\noptimization:\n  max_epochs: 8\n  min_steps_per_epoch: 30\n  max_steps_per_epoch: 1000\n  max_val_steps: 1000\n  max_test_steps: 2000\n  loss:\n    - binary_cross_entropy\n  base_lr:\n    - 0.0001\n    - 0.0005\n    - 0.001\n    - 0.005\n    - 0.01\n    - 0.05\n  weight_decay:\n    - 0\n    - 5.e-8\n    - 5.e-7\n    - 0.000005\n  batch_size:\n    - 512\n    - 1024\n  early_stopping:\n    - min_delta: 0\n      patience: 3\n  lr_scheduler:\n    - name: cosine_with_warmup_restarts\n      interval: step\n      kwargs:\n        warmup_ratio_or_steps: 0.1\n    - name: constant_with_warmup\n      interval: step\n      kwargs:\n        warmup_ratio_or_steps: 0.1\n    - name: linear_with_warmup\n      interval: step\n      kwargs:\n        warmup_ratio_or_steps: 0.1\n    - name: cosine_with_warmup\n      interval: step\n      kwargs:\n        warmup_ratio_or_steps: 0.1\n  majority_sampling_ratio:\n    - null\n  weight_mode:\n    - null\nmodel_architecture:\n  model:\n    - name: GNN\n      channels:\n        - 64\n        - 128\n        - 256\n      aggregation:\n        - - sum\n          - mean\n          - max\n        - - sum\n          - mean\n          - min\n          - max\n          - std\n  channels: '???'\n  num_pre_message_passing_layers:\n    - 0\n    - 1\n    - 2\n  num_post_message_passing_layers:\n    - 1\n    - 2\n  aggregation: '???'\n  activation:\n    - relu\n    - leaky_relu\n    - elu\n    - gelu\n  normalization:\n    - layer_norm\n  module: '???'\n  handle_new_target_entities: '???'\n  target_embedding_mode: '???'\n  output_embedding_dim: '???'\n  ranking_embedding_loss_coeff: '???'\n  distance_measure: '???'\n  use_seq_id:\n    - false\n  prediction_time_encodings:\n    - false\n  past_encoder: '???'\n  handle_new_entities: '???'\n  forecast_type: '???'\n",
     "graphName": null,
-    "graphSnapshotId": "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460",
-    "trainTableJobId": "gen-traintable-job-9f8b259b4f764c8f932ad5912a926ec2",
+    "graphSnapshotId": "graph-0005b000000000000000000000000000@00033000000000000000000000000000",
+    "trainTableJobId": "gen-traintable-job-00046000000000000000000000000000",
     "trainTableJobStatus": "DONE",
     "dateCreated": "Fri May 23, 2025, 6:35:09 AM",
     "dateUpdated": "Fri May 23, 2025, 7:26:35 AM",
     "created": "5 days ago",
     "updated": "5 days ago",
-    "trainingJobId": "trainingjob-9f8b259b4f764c8f932ad5912a926ec2",
-    "latestTrainingJobId": "trainingjob-9f8b259b4f764c8f932ad5912a926ec2",
+    "trainingJobId": "trainingjob-00046000000000000000000000000000",
+    "latestTrainingJobId": "trainingjob-00046000000000000000000000000000",
     "trainingStatus": "DONE",
     "statusKey": "Progress",
     "log": {
@@ -118,7 +118,7 @@
             }
         ],
         "test_explain": null,
-        "_test_explain_file_path": "./jobs/trainingjob-d8f7dad747bf418ab23898e54d0a2fc5/test_explain.json.gz",
+        "_test_explain_file_path": "./jobs/trainingjob-0005d000000000000000000000000000/test_explain.json.gz",
         "test_eval": {
             "confusion_matrix": {
                 "true_positives": [
@@ -226,7 +226,7 @@
     "jobSource": "UI",
     "tags": {
         "TimeframeStats": "TimeframeStats",
-        "pquery_id": "pquery-629e15c329bb119cbae6de2fc2021165"
+        "pquery_id": "pquery-0002e000000000000000000000000000"
     },
     "trialProgress": {
         "iterations_completed": 2,

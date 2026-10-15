@@ -113,7 +113,7 @@ describe("JobsListTable", () => {
 
         expect(document.body.style.overflow).toBe("");
 
-        const jobRow = screen.getByText(/9f8b2/).closest("tr");
+        const jobRow = screen.getByText(/00046/).closest("tr");
         if (jobRow) {
             fireEvent.click(jobRow);
         }
@@ -159,7 +159,7 @@ describe("JobsListTable", () => {
         let prevTrigger: Element | null = null;
         await waitFor(() => {
             const trigger = screen
-                .getByText("9f8b2")
+                .getByText("00046")
                 .closest('[data-slot="hover-card-trigger"]');
             if (!trigger || trigger !== prevTrigger) {
                 prevTrigger = trigger;
@@ -167,7 +167,7 @@ describe("JobsListTable", () => {
             }
         });
 
-        await userEvent.hover(screen.getByText("9f8b2"));
+        await userEvent.hover(screen.getByText("00046"));
 
         await waitFor(() => {
             expect(screen.getByText("Query")).toBeInTheDocument();
@@ -177,7 +177,7 @@ describe("JobsListTable", () => {
     it("Should open job overview drawer on row click", async () => {
         await renderJobsListTable(defaultProps);
 
-        const jobId = "trainingjob-9f8b259b4f764c8f932ad5912a926ec2";
+        const jobId = "trainingjob-00046000000000000000000000000000";
         const displayId = jobId.replace("trainingjob-", "").slice(0, 5);
         const jobIdElement = screen.getByText(displayId);
         expect(jobIdElement).toBeInTheDocument();

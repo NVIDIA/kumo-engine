@@ -112,6 +112,15 @@ render_profile() {
   assert_absent "$manifest" "privileged: true"
   assert_contains "$manifest" "seccompProfile:"
   assert_contains "$manifest" "allowPrivilegeEscalation: false"
+  for deployment in kumo-ui kumo-rest kumo-api databackend mlworkflow kumo-poolcontroller; do
+    local runtime_doc="${TMP_DIR}/${provider}-${deployment}-runtime.yaml"
+    resource_doc "$manifest" Deployment "$deployment" "$runtime_doc"
+    assert_all_contains "$runtime_doc" "readOnlyRootFilesystem: true" \
+      "mountPath: /tmp" "emptyDir: {}"
+    if [ "$deployment" != kumo-ui ]; then
+      assert_contains "$runtime_doc" "mountPath: /home/kumouser/.cache"
+    fi
+  done
   assert_absent "$manifest" "secretName: temporal-mtls"
   assert_absent "$manifest" "kumo-postgres-migration"
   assert_absent "$manifest" "POOL_WORKER_SECRETS_SECRET"
@@ -183,6 +192,31 @@ render_profile() {
   done
   resource_doc "$manifest" Deployment kumo-poolcontroller \
     "${TMP_DIR}/${provider}-poolcontroller.yaml"
+  assert_env_pair "${TMP_DIR}/${provider}-poolcontroller.yaml" \
+    POOL_WORKER_READ_ONLY_ROOT_FILESYSTEM true
+  assert_absent "${TMP_DIR}/${provider}-poolcontroller.yaml" POOL_WORKER_RUN_AS_USER
+  assert_absent "${TMP_DIR}/${provider}-poolcontroller.yaml" POOL_WORKER_RUN_AS_GROUP
+  local identity_manifest="${TMP_DIR}/${provider}-identity.yaml"
+  "$HELM_BIN" template profile-test "$ROOT" -f "$profile" -f "$fixture" \
+    --set global.podSecurityContext.runAsUser=1000 \
+    --set global.podSecurityContext.runAsGroup=1000 >"$identity_manifest"
+  assert_env_pair "$identity_manifest" POOL_WORKER_RUN_AS_USER 1000
+  assert_env_pair "$identity_manifest" POOL_WORKER_RUN_AS_GROUP 1000
+  "$HELM_BIN" template profile-test "$ROOT" -f "$profile" -f "$fixture" \
+    --set global.podSecurityContext.runAsUser=1000 \
+    --set global.podSecurityContext.runAsGroup=1000 \
+    --set global.containerSecurityContext.runAsUser=1000710000 \
+    --set global.containerSecurityContext.runAsGroup=0 >"$identity_manifest"
+  assert_env_pair "$identity_manifest" POOL_WORKER_RUN_AS_USER 1000710000
+  assert_env_pair "$identity_manifest" POOL_WORKER_RUN_AS_GROUP 0
+  for read_only in false null; do
+    local readonly_manifest="${TMP_DIR}/${provider}-readonly-${read_only}.yaml"
+    "$HELM_BIN" template profile-test "$ROOT" -f "$profile" -f "$fixture" \
+      --set "global.containerSecurityContext.readOnlyRootFilesystem=${read_only}" \
+      >"$readonly_manifest"
+    assert_absent "$readonly_manifest" "readOnlyRootFilesystem: true"
+    assert_env_pair "$readonly_manifest" POOL_WORKER_READ_ONLY_ROOT_FILESYSTEM false
+  done
   assert_contains "${TMP_DIR}/${provider}-poolcontroller.yaml" \
     "serviceAccountName: kumo-controller"
   assert_contains "${TMP_DIR}/${provider}-poolcontroller.yaml" "memory: 3Gi"
@@ -257,6 +291,8 @@ assert_absent "${TMP_DIR}/gcp-static-kumo-ui.yaml" \
 for job in gcp-static-test-preflight gcp-static-test-register-temporal-ns; do
   doc="${TMP_DIR}/${job}.yaml"
   resource_doc "$GCP_STATIC_MANIFEST" Job "$job" "$doc"
+  assert_all_contains "$doc" "readOnlyRootFilesystem: true" \
+    "mountPath: /tmp" "mountPath: /home/kumouser/.cache" "emptyDir: {}"
   assert_absent "$doc" "gcp-application-credentials"
   assert_absent "$doc" "GOOGLE_APPLICATION_CREDENTIALS"
 done
@@ -449,6 +485,8 @@ for provider in aws azure; do
   assert_absent "$OPENSHIFT_MANIFEST" "supplementalGroups:"
   assert_absent "$OPENSHIFT_MANIFEST" "runAsUser:"
   assert_absent "$OPENSHIFT_MANIFEST" "runAsGroup:"
+  assert_absent "$OPENSHIFT_MANIFEST" POOL_WORKER_RUN_AS_USER
+  assert_absent "$OPENSHIFT_MANIFEST" POOL_WORKER_RUN_AS_GROUP
   assert_absent "$OPENSHIFT_MANIFEST" "asm-1-29"
   assert_contains "$OPENSHIFT_MANIFEST" "runAsNonRoot: true"
   resource_doc "$OPENSHIFT_MANIFEST" Deployment kumo-poolcontroller \

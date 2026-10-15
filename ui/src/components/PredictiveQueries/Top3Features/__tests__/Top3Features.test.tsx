@@ -16,7 +16,7 @@ import { setTopKFeatureResponseType } from "components/PredictiveQueries/Explana
 import { Top3Features, Top3FeaturesProps } from "../Top3Features";
 
 const entityId = "265";
-const jobId = "trainingjob-9f8b259b4f764c8f932ad5912a926ec2";
+const jobId = "trainingjob-00046000000000000000000000000000";
 const category = "random";
 
 const defaultProps: Top3FeaturesProps = {

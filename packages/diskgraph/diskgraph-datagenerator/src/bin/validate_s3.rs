@@ -58,9 +58,13 @@ struct Args {
     #[arg(long)]
     index_mem_budget_bytes: Option<u64>,
 
-    /// S3 bucket to use (default: kumo-prod-dataplane-bucket, or kumo-doordash-cache for doordash)
+    /// S3 bucket containing the jobs and their source data.
     #[arg(long)]
-    bucket: Option<String>,
+    bucket: String,
+
+    /// Directory within the bucket, if different from the customer in each job spec.
+    #[arg(long)]
+    customer_prefix: Option<String>,
 
     /// Use the config converter instead of infer to generate DiskGraph config.
     /// This reads the Kumo graph config (config.json) and converts it directly.
@@ -136,6 +140,7 @@ async fn main() -> Result<()> {
                 args.parallel,
                 args.index_mem_budget_bytes,
                 args.bucket.clone(),
+                args.customer_prefix.clone(),
                 args.use_config_converter,
             )
             .await
@@ -244,7 +249,8 @@ async fn validate_job(
     resume: bool,
     parallel: bool,
     index_mem_budget_bytes: Option<u64>,
-    bucket: Option<String>,
+    bucket: String,
+    customer_prefix: Option<String>,
     use_config_converter: bool,
 ) -> Result<ValidationReport> {
     // 1. Download
@@ -254,7 +260,8 @@ async fn validate_job(
         out_root: download_root_base.to_path_buf(),
         clean: !resume,
         bucket: bucket.clone(),
-        ..Default::default()
+        customer_prefix: customer_prefix.clone(),
+        dry_run: false,
     };
 
     let data_dir = download_job(job_spec, options).await?;
@@ -289,22 +296,8 @@ async fn validate_job(
 
         // Build data_persist_dir from bucket/customer
         let (customer, _) = parse_job_spec(job_spec)?;
-        let effective_bucket = bucket.as_deref().unwrap_or_else(|| {
-            if customer.eq_ignore_ascii_case("doordash") {
-                "kumo-doordash-cache"
-            } else {
-                "kumo-prod-dataplane-bucket"
-            }
-        });
-        let customer_path = if customer.eq_ignore_ascii_case("doordash") {
-            "kumo"
-        } else {
-            &customer
-        };
-        let data_persist_dir = format!(
-            "s3://{}/{}/prod/data-persist-dir",
-            effective_bucket, customer_path
-        );
+        let customer_path = customer_prefix.as_deref().unwrap_or(&customer);
+        let data_persist_dir = format!("s3://{}/{}/prod/data-persist-dir", bucket, customer_path);
 
         // Determine dataset name
         let dataset_name = kumo_config.name.clone().unwrap_or_else(|| {
@@ -420,10 +413,10 @@ async fn validate_job(
     println!("Verifying S3 Stats...");
     let s3_verification = match verify_s3_stats(
         &data_dir,
-        &customer,
+        customer_prefix.as_deref().unwrap_or(&customer),
         &job_id,
         &stats,
-        bucket.as_deref(),
+        &bucket,
         graph_config.as_ref(),
     )
     .await
@@ -496,10 +489,10 @@ fn get_table_duplicates(table_name: &str, stats: &IngestStats) -> u64 {
 
 async fn verify_s3_stats(
     data_dir: &Path,
-    customer: &str,
+    customer_path: &str,
     job_id: &str,
     stats: &IngestStats,
-    bucket_override: Option<&str>,
+    bucket: &str,
     kumo_config: Option<&serde_json::Value>,
 ) -> Result<Vec<String>> {
     let mut messages = Vec::new();
@@ -518,19 +511,6 @@ async fn verify_s3_stats(
             }
         }
     }
-
-    let bucket = if let Some(b) = bucket_override {
-        b
-    } else if customer.eq_ignore_ascii_case("doordash") {
-        "kumo-doordash-cache"
-    } else {
-        "kumo-prod-dataplane-bucket"
-    };
-    let customer_path = if customer.eq_ignore_ascii_case("doordash") {
-        "kumo"
-    } else {
-        customer
-    };
 
     // Download materialized_task_persist_paths.json manifest for efficient edge lookups
     let manifest_key = format!(
@@ -1266,5 +1246,20 @@ fn truncate_str(s: &str, max: usize) -> String {
         s.to_string()
     } else {
         format!("...{}", &s[s.len() - max + 3..])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Args;
+    use clap::Parser;
+
+    #[test]
+    fn storage_is_chosen_explicitly() {
+        let job = ["validate-s3-ingest", "example trainingjob-example"];
+        assert!(Args::try_parse_from(job).is_err());
+        assert!(
+            Args::try_parse_from(job.into_iter().chain(["--bucket", "example-bucket"])).is_ok()
+        );
     }
 }

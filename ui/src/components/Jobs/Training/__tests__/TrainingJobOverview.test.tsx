@@ -36,7 +36,7 @@ import mockWorkflowResponseFailedJob from "./MockResponses/TrainingWorkflowFaile
 import mockWorkflowResponseQueuedJob from "./MockResponses/TrainingWorkflowQueued.test.json";
 import mockWorkflowResponseRunningJob from "./MockResponses/TrainingWorkflowRunning.test.json";
 
-const id = "trainingjob-cd40820089504c91825ec0b413e97cbb";
+const id = "trainingjob-00059000000000000000000000000000";
 const displayId = id.replace("trainingjob-", "").slice(0, 5);
 
 const expectedWorkflow = { ...mockWorkflowResponse };
@@ -53,7 +53,7 @@ const queryInfo = parseTrainingWorkflowResponse(
 const minimalQueryInfo = parseTrainingWorkflowResponse(
     minimalTrainingWorkflow(id, "DONE", {
         test_new_tag: "test_new_tag",
-        pquery_id: "pquery-629e15c329bb119cbae6de2fc2021165"
+        pquery_id: "pquery-0002e000000000000000000000000000"
     }) as unknown as TrainingWorkflowResponse
 );
 
@@ -553,7 +553,7 @@ describe("TrainingJobOverview", () => {
                 expect(mockAxiosInstance.post).toHaveBeenCalledWith(
                     "v0/jobs/add_tag",
                     {
-                        job_id: "trainingjob-cd40820089504c91825ec0b413e97cbb",
+                        job_id: "trainingjob-00059000000000000000000000000000",
                         key: key,
                         project_id: "project-tests",
                         value: value
@@ -580,7 +580,7 @@ describe("TrainingJobOverview", () => {
                 expect(mockAxiosInstance.post).toHaveBeenCalledWith(
                     "v0/jobs/delete_tag",
                     {
-                        job_id: "trainingjob-cd40820089504c91825ec0b413e97cbb",
+                        job_id: "trainingjob-00059000000000000000000000000000",
                         key: "test_new_tag",
                         project_id: "project-tests",
                         value: null

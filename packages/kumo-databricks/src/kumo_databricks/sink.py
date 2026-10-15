@@ -26,14 +26,15 @@ from typing import Optional, Sequence
 
 import pandas as pd
 from databricks.sql.client import Connection
-from kumo_databricks.session import _DatabricksSessions, _target_config
+from kumo_databricks.registry import DatabricksModelRegistryMixin
+from kumo_databricks.session import _target_config
 from kumo_databricks.write import RunVolume
 from kumoapi.data_source import DataSourceType
 from kumoapi.jobs import WriteMode
 from kumoapi.plugin import SourceConnector
 
 
-class DatabricksSinkBackend(_DatabricksSessions):
+class DatabricksSinkBackend(DatabricksModelRegistryMixin):
     r"""Writes a produced artifact to a Databricks Delta table.
 
     Registered by default beside

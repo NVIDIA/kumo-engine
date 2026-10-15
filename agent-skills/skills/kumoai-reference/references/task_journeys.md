@@ -54,10 +54,12 @@ Use the same journey with a confirmed FK target, for example
 `PREDICT LIST_DISTINCT(orders.product_id, 0, 30, days) RANK TOP 10 FOR EACH customers.customer_id`.
 For static links use `LIST_DISTINCT(pairs.product_id)` without a time window and omit the
 scoring timestamp. Confirm TEMPORAL_LINK_PREDICTION or STATIC_LINK_PREDICTION respectively.
-Set `PREDICT_OPTIONS = {"num_classes_to_return": K}` with the confirmed ranking K. No binary
-threshold. Preserve the item universe, positive interaction, eligibility and evaluation
-sampling. Inspect entity/CLASS and available SCORE/time columns. Returned rows can be fewer
-than K when candidates are unavailable. Compare recorded precision/MAP/recall at the same K.
+Set `PREDICT_OPTIONS = {"num_classes_to_return": N}`, where N is the confirmed number of
+results per entity: the query's `RANK TOP K` unless the user asked for a different count
+(1–500; `kumoai-reference/references/kumo_finetuning_sdk.md` §9). No binary threshold.
+Preserve the item universe, positive interaction, eligibility and evaluation sampling. Inspect
+entity/CLASS and available SCORE/time columns. Returned rows can be fewer than N when
+candidates are unavailable. Compare recorded precision/MAP/recall at the same K.
 
 For a non-FK category ranking, confirm the distinct MULTILABEL_RANKING task rather than treating
 it as a link to a product table. Do not create a graph edge solely to force a task type.

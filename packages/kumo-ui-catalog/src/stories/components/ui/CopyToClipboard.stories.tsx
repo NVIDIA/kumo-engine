@@ -65,7 +65,7 @@ export const Default: Story = {
 
 export const WithTitle: Story = {
     args: {
-        copiedText: "s3://kumo-sample/transactions/",
+        copiedText: "s3://example-bucket/transactions/",
         tooltipText: ""
     },
     render: function Render(args) {

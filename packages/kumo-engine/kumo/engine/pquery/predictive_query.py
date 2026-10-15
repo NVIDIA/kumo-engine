@@ -48,8 +48,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 from kumo_core.model_plan import ModelPlan as CoreModelPlan
+from kumo_core.model_plan import ModelPlanValueError
+from kumo_core.model_plan import \
+    TrainingTableGenerationPlan as CoreGenerationPlan
 from kumo_core.model_plan import (
-    ModelPlanValueError,
     inferred_or_missing_type_to_none,
     unsupported_entity_candidate_errors,
 )
@@ -228,8 +230,7 @@ class PredictiveQuery:
 
         Args:
             snapshot: a snapshot of `self.graph` to compile against.
-            plan: if not given, defers the training-table-generation section
-                of the model plan entirely to `kumo_core`'s own defaults,
+            plan: if not given, uses `kumo_core`'s generation defaults,
                 matching the local backend's existing
                 `suggest_training_table_plan` default.
         """
@@ -240,34 +241,15 @@ class PredictiveQuery:
                     f"'{name}' is not supported by native training-table "
                     "generation; use TrainingTable.from_source_table() to "
                     "train on existing labeled rows.")
-        # Lazy: kumo.engine.trainer.trainer also imports kumo.engine.pquery (this
-        # package), so a module-level import here would be circular.
-        from kumo.engine.trainer.trainer import _to_core_model_plan
+        from kumo_core.io.json import from_json_dict
 
-        # training_table_generation is internal-only -- absent from the
-        # public kumoapi.model_plan.ModelPlan entirely (confirmed via
-        # kumo_core.model_plan_conversion.INTERNAL_ONLY_FIELDS) -- so unlike
-        # _to_core_model_plan's full-plan conversion, overriding this one
-        # section needs the same raw JSON round-trip the cloud SDK's own
-        # internal_model_plan (kumoai/backend/local/train_table.py:126-149)
-        # uses, there being no public equivalent to convert instead.
-        model_plan = _to_core_model_plan(ModelPlan())
-        if plan is not None:
-            from kumo_core.io.json import from_json_dict
-
-            section = from_json_dict(to_json_dict(plan),
-                                     type(model_plan.training_table_generation))
-            model_plan = replace(model_plan, training_table_generation=section)
-
-        options = model_plan.training_table_generation
+        options = (CoreGenerationPlan() if plan is None else from_json_dict(
+            to_json_dict(plan), CoreGenerationPlan))
         value = inferred_or_missing_type_to_none(options.split)
         if value is not None:
             split = resolve_query_split(self._parsed, value)
             if isinstance(split, RandomLinkSplit):
-                model_plan = replace(
-                    model_plan,
-                    training_table_generation=replace(options,
-                                                      split=repr(split)))
+                options = replace(options, split=repr(split))
 
         # Validate before allocating a run directory or invoking native
         # generation. DiskGraph does not carry weight_col in TrainTableRequest,
@@ -276,10 +258,14 @@ class PredictiveQuery:
         # generate_training_table has no run_mode argument, so FAST only
         # preflights mode-independent constraints. Fit remains authoritative
         # for validation that depends on its selected run mode.
-        model_plan.validate(
+        errors, warnings = options.validate(
             **self._model_plan_validation_facts(RunMode.FAST),
             has_train_table_weight_col=False,
         )
+        for warning in warnings:
+            logger.warning(f"{warning.title}: {warning.message}")
+        if errors:
+            raise ModelPlanValueError(errors)
 
         run_id = new_run_id()
         run_dir = train_table_scratch_dir(run_id)
@@ -295,13 +281,13 @@ class PredictiveQuery:
             run_id=run_id,
             scratch_dir=str(run_dir),
             artifact_dir=str(run_dir),
-            model_plan=model_plan,
+            training_table_generation_plan=options,
         )
         with no_encoder_inference_warnings():
             task_plan = build_training_task_plan(workflow)
         generated = generate_train_table(task_plan.train_table)
 
-        generation_plan = model_plan.training_table_generation
+        generation_plan = options
         if workflow.query.query_type == 'temporal':
             offset = workflow.query.query.get_combined_date_offset_range()
             timeframe_step = inferred_or_missing_type_to_none(

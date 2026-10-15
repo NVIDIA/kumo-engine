@@ -57,7 +57,7 @@ s3=[
 ]
 # glove.6B 50d, the default model for text columns.
 text=[
-    "kumo-glove-6b-50d==1.0.0",
+    "kumo-glove-6b-50d>=1.0.0,<2",
 ]
 gcs=[
     "kumo-gcs>=0.1.0.dev1",

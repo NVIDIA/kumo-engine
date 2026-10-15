@@ -249,9 +249,8 @@ struct ParquetInput {
 ///
 /// Every encoding decision is made from this sample, and value vocabularies are
 /// partitioned across files, so the head of one file shows a fraction of a
-/// column's distinct values however many rows it reads. On doordash `orders`,
-/// 10k head rows find 1,029 of 9,279 `ALL_TAGS` values; the same budget spread
-/// over six files finds 2,085.
+/// column's distinct values however many rows it reads. Spread the sample
+/// across files to cover more of the column's vocabulary.
 ///
 /// This reads through its own readers and consumes nothing from the encode
 /// stream, so encode still reads every file whole. These rows are therefore
@@ -1018,7 +1017,7 @@ pub(crate) fn ingest_with_stats_from_source_and_sidecars(
         )?;
         // Marker is now written; a crash from this line on does not invalidate
         // pk_map. Drop the pristines + free pkey.bin temp files we no longer
-        // need (saves ~160 GB on DoorDash-shaped data).
+        // need for the remaining ingest phases.
         ctx.pk_map_post()?;
         let pkey_freed = ctx.cleanup_pkey_temp_files().unwrap_or(0);
         if pkey_freed > 0 {
@@ -6969,12 +6968,14 @@ mod encode_memory_budget_tests {
 
 impl IngestContext {
     fn make_pool<S: Default + Send + 'static>(&self, threads: Option<usize>) -> TaskPool<S> {
+        TaskPool::new(self.worker_threads(threads))
+    }
+
+    fn worker_threads(&self, threads: Option<usize>) -> usize {
         if !self.parallel {
-            return TaskPool::new(1);
+            return 1;
         }
-        let n = threads.unwrap_or_else(default_worker_threads);
-        let n = n.max(1);
-        TaskPool::new(n)
+        threads.unwrap_or_else(default_worker_threads).max(1)
     }
 
     fn emit_progress(&self, event: ProgressEvent) {
@@ -11320,7 +11321,12 @@ impl IngestContext {
                 crate::ts_grouping::BUCKET_INDEX_FILENAME
             );
             let bucket_abs = root.join(&bucket_rel);
-            let grouping = crate::ts_grouping::merge_stage(&shards, &bucket_abs, bucket_rel)?;
+            let grouping = crate::ts_grouping::merge_stage(
+                &shards,
+                &bucket_abs,
+                bucket_rel,
+                self.worker_threads(self.index_threads),
+            )?;
             out.insert(table.name.clone(), grouping);
         }
         Ok(out)
@@ -11672,8 +11678,7 @@ impl IngestContext {
 
     /// Post-pk_map cleanup: free encode's `pkey.bin`/`pkey.meta` files.
     /// pk_map is the only consumer of those files; once pk_map's marker is
-    /// written, holding them through the rest of the pipeline costs ~160 GB
-    /// for DoorDash-shaped data and gains nothing.
+    /// written, keeping them through the rest of the pipeline wastes storage.
     /// `node_data.bin` stays — `build_index_metadata` reads it.
     fn cleanup_pkey_temp_files(&self) -> Result<u64> {
         let root = match &*self.target {
@@ -12342,8 +12347,7 @@ mod context_prefix_tests {
     use arrow_array::Int64Array;
     use arrow_schema::{DataType, Field, Schema};
 
-    /// A feature table with embedding columns: the shape that exposed this.
-    /// Tubi's `programs` is 3,401 rows with two 1,020-wide `float64` lists.
+    /// Generate wide embedding lists to test sample-memory limits.
     fn embedding_batch(rows: usize, width: usize) -> RecordBatch {
         let mut embedding = ListBuilder::new(Float64Builder::new());
         for row in 0..rows {

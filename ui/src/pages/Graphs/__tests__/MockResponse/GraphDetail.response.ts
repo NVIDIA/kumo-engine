@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 export const graphDetail = {
-    "id": "graph-4973156df602a3f4346186713bd6782d",
+    "id": "graph-00022000000000000000000000000000",
     "graph": {
         "tables": {
             "transactions": {

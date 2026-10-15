@@ -12,6 +12,13 @@
 !packages/kumo-core/src/kumo_core/csv_rules.py
 !packages/kumo-core/src/kumo_core/custom_sql.py
 !packages/kumo-core/src/kumo_core/artifact_staging.py
+# Model registries validate bundles through the portable artifact contract.
+!packages/kumo-core/src/kumo_core/artifacts.py
+!packages/kumo-core/src/kumo_core/config.py
+!packages/kumo-core/src/kumo_core/manifest.py
+!packages/kumo-core/src/kumo_core/io/__init__.py
+!packages/kumo-core/src/kumo_core/io/filesystem.py
+!packages/kumo-core/src/kumo_core/io/json.py
 !packages/kumo-core/src/kumo_core/stype_inference.py
 !packages/kumo-core/src/kumo_core/types/__init__.py
 !packages/kumo-core/src/kumo_core/types/enums.py

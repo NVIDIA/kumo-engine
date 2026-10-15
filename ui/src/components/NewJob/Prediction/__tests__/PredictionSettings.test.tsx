@@ -38,7 +38,7 @@ import PredictionSettings, {
 const jobList = { ...mockJobsListResponse };
 const mockTrainingJob = {
     ...jobList.jobs[0],
-    id: "trainingjob-9f8b259b4f764c8f932ad5912a926ec2",
+    id: "trainingjob-00046000000000000000000000000000",
     queryYaml:
         "PREDICT COUNT(FINANCE_TRANS.*, 0, 30, days) = 0 FOR EACH FINANCE_ACCOUNT.ACCOUNT_ID",
     graphName: "financial_graph",
@@ -50,8 +50,8 @@ const mockTrainingJob = {
     taskType: TaskType.BINARY_CLASSIFICATION,
     jobSource: "UI",
     graphSnapshotId:
-        "graph-d445eeb8b2aa1b79a142406239fa74e8@6f0ae33ac31edb0c321fbe182e39e460",
-    trainingJobId: "trainingjob-9f8b259b4f764c8f932ad5912a926ec2"
+        "graph-0005b000000000000000000000000000@00033000000000000000000000000000",
+    trainingJobId: "trainingjob-00046000000000000000000000000000"
 } as unknown as GenericJob & PredictiveQueryInfo;
 
 const setPredictionJobArgs = vi.fn();
@@ -256,7 +256,7 @@ describe("PredictionSettings", () => {
 
         expect(screen.getByText("Select Connector")).toBeInTheDocument();
 
-        const jobID = "9f8b2";
+        const jobID = "00046";
         const upperCaseJobID = jobID.toUpperCase();
 
         verifyPredictionsCheckbox(`${upperCaseJobID}_PREDICTIONS`);
@@ -269,7 +269,7 @@ describe("PredictionSettings", () => {
 
         expect(screen.getByText("Select Connector")).toBeInTheDocument();
 
-        const jobID = "9f8b2";
+        const jobID = "00046";
         const upperCaseJobID = jobID.toUpperCase();
 
         expect(screen.getByPlaceholderText("Table Schema")).toBeInTheDocument();
@@ -287,7 +287,7 @@ describe("PredictionSettings", () => {
 
         expect(screen.getByText("Select Connector")).toBeInTheDocument();
 
-        const jobID = "9f8b2";
+        const jobID = "00046";
         const upperCaseJobID = jobID.toUpperCase();
 
         verifyPredictionsCheckbox(`${upperCaseJobID}_PREDICTIONS`);
@@ -330,7 +330,7 @@ describe("PredictionSettings", () => {
             );
         });
 
-        const trainingJobId = "trainingjob-9f8b259b4f764c8f932ad5912a926ec2";
+        const trainingJobId = "trainingjob-00046000000000000000000000000000";
         await waitFor(() => {
             expect(mockAxiosInstance.get).toHaveBeenCalledWith(
                 `v1/predictive_queries/${trainingJobId}/get_allowed_bp_query_overrides`

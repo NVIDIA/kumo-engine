@@ -32,6 +32,7 @@ from kumo_core.features.stores.in_memory_feature import (
     InMemoryFeatureStore,
     get_tf,
 )
+from kumo_core.sources.cpu import cpu_budget
 from kumo_core.training.config import shm_safe_num_workers
 from kumoapi.encoder import Datetime
 from torch_geometric.sampler import NumNeighbors
@@ -179,6 +180,66 @@ def _decimal_primary_key_arrow_type(
     return None
 
 
+_NODE_COLUMN_READ_BATCH = 1 << 20
+
+
+def _iter_node_column(
+    engine: Any,
+    table_name: str,
+    column: str,
+    start: int,
+    stop: int,
+) -> Iterator[tuple[int, pa.Array]]:
+    for chunk_start in range(start, stop, _NODE_COLUMN_READ_BATCH):
+        node_ids = list(
+            range(chunk_start, min(chunk_start + _NODE_COLUMN_READ_BATCH,
+                                   stop)))
+        request = [{
+            'node_type': table_name,
+            'node_ids': node_ids,
+            'feature_names': [column],
+        }]
+        batches = [
+            event['batch'] for event in engine.fetch_features(request)
+            if event['type'] == 'feature'
+        ]
+        if not batches:
+            raise RuntimeError(
+                f"DiskGraph returned no '{table_name}.{column}' values for "
+                f'node IDs [{node_ids[0]}, {node_ids[-1]}]')
+        values = pa.Table.from_batches(batches)
+        if column not in values.column_names:
+            raise RuntimeError(f"DiskGraph response for '{table_name}' "
+                               f"omitted column '{column}'")
+        if values.num_rows != len(node_ids):
+            raise RuntimeError(
+                f"DiskGraph returned {values.num_rows} '{table_name}.{column}' "
+                f'values for {len(node_ids)} requested node IDs')
+        yield chunk_start, values.column(column).combine_chunks()
+
+
+def _node_column_engine(index_path: str) -> Any:
+    from diskgraph import SamplerEngine
+    return SamplerEngine(index_path, num_threads=cpu_budget())
+
+
+def read_node_column(
+    index_path: str,
+    table_name: str,
+    column: str,
+    num_nodes: int,
+    engine: Any | None = None,
+) -> pa.ChunkedArray:
+    """``column`` for node IDs ``[0, num_nodes)``, scanned on a multi-threaded
+    engine."""
+    chunks = [
+        values for _, values in _iter_node_column(
+            engine or _node_column_engine(index_path), table_name, column, 0,
+            num_nodes)
+    ]
+    return pa.chunked_array(chunks, type=None if chunks else pa.null())
+
+
 def iter_primary_key_batches(
     index_path: str,
     table_name: str,
@@ -205,38 +266,9 @@ def iter_primary_key_batches(
         pkey_name,
     )
 
-    if engine is None:
-        from diskgraph import SamplerEngine
-        feature_engine = SamplerEngine(index_path)
-    else:
-        feature_engine = engine
-
-    for batch_start in range(start, stop, batch_size):
-        batch_stop = min(batch_start + batch_size, stop)
-        node_ids = list(range(batch_start, batch_stop))
-        request = [{
-            'node_type': table_name,
-            'node_ids': node_ids,
-            'feature_names': [pkey_name],
-        }]
-        feature_batches = [
-            event['batch'] for event in feature_engine.fetch_features(request)
-            if event['type'] == 'feature'
-        ]
-        if not feature_batches:
-            raise RuntimeError(
-                f"DiskGraph returned no primary keys for '{table_name}' "
-                f'node IDs [{batch_start}, {batch_stop})')
-        table = pa.Table.from_batches(feature_batches)
-        if pkey_name not in table.column_names:
-            raise RuntimeError(
-                f"DiskGraph response for '{table_name}' omitted primary-key "
-                f"column '{pkey_name}'")
-        if table.num_rows != len(node_ids):
-            raise RuntimeError(
-                f"DiskGraph returned {table.num_rows} primary keys for "
-                f'{len(node_ids)} requested node IDs')
-        primary_key_column = table.column(pkey_name).combine_chunks()
+    feature_engine = engine or _node_column_engine(index_path)
+    for chunk_start, primary_key_column in _iter_node_column(
+            feature_engine, table_name, pkey_name, start, stop):
         if (decimal_primary_key_type is not None
                 and primary_key_column.type != decimal_primary_key_type):
             try:
@@ -246,21 +278,22 @@ def iter_primary_key_batches(
                 raise RuntimeError(
                     f"DiskGraph returned invalid values for decimal primary "
                     f"key '{table_name}.{pkey_name}'") from error
-        primary_keys = primary_key_column.to_pandas().to_numpy(copy=False)
-        canonical = np.asarray(
-            feature_engine.canonical_node_mask(
-                table_name,
-                node_ids,
-                primary_key_column,
-            ),
-            dtype=np.bool_,
-        )
-        if canonical.shape != (len(node_ids), ):
-            raise RuntimeError(
-                f"DiskGraph returned an invalid canonical-node mask for "
-                f"'{table_name}': {canonical.shape}")
-        yield (np.asarray(node_ids,
-                          dtype=np.uint64)[canonical], primary_keys[canonical])
+        for offset in range(0, len(primary_key_column), batch_size):
+            batch = primary_key_column.slice(offset, batch_size)
+            node_ids = list(
+                range(chunk_start + offset,
+                      chunk_start + offset + len(batch)))
+            canonical = np.asarray(
+                feature_engine.canonical_node_mask(table_name, node_ids,
+                                                   batch),
+                dtype=np.bool_,
+            )
+            if canonical.shape != (len(node_ids), ):
+                raise RuntimeError(
+                    f"DiskGraph returned an invalid canonical-node mask for "
+                    f"'{table_name}': {canonical.shape}")
+            yield (np.asarray(node_ids, dtype=np.uint64)[canonical],
+                   batch.to_pandas().to_numpy(copy=False)[canonical])
 
 
 _DISKGRAPH_STRICT_HOP_VALIDATION = os.getenv(

@@ -80,7 +80,7 @@ async def test_table_lifecycle(client: TestClient,
                                args: Dict[str, Any]):
     """
     Test the table lifecycle from discovery through snapshot across supported
-    parquet data types, including the safe metadata-only sampling outcome.
+    parquet data types.
     """
     assert args["connector_type"] == ConnectorType.file
     root_dir = ("s3://kumocloud-test-bucket/ux_e2e_stability_tests/"
@@ -108,12 +108,6 @@ async def test_table_lifecycle(client: TestClient,
     assert len(args['default_stypes']) == len(table_samples.cols)
     for col in table_samples.cols:
         assert col.stype == args['default_stypes'][col.name], col.name
-    if args.get('expect_metadata_only', False):
-        # Unsupported physical types are exposed as safe metadata. The sample
-        # endpoint degrades to a metadata-only response instead of failing the
-        # request and leaking the underlying reader error.
-        assert table_samples.sample_rows is None
-        return
 
     # Only include columns that are supported
     # when creating the table.

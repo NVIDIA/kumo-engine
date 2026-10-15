@@ -45,7 +45,10 @@ CAPABILITY = [
 ]
 HOSTS: dict[str, dict] = {
     # The Cortex extension root holds only `skills/`, with one skill directory.
-    'coco': dict(prefix='kumo-ds/skills', hosts=['snowflake-coco/adapter.md'], capability=True),
+    'coco': dict(prefix='kumo-ds/skills',
+                 hosts=['snowflake-coco/adapter.md', 'snowflake-coco/runtime.md',
+                        'snowflake-coco/ml_job.md'],
+                 capability=True),
 }
 
 MARKER = re.compile(r'SKILL-BUILD: [^`*\s]+')

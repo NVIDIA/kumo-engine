@@ -39,7 +39,8 @@ cheap pass left ambiguous):
   call.
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import replace
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from kumo_core.stype_inference import infer_stype_from_name
 from kumoapi.plugin import SourceBackend
@@ -175,6 +176,29 @@ def infer_source_columns(
     }
 
 
+def refuse_unsupported_columns(connector: Connector, table_name: str,
+                               columns: List[Column]) -> None:
+    r"""Raises for columns whose source type has no Kumo dtype and that no
+    declared dtype resolved.
+    """
+    from kumo_core.sources.object_store_backend import ObjectStoreSourceBackend
+
+    names = [col.name for col in columns if col.dtype == Dtype.unsupported]
+    if not names:
+        return
+    backend = connector.source_backend
+    types = (backend.source_types(connector, table_name) if isinstance(
+        backend, ObjectStoreSourceBackend) else {})
+    listed = ', '.join(
+        f"{name!r} ({types[name]})" if name in types else repr(name)
+        for name in names)
+    raise ValueError(
+        f"Table {table_name!r} has columns whose source type Kumo cannot "
+        f"read: {listed}. Declare a dtype for them (`dtypes=` or "
+        f"`with_column(name, dtype=...)`), leave them out of `column_names`, "
+        f"or cast them at the source.")
+
+
 def resolve_table_columns(
     connector: Connector,
     table_name: str,
@@ -185,6 +209,7 @@ def resolve_table_columns(
     time_column: Optional[str],
     end_time_column: Optional[str],
     sql: Optional[str] = None,
+    dtypes: Optional[Mapping[str, Dtype]] = None,
 ) -> List[Column]:
     r"""Finishes what `infer_source_columns`'s cheap pass left open: applies
     the primary-key/time-column stype override, then -- only if something is
@@ -207,6 +232,8 @@ def resolve_table_columns(
             `Stype.timestamp`.
         end_time_column: names the end-time column, same as `time_column`.
         sql: a Custom SQL table's query, sampled instead of `table_name`.
+        dtypes: declared dtypes that replace the source's, including for
+            columns whose source type has no Kumo dtype.
 
     Raises:
         ValueError: if `column_names` matches nothing, or a selected
@@ -225,6 +252,16 @@ def resolve_table_columns(
         raise ValueError(f"Table {table_name!r} has no columns to resolve "
                          f"(column_names={column_names!r} matched none of "
                          f"{sorted(columns)!r}).")
+    unknown = sorted(set(dtypes or {}) - {col.name for col in selected})
+    if unknown:
+        raise ValueError(f"Table {table_name!r} has no selected column "
+                         f"{', '.join(map(repr, unknown))} to declare a "
+                         f"dtype for.")
+    selected = [
+        replace(col, dtype=dtypes[col.name], stype=None,
+                multicategorical_delimiter=None)
+        if dtypes and col.name in dtypes else col for col in selected
+    ]
 
     resolved: Dict[str, Tuple[Optional[Dtype], Optional[Stype]]] = {
         col.name:
@@ -238,11 +275,12 @@ def resolve_table_columns(
                              Dtype.string and delimiters[name] is None)
            for name, (dtype, stype) in resolved.items()):
         source_backend = connector.source_backend
-        dtypes, statistics, frame, is_empty = _sample(source_backend, connector,
-                                                      table_name, sql)
+        sampled, statistics, frame, is_empty = _sample(source_backend,
+                                                       connector, table_name,
+                                                       sql)
         for col in selected:
             dtype, stype = resolved[col.name]
-            dtype = dtype or dtypes.get(col.name)
+            dtype = dtype or sampled.get(col.name)
             num_unique_multi = None
             delimiter = delimiters[col.name]
             if (dtype == Dtype.string and frame is not None

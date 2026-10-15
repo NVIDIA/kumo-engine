@@ -55,3 +55,9 @@ def test_a_top_level_import_loads_neither_training_nor_the_plugin_half():
         ROOT, "kumo_databricks", "DatabricksSourceReader",
         unloaded=("kumo_databricks.session", "kumo_databricks.backend",
                   "kumo_databricks.sink"))
+
+
+def test_table_sink_import_does_not_load_mlflow():
+    assert_top_level_import_is_cheap(ROOT, 'kumo_databricks.sink',
+                                     'DatabricksSinkBackend',
+                                     unloaded=('mlflow', 'kumo_core.artifacts'))

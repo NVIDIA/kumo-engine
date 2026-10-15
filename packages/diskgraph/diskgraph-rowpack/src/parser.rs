@@ -160,6 +160,21 @@ pub(crate) fn with_stack_str<Out, V: std::fmt::Display>(
     f(s)
 }
 
+pub(crate) fn with_float_str<Out, V: std::fmt::Display + std::fmt::LowerExp>(
+    value: V,
+    counter: Option<&std::sync::atomic::AtomicU64>,
+    f: impl FnOnce(&str) -> Result<Out>,
+) -> Result<Out> {
+    use std::fmt::Write as _;
+    let mut buf = StackStr::new();
+    if write!(&mut buf, "{}", value).is_err() {
+        buf = StackStr::new();
+        write!(&mut buf, "{:e}", value).map_err(|_| anyhow!("string format overflow"))?;
+    }
+    let s = buf.as_str()?;
+    f(trim_borrowed_str(s, MAX_INPUT_STRING_BYTES, counter))
+}
+
 pub(crate) fn parse_uuid_string(bytes: &[u8]) -> Option<[u8; 16]> {
     let mut out = [0u8; 16];
     if bytes.len() == 32 {

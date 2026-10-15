@@ -20,11 +20,9 @@
 # TABLE_NAME is destination table in snowflake. If it already exists, the
 # script will fail (unless the --append flag is set)
 #
-# The Snowflake account is assumed to be xva19026. You can log into the UI
-# here: https://app.snowflake.com/us-west-2/xva19026/#/data/databases Please
-# refer to 1password for login information. This script must be run with
-# access to the secret named `xva19026.snowflakecomputing.com` in AWS
-# secretsmanager. The AWS dev VM should usually work.
+# Use --account to override the default account. This script reads the secret
+# named <account>.snowflakecomputing.com from the configured secret manager.
+# The secret must contain the password and can specify the user (default: kumo).
 #
 # To upload multiple datasets at once, please use the following script:
 #

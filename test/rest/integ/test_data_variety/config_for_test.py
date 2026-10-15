@@ -21,7 +21,6 @@ class FailStage(Enum):
 
 
 # SNOWFLAKE
-# https://app.snowflake.com/lfwgwbp/zxa66432/#/data/databases/KUMO/schemas/DATA_TYPE_TEST/table/ALL_DATA_TYPES
 snow_table_name = 'snow_table'
 snow_pkey_cols = ['ID']
 snow_default_stypes = {
@@ -101,8 +100,9 @@ parquet_args = {
     "fail_message": None,
 }
 
-# Parquet metadata with unsigned columns. Sample rows cannot be represented by
-# the supported API types, so the endpoint returns metadata and omits rows.
+# Parquet with unsigned columns. uint8/uint16 read as int32; uint64 has no
+# Kumo dtype that holds every value, so it stays unsupported and is left out
+# of the table, which then ingests.
 unsupported_parquet_args = {
     "connector_type": ConnectorType.file,
     "source_name": "failing_dummy",
@@ -110,14 +110,13 @@ unsupported_parquet_args = {
     "pkey": ["id"],
     "default_stypes": {
         "id": Stype.ID,
-        "uint8_col": Stype.unsupported,
-        "uint16_col": Stype.unsupported,
+        "uint8_col": Stype.numerical,
+        "uint16_col": Stype.numerical,
         "uint32_col": Stype.numerical,
         "uint64_col": Stype.unsupported,
     },
     "time_cols": None,
     "time_cols_na_count": None,
-    "expect_metadata_only": True,
     "fail_stage": None,
     "fail_message": None,
 }

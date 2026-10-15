@@ -262,7 +262,7 @@ describe("PredictionsListPage", () => {
             page: 1
         });
 
-        const searchKey = `9804b`;
+        const searchKey = `00042`;
         const searchInput = await screen.findByPlaceholderText("Search");
         await userEvent.type(searchInput, searchKey);
 

@@ -2342,6 +2342,11 @@ impl DiskGraphEngine {
                             .and_then(|m| m.get(seed_type))
                             .and_then(|v| v.get(node.seed_index as usize).copied())
                     });
+                if let (Some(dec), Some(anch)) = (decoder, anchor) {
+                    let newer = unpacker
+                        .partition_point(|key| dec.decode(key).0.is_some_and(|ts| ts > anch));
+                    unpacker.advance(newer);
+                }
 
                 let mut n = 0;
                 let batch_size = k.min(128);

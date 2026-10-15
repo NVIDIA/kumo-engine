@@ -27,6 +27,8 @@
 # - All logs, results, and state live under ./benchmark/ (git-ignored).
 set -euo pipefail
 
+: "${S3_PREFIX:?Set S3_PREFIX to the benchmark data location}"
+
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel 2>/dev/null || true)"
 if [[ -z "${REPO_ROOT}" ]]; then
@@ -157,7 +159,10 @@ reset_xfs_mount() {
 run_ingest() {
   local config="$1"
   local log_file="$2"
-  "${REPO_ROOT}/diskgraph-ingest/scripts/ingest_s3.sh" "${config}" 2>&1 | tee "${log_file}"
+  local resolved="${BENCHMARK_ROOT}/$(basename "${config}")"
+  python3 "${SCRIPT_DIR}/rewrite_config.py" "${config}" \
+    --data-root "${S3_PREFIX}" --output "${resolved}" || return
+  "${REPO_ROOT}/diskgraph-ingest/scripts/ingest_s3.sh" "${resolved}" 2>&1 | tee "${log_file}"
 }
 
 main() {

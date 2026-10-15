@@ -10,7 +10,7 @@ from kumo_core.encoder_selection import (
     select_encoder,
     select_text_encoder,
 )
-from kumo_core.model_plan import ModelPlan
+from kumo_core.model_plan import TrainingTableGenerationPlan
 from kumo_core.pquery import (
     NativeGraphColumn,
     PredictiveQueryPlanError,
@@ -119,7 +119,7 @@ def test_native_plan_uses_all_query_operands_and_preserves_ordinary_roles(
     plan = build_native_pquery_task_plan(
         query=query,
         graph=graph,
-        model_plan=ModelPlan(),
+        training_table_generation_plan=TrainingTableGenerationPlan(),
         run_id="shared-selection",
         graph_index_path=str(tmp_path / "index"),
         scratch_dir=str(tmp_path / "scratch"),

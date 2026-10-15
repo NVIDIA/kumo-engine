@@ -24,11 +24,18 @@ Or use the wrapper script:
 diskgraph-datagenerator/scripts/generate_dataset.sh diskgraph-datagenerator/configs/small_100m.json
 ```
 
-Cloud example (auto-detects AWS/GCP/Azure metadata, writes to `kumo-unit-test` by default):
+For cloud storage, provide the output location directly:
 
 ```bash
-diskgraph-datagenerator/scripts/cloud_generate_dataset.sh diskgraph-datagenerator/configs/small_100m.json
+cargo run -p diskgraph-datagenerator --release -- \
+  --config diskgraph-datagenerator/configs/small_100m.json \
+  --output s3://example-bucket/diskgraph-datagenerator/small_100m
 ```
+
+The `cloud_generate_dataset.sh` wrapper requires `DISKGRAPH_CLOUD_BUCKET`, or
+`DISKGRAPH_CLOUD_CONTAINER` for Azure. It has no default destination. Its existing
+metadata detection can select GCS when a metadata request fails. Use the direct
+command above to choose the destination explicitly.
 
 ## JSON config overview
 

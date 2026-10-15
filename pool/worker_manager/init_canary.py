@@ -299,14 +299,18 @@ def pool_config_hash(
     cache_taint: str,
     eph_taint: str,
     eph_canary_enabled: bool = True,
+    read_only_root_filesystem: bool = True,
+    run_as_user: Optional[int] = None,
+    run_as_group: Optional[int] = None,
     extra_tolerations: Optional[List[str]] = None,
 ) -> str:
     """Stable hash of the pool-infra dimensions a canary actually exercises.
 
     Keyed on: the set of cache tier specs, the StorageClass, the label keys used
     to select cache nodes, the cache- and eph-pool taint VALUES the
-    canary tolerates, and whether the eph canary is enabled. A change to any
-    of these invalidates a cached success and forces re-validation - e.g.
+    canary tolerates, container identity, read-only root mode, and whether the
+    eph canary is enabled.
+    A change invalidates a cached success and forces re-validation - e.g.
     re-pointing a pool's dedicated taint must re-prove the pool, since a
     TTL-fresh cached success would otherwise wrongly SKIP re-validation.
     ``eph_canary_enabled`` is keyed so that toggling the (opt-out) eph canary
@@ -326,10 +330,14 @@ def pool_config_hash(
         'cache_taint': cache_taint,
         'eph_taint': eph_taint,
         'eph_canary_enabled': eph_canary_enabled,
+        'read_only_root_filesystem': read_only_root_filesystem,
     }
-    # Preserve the old hash when no extras are configured: an image upgrade
-    # alone must not force GPU/PVC provisioning. Include every extra field,
-    # including operator and tolerationSeconds; ordering is not meaningful.
+    if run_as_user is not None:
+        dimensions['run_as_user'] = run_as_user
+    if run_as_group is not None:
+        dimensions['run_as_group'] = run_as_group
+    # Include every extra field, including operator and tolerationSeconds;
+    # ordering is not meaningful.
     if extra_tolerations:
         dimensions['extra_tolerations'] = sorted(set(extra_tolerations))
     payload = json.dumps(dimensions, sort_keys=True)
@@ -1121,6 +1129,7 @@ async def run_init_canary(
     cache_sched0 = manager.cache_canary_scheduling(
         tier_specs[0].size_gib, tier_specs[0].gpu_count)
 
+    security = _runtime_container_security_context()
     config_hash = pool_config_hash(
         tiers_gib=tiers,
         tier_specs=tier_keys,
@@ -1133,6 +1142,9 @@ async def run_init_canary(
         cache_taint=_taint_str(cache_sched0.tolerations[0]),
         eph_taint=_taint_str(eph_sched.tolerations[0]),
         eph_canary_enabled=EPH_CANARY_ENABLED,
+        read_only_root_filesystem=bool(security.read_only_root_filesystem),
+        run_as_user=security.run_as_user,
+        run_as_group=security.run_as_group,
         extra_tolerations=[
             json.dumps(_toleration_key(t))
             for t in (cache_sched0.tolerations[1:] + eph_sched.tolerations[1:])

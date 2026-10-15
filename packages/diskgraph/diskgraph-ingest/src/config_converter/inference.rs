@@ -1220,7 +1220,7 @@ mod tests {
         // Sizing shards for a smaller memory slice must produce >= as many shards as a
         // larger one (smaller shards). Uses smooth_shard_target directly to simulate the
         // per-cpu memory that shrinks with a memory cgroup.
-        let total = 182 * GB; // ~DoorDash source size
+        let total = 182 * GB;
         let cpus = 64u64;
         let host_per_cpu = 497 * GB / cpus;
         let cgroup_per_cpu = 128 * GB / cpus;

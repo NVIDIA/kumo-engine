@@ -514,7 +514,7 @@ def test_bigquery_gcs_artifact_load_failure_is_sanitized(caplog):
 def test_bigquery_empty_credentials_and_open():
     connector = BigQueryConnector(
         name='bigquery',
-        project_id='kumo-engineering',
+        project_id='example-project',
         dataset_id='financial',
     )
     # Empty explicit credentials use the deployment's stored-credential path.

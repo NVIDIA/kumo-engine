@@ -1,6 +1,6 @@
 ---
 name: kumo-data-science
-description: "Use for any work with KumoAI predictive models on Snowflake data: train a model, score data with a trained one, or answer questions about an existing model or run — explain its predictions, diagnose its training, publish, reload or retain it, train or score on custom labels or rows, or tune it. Covers churn, propensity, fraud, recommendation, forecasting and link prediction; feature attribution and column cohorts; metrics, trials and learning curves; registry publishing and artifact retention; caller-supplied labels, weights and splits; encoders, run mode and experiments. For a new model it checks that the request names the data (a schema, connector, or semantic view), the outcome and the time window, confirms the inferred tables and the task, then generates one notebook or script; it runs the job only when asked. Triggers: kumo, predict, churn, recommend, forecast, fraud, train a model, run inference, explain a prediction, feature importance, model metrics, publish or load a model, tune a model, semantic view."
+description: "Use for any work with KumoAI predictive models on Snowflake data: train a model, score data with a trained one, or answer questions about an existing model or run — explain its predictions, diagnose its training, publish, reload or retain it, train or score on custom labels or rows, or tune it. Covers churn, propensity, fraud, recommendation, forecasting and link prediction; feature attribution and column cohorts; metrics, trials and learning curves; registry publishing and artifact retention; caller-supplied labels, weights and splits; encoders, run mode and experiments. For a new model it checks that the request names the data (a schema, connector, or semantic view), the outcome and the time window, confirms the inferred tables and the task, then generates one notebook or script; it runs the job only when asked, in the notebook or as a Snowflake ML Job on a compute pool. Triggers: kumo, predict, churn, recommend, forecast, fraud, train a model, run inference, explain a prediction, feature importance, model metrics, publish or load a model, tune a model, semantic view, ML Job, compute pool."
 ---
 
 # Data Science Agent — Router Skill
@@ -34,6 +34,11 @@ for what the selected workflow is missing. If the host has not provided the refe
 report that limitation rather than inventing its workflow. **New training requests still follow
 the gates below**, unchanged.
 
+A request to run the artifact as a **Snowflake ML Job** — on a compute pool, unattended, or on a
+schedule — or a question about a job already submitted (status, logs, cost) also reads
+`hosts/snowflake-coco/ml_job.md`. It adds settings to the gates below and changes where Step 3
+runs; it never replaces the gates. A request that does not mention a job stays in the notebook.
+
 ## Purpose
 Take a plain-language ML request, get it to a **confirmed** task and graph through a multi-turn
 intake, and generate **one** runnable KumoAI artifact — a notebook for training, a Python script
@@ -60,8 +65,10 @@ trainer, and `predict` runs against an explicitly rebuilt graph snapshot (see St
   never fed to training — are not this; they exist so a candidate key can be disqualified before
   it silently discards rows
 - Search for, rank, or curate tables by business relevance
-- Retry, schedule, or resume jobs, or keep state across sessions. The one execution the agent
-  performs is Step 3, and only when the user asks.
+- Retry or resume jobs, or keep state across sessions. The one execution the agent performs is
+  Step 3, and only when the user asks.
+- Schedule anything on its own initiative (a recurring run is proposed and created only on explicit
+  confirmation; see `hosts/snowflake-coco/ml_job.md` §8)
 - RFM / zero-shot workflows
 - Audit the user's schema for leakage at intake beyond the mandatory availability guards in
   Node 1c. The codegen guard in `kumoai-reference/SKILL.md` (the target never appears as a
@@ -104,22 +111,9 @@ First decide the operation: `train` or `batch_inference`.
 **`train` — never ask for:** column names, types, keys, joins, table mode (inferred at 1c);
 output table (optional; preserve if given); metrics; embeddings (add only if asked).
 
-**`batch_inference` — required (ask if missing):**
-- `model_address` — the model the user names: a name or ID, a registry location with a version, or
-  a retained local bundle directory
-- `output_location` — a Snowflake table; a connector plus a table name is complete
-
-**`batch_inference` — resolved, never asked** (`accept/intake_contract.md`):
-- `source_scope`: a source the user named, else the connector named for this request, else the
-  source recorded with the model. The bundle restores trainer state, **not** the graph, so the
-  graph is rebuilt from source at 1c.
-- `scoring_population`: defaults to every entity of the trained entity table, anchored at the
-  latest timestamp in the rebuilt snapshot, tagged `[default]`. A subset or date the user names
-  replaces it.
-- The target, positive-label condition, window and task type are fixed by the trained model and
-  must not be reopened.
-
-A request with a model and a destination goes to the gates. It does not get an ask-back.
+**`batch_inference`:** its required and resolved fields, and what changes at Nodes 1c, 1d and
+Step 2, are in `accept/batch_inference.md`. Read it when the operation is `batch_inference`; a
+training request never needs it.
 
 **Never fill a required field from the schema.** A preflight result (or a schema listing handed
 to you) can tell you which tables exist, not what the user wants predicted. If the user has not
@@ -135,8 +129,6 @@ implements a field they already named** — infer the mapping and show it `[infe
 |---|---|
 | Any required field missing | ASK BACK — list exactly the missing fields |
 | `source_scope` given but does not resolve (schema or semantic view not found / unreadable) | ASK BACK — ask for a valid source; do not guess a similar name |
-| `batch_inference`: `model_address` does not resolve, or the user calls it rejected | ASK BACK — name it as unusable, ask for a corrected identifier; do not guess |
-| `batch_inference`: `output_location` is not a Snowflake table (`s3://`, file path) | ASK BACK — name it as unusable, ask for a Snowflake destination; do not substitute |
 | All required present | proceed to Node 1b |
 
 ### Node 1b — Atomic question check
@@ -157,9 +149,8 @@ Run read-only preflight inside `source_scope`.
 Present the graph proposal — seeds, tables,
 primary keys, time columns, links, `table_mode: all-connected [default]` — each line tagged
 `[supplied]` / `[declared]` / `[inferred]` / `[inferred, unverified]` / `[default]`. A semantic
-view is resolved to its base tables, keys and relationships (`accept/preflight.md` §1a); its base
-tables must share one schema. **Stop and wait for confirmation.** User-supplied values take
-precedence over inferred ones.
+view is resolved by `accept/semantic_view.md`, read only for a semantic view. If the user asked for embeddings, say they are included. **Stop and wait for confirmation.**
+User-supplied values take precedence over inferred ones.
 
 **Mandatory column-availability pass.** Before presenting the graph, decide the selected columns
 for every included table and add an `Excluded columns` section to the proposal.
@@ -182,13 +173,6 @@ for every included table and add an `Excluded columns` section to the proposal.
   first pass cannot establish it, say so rather than guessing, and if the host's runtime guard
   later resolves it, return to this node with a revised proposal rather than proceeding.
 
-For `batch_inference`, do not re-derive this set. The selected columns are the ones the model
-was trained on: take them from the graph-building code and column metadata recorded with the
-model (`kumo-model-persistence/references/reuse.md`), and show each table's list at this gate.
-Re-inferring them can build the table with a different column list than the model saw, so
-`predict` either fails on the mismatch or scores on different features. If no recorded column
-selection is available, say so and remain at this node rather than substituting a fresh one.
-
 Tag each exclusion `[inferred]`, give the reason, and let the user correct it at this same gate.
 Carry the confirmed exclusion set into code generation: a table with any exclusion must be built
 with an explicit positional column list, because omitting it silently restores every source
@@ -205,19 +189,12 @@ leaving them unmentioned, because each one changes whether the task is expressib
 - a time-ranged target whose referenced table has no usable time column — say so, and say what
   would make the task expressible. A timestamp on another table does not repair the target.
 
-This node runs for `batch_inference` too. A saved bundle does not carry graph storage or source
-data, and `predict` requires an explicit `snapshot`, so the graph is rebuilt and confirmed the
-same way. Confirm that the rebuilt structure matches what the model was trained on; a bundle
-from an older SDK, or source tables whose shape has drifted, fails at load or predict rather
-than scoring silently.
-
 | Condition | Transition |
 |---|---|
 | Seeds cannot be connected without transforming data | REJECT — explain; generate nothing |
-| Semantic view's base tables span more than one schema; a relationship uses a multi-column key, declares a non-equality match, or two relationships reference two different columns of one table; a logical table is defined by a query rather than a base table | ASK BACK — name what was found; do not pick a schema, drop tables, or substitute a link (`accept/preflight.md` §1a) |
+| A semantic view fails a check in `accept/semantic_view.md` | ASK BACK — as that file says; do not pick a schema, drop tables, or substitute a link |
 | User corrects a line | re-present the proposal with the correction `[supplied]` |
 | Confirmed proposal still lacks metadata the task requires (entity key, target time column) | remain at Node 1c — explain the correction needed; generate nothing |
-| `batch_inference` and no column selection is recorded with the model | remain at Node 1c — say the training-time selection is unavailable; generate nothing |
 | User confirms | proceed to Node 1d |
 
 ### Node 1d — Task interpretation gate
@@ -240,19 +217,6 @@ already have a target scored (for example "every order"), the notebook stages an
 population table. That is a write, so name it here: next to the confirmed destination by default
 (`<DESTINATION>_POPULATION`), or ask for a schema when there is no destination. Never stage it in
 the source schema.
-
-For `batch_inference`, restate in this shape and stop for confirmation:
-
-```
-- Model: <model address, verbatim> — trained task reused unchanged
-- Source: <source_scope> [supplied | inferred]
-- Population: <all <entity> as of latest snapshot timestamp [default] | the user's subset/date [supplied]>
-- Output: predictions written to <destination, verbatim>
-- Embeddings: <included, if explicitly requested>
-```
-
-Without tools, where 1c cannot run, fold the source and graph lines into this one restatement.
-Do not turn them into questions.
 
 | Condition | Transition |
 |---|---|
@@ -281,6 +245,8 @@ Source: shipped package (`kumo_core.model_plan`)
 
 ## Step 2 — Generate via KumoAI
 
+Read the host's `runtime.md` (`hosts/snowflake-coco/runtime.md`) before generating.
+
 After ACCEPT, load `kumoai-reference/SKILL.md` and hand off the confirmed payload. Produce
 **one** artifact.
 
@@ -302,16 +268,9 @@ After ACCEPT, load `kumoai-reference/SKILL.md` and hand off the confirmed payloa
 
 The user may ask for a script instead of a notebook.
 
-### `batch_inference` → load the model, rebuild the graph, predict
+### `batch_inference`
 
-Follow `kumo-model-persistence/SKILL.md` for the load and predict code. Restore the trainer with
-`Trainer.load` (retained bundle) or `Trainer.load_from_connector` (registry), materialize the
-snapshot for the graph confirmed at 1c, build the prediction table for the confirmed scoring
-population — `kumo-custom-populations/SKILL.md` when the user supplied exact rows — and call
-`predict(prediction_table, snapshot=snapshot, output_config=...)`.
-
-Do not refit. If the bundle cannot be loaded, or the rebuilt graph is incompatible with it,
-report the failing stage and stop; do not substitute a fresh training run without being asked.
+See `accept/batch_inference.md`, *Step 2*.
 
 The artifact must preserve every confirmed input verbatim — entity, outcome, window, table mode,
 metadata, links, destination. No invented link, horizon, or table.
@@ -322,7 +281,9 @@ metadata, links, destination. No invented link, horizon, or table.
 
 Default is generate-only. Run only when the user says to run it,
 in the same or a later turn. Then, per `kumoai-reference/references/kumo_finetuning_sdk.md`:
-- Run the notebook. `fit` blocks until training finishes; there is no job to poll.
+- Run the notebook. `fit` blocks until training finishes; there is no Kumo job to poll. When the
+  user asked for a Snowflake ML Job, running means submitting it and waiting for its Snowflake
+  status instead (`hosts/snowflake-coco/ml_job.md` §6).
 - Report the outcome: the training metrics, or the exception and the cell that raised it
 - Let the notebook's own predict step run; predictions land at the confirmed destination — **the
   name is written verbatim**, no suffix, no case change; report it as `DB.SCHEMA.TABLE`
@@ -332,7 +293,7 @@ in the same or a later turn. Then, per `kumoai-reference/references/kumo_finetun
 
 ## Host adapter
 Snowflake-specific runtime facts, including how to run preflight SQL, live in
-`hosts/snowflake-coco/adapter.md`.
+`hosts/snowflake-coco/adapter.md` (intake), and `hosts/snowflake-coco/runtime.md` (read at Step 2).
 
 ---
 

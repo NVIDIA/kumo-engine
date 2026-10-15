@@ -3849,7 +3849,7 @@ class _FakeSamplerEngine:
     # 2011-08-17, 2013-07-15, 1999-12-04 as unix SECONDS.
     _UNIX_SECONDS = [1313539200, 1373846400, 944265600]
 
-    def __init__(self, index_path: str) -> None:
+    def __init__(self, index_path: str, **_kwargs) -> None:
         self._index_path = index_path
 
     def fetch_features(self, request):
@@ -3879,7 +3879,7 @@ def test_fetch_rhs_time_col_returns_nanoseconds_not_seconds(
     out = dldm.DiskgraphLightningDataModule._fetch_rhs_time_col(
         index_path="/unused",
         node_type="products",
-        node_ids=[0, 1, 2],
+        num_nodes=3,
         col_name="product_time",
     )
     assert out is not None

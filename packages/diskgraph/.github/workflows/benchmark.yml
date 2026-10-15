@@ -34,7 +34,7 @@ env:
   BASELINE_ROOT: /mnt/localssd/benchmark_baseline
   DATA_ROOT: /mnt/localssd/benchmark_data
   CONFIG_LIST: scripts/benchmarks/benchmark_configs/config_list.txt
-  S3_PREFIX: s3://kumo-unit-test/diskgraph-datagenerator
+  S3_PREFIX: ${{ vars.DISKGRAPH_BENCHMARK_S3_PREFIX }}
 
 jobs:
   benchmark:
@@ -49,6 +49,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check storage configuration
+        run: ': "${S3_PREFIX:?Set the DISKGRAPH_BENCHMARK_S3_PREFIX repository variable}"'
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -86,9 +89,8 @@ jobs:
               echo "Using cached data for ${dataset}"
             fi
 
-            # Generate local config by rewriting S3 paths to local paths.
+            # Resolve relative object paths against the local cache.
             python3 scripts/benchmarks/rewrite_config.py "${config}" \
-              --s3-prefix "${S3_PREFIX}" \
               --data-root "${DATA_ROOT}" \
               --output "${local_dir}/diskgraph_config.json"
             echo "Prepared local config: ${local_dir}/diskgraph_config.json"

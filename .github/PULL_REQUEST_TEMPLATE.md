@@ -42,7 +42,7 @@ For detailed instructions on release handeling see [README.md](https://github.co
 **If P0 Fix on master:**
 - Related P0 bug / incident ticket(s): <!-- GitHub issue links -->
 - Brief symptoms / customer impact: <!-- Plain language: what breaks for customers? -->
-- Known affected customers / envs: <!-- e.g. “all EU SaaS” -->
+- Affected deployment types: <!-- Omit customer names and private incident details. -->
 - Affected versions: <!-- Must check: 1) earliest version bug appeared, 2) ensuring forward-ported to all affected versions without gaps -->
 
 **If Backport PR:**

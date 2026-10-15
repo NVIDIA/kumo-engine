@@ -300,11 +300,8 @@ def test_temporal_link_pred_validate_generate_train_table(
         num_users=5, num_stores=3, num_edges=15)
     graph.infer_metadata().infer_encoders()
 
-    # RHS target filter excludes every candidate (STORE_ID range is 0..2). The
-    # LHS entity pool is still non-empty, so gen succeeds, but the RANK TOP 10
-    # request now exceeds the (zero) available target count -> the validator
-    # returns "Top k is too large" rather than the empty-table title (an empty
-    # RHS is a top-k mismatch on TT-NG, not an empty training table).
+    # RHS target filter excludes every candidate (STORE_ID range is 0..2), so
+    # every anchor has an empty target and no training row is written.
     query = ('PREDICT LIST_DISTINCT(ORDERS.STORE_ID WHERE '
              'ORDERS.STORE_ID > 100, 0, 2) RANK TOP 10 FOR EACH '
              'USERS.USER_ID')
@@ -317,7 +314,7 @@ def test_temporal_link_pred_validate_generate_train_table(
     _, _, validation_response = pquery.generate_train_table(
         diskgraph_index_path=index_path, destination=str(tmp_path / 'lp1'))
     assert not validation_response.ok
-    assert validation_response.errors[0].title == 'Top k is too large'
+    assert validation_response.errors[0].title == 'Empty training table'
 
     # Entity filter excludes every USERS row (USER_ID range is 0..4) -> empty
     # LHS seed table. On TT-NG the empty case surfaces as a 0-byte ``tt.parquet``

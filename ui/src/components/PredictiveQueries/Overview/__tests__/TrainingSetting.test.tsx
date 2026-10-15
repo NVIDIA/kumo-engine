@@ -17,7 +17,7 @@ import TrainingSetting, { TrainingSettingProps } from "../TrainingSetting";
 
 import { ModelPlan } from "./MockResponses/ModelPlan";
 
-const id = "trainingjob-ba19d6bdf1c5406fbb00525b221a8adf";
+const id = "trainingjob-00053000000000000000000000000000";
 const defaultProps: TrainingSettingProps = {
     queryId: id,
     trainingJobId: id,

@@ -34,7 +34,7 @@ import {
 } from "./MockFunctions/PredictionTableGeneration.mock";
 import { doneResponse } from "./MockResponses/PredictionTableGeneration";
 
-const id = "gen-predtable-job-e01e53529bcf443ea47dae482a58d383";
+const id = "gen-predtable-job-00060000000000000000000000000000";
 const expectedPredictionTable = doneResponse;
 expectedPredictionTable.resource.job_id = id;
 const predictionTableDetails = parsePredictionTableGenResponse(
@@ -266,7 +266,7 @@ describe("PredictionTableGenOverview", () => {
                 expect(mockAxiosInstance.post).toHaveBeenCalledWith(
                     "v0/jobs/add_tag",
                     {
-                        job_id: "gen-predtable-job-e01e53529bcf443ea47dae482a58d383",
+                        job_id: "gen-predtable-job-00060000000000000000000000000000",
                         key: key,
                         project_id: "project-tests",
                         value: value
@@ -293,7 +293,7 @@ describe("PredictionTableGenOverview", () => {
                 expect(mockAxiosInstance.post).toHaveBeenCalledWith(
                     "v0/jobs/delete_tag",
                     {
-                        job_id: "gen-predtable-job-e01e53529bcf443ea47dae482a58d383",
+                        job_id: "gen-predtable-job-00060000000000000000000000000000",
                         key: "test_new_pred_page",
                         project_id: "project-tests",
                         value: null

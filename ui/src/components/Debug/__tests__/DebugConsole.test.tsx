@@ -36,7 +36,7 @@ describe("DebugConsole", () => {
         useCacheStore.getState().resetCacheConfig();
     });
 
-    const jobId = "trainingjob-bed43f8f2fc54ea985439b026dbe0865";
+    const jobId = "trainingjob-00055000000000000000000000000000";
     const renderDebugConsole = async (initialPath = `/jobs/${jobId}`) => {
         const queryClient = createQueryClient();
         await act(async () => {

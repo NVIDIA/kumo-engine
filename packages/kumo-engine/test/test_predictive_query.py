@@ -498,7 +498,7 @@ def test_custom_training_table_materializes_weight_and_manual_split(
     assert table.required_stages == ('train', 'val', 'test')
     assert captured['custom'].parquet_path == str(rows)
     assert captured['custom'].weight_column == 'WEIGHT'
-    generation = captured['plan_kwargs']['model_plan'].training_table_generation
+    generation = captured['plan_kwargs']['training_table_generation_plan']
     assert generation.split == (
         "ManualSplit(col='SPLIT', train_value=0, val_value=1, test_value=2)")
 
@@ -542,7 +542,7 @@ def test_custom_training_table_uses_the_normal_inferred_split(
         snapshot=snapshot,
     )
 
-    assert str(captured['model_plan'].training_table_generation.split) in {
+    assert str(captured['training_table_generation_plan'].split) in {
         'inferred', 'missing'
     }
     assert table.required_stages == ('train', 'val')

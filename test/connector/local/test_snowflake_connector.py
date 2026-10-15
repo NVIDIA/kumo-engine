@@ -436,7 +436,7 @@ def test_snowflake_malformed_bytes_falls_back_to_info_table():
 
 
 def test_snowflake_query():
-    connector = SnowflakeConnector('snowflake', account='xva19026',
+    connector = SnowflakeConnector('snowflake', account='example-account',
                                    warehouse='WH_XS', database='KUMO',
                                    schema_name='FINANCIAL')
     assert connector.get_query('test_table') == (

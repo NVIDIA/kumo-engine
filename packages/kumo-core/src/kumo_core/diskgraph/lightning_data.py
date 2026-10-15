@@ -2702,15 +2702,12 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
             return self._null_valid_rhs(num_rhs)
         end_col = self._end_time_col_for(self._rhs_node_type)
 
-        node_ids = list(range(num_rhs))
         create_time = self._fetch_rhs_time_col(index_path, self._rhs_node_type,
-                                               node_ids, create_col)
-        if create_time is None:
-            return self._null_valid_rhs(num_rhs)
+                                               num_rhs, create_col)
         end_time = None
         if end_col:
             end_time = self._fetch_rhs_time_col(index_path, self._rhs_node_type,
-                                                node_ids, end_col)
+                                                num_rhs, end_col)
 
         return DiskgraphValidRHS(
             num_rhs_nodes=num_rhs,
@@ -2746,42 +2743,24 @@ class DiskgraphLightningDataModule(pl.LightningDataModule):
     def _fetch_rhs_time_col(
         index_path: str,
         node_type: str,
-        node_ids: list[int],
+        num_nodes: int,
         col_name: str,
-    ) -> "Any | None":
-        """Fetch a time/end_time column for ``node_ids`` from the DG index as an
-        int64 NANOSECONDS tensor (NaT => -1, the ``RHSTime`` never-expire
-        sentinel); ``None`` if the column is absent.
+    ) -> "Any":
+        """Fetch a time/end_time column for node IDs ``[0, num_nodes)`` from the
+        DG index as an int64 NANOSECONDS tensor (NaT => -1, the ``RHSTime``
+        never-expire sentinel).
 
         Nanoseconds is the Kumo-Python-internal timestamp unit, so this column is
         directly comparable to the ns ``seed_time`` and ns ``unix_*_offset`` in
         ``RHSTime.get_valid_nodes`` (all-ns RHS validity)."""
         import pandas as pd
-        import pyarrow as pa
         import torch
-        from diskgraph import SamplerEngine
+        from kumo_core.diskgraph.stores import read_node_column
 
-        engine = SamplerEngine(index_path)
-        BATCH = 50_000
-        all_batches = []
-        for start in range(0, len(node_ids), BATCH):
-            chunk = node_ids[start:start + BATCH]
-            request = [{
-                "node_type": node_type,
-                "node_ids": chunk,
-                "feature_names": [col_name],
-            }]
-            for event in engine.fetch_features(request):
-                if event.get("type") == "feature":
-                    all_batches.append(event["batch"])
-
-        if not all_batches:
-            return torch.zeros(len(node_ids), dtype=torch.long)
-        table = pa.Table.from_batches(all_batches)
-        if col_name not in table.column_names:
-            return None
         ser = pd.to_datetime(
-            table.column(col_name).to_pandas(), errors="coerce")
+            read_node_column(index_path, node_type, col_name,
+                             num_nodes).to_pandas(),
+            errors="coerce")
         # Return int64 NANOSECONDS regardless of the pandas datetime resolution.
         # Kumo Python is ns-canonical, so the RHS validity arithmetic compares
         # this create/end-time against an ns ``seed_time`` and ns ``unix_*_offset``

@@ -113,6 +113,24 @@ def test_stage_source_table_preserves_parquet_parts(tmp_path, monkeypatch,
     assert pq.read_table(output).num_rows == 16
 
 
+def test_stage_source_table_casts_to_what_the_table_reader_reads(tmp_path):
+    from decimal import Decimal
+
+    root = tmp_path / "connector"
+    root.mkdir()
+    pq.write_table(
+        pa.table({
+            "ENTITY1": pa.array([Decimal(1), Decimal(2)], pa.decimal128(38, 0)),
+            "TARGET1": pa.array(["a", "b"]).dictionary_encode(),
+        }), root / "curated.parquet")
+
+    output = stage_source_table(
+        FileConnector(root_dir=str(root))["curated"], tmp_path / "staged")
+
+    assert pq.read_table(output).schema == pa.schema([("ENTITY1", pa.int64()),
+                                                      ("TARGET1", pa.string())])
+
+
 def test_stage_source_table_retains_single_file_in_parts_directory(tmp_path):
     root = tmp_path / "connector"
     root.mkdir()

@@ -35,7 +35,7 @@ export const setBatchPredictionJobsResponseType = (
 const mockValidResponse = (): Promise<AxiosResponse<unknown>> => {
     return Promise.resolve(
         createMockResponse({
-            id: "bp-job-349fee63191149bf85731f7bb7ffcf45"
+            id: "bp-job-0001a000000000000000000000000000"
         }) as unknown as AxiosResponse<unknown>
     );
 };

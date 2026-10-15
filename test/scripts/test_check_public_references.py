@@ -25,6 +25,8 @@ def test_scan_allows_public_and_example_links() -> None:
         "https://docs.python.org/3/",
         "https://monitoring.example.test/dashboard",
         "https://github.com/kumo-ai/kumo",
+        "https://support.1password.com/",
+        "https://www.1password.com/",
     ])
 
     assert scan_text("README.md", text) == []
@@ -44,6 +46,29 @@ def test_scan_reports_company_chat_reference() -> None:
     findings = scan_text("README.md", reference)
     assert len(findings) == 1
     assert findings[0].category == "company chat channel"
+
+
+def test_scan_reports_private_password_manager_item() -> None:
+    host = "start." + "1password.com"
+    text = f'"https://{host}/open/i?a=example-account"\n"&v=example-vault"'
+
+    findings = scan_text("scripts/debug/example.py", text)
+
+    assert [(f.line, f.category) for f in findings] == [
+        (1, "private password-manager item")
+    ]
+    assert scan_text("guide.md", f"https://{host}/") == []
+
+
+@pytest.mark.parametrize("reference", ["https://{host}/", "h={host}"])
+def test_scan_reports_private_password_manager_workspace(reference) -> None:
+    host = "team-kumo." + "1password.com"
+
+    findings = scan_text("guide.md", reference.format(host=host))
+
+    assert [(f.host, f.category) for f in findings] == [
+        (host, "private password-manager workspace")
+    ]
 
 
 def test_scan_skips_malformed_url_shaped_text() -> None:
@@ -247,6 +272,16 @@ def test_identifier_rules_skip_exempt_paths(path) -> None:
 
     assert scan_text(path, text) == []
     assert len(scan_text("kumo/config.py", text)) == 1
+
+
+@pytest.mark.parametrize("story", ["Alert", "CopyToClipboard", "OutputCard"])
+def test_ui_examples_reject_private_identifiers(story) -> None:
+    path = ("packages/kumo-ui-catalog/src/stories/components/ui/"
+            f"{story}.stories.tsx")
+    findings = scan_text(path, "/home/" + "someone/project/error.py")
+
+    assert [finding.category
+            for finding in findings] == ["personal home directory"]
 
 
 def test_diff_scan_works_in_a_blobless_clone_without_lazy_fetch(

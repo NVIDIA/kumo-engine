@@ -51,5 +51,6 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
+markers = ["allow_hosts(hosts): uses a loopback HTTP server in public tests"]
 testpaths = ["tests"]
 pythonpath = ["src", "../kumo-core/src", "../kumo-core/tests"]

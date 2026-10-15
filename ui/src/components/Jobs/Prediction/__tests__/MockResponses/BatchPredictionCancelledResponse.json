@@ -1,8 +1,8 @@
 {
-    "id": "bp-job-3f5f52a53f01473d8c5123ff7ba4fd15",
+    "id": "bp-job-0001e000000000000000000000000000",
     "config": {
-        "predictive_query_id": "NA-558e58967ac7fadf2a9a408fa4a8b52d",
-        "training_job_id": "trainingjob-9f8b259b4f764c8f932ad5912a926ec2",
+        "predictive_query_id": "NA-00027000000000000000000000000000",
+        "training_job_id": "trainingjob-00046000000000000000000000000000",
         "task_type": "binary_classification",
         "num_classes_to_return": null,
         "binary_classification_threshold": 0.5,
@@ -32,11 +32,11 @@
         "output_directory": null,
         "output_types": null,
         "num_parallel_workers_limit": 2,
-        "generate_pred_table_job_id": "gen-predtable-job-e01e53529bcf443ea47dae482a58d383",
+        "generate_pred_table_job_id": "gen-predtable-job-00060000000000000000000000000000",
         "custom_pred_table_source": null,
-        "graph_id": "NA-d445eeb8b2aa1b79a142406239fa74e8",
-        "graph_data_version": "6f0ae33ac31edb0c321fbe182e39e460",
-        "pquery_def_fpid": "558e58967ac7fadf2a9a408fa4a8b52d",
+        "graph_id": "NA-0005b000000000000000000000000000",
+        "graph_data_version": "00033000000000000000000000000000",
+        "pquery_def_fpid": "00027000000000000000000000000000",
         "explanations": false
     },
     "timestamps": {
@@ -44,8 +44,8 @@
         "updated_at": "2025-04-09T05:27:46.421947+00:00"
     },
     "predictive_query_link": {
-        "name": "NA-558e58967ac7fadf2a9a408fa4a8b52d",
-        "id": "NA-558e58967ac7fadf2a9a408fa4a8b52d",
+        "name": "NA-00027000000000000000000000000000",
+        "id": "NA-00027000000000000000000000000000",
         "training_job_id": null
     },
     "execution": {
@@ -63,15 +63,15 @@
         "results": null
     },
     "graph_link": {
-        "name": "NA-d445eeb8b2aa1b79a142406239fa74e8",
-        "id": "NA-d445eeb8b2aa1b79a142406239fa74e8",
+        "name": "NA-0005b000000000000000000000000000",
+        "id": "NA-0005b000000000000000000000000000",
         "snapshot_id": null
     },
     "description": "",
     "batch_prediction_workflow_id": null,
     "tags": {
-        "pquery_id": "pquery-558e58967ac7fadf2a9a408fa4a8b52d",
-        "model_id": "trainingjob-9f8b259b4f764c8f932ad5912a926ec2",
+        "pquery_id": "pquery-00027000000000000000000000000000",
+        "model_id": "trainingjob-00046000000000000000000000000000",
         "new_prediction_job": "new_prediction_job"
     },
     "job_source": "UI"

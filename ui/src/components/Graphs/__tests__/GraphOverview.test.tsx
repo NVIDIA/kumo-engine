@@ -27,7 +27,7 @@ vi.mock("hooks/project/projects", () => ({
 
 describe("GraphOverview", () => {
     const { graphOverviewMock, renderGraphOverview } = setupGraphTests();
-    const graphId = "graph-4973156df602a3f4346186713bd6782d";
+    const graphId = "graph-00022000000000000000000000000000";
 
     beforeEach(() => {
         resetQueryClient();

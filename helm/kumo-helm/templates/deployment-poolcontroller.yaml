@@ -75,6 +75,17 @@ spec:
           value: {{ include "kumo.serviceAccountName" (dict "root" . "role" "worker") | quote }}
         - name: POOL_WORKER_FS_GROUP
           value: {{ .Values.workloads.poolcontroller.runtimeFsGroup | default "" | quote }}
+        {{- $podSecurity := include "kumo.podSecurityContext" (dict "root" . "extra" dict) | fromYaml | default dict }}
+        {{- $containerSecurity := include "kumo.containerSecurityContext" (dict "root" . "extra" dict) | fromYaml }}
+        {{- $workerSecurity := mergeOverwrite $podSecurity $containerSecurity }}
+        {{- range $field, $env := dict "runAsUser" "POOL_WORKER_RUN_AS_USER" "runAsGroup" "POOL_WORKER_RUN_AS_GROUP" }}
+        {{- if hasKey $workerSecurity $field }}
+        - name: {{ $env }}
+          value: {{ index $workerSecurity $field | int64 | quote }}
+        {{- end }}
+        {{- end }}
+        - name: POOL_WORKER_READ_ONLY_ROOT_FILESYSTEM
+          value: {{ (include "kumo.containerSecurityContext" (dict "root" . "extra" dict) | fromYaml).readOnlyRootFilesystem | default false | quote }}
         {{- with .Values.tenantSecretKey }}
         {{- if .secretName }}
         # Coordinates of the deployment secret key so runtime-created pool pods
@@ -138,15 +149,19 @@ spec:
           failureThreshold: 1
         resources:
           {{- toYaml .Values.workloads.poolcontroller.resources | nindent 10 }}
-        {{- if or .Values.temporal.clientMtlsSecret (.Values.postgres.dsnSecret | default dict).secretName (.Values.kumoConfig.gsaKey | default dict).existingSecret }}
         volumeMounts:
+        - name: runtime-tmp
+          mountPath: /tmp
+        - name: runtime-cache
+          mountPath: /home/kumouser/.cache
         {{- include "kumo.temporalVolumeMount" . | nindent 8 }}
         {{- include "kumo.secretsVolumeMount" . | nindent 8 }}
         {{- include "kumo.gcpApplicationCredentialsVolumeMount" . | nindent 8 }}
-        {{- end }}
-      {{- if or .Values.temporal.clientMtlsSecret (.Values.postgres.dsnSecret | default dict).secretName (.Values.kumoConfig.gsaKey | default dict).existingSecret }}
       volumes:
+      - name: runtime-tmp
+        emptyDir: {}
+      - name: runtime-cache
+        emptyDir: {}
       {{- include "kumo.temporalVolume" . | nindent 6 }}
       {{- include "kumo.secretsVolume" . | nindent 6 }}
       {{- include "kumo.gcpApplicationCredentialsVolume" . | nindent 6 }}
-      {{- end }}

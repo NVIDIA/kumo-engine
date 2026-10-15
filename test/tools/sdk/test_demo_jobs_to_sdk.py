@@ -475,13 +475,13 @@ def test_file_upload_source_table_is_classified_as_unreplayable():
         connector_id="connector-project-upload",
         source={
             'mode': 'relative',
-            'path': "lyft_driver_acceptance_ID"
+            'path': "uploaded_events_ID"
         },
         file_type="PARQUET",
     )
 
     with pytest.raises(ExportError, match="file-upload source table"):
-        validate_source_table_ref("lyft_driver", source, SOURCE_EXISTS)
+        validate_source_table_ref("uploaded_events", source, SOURCE_EXISTS)
 
 
 def _s3_output(artifact_type, file_path):
@@ -544,10 +544,10 @@ def _set_single_source(rest_db, *, graph_name, source_table_name, s3_path,
 @pytest.mark.parametrize(
     "job_id,forecast_length,lag_timesteps",
     [
-        ("trainingjob-0bb9a3189c5044f99eba447343a41dbe", 12, None),
-        ("trainingjob-3e312681cbc745b3a0b48e26d832be6b", 4, None),
-        ("trainingjob-71d5d24bd5234ed5bf081b4dd2b58f85", 30, 14),
-        ("trainingjob-78764db0b998406eb6cab14972048a78", 2, 2),
+        ("trainingjob-00000000000000000000000000000001", 12, None),
+        ("trainingjob-00000000000000000000000000000002", 4, None),
+        ("trainingjob-00000000000000000000000000000003", 30, 14),
+        ("trainingjob-00000000000000000000000000000004", 2, 2),
     ],
 )
 def test_known_bug005_forecasting_jobs_are_skipped_by_id(
@@ -613,13 +613,13 @@ def test_year_over_year_false_string_does_not_skip():
     "job_id,graph_name,source_table_name,s3_path",
     [
         (
-            "trainingjob-3760f183afab4bed9dc089200dc5f4f1",
+            "trainingjob-00000000000000000000000000000005",
             "admissions",
             "admissions",
             "s3://example-bucket/demo/prod/MIMIC_III_v1.4/core/admissions.parquet",
         ),
         (
-            "trainingjob-6adcad26674b497d8b616a73f0926a15",
+            "trainingjob-00000000000000000000000000000006",
             "admissions",
             "admissions",
             "s3://example-bucket/demo/prod/MIMIC_III_v1.4/core/admissions.parquet",
@@ -652,8 +652,8 @@ def test_known_bug011_missing_training_sources_are_skipped_by_id(
 @pytest.mark.parametrize(
     "job_id,source_table_name",
     [
-        ("bp-job-614da56416524957af5ab80ed8fb6257", "transactions"),
-        ("bp-job-92eaee04be834ad285d4e762284f8b97", "devices"),
+        ("bp-job-00000000000000000000000000000007", "transactions"),
+        ("bp-job-00000000000000000000000000000008", "devices"),
     ],
 )
 def test_known_bug011_missing_batch_sources_are_skipped_by_id(
@@ -684,12 +684,12 @@ def test_known_bug011_missing_batch_sources_are_skipped_by_id(
 
 def test_known_bug011_uploaded_training_source_is_skipped_by_id():
     rest_db, ml_db, job = _tiny_dbs()
-    job.id = "trainingjob-6d11c82d41ee45b8b6ee044f732d6765"
+    job.id = "trainingjob-00000000000000000000000000000009"
     ml_db.training_job_map = {job.id: job}
     _set_single_source(
         rest_db,
-        graph_name="lyft_driver_acceptance_ID",
-        source_table_name="lyft_driver_acceptance_ID",
+        graph_name="uploaded_events_ID",
+        source_table_name="uploaded_events_ID",
         s3_path="",
         connector_id="connector-project-upload",
     )
@@ -701,8 +701,7 @@ def test_known_bug011_uploaded_training_source_is_skipped_by_id():
     assert len(statuses) == 1
     assert statuses[0].job_id == job.id
     assert not statuses[0].exportable
-    assert "file-upload source table lyft_driver_acceptance_ID" in statuses[
-        0].reason
+    assert "file-upload source table uploaded_events_ID" in statuses[0].reason
     assert "connector-project-upload" in statuses[0].reason
 
 
@@ -757,7 +756,7 @@ def _model_plan_graph_dbs(table_specs, col_groups, query):
     "job_id,table_specs,col_groups,stale_key,stale_value,expected_key",
     [
         (
-            "trainingjob-4f5e8a762d2b4a0ba6861b383f8e4e57",
+            "trainingjob-0000000000000000000000000000000a",
             (("products", "Products", "ProductId", ()),
              ("sales", "Sales", "SalesId", ("ProductId", ))),
             ((("products", "ProductId"), ("sales", "ProductId")), ),
@@ -766,7 +765,7 @@ def _model_plan_graph_dbs(table_specs, col_groups, query):
             "products.ProductId->sales.ProductId",
         ),
         (
-            "trainingjob-6c32e778465c47e4bfa7784b8aa4c035",
+            "trainingjob-0000000000000000000000000000000b",
             (("products", "Products", "ProductId", ()),
              ("sales", "Sales", "SalesId", ("ProductId", ))),
             ((("products", "ProductId"), ("sales", "ProductId")), ),
@@ -775,7 +774,7 @@ def _model_plan_graph_dbs(table_specs, col_groups, query):
             "products.ProductId->sales.ProductId",
         ),
         (
-            "trainingjob-6417124e8fb14d9889e04ae907909ec6",
+            "trainingjob-0000000000000000000000000000000c",
             (("stores", "Stores", "StoreId", ()), ("sales", "Sales", "SalesId",
                                                    ("StoreId", ))),
             ((("stores", "StoreId"), ("sales", "StoreId")), ),
@@ -784,17 +783,16 @@ def _model_plan_graph_dbs(table_specs, col_groups, query):
             "stores.StoreId->sales.StoreId",
         ),
         (
-            "trainingjob-2b51a3958d1146deb5b3388a3b010f07",
-            (("kumo_max_email", "kumo_max_email", "BOLT_USER_ID", ()),
-             ("kumo_link_final", "KUMO_LINK_FINAL", "BOLT_USER_ID", ())),
-            ((("kumo_max_email", "BOLT_USER_ID"),
-              ("kumo_link_final", "BOLT_USER_ID")), ),
-            "kumo_max_email.BOLT_USER_ID->KUMO_LINK_FINAL.BOLT_USER_ID",
+            "trainingjob-0000000000000000000000000000000d",
+            (("user_profiles", "user_profiles", "USER_ID", ()),
+             ("user_events", "USER_EVENTS", "USER_ID", ())),
+            ((("user_profiles", "USER_ID"), ("user_events", "USER_ID")), ),
+            "user_profiles.USER_ID->USER_EVENTS.USER_ID",
             "inferred",
-            "kumo_max_email.BOLT_USER_ID->kumo_link_final.BOLT_USER_ID",
+            "user_profiles.USER_ID->user_events.USER_ID",
         ),
         (
-            "trainingjob-1b1fcea163a347f28c9e38fffadbad5c",
+            "trainingjob-0000000000000000000000000000000e",
             (("copurchase", "CoPurchase", "ProductId1",
               ("ProductId2", )), ("products", "Products", "ProductId", ()),
              ("products_rhs", "Products", "ProductId", ())),

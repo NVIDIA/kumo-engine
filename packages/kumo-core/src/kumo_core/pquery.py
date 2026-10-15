@@ -46,7 +46,6 @@ from .encoder_selection import (
     select_encoder,
 )
 from .model_plan import (
-    ModelPlan,
     TrainingTableGenerationPlan,
     inferred_or_missing_type_to_false,
     inferred_or_missing_type_to_none,
@@ -759,7 +758,7 @@ def _forecast_options(
     if (isinstance(lag_timesteps, bool)
             or not isinstance(lag_timesteps, Integral) or lag_timesteps < 1):
         raise PredictiveQueryPlanError(
-            "model_plan.training_table_generation.lag_timesteps must be a "
+            "training_table_generation_plan.lag_timesteps must be a "
             "positive integer for forecasting")
     timeframe = query.query.get_combined_date_offset_range().timeframe
     step_seconds = int(timeframe.total_seconds())
@@ -854,22 +853,21 @@ def resolve_query_split(query: ValidatedNativeQuery,
 def _split_options(
     query: ValidatedNativeQuery,
     graph: NativeGraph,
-    model_plan: ModelPlan,
+    options: TrainingTableGenerationPlan,
 ) -> tuple[Mapping[str, Any], str]:
-    value = inferred_or_missing_type_to_none(
-        model_plan.training_table_generation.split)
+    value = inferred_or_missing_type_to_none(options.split)
     if value is None:
         return _default_split(
             query,
             graph,
-            model_plan.training_table_generation,
+            options,
         )
     try:
         descriptor = resolve_query_split(query, str(value))
         split, family = split_config_from_descriptor(descriptor)
     except ValueError as error:
         raise PredictiveQueryPlanError(
-            f"model_plan training-table {error}") from error
+            f"training-table generation plan {error}") from error
     if query.query_type != "static" and family == "TimeRangeSplit":
         offset = query.query.get_combined_date_offset_range()
         split = {
@@ -880,7 +878,7 @@ def _split_options(
             "flexible_boundaries": False,
         }
         timeframe_step = inferred_or_missing_type_to_none(
-            model_plan.training_table_generation.timeframe_step)
+            options.timeframe_step)
         if timeframe_step is not None:
             split["timeframe_step"] = int(timeframe_step)
     return split, family
@@ -1365,7 +1363,7 @@ def build_native_pquery_task_plan(
         *,
         query: ValidatedNativeQuery,
         graph: NativeGraph,
-        model_plan: ModelPlan,
+        training_table_generation_plan: TrainingTableGenerationPlan,
         run_id: str,
         graph_index_path: str,
         scratch_dir: str,
@@ -1380,22 +1378,15 @@ def build_native_pquery_task_plan(
     rows carry their own ``TIMESTAMP`` values.
     """
 
-    if not isinstance(query, ValidatedNativeQuery):
-        raise TypeError("query must be a resolved ValidatedNativeQuery")
-    if not isinstance(graph, NativeGraph):
-        raise TypeError("graph must be a resolved NativeGraph")
-    if not isinstance(model_plan, ModelPlan):
-        raise TypeError("model_plan must be a resolved ModelPlan")
-    query = resolve_query_forecast(query, graph,
-                                   model_plan.training_table_generation)
+    query = resolve_query_forecast(query, graph, training_table_generation_plan)
     if query.task_type not in _NATIVE_TRAINING_TASK_TYPES:
         raise PredictiveQueryPlanError(
             "Portable training does not support task type "
             f"{query.task_type!r}")
     if not graph_index_path:
         raise PredictiveQueryPlanError("ingest output is missing index_path")
-    options = model_plan.training_table_generation
-    split, split_family = _split_options(query, graph, model_plan)
+    options = training_table_generation_plan
+    split, split_family = _split_options(query, graph, options)
     lag_timesteps, compiler_options = _forecast_options(query, options)
     resolved_timestamps: tuple[int, ...] = ()
     if not supplied_rows:

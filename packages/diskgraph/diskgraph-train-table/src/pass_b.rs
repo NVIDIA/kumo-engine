@@ -414,8 +414,6 @@ fn write_empty_stage_part(
 // ─── Mode entry points ───────────────────────────────────────────────────────
 
 /// Per-anchor fused pass-B: a [`SplitDecider`] decides each whole row's stage.
-/// `is_array_lp` folds in the empty-target drop (anchor rows whose `TARGET1`
-/// list is empty go nowhere).
 ///
 /// `drop_split_column` is `Some(col)` for the custom-TT split-column path: that
 /// column is the split signal and is projected OUT of each stage sub-batch so
@@ -427,14 +425,13 @@ pub(crate) fn run_pass_b_per_anchor<U: UnitSystem, D: SplitDecider<U> + Sync>(
     decider: &D,
     output_dir: &Path,
     total_rows: u64,
-    is_array_lp: bool,
     drop_split_column: Option<&str>,
     out_schema: &SchemaRef,
     forecasting_horizon: Option<(i64, i64)>,
     fact_pseudo_time: Option<&FactPseudoTime>,
 ) -> TTGenResult<[StagePartsOut; 3]> {
     let horizon_policy = if let Some((step_ns, length)) = forecasting_horizon {
-        let max_ts = stage_max_timestamps::<U, D>(tt_parquet, decider, is_array_lp)?;
+        let max_ts = stage_max_timestamps::<U, D>(tt_parquet, decider)?;
         ForecastingHorizonPolicy::new(max_ts, step_ns, length)
     } else {
         None
@@ -449,7 +446,6 @@ pub(crate) fn run_pass_b_per_anchor<U: UnitSystem, D: SplitDecider<U> + Sync>(
                 batch,
                 decider,
                 offset,
-                is_array_lp,
                 horizon_policy.as_ref(),
                 drop_split_column,
             )
@@ -461,7 +457,6 @@ pub(crate) fn run_pass_b_per_anchor<U: UnitSystem, D: SplitDecider<U> + Sync>(
 fn stage_max_timestamps<U: UnitSystem, D: SplitDecider<U>>(
     tt_parquet: &Path,
     decider: &D,
-    is_array_lp: bool,
 ) -> TTGenResult<[Option<i64>; 3]> {
     let mut max_ts: [Option<i64>; 3] = [None, None, None];
     let mut offset = 0u64;
@@ -471,7 +466,7 @@ fn stage_max_timestamps<U: UnitSystem, D: SplitDecider<U>>(
         let batch =
             batch_res.map_err(|e| TTGenError::Parquet(format!("pass_b reader: {e}")))?;
             let stages =
-                assign_per_anchor_stages::<U, D>(&batch, decider, offset, is_array_lp, None)?;
+                assign_per_anchor_stages::<U, D>(&batch, decider, offset, None)?;
         let ts = timestamp_ns_array(&batch)?;
         for (row, stage) in stages.into_iter().enumerate() {
             if (stage as usize) < 3 {
@@ -739,7 +734,7 @@ mod tests {
             schema,
             Some(group_size),
             |batch, offset| {
-                route_per_anchor::<Seconds, D>(batch, decider, offset, false, None, None)
+                route_per_anchor::<Seconds, D>(batch, decider, offset, None, None)
             },
             None,
         )
@@ -906,7 +901,6 @@ mod tests {
                         &decider,
                         output.path(),
                         timestamps.len() as u64,
-                        false,
                         None,
                         &schema,
                         None,
@@ -945,7 +939,6 @@ mod tests {
             &d,
             dir.path(),
             ts_secs.len() as u64,
-            false,
             None,
             &schema,
             None,
@@ -985,7 +978,6 @@ mod tests {
             &d,
             dir.path(),
             ts_secs.len() as u64,
-            false,
             None,
             &schema,
             None,
@@ -1023,7 +1015,6 @@ mod tests {
             &d,
             dir.path(),
             0,
-            false,
             None,
             &schema,
             None,
@@ -1050,7 +1041,6 @@ mod tests {
             &d,
             dir.path(),
             ts_secs.len() as u64,
-            false,
             None,
             &schema,
             None,
@@ -1072,39 +1062,6 @@ mod tests {
         let mut sorted = out[0].parts.clone();
         sorted.sort();
         assert_eq!(out[0].parts, sorted);
-    }
-
-    #[test]
-    fn per_anchor_array_lp_drops_empty_target() {
-        let dir = tempfile::tempdir().unwrap();
-        let tt = dir.path().join("tt.parquet");
-        let rows: Vec<(i64, i64, Vec<(&str, i64)>)> = vec![
-            (0, 10, vec![("a", 1)]),  // train
-            (1, 50, vec![]),          // empty target → dropped
-            (2, 150, vec![("b", 1)]), // val
-        ];
-        let schema = write_lp_parquet(&tt, &rows, None);
-        let d = time_range_decider();
-        let out = run_pass_b_per_anchor::<Seconds, _>(
-            &tt,
-            &d,
-            dir.path(),
-            rows.len() as u64,
-            true,
-            None,
-            &schema,
-            None,
-            None,
-        )
-        .unwrap();
-        assert_eq!(out[0].row_count, 1);
-        assert_eq!(out[1].row_count, 1);
-        assert_eq!(out[0].row_count + out[1].row_count + out[2].row_count, 2);
-        // Empty-target row (ts=50) does NOT contribute to any seed-time.
-        assert_eq!(
-            out[0].seed_time,
-            Some([10 * 1_000_000_000, 10 * 1_000_000_000])
-        );
     }
 
     /// Custom-TT split-column drop: the configured split column is projected
@@ -1163,7 +1120,6 @@ mod tests {
             &d,
             dir.path(),
             4,
-            false,
             Some("split_col"),
             &out_schema,
             None,

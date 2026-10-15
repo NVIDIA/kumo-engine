@@ -106,6 +106,15 @@ class PublicRunnerTest(unittest.TestCase):
                     (target / 'test_unregistered.py').write_text(
                         'def test_new(): assert True\n')
                     (target / '.env').write_text('SYNTHETIC=placeholder\n')
+                artifact_modules = (
+                    'artifacts.py', 'config.py', 'manifest.py',
+                    'io/__init__.py', 'io/filesystem.py', 'io/json.py',
+                ) if profile == 'public' else ()
+                core_path = Path('packages/kumo-core/src/kumo_core')
+                for module in artifact_modules:
+                    target = context / core_path / module
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text('# artifact dependency fixture\n')
                 (context / 'Dockerfile').write_text('FROM scratch\nCOPY . /\n')
                 shutil.copyfile(
                     runner.ROOT / 'tests' / profile / 'Dockerfile.dockerignore',
@@ -119,6 +128,9 @@ class PublicRunnerTest(unittest.TestCase):
                     self.assertTrue((target / 'test_unregistered.py').is_file(),
                                     str(path))
                     self.assertFalse((target / '.env').exists(), str(path))
+                for module in artifact_modules:
+                    target = root / 'output' / core_path / module
+                    self.assertTrue(target.is_file(), str(module))
 
     @unittest.skipUnless(shutil.which('docker'), 'Docker is required')
     def test_wheel_rebuild_replaces_previous_output(self):
